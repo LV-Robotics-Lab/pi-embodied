@@ -6,12 +6,11 @@
 	"type": "module",
 	"pi": {
 		"extensions": [
-			"src/libero/index.ts"
+			"src/libero/index.ts",
+			"src/dashboard/index.ts"
 		]
 	},
 	"peerDependencies": {
-		"@earendil-works/pi-agent-core": "*",
-		"@earendil-works/pi-ai": "*",
 		"@earendil-works/pi-coding-agent": "*",
 		"typebox": "*"
 	}

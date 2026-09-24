@@ -16,14 +16,36 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type TSchema, Type } from "typebox";
+import { explore } from "../explore.ts";
+import { flywheel } from "../flywheel.ts";
+import { memory } from "../memory/index.ts";
+import { operator } from "../operator.ts";
 import { decodePngChannel, encodePng } from "../png.ts";
 import { NdArray, RpcClient } from "../rpc.ts";
+import { episodeVideo } from "../video.ts";
+import { registerFlash } from "./flash.ts";
 
-const SYSTEM = readFileSync(new URL("./SYSTEM.md", import.meta.url), "utf8");
+const read = (name: string) => readFileSync(new URL(name, import.meta.url), "utf8");
+const SYSTEM = read("./SYSTEM.md");
+const MEMORY = { hf: read("./memory-hf.md"), local: read("./memory-local.md") };
+const TASK_ENTRY = "libero_task";
+const PRIMITIVES = [
+	"move_to",
+	"pi0_pick",
+	"pi0_doubled",
+	"release",
+	"set_gripper",
+	"rotate_wrist",
+	"rotate_pitch",
+	"move_pose",
+];
+const TOOLS = [...PRIMITIVES, "view_env_state", "view_camera_meta", "segment", "back_project", "finish"];
 const CAMERAS = { agentview: "agentview", wrist: "robot0_eye_in_hand" } as const;
 type Camera = keyof typeof CAMERAS;
 type Obs = { main_images: NdArray; wrist_images?: NdArray | null; states: NdArray };
 type StepReturn = [Obs, unknown, boolean | NdArray, boolean | NdArray, unknown];
+type ChunkReturn = [Obs[], NdArray, NdArray, NdArray, unknown];
+type Cell = { suite: string; task: string; seed: string };
 type CameraMeta = { intrinsic_K: number[][]; extrinsic_cam2world: number[][]; depth_near?: number; depth_far?: number };
 type WorldMap = { envStep: number; size: number; rgb: Buffer; xyz: Float32Array };
 
@@ -98,7 +120,23 @@ export default function libero(pi: ExtensionAPI) {
 	let envStep = 0;
 	let language = "";
 	let claimed: { status: string; summary: string } | undefined;
+	let finishing = false;
+	let cell: Cell = { suite: "libero_10", task: "0", seed: "0" };
 	const worldMaps = new Map<string, WorldMap>();
+
+	const tag = () => `${cell.suite.replace(/^libero_/, "")}_t${cell.task}_s${cell.seed}`;
+	const rpentMemory = () => (flag("rpent", "") ? join(flag("rpent", ""), "memory") : "");
+	const mem = memory(pi, {
+		robot: "libero",
+		...(rpentMemory() ? { home: rpentMemory } : {}),
+		cell: () => ({ tag: tag(), reference: tag().replace(/_s\d+$/, "_s0") }),
+		primitives: PRIMITIVES,
+		explore: () => pi.getFlag("explore") === true,
+	});
+	const video = episodeVideo(pi);
+	const fly = flywheel(pi);
+	const op = operator(pi, { step: () => envStep });
+	registerFlash(pi, () => ({ suite: cell.suite, task: cell.task }));
 
 	const states = () => obs.states.toArray();
 	const eef = () => states().slice(0, 3);
@@ -112,8 +150,19 @@ export default function libero(pi: ExtensionAPI) {
 		envStep += steps;
 	}
 
+	const scalar = (v: unknown) => (v instanceof NdArray ? v.toArray()[0] : Number(v));
+
+	/** Every env transition goes to the episode video and the flywheel recorder. */
+	function record(action: number[], o: Obs, reward: number, term: boolean, trunc: boolean, vlaId = -1, index = -1) {
+		video.frame(o.main_images);
+		fly.transition(action, o, reward, term, trunc, vlaId, index);
+	}
+
 	async function step(action: number[]) {
-		absorb(await env.call<StepReturn>("env.step", {}, 60_000, [NdArray.f32(action)]), 1);
+		op.check();
+		const ret = await env.call<StepReturn>("env.step", {}, 60_000, [NdArray.f32(action)]);
+		record(action, ret[0], scalar(ret[1]), done(ret[2]), done(ret[3]));
+		absorb(ret, 1);
 	}
 
 	/** One Pi0.5 forward pass with `prompt` as the instruction, executed as one action chunk. */
@@ -125,12 +174,38 @@ export default function libero(pi: ExtensionAPI) {
 			states: NdArray.f32(states(), [1, states().length]),
 			task_descriptions: [prompt],
 		};
+		op.check();
 		const actions = await vla.call<NdArray>("vla.predict", {}, 120_000, [wire, { mode: "eval" }]);
 		const chunk = new NdArray(actions.dtype, actions.shape.slice(1), actions.data);
-		absorb(
-			await env.call<StepReturn>("env.chunk_step", { return_all_frames: false }, 120_000, [chunk]),
-			chunk.shape[0],
+		const vlaId = fly.proposal(prompt, chunk);
+		op.check();
+		const [frames, rew, term, trunc, info] = await env.call<ChunkReturn>(
+			"env.chunk_step",
+			{ return_all_frames: true },
+			120_000,
+			[chunk],
 		);
+		const [a, r, te, tr] = [chunk.toArray(), rew.toArray(), term.toArray(), trunc.toArray()];
+		const width = chunk.shape[1];
+		frames.forEach((o, i) => {
+			record(a.slice(i * width, (i + 1) * width), o, r[i], Boolean(te[i]), Boolean(tr[i]), vlaId, i);
+		});
+		absorb([frames[frames.length - 1], rew, term, trunc, info], chunk.shape[0]);
+	}
+
+	const flyMeta = () => ({
+		suite: cell.suite,
+		task_id: Number(cell.task),
+		seed: Number(cell.seed),
+		task_language: language,
+	});
+
+	/** Restore the episode's initial scene (session start, exploration `reset`). */
+	async function resetEpisode() {
+		worldMaps.clear();
+		terminated = truncated = false;
+		envStep = 0;
+		[obs] = await env.call<[Obs, unknown]>("env.reset", {}, 300_000);
 	}
 
 	async function render(camera: Camera, size: number, depth: boolean) {
@@ -235,20 +310,22 @@ export default function libero(pi: ExtensionAPI) {
 								text: `Episode already ended (terminated=${terminated}, truncated=${truncated}).`,
 							},
 						],
-						details: {},
+						details: { terminated, truncated },
+						terminate: finishing,
 					};
 				}
 				const result = await run(params);
-				if (motion) return observe(result);
+				if (motion) return { ...(await observe(result)), terminate: finishing };
 				const { _image, ...rest } = result as { _image?: Buffer };
 				const content = [{ type: "text" as const, text: JSON.stringify(rest) }];
-				if (!_image) return { content, details: rest };
+				if (!_image) return { content, details: rest, terminate: finishing };
 				return {
 					content: [
 						...content,
 						{ type: "image" as const, data: _image.toString("base64"), mimeType: "image/png" },
 					],
 					details: rest,
+					terminate: finishing,
 				};
 			},
 		});
@@ -722,13 +799,41 @@ export default function libero(pi: ExtensionAPI) {
 		},
 	});
 
-	pi.on("session_start", async () => {
+	pi.registerCommand("libero-task", {
+		description: "Start a new LIBERO episode in a new session: /libero-task <suite> <task> <seed>",
+		handler: async (args, ctx) => {
+			const [suite, task, seed, ...rest] = args.trim().split(/\s+/);
+			if (rest.length || !suite || !/^\d+$/.test(task ?? "") || !/^\d+$/.test(seed ?? "")) {
+				ctx.ui.notify("Usage: /libero-task <suite> <task> <seed>", "error");
+				return;
+			}
+			await ctx.newSession({
+				setup: async (sm) => {
+					sm.appendCustomEntry(TASK_ENTRY, { suite, task: Number(task), seed: Number(seed) });
+				},
+				withSession: async (next) => {
+					next.sendUserMessage("Solve the task.").catch((err) => next.ui.notify(String(err), "error"));
+				},
+			});
+		},
+	});
+
+	pi.on("session_start", async (_event, ctx) => {
 		server?.kill();
-		worldMaps.clear();
-		terminated = truncated = false;
-		envStep = 0;
 		claimed = undefined;
-		const [suite, task, seed] = [flag("suite", "libero_10"), flag("task", "0"), flag("seed", "0")];
+		finishing = false;
+		// A task picked with /libero-task (or the dashboard) is a session entry and overrides the flags.
+		const picked = ctx.sessionManager
+			.getBranch()
+			.filter((e) => e.type === "custom" && e.customType === TASK_ENTRY)
+			.pop();
+		const data =
+			picked?.type === "custom" ? (picked.data as { suite: string; task: number; seed: number }) : undefined;
+		cell = data
+			? { suite: data.suite, task: String(data.task), seed: String(data.seed) }
+			: { suite: flag("suite", "libero_10"), task: flag("task", "0"), seed: flag("seed", "0") };
+		if (!picked) pi.appendEntry(TASK_ENTRY, { suite: cell.suite, task: Number(cell.task), seed: Number(cell.seed) });
+		const { suite, task, seed } = cell;
 		vla = new RpcClient(flag("vla", ""));
 		sam3 = new RpcClient(flag("sam3", ""));
 		let endpoint = pi.getFlag("env") as string | undefined;
@@ -776,23 +881,10 @@ export default function libero(pi: ExtensionAPI) {
 		);
 		exited.catch(() => {});
 		await Promise.race([env.ready(), exited]);
-		[obs] = await env.call<[Obs, unknown]>("env.reset", {}, 300_000);
+		await resetEpisode();
 		language = await env.call<string>("env.get_task_language");
-		pi.setActiveTools([
-			"view_env_state",
-			"move_to",
-			"pi0_pick",
-			"pi0_doubled",
-			"release",
-			"set_gripper",
-			"rotate_wrist",
-			"rotate_pitch",
-			"move_pose",
-			"view_camera_meta",
-			"segment",
-			"back_project",
-			"finish",
-		]);
+		fly.reset(obs, flyMeta());
+		pi.setActiveTools([...TOOLS, ...op.tools(), ...mem.tools]);
 	});
 
 	pi.on("session_shutdown", () => {
@@ -800,7 +892,24 @@ export default function libero(pi: ExtensionAPI) {
 		server = undefined;
 	});
 
-	pi.on("before_agent_start", () => ({ systemPrompt: SYSTEM.replaceAll("{{task_language}}", language) }));
+	pi.on("before_agent_start", () => {
+		const system = SYSTEM.replaceAll("{{task_language}}", language);
+		// Exploration appends its own memory instructions.
+		if (pi.getFlag("explore") === true) return { systemPrompt: system };
+		return { systemPrompt: `${system}\n\n${mem.render(MEMORY[mem.profile], { task: cell.task })}` };
+	});
+
+	// pi stops early only when every result in a batch terminates: a batch that calls
+	// `finish` ends with it, and nothing runs after `finish`.
+	pi.on("message_end", (event) => {
+		const m = event.message;
+		if (m.role === "assistant") finishing = m.content.some((c) => c.type === "toolCall" && c.name === "finish");
+	});
+	pi.on("tool_call", (event) =>
+		claimed && event.toolName !== "finish"
+			? { block: true, reason: "The episode is finished.", terminate: true }
+			: undefined,
+	);
 
 	pi.on("context", (event) => {
 		let keep = Number(flag("keep-images", "4"));
@@ -820,16 +929,27 @@ export default function libero(pi: ExtensionAPI) {
 
 	pi.on("agent_end", (_event, ctx) => {
 		const result = {
-			suite: flag("suite", ""),
-			task: Number(flag("task", "0")),
-			seed: Number(flag("seed", "0")),
+			suite: cell.suite,
+			task: Number(cell.task),
+			seed: Number(cell.seed),
 			terminated,
 			truncated,
 			env_steps: envStep,
 			claimed: claimed?.status ?? null,
 			summary: claimed?.summary ?? null,
+			...op.result(),
 		};
 		pi.appendEntry("libero_result", result);
 		if (!ctx.hasUI) console.error(`[libero] ${JSON.stringify(result)}`);
+	});
+
+	explore(pi, {
+		reset: async (result) => {
+			await resetEpisode();
+			fly.reset(obs, flyMeta());
+			return observe(result);
+		},
+		render: mem.render,
+		tools: mem.tools,
 	});
 }

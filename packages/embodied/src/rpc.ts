@@ -66,6 +66,8 @@ function decode(value: unknown): unknown {
 
 export class RpcClient {
 	url: string;
+	/** Server-side session id, for servers that scope state per client (RoboCasa's VLA). */
+	session: string | null = null;
 
 	constructor(endpoint: string) {
 		const base = endpoint.includes("://") ? endpoint : `http://${endpoint}`;
@@ -81,7 +83,7 @@ export class RpcClient {
 		const res = await fetch(this.url, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ method, args: encode(args), kwargs: encode(kwargs), session_id: null }),
+			body: JSON.stringify({ method, args: encode(args), kwargs: encode(kwargs), session_id: this.session }),
 			signal: AbortSignal.timeout(timeoutMs),
 		});
 		const body = (await res.json()) as { ok: boolean; result?: unknown; error?: string };

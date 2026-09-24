@@ -27,7 +27,6 @@ import type {
 import { encodePng } from "../png.ts";
 
 const TASK_ENTRY = "libero_task";
-const OPENING_PROMPT = "Solve the task.";
 const HUB = Symbol.for("pi-embodied.dashboard");
 
 type Message = MessageEndEvent["message"];
@@ -72,7 +71,7 @@ type Episode = Task & {
 /** Process-wide dashboard; it outlives extension runtimes, which pi rebuilds on every session switch. */
 type Hub = ReturnType<typeof createHub>;
 
-function currentTask(pi: ExtensionAPI, ctx: ExtensionContext): Task {
+function currentTask(ctx: ExtensionContext): Task {
 	const branch = ctx.sessionManager.getBranch();
 	for (let i = branch.length - 1; i >= 0; i--) {
 		const e = branch[i];
@@ -81,8 +80,7 @@ function currentTask(pi: ExtensionAPI, ctx: ExtensionContext): Task {
 			return { suite: String(d.suite), task: String(d.task), seed: String(d.seed) };
 		}
 	}
-	const flag = (name: string) => String(pi.getFlag(name) ?? "?");
-	return { suite: flag("suite"), task: flag("task"), seed: flag("seed") };
+	return { suite: "?", task: "?", seed: "?" };
 }
 
 function parseTask(text: string): Task | undefined {
@@ -232,7 +230,7 @@ function createHub(server: Server, url: string, page: string) {
 			callStart.clear();
 			frameCache.clear();
 			episode = {
-				...currentTask(nextPi, nextCtx),
+				...currentTask(nextCtx),
 				gen: (episode?.gen ?? 0) + 1,
 				language: "",
 				attached: true,
@@ -428,32 +426,6 @@ export default function dashboard(pi: ExtensionAPI) {
 	pi.registerFlag("dashboard-host", { type: "string", default: "127.0.0.1", description: "Dashboard bind address" });
 	pi.registerFlag("dashboard-port", { type: "string", default: "0", description: "Dashboard port (0 = any free)" });
 	pi.registerFlag("dashboard-language", { type: "string", default: "en", description: "Dashboard UI: en | zh-cn" });
-	// Shared with the LIBERO extension (flags are process-wide); read to label the CLI-started session.
-	for (const name of ["suite", "task", "seed"]) pi.registerFlag(name, { type: "string" });
-
-	pi.registerCommand("libero-task", {
-		description: "Start a new LIBERO episode in a new session: /libero-task <suite> <task> <seed>",
-		handler: async (args, ctx) => {
-			const task = parseTask(args);
-			if (!task) {
-				ctx.ui.notify("Usage: /libero-task <suite> <task> <seed>", "error");
-				return;
-			}
-			await ctx.newSession({
-				setup: async (sm) => {
-					sm.appendCustomEntry(TASK_ENTRY, {
-						suite: task.suite,
-						task: Number(task.task),
-						seed: Number(task.seed),
-					});
-				},
-				withSession: async (next) => {
-					next.sendUserMessage(OPENING_PROMPT).catch((err) => next.ui.notify(String(err), "error"));
-				},
-			});
-		},
-	});
-
 	let hub: Hub | undefined;
 	const on = <T>(fn: (h: Hub) => T) => (hub ? fn(hub) : undefined);
 

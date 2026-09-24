@@ -5,10 +5,17 @@
  * - After every mutating tool the robot state is captured and returned to the
  *   model (text + camera images), so the planner always reasons over what the
  *   world looks like after its action rather than over what the tool claims.
+ * - When a mutating tool fails, the state is still captured and returned with
+ *   the error: the robot may have moved before the failure.
  * - `finish` ends the run but never decides success: that comes from the
- *   environment (`robot.solved()`), never from the agent's own claim.
+ *   environment (`robot.solved()`), never from the agent's own claim. Every
+ *   result in the batch that contains `finish` terminates, so the run stops
+ *   after that batch; calls after `finish` are blocked.
  * - Every call is appended to the episode trace, and every captured frame is
  *   written to disk for later inspection.
+ *
+ * Batch termination, post-finish blocking, and the error flag on captured
+ * failures rely on the hooks installed by `episodeExtension`.
  */
 
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -78,6 +85,10 @@ export class Episode {
 	finish?: { status: string; summary: string };
 	/** Camera frames currently replaced by markers in the model context. */
 	imagesPruned = 0;
+	/** The current assistant tool batch contains `finish`; its results terminate the run. */
+	endsAfterBatch = false;
+	/** Tool calls that failed but returned a state capture; reported to the model as errors. */
+	readonly failedCalls = new Set<string>();
 	readonly outDir: string | undefined;
 	private frameIndex = 0;
 
@@ -129,7 +140,7 @@ export function buildPiTools(robot: Robot, episode: Episode): ToolDefinition[] {
 		description: tool.description,
 		parameters: tool.parameters,
 		executionMode: "sequential",
-		async execute(_id, params, signal): Promise<AgentToolResult<unknown>> {
+		async execute(id, params, signal): Promise<AgentToolResult<unknown>> {
 			const entry: TraceEntry = {
 				index: episode.trace.length,
 				tool: tool.name,
@@ -138,19 +149,41 @@ export function buildPiTools(robot: Robot, episode: Episode): ToolDefinition[] {
 				solvedAfter: false,
 			};
 			episode.trace.push(entry);
+			const terminate = episode.endsAfterBatch;
 			const started = Date.now();
 			try {
-				const { result, observation } = await tool.run(params, { signal, episode });
+				let run: Awaited<ReturnType<typeof tool.run>>;
+				try {
+					run = await tool.run(params, { signal, episode });
+				} catch (err) {
+					entry.error = err instanceof Error ? err.message : String(err);
+					if (tool.readonly) throw err;
+					let obs: Observation;
+					try {
+						obs = await robot.observe();
+					} catch {
+						throw err;
+					}
+					episode.failedCalls.add(id);
+					entry.solvedAfter = robot.solved();
+					entry.frames = episode.saveFrames(obs);
+					return {
+						content: observationContent(obs, { error: entry.error }),
+						details: { error: entry.error, state: obs.state },
+						terminate,
+					};
+				}
+				const { result, observation } = run;
 				const obs = observation ?? (tool.readonly ? undefined : await robot.observe());
 				entry.result = result;
 				entry.solvedAfter = robot.solved();
 				if (!obs) {
-					return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
+					return { content: [{ type: "text", text: JSON.stringify(result) }], details: result, terminate };
 				}
 				entry.frames = episode.saveFrames(obs);
-				return { content: observationContent(obs, { result }), details: { result, state: obs.state } };
+				return { content: observationContent(obs, { result }), details: { result, state: obs.state }, terminate };
 			} catch (err) {
-				entry.error = err instanceof Error ? err.message : String(err);
+				entry.error ??= err instanceof Error ? err.message : String(err);
 				throw err;
 			} finally {
 				entry.elapsedMs = Date.now() - started;

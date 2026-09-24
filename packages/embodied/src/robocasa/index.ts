@@ -202,14 +202,13 @@ export default function robocasa(pi: ExtensionAPI) {
 
 	/** Top-down RGB and per-pixel world xyz (RPent's world map: T_p2w @ [col*z, row*z, z, 1]). */
 	async function rgbd(camera: string, size: number): Promise<{ rgb: Buffer; map: WorldMap }> {
-		const [[img, depth], T] = await Promise.all([
-			env.call<[NdArray, NdArray]>(
-				"env.render_camera",
-				{ camera_name: camera, height: size, width: size, depth: true },
-				120_000,
-			),
-			env.call<NdArray>("env.get_camera_transform", { camera_name: camera, height: size, width: size }),
-		]);
+		// One call at a time: concurrent calls interleave on the env server's worker pipe.
+		const [img, depth] = await env.call<[NdArray, NdArray]>(
+			"env.render_camera",
+			{ camera_name: camera, height: size, width: size, depth: true },
+			120_000,
+		);
+		const T = await env.call<NdArray>("env.get_camera_transform", { camera_name: camera, height: size, width: size });
 		const z = depth.toArray();
 		const t = T.toArray();
 		const xyz = new Float32Array(size * size * 3);
@@ -228,14 +227,12 @@ export default function robocasa(pi: ExtensionAPI) {
 	/** Record the current observation as the next numbered state. */
 	async function capture(command: Record<string, unknown> | null, result: unknown, elapsed: number | null) {
 		const hi = Number(flag("hi-res", "0"));
-		const [success, progress, agent, wrist, nav, high] = await Promise.all([
-			env.call<boolean>("env.check_success"),
-			env.call<Record<string, unknown>>("env.get_task_progress").catch(() => ({})),
-			rgbd(CAMERAS.agentview, SIZE),
-			rgbd(CAMERAS.wrist, SIZE),
-			rgbd(CAMERAS.navview, SIZE),
-			hi > 0 ? rgbd(CAMERAS.agentview, hi) : undefined,
-		]);
+		const success = await env.call<boolean>("env.check_success");
+		const progress = await env.call<Record<string, unknown>>("env.get_task_progress").catch(() => ({}));
+		const agent = await rgbd(CAMERAS.agentview, SIZE);
+		const wrist = await rgbd(CAMERAS.wrist, SIZE);
+		const nav = await rgbd(CAMERAS.navview, SIZE);
+		const high = hi > 0 ? await rgbd(CAMERAS.agentview, hi) : undefined;
 		const round4 = (key: string) => vec(key).map((v) => round(v));
 		const s: State = {
 			step: states.length,
@@ -413,7 +410,8 @@ export default function robocasa(pi: ExtensionAPI) {
 
 	/** One per-sim-step history entry: proprio + the 3 VLA cameras at 256, top-down. */
 	async function frame(): Promise<Frame> {
-		const images = await Promise.all(VLA_CAMERAS.map((c) => rgb(c)));
+		const images: Awaited<ReturnType<typeof rgb>>[] = [];
+		for (const c of VLA_CAMERAS) images.push(await rgb(c));
 		return {
 			state: {
 				"state.gripper_qpos": vec("robot0_gripper_qpos"),

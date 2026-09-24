@@ -121,8 +121,24 @@ export default function libero(pi: ExtensionAPI) {
 	let language = "";
 	let claimed: { status: string; summary: string } | undefined;
 	let finishing = false;
+	let ready = false;
 	let cell: Cell = { suite: "libero_10", task: "0", seed: "0" };
 	const worldMaps = new Map<string, WorldMap>();
+
+	// Registered before memory() so the cell is resolved before memory's own session_start reads it.
+	pi.on("session_start", (_event, ctx) => {
+		// A task picked with /libero-task (or the dashboard) is a session entry and overrides the flags.
+		const picked = ctx.sessionManager
+			.getBranch()
+			.filter((e) => e.type === "custom" && e.customType === TASK_ENTRY)
+			.pop();
+		const data =
+			picked?.type === "custom" ? (picked.data as { suite: string; task: number; seed: number }) : undefined;
+		cell = data
+			? { suite: data.suite, task: String(data.task), seed: String(data.seed) }
+			: { suite: flag("suite", "libero_10"), task: flag("task", "0"), seed: flag("seed", "0") };
+		if (!picked) pi.appendEntry(TASK_ENTRY, { suite: cell.suite, task: Number(cell.task), seed: Number(cell.seed) });
+	});
 
 	const tag = () => `${cell.suite.replace(/^libero_/, "")}_t${cell.task}_s${cell.seed}`;
 	const rpentMemory = () => (flag("rpent", "") ? join(flag("rpent", ""), "memory") : "");
@@ -253,7 +269,8 @@ export default function libero(pi: ExtensionAPI) {
 
 	async function observe(result: Record<string, unknown>) {
 		const raw = await env.call<Record<string, NdArray>>("env.raw_obs");
-		const frames = await Promise.all((["agentview", "wrist"] as const).map((c) => render(c, 1024, false)));
+		// One call at a time: concurrent calls interleave on the env server's worker pipe.
+		const frames = [await render("agentview", 1024, false), await render("wrist", 1024, false)];
 		const state = {
 			robot0_eef_pos: raw.robot0_eef_pos.toArray().map((v) => round(v)),
 			robot0_eef_quat: raw.robot0_eef_quat.toArray().map((v) => round(v)),
@@ -822,17 +839,24 @@ export default function libero(pi: ExtensionAPI) {
 		server?.kill();
 		claimed = undefined;
 		finishing = false;
-		// A task picked with /libero-task (or the dashboard) is a session entry and overrides the flags.
-		const picked = ctx.sessionManager
-			.getBranch()
-			.filter((e) => e.type === "custom" && e.customType === TASK_ENTRY)
-			.pop();
-		const data =
-			picked?.type === "custom" ? (picked.data as { suite: string; task: number; seed: number }) : undefined;
-		cell = data
-			? { suite: data.suite, task: String(data.task), seed: String(data.seed) }
-			: { suite: flag("suite", "libero_10"), task: flag("task", "0"), seed: flag("seed", "0") };
-		if (!picked) pi.appendEntry(TASK_ENTRY, { suite: cell.suite, task: Number(cell.task), seed: Number(cell.seed) });
+		ready = false;
+		try {
+			await startEpisode();
+			ready = true;
+		} catch (err) {
+			// Without a robot there is nothing to act on: no tools, and a non-interactive run exits.
+			pi.setActiveTools([]);
+			const message = `LIBERO unavailable: ${err instanceof Error ? err.message : String(err)}`;
+			if (ctx.hasUI) ctx.ui.notify(message, "error");
+			else {
+				console.error(`[libero] ${message}`);
+				process.exitCode = 1;
+				ctx.shutdown();
+			}
+		}
+	});
+
+	async function startEpisode() {
 		const { suite, task, seed } = cell;
 		vla = new RpcClient(flag("vla", ""));
 		sam3 = new RpcClient(flag("sam3", ""));
@@ -885,7 +909,7 @@ export default function libero(pi: ExtensionAPI) {
 		language = await env.call<string>("env.get_task_language");
 		fly.reset(obs, flyMeta());
 		pi.setActiveTools([...TOOLS, ...op.tools(), ...mem.tools]);
-	});
+	}
 
 	pi.on("session_shutdown", () => {
 		server?.kill();
@@ -905,11 +929,13 @@ export default function libero(pi: ExtensionAPI) {
 		const m = event.message;
 		if (m.role === "assistant") finishing = m.content.some((c) => c.type === "toolCall" && c.name === "finish");
 	});
-	pi.on("tool_call", (event) =>
-		claimed && event.toolName !== "finish"
-			? { block: true, reason: "The episode is finished.", terminate: true }
-			: undefined,
-	);
+	pi.on("tool_call", (event) => {
+		if (!ready) return { block: true, reason: "The robot is not available.", terminate: true };
+		if (claimed && event.toolName !== "finish") {
+			return { block: true, reason: "The episode is finished.", terminate: true };
+		}
+		return undefined;
+	});
 
 	pi.on("context", (event) => {
 		let keep = Number(flag("keep-images", "4"));

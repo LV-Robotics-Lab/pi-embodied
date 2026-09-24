@@ -225,12 +225,14 @@ export default function libero(pi: ExtensionAPI) {
 	}
 
 	async function render(camera: Camera, size: number, depth: boolean) {
-		const [rgb, d] = await env.call<[NdArray, NdArray | null]>("env.render_camera", {
+		// The env returns [rgb, depth] with depth, and the bare rgb array without it.
+		const out = await env.call<NdArray | [NdArray, NdArray]>("env.render_camera", {
 			camera_name: CAMERAS[camera],
 			height: size,
 			width: size,
 			depth,
 		});
+		const [rgb, d] = out instanceof NdArray ? [out, null] : out;
 		return { rgb: flipRows(rgb.data, size, size * 3), depth: d };
 	}
 
@@ -686,7 +688,9 @@ export default function libero(pi: ExtensionAPI) {
 			min_score: num("Default 0.2"),
 		}),
 		async ({ prompt, point, camera: c = "agentview", min_score = 0.2 }) => {
-			if (Boolean(prompt?.trim()) === Boolean(point)) return { error: "give exactly one of prompt or point" };
+			// Models often fill both optional fields; a non-empty prompt wins.
+			const text = prompt?.trim();
+			if (!text && !point) return { error: "give a text prompt or a point [row, col]" };
 			const map = await worldMap(c, 1024);
 			const png = encodePng(map.rgb, 1024, 1024);
 			const res = await sam3.call<{
@@ -697,7 +701,7 @@ export default function libero(pi: ExtensionAPI) {
 				reason?: string;
 			}>("sam3.segment", {
 				image_base64: png.toString("base64"),
-				...(prompt?.trim() ? { text_prompt: prompt.trim() } : { point }),
+				...(text ? { text_prompt: text } : { point }),
 				min_score,
 			});
 			if (!res.found || !res.mask_png_base64)
@@ -762,10 +766,14 @@ export default function libero(pi: ExtensionAPI) {
 			};
 			const valid = (p: number[]) =>
 				p.every(Number.isFinite) && Math.abs(p[0]) + Math.abs(p[1]) + Math.abs(p[2]) > 1e-6;
-			if (row_range || col_range) {
-				if (!row_range || !col_range) return { error: "region mode needs both row_range and col_range" };
-				const [r0, r1] = [clip(Math.min(...row_range), 0, size), clip(Math.max(...row_range), 0, size)];
-				const [c0, c1] = [clip(Math.min(...col_range), 0, size), clip(Math.max(...col_range), 0, size)];
+			// An empty window ([0, 0]) is a placeholder, not a region.
+			const span = (r?: number[]) => (r && Math.max(...r) > Math.min(...r) ? r : undefined);
+			const rows = span(row_range);
+			const cols = span(col_range);
+			if (rows || cols) {
+				if (!rows || !cols) return { error: "region mode needs both row_range and col_range" };
+				const [r0, r1] = [clip(Math.min(...rows), 0, size), clip(Math.max(...rows), 0, size)];
+				const [c0, c1] = [clip(Math.min(...cols), 0, size), clip(Math.max(...cols), 0, size)];
 				let pts: number[][] = [];
 				for (let r = r0; r < r1; r++) for (let cc = c0; cc < c1; cc++) if (valid(at(r, cc))) pts.push(at(r, cc));
 				if (z_min !== undefined) pts = pts.filter((p) => p[2] >= z_min);

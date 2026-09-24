@@ -1,0 +1,486 @@
+/**
+ * Live dashboard for pi-embodied (RPent's `--dashboard`).
+ *
+ *   pi -e packages/embodied/src/libero -e packages/embodied/src/dashboard --dashboard \
+ *     [--dashboard-host 0.0.0.0] [--dashboard-port 8765] [--dashboard-language zh-cn]
+ *
+ * One static page served by node:http follows pi's own events over Server-Sent Events:
+ * streamed thinking and text, tool calls with their arguments and results, the camera
+ * frames each tool returned, and the episode status. The page state is rebuilt from the
+ * session branch at every session_start, so reload, resume and fork show the right history.
+ *
+ * `/libero-task <suite> <task> <seed>` (from the page or the editor) starts a new pi session
+ * carrying a `libero_task` entry, which the LIBERO extension reads at session_start in place
+ * of its --suite/--task/--seed flags, and submits the opening prompt.
+ */
+
+import { readFileSync } from "node:fs";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { hostname } from "node:os";
+import { inflateSync } from "node:zlib";
+import type {
+	ExtensionAPI,
+	ExtensionContext,
+	MessageEndEvent,
+	MessageUpdateEvent,
+} from "@earendil-works/pi-coding-agent";
+import { encodePng } from "../png.ts";
+
+const TASK_ENTRY = "libero_task";
+const OPENING_PROMPT = "Solve the task.";
+const HUB = Symbol.for("pi-embodied.dashboard");
+
+type Message = MessageEndEvent["message"];
+type StreamEvent = MessageUpdateEvent["assistantMessageEvent"];
+type Image = { type: "image"; data: string; mimeType: string };
+type Task = { suite: string; task: string; seed: string };
+type Item = {
+	id: number;
+	kind: "user" | "thinking" | "text" | "tool_call" | "tool_result" | "meta";
+	text: string;
+	name?: string;
+	callId?: string;
+	args?: unknown;
+	isError?: boolean;
+	step?: number;
+};
+type Step = {
+	n: number;
+	name: string;
+	args: unknown;
+	result: unknown;
+	isError: boolean;
+	envStep: number | null;
+	terminated: boolean;
+	truncated: boolean;
+	ms: number | null;
+	frames: string[];
+};
+type Episode = Task & {
+	gen: number;
+	language: string;
+	attached: boolean;
+	running: boolean;
+	envStep: number;
+	terminated: boolean;
+	truncated: boolean;
+	claimed: string | null;
+	summary: string | null;
+	usage: { input: number; output: number; tools: number };
+};
+
+/** Process-wide dashboard; it outlives extension runtimes, which pi rebuilds on every session switch. */
+type Hub = ReturnType<typeof createHub>;
+
+function currentTask(pi: ExtensionAPI, ctx: ExtensionContext): Task {
+	const branch = ctx.sessionManager.getBranch();
+	for (let i = branch.length - 1; i >= 0; i--) {
+		const e = branch[i];
+		if (e.type === "custom" && e.customType === TASK_ENTRY) {
+			const d = (e.data ?? {}) as Partial<Record<keyof Task, unknown>>;
+			return { suite: String(d.suite), task: String(d.task), seed: String(d.seed) };
+		}
+	}
+	const flag = (name: string) => String(pi.getFlag(name) ?? "?");
+	return { suite: flag("suite"), task: flag("task"), seed: flag("seed") };
+}
+
+function parseTask(text: string): Task | undefined {
+	const [suite, task, seed, ...rest] = text.trim().split(/\s+/);
+	if (rest.length || !/^[\w.-]+$/.test(suite ?? "") || !/^\d+$/.test(task ?? "") || !/^\d+$/.test(seed ?? ""))
+		return undefined;
+	return { suite, task, seed };
+}
+
+const textOf = (content: string | { type: string; text?: string }[]) =>
+	typeof content === "string"
+		? content
+		: content
+				.filter((c) => c.type === "text")
+				.map((c) => c.text)
+				.join("\n");
+
+const clip = (s: string, n = 4000) => (s.length > n ? `${s.slice(0, n)}… [${s.length - n} more chars]` : s);
+
+/** Downscale a PNG from ../png.ts (8-bit RGB, filter 0) by an integer box filter; anything else is served as is. */
+function shrinkPng(png: Buffer, maxWidth: number): Buffer {
+	if (png.toString("ascii", 12, 16) !== "IHDR") return png;
+	const width = png.readUInt32BE(16);
+	const height = png.readUInt32BE(20);
+	if (width <= maxWidth || png[24] !== 8 || png[25] !== 2 || png[28] !== 0) return png;
+	const idat: Buffer[] = [];
+	for (let pos = 8; pos < png.length; ) {
+		const len = png.readUInt32BE(pos);
+		if (png.toString("ascii", pos + 4, pos + 8) === "IDAT") idat.push(png.subarray(pos + 8, pos + 8 + len));
+		pos += 12 + len;
+	}
+	const raw = inflateSync(Buffer.concat(idat));
+	const stride = width * 3 + 1;
+	for (let y = 0; y < height; y++) if (raw[y * stride] !== 0) return png;
+	const f = Math.ceil(width / maxWidth);
+	const [w, h] = [Math.floor(width / f), Math.floor(height / f)];
+	const out = Buffer.alloc(w * h * 3);
+	for (let y = 0; y < h; y++)
+		for (let x = 0; x < w; x++)
+			for (let c = 0; c < 3; c++) {
+				let sum = 0;
+				for (let dy = 0; dy < f; dy++)
+					for (let dx = 0; dx < f; dx++) sum += raw[(y * f + dy) * stride + 1 + (x * f + dx) * 3 + c];
+				out[(y * w + x) * 3 + c] = Math.round(sum / (f * f));
+			}
+	return encodePng(out, w, h);
+}
+
+function createHub(server: Server, url: string, page: string) {
+	const clients = new Set<ServerResponse>();
+	const frameCache = new Map<string, Buffer>();
+	let pi: ExtensionAPI | undefined;
+	let ctx: ExtensionContext | undefined;
+	let nextId = 0;
+	let items: Item[] = [];
+	let steps: Step[] = [];
+	let images: Image[][] = [];
+	let episode: Episode | undefined;
+	let streaming = new Map<number, Item>();
+	const callArgs = new Map<string, unknown>();
+	const callStart = new Map<string, number>();
+
+	const send = (op: Record<string, unknown>) => {
+		const line = `data: ${JSON.stringify(op)}\n\n`;
+		for (const res of clients) res.write(line);
+	};
+	const snapshot = () => ({ op: "reset", episode, items, steps });
+	const touch = () => send({ op: "episode", episode });
+	const add = (item: Omit<Item, "id">) => {
+		const full = { id: nextId++, ...item };
+		items.push(full);
+		send({ op: "item", item: full });
+		return full;
+	};
+	const replace = (item: Item) => send({ op: "item", item });
+
+	function partItem(part: Extract<Message, { role: "assistant" }>["content"][number]): Omit<Item, "id"> {
+		if (part.type === "text") return { kind: "text", text: part.text };
+		if (part.type === "thinking") return { kind: "thinking", text: part.redacted ? "[redacted]" : part.thinking };
+		callArgs.set(part.id, part.arguments);
+		return { kind: "tool_call", text: "", name: part.name, callId: part.id, args: part.arguments };
+	}
+
+	function toolResult(m: Extract<Message, { role: "toolResult" }>) {
+		if (!episode) return;
+		const text = textOf(m.content);
+		const frames = m.content.filter((c): c is Image => c.type === "image");
+		let parsed: unknown = text;
+		try {
+			parsed = JSON.parse(text);
+		} catch {}
+		const obs =
+			parsed && typeof parsed === "object" && "terminated" in parsed
+				? (parsed as Record<string, unknown>)
+				: undefined;
+		if (obs) {
+			episode.terminated ||= obs.terminated === true;
+			episode.truncated ||= obs.truncated === true;
+			if (typeof obs.step === "number") episode.envStep = obs.step;
+			if (typeof obs.task_language === "string") episode.language = obs.task_language;
+		}
+		if (m.toolName === "finish" && !m.isError) {
+			const d = (m.details ?? {}) as { status?: unknown; summary?: unknown };
+			episode.claimed = typeof d.status === "string" ? d.status : null;
+			episode.summary = typeof d.summary === "string" ? d.summary : null;
+		}
+		const labels = obs && Array.isArray(obs.images) ? obs.images.map((s) => String(s).split(" ")[0]) : [];
+		const started = callStart.get(m.toolCallId);
+		const step: Step = {
+			n: steps.length,
+			name: m.toolName,
+			args: callArgs.get(m.toolCallId) ?? null,
+			result: obs ? obs.result : parsed,
+			isError: m.isError,
+			envStep: obs && typeof obs.step === "number" ? obs.step : null,
+			terminated: obs?.terminated === true,
+			truncated: obs?.truncated === true,
+			ms: started === undefined ? null : Date.now() - started,
+			frames: frames.map((_, k) => labels[k] ?? (frames.length === 1 ? "image" : `image ${k + 1}`)),
+		};
+		steps.push(step);
+		images.push(frames);
+		episode.usage.tools++;
+		send({ op: "step", step });
+		add({
+			kind: "tool_result",
+			text: clip(text),
+			name: m.toolName,
+			callId: m.toolCallId,
+			isError: m.isError,
+			step: step.n,
+		});
+		touch();
+	}
+
+	const hub = {
+		url,
+		/** Bind to a fresh runtime and rebuild the page state from its session branch. */
+		attach(nextPi: ExtensionAPI, nextCtx: ExtensionContext) {
+			pi = nextPi;
+			ctx = nextCtx;
+			items = [];
+			steps = [];
+			images = [];
+			streaming = new Map();
+			callArgs.clear();
+			callStart.clear();
+			frameCache.clear();
+			episode = {
+				...currentTask(nextPi, nextCtx),
+				gen: (episode?.gen ?? 0) + 1,
+				language: "",
+				attached: true,
+				running: false,
+				envStep: 0,
+				terminated: false,
+				truncated: false,
+				claimed: null,
+				summary: null,
+				usage: { input: 0, output: 0, tools: 0 },
+			};
+			const e = episode;
+			items.push({ id: nextId++, kind: "meta", text: `${e.suite} · task ${e.task} · seed ${e.seed}` });
+			for (const entry of nextCtx.sessionManager.getBranch()) {
+				if (entry.type === "message") hub.messageEnd(entry.message);
+				else if (entry.type === "custom" && entry.customType === "libero_result")
+					items.push({ id: nextId++, kind: "meta", text: `libero_result ${JSON.stringify(entry.data)}` });
+			}
+			send(snapshot());
+		},
+		detach() {
+			pi = undefined;
+			ctx = undefined;
+			if (episode) Object.assign(episode, { attached: false, running: false });
+			touch();
+		},
+		close() {
+			hub.detach();
+			for (const res of clients) res.end();
+			clients.clear();
+			server.closeAllConnections();
+			server.close();
+			delete (globalThis as Record<symbol, unknown>)[HUB];
+		},
+		setRunning(running: boolean) {
+			if (!episode) return;
+			episode.running = running;
+			touch();
+		},
+		agentEnd() {
+			const last = ctx?.sessionManager.getBranch().at(-1);
+			if (last?.type === "custom" && last.customType === "libero_result")
+				add({ kind: "meta", text: `libero_result ${JSON.stringify(last.data)}` });
+			hub.setRunning(false);
+		},
+		toolStart(callId: string) {
+			callStart.set(callId, Date.now());
+		},
+		messageStart(m: Message) {
+			if (m.role === "assistant") streaming = new Map();
+		},
+		messageUpdate(ev: StreamEvent) {
+			if (ev.type === "thinking_start" || ev.type === "text_start") {
+				streaming.set(ev.contentIndex, add({ kind: ev.type === "text_start" ? "text" : "thinking", text: "" }));
+			} else if (ev.type === "thinking_delta" || ev.type === "text_delta") {
+				const item = streaming.get(ev.contentIndex);
+				if (!item) return;
+				item.text += ev.delta;
+				send({ op: "append", id: item.id, text: ev.delta });
+			} else if (ev.type === "toolcall_end") {
+				streaming.set(ev.contentIndex, add(partItem(ev.toolCall)));
+			}
+		},
+		/** Final form of a message, live or replayed from the branch. */
+		messageEnd(m: Message) {
+			if (m.role === "user") add({ kind: "user", text: textOf(m.content) });
+			if (m.role === "toolResult") toolResult(m);
+			if (m.role !== "assistant") return;
+			m.content.forEach((part, i) => {
+				const item = streaming.get(i);
+				if (item) replace(Object.assign(item, partItem(part)));
+				else add(partItem(part));
+			});
+			streaming = new Map();
+			if (m.stopReason === "error" || m.stopReason === "aborted")
+				add({ kind: "meta", text: `${m.stopReason}${m.errorMessage ? `: ${m.errorMessage}` : ""}` });
+			if (episode) {
+				episode.usage.input += m.usage.input + m.usage.cacheRead + m.usage.cacheWrite;
+				episode.usage.output += m.usage.output;
+				touch();
+			}
+		},
+		async handle(req: IncomingMessage, res: ServerResponse) {
+			const url = new URL(req.url ?? "/", "http://dashboard");
+			const reply = (status: number, body: unknown) => {
+				res.writeHead(status, { "Content-Type": "application/json" });
+				res.end(JSON.stringify(body));
+			};
+			if (req.method === "GET" && url.pathname === "/") {
+				res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+				res.end(page);
+				return;
+			}
+			if (req.method === "GET" && url.pathname === "/events") {
+				res.writeHead(200, {
+					"Content-Type": "text/event-stream",
+					"Cache-Control": "no-store",
+					Connection: "keep-alive",
+				});
+				res.write(`data: ${JSON.stringify(snapshot())}\n\n`);
+				clients.add(res);
+				req.on("close", () => clients.delete(res));
+				return;
+			}
+			const frame = url.pathname.match(/^\/frame\/(\d+)\/(\d+)\/(\d+)$/);
+			if (req.method === "GET" && frame) {
+				const [gen, n, k] = frame.slice(1).map(Number);
+				const img = gen === episode?.gen ? images[n]?.[k] : undefined;
+				if (!img) return reply(404, { error: "no such frame" });
+				const width = Number(url.searchParams.get("w") ?? 0);
+				const key = `${gen}/${n}/${k}/${width}`;
+				let body = frameCache.get(key);
+				if (!body) {
+					body = Buffer.from(img.data, "base64");
+					if (width > 0 && img.mimeType === "image/png") body = shrinkPng(body, width);
+					frameCache.set(key, body);
+					if (frameCache.size > 32) frameCache.delete(frameCache.keys().next().value as string);
+				}
+				res.writeHead(200, { "Content-Type": img.mimeType, "Cache-Control": "private, max-age=86400" });
+				res.end(body);
+				return;
+			}
+			if (req.method !== "POST") return reply(404, { error: "not found" });
+			// JSON-only POSTs: a cross-origin page cannot send them without a CORS preflight we never answer.
+			if (!req.headers["content-type"]?.startsWith("application/json"))
+				return reply(415, { error: "expected application/json" });
+			let raw = "";
+			for await (const chunk of req) {
+				raw += chunk;
+				if (raw.length > 65_536) return reply(413, { error: "body too large" });
+			}
+			let body: Record<string, unknown>;
+			try {
+				body = JSON.parse(raw || "{}");
+			} catch {
+				return reply(400, { error: "invalid JSON" });
+			}
+			if (!pi || !ctx) return reply(409, { error: "session is switching; retry in a moment" });
+			if (url.pathname === "/task") {
+				const task = parseTask(`${body.suite} ${body.task} ${body.seed}`);
+				if (!task) return reply(422, { error: "usage: suite (word), task (integer), seed (integer)" });
+				pi.sendUserMessage(`/libero-task ${task.suite} ${task.task} ${task.seed}`, { expandPromptTemplates: true });
+				return reply(202, { ok: true });
+			}
+			if (url.pathname === "/message") {
+				const text = typeof body.text === "string" ? body.text.trim() : "";
+				if (!text) return reply(422, { error: "empty message" });
+				if (text.startsWith("/")) {
+					if (!text.startsWith("/libero-task ") || !parseTask(text.slice(13)))
+						return reply(422, { error: "the only command here is /libero-task <suite> <task> <seed>" });
+					pi.sendUserMessage(text, { expandPromptTemplates: true });
+				} else pi.sendUserMessage(text, ctx.isIdle() ? undefined : { deliverAs: "steer" });
+				return reply(202, { ok: true, steered: !ctx.isIdle() });
+			}
+			if (url.pathname === "/interrupt") {
+				const idle = ctx.isIdle();
+				if (!idle) ctx.abort();
+				return reply(idle ? 200 : 202, { ok: true, interrupted: !idle });
+			}
+			return reply(404, { error: "not found" });
+		},
+	};
+	setInterval(() => {
+		for (const res of clients) res.write(": ping\n\n");
+	}, 15_000).unref();
+	return hub;
+}
+
+function startHub(host: string, port: number, language: string): Promise<Hub> {
+	const lang = language === "zh-cn" ? "zh-cn" : "en";
+	const page = readFileSync(new URL("./page.html", import.meta.url), "utf8").replace("__LANG__", lang);
+	return new Promise((resolve, reject) => {
+		let hub: Hub | undefined;
+		const server = createServer((req, res) => {
+			hub?.handle(req, res).catch((err) => {
+				if (!res.headersSent) res.writeHead(500, { "Content-Type": "application/json" });
+				res.end(JSON.stringify({ error: String(err) }));
+			});
+		});
+		server.once("error", reject);
+		server.listen(port, host, () => {
+			const { port: bound } = server.address() as { port: number };
+			const shown = host === "0.0.0.0" || host === "::" ? hostname() : host.includes(":") ? `[${host}]` : host;
+			hub = createHub(server, `http://${shown}:${bound}/`, page);
+			server.unref();
+			resolve(hub);
+		});
+	});
+}
+
+export default function dashboard(pi: ExtensionAPI) {
+	pi.registerFlag("dashboard", { type: "boolean", default: false, description: "Serve the live dashboard" });
+	pi.registerFlag("dashboard-host", { type: "string", default: "127.0.0.1", description: "Dashboard bind address" });
+	pi.registerFlag("dashboard-port", { type: "string", default: "0", description: "Dashboard port (0 = any free)" });
+	pi.registerFlag("dashboard-language", { type: "string", default: "en", description: "Dashboard UI: en | zh-cn" });
+	// Shared with the LIBERO extension (flags are process-wide); read to label the CLI-started session.
+	for (const name of ["suite", "task", "seed"]) pi.registerFlag(name, { type: "string" });
+
+	pi.registerCommand("libero-task", {
+		description: "Start a new LIBERO episode in a new session: /libero-task <suite> <task> <seed>",
+		handler: async (args, ctx) => {
+			const task = parseTask(args);
+			if (!task) {
+				ctx.ui.notify("Usage: /libero-task <suite> <task> <seed>", "error");
+				return;
+			}
+			await ctx.newSession({
+				setup: async (sm) => {
+					sm.appendCustomEntry(TASK_ENTRY, {
+						suite: task.suite,
+						task: Number(task.task),
+						seed: Number(task.seed),
+					});
+				},
+				withSession: async (next) => {
+					next.sendUserMessage(OPENING_PROMPT).catch((err) => next.ui.notify(String(err), "error"));
+				},
+			});
+		},
+	});
+
+	let hub: Hub | undefined;
+	const on = <T>(fn: (h: Hub) => T) => (hub ? fn(hub) : undefined);
+
+	pi.on("session_start", async (_event, ctx) => {
+		if (pi.getFlag("dashboard") !== true) return;
+		const slot = globalThis as Record<symbol, Promise<Hub> | undefined>;
+		const first = !slot[HUB];
+		slot[HUB] ??= startHub(
+			String(pi.getFlag("dashboard-host")),
+			Number(pi.getFlag("dashboard-port")),
+			String(pi.getFlag("dashboard-language")),
+		);
+		hub = await slot[HUB];
+		hub.attach(pi, ctx);
+		if (first) {
+			if (ctx.hasUI) ctx.ui.notify(`Dashboard: ${hub.url}`, "info");
+			else console.error(`[dashboard] ${hub.url}`);
+		}
+	});
+	pi.on("session_shutdown", (event) => {
+		on((h) => (event.reason === "quit" ? h.close() : h.detach()));
+		hub = undefined;
+	});
+	pi.on("agent_start", () => on((h) => h.setRunning(true)));
+	pi.on("agent_end", () => on((h) => h.agentEnd()));
+	pi.on("message_start", (event) => on((h) => h.messageStart(event.message)));
+	pi.on("message_update", (event) => on((h) => h.messageUpdate(event.assistantMessageEvent)));
+	pi.on("message_end", (event) => on((h) => h.messageEnd(event.message)));
+	pi.on("tool_execution_start", (event) => on((h) => h.toolStart(event.toolCallId)));
+}

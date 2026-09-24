@@ -2,15 +2,14 @@
 	"name": "@lv-robotics/pi-embodied",
 	"version": "0.0.1",
 	"private": true,
-	"description": "Embodied-agent harness on pi: robot tools over the robot service RPC, batch evaluation",
+	"description": "Robots as pi extensions",
 	"type": "module",
-	"scripts": {
-		"eval": "node --import tsx src/eval.ts",
-		"test": "node --import tsx --test test/*.test.ts",
-		"check": "tsgo --noEmit -p tsconfig.json"
+	"pi": {
+		"extensions": [
+			"src/libero/index.ts"
+		]
 	},
 	"peerDependencies": {
-		"@earendil-works/pi-ai": "*",
 		"@earendil-works/pi-coding-agent": "*",
 		"typebox": "*"
 	}

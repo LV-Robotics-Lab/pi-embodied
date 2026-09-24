@@ -1,37 +1,24 @@
 # pi-embodied
 
-Embodied-agent harness built on pi. An LLM planner drives a robot through tools;
-robot, VLA and perception services are reached over the robot service RPC
-(`POST /call` with `{method, args, kwargs}`, numpy arrays as `__ndarray__`).
+Robots as pi extensions. A robot extension registers the robot's tools, replaces the
+system prompt, and records the environment's own success signal in the session.
+Everything else (the agent loop, models, sessions, interactive/print/json/rpc modes)
+is pi.
 
-## Layout
+## LIBERO
 
-- `src/rpc.ts`: robot service RPC client.
-- `src/toolkit.ts`: robot tools as pi tools. Mutating tools return a fresh state
-  capture with camera images; `finish` ends the run; success comes from the
-  environment, never from the agent's claim.
-- `src/image-budget.ts`: keeps camera frames in context under a byte budget, with
-  hysteresis so provider prefix caches keep hitting.
-- `src/extension.ts`: pi extension for one episode (tools + context hygiene).
-- `src/eval.ts`: batch evaluation, one pi session per episode; provider and
-  gateway failures are reported as `infra_error`, retried, and excluded from the
-  success rate.
-- `src/robots/`: robot registry.
-- `test/`: unit tests.
-
-## Commands
+Needs an [RPent](https://github.com/RLinf/RPent) checkout with its LIBERO, Pi0.5 and
+SAM3 services installed; the extension speaks their HTTP RPC directly.
 
 ```bash
-cd packages/embodied
-npm run check                                   # typecheck
-npm test                                        # unit tests
-npm run eval -- --robot <name> --endpoint http://127.0.0.1:18100 \
-  --tasks 0-3 --seeds 0-4 --model selfhost/muse-glimmer-30b --thinking medium
+export RPENT_ROOT=/path/to/RPent RPENT_PYTHON=/path/to/venv/bin/python
+PI05_CHECKPOINT_PATH=... SAM3_CHECKPOINT_PATH=... packages/embodied/src/libero/serve.sh
+
+pi -e packages/embodied/src/libero --suite libero_10 --task 2 --seed 0          # interactive
+packages/embodied/src/libero/eval.sh runs/l10 libero_10 0-9 0-2 --model <provider/model>
 ```
 
-## Compatibility and credits
+Each session ends with a `libero_result` entry (`terminated` is LIBERO's success flag,
+`claimed` is the agent's own status).
 
-The RPC wire format and the tool execution contract (post-action state capture,
-environment-judged success) follow [RPent](https://github.com/RLinf/RPent)
-(Apache-2.0), so RPent's LIBERO env, pi0.5 VLA and SAM3 servers can be attached
-without modification.
+The RPC format and tool semantics follow RPent (Apache-2.0).

@@ -5,18 +5,18 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pi-embodied-services"
 dynamic = ["version"]
-description = "Robot environment and model RPC services for pi-embodied (migrated from RPent)"
+description = "Robot environment and model RPC services for pi-embodied"
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.10,<3.13"
 license = { file = "LICENSE" }
-authors = [{ name = "pi-embodied contributors" }, { name = "RPent Contributors" }]
+authors = [{ name = "pi-embodied contributors" }]
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
     "Environment :: GPU :: NVIDIA CUDA :: 12",
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
 ]
-# Server-side only: RPent's planner dependencies (claude-agent-sdk,
+# Server-side only: planner dependencies (claude-agent-sdk,
 # openai-codex, pydantic-ai, mcp, prompt-toolkit, fastapi, httpx, ...) are
 # intentionally absent.
 dependencies = [
@@ -137,7 +137,7 @@ select = ["E", "F", "W", "I"]
 ignore = ["E501", "E741"]
 
 [tool.ruff.lint.per-file-ignores]
-# RPent imports the RoboTwin runtime after defining helpers, on purpose.
+# Imports the RoboTwin runtime after defining helpers, on purpose.
 "pi_embodied_services/robots/robotwin/env_server.py" = ["E402"]
 
 [tool.ruff.lint.isort]

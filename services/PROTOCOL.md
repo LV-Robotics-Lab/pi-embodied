@@ -17,7 +17,7 @@ Every service except the LingBot-VLA launcher speaks the same JSON-over-HTTP RPC
   rules below) makes the server drop the connection instead of answering.
 - The server binds `--host` (default `127.0.0.1`) and `--port` (default `0` = any free
   port) and prints `RPC server listening on http://HOST:PORT` to stdout once bound.
-- Only HTTP exists. RPent's pickle-framed `socket` transport was removed (unpickling a
+- Only HTTP exists. The pickle-framed `socket` transport was removed (unpickling a
   request is remote code execution for anyone who can reach the port); `--transport`
   accepts only `http`.
 
@@ -36,7 +36,7 @@ Every service except the LingBot-VLA launcher speaks the same JSON-over-HTTP RPC
 - **One call at a time per server process.** Every business call (and `session.*`) takes a
   process-wide lock, so no two calls overlap, including across clients and sessions and when
   a client times out, drops the connection and retries while the first call still runs (the
-  first call finishes; the retry waits behind it). RPent let "read-only" methods run in
+  first call finishes; the retry waits behind it). Earlier versions let "read-only" methods run in
   parallel; that is gone (a concurrent `env.render_camera` broke LIBERO's worker pipe).
 - Lock-free methods, answered at once even while a call runs: `healthz`, `stop`, `cancel`,
   `shutdown` (`shutdown` still waits for the running call before it takes effect).

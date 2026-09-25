@@ -2,14 +2,10 @@
 
 The Python side of pi-embodied: the simulator/robot **env servers** and the **model servers**
 (VLA policies, SAM3, Molmo) that the TypeScript robots in `packages/embodied` talk to over
-HTTP. The code was migrated from [RPent](https://github.com/RLinf/RPent) at upstream commit
-`eecf206959008700a315f58dc98146f147006f09` (2026-09-24). Only the server side was taken;
-RPent's planner, dashboard, CLI, memory CLI, flywheel and planner toolkits are not here
-because pi replaces them.
+HTTP.
 
-License: Apache-2.0 (`LICENSE`, `NOTICE`); this differs from the MIT license of the rest of
-the repository. Every file copied from RPent keeps its license header, and modified files say
-what changed ("Modified by pi-embodied: ...").
+License: Apache-2.0 (`LICENSE`); this differs from the MIT license of the rest of the
+repository.
 
 Wire protocol, method list and `stop` semantics: [PROTOCOL.md](PROTOCOL.md).
 
@@ -33,33 +29,21 @@ services/
   tests/                    dispatch lock / stop / healthz (no simulator)
 ```
 
-Module mapping from RPent (one package, so it can sit next to an installed `rpent` in the
-same venv without shadowing it):
+`franka/perception.py` and `dual_franka/perception.py` hold the calibration and base-frame
+helpers.
 
-| RPent | here |
-|---|---|
-| `rpent.utils.*` | `pi_embodied_services.utils.*` |
-| `rpent.robots.components.*` | `pi_embodied_services.components.*` |
-| `robots.<robot>.*` | `pi_embodied_services.robots.<robot>.*` |
-| `robots.robotwin.robot_spec` (contracts) | `pi_embodied_services.robots.robotwin.contract` |
+## Behavior
 
-`franka/perception.py` and `dual_franka/perception.py` keep only the calibration and
-base-frame helpers (same function names); the planner-side back-projection tools are gone.
-
-## Changes from RPent
-
-- One call at a time per server (process-wide lock); RPent let read-only calls overlap.
+- One call at a time per server (process-wide lock).
 - New lock-free `stop` / `cancel` method; Franka/dual-Franka servo and chunk loops and the
   RoboTwin chunk loop poll it between steps. See PROTOCOL.md for exactly what it can stop.
 - `healthz` returns `{status, version, service}`.
-- The pickle socket transport is removed; `--transport` accepts only `http`.
-- Everything else (CLI flags, method names, arguments, results) is unchanged, except that
-  results of interrupted calls carry `"cancelled": true`.
+- `--transport` accepts only `http`; results of interrupted calls carry `"cancelled": true`.
 
 ## Install
 
 Each robot extra pins its own VLA runtime (Torch/Transformers versions differ), so use one
-venv per robot family, exactly as with RPent. From the repository root:
+venv per robot family. From the repository root:
 
 ```bash
 # LIBERO (+ SAM3 + Pi0.5 via RLinf's openpi fork; mujoco==3.3.0)
@@ -135,7 +119,7 @@ python -m pi_embodied_services.robots.franka.env_server --task-description "..."
 python -m pi_embodied_services.robots.dual_franka.env_server --task-description "..." [--robot-config YAML]
 ```
 
-Environment variables read by the servers (unchanged from RPent): `PI05_CHECKPOINT_PATH`,
+Environment variables read by the servers: `PI05_CHECKPOINT_PATH`,
 `PI05_NORM_STATS_PATH`, `SAM3_CHECKPOINT_PATH`, `MOLMO_CHECKPOINT_PATH`, `LIBERO_ROBOT_BASE`,
 `ROBOT_PLATFORM`, `MUJOCO_EGL_DEVICE_ID`, `RLDX_RESET_SEED`, `RLDX_ATTN_IMPL`, `HF_HOME` /
 `HF_HUB_CACHE` (RLDX backbone metadata), `ROBOTWIN_ASSETS_PATH`, `QWEN25_PATH` (LingBot),
@@ -167,10 +151,10 @@ Not vendored; installed by the extras or provided by the host:
   (rev `e727b46`), the RoboTwin asset snapshot, the dual-Franka Pi0.5 checkpoint and its SFT
   dataset repo id.
 
-Known upstream caveat: `dual_franka/env_server.py` uses RLinf attributes
+Known caveat: `dual_franka/env_server.py` uses RLinf attributes
 (`_left_ctrl`/`_right_ctrl`, `get_raw_camera_snapshot`, `get_raw_camera_metadata`) that the
-pinned RLinf `bde6c918` does not define; RPent resolves them from the RLinf checkout given
-by `RPENT_RLINF_ROOT`. That is unchanged here.
+pinned RLinf `bde6c918` does not define; they come from the RLinf checkout given by
+`RPENT_RLINF_ROOT`.
 
 ## Tests
 

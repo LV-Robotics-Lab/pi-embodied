@@ -23,7 +23,7 @@ two loaded extensions that register the same flag or tool, so they cannot all be
 
 Shared modules:
 
-- `src/memory/`: RPent-compatible memory (`MEMORY.md`, global/suite/task layers,
+- `src/memory/`: memory (`MEMORY.md`, global/suite/task layers,
   validation, merge, index), synced from `RLinf/RPent-memory` into `$PI_EMBODIED_MEMORY`
   (default `~/.pi/embodied/memory`); `/memory sync|validate|index|merge`.
   Its guard denies file tools by default: only the memory, the cell's files in the output dir,
@@ -33,9 +33,9 @@ Shared modules:
   (LIBERO also its DISTIL pass).
 - `src/operator.ts`: human-in-the-loop (`--operator`): verdict and scene-reset requests as
   `ctx.ui.select` dialogs (TUI or RPC client), plus `/success /failure /abort /done /continue /operator`.
-- `src/video.ts`: episode video (ffmpeg). `src/flywheel.ts`: Flywheel data in RPent's
+- `src/video.ts`: episode video (ffmpeg). `src/flywheel.ts`: Flywheel data in the
   LIBERO-only schema (default root `~/.pi/embodied/datacollection`), with LeRobot export
-  (LIBERO only, as in RPent; `/flywheel-export` runs `pi_embodied_services.flywheel` with `--python`).
+  (LIBERO only; `/flywheel-export` runs `pi_embodied_services.flywheel` with `--python`).
 - `src/dashboard/`: live web dashboard (`--dashboard`) for any robot.
 - `src/libero/flash.ts`: Flash replay without an LLM (`--model flash/replay`).
 
@@ -80,4 +80,3 @@ services/PROTOCOL.md (the rest finish the call, bounded by their own step clips 
 server it started to `shutdown`, which closes the environment (and the real arm's RLinf worker)
 before the process exits.
 
-The RPC format and tool semantics follow RPent (Apache-2.0).

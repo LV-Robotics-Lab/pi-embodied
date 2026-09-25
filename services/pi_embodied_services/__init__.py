@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Robot and model RPC services for pi-embodied, migrated from RPent."""
+"""Robot and model RPC services for pi-embodied."""
 
 __all__ = ["__version__"]
 

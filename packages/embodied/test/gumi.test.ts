@@ -442,6 +442,8 @@ test("gumi: DAgger takeover pauses the agent between units, drops its stale call
 	const [msg] = f.sent as { content: any[]; options: any }[];
 	assert.equal(msg.options.deliverAs, "steer");
 	assert.equal(msg.content[1].data, png(102));
+	// A marked `point` image is no camera frame: it does not become the next step's observation.
+	await f.emit("tool_result", { toolName: "point", input: {}, content: [{ type: "text", text: "{}" }, image(99)] });
 	// It decides again: that call runs and is recorded as the agent's.
 	assert.equal(await f.emit("tool_call", { toolName: "act", input: { unit: "MV_DOWN" } }), undefined);
 	await f.emit("tool_result", { toolName: "act", input: { unit: "MV_DOWN" }, ...result([5, 6], []) });

@@ -33,6 +33,9 @@ import { join } from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type RobotStatus, STATUS_EVENT } from "../robot.ts";
+import { UNITS_EVENT, type UnitsHandle } from "../units/index.ts";
+
+export { UNITS_EVENT, type UnitsHandle };
 
 // ---------------------------------------------------------------------------
 // vocabulary and the command grammar (gumi/web_teleop/backend.py, web_teleop_dual/dual_backend.py)
@@ -491,23 +494,6 @@ export class Takeover {
 // ---------------------------------------------------------------------------
 // the robot's unit layer, as ../units publishes it on pi.events
 
-/** `pi.events` channel on which ../units publishes the robot's `UnitsHandle` at every session start. */
-export const UNITS_EVENT = "pi-embodied:units";
-export type UnitsHandle = {
-	/** The agent's unit tool (`act`). */
-	tool: string;
-	/** Arm names on a dual-arm robot (`act`'s `arm`), [] on one arm. */
-	arms: readonly string[];
-	/** Units `act` accepts. */
-	vocabulary: readonly string[];
-	stepM: number;
-	yawStepRad?: number;
-	/** What one `act` call does (grounding, `apply`, recovery / auto_release, the units header), without the model. */
-	run: (params: { unit: string; n?: number; arm?: string }, signal?: AbortSignal) => Promise<AgentToolResult<unknown>>;
-	/** The robot's proprioception (`eef_xyz`, `gripper_width`, ...), per arm on two arms. */
-	state?: (arm?: string) => Promise<Record<string, unknown>>;
-};
-
 /**
  * What an `act` call asked for, as one step: `{unit, n}`, on two arms `{unit, arm, n}` (the other arm
  * holds STILL). STOP (hold and look) and DONE move nothing and are not recorded, like the rollouts'
@@ -700,7 +686,9 @@ export function gumi(
 			}
 			publish();
 		}
-		if (obs) latest = obs;
+		// The cameras (the unit tool's result, or a robot observation that lists its `images`); not, e.g.,
+		// `point`'s marked image, which is no camera frame.
+		if (obs && (event.toolName === handle?.tool || Array.isArray(obs.json?.images))) latest = obs;
 		// Whatever the agent's tool returned is what it looks at next.
 		takeover.seen();
 		return undefined;

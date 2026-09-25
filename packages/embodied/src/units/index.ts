@@ -38,6 +38,23 @@ import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
 
+/** `pi.events` channel on which this module publishes the robot's `UnitsHandle` at every session start. */
+export const UNITS_EVENT = "pi-embodied:units";
+export type UnitsHandle = {
+	/** The agent's unit tool (`act`). */
+	tool: string;
+	/** Arm names on a dual-arm robot (`act`'s `arm`), [] on one arm. */
+	arms: readonly string[];
+	/** Units `act` accepts. */
+	vocabulary: readonly string[];
+	stepM: number;
+	yawStepRad?: number;
+	/** What one `act` call does (grounding, `apply`, recovery / auto_release, the units header), without the model. */
+	run: (params: { unit: string; n?: number; arm?: string }, signal?: AbortSignal) => Promise<AgentToolResult<unknown>>;
+	/** The robot's proprioception (`eef_xyz`, `gripper_width`, ...), per arm on two arms. */
+	state?: (arm?: string) => Promise<Record<string, unknown>>;
+};
+
 // ---------------------------------------------------------------------------
 // the vocabulary (core/action_units.py)
 
@@ -396,93 +413,108 @@ export function units(
 		"act",
 		`Execute one action unit (${vocab.join(", ")}), repeated n times. MV_* move the gripper ~${Math.round(spec.stepM * 100)} cm${spec.yawStepRad ? `, ROTATE_* turn it ~${Math.round((spec.yawStepRad * 180) / Math.PI)} deg` : ""}; GRASP closes, RELEASE opens, STOP holds one step, DONE means the task is complete (call finish). Returns the new images and state.`,
 		Type.Object(props),
-		async (params, signal) => {
-			const p = params as { unit: Unit; n?: number; arm?: string; target_in_wrist?: boolean; plan?: MoveUnit[] };
-			const { unit, arm, target_in_wrist: inWrist } = p;
-			const key = arm ?? "";
-			if (unit === "DONE")
-				return {
-					content: [text("DONE: if the images show the task complete, call `finish` now; otherwise keep acting.")],
-					details: { unit },
-				};
-			if (unit === "STILL") return { content: [text(`STILL: the ${arm ?? ""} arm holds.`)], details: { unit } };
-			const lines: string[] = [];
-			let queue: Unit[] = Array(Math.max(1, Math.min(MAX_REPEAT, Math.floor(p.n ?? 1)))).fill(unit);
-			if (p.plan?.length && plugin("action_chunk")) {
-				if (inWrist === false) queue = p.plan.filter(isMove).slice(0, CHUNK_STEPS);
-				else lines.push("plan ignored: plans run only while target_in_wrist is false; one unit ran.");
-				if (inWrist !== false) queue = [unit];
-			}
-			let last: Result | undefined;
-			const ran: string[] = [];
-			// A recovery note lasts until the next GRASP.
-			if (queue.includes("GRASP")) note = "";
-			for (const u of queue) {
-				const before = await read(arm);
-				const acc = yaw.get(key) ?? 0;
-				let label: string = u;
-				let move = ground(spec, u, isMove(u) ? stepFor(u, before, inWrist) : spec.stepM) as Move;
-				if (plugin("rotation")) {
-					// Holding and turned: MV_UP first turns back to the start heading.
-					if (u === "MV_UP" && closed.get(key) && Math.abs(acc) > NEUTRAL_YAW) {
-						move = { delta: [0, 0, 0], yaw: -acc, gripper: null };
-						label = "MV_UP(realign)";
-					} else if (isMove(u) && inWrist !== false)
-						move.delta = compensate(move.delta, (spec.yawCompensationSign ?? 1) * acc);
-					else if (move.yaw && Math.abs(acc + move.yaw) > MAX_YAW) {
-						lines.push(`${u} refused: the gripper is already turned ${Math.round((acc * 180) / Math.PI)} deg.`);
-						break;
-					}
-				}
-				if (arm) move.arm = arm;
-				last = await spec.apply(move, signal);
-				ran.push(label);
-				recent.push(label);
-				if (move.yaw) yaw.set(key, acc + move.yaw);
-				if (move.gripper) closed.set(key, move.gripper === "close");
-				const after = await read(arm);
-				const details = last.details as { error?: unknown; terminated?: unknown } | undefined;
-				if (details?.error || details?.terminated) break;
-				// proprioception: a MV_* that barely moved is blocked (contact, floor, workspace limit).
-				const [p0, p1] = [eef(before), eef(after)];
-				const commanded = Math.hypot(...move.delta);
-				if (plugin("proprioception") && p0 && p1 && commanded > 0) {
-					const moved = [0, 1, 2].reduce((s, k) => s + (p1[k] - p0[k]) * move.delta[k], 0) / commanded;
-					if (moved < commanded * STALL_RATIO) {
-						lines.push(
-							u === "MV_DOWN"
-								? `Last MV_DOWN lowered ${(moved * 100).toFixed(1)} of ${(commanded * 100).toFixed(1)} cm -> already in contact, do NOT MV_DOWN again`
-								: `Last ${u} moved ${(moved * 100).toFixed(1)} of ${(commanded * 100).toFixed(1)} cm -> blocked`,
-						);
-						break;
-					}
-				}
-				// recovery: a GRASP that closed on nothing is reopened at once.
-				if (u === "GRASP" && plugin("recovery") && empty(after)) {
-					last = await reopen(arm, signal);
-					recent.push("RELEASE(recovery)");
-					note = NOTES.empty_grasp;
-					break;
-				}
-				// auto_release: a closed gripper that collapsed (the object slipped out) is reopened.
-				if (u !== "GRASP" && plugin("auto_release") && closed.get(key) && empty(after)) {
-					last = await reopen(arm, signal);
-					recent.push("RELEASE(auto)");
-					note = NOTES.lost_grasp;
-					break;
-				}
-			}
-			const what =
-				queue.every((u) => u === queue[0]) && ran.every((u) => u === ran[0])
-					? `${ran[0] ?? queue[0]} x${ran.length}`
-					: ran.join(", ");
-			lines.unshift(
-				`units: ${what}${arm ? ` (${arm} arm)` : ""}${ran.length < queue.length ? ` of ${queue.length} (stopped early)` : ""}`,
-			);
-			if (!last) return { content: [await header(lines, arm)], details: { unit } };
-			return { ...last, content: [await header(lines, arm), ...last.content] };
-		},
+		(params, signal) => act(params as ActParams, signal),
 	);
+
+	type ActParams = { unit: string; n?: number; arm?: string; target_in_wrist?: boolean; plan?: string[] };
+	/** `act`'s body; ../gumi (dashboard teleop, DAgger takeover) runs it too, through the handle below. */
+	async function act(params: ActParams, signal: AbortSignal | undefined): Promise<Result> {
+		const p = params as { unit: Unit; n?: number; arm?: string; target_in_wrist?: boolean; plan?: MoveUnit[] };
+		const { unit, arm, target_in_wrist: inWrist } = p;
+		const key = arm ?? "";
+		if (unit === "DONE")
+			return {
+				content: [text("DONE: if the images show the task complete, call `finish` now; otherwise keep acting.")],
+				details: { unit },
+			};
+		if (unit === "STILL") return { content: [text(`STILL: the ${arm ?? ""} arm holds.`)], details: { unit } };
+		const lines: string[] = [];
+		let queue: Unit[] = Array(Math.max(1, Math.min(MAX_REPEAT, Math.floor(p.n ?? 1)))).fill(unit);
+		if (p.plan?.length && plugin("action_chunk")) {
+			if (inWrist === false) queue = p.plan.filter(isMove).slice(0, CHUNK_STEPS);
+			else lines.push("plan ignored: plans run only while target_in_wrist is false; one unit ran.");
+			if (inWrist !== false) queue = [unit];
+		}
+		let last: Result | undefined;
+		const ran: string[] = [];
+		// A recovery note lasts until the next GRASP.
+		if (queue.includes("GRASP")) note = "";
+		for (const u of queue) {
+			const before = await read(arm);
+			const acc = yaw.get(key) ?? 0;
+			let label: string = u;
+			let move = ground(spec, u, isMove(u) ? stepFor(u, before, inWrist) : spec.stepM) as Move;
+			if (plugin("rotation")) {
+				// Holding and turned: MV_UP first turns back to the start heading.
+				if (u === "MV_UP" && closed.get(key) && Math.abs(acc) > NEUTRAL_YAW) {
+					move = { delta: [0, 0, 0], yaw: -acc, gripper: null };
+					label = "MV_UP(realign)";
+				} else if (isMove(u) && inWrist !== false)
+					move.delta = compensate(move.delta, (spec.yawCompensationSign ?? 1) * acc);
+				else if (move.yaw && Math.abs(acc + move.yaw) > MAX_YAW) {
+					lines.push(`${u} refused: the gripper is already turned ${Math.round((acc * 180) / Math.PI)} deg.`);
+					break;
+				}
+			}
+			if (arm) move.arm = arm;
+			last = await spec.apply(move, signal);
+			ran.push(label);
+			recent.push(label);
+			if (move.yaw) yaw.set(key, acc + move.yaw);
+			if (move.gripper) closed.set(key, move.gripper === "close");
+			const after = await read(arm);
+			const details = last.details as { error?: unknown; terminated?: unknown } | undefined;
+			if (details?.error || details?.terminated) break;
+			// proprioception: a MV_* that barely moved is blocked (contact, floor, workspace limit).
+			const [p0, p1] = [eef(before), eef(after)];
+			const commanded = Math.hypot(...move.delta);
+			if (plugin("proprioception") && p0 && p1 && commanded > 0) {
+				const moved = [0, 1, 2].reduce((s, k) => s + (p1[k] - p0[k]) * move.delta[k], 0) / commanded;
+				if (moved < commanded * STALL_RATIO) {
+					lines.push(
+						u === "MV_DOWN"
+							? `Last MV_DOWN lowered ${(moved * 100).toFixed(1)} of ${(commanded * 100).toFixed(1)} cm -> already in contact, do NOT MV_DOWN again`
+							: `Last ${u} moved ${(moved * 100).toFixed(1)} of ${(commanded * 100).toFixed(1)} cm -> blocked`,
+					);
+					break;
+				}
+			}
+			// recovery: a GRASP that closed on nothing is reopened at once.
+			if (u === "GRASP" && plugin("recovery") && empty(after)) {
+				last = await reopen(arm, signal);
+				recent.push("RELEASE(recovery)");
+				note = NOTES.empty_grasp;
+				break;
+			}
+			// auto_release: a closed gripper that collapsed (the object slipped out) is reopened.
+			if (u !== "GRASP" && plugin("auto_release") && closed.get(key) && empty(after)) {
+				last = await reopen(arm, signal);
+				recent.push("RELEASE(auto)");
+				note = NOTES.lost_grasp;
+				break;
+			}
+		}
+		const what =
+			queue.every((u) => u === queue[0]) && ran.every((u) => u === ran[0])
+				? `${ran[0] ?? queue[0]} x${ran.length}`
+				: ran.join(", ");
+		lines.unshift(
+			`units: ${what}${arm ? ` (${arm} arm)` : ""}${ran.length < queue.length ? ` of ${queue.length} (stopped early)` : ""}`,
+		);
+		if (!last) return { content: [await header(lines, arm)], details: { unit } };
+		return { ...last, content: [await header(lines, arm), ...last.content] };
+	}
+	// The robot's unit layer for ../gumi, published every session (the dashboard operator drives through it).
+	const handle: UnitsHandle = {
+		tool: "act",
+		arms: armNames,
+		vocabulary: vocab,
+		stepM: spec.stepM,
+		yawStepRad: spec.yawStepRad,
+		run: act,
+		state: spec.state,
+	};
+	pi.on("session_start", () => pi.events.emit(UNITS_EVENT, handle));
 
 	if (spec.point) {
 		const { cameras, locate } = spec.point;

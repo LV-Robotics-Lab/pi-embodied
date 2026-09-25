@@ -12,6 +12,7 @@
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
 import { decodePngChannel, encodePng } from "../png.ts";
@@ -199,7 +200,7 @@ export default function libero(pi: ExtensionAPI) {
 			description:
 				"End the episode after checking the latest state. Success is LIBERO's terminated flag, not this call.",
 			parameters: Type.Object({
-				status: Type.Union([Type.Literal("success"), Type.Literal("failure")]),
+				status: StringEnum(["success", "failure"] as const),
 				summary: Type.String(),
 			}),
 			result: (params) => ({
@@ -415,9 +416,7 @@ export default function libero(pi: ExtensionAPI) {
 	const xyz = Type.Array(Type.Number(), { minItems: 3, maxItems: 3, description: "World-frame [x, y, z] in meters" });
 	const num = (description: string) => Type.Optional(Type.Number({ description }));
 	const int = (description: string) => Type.Optional(Type.Integer({ description }));
-	const camera = Type.Optional(
-		Type.Union([Type.Literal("agentview"), Type.Literal("wrist")], { description: "Default agentview" }),
-	);
+	const camera = Type.Optional(StringEnum(["agentview", "wrist"] as const, { description: "Default agentview" }));
 
 	tool(
 		"view_env_state",
@@ -723,7 +722,7 @@ export default function libero(pi: ExtensionAPI) {
 		Type.Object({
 			camera,
 			resolution: Type.Optional(
-				Type.Union([Type.Literal("high"), Type.Literal("low")], {
+				StringEnum(["high", "low"] as const, {
 					description: "high = 1024 (default), low = 256",
 				}),
 			),
@@ -816,7 +815,7 @@ export default function libero(pi: ExtensionAPI) {
 			row: int("Pixel row"),
 			col: int("Pixel column"),
 			camera,
-			resolution: Type.Optional(Type.Union([Type.Literal("high"), Type.Literal("low")])),
+			resolution: Type.Optional(StringEnum(["high", "low"] as const)),
 			row_range: Type.Optional(Type.Array(Type.Integer(), { minItems: 2, maxItems: 2 })),
 			col_range: Type.Optional(Type.Array(Type.Integer(), { minItems: 2, maxItems: 2 })),
 			z_min: num("Region mode: keep pixels with world z >= z_min"),

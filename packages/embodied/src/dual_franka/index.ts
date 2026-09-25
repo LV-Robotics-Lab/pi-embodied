@@ -22,6 +22,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
 import { decodePngChannel, encodePng } from "../png.ts";
@@ -667,7 +668,7 @@ export default function dualFranka(pi: ExtensionAPI) {
 				"Registered projection view name, e.g. d455 or base (default d455). Valid names come from perception.projection_views and the current state's saved artifacts.",
 		}),
 	);
-	const arm = Type.Union([Type.Literal("left"), Type.Literal("right")], {
+	const arm = StringEnum(["left", "right"] as const, {
 		description: "Which arm to command; the other arm is left uncommanded.",
 	});
 	const xyz = Type.Array(Type.Number(), { minItems: 3, maxItems: 3 });

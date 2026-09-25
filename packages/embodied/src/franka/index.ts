@@ -21,6 +21,7 @@
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
 import { encodePng } from "../png.ts";
@@ -674,9 +675,7 @@ export default function franka(pi: ExtensionAPI) {
 			row: Type.Integer({ minimum: 0 }),
 			col: Type.Integer({ minimum: 0 }),
 			step: stepParam,
-			camera: Type.Optional(
-				Type.Union([Type.Literal("wrist"), Type.Literal("third_person")], { description: "Default wrist" }),
-			),
+			camera: Type.Optional(StringEnum(["wrist", "third_person"] as const, { description: "Default wrist" })),
 			debug: Type.Optional(Type.Boolean({ description: "Default false" })),
 		}),
 		async ({ row, col, step, camera = "wrist", debug = false }) => {

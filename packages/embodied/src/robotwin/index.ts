@@ -15,6 +15,7 @@
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
 import { encodePng } from "../png.ts";
@@ -668,8 +669,8 @@ export default function robotwin(pi: ExtensionAPI) {
 		});
 	}
 
-	const arm = Type.Union([Type.Literal("left"), Type.Literal("right")]);
-	const view = Type.Union([Type.Literal("head"), Type.Literal("left_wrist"), Type.Literal("right_wrist")], {
+	const arm = StringEnum(["left", "right"] as const);
+	const view = StringEnum(["head", "left_wrist", "right_wrist"] as const, {
 		description: "View whose RGB supplied the pixels; also the pixel coordinate space",
 	});
 	const step = Type.Optional(Type.Integer({ description: "Recorded state; -1 (default) = latest, 0 = initial" }));

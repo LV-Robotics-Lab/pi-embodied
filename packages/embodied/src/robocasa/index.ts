@@ -15,6 +15,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
 import { encodePng } from "../png.ts";
@@ -226,7 +227,7 @@ export default function robocasa(pi: ExtensionAPI) {
 			description:
 				"Declare the task finished: when success (robocasa_terminated) becomes true, or when genuinely stuck after honest exploration. Give a 1-3 sentence summary of what worked and what failed. Success is the env's state.success, not this call.",
 			parameters: Type.Object({
-				status: Type.Union([Type.Literal("success"), Type.Literal("failure"), Type.Literal("stuck")]),
+				status: StringEnum(["success", "failure", "stuck"] as const),
 				summary: Type.String(),
 			}),
 			result: (params) => ({
@@ -645,12 +646,12 @@ export default function robocasa(pi: ExtensionAPI) {
 	const gripArg = (description: string) =>
 		Type.Optional(Type.Union([Type.Number(), Type.String()], { description: `${description} (default 'hold')` }));
 	const camera = Type.Optional(
-		Type.Union([Type.Literal("agentview"), Type.Literal("navview"), Type.Literal("wrist")], {
+		StringEnum(["agentview", "navview", "wrist"] as const, {
 			description: "Camera (default agentview)",
 		}),
 	);
 	const resolution = Type.Optional(
-		Type.Union([Type.Literal("high"), Type.Literal("low")], {
+		StringEnum(["high", "low"] as const, {
 			description: "low = the 256x256 world map (default); high = the --hi-res agentview map",
 		}),
 	);

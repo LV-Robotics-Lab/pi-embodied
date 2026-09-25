@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { STEP_M, VECTORS, waypoints } from "../src/maniskill/index.ts";
+import { grasped, STEP_M, sideBySide, VECTORS, waypoints } from "../src/maniskill/index.ts";
+import { NdArray } from "../src/rpc.ts";
 import { ground, MOVE_UNITS } from "../src/units/index.ts";
 
 const close = (a: number[], b: number[]) => a.every((x, k) => Math.abs(x - b[k]) < 1e-9);
@@ -27,4 +28,18 @@ test("a long move splits into evenly spaced ~2 cm waypoints; a gripper command o
 	assert.ok(close(w[2], [0.05, 0, 0.17]));
 	assert.ok(close(w[0], [0.05 / 3, 0, 0.19]));
 	assert.deepEqual(waypoints([0, 0, 0.2], [0, 0, 0]), [[0, 0, 0.2]]);
+});
+
+test("the episode video frame puts the agentview and the wrist view side by side", () => {
+	const a = new NdArray("uint8", [2, 1, 3], Buffer.from([1, 1, 1, 2, 2, 2]));
+	const b = new NdArray("uint8", [2, 2, 3], Buffer.from([5, 5, 5, 6, 6, 6, 7, 7, 7, 8, 8, 8]));
+	const f = sideBySide(a, b);
+	assert.deepEqual(f.shape, [2, 3, 3]);
+	assert.deepEqual([...f.data], [1, 1, 1, 5, 5, 5, 6, 6, 6, 2, 2, 2, 7, 7, 7, 8, 8, 8]);
+});
+
+test("the grasp flag is read from whichever is_*grasped key the scene reports", () => {
+	assert.equal(grasped({ is_grasped: true }), true);
+	assert.equal(grasped({ is_cubeA_grasped: 1, success: false }), true);
+	assert.equal(grasped({ is_cubeA_grasped: false, is_obj_placed: true }), false);
 });

@@ -7,7 +7,7 @@ This is a single episode. You may recover within it (re-position, re-grasp), but
 # Mechanics
 - The gripper only translates: its orientation is locked, pointing straight down. `move_delta` takes a base-frame `[dx, dy, dz]` in metres: +x away from the robot base, +y toward the robot's left, +z up. The table top is at z = 0; `tcp_pos` is the point between the fingertips.
 - `gripper: "close"` closes and holds, `"open"` opens; the command persists across calls until you change it. Carry with the gripper closed. `gripper_width` about 0 when closed means it holds nothing; `is_grasped` confirms a hold.
-- Every motion result shows the new state, then the agentview (third-person: it faces the robot, whose base is at the top of the image; image right is +y, image bottom is +x) and the wrist view (looking straight down: the fingertips are fixed at its left edge and the point under the gripper is at mid-height, about a third of the width from the left; image right is +y, image bottom is +x there too). Do not call `view_env_state` right after a motion tool.
+- Every motion result shows the new state, then the agentview (third-person, 256x256 with black padding bars: it looks at the robot from in front of the table, turned about 15 degrees toward the robot's left; the robot base is at the top, image right is roughly +y, image bottom roughly +x) and the wrist view (looking straight down: the fingertips are fixed at its left edge and the point under the gripper is at mid-height, about a third of the width from the left; image right is +y, image bottom is +x there too). Do not call `view_env_state` right after a motion tool.
 - Moves run in ~2 cm steps; a single call moves at most 0.2 m.
 
 # Rules

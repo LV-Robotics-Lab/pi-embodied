@@ -23,7 +23,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { encodePng } from "../png.ts";
 import { attach, defineRobot, SERVICES } from "../robot.ts";
-import type { NdArray, RpcClient } from "../rpc.ts";
+import { NdArray, type RpcClient } from "../rpc.ts";
 import type { MoveUnit, Vec3 } from "../units/index.ts";
 
 const SYSTEM = readFileSync(new URL("./SYSTEM.md", import.meta.url), "utf8");
@@ -58,14 +58,15 @@ export const MAX_MOVE_M = 0.2;
 export const EMPTY_WIDTH_M = 0.005;
 
 /**
- * How the stock scenes' cameras look, measured on PickCube seed 0 (units stepped and the TCP
- * projected through the wrist calibration): `base_camera` sits in front of the robot looking back
- * at it; the wrist `hand_camera`, rotated 270 deg by the env server, looks straight down with the
- * fingertips at the left edge and the point under the TCP at mid-height, 26-38 % of the width
- * from the left (lower gripper = further left).
+ * How the views look, measured on PickCube seed 0 (units stepped, the cube projected through the
+ * wrist calibration): the agentview (env server AGENTVIEW) sits low in front of the robot, turned
+ * 15 deg toward the robot's left; the wrist camera (Show-Harness's centred mount, rotated 270 deg)
+ * looks straight down with the fingertips at the left edge and the point under the TCP at
+ * mid-height, 31-41 % of the width from the left (lower gripper = further left). Both are
+ * letterboxed to 256x256.
  */
-export const VIEWS = `Each result shows the third-person view, then the wrist view. In BOTH views MV_LEFT / MV_RIGHT move the gripper toward the image left / right, MV_FWD toward the image bottom, MV_BACK toward the image top.
-- Third-person view: it faces the robot, whose base is at the top of the image; judge the gripper against the target directly.
+export const VIEWS = `Each result shows the third-person view, then the wrist view (both 256x256, black bars are padding). In BOTH views MV_LEFT / MV_RIGHT move the gripper toward the image left / right, MV_FWD toward the image bottom, MV_BACK toward the image top.
+- Third-person view: it looks at the robot from in front of the table, slightly from the robot's left side, so the robot base is at the top and the directions above are tilted about 15 degrees; judge the gripper against the target directly.
 - Wrist view: it looks straight down; the two fingertips stay fixed at the left edge (one near the top, one near the bottom), and the grasp point is between them, at mid-height, about a third of the width from the left edge. A target right of the grasp point needs MV_RIGHT, left of it MV_LEFT, below it MV_FWD, above it MV_BACK; a target on the grasp point is under the gripper: MV_DOWN. The camera moves with the gripper, so after MV_RIGHT the scene shifts left.`;
 
 type Obs = {
@@ -78,9 +79,28 @@ type Obs = {
 };
 type Info = Record<string, unknown>;
 type ServoReturn = [Obs[], Info];
-type Meta = { env_id: string; seed: number };
+type Meta = { env_id: string; seed: number } & Partial<typeof VIEW_SETUP>;
+/** The env server camera setup VIEWS describes; a server rendering anything else is refused. */
+export const VIEW_SETUP = { agentview: "oblique", wrist_mount: "centered", wrist_rotation: 270, wrist_flip: "none" };
 
 const round = (v: number, d = 4) => Number(v.toFixed(d));
+
+/** ManiSkill's grasp flag: `is_grasped` (PickCube), `is_cubeA_grasped` (StackCube), ... */
+export const grasped = (info: Record<string, unknown>) =>
+	Object.entries(info).some(([k, v]) => /^is_.*grasped$/.test(k) && Boolean(v));
+
+/** Two HxWx3 uint8 images of the same height, side by side (the episode video's frame). */
+export function sideBySide(a: NdArray, b: NdArray): NdArray {
+	const [h, wa] = a.shape;
+	const wb = b.shape[1];
+	if (b.shape[0] !== h) throw new Error(`views differ in height: ${a.shape} vs ${b.shape}`);
+	const out = Buffer.alloc(h * (wa + wb) * 3);
+	for (let y = 0; y < h; y++) {
+		a.data.copy(out, y * (wa + wb) * 3, y * wa * 3, (y + 1) * wa * 3);
+		b.data.copy(out, (y * (wa + wb) + wa) * 3, y * wb * 3, (y + 1) * wb * 3);
+	}
+	return new NdArray("uint8", [h, wa + wb, 3], out);
+}
 /**
  * The waypoints of one base-frame move: one per ~2 cm decision, ceil(|delta| / STEP_M) of them,
  * evenly spaced from `start` (a pure gripper command or STOP is one waypoint at `start`).
@@ -157,7 +177,7 @@ export default function maniskill(pi: ExtensionAPI) {
 				eef_xyz: obs.tcp_pos.toArray().map((v) => round(v)),
 				gripper_width: round(obs.gripper_width),
 				table_z: 0,
-				is_grasped: Boolean(info.is_grasped),
+				is_grasped: grasped(info),
 			}),
 		},
 	});
@@ -174,7 +194,7 @@ export default function maniskill(pi: ExtensionAPI) {
 		obs = o;
 		info = i;
 		success ||= Boolean(i.success);
-		everGrasped ||= Boolean(i.is_grasped);
+		everGrasped ||= grasped(i);
 	}
 
 	/** Run one base-frame move (m) with an optional gripper command; every control step goes to the video. */
@@ -197,7 +217,7 @@ export default function maniskill(pi: ExtensionAPI) {
 				[target, gripper],
 				signal,
 			);
-			for (const f of frames) video.frame(f.agentview);
+			for (const f of frames) video.frame(sideBySide(f.agentview, f.wrist));
 			steps += frames.length;
 			envStep += frames.length;
 			absorb(frames[frames.length - 1], i);
@@ -225,7 +245,7 @@ export default function maniskill(pi: ExtensionAPI) {
 				tcp_pos: obs.tcp_pos.toArray().map((v) => round(v)),
 				gripper_width: round(obs.gripper_width),
 				gripper_command: gripper > 0 ? "open" : "close",
-				is_grasped: Boolean(info.is_grasped),
+				is_grasped: grasped(info),
 			},
 			images: [
 				`agentview ${obs.agentview.shape[1]}x${obs.agentview.shape[0]}`,
@@ -281,6 +301,11 @@ export default function maniskill(pi: ExtensionAPI) {
 		const meta = await env.call<Meta>("env.get_env_meta");
 		if (meta.env_id !== envId || meta.seed !== Number(seed))
 			throw new Error(`env server runs ${meta.env_id} seed ${meta.seed}, not ${envId} seed ${seed}`);
+		const setup = Object.entries(VIEW_SETUP).filter(([k, v]) => meta[k as keyof typeof VIEW_SETUP] !== v);
+		if (setup.length)
+			throw new Error(
+				`env server cameras (${setup.map(([k]) => `${k}=${meta[k as keyof typeof VIEW_SETUP]}`).join(", ")}) differ from the ones the prompt describes (${JSON.stringify(VIEW_SETUP)}); update the services dir`,
+			);
 		success = everGrasped = false;
 		envStep = 0;
 		gripper = 1;

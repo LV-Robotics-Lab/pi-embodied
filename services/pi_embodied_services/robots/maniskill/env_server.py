@@ -48,6 +48,19 @@ INSTRUCTIONS = {
     "LiftPegUpright-v1": "lift the peg upright",
 }
 CAMERAS = {"agentview": "base_camera", "wrist": "hand_camera"}
+#: The actors each task needs the model to see, by env attribute: checked in the agentview
+#: at every reset (``check_visible``).
+TASK_ACTORS = {
+    "PickCube-v1": ["cube"],
+    "StackCube-v1": ["cubeA", "cubeB"],
+    "PushCube-v1": ["obj", "goal_region"],
+    "PullCube-v1": ["obj", "goal_region"],
+    "PokeCube-v1": ["cube", "peg", "goal_region"],
+    "LiftPegUpright-v1": ["peg"],
+}
+#: Fewest agentview pixels (640x480 sensor) a task actor may show; a 4 cm cube at the far
+#: edge of the workspace covers ~60.
+MIN_VISIBLE_PX = 20
 OPEN = 1.0
 #: Stock Panda arm_pd_ee_delta_pos position bound: action 1.0 = 0.1 m.
 DELTA_BOUND_M = 0.1
@@ -57,6 +70,21 @@ def _np(value: Any) -> np.ndarray:
     if hasattr(value, "detach"):
         value = value.detach().cpu().numpy()
     return np.asarray(value)
+
+
+def _letterbox(image: np.ndarray, size: int) -> np.ndarray:
+    """Equal-ratio resize into a ``size`` square with centred black bars (Show-Harness
+    ``prepare_view(square_size=...)``, the real rigs' ``resize_with_pad``)."""
+    from PIL import Image
+
+    h, w = image.shape[:2]
+    scale = size / max(h, w)
+    nh, nw = max(1, round(h * scale)), max(1, round(w * scale))
+    resized = np.asarray(Image.fromarray(image).resize((nw, nh), Image.BILINEAR))
+    out = np.zeros((size, size, 3), dtype=np.uint8)
+    y0, x0 = (size - nh) // 2, (size - nw) // 2
+    out[y0 : y0 + nh, x0 : x0 + nw] = resized
+    return out
 
 
 def _orient(image: np.ndarray, degrees: int, flip: str) -> np.ndarray:
@@ -73,8 +101,8 @@ def _orient(image: np.ndarray, degrees: int, flip: str) -> np.ndarray:
 
 #: Show-Harness core/sim/maniskill_scenes.py WRIST_MOUNTS["centered"]: the D415 orientation
 #: on ``panda_hand`` without the stock rig's 2 cm lateral ``camera_link`` hop, so the finger
-#: pair is centred; with ``wrist_flip: both`` the fingertips are at the top and wrist left ==
-#: agentview left (their training contract).
+#: pair is centred (on their rig ``wrist_flip: both`` then puts the fingertips at the top;
+#: the stock scenes' start pose needs a 270 deg rotation instead, see ``main``).
 _Q_D415 = [0.0, 0.7071068, 0.0, 0.7071068]  # wxyz
 
 
@@ -103,6 +131,23 @@ def center_wrist_camera() -> None:
     )
 
 
+#: Agentview for the stock scenes. Show-Harness's calibrated ``external_cam`` exists only on
+#: the RLinf real2sim rigs (BlockPAP-v1 / BlockStack-v1, not public). The stock
+#: ``base_camera`` (eye [0.3, 0, 0.6], 128 px) faces the robot head-on, so the arm and
+#: gripper hide a cube under the TCP. This pose (compared against the stock camera and
+#: 7 others on PickCube/StackCube/PushCube seed 0, at reset and with the fingertips at the
+#: cube) sits low in front of the robot, 15 deg toward its left: the cube stays visible at
+#: reset and beside the fingers during the descent, and image left/right and bottom/top
+#: stay close to the robot's -y/+y and +x/-x. 640x480 like their external_cam.
+AGENTVIEW = {
+    "eye": [0.6, 0.16, 0.45],
+    "target": [-0.08, 0.0, 0.05],
+    "fov_deg": 60.0,
+    "width": 640,
+    "height": 480,
+}
+
+
 class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
     """One ManiSkill env (``num_envs=1``); every call runs on the main thread."""
 
@@ -117,11 +162,12 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         wrist_mount: str = "centered",
         control_mode: str = "pd_ee_delta_pos",
         sim_backend: str = "physx_cpu",
-        camera_resolution: int = 512,
+        agentview: str = "oblique",
+        view_size: int = 256,
         max_episode_steps: int = 100_000,
         settle_steps: int = 8,
-        wrist_rotation: int = 0,
-        wrist_flip: str = "both",
+        wrist_rotation: int = 270,
+        wrist_flip: str = "none",
     ):
         super().__init__()
         import gymnasium as gym
@@ -133,19 +179,18 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         self._env = gym.make(
             env_id,
             num_envs=1,
-            obs_mode="rgb",
+            obs_mode="rgb+segmentation",
             control_mode=control_mode,
             robot_uids=robot_uids,
             sim_backend=sim_backend,
             max_episode_steps=int(max_episode_steps),
-            sensor_configs=dict(
-                width=int(camera_resolution), height=int(camera_resolution)
-            ),
+            sensor_configs=self._sensor_configs(agentview),
         )
         self._seed = int(seed)
         self._settle_steps = int(settle_steps)
         self._wrist_rotation = int(wrist_rotation)
         self._wrist_flip = wrist_flip
+        self._view_size = int(view_size)
         self._obs: dict = {}
         self._closed = False
         self._meta = {
@@ -154,7 +199,8 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
             "robot_uids": robot_uids,
             "control_mode": control_mode,
             "sim_backend": sim_backend,
-            "camera_resolution": int(camera_resolution),
+            "agentview": agentview,
+            "view_size": self._view_size,
             "settle_steps": self._settle_steps,
             "wrist_mount": wrist_mount,
             "wrist_rotation": self._wrist_rotation,
@@ -169,17 +215,35 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
 
     # ---- helpers ----
 
+    @staticmethod
+    def _sensor_configs(agentview: str) -> dict:
+        """The agentview pose (``oblique`` = AGENTVIEW, or the scene's ``stock`` camera)
+        and a 256 px wrist render."""
+        cfg: dict = {"hand_camera": {"width": 256, "height": 256}}
+        if agentview == "oblique":
+            from mani_skill.utils import sapien_utils
+
+            cfg["base_camera"] = {
+                "pose": sapien_utils.look_at(AGENTVIEW["eye"], AGENTVIEW["target"]),
+                "fov": np.deg2rad(AGENTVIEW["fov_deg"]),
+                "width": AGENTVIEW["width"],
+                "height": AGENTVIEW["height"],
+            }
+        return cfg
+
     @property
     def _agent(self):
         return self._env.unwrapped.agent
 
     def _rgb(self, obs: dict, name: str) -> np.ndarray:
+        """One view through Show-Harness's transform: orient (wrist only) -> letterbox.
+
+        Their 4:3 wrist crop is not applied: after the 270 deg rotation the fingertips sit
+        at the top and bottom of the left edge, and the crop would cut them off."""
         rgb = _np(obs["sensor_data"][CAMERAS[name]]["rgb"])[0].astype(np.uint8)
-        return (
-            _orient(rgb, self._wrist_rotation, self._wrist_flip)
-            if name == "wrist"
-            else np.ascontiguousarray(rgb)
-        )
+        if name == "wrist":
+            rgb = _orient(rgb, self._wrist_rotation, self._wrist_flip)
+        return _letterbox(rgb, self._view_size) if self._view_size else rgb
 
     def _state(self) -> dict:
         tcp = self._agent.tcp.pose
@@ -233,7 +297,31 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         hold = np.array([0.0, 0.0, 0.0, OPEN], dtype=np.float32)
         for _ in range(self._settle_steps):
             obs, _r, _te, _tr, info = self._step(hold)
+        self.check_visible(obs)
         return self._pack(obs), info
+
+    def visible_pixels(self, obs: dict) -> dict:
+        """Agentview pixels of each task actor (per-actor segmentation of base_camera)."""
+        seg = _np(obs["sensor_data"][CAMERAS["agentview"]]["segmentation"])[0, ..., 0]
+        env = self._env.unwrapped
+        out = {}
+        for name in TASK_ACTORS.get(self._meta["env_id"], []):
+            ids = _np(getattr(env, name).per_scene_id).reshape(-1)
+            out[name] = int(np.isin(seg, ids).sum())
+        return out
+
+    def check_visible(self, obs: dict) -> None:
+        """Refuse an episode whose agentview does not show every task actor: a hidden
+        object makes the planner's failure meaningless (the stock PickCube camera hid the
+        cube behind the gripper). Raising fails the reset, so the robot never starts."""
+        px = self.visible_pixels(obs)
+        self._meta["visible_px"] = px
+        hidden = {k: v for k, v in px.items() if v < MIN_VISIBLE_PX}
+        if hidden:
+            raise RuntimeError(
+                f"task objects not visible in the agentview after reset: {hidden} px "
+                f"(need >= {MIN_VISIBLE_PX}); refusing the episode"
+            )
 
     def step(self, action):
         obs, rew, term, trunc, info = self._step(action)
@@ -308,11 +396,12 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         return {**self._state(), "info": info}
 
     def render_camera(self, camera_name: str = "agentview", **_: Any):
-        """Latest frame of ``agentview`` or ``wrist`` (sensor resolution)."""
+        """Latest frame of ``agentview`` or ``wrist``, as the model sees it."""
         return self._rgb(self._obs, camera_name)
 
     def get_camera_meta(self, camera_name: str = "agentview", **_: Any) -> dict:
-        """OpenCV intrinsics and camera-to-world extrinsic of a sensor camera."""
+        """OpenCV intrinsics and camera-to-world extrinsic of a sensor camera (raw sensor
+        pixels, before the orientation and letterbox of ``render_camera``)."""
         param = self._obs["sensor_param"][CAMERAS[camera_name]]
         w2c = np.eye(4)
         w2c[:3] = _np(param["extrinsic_cv"])[0]
@@ -346,16 +435,23 @@ def main():
         "--wrist-mount", choices=["centered", "camera_link"], default="centered"
     )
     p.add_argument("--sim-backend", default="physx_cpu")
-    p.add_argument("--camera-resolution", type=int, default=512)
+    p.add_argument("--agentview", choices=["oblique", "stock"], default="oblique")
+    p.add_argument(
+        "--view-size", type=int, default=256, help="letterbox square, px (0 = raw)"
+    )
     p.add_argument("--settle-steps", type=int, default=8)
-    # Show-Harness configs/robot_maniskill.yaml: wrist_rotation_degrees 0, wrist_flip both
-    # (for the centred mount). The stock panda_wristcam (camera_link) needs rotation 270,
-    # flip none for the same image directions, with the fingers at the left edge instead.
-    p.add_argument("--wrist-rotation", type=int, choices=[0, 90, 180, 270], default=0)
+    # Measured on the stock scenes (PickCube seed 0, cube projected through the wrist
+    # calibration while stepping MV_LEFT / MV_FWD): the centred camera renders image right =
+    # -x, image down = +y, i.e. 90 deg off Show-Harness's RLinf rig, whose calibrated start
+    # pose rolls the hand; their `flip: both` would put MV_FWD at the image left here.
+    # Rotating 270 (CCW, no flip) gives the agentview's convention: image right = +y
+    # (MV_RIGHT), image bottom = +x (MV_FWD); the fingertips sit at the left edge and the
+    # point under the TCP at mid-height, 31-41 % of the width from the left.
+    p.add_argument("--wrist-rotation", type=int, choices=[0, 90, 180, 270], default=270)
     p.add_argument(
         "--wrist-flip",
         choices=["none", "vertical", "horizontal", "both"],
-        default="both",
+        default="none",
     )
     p.add_argument(
         "--parent-watch",
@@ -369,7 +465,8 @@ def main():
         seed=args.seed,
         robot_uids=args.robot_uids,
         sim_backend=args.sim_backend,
-        camera_resolution=args.camera_resolution,
+        agentview=args.agentview,
+        view_size=args.view_size,
         settle_steps=args.settle_steps,
         wrist_mount=args.wrist_mount,
         wrist_rotation=args.wrist_rotation,

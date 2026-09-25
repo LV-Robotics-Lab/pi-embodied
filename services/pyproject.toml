@@ -85,6 +85,13 @@ franka = [
     "matplotlib>=3.8",
     "pillow>=10",
 ]
+maniskill = [
+    # ManiSkill 3 stock scenes (PickCube/StackCube/PushCube); on sm_120 install the
+    # torch 2.7.1+cu128 build first.
+    "mani_skill==3.0.1",
+    "torch",
+    "pillow>=10",
+]
 piper = [
     # AgileX Piper over ROS topics (Show-Harness's Cobot Magic stack); ROS itself
     # (rospy, the piper_msgs packages) comes from the host's ROS Noetic install.

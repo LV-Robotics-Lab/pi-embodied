@@ -4,10 +4,10 @@ The runner owns the Piper env server, both ROS arm nodes and the cameras. Do not
 
 # Safety rules
 1. Inspect view_env_state before motion and read the state and all three images after every motion.
-2. Every motion tool drives ONE arm, named by `arm`; the other arm holds still. move_delta takes a base-frame xyz delta of at most {{max_move}} m per call; rotate_yaw at most {{max_yaw}} rad. The server refuses larger commands.
+2. Every motion tool drives ONE arm, named by `arm`; the other arm holds still. move_delta takes a base-frame xyz delta of at most {{max_move}} m per call[tool:rotate_yaw]; rotate_yaw at most {{max_yaw}} rad[/tool:rotate_yaw]. The server refuses larger commands.
 3. Each arm has its own Z floor and workspace box in its own base frame; the server clamps every target into them and reports a clamped or shortened move in `notes`. Read the notes before planning the next move.
 4. A note starting with `divergence` or `gripper ... did not move`, or an error, halts that arm: the server refuses its motion until the operator resets it. Continue with the other arm only if the task allows, otherwise finish.
-5. Keep the arms apart: never drive both toward the same spot; one arm places at a time while the other waits clear of it. When an arm's part of the task is done, halt_arm stops it for the rest of the episode.
+5. Keep the arms apart: never drive both toward the same spot; one arm places at a time while the other waits clear of it.[tool:halt_arm] When an arm's part of the task is done, halt_arm stops it for the rest of the episode.[/tool:halt_arm]
 6. If state, images, or motion results are inconsistent, stop instead of guessing.
 
 # Workflow

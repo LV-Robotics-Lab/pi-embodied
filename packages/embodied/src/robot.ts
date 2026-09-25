@@ -41,6 +41,28 @@ export const median = (v: number[]) => {
 };
 export const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
+/**
+ * Keep every `[tool:name]...[/tool:name]` block of a robot's system prompt when that tool is
+ * active, drop it otherwise, so an excluded tool is not described. `[tool:a|b]` is kept when any of
+ * them is active; nested blocks need all of theirs. Markers on their own lines wrap whole lines,
+ * markers within a line wrap that text. An unpaired marker, or a block nested in one of the same
+ * name, throws: the template is broken.
+ */
+export function toolSections(prompt: string, active: readonly string[]): string {
+	const re = /\[tool:([\w|]+)\](\n?)([\s\S]*?)\[\/tool:\1\](\n?)/g;
+	let out = prompt;
+	for (let prev = ""; prev !== out; ) {
+		prev = out;
+		out = out.replace(re, (_, names: string, open: string, body: string, close: string) => {
+			if (body.includes(`[tool:${names}]`)) throw new Error(`[tool:${names}] nested in itself in the system prompt`);
+			return (names.split("|").some((n) => active.includes(n)) ? body : "") + (open ? "" : close);
+		});
+	}
+	const left = out.match(/\[\/?tool:[^\]]*\]/);
+	if (left) throw new Error(`unpaired ${left[0]} in the system prompt`);
+	return out;
+}
+
 // ---------------------------------------------------------------------------
 // the robot base
 
@@ -82,7 +104,7 @@ export type RobotSpec = {
 	start: (ctx: ExtensionContext) => Promise<string[]>;
 	/** Release what `start` acquired beyond the `serve`d env server (before a start and at shutdown). */
 	stop?: () => Promise<void> | void;
-	/** The system prompt, filled for this episode. */
+	/** The system prompt, filled for this episode; its `[tool:name]` blocks follow the active tools (`toolSections`). */
 	prompt?: () => string | undefined;
 	/** The episode's outcome for the result entry; the base adds robot, claimed, summary, turns, budget, operator fields, env_error. */
 	result: (ended: Ended) => Json;
@@ -332,7 +354,9 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 			}
 		}
 		const mode = un?.mode();
-		const own = spec.prompt?.();
+		// The robot's prompt describes only the tools left active by --tools/--exclude-tools and --units.
+		const filled = spec.prompt?.();
+		const own = filled === undefined ? undefined : toolSections(filled, pi.getActiveTools());
 		const systemPrompt =
 			mode === "pure" ? un?.prompt() : mode === "both" ? `${own ?? ""}\n\n${un?.prompt()}`.trim() : own;
 		return systemPrompt === undefined ? undefined : { systemPrompt };

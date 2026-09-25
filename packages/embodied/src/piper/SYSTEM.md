@@ -4,7 +4,7 @@ The runner owns the Piper env server, the ROS arm node and the cameras. Do not s
 
 # Safety rules
 1. Inspect view_env_state before motion and read the state and both images after every motion.
-2. move_delta takes a base-frame xyz delta of at most {{max_move}} m per call; rotate_yaw at most {{max_yaw}} rad. The server refuses larger commands.
+2. move_delta takes a base-frame xyz delta of at most {{max_move}} m per call[tool:rotate_yaw]; rotate_yaw at most {{max_yaw}} rad[/tool:rotate_yaw]. The server refuses larger commands.
 3. The server clamps every target above the table (Z floor) and inside the workspace box; a clamped or shortened move is reported in `notes`. Read the notes before planning the next move.
 4. A note starting with `divergence` or `gripper ... did not move` means commands are not reaching the arm: stop and finish instead of retrying.
 5. If state, images, or motion results are inconsistent, stop instead of guessing.

@@ -19,6 +19,7 @@ import { flywheel } from "./flywheel.ts";
 import { type MemoryOptions, memory } from "./memory/index.ts";
 import { operator } from "./operator.ts";
 import { forgetUnresponsive, NdArray, RpcClient, RpcUnavailable } from "./rpc.ts";
+import { type UnitsSpec, units } from "./units/index.ts";
 import { episodeVideo } from "./video.ts";
 
 export type Json = Record<string, any>;
@@ -102,6 +103,8 @@ export type RobotSpec = {
 	/** Mount the episode video (../video.ts) and the LIBERO Flywheel recorder (../flywheel.ts). */
 	video?: boolean;
 	flywheel?: boolean;
+	/** Mount Show-Harness action units (../units): --units=true leaves only `act`, `finish` and its plugins' tools; --units=both adds them. */
+	units?: UnitsSpec;
 };
 
 /**
@@ -214,6 +217,34 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		summary: claimed?.summary ?? null,
 		...(ready ? spec.status?.() : {}),
 	});
+
+	/** Register a sequential robot tool; its result terminates the batch when the batch also calls `finish`. */
+	function tool<P extends TSchema>(
+		toolName: string,
+		description: string,
+		parameters: P,
+		run: (params: Static<P>, signal: AbortSignal | undefined, ctx: ExtensionContext) => Promise<Result>,
+	) {
+		pi.registerTool({
+			name: toolName,
+			label: toolName,
+			description,
+			parameters,
+			executionMode: "sequential",
+			async execute(_id, params, sig, _onUpdate, ctx) {
+				signal = sig;
+				try {
+					return { ...(await run(params, sig, ctx)), terminate: finishing };
+				} catch (err) {
+					if (err instanceof RpcUnavailable) fail(err.message);
+					throw err;
+				} finally {
+					signal = undefined;
+				}
+			},
+		});
+	}
+	const un = spec.units ? units(pi, spec.units, tool, () => task) : undefined;
 	const publish = () => pi.events.emit(STATUS_EVENT, status());
 
 	async function stop() {
@@ -227,7 +258,13 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		await stop();
 		try {
 			const tools = await spec.start(ctx);
-			pi.setActiveTools([...new Set([...tools, ...op.tools(), ...(mem?.tools ?? [])])]);
+			// Pure units mode hides the robot's own tools and memory's (Show-Harness's pure mode).
+			const mode = un?.mode();
+			const own =
+				mode === "pure"
+					? [...(un?.tools() ?? []), "finish"]
+					: [...tools, ...(mem?.tools ?? []), ...(mode === "both" ? (un?.tools() ?? []) : [])];
+			pi.setActiveTools([...new Set([...own, ...op.tools()])]);
 			ready = true;
 		} catch (err) {
 			// Without a robot there is nothing to act on: no tools, and a non-interactive run exits.
@@ -268,7 +305,10 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 				deadline.unref();
 			}
 		}
-		const systemPrompt = spec.prompt?.();
+		const mode = un?.mode();
+		const own = spec.prompt?.();
+		const systemPrompt =
+			mode === "pure" ? un?.prompt() : mode === "both" ? `${own ?? ""}\n\n${un?.prompt()}`.trim() : own;
 		return systemPrompt === undefined ? undefined : { systemPrompt };
 	});
 	pi.on("message_end", (event) => {
@@ -416,31 +456,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 			return signal;
 		},
 		/** Register a sequential robot tool; its result terminates the batch when the batch also calls `finish`. */
-		tool<P extends TSchema>(
-			toolName: string,
-			description: string,
-			parameters: P,
-			run: (params: Static<P>, signal: AbortSignal | undefined, ctx: ExtensionContext) => Promise<Result>,
-		) {
-			pi.registerTool({
-				name: toolName,
-				label: toolName,
-				description,
-				parameters,
-				executionMode: "sequential",
-				async execute(_id, params, sig, _onUpdate, ctx) {
-					signal = sig;
-					try {
-						return { ...(await run(params, sig, ctx)), terminate: finishing };
-					} catch (err) {
-						if (err instanceof RpcUnavailable) fail(err.message);
-						throw err;
-					} finally {
-						signal = undefined;
-					}
-				},
-			});
-		},
+		tool,
 		/**
 		 * Start `python ...args --transport http --host 127.0.0.1 --port <free> --parent-watch` (a service
 		 * RPC server; it exits with pi) and wait for healthz. It is stopped at the next start and at shutdown.

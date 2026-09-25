@@ -13,7 +13,9 @@
 # limitations under the License.
 #
 # Modified by pi-embodied: import paths rewritten; healthz service name; HTTP is
-# the only --transport; install and PYTHONPATH hints point at services/.
+# the only --transport; install and PYTHONPATH hints point at services/; the point
+# parser skips Molmo2's leading image index; activations are released after each call;
+# --max-gpu-memory offloads part of the weights for a shared GPU.
 
 """RPC server owning the local Molmo visual-grounding model.
 
@@ -51,9 +53,9 @@ from pi_embodied_services.utils.rpc import RpcFacade
 
 logger = get_logger("molmo_server")
 
-#: Molmo2 writes one or more ``point-id x y`` triples in normalized thousandths.
+#: Molmo2 writes ``<points coords="...">``: an image index, then ``point-id x y`` triples in
+#: normalized thousandths (``1 1 424 446``); older outputs omit the image index (``1 424 446``).
 _COORDS = re.compile(r"<(?:point|points)\b[^>]*\bcoords=[\"']([^\"']+)[\"']", re.I)
-_POINT = re.compile(r"(?:^|[\t:;,])\s*\d+\s+([0-9]{1,4})\s+([0-9]{1,4})")
 
 
 def _parse_point(answer: str) -> tuple[float, float] | None:
@@ -61,10 +63,12 @@ def _parse_point(answer: str) -> tuple[float, float] | None:
     coords = _COORDS.search(answer)
     if coords is None:
         return None
-    point = _POINT.search(coords.group(1))
-    if point is None:
+    tokens = re.split(r"[\s:;,]+", coords.group(1).split("\t")[0].strip())
+    if not all(t.isdigit() for t in tokens) or len(tokens) < 3:
         return None
-    x, y = float(point.group(1)), float(point.group(2))
+    if len(tokens) % 3 == 1:
+        tokens = tokens[1:]
+    x, y = float(tokens[1]), float(tokens[2])
     if not (0 <= x <= 1000 and 0 <= y <= 1000):
         return None
     return x, y
@@ -87,12 +91,12 @@ class MolmoFacade(RpcFacade):
 
     SERVICE_NAME = "molmo"
 
-    def __init__(self, checkpoint: str) -> None:
+    def __init__(self, checkpoint: str, max_gpu_memory: str | None = None) -> None:
         super().__init__()
-        self._load(checkpoint)
+        self._load(checkpoint, max_gpu_memory)
         self._register_rpc()
 
-    def _load(self, checkpoint: str) -> None:
+    def _load(self, checkpoint: str, max_gpu_memory: str | None = None) -> None:
         try:
             import torch
             from transformers import AutoModelForImageTextToText, AutoProcessor
@@ -107,16 +111,22 @@ class MolmoFacade(RpcFacade):
         processor = AutoProcessor.from_pretrained(
             checkpoint, trust_remote_code=True, local_files_only=True
         )
-        model = (
-            AutoModelForImageTextToText.from_pretrained(
-                checkpoint,
-                trust_remote_code=True,
-                local_files_only=True,
-                dtype=torch.bfloat16,
-            )
-            .to("cuda")
-            .eval()
+        kwargs: dict[str, Any] = {}
+        if max_gpu_memory:
+            # Sharing a GPU: keep this much of the weights on it, the rest in host
+            # memory (needs accelerate).
+            kwargs = {
+                "device_map": "auto",
+                "max_memory": {0: max_gpu_memory, "cpu": "512GiB"},
+            }
+        model = AutoModelForImageTextToText.from_pretrained(
+            checkpoint,
+            trust_remote_code=True,
+            local_files_only=True,
+            dtype=torch.bfloat16,
+            **kwargs,
         )
+        model = (model if max_gpu_memory else model.to("cuda")).eval()
         self._torch = torch
         self._model = model
         self._processor = processor
@@ -155,6 +165,8 @@ class MolmoFacade(RpcFacade):
             generated = self._model.generate(
                 **inputs, max_new_tokens=48, do_sample=False
             )
+            # The GPU is shared with the VLA and SAM3: hand activations back between calls.
+            self._torch.cuda.empty_cache()
         answer = self._processor.tokenizer.decode(
             generated[0, inputs["input_ids"].shape[1] :], skip_special_tokens=False
         )
@@ -193,6 +205,12 @@ def _build_argparser() -> argparse.ArgumentParser:
         help="GPU device exposed through CUDA_VISIBLE_DEVICES.",
     )
     parser.add_argument(
+        "--max-gpu-memory",
+        default=None,
+        help="Cap the weights kept on the GPU (e.g. 13GiB) and offload the rest to "
+        "host memory, for a GPU shared with the VLA and SAM3.",
+    )
+    parser.add_argument(
         "--parent-watch",
         action="store_true",
         help="watch parent process via stdin pipe and exit when it dies",
@@ -212,7 +230,7 @@ def main() -> None:
             "MOLMO_CHECKPOINT_PATH is not set; export the path to the Molmo "
             "weights before starting pi-embodied"
         )
-    facade = MolmoFacade(checkpoint)
+    facade = MolmoFacade(checkpoint, args.max_gpu_memory)
     facade.serve(
         transport=args.transport,
         host=args.host,

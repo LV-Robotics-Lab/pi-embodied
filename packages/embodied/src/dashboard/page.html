@@ -38,7 +38,7 @@ input { font: inherit; padding: 4px 6px; width: 90px; background: var(--bg); col
 button { font: inherit; padding: 4px 10px; border: 1px solid var(--line); border-radius: 4px; background: var(--bg); color: var(--fg); cursor: pointer; }
 button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
 .status { width: 100%; font-size: 12px; color: var(--muted); }
-.camera { display: flex; flex-direction: column; min-height: 0; flex: 0 0 55%; border-bottom: 1px solid var(--line); }
+.camera { display: flex; flex-direction: column; min-height: 0; flex: 0 0 50%; border-bottom: 1px solid var(--line); }
 .frames { flex: 1; min-height: 0; display: flex; gap: 6px; padding: 6px; justify-content: center; align-items: center; }
 .frames a { flex: 1; min-width: 0; height: 100%; display: flex; flex-direction: column; align-items: center; }
 .frames img { max-width: 100%; max-height: calc(100% - 18px); object-fit: contain; background: #000; }
@@ -49,6 +49,17 @@ td.m { font-family: ui-monospace, monospace; word-break: break-word; }
 tr.step { cursor: pointer; }
 tr.step.sel { background: var(--code); }
 .empty { color: var(--muted); padding: 12px; }
+.teleop { border-bottom: 1px solid var(--line); }
+.tp-body { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: flex-start; padding: 6px 12px; }
+.pad { display: grid; grid-template-columns: repeat(4, auto); gap: 3px; align-items: center; }
+.pad b { grid-column: 1 / -1; font-size: 11px; color: var(--muted); font-weight: 600; }
+.pad button { padding: 3px 6px; font-size: 12px; min-width: 64px; }
+.pad button kbd { font-size: 10px; color: var(--muted); margin-left: 3px; }
+.pad button.held { background: var(--accent); color: #fff; border-color: var(--accent); }
+.tp-side { display: flex; flex-direction: column; gap: 6px; }
+.tp-side form, .tp-row { display: flex; gap: 6px; align-items: center; padding: 0; border: 0; background: none; flex-wrap: wrap; }
+.tp-side input[type=text] { width: 160px; }
+.badge.rec { color: var(--bad); }
 </style>
 </head>
 <body>
@@ -90,6 +101,25 @@ tr.step.sel { background: var(--code); }
       </div>
       <div class="frames" id="frames"><div class="empty" data-t="noFrame"></div></div>
     </div>
+    <div class="teleop" id="teleop" hidden>
+      <div class="title"><span data-t="teleop"></span><span id="tpMode" class="badge"></span><span id="tpRec" class="badge"></span><span class="grow"></span>
+        <label><input type="checkbox" id="tpKeys" style="width:auto" checked /> <span data-t="keys"></span></label>
+        <button id="tpTake"></button>
+      </div>
+      <div class="tp-body">
+        <div id="tpPads" class="tp-row"></div>
+        <div class="tp-side">
+          <form id="tpSeq"><input type="text" id="tpCmd" /><button class="primary" data-t="run"></button></form>
+          <div class="tp-row">
+            <button id="tpStart" data-t="recStart"></button>
+            <label><input type="checkbox" id="tpSuccess" style="width:auto" /> <span data-t="success"></span></label>
+            <button id="tpSave" data-t="recSave"></button>
+            <button id="tpDiscard" data-t="recDiscard"></button>
+          </div>
+        </div>
+        <div class="status" id="tpStatus"></div>
+      </div>
+    </div>
     <div class="title"><span data-t="timeline"></span><span id="stepCount" class="meta"></span></div>
     <div class="scroll" style="padding:0"><table><tbody id="timeline"></tbody></table><div class="empty" id="noSteps" data-t="noActions"></div></div>
   </div>
@@ -110,6 +140,16 @@ const COPY = {
     confirmSwitch: "The agent is running. Abort this episode and start the new task?",
     sent: "Sent.", steered: "Queued: delivered after the current tool call.", interrupted: "Interrupt requested.",
     taskSent: "Starting a new session…", failed: (e) => `Failed: ${e}`, stepCaption: (s) => `#${s.n} ${s.name}`,
+    teleop: "Teleop (GUMI)", keys: "keyboard", run: "Run", recStart: "Start recording", success: "success",
+    recSave: "Save", recDiscard: "Discard", seqPlaceholder: "w*3 a g",
+    seqPlaceholderDual: "L:w*3 R:i g",
+    modes: { agent: "agent drives", requested: "takeover requested", human: "operator drives" },
+    take: "Take over", release: "Hand back", waiting: "Waiting for the unit…",
+    recOn: (r, n) => `REC ${r} · ${n} steps`, recOff: "not recording", recDisabled: "recording off (--gumi-record)",
+    confirmDiscard: "Delete the rollout being recorded?", look: "Look",
+    help: "keys: W/S/A/D move · Q/E up/down · Z/X rotate · G grasp · R release · Space toggle gripper · hold to repeat",
+    helpDual: "left W/S/A/D Q/E Z/X, G or L-Shift grasp, R release, L-Ctrl STILL · right I/K/J/L U/O N/M, R-Shift grasp, . release, R-Ctrl STILL · hold to repeat",
+    arms: { arm: "arm", left: "left arm", right: "right arm" },
   },
   "zh-cn": {
     monitor: "实时监控", reasoning: "智能体推理与工具调用", expand: "展开工具调用", autoscroll: "自动滚动",
@@ -125,6 +165,16 @@ const COPY = {
     confirmSwitch: "智能体正在运行。中止当前回合并开始新任务?",
     sent: "已发送。", steered: "已排队:当前工具调用结束后送达。", interrupted: "已请求中断。",
     taskSent: "正在新建会话…", failed: (e) => `失败:${e}`, stepCaption: (s) => `#${s.n} ${s.name}`,
+    teleop: "遥操作 (GUMI)", keys: "键盘", run: "执行", recStart: "开始录制", success: "成功",
+    recSave: "保存", recDiscard: "丢弃", seqPlaceholder: "w*3 a g",
+    seqPlaceholderDual: "L:w*3 R:i g",
+    modes: { agent: "智能体控制", requested: "等待接管", human: "操作员控制" },
+    take: "接管", release: "交还智能体", waiting: "等待当前动作结束…",
+    recOn: (r, n) => `录制中 ${r} · ${n} 步`, recOff: "未录制", recDisabled: "未开启录制(--gumi-record)",
+    confirmDiscard: "删除正在录制的轨迹?", look: "观察",
+    help: "按键:W/S/A/D 平移 · Q/E 上/下 · Z/X 旋转 · G 抓取 · R 松开 · 空格 切换夹爪 · 按住连续执行",
+    helpDual: "左臂 W/S/A/D Q/E Z/X,G 或左 Shift 抓取,R 松开,左 Ctrl 保持 · 右臂 I/K/J/L U/O N/M,右 Shift 抓取,. 松开,右 Ctrl 保持 · 按住连续执行",
+    arms: { arm: "机械臂", left: "左臂", right: "右臂" },
   },
 };
 const T = COPY[document.documentElement.lang === "zh-cn" ? "zh-cn" : "en"];
@@ -250,11 +300,12 @@ function connect() {
       $("transcript").replaceChildren(); $("timeline").replaceChildren(); $("noSteps").hidden = false; $("stepCount").textContent = "";
       $("frames").replaceChildren(el("div", "empty", T.noFrame)); $("caption").textContent = ""; $("live").checked = true;
       if (!op.items.length) $("transcript").append(el("div", "empty", T.noEvents));
-      op.items.forEach(putItem); op.steps.forEach(putStep); renderEpisode();
+      op.items.forEach(putItem); op.steps.forEach(putStep); renderEpisode(); renderGumi(op.gumi);
     } else if (op.op === "item") putItem(op.item);
     else if (op.op === "append") appendText(op.id, op.text);
     else if (op.op === "step") putStep(op.step);
     else if (op.op === "episode") { episode = op.episode; renderEpisode(); }
+    else if (op.op === "gumi") renderGumi(op.gumi);
   };
 }
 
@@ -288,6 +339,111 @@ $("newTask").onsubmit = async (e) => {
 };
 $("expand").onchange = () => { for (const p of document.querySelectorAll("#transcript pre.args")) p.hidden = !$("expand").checked; };
 $("live").onchange = () => { if ($("live").checked) { const last = steps.findLast((s) => s && s.frames.length); if (last) select(last.n, false); } };
+
+// ---- GUMI teleop: one unit per press, hold to repeat; two arms: one synchronized pair per step.
+const UNIT_LABEL = { MV_FWD: "FWD", MV_BACK: "BACK", MV_LEFT: "LEFT", MV_RIGHT: "RIGHT", MV_UP: "UP", MV_DOWN: "DOWN",
+  ROTATE_CCW: "CCW", ROTATE_CW: "CW", GRASP: "GRASP", RELEASE: "RELEASE", STOP: "", STILL: "STILL" };
+const KEYS_SINGLE = { KeyW: "MV_FWD", KeyS: "MV_BACK", KeyA: "MV_LEFT", KeyD: "MV_RIGHT", KeyQ: "MV_UP", KeyE: "MV_DOWN",
+  ArrowUp: "MV_UP", ArrowDown: "MV_DOWN", ArrowLeft: "MV_LEFT", ArrowRight: "MV_RIGHT",
+  KeyZ: "ROTATE_CCW", KeyX: "ROTATE_CW", KeyG: "GRASP", KeyR: "RELEASE" };
+const KEYS_DUAL = {
+  KeyW: ["left", "MV_FWD"], KeyS: ["left", "MV_BACK"], KeyA: ["left", "MV_LEFT"], KeyD: ["left", "MV_RIGHT"],
+  KeyQ: ["left", "MV_UP"], KeyE: ["left", "MV_DOWN"], KeyZ: ["left", "ROTATE_CCW"], KeyX: ["left", "ROTATE_CW"],
+  KeyG: ["left", "GRASP"], ShiftLeft: ["left", "GRASP"], KeyR: ["left", "RELEASE"], ControlLeft: ["left", "STILL"],
+  KeyI: ["right", "MV_FWD"], KeyK: ["right", "MV_BACK"], KeyJ: ["right", "MV_LEFT"], KeyL: ["right", "MV_RIGHT"],
+  KeyU: ["right", "MV_UP"], KeyO: ["right", "MV_DOWN"], KeyN: ["right", "ROTATE_CCW"], KeyM: ["right", "ROTATE_CW"],
+  ShiftRight: ["right", "GRASP"], Period: ["right", "RELEASE"], ControlRight: ["right", "STILL"] };
+const ONE_SHOT = new Set(["GRASP", "RELEASE", "STOP", "STILL"]);
+const REPEAT_MS = 250;
+let G = null, padsKey = "", inFlight = false, timer = null;
+const held = new Map();   // key/button id -> [arm, unit], newest last
+const dual = () => G && G.arms.length > 1;
+const keyName = (code) => code.replace(/^Key/, "").replace(/^Arrow/, "").replace("Period", ".").replace("Left", "L-").replace("Right", "R-");
+
+function renderGumi(g) {
+  G = g ?? null;
+  $("teleop").hidden = !G || !G.available;
+  if (!G || !G.available) return;
+  $("tpMode").textContent = T.modes[G.mode];
+  $("tpMode").className = "badge " + (G.mode === "human" ? "warn" : G.mode === "requested" ? "run" : "meta");
+  $("tpTake").textContent = G.mode === "agent" ? T.take : G.mode === "requested" ? T.waiting : T.release;
+  $("tpRec").textContent = !G.root ? T.recDisabled : G.recording ? T.recOn(G.recording, G.steps) : T.recOff;
+  $("tpRec").className = "badge " + (G.recording ? "rec" : "meta");
+  $("tpStart").disabled = !G.root || !!G.recording;
+  $("tpSave").disabled = $("tpDiscard").disabled = !G.recording;
+  $("tpCmd").placeholder = dual() ? T.seqPlaceholderDual : T.seqPlaceholder;
+  $("tpStatus").textContent = [G.message, G.last ? `last: ${G.last}` : "", dual() ? T.helpDual : T.help].filter(Boolean).join(" · ");
+  const key = G.arms.join() + "|" + G.vocabulary.join();
+  if (key === padsKey) return;
+  padsKey = key;
+  const keymap = dual() ? KEYS_DUAL : Object.fromEntries(Object.entries(KEYS_SINGLE).map(([k, u]) => [k, [G.arms[0], u]]));
+  $("tpPads").replaceChildren(...G.arms.map((arm) => {
+    const pad = el("div", "pad"); pad.append(el("b", "", T.arms[arm] ?? arm));
+    for (const unit of G.vocabulary.filter((u) => u !== "DONE" && (u !== "STILL" || dual()))) {
+      const code = Object.keys(keymap).find((k) => keymap[k][0] === arm && keymap[k][1] === unit && !k.startsWith("Arrow"));
+      const b = el("button", "", unit === "STOP" ? T.look : UNIT_LABEL[unit] ?? unit);
+      if (code) b.append(el("kbd", "", keyName(code)));
+      b.title = unit; b.dataset.id = `btn:${arm}:${unit}`;
+      b.onpointerdown = (e) => { e.preventDefault(); press(b.dataset.id, arm, unit); };
+      b.onpointerup = b.onpointerleave = () => release(b.dataset.id);
+      pad.append(b);
+    }
+    return pad;
+  }));
+}
+function press(id, arm, unit) {
+  if (held.has(id)) return;
+  held.set(id, [arm, unit]);
+  document.querySelector(`[data-id="${CSS.escape(id)}"]`)?.classList.add("held");
+  tick();
+  timer ??= setInterval(tick, REPEAT_MS);
+}
+function release(id) {
+  held.delete(id);
+  document.querySelector(`[data-id="${CSS.escape(id)}"]`)?.classList.remove("held");
+  if (!held.size) { clearInterval(timer); timer = null; }
+}
+/** One step from what is held now: the newest unit per arm (the idle arm STILL); one request in flight. */
+async function tick() {
+  if (inFlight || !held.size || !G) return;
+  const per = {};
+  for (const [id, [arm, unit]] of held) {
+    if (unit === null) continue;
+    per[arm] = unit;
+    if (ONE_SHOT.has(unit)) held.set(id, [arm, null]);
+  }
+  if (!Object.keys(per).length) return;
+  const body = dual() ? { left: per.left ?? "STILL", right: per.right ?? "STILL" } : { unit: per[G.arms[0]] };
+  if (dual() && body.left === "STILL" && body.right === "STILL") return;
+  await gumiPost("/gumi/step", body);
+}
+async function gumiPost(path, body) {
+  inFlight = true;
+  try { const r = await post(path, body); if (r.state) renderGumi(r.state); return r; }
+  catch (err) { $("tpStatus").textContent = T.failed(err.message); }
+  finally { inFlight = false; }
+}
+$("tpSeq").onsubmit = async (e) => {
+  e.preventDefault();
+  const command = $("tpCmd").value.trim(); if (!command) return;
+  if (await gumiPost("/gumi/step", { command })) $("tpCmd").select();
+};
+$("tpTake").onclick = () => gumiPost("/gumi/control", { action: G?.mode === "agent" ? "take" : "release" });
+$("tpStart").onclick = () => gumiPost("/gumi/record", { action: "start" });
+$("tpSave").onclick = () => gumiPost("/gumi/record", { action: "save", success: $("tpSuccess").checked });
+$("tpDiscard").onclick = () => { if (confirm(T.confirmDiscard)) gumiPost("/gumi/record", { action: "discard" }); };
+const typing = (e) => ["INPUT", "TEXTAREA"].includes(e.target?.tagName) && e.target.type !== "checkbox";
+document.addEventListener("keydown", (e) => {
+  if (e.repeat || typing(e) || !$("tpKeys").checked || !G?.available || e.metaKey || e.altKey) return;
+  if (e.ctrlKey && !e.code.startsWith("Control")) return;
+  let hit = dual() ? KEYS_DUAL[e.code] : KEYS_SINGLE[e.code] ? [G.arms[0], KEYS_SINGLE[e.code]] : undefined;
+  if (!dual() && e.code === "Space") hit = [G.arms[0], G.closed[G.arms[0]] ? "RELEASE" : "GRASP"];
+  if (!hit || !G.vocabulary.includes(hit[1]) && hit[1] !== "STILL") return;
+  e.preventDefault();
+  press(`key:${e.code}`, hit[0], hit[1]);
+});
+document.addEventListener("keyup", (e) => release(`key:${e.code}`));
+window.addEventListener("blur", () => { for (const id of [...held.keys()]) release(id); });
 connect();
 </script>
 </body>

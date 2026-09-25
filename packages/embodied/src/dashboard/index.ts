@@ -22,12 +22,14 @@ import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { hostname } from "node:os";
 import { inflateSync } from "node:zlib";
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
 	MessageEndEvent,
 	MessageUpdateEvent,
 } from "@earendil-works/pi-coding-agent";
+import { type Gumi, type GumiState, gumi, observation, type Step as UnitStep } from "../gumi/index.ts";
 import { encodePng } from "../png.ts";
 import { RESULT_ENTRY, type RobotStatus, STATUS_EVENT, TASK_ENTRY } from "../robot.ts";
 
@@ -139,6 +141,9 @@ function createHub(server: Server, url: string, page: string) {
 	let images: Image[][] = [];
 	let episode: Episode | undefined;
 	let streaming = new Map<number, Item>();
+	/** GUMI teleop / recording / takeover (../gumi) of this runtime, and its latest state. */
+	let teleop: Gumi | undefined;
+	let teleopState: GumiState | undefined;
 	const callArgs = new Map<string, unknown>();
 	const callStart = new Map<string, number>();
 
@@ -146,7 +151,7 @@ function createHub(server: Server, url: string, page: string) {
 		const line = `data: ${JSON.stringify(op)}\n\n`;
 		for (const res of clients) res.write(line);
 	};
-	const snapshot = () => ({ op: "reset", episode, items, steps });
+	const snapshot = () => ({ op: "reset", episode, items, steps, gumi: teleopState });
 	const touch = () => send({ op: "episode", episode });
 	const add = (item: Omit<Item, "id">) => {
 		const full = { id: nextId++, ...item };
@@ -217,9 +222,11 @@ function createHub(server: Server, url: string, page: string) {
 	const hub = {
 		url,
 		/** Bind to a fresh runtime and rebuild the page state from its session branch. */
-		attach(nextPi: ExtensionAPI, nextCtx: ExtensionContext, status: RobotStatus | undefined) {
+		attach(nextPi: ExtensionAPI, nextCtx: ExtensionContext, status: RobotStatus | undefined, g: Gumi) {
 			pi = nextPi;
 			ctx = nextCtx;
+			teleop = g;
+			teleopState = g.state();
 			items = [];
 			steps = [];
 			images = [];
@@ -255,6 +262,7 @@ function createHub(server: Server, url: string, page: string) {
 		detach() {
 			pi = undefined;
 			ctx = undefined;
+			teleop = undefined;
 			if (episode) Object.assign(episode, { attached: false, running: false });
 			touch();
 		},
@@ -267,6 +275,34 @@ function createHub(server: Server, url: string, page: string) {
 			delete (globalThis as Record<symbol, unknown>)[HUB];
 		},
 		status: applyStatus,
+		gumiState(s: GumiState) {
+			teleopState = s;
+			send({ op: "gumi", gumi: s });
+		},
+		/** An operator step (../gumi): a timeline row with the frames it returned, like a tool result. */
+		teleopStep(label: string, unit: UnitStep, result: AgentToolResult<unknown>, isError: boolean) {
+			if (!episode) return;
+			const frames = result.content.filter((c): c is Image => c.type === "image");
+			const text = textOf(result.content);
+			const labels = observation(result)?.labels ?? [];
+			const step: Step = {
+				n: steps.length,
+				name: "operator",
+				args: unit,
+				result: clip(text, 400),
+				isError,
+				envStep: episode.envStep,
+				solved: episode.solved,
+				ms: null,
+				frames: frames.map(
+					(_, k) => labels[k]?.split(" ")[0] || (frames.length === 1 ? "image" : `image ${k + 1}`),
+				),
+			};
+			steps.push(step);
+			images.push(frames);
+			send({ op: "step", step });
+			add({ kind: "meta", text: `operator ${label}${isError ? ` failed: ${clip(text, 200)}` : ""}`, step: step.n });
+		},
 		setRunning(running: boolean) {
 			if (!episode) return;
 			episode.running = running;
@@ -389,6 +425,20 @@ function createHub(server: Server, url: string, page: string) {
 				} else pi.sendUserMessage(text, ctx.isIdle() ? undefined : { deliverAs: "steer" });
 				return reply(202, { ok: true, steered: !ctx.isIdle() });
 			}
+			// GUMI (../gumi): teleop steps, the rollout recorder, and takeover from the agent.
+			if (url.pathname.startsWith("/gumi/") && teleop) {
+				const g = teleop;
+				try {
+					if (url.pathname === "/gumi/step") return reply(200, await g.step(body));
+					if (url.pathname === "/gumi/record")
+						return reply(200, g.record(String(body.action ?? ""), body.success));
+					if (url.pathname === "/gumi/control") return reply(200, g.control(String(body.action ?? "")));
+				} catch (err) {
+					const status = (err as { status?: number }).status;
+					if (!status) throw err;
+					return reply(status, { error: (err as Error).message, state: g.state() });
+				}
+			}
 			if (url.pathname === "/interrupt") {
 				const idle = ctx.isIdle();
 				if (!idle) ctx.abort();
@@ -433,6 +483,10 @@ export default function dashboard(pi: ExtensionAPI) {
 	let hub: Hub | undefined;
 	let status: RobotStatus | undefined;
 	const on = <T>(fn: (h: Hub) => T) => (hub ? fn(hub) : undefined);
+	const teleop = gumi(pi, {
+		onState: (s) => on((h) => h.gumiState(s)),
+		onStep: (label, step, result, isError) => on((h) => h.teleopStep(label, step, result, isError)),
+	});
 	// The robot in this runtime publishes its status here; it may do so before the hub is attached.
 	pi.events.on(STATUS_EVENT, (data) => {
 		status = data as RobotStatus;
@@ -449,7 +503,7 @@ export default function dashboard(pi: ExtensionAPI) {
 			String(pi.getFlag("dashboard-language")),
 		);
 		hub = await slot[HUB];
-		hub.attach(pi, ctx, status);
+		hub.attach(pi, ctx, status, teleop);
 		if (first) {
 			if (ctx.hasUI) ctx.ui.notify(`Dashboard: ${hub.url}`, "info");
 			else console.error(`[dashboard] ${hub.url}`);

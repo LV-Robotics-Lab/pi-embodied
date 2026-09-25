@@ -12,7 +12,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -144,6 +144,20 @@ export default function robocasa(pi: ExtensionAPI) {
 	const tag = () => `${cell().task}_${cell().split}_s${cell().seed}`;
 	/** Local corpora (and exploration) key the seed-0 reference by split; the published HF corpus does not. */
 	const local = () => pi.getFlag("memory-profile") === "local" || pi.getFlag("explore") === true;
+	/**
+	 * The current task's published files that exist: RLinf/RPent-memory main keeps them under task_only/, the
+	 * Target50 snapshot (551fc31) under results/ with a recipe_ prefix.
+	 */
+	const hfMemoryFiles = () => {
+		const t = cell().task;
+		const files = [
+			...[`${t}_s0.json`, `${t}_s0_recipe.jsonl`, `${t}.md`].map((f) => `task_only/${f}`),
+			...[`${t}_s0.json`, `recipe_${t}_s0.jsonl`, `${t}.md`].map((f) => `results/${f}`),
+		]
+			.map((f) => robot.mem!.render(`{{memory_dir}}/${f}`))
+			.filter((f) => existsSync(f));
+		return files.length ? files.map((f) => `- ${f}`).join("\n") : "(none: this task has no published memory)";
+	};
 	const robot = defineRobot(pi, {
 		name: "robocasa",
 		task: ["task-name", "split", "seed"],
@@ -176,7 +190,9 @@ export default function robocasa(pi: ExtensionAPI) {
 				task_name: cell().task,
 				split: cell().split,
 				seed: cell().seed,
-				memory: explore ? "" : mem.render(MEMORY[mem.profile], { task_name: cell().task }).trim(),
+				memory: explore
+					? ""
+					: mem.render(MEMORY[mem.profile], { task_name: cell().task, memory_files: hfMemoryFiles() }).trim(),
 				success_criteria: criteria,
 				reset_mode: explore
 					? "`reset` restarts the episode with a freshly sampled scene; re-run perception after it."

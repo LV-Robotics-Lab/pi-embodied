@@ -15,11 +15,11 @@ two loaded extensions that register the same flag or tool, so they cannot all be
 
 | Robot | Extension | Success signal | Shared modules |
 | --- | --- | --- | --- |
-| LIBERO / LIBERO-PRO | `src/libero` | LIBERO `terminated` | memory, explore, video, flywheel, operator, Flash |
+| LIBERO / LIBERO-PRO | `src/libero` | LIBERO `terminated` | memory, explore, video, flywheel, operator, Flash, units |
 | RoboCasa | `src/robocasa` | `env._check_success()` | memory, explore, video |
 | RoboTwin | `src/robotwin` | `eval_success` | memory, explore, video |
-| Franka (real) | `src/franka` | operator verdict (`--operator`) | memory guard, operator |
-| Dual Franka (real) | `src/dual_franka` | operator verdict (required) | memory guard, operator |
+| Franka (real) | `src/franka` | operator verdict (`--operator`) | memory guard, operator, units |
+| Dual Franka (real) | `src/dual_franka` | operator verdict (required) | memory guard, operator, units |
 
 Shared modules:
 
@@ -37,6 +37,17 @@ Shared modules:
   LIBERO-only schema (default root `~/.pi/embodied/datacollection`), with LeRobot export
   (LIBERO only; `/flywheel-export` runs `pi_embodied_services.flywheel` with `--flywheel-python`,
   default `--python`; LeRobot needs its own venv, see services/README.md).
+- `src/units/`: Show-Harness action units. `--units=true` hides the robot's tools: the model drives
+  the arm with `act` (one unit: MV_FWD/BACK/LEFT/RIGHT/UP/DOWN, ROTATE_CW/CCW where the robot has
+  yaw, GRASP, RELEASE, STOP, DONE; optional repeat `n`), `finish`, and the plugins' `point` / `plan`,
+  under the ported zero-shot prompt. `--units=both` adds `act` (and `point` / `plan`) to the robot's
+  tools and appends the units section to its prompt. `--stateless` keeps only the task and the latest
+  observation turn (the paper's no-history setting). `--units-plugins` (default: Show-Harness's
+  zero-shot Franka set `recovery,auto_release,proprioception,variable_step,action_chunk,rotation,plan`;
+  `point` is opt-in) picks the plugins; `--units-coarse-step` is variable_step's coarse step. A robot
+  opts in with `units` in its spec (base-frame unit vectors, step, optional yaw step, `apply`,
+  `state`); the moves go through its own safety checks (Franka and dual Franka: `--max-move`,
+  `--workspace-xy`, `--z-floor`).
 - `src/dashboard/`: live web dashboard (`--dashboard`) for any robot.
 - `src/libero/flash.ts`: Flash replay without an LLM (`--model flash/replay`).
 

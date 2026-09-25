@@ -1,0 +1,65 @@
+# AgileX Piper, one arm of the Show-Harness dual rig (configs/robot_piper.yaml,
+# configs/site/piper_arms.yaml, configs/primitives_piper.yaml).
+#
+# The server refuses to start until calibration.z_floor_m is set (or
+# limits.enable_z_floor is false), and refuses reset until begin_joints is set.
+# Copy this file, calibrate on the hardware, and pass it with --robot-config.
+
+arm: left            # ROS topic namespace: /puppet/joint_left, /puppet/pos_cmd_left, ...
+
+ros:
+  feedback_timeout_s: 5.0    # wait for the first arm feedback on start
+  max_feedback_age_s: 0.5    # older feedback = dead node / CAN: refuse to act
+
+cameras:             # sensor_msgs/Image topics from astra_camera multi_camera.launch
+  front: /camera_f/color/image_raw
+  wrist: /camera_l/color/image_raw    # /camera_r/color/image_raw for the right arm
+  max_age_s: 1.0
+  connect_timeout_s: 10.0
+  image_size: 256    # square letterbox for the model (Show-Harness camera_resolution); 0 = native
+
+calibration:         # !! CAPTURE ON HARDWARE !!
+  # Rest the closed gripper on the tabletop and copy z from /puppet/end_pose_euler_<arm>.
+  z_floor_m: null
+  # 6 joint angles (rad) from /puppet/joint_<arm> position[0:6]. Show-Harness's left
+  # rig begin pose was [-0.44299, 0.85654, -0.9814, 0.02017, 0.92179, 0.0] (example only).
+  begin_joints: null
+  rest_joints: null
+
+limits:
+  enable_z_floor: true
+  workspace_min: null        # optional base-frame box [x, y, z] (m); both or neither
+  workspace_max: null
+  max_step_m: 0.05           # largest translation one call may command (Show-Harness clamp)
+  max_yaw_rad: 0.2           # largest |yaw| one call may command
+  speed_mps: 0.05            # joint-stream Cartesian speed (Show-Harness constant-rate ~5 cm/s)
+  yaw_speed_radps: 0.5
+  reset_time_s: 4.0          # joint-space move to begin/rest
+
+gripper:             # Piper stroke ~0.07 m; measure on the unit
+  open_width_m: 0.07
+  empty_width_m: 0.005       # a close that ends at/below this caught nothing -> reopen; null disables
+  close_threshold_m: 0.06
+  grasp_open_width_m: 0.055
+  settle_s: 1.5
+  min_settle_s: 0.5
+
+motion:
+  backend: joint_stream      # joint_stream (MOVE J stream, smooth) | endpose (MOVE P)
+  joint_stream_hz: 50
+  ori_flex_deg: 15           # orientation bend the IK may use to keep a target reachable
+  settle_steps: 6
+  settle_dt_s: 0.1
+  divergence_resync_m: 0.06
+  divergence_resync_rad: null   # null = 1.5 x max_yaw_rad
+  # Frame of the action-unit moves: heading = Show-Harness motion_frame: wrist (+X along
+  # the gripper's horizontal heading); base = the primitives vectors as base-frame axes.
+  units_frame: heading
+
+tasks:               # --task <name>
+  banana_plate:
+    instruction: "Pick up the banana and place it on the plate"
+    success_criteria: "The banana rests on the plate and the gripper is open."
+  block_plate:
+    instruction: "Pick up the block and place it on the plate"
+    success_criteria: "The block rests on the plate and the gripper is open."

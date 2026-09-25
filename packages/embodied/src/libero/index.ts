@@ -15,8 +15,9 @@ import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
 import { decodePngChannel, encodePng } from "../png.ts";
-import { defineRobot, median, SERVICES } from "../robot.ts";
+import { defineRobot, mark, median, SERVICES } from "../robot.ts";
 import { NdArray, RpcClient } from "../rpc.ts";
+import type { Move } from "../units/index.ts";
 import { registerFlash } from "./flash.ts";
 
 const read = (name: string) => readFileSync(new URL(name, import.meta.url), "utf8");
@@ -47,6 +48,10 @@ const PRIMITIVES = [
 ];
 const TOOLS = [...PRIMITIVES, "view_env_state", "view_camera_meta", "segment", "back_project", "finish"];
 const CAMERAS = { agentview: "agentview", wrist: "robot0_eye_in_hand" } as const;
+/** Units mode (../units): how the two images look, and which way each unit moves in them. */
+const VIEWS = `Each result shows the agentview, then the wrist view (verified in LIBERO: MV_FWD is world +x, MV_LEFT is -y).
+- Agentview (first image) faces the robot, whose base is at the image top: MV_LEFT / MV_RIGHT move the gripper toward the image left / right, MV_FWD toward the image bottom (toward the camera), MV_BACK toward the image top.
+- Wrist view (second image) looks straight down from the gripper; the two fingers are at the image bottom corners and the grasp point is between them, at the horizontal center just above the fingers. It is turned half around relative to the agentview: MV_FWD moves toward the wrist image TOP, MV_BACK toward its bottom, MV_LEFT toward its RIGHT and MV_RIGHT toward its LEFT. So a target above the grasp point in the wrist image needs MV_FWD, one to its right needs MV_LEFT.`;
 type Camera = keyof typeof CAMERAS;
 type Obs = { main_images: NdArray; wrist_images?: NdArray | null; states: NdArray };
 type StepReturn = [Obs, unknown, boolean | NdArray, boolean | NdArray, unknown];
@@ -111,6 +116,10 @@ export default function libero(pi: ExtensionAPI) {
 	let truncated = false;
 	let envStep = 0;
 	let language = "";
+	/** The gripper command units mode holds between units: -1 open, +1 closed. */
+	let grip = -1;
+	/** The table (or floor) height in front of the robot, for units' proprioception and variable_step. */
+	let tableZ: number | undefined;
 	const worldMaps = new Map<string, WorldMap>();
 
 	const tag = () => `${robot.task.suite.replace(/^libero_/, "")}_t${robot.task.task}_s${robot.task.seed}`;
@@ -159,6 +168,29 @@ export default function libero(pi: ExtensionAPI) {
 			env_steps: envStep,
 		}),
 		status: () => ({ language, step: envStep, solved: terminated }),
+		units: {
+			vectors: {
+				MV_FWD: [1, 0, 0],
+				MV_BACK: [-1, 0, 0],
+				MV_LEFT: [0, -1, 0],
+				MV_RIGHT: [0, 1, 0],
+				MV_UP: [0, 0, 1],
+				MV_DOWN: [0, 0, -1],
+			},
+			stepM: 0.02,
+			yawStepRad: 0.15,
+			apply: (move) => unitStep(move),
+			state: async () => ({
+				eef_xyz: eef().map((v) => round(v)),
+				gripper_width: round(gripper()),
+				...(tableZ === undefined ? {} : { table_z: tableZ }),
+			}),
+			instruction: () => language,
+			views: VIEWS,
+			// Measured: fingers closed on nothing read <= 0.003 (sum of both finger joints); a held can reads ~0.06.
+			emptyWidthM: 0.004,
+			point: { cameras: ["agentview", "wrist"], locate: (camera, points) => locate(camera as Camera, points) },
+		},
 		finish: {
 			description:
 				"End the episode after checking the latest state. Success is LIBERO's terminated flag, not this call.",
@@ -253,8 +285,10 @@ export default function libero(pi: ExtensionAPI) {
 	async function resetEpisode() {
 		worldMaps.clear();
 		terminated = truncated = false;
+		grip = -1;
 		envStep = 0;
 		[obs] = await call<[Obs, unknown]>(env, "env.reset", {}, 300_000);
+		tableZ = await surfaceZ().catch(() => undefined);
 	}
 
 	async function render(camera: Camera, size: number, depth: boolean) {
@@ -824,6 +858,81 @@ export default function libero(pi: ExtensionAPI) {
 		},
 		false,
 	);
+
+	/**
+	 * One action unit (../units): drive the gripper, servo the EEF to its current position plus
+	 * `delta` (holding the gripper command), turn the wrist by `yaw`, or hold one step (STOP).
+	 */
+	async function unitStep(move: Move) {
+		if (terminated || truncated)
+			return {
+				content: [{ type: "text" as const, text: `Episode already ended (terminated=${terminated}).` }],
+				details: { terminated, truncated },
+			};
+		let steps = 0;
+		if (move.gripper) {
+			grip = move.gripper === "close" ? 1 : -1;
+			// Until the fingers stop moving (they stop on a grasped object), at most 15 steps.
+			for (let prev = Number.NaN; steps < 15 && !terminated && !truncated; ) {
+				await step([0, 0, 0, 0, 0, 0, grip]);
+				steps++;
+				if (steps > 3 && Math.abs(gripper() - prev) < 5e-4) break;
+				prev = gripper();
+			}
+		}
+		if (Math.hypot(...move.delta) > 0) {
+			const target = eef().map((v, i) => v + move.delta[i]);
+			for (let k = 0; k < 25 && !terminated && !truncated; k++) {
+				const diff = target.map((v, i) => v - eef()[i]);
+				if (Math.hypot(...diff) < 0.004) break;
+				await step([...diff.map((d) => clip(clip(d, -0.025, 0.025) / 0.05, -1, 1)), 0, 0, 0, grip]);
+				steps++;
+			}
+		}
+		if (move.yaw) steps += (await rotate("yaw", undefined, move.yaw, grip, 25, 0.02, 0.1)).steps_used as number;
+		if (!move.gripper && !Math.hypot(...move.delta) && !move.yaw) {
+			await step([0, 0, 0, 0, 0, 0, grip]);
+			steps++;
+		}
+		return observe({
+			name: "act",
+			steps_used: steps,
+			eef_pos: eef().map((v) => round(v)),
+			gripper: round(gripper()),
+		});
+	}
+
+	/** Median world z of the agentview's bottom-center strip: the table or floor surface nearest the camera. */
+	async function surfaceZ() {
+		const map = await worldMap("agentview", 256);
+		const z: number[] = [];
+		for (let r = 218; r < 256; r++)
+			for (let c = 77; c < 179; c++) {
+				const v = map.xyz[(r * 256 + c) * 3 + 2];
+				if (Number.isFinite(v)) z.push(v);
+			}
+		return z.length ? round(median(z)) : undefined;
+	}
+
+	/** Affordance points (../units `point`): the marked 1024 image and world xyz (median of a 7x7 window). */
+	async function locate(camera: Camera, points: [number, number][]) {
+		const map = await worldMap(camera, 1024);
+		let rgb: Buffer = map.rgb;
+		const xyz = points.map(([fy, fx]) => {
+			const row = clip(Math.round(fy * 1023), 0, 1023);
+			const col = clip(Math.round(fx * 1023), 0, 1023);
+			rgb = mark({ width: 1024, height: 1024, rgb }, row, col, [255, 32, 32]);
+			const pts: number[][] = [];
+			for (let r = Math.max(0, row - 3); r <= Math.min(1023, row + 3); r++)
+				for (let c = Math.max(0, col - 3); c <= Math.min(1023, col + 3); c++) {
+					const i = (r * 1024 + c) * 3;
+					const p = [map.xyz[i], map.xyz[i + 1], map.xyz[i + 2]];
+					if (p.every(Number.isFinite) && Math.abs(p[0]) + Math.abs(p[1]) + Math.abs(p[2]) > 1e-6) pts.push(p);
+				}
+			return pts.length < 5 ? null : [0, 1, 2].map((k) => round(median(pts.map((p) => p[k]))));
+		});
+		return { image: encodePng(rgb, 1024, 1024), xyz };
+	}
 
 	/** Start (or attach to) the env server and restore the initial scene; returns the tools to activate. */
 	async function startEpisode() {

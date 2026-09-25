@@ -12,15 +12,19 @@
  * Each anchor is re-read the way it was recorded: `segment` anchors by SAM3 (the segment tool), the
  * rest by Molmo pointing in the opening agentview image, profiled through back_project; the arm
  * then parks over each Molmo anchor and asks again from the wrist, kept only within 5 cm of the
- * coarse reading. Waypoints are replayed as offsets from their live anchor.
+ * coarse reading. Waypoints are replayed as offsets from their live anchor. With `--molmo off` nothing is
+ * pointed at: point anchors stay where they were recorded and picks keep their recorded thresholds
+ * without retries, so the plan replays its recorded calls verbatim (meaningful only on the recorded seed).
  *
- * Plans live in `--flash-plans` (default memory/libero/flash) as `<family>_<suite>_t<task>_{plan,anchors}.json`,
- * from flash-generate.ts or the HF memory dataset. Molmo runs in its own env:
- * `python -m pi_embodied_services.components.molmo_server` (see services/README.md).
+ * Plans are `<family>_<suite>_t<task>_{plan,anchors}.json` in `--flash-plans`, else in the LIBERO memory root
+ * (`--memory-dir`, or the synced HF memory) under `flash/` (flash-generate.ts) or `task_card/` (the HF
+ * dataset). Molmo runs in its own env: `python -m pi_embodied_services.components.molmo_server` (see
+ * services/README.md).
  */
 
-import { readFileSync } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 import {
 	type Api,
 	type AssistantMessage,
@@ -111,7 +115,7 @@ function load(dir: string, name: string): Program {
  */
 async function replay(
 	act: (calls: Call[]) => Promise<Reply[]>,
-	molmo: RpcClient,
+	molmo: RpcClient | undefined,
 	program: Program,
 	note: (s: string) => void,
 ) {
@@ -130,7 +134,7 @@ async function replay(
 
 	/** Molmo's point for `query` in a 1024 camera image, as [col, row] in that image. */
 	async function point(image: string | undefined, query: string): Promise<XY | undefined> {
-		if (!image) return undefined;
+		if (!image || !molmo) return undefined;
 		const res = await molmo.call<{ point_xy?: number[]; image_size?: number[] }>(
 			"molmo.ground",
 			{ image_base64: image, query },
@@ -190,8 +194,11 @@ async function replay(
 			const w = r.error === undefined ? worldOf(r.json) : undefined;
 			if (!w) note(`${phrase} segmentation failed: ${r.error ?? r.json.error ?? "no world_xyz"}`);
 			xy = w ? [w[0], w[1]] : undefined;
-		} else {
+		} else if (molmo) {
 			xy = await locate("agentview", PROMPTS.survey(phrase));
+		} else {
+			xy = reference.get(phrase);
+			note(`${phrase} kept at its recorded position (no Molmo)`);
 		}
 		if (!xy || Math.max(Math.abs(xy[0]), Math.abs(xy[1])) > REACH) {
 			note(`${phrase} not located, or out of reach`);
@@ -209,7 +216,7 @@ async function replay(
 		return (s.action === "move_to" || s.action === "move_pose") && Number.isFinite(z) ? [z] : [];
 	});
 	const hover = zs.length ? Math.max(...zs) : 0.72;
-	for (const [phrase, coarse] of [...live]) {
+	for (const [phrase, coarse] of molmo ? [...live] : []) {
 		if (locatorOf.get(phrase) === "segment") continue;
 		try {
 			await move("move_to", {
@@ -276,9 +283,9 @@ async function replay(
 		} else if (name === "pi0_pick" || name === "pi0_doubled") {
 			const stripped = String(args.prompt ?? "").replace(/^(pick up|grasp)\s+the\s+/i, "");
 			heldPhrase = stripped.split(/\b(?:on|in|into|inside|by|and)\b/)[0].trim();
-			if (name === "pi0_pick") Object.assign(args, FLASH_PICK_THRESHOLDS);
+			if (name === "pi0_pick" && molmo) Object.assign(args, FLASH_PICK_THRESHOLDS);
 			let result = await move(name, args);
-			if (name === "pi0_pick" && result.success !== true) {
+			if (name === "pi0_pick" && molmo && result.success !== true) {
 				for (let attempt = 1; attempt < PICK_ATTEMPTS && !finished(); attempt++) {
 					for (const again of recent) await move(again.name, { ...again.arguments });
 					result = await move(name, { ...args });
@@ -351,11 +358,14 @@ const MODEL: Model<"flash"> = {
 
 /** Register the `flash/replay` model on the LIBERO extension; `cell` reads its --suite and --task. */
 export function registerFlash(pi: ExtensionAPI, cell: () => { suite: string; task: string }) {
-	pi.registerFlag("molmo", { type: "string", default: "http://127.0.0.1:18400", description: "Molmo server" });
+	pi.registerFlag("molmo", {
+		type: "string",
+		default: "http://127.0.0.1:18400",
+		description: "Molmo server, or off to replay point anchors at their recorded positions",
+	});
 	pi.registerFlag("flash-plans", {
 		type: "string",
-		default: "memory/libero/flash",
-		description: "Directory of Flash plans",
+		description: "Directory of Flash plans (default: <memory>/libero/flash, then task_card)",
 	});
 
 	type Turn = { text: string; calls: ToolCall[] };
@@ -415,11 +425,16 @@ export function registerFlash(pi: ExtensionAPI, cell: () => { suite: string; tas
 			const match = SUITE.exec(suite);
 			if (!match) throw new Error(`Flash plans cover libero_{10,goal,object,spatial}_{task,swap}, not ${suite}`);
 			const program = `${match[1]}_${match[2]}_t${task}`;
-			const dir = String(pi.getFlag("flash-plans") ?? "");
-			const plans = isAbsolute(dir) ? dir : resolve(cwd, dir);
-			const loaded = load(plans, program);
-			const molmo = new RpcClient(String(pi.getFlag("molmo") ?? ""));
-			await molmo.ready(30_000);
+			const flag = pi.getFlag("flash-plans");
+			const memory =
+				(pi.getFlag("memory-dir") as string | undefined) ||
+				join(process.env.PI_EMBODIED_MEMORY || join(homedir(), ".pi", "embodied", "memory"), "libero");
+			const dirs = flag ? [String(flag)] : ["flash", "task_card"].map((d) => join(memory, d));
+			const plans = dirs.map((d) => resolve(cwd, d));
+			const loaded = load(plans.find((d) => existsSync(join(d, `${program}_plan.json`))) ?? plans[0], program);
+			const endpoint = String(pi.getFlag("molmo") ?? "");
+			const molmo = endpoint && endpoint !== "off" ? new RpcClient(endpoint) : undefined;
+			await molmo?.ready(30_000);
 			notes.push(`replaying the ${program} program`);
 			const out = await replay(act, molmo, loaded, (s) => notes.push(s));
 			status = out.done ? "success" : "failure";

@@ -49,6 +49,7 @@ import {
 	vec,
 } from "../robot.ts";
 import { NdArray, type RpcClient } from "../rpc.ts";
+import type { Move } from "../units/index.ts";
 
 const SYSTEM = readFileSync(new URL("./SYSTEM.md", import.meta.url), "utf8");
 
@@ -203,6 +204,18 @@ export default function franka(pi: ExtensionAPI) {
 		default: "0.1",
 		description: "Largest move_delta per call, m (a task's documented limit applies if tighter)",
 	});
+	pi.registerFlag("workspace-xy", {
+		type: "string",
+		default: "0.159,1.159,-0.456,0.544",
+		description:
+			"TCP x/y box for move_delta and units, m: xmin,xmax,ymin,ymax (default: example.yaml's ee_pose_limit; '' = off)",
+	});
+	pi.registerFlag("z-floor", {
+		type: "string",
+		default: "",
+		description:
+			"Lowest TCP z for move_delta and units, m; also the table height for units' proprioception ('' = off; Show-Harness's empty-table floor is 0.14)",
+	});
 	pi.registerFlag("max-rotate", {
 		type: "string",
 		default: "0.5",
@@ -244,6 +257,24 @@ export default function franka(pi: ExtensionAPI) {
 		},
 		result: () => ({ task: Number(task()), task_name: setup?.task.name ?? null, steps: steps.length, out }),
 		status: () => ({ step: steps.length - 1 }),
+		units: {
+			// Show-Harness configs/primitives_franka.yaml (base frame: MV_LEFT is base -y).
+			vectors: {
+				MV_FWD: [1, 0, 0],
+				MV_BACK: [-1, 0, 0],
+				MV_LEFT: [0, -1, 0],
+				MV_RIGHT: [0, 1, 0],
+				MV_UP: [0, 0, 1],
+				MV_DOWN: [0, 0, -1],
+			},
+			stepM: 0.02,
+			yawStepRad: 0.15,
+			apply: (move, signal) => unitStep(move, signal),
+			state: unitState,
+			instruction: () => setup?.task.instruction ?? "",
+			// Show-Harness plugins/recovery: a closed Franka gripper at or below 1 mm holds nothing.
+			emptyWidthM: 0.001,
+		},
 		finish: {
 			description:
 				"Call when the task is complete or unrecoverable. Halts the agent loop. Save any artifacts (recipe, audit) BEFORE calling finish.",
@@ -373,37 +404,88 @@ export default function franka(pi: ExtensionAPI) {
 		run: (p: Static<P>, signal: AbortSignal | undefined, ctx: ExtensionContext) => Promise<Json>,
 		mutating = true,
 	) {
-		robot.tool(name, description, parameters, outcome);
+		robot.tool(name, description, parameters, (params, signal, ctx) =>
+			outcome(name, params as Json, () => run(params, signal, ctx), mutating),
+		);
+	}
 
-		async function outcome(params: Static<P>, signal: AbortSignal | undefined, ctx: ExtensionContext) {
-			if (!env || !steps.length) return toolResult({ error: "robot not initialized; see the session start error" });
-			const started = performance.now();
-			let result: Json;
-			let failed = false;
-			try {
-				result = await run(params, signal, ctx);
-			} catch (err) {
-				result = { error: message(err) };
-				failed = true;
-			}
-			if (!mutating) {
-				const { _pngs, ...rest } = result;
-				return toolResult(rest, _pngs ?? []);
-			}
-			const elapsed = round((performance.now() - started) / 1000, 2);
-			try {
-				const { output, pngs } = view(await dumpState({ action: name, ...params }, result, elapsed));
-				output.agent_elapsed_s = elapsed;
-				if (failed) for (const [k, v] of Object.entries(result)) output[k] ??= v;
-				return toolResult(output, pngs);
-			} catch (err) {
-				return toolResult({
-					...result,
-					state_capture_error: message(err),
-					error: result.error ?? `failed to capture state after ${name}: ${message(err)}`,
-				});
-			}
+	/** Run a tool body; a mutating one then records a fresh state step and returns it (errors included). */
+	async function outcome(name: string, params: Json, run: () => Promise<Json>, mutating = true) {
+		if (!env || !steps.length) return toolResult({ error: "robot not initialized; see the session start error" });
+		const started = performance.now();
+		let result: Json;
+		let failed = false;
+		try {
+			result = await run();
+		} catch (err) {
+			result = { error: message(err) };
+			failed = true;
 		}
+		if (!mutating) {
+			const { _pngs, ...rest } = result;
+			return toolResult(rest, _pngs ?? []);
+		}
+		const elapsed = round((performance.now() - started) / 1000, 2);
+		try {
+			const { output, pngs } = view(await dumpState({ action: name, ...params }, result, elapsed));
+			output.agent_elapsed_s = elapsed;
+			if (failed) for (const [k, v] of Object.entries(result)) output[k] ??= v;
+			return toolResult(output, pngs);
+		} catch (err) {
+			return toolResult({
+				...result,
+				state_capture_error: message(err),
+				error: result.error ?? `failed to capture state after ${name}: ${message(err)}`,
+			});
+		}
+	}
+
+	/** Refuse a move whose target leaves the --workspace-xy box or goes below --z-floor (unless it moves back in). */
+	function checkWorkspace(delta: number[]) {
+		const box = flag("workspace-xy").split(",").filter(Boolean).map(Number);
+		const floor = flag("z-floor") ? Number(flag("z-floor")) : undefined;
+		if (box.length !== 4 && floor === undefined) return;
+		if (box.length && (box.length !== 4 || !box.every(Number.isFinite)))
+			throw new Error(`--workspace-xy must be "xmin,xmax,ymin,ymax", got "${flag("workspace-xy")}"`);
+		const tcp = tcpPose(steps[steps.length - 1]);
+		const outside = (p: number[]) =>
+			(box.length === 4
+				? Math.max(0, box[0] - p[0], p[0] - box[1]) + Math.max(0, box[2] - p[1], p[1] - box[3])
+				: 0) + (floor !== undefined ? Math.max(0, floor - p[2]) : 0);
+		const target = tcp.slice(0, 3).map((v, i) => v + delta[i]);
+		if (outside(target) > 1e-6 && outside(target) >= outside(tcp) - 1e-6)
+			throw new Error(
+				`the move ends at [${roundAll(target, 3)}], outside the workspace (x ${box[0]}..${box[1]}, y ${box[2]}..${box[3]}${floor !== undefined ? `, z >= ${floor}` : ""} m; --workspace-xy / --z-floor)`,
+			);
+	}
+
+	/** Units mode (../units): one grounded action unit on the existing move primitives. */
+	function unitStep(move: Move, signal: AbortSignal | undefined) {
+		return outcome("act", { move }, async () => {
+			check(signal);
+			const out: Json = {};
+			if (move.gripper) out.gripper = await motion("env.set_gripper", { open: move.gripper === "open" }, signal);
+			if (Math.hypot(...move.delta) > 0) {
+				checkMove(move.delta, Number(flag("max-move", "0.1")), setup?.task.constraints);
+				checkWorkspace(move.delta);
+				out.move = await motion("env.move_delta", { delta_xyz: NdArray.f32(move.delta) }, signal);
+			}
+			if (move.yaw)
+				out.rotate = await motion("env.rotate_delta", { delta_rpy: NdArray.f32([0, 0, move.yaw]) }, signal);
+			return out;
+		});
+	}
+
+	/** Proprioception for units mode: TCP position and gripper width from the latest state step. */
+	async function unitState(): Promise<Json> {
+		const base = steps[steps.length - 1]?.blob.state?.raw_base_state ?? {};
+		const width = vec(base.gripper_position);
+		return {
+			eef_xyz: roundAll(vec(base.tcp_pose).slice(0, 3)),
+			...(width.length ? { gripper_width: round(width[0]) } : {}),
+			gripper_open: base.gripper_open ?? null,
+			...(flag("z-floor") ? { table_z: Number(flag("z-floor")) } : {}),
+		};
 	}
 
 	const stepParam = Type.Optional(Type.Integer({ description: "State step (default -1 = latest)" }));
@@ -767,6 +849,7 @@ export default function franka(pi: ExtensionAPI) {
 			check(signal);
 			const delta = vec3(delta_xyz, "delta_xyz");
 			checkMove(vec(delta_xyz), Number(flag("max-move", "0.1")), setup?.task.constraints);
+			checkWorkspace(vec(delta_xyz));
 			return motion("env.move_delta", { delta_xyz: delta }, signal);
 		},
 	);

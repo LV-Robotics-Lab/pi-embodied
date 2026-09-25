@@ -1,45 +1,67 @@
 #!/usr/bin/env bash
 # Run RoboCasa Target50 episodes with pi in print mode and report RoboCasa-judged success
-# (`state.success`). The matrix (splits, tasks, seeds, per-split cell timeouts) comes from
-# services/pi_embodied_services/robots/robocasa/eval/target50.json (TARGET50 overrides it), and
-# every episode runs under the frozen RLDX settings below.
+# (`state.success`). The matrix (splits, tasks, seeds, per-split cell timeouts), the frozen RLDX
+# settings and the task-memory revision come from
+# services/pi_embodied_services/robots/robocasa/eval/target50.json (TARGET50 overrides it).
 #   eval.sh <out-dir> <splits|all> [pi args...]
 #   eval.sh runs/t50 all --model openai/gpt-5.5 --thinking xhigh --memory-profile local --memory-dir target50-memory/robocasa
 # TASKS=OpenDrawer,CloseFridge and SEEDS=1,2 narrow the matrix.
 #
-# Each episode runs in <out>/<split>/<Task>_s<seed>/ and ends with a result.json taken from the
-# session's `robot_result` entry. An episode is valid when the environment produced a result and
-# the planner did not fail (`env_error`, `planner_error` and a missing result are invalid),
-# whatever the outcome. Rerunning retries exactly the invalid episodes; valid ones are kept.
-# Each result records the model, thinking level and --max-turns, and the summary covers only the requested
-# cells and refuses to mix configurations. Rates are per split and task-weighted (the mean of
-# per-task rates, the RoboCasa365 convention).
+# Each episode runs in <out>/<split>/<Task>_s<seed>/ and ends with a result.json in the Target50
+# result schema (schema_version, protocol_id, evaluation_split, valid, success_source,
+# termination_reason, planner, runtime), built from the session's `robot_result` entry. The planner
+# is recorded as it ran: backend "pi", the model without its provider prefix, --thinking as
+# reasoning_effort, --max-turns.
+#
+# An episode is valid when the environment produced a result and the planner did not fail
+# (`env_error`, `planner_error`, a missing or duplicate result and a killed process are invalid,
+# termination_reason `infrastructure_error`), whatever the outcome. A spent --time-limit or
+# --max-turns budget is a valid planner_timeout. Rerunning retries exactly the invalid episodes
+# (the manifest's retry_policy); valid ones are kept, and results of another configuration are refused.
+#
+# The summary is task-weighted per split. A full run (all splits, no TASKS/SEEDS) is also scored by
+# validate_target50.py (services/.../robocasa/eval) against <out>/target50.pi.json: the manifest with planner_reference
+# replaced by the planner that actually ran, everything else (protocol, matrix, timeouts, RLDX
+# settings, success source) unchanged. That validator's `overall.success_rate` is the Target50 score.
 set -uo pipefail
 out=$1 splits=$2
 shift 2
 here=$(cd "$(dirname "$0")" && pwd)
 SERVICES=${PI_EMBODIED_SERVICES:-$(cd "$here/../../../../services" && pwd)}
 manifest=${TARGET50:-$SERVICES/pi_embodied_services/robots/robocasa/eval/target50.json}
+validator=$SERVICES/pi_embodied_services/robots/robocasa/eval/validate_target50.py
 PI=${PI:-pi}
-MAX_TURNS=${MAX_TURNS:-100}
+PY=${PI_EMBODIED_PYTHON:-python3}
 [ "$splits" = all ] && splits=atomic,composite_seen,composite_unseen
-model="" thinking="" turns=$MAX_TURNS
+full=""
+[ "$splits" = atomic,composite_seen,composite_unseen ] && [ -z "${TASKS:-}${SEEDS:-}" ] && full=1
+model="" thinking="" turns=${MAX_TURNS:-100}
 args=("$@")
 for ((i = 0; i < ${#args[@]}; i++)); do
 	case ${args[i]} in
 	--model) model=${args[i + 1]:-} ;;
 	--thinking) thinking=${args[i + 1]:-} ;;
+	--max-turns) turns=${args[i + 1]:-0} ;;
 	--model=*) model=${args[i]#*=} ;;
 	--thinking=*) thinking=${args[i]#*=} ;;
+	--max-turns=*) turns=${args[i]#*=} ;;
 	esac
 done
-export RLDX_MAX_CHUNKS=40 RLDX_SETTLE_PATIENCE=999 RLDX_ACTION_STEPS_PER_CHUNK=8
+protocol() { # <expr>: a value from the manifest
+	node -e 'const m = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); console.log(eval(process.argv[2]))' "$manifest" "$1"
+}
+export RLDX_MAX_CHUNKS=$(protocol m.runtime_protocol.rldx_max_chunks)
+export RLDX_SETTLE_PATIENCE=$(protocol m.runtime_protocol.rldx_settle_patience)
+export RLDX_ACTION_STEPS_PER_CHUNK=$(protocol m.runtime_protocol.rldx_action_steps_per_chunk)
 unset RLDX_RESET_SEED
+# The protocol pins the task-memory snapshot (hf profile); PI_EMBODIED_MEMORY_REVISION overrides it.
+export PI_EMBODIED_MEMORY_REVISION=${PI_EMBODIED_MEMORY_REVISION:-$(protocol m.dependencies.task_memory.revision)}
 
-record() { # <dir> <exit code>: write result.json from the episode's session
+record() { # <dir> <exit code> <split> <task> <seed> <cell timeout> <elapsed s>: write result.json
 	node --input-type=module -e '
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
-const [dir, code, model, thinking, turns] = process.argv.slice(1);
+const [dir, code, manifest, split, task, seed, limit, elapsed, model, thinking, turns] = process.argv.slice(1);
+const m = JSON.parse(readFileSync(manifest, "utf8"));
 const results = [];
 for (const f of readdirSync(dir).filter((f) => f.endsWith(".jsonl"))) {
 	for (const line of readFileSync(`${dir}/${f}`, "utf8").split("\n")) {
@@ -49,22 +71,59 @@ for (const f of readdirSync(dir).filter((f) => f.endsWith(".jsonl"))) {
 	}
 }
 const last = results.length === 1 ? results[0] : undefined;
-const status = Number(code) === 124 ? "timeout" : results.length > 1 ? "duplicate_result"
+const killed = Number(code) === 124 || Number(code) === 137;
+const status = killed ? "timeout" : results.length > 1 ? "duplicate_result"
 	: !last ? (Number(code) ? "env_error" : "missing")
 	: last.env_error ? "env_error" : last.planner_error ? "planner_error" : last.success ? "success" : "failure";
-const result = { ...(last ?? {}), status, exit_code: Number(code), model: model || null, thinking: thinking || null, max_turns: Number(turns) };
+const valid = status === "success" || status === "failure";
+const slash = model.indexOf("/");
+const result = {
+	...(last ?? {}),
+	// Target50 result schema, checked by validate_target50.py.
+	schema_version: "1.0",
+	protocol_id: m.protocol_id,
+	evaluation_split: split,
+	task_name: task,
+	environment_split: m.environment_split,
+	seed: Number(seed),
+	valid,
+	success: last?.success === true,
+	success_source: m.success_source,
+	termination_reason: !valid ? "infrastructure_error" : status === "failure" && last.planner_budget_exhausted ? "planner_timeout" : "completed",
+	elapsed_s: Number(elapsed),
+	planner: {
+		backend: "pi",
+		model: (slash >= 0 ? model.slice(slash + 1) : model) || null,
+		reasoning_effort: thinking || null,
+		max_turns: Number(turns),
+	},
+	planner_provider: slash >= 0 ? model.slice(0, slash) : null,
+	runtime: {
+		cell_timeout_seconds: Number(limit),
+		rldx_max_chunks: last?.rldx_max_chunks ?? null,
+		rldx_settle_patience: last?.rldx_settle_patience ?? null,
+		rldx_action_steps_per_chunk: last?.rldx_action_steps_per_chunk ?? null,
+	},
+	// pi-embodied bookkeeping: why an episode is invalid, and the configuration reruns must match.
+	status,
+	exit_code: Number(code),
+	model: model || null,
+	thinking: thinking || null,
+	max_turns: Number(turns),
+};
 writeFileSync(`${dir}/result.json`, `${JSON.stringify(result, null, 2)}\n`);
-console.log(JSON.stringify({ status, success: result.success, claimed: result.claimed, env_steps: result.env_steps }));
-' "$1" "$2" "$model" "$thinking" "$turns"
+console.log(JSON.stringify({ status, termination_reason: result.termination_reason, success: result.success, claimed: result.claimed, env_steps: result.env_steps }));
+' "$1" "$2" "$manifest" "$3" "$4" "$5" "$6" "$7" "$model" "$thinking" "$turns"
 }
 
 valid() { # <dir>: 0 = a valid result of this configuration, 2 = a valid result of another one, 1 = none
 	node -e '
-const [path, model, thinking, turns] = process.argv.slice(1);
+const [path, protocolId, model, thinking, turns] = process.argv.slice(1);
 const r = JSON.parse(require("fs").readFileSync(path, "utf8"));
 if (r.status !== "success" && r.status !== "failure") process.exit(1);
-process.exit(r.model === (model || null) && r.thinking === (thinking || null) && r.max_turns === Number(turns) ? 0 : 2);
-' "$1/result.json" "$model" "$thinking" "$turns" 2>/dev/null
+const same = r.protocol_id === protocolId && r.model === (model || null) && r.thinking === (thinking || null) && r.max_turns === Number(turns);
+process.exit(same ? 0 : 2);
+' "$1/result.json" "$(protocol m.protocol_id)" "$model" "$thinking" "$turns" 2>/dev/null
 }
 
 cells=$(node -e '
@@ -79,21 +138,25 @@ for (const name of process.argv[2].split(",")) {
 			if ((!tasks || tasks.includes(t)) && (!seeds || seeds.includes(String(s))))
 				console.log(`${name} ${t} ${s} ${split.timeout_seconds}`);
 }' "$manifest" "$splits" "${TASKS:-}" "${SEEDS:-}") || exit 1
+[ -n "$cells" ] || { echo "no Target50 cells match splits=$splits TASKS=${TASKS:-} SEEDS=${SEEDS:-}" >&2 && exit 1; }
 
 while read -r split task seed limit; do
 	dir=$out/$split/${task}_s$seed
 	valid "$dir"
 	case $? in
 	0) continue ;;
-	2) echo "$dir holds a result of another model, thinking level or --max-turns; use another out dir" >&2 && exit 1 ;;
+	2) echo "$dir holds a result of another protocol, model, thinking level or --max-turns (or an older result format); use another out dir" >&2 && exit 1 ;;
 	esac
 	rm -rf "$dir" && mkdir -p "$dir"
 	echo "== $split $task seed $seed"
-	# --time-limit ends the planner gracefully; `timeout` is only the backstop for a hung process.
+	start=$SECONDS
+	# --time-limit ends the planner at the cell timeout (a planner_timeout); `timeout` is only the
+	# backstop for a hung process, and a killed episode is invalid.
 	timeout -k 30 $((limit + 900)) $PI -p --session-dir "$dir" -e "$here" --task-name "$task" --split target \
-		--seed "$seed" --max-turns "$MAX_TURNS" --time-limit "$limit" --log-dir "$dir" "$@" "Solve the task." \
+		--seed "$seed" --max-turns "$turns" --time-limit "$limit" --log-dir "$dir" "$@" "Solve the task." \
 		</dev/null >"$dir/stdout.log" 2>"$dir/stderr.log"
-	record "$dir" "$?"
+	code=$?
+	record "$dir" "$code" "$split" "$task" "$seed" "$limit" $((SECONDS - start))
 done <<<"$cells"
 
 node -e '
@@ -117,6 +180,7 @@ const n = (s) => rows.filter((r) => r.status === s).length;
 const rate = (ok, all) => (all ? ((100 * ok) / all).toFixed(1) : "-");
 const scored = scoredRows.length;
 const lies = rows.filter((r) => r.status === "failure" && r.claimed === "success").length;
+const timeouts = rows.filter((r) => r.termination_reason === "planner_timeout").length;
 const invalid = rows.length - scored;
 const perTask = new Map();
 for (const r of scoredRows) {
@@ -130,6 +194,36 @@ for (const split of new Set(rows.map((r) => r.split))) {
 	const ok = s.filter((r) => r.status === "success").length;
 	console.log(`${split}: success ${ok}/${s.length} (${rate(ok, s.length)}%)`);
 }
-console.log(`${[...configs][0] ?? "-"}: success ${n("success")}/${scored} (${rate(n("success"), scored)}%), task-weighted ${perTask.size ? (100 * weighted).toFixed(1) : "-"}%, claimed-but-failed ${lies}, invalid ${invalid} (env_error ${n("env_error")}, planner_error ${n("planner_error")}, timeout ${n("timeout")}, missing ${n("missing")}, duplicate ${n("duplicate_result")}) of ${rows.length}`);
+console.log(`${[...configs][0] ?? "-"}: success ${n("success")}/${scored} (${rate(n("success"), scored)}%), task-weighted ${perTask.size ? (100 * weighted).toFixed(1) : "-"}%, planner_timeout ${timeouts}, claimed-but-failed ${lies}, invalid ${invalid} (env_error ${n("env_error")}, planner_error ${n("planner_error")}, timeout ${n("timeout")}, missing ${n("missing")}, duplicate ${n("duplicate_result")}) of ${rows.length}`);
 if (invalid) process.exit(1);
 ' "$out" "$cells"
+summary=$?
+
+# The manifest with planner_reference replaced by the planner that ran; nothing else changes.
+derived=$out/target50.pi.json
+node -e '
+const fs = require("fs");
+const [manifest, derived, model, thinking, turns] = process.argv.slice(1);
+const m = JSON.parse(fs.readFileSync(manifest, "utf8"));
+const slash = model.indexOf("/");
+const ran = {
+	planner: "pi",
+	model: (slash >= 0 ? model.slice(slash + 1) : model) || null,
+	reasoning_effort: thinking || null,
+	max_turns: Number(turns),
+};
+const ref = m.planner_reference;
+if (ref.model !== ran.model || ref.reasoning_effort !== ran.reasoning_effort || ref.max_turns !== ran.max_turns)
+	console.log(`note: the planner (${ran.model}/${ran.reasoning_effort}/${ran.max_turns} turns) differs from the protocol reference (${ref.planner}/${ref.model}/${ref.reasoning_effort}/${ref.max_turns} turns)`);
+const out = { ...m, planner_reference: { ...ref, ...ran }, reference_planner_replaced: { from: ref, by: "pi-embodied robocasa/eval.sh" } };
+fs.writeFileSync(derived, `${JSON.stringify(out, null, 2)}\n`);
+' "$manifest" "$derived" "$model" "$thinking" "$turns" || exit 1
+
+if [ -z "$full" ]; then
+	echo "partial run (splits=$splits TASKS=${TASKS:-} SEEDS=${SEEDS:-}): no Target50 score; a full run is scored by validate_target50.py"
+	exit "$summary"
+fi
+echo "== validate_target50.py --manifest $derived"
+"$PY" "$validator" "$out" --manifest "$derived"
+validated=$?
+[ "$summary" -eq 0 ] && [ "$validated" -eq 0 ]

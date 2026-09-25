@@ -25,13 +25,15 @@ const unchanged = (path: string, f: HfFile) => {
 
 /**
  * Plain-HTTPS `snapshot_download(repo, repo_type="dataset", allow_patterns=["<robot>/**"])` into the
- * memory home. Honors HF_ENDPOINT, HF_TOKEN, HF_HUB_OFFLINE=1 and PI_EMBODIED_MEMORY_REPO; files whose
+ * memory home. Honors HF_ENDPOINT, HF_TOKEN, HF_HUB_OFFLINE=1, PI_EMBODIED_MEMORY_REPO and
+ * PI_EMBODIED_MEMORY_REVISION (a branch or commit, default main; evaluation protocols pin one); files whose
  * git blob hash already matches are skipped; failures fall back to whatever is on disk.
  */
 export async function syncMemory(dir: string, log: (m: string) => void, remote = HF_REPO): Promise<void> {
 	const root = resolve(dir);
 	const robot = basename(root);
 	const repo = process.env.PI_EMBODIED_MEMORY_REPO ?? remote;
+	const revision = process.env.PI_EMBODIED_MEMORY_REVISION || "main";
 	if (process.env.HF_HUB_OFFLINE === "1") {
 		if (!hasFiles(root)) log(`HF_HUB_OFFLINE=1 but no local memory was found under ${root}`);
 		return;
@@ -46,7 +48,7 @@ export async function syncMemory(dir: string, log: (m: string) => void, remote =
 		return res;
 	};
 	try {
-		const info = (await (await get(`${endpoint}/api/datasets/${repo}/revision/main?blobs=true`)).json()) as {
+		const info = (await (await get(`${endpoint}/api/datasets/${repo}/revision/${encodeURIComponent(revision)}?blobs=true`)).json()) as {
 			sha: string;
 			siblings: HfFile[];
 		};
@@ -69,6 +71,6 @@ export async function syncMemory(dir: string, log: (m: string) => void, remote =
 		const local = hasFiles(root)
 			? `continuing with local memory under ${root}`
 			: `no local memory was found under ${root}`;
-		log(`could not sync '${robot}' from '${repo}': ${message(e)}; ${local}`);
+		log(`could not sync '${robot}' from '${repo}'@${revision}: ${message(e)}; ${local}`);
 	}
 }

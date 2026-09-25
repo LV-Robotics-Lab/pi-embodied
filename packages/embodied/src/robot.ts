@@ -141,6 +141,8 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	let started: number | undefined;
 	let outOfBudget: "turns" | "time" | undefined;
 	let plannerError: string | undefined;
+	/** Ends the episode when the --time-limit wall-clock budget runs out, even mid-call. */
+	let deadline: ReturnType<typeof setTimeout> | undefined;
 	pi.registerFlag("keep-images", {
 		type: "string",
 		default: String(spec.keepImages),
@@ -161,6 +163,8 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	pi.on("session_start", (_event, ctx) => {
 		ready = ran = ended = reported = finishing = false;
 		failed = broken = claimed = started = plannerError = outOfBudget = undefined;
+		clearTimeout(deadline);
+		deadline = undefined;
 		// A service that stopped answering ended the last episode; this one may find it restarted.
 		forgetUnresponsive();
 		turns = 0;
@@ -231,8 +235,24 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		publish();
 	}
 
-	pi.on("before_agent_start", () => {
-		started ??= Date.now();
+	pi.on("before_agent_start", (_event, ctx) => {
+		if (started === undefined) {
+			started = Date.now();
+			// The budget is wall-clock: a hung model or tool call must not outlive it. Aborting stops the
+			// running tool (its RPC gets `stop`), and the result records a planner timeout.
+			const limit = Number(pi.getFlag("time-limit"));
+			if (limit > 0) {
+				deadline = setTimeout(() => {
+					deadline = undefined;
+					if (ended) return;
+					outOfBudget = "time";
+					ended = true;
+					publish();
+					ctx.abort();
+				}, limit * 1000);
+				deadline.unref();
+			}
+		}
 		const systemPrompt = spec.prompt?.();
 		return systemPrompt === undefined ? undefined : { systemPrompt };
 	});
@@ -315,6 +335,10 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	});
 	// The result first: stopping the env server can take a while.
 	pi.on("session_shutdown", (_event, ctx) => report(ctx.hasUI, "shutdown"));
+	pi.on("session_shutdown", () => {
+		clearTimeout(deadline);
+		deadline = undefined;
+	});
 	pi.on("session_shutdown", stop);
 
 	// After the robot's before_agent_start and tool_call gate: exploration rewrites that prompt and guards `finish`.

@@ -51,7 +51,8 @@ to the FCI directly) before starting Polymetis on the NUC, and vice versa.
 Execution: one call at a time on the main thread (the ZeroRPC client is gevent-based
 and must stay on the thread that made it). ``stop`` is lock-free; motions poll it
 between servo ticks / gripper polls and return ``cancelled: true`` with the arm
-holding the last commanded setpoint (at most one ``servo_step_m`` ahead).
+holding the last commanded setpoint (at most one ``servo_step_m`` ahead). Parent
+death (``--parent-watch``) and ``shutdown`` request a stop first.
 """
 
 from __future__ import annotations
@@ -73,6 +74,7 @@ from pi_embodied_services.robots.franka_polymetis.control import (
     PolymetisLimits,
     flange_to_tcp,
 )
+from pi_embodied_services.utils.daemon import watch_parent_death
 from pi_embodied_services.utils.logging import get_logger
 from pi_embodied_services.utils.rpc.main_thread_serve import MainThreadServeMixin
 
@@ -108,6 +110,8 @@ _LIMIT_KEYS = (
     "rotate_tolerance_rad",
     "descent_stall_ratio",
     "divergence_resync_m",
+    "max_tracking_error_m",
+    "max_tilt_rad",
 )
 _GRIPPER_KEYS = {
     "close_threshold_m": "gripper_close_threshold_m",
@@ -301,6 +305,22 @@ class FrankaPolymetisFacade(MainThreadServeMixin, BaseEnvFacade):
             robot, limits_from_config(cfg), self.stop_requested, sleep=sleep
         )
         self.controller.start_impedance()
+
+    def serve(self, *, parent_watch: bool = False, **kwargs: Any) -> None:
+        """Parent death also stops the running motion or reset (not only the loop)."""
+
+        def on_death() -> None:
+            self.request_stop()
+            self._shutdown_event.set()
+
+        if parent_watch:
+            watch_parent_death(on_death)
+        super().serve(parent_watch=False, **kwargs)
+
+    def _builtin_dispatch(self, method: str, args: tuple, kwargs: dict) -> Any:
+        if method == "shutdown":  # halt the running call before waiting for it
+            self.request_stop()
+        return super()._builtin_dispatch(method, args, kwargs)
 
     def _register_rpc(self) -> None:
         for name in METHODS:

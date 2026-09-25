@@ -38,7 +38,7 @@ import {
 	vec,
 } from "../robot.ts";
 import { NdArray, type RpcClient, RpcUnavailable } from "../rpc.ts";
-import type { MoveUnit, UnitsSpec, Vec3 } from "../units/index.ts";
+import { compensate, type MoveUnit, type State, type UnitsSpec, type Vec3 } from "../units/index.ts";
 
 const SYSTEM = readFileSync(new URL("./SYSTEM.md", import.meta.url), "utf8");
 
@@ -54,9 +54,10 @@ type Step = { blob: Json; images: Record<string, string> };
 
 /**
  * The action-unit grounding of Show-Harness configs/primitives_piper.yaml: MV_* unit vectors
- * (x toward the far field, y left, z up), 2 cm per unit, 0.15 rad per rotation unit. The env
- * server interprets them in the frame its config names (`motion.units_frame`: `heading` is
- * Show-Harness's `motion_frame: wrist`).
+ * (x toward the far field, y left, z up), 2 cm per unit. The env server interprets them in the
+ * frame its config names (`motion.units_frame`: `heading` is Show-Harness's `motion_frame: wrist`).
+ * No ROTATE_* units: Show-Harness never offers rotation on the Piper (core/launch.py), and the
+ * rotation plugin would turn heading-frame moves a second time.
  */
 export const PIPER_UNITS = {
 	vectors: {
@@ -68,8 +69,13 @@ export const PIPER_UNITS = {
 		MV_DOWN: [0, 0, -1],
 	} as Record<MoveUnit, Vec3>,
 	stepM: 0.02,
-	yawStepRad: 0.15,
 };
+
+/** The base-frame translation of a heading-frame delta: rotated by the state's `heading_yaw_rad`, as the server does. */
+export function headingToBase(delta: Vec3, state: State | undefined): Vec3 {
+	const heading = state?.heading_yaw_rad;
+	return typeof heading === "number" ? compensate(delta, heading) : delta;
+}
 
 /**
  * How the Piper rig's views look, from Show-Harness plugins/ego (the rig's `is_ego` fix, learned on
@@ -142,6 +148,8 @@ export default function piper(pi: ExtensionAPI) {
 				guardedStep(move.delta, move.yaw, move.gripper, unitsFrame(), signal, false),
 			),
 		state: async () => proprio(await call<Json>("env.get_robot_state")),
+		// The stall check compares commanded and measured motion in the base frame.
+		baseDelta: (delta, state) => (unitsFrame() === "heading" ? headingToBase(delta, state) : delta),
 		instruction: () => task?.instruction ?? "",
 		views: VIEWS,
 		get emptyWidthM() {
@@ -220,6 +228,7 @@ export default function piper(pi: ExtensionAPI) {
 			// The Z floor is the EEF height with the gripper resting on the table (Show-Harness high_above_table).
 			...(typeof s.z_floor_m === "number" ? { table_z: s.z_floor_m } : {}),
 			eef_euler_xyz: vec(s.eef_euler_xyz).map((v) => round(v, 3)),
+			heading_yaw_rad: typeof s.heading_yaw_rad === "number" ? s.heading_yaw_rad : null,
 			gripper_closed: s.gripper_closed,
 		};
 	}

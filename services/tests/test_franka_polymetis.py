@@ -30,6 +30,7 @@ import numpy as np
 import pytest
 import yaml
 
+from pi_embodied_services.robots.franka_polymetis import control, env_server, nuc_server
 from pi_embodied_services.robots.franka_polymetis.calibration import (
     easy_handeye_yaml,
     matrix_to_quat_xyzw,
@@ -38,6 +39,7 @@ from pi_embodied_services.robots.franka_polymetis.control import (
     quat_angle,
     quat_from_euler_xyz,
     quat_rotate,
+    tool_tilt,
 )
 from pi_embodied_services.robots.franka_polymetis.env_server import (
     DEFAULT_CONFIG,
@@ -45,6 +47,7 @@ from pi_embodied_services.robots.franka_polymetis.env_server import (
     FrankaPolymetisFacade,
     letterbox_geometry,
     letterbox_intrinsics,
+    limits_from_config,
     load_config,
     main,
 )
@@ -54,6 +57,7 @@ from pi_embodied_services.robots.franka_polymetis.mock import (
     MockRGBD,
 )
 from pi_embodied_services.utils.rpc.http_rpc import HttpRpcClient
+from pi_embodied_services.utils.rpc.main_thread_serve import MainThreadServeMixin
 
 SERVICES = Path(__file__).resolve().parents[1]
 DOWN = (1.0, 0.0, 0.0, 0.0)  # gripper pointing down: 180 deg about x
@@ -73,7 +77,6 @@ CFG = {
         "workspace_max": [0.75, 0.35, 0.60],
         "max_move_m": 0.08,
         "max_rotate_rad": 0.2,
-        "tick_s": 0.0,
         "settle_dt_s": 0.0,
     },
     "gripper": {"settle_s": 0.0, "min_settle_s": 0.0},
@@ -101,6 +104,22 @@ def facade(robot=None, config=None, sleep=lambda s: None) -> FrankaPolymetisFaca
 
 def call(f: FrankaPolymetisFacade, method: str, *args, **kwargs):
     return f._serve_dispatch(method, args, kwargs)
+
+
+class WallRobot(MockPolymetisRobot):
+    """A wall at x = ``wall_x`` stops the measured pose; ``reflex`` makes contact
+    terminate the controller (a libfranka collision reflex)."""
+
+    def __init__(self, *args, wall_x: float, reflex: bool = False, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.wall_x, self.reflex = wall_x, reflex
+
+    def update_desired_ee_pose(self, pose):
+        super().update_desired_ee_pose(pose)
+        if self.pose[0] > self.wall_x:
+            self.pose[0] = self.wall_x
+            if self.reflex:
+                self.lose_controller()
 
 
 # -- RPC parity with the RLinf backend ----------------------------------------
@@ -351,7 +370,7 @@ def test_stop_halts_a_move_between_control_ticks():
     robot = MockPolymetisRobot((0.5, 0.0, 0.3, *DOWN))
     f = facade(
         robot,
-        cfg(limits={"tick_s": 0.01, "servo_step_m": 0.0005}),
+        cfg(limits={"tick_s": 0.01, "servo_step_m": 0.0005, "servo_step_rad": 0.0025}),
         sleep=time.sleep,
     )
     box: dict = {}
@@ -382,7 +401,7 @@ def test_stop_halts_the_joint_stream_reset():
     robot = MockPolymetisRobot((0.5, 0.0, 0.3, *DOWN))
     f = facade(
         robot,
-        cfg(limits={"tick_s": 0.01}, reset={"begin_time_s": 5.0}),
+        cfg(limits={"tick_s": 0.025}, reset={"begin_time_s": 5.0}),
         sleep=time.sleep,
     )
     box: dict = {}
@@ -396,6 +415,244 @@ def test_stop_halts_the_joint_stream_reset():
     thread.join(timeout=5)
     assert box["r"]["cancelled"] is True and box["r"]["ok"] is False
     assert robot.joint_setpoints < 400 and robot.controller == "cartesian"
+
+
+def test_a_recurring_reflex_fails_the_call_after_one_restart():
+    robot = WallRobot((0.5, 0.0, 0.3, *DOWN), wall_x=0.51, reflex=True)
+    f = facade(robot)
+    with pytest.raises(RuntimeError, match="lost again in the same call"):
+        call(f, "env.move_delta", [0.08, 0.0, 0.0])
+    assert f.controller.restarts == 2  # one resume, then a restart to hold only
+    assert robot.controller == "cartesian" and len(robot.setpoints) < 10
+    np.testing.assert_allclose(f.controller.target_pos, robot.pose[:3])
+    # A single loss resumes and reports the restart.
+    robot = MockPolymetisRobot((0.5, 0.0, 0.3, *DOWN))
+    f = facade(robot)
+    robot.lose_controller()
+    r = call(f, "env.move_delta", [0.02, 0.0, 0.0])
+    assert r["ok"] and r["controller_restarts"] == 1
+
+
+def test_contact_stops_the_ramp_and_reanchors_on_all_axes():
+    robot = WallRobot((0.5, 0.0, 0.3, *DOWN), wall_x=0.52)
+    f = facade(robot)
+    r = call(f, "env.move_delta", [0.06, 0.02, 0.0])
+    assert r["ok"] is False and r["blocked"] is True
+    assert len(robot.setpoints) < 20  # stopped well before the 26-tick ramp ended
+    np.testing.assert_allclose(f.controller.target_pos, robot.pose[:3], atol=1e-12)
+    np.testing.assert_allclose(robot.setpoints[-1], robot.pose)
+    for _ in range(3):  # repeated pushes never leave the setpoint inside the wall
+        call(f, "env.move_delta", [0.02, 0.0, 0.0])
+        assert abs(f.controller.target_pos[0] - robot.pose[0]) < 1e-12
+    # Pushed 2.5 cm aside while idle: a pure-z move does not pull the arm back.
+    robot.pose[1] += 0.025
+    call(f, "env.move_delta", [0.0, 0.0, 0.01])
+    assert robot.setpoints[-1][1] == pytest.approx(robot.pose[1])
+    # Displaced by more than move_tolerance_m at the end of a call: re-anchored.
+    command = robot.update_desired_ee_pose
+
+    def sag(pose):
+        command(pose)
+        robot.pose[1] -= 0.012
+
+    robot.update_desired_ee_pose = sag
+    r = call(f, "env.move_delta", [-0.01, 0.0, 0.0])
+    assert r["reanchored"] is True and r["ok"] is False
+    np.testing.assert_allclose(f.controller.target_pos, robot.setpoints[-1][:3])
+
+
+@pytest.mark.parametrize(
+    "section, values, match",
+    [
+        ("limits", {"z_floor_m": float("nan")}, "finite"),
+        ("limits", {"workspace_max": [0.75, float("inf"), 0.6]}, "finite"),
+        ("limits", {"tick_s": 0.0}, "tick_s"),
+        ("limits", {"tick_s": 0.01}, "m/s"),
+        ("limits", {"max_tracking_error_m": 0.2}, "max_tracking_error_m"),
+        ("limits", {"max_tilt_rad": 2.0}, "max_tilt_rad"),
+        ("robot", {"tcp_offset_m": [float("nan"), 0.0, 0.0]}, "finite"),
+        ("impedance", {"kx": [5000, 750, 750, 15, 15, 15]}, "gains"),
+        ("impedance", {"kxd": [37, 37, 37, 2, 2, 9]}, "gains"),
+        ("reset", {"begin_joints": [float("nan")] * 7}, "finite"),
+        ("reset", {"begin_joints": [0, -0.5, 0, -2.6, 0, 0.0, 0.86]}, "joint limits"),
+        ("reset", {"begin_time_s": 0.1}, "begin_time_s"),
+    ],
+)
+def test_config_rejects_non_finite_and_out_of_range_values(section, values, match):
+    with pytest.raises(ValueError, match=match):
+        limits_from_config(cfg(**{section: values}))
+
+
+def test_reset_is_speed_bounded_and_never_leaves_joint_impedance_running():
+    robot = MockPolymetisRobot((0.5, 0.0, 0.3, *DOWN))
+    f = facade(robot, cfg(reset={"begin_time_s": 0.5}))
+    sent = []
+    move = robot.move_to_joint_positions
+    robot.move_to_joint_positions = lambda q, t: (sent.append(t), move(q, t))
+    q0 = robot.q.copy()
+    r = call(f, "env.reset")
+    distance = np.max(np.abs(np.asarray(CFG["reset"]["begin_joints"]) - q0))
+    assert r["info"]["duration_s"] == pytest.approx(1.875 * distance / 0.5)
+    assert robot.joint_setpoints >= r["info"]["duration_s"] / 0.05
+    # A NaN joint reading is refused and Cartesian impedance holds the arm.
+    robot.q[:] = np.nan
+    with pytest.raises(RuntimeError, match="invalid joint positions"):
+        call(f, "env.reset")
+    assert robot.controller == "cartesian"
+    # An error mid-stream goes back to Cartesian impedance.
+    robot.q = q0.copy()
+    stream = robot.update_desired_joint_pos
+
+    def fail(q):
+        if robot.joint_setpoints >= 3:
+            raise RuntimeError("NUC connection lost")
+        stream(q)
+
+    robot.joint_setpoints = 0
+    robot.update_desired_joint_pos = fail
+    with pytest.raises(RuntimeError, match="NUC connection lost"):
+        call(f, "env.reset")
+    assert robot.controller == "cartesian"
+    np.testing.assert_allclose(f.controller.target_pos, robot.pose[:3])
+    # move_to_joint_positions gets the speed-bounded duration too.
+    f = facade(
+        MockPolymetisRobot((0.5, 0.0, 0.3, *DOWN)),
+        cfg(reset={"begin_time_s": 0.5, "method": "move_to_joint_positions"}),
+    )
+    f.controller.robot.move_to_joint_positions = lambda q, t: sent.append(t)
+    call(f, "env.reset")
+    assert sent[-1] >= 1.875 * distance / 0.5 - 1e-9
+
+
+def test_workspace_is_checked_per_axis_and_on_the_begin_pose():
+    robot = MockPolymetisRobot((0.74, 0.0, 0.09, *DOWN))  # 5 cm below the floor
+    f = facade(robot)
+    with pytest.raises(ValueError, match="outside the workspace"):
+        call(f, "env.move_delta", [0.04, 0.0, 0.06])  # x would end 3 cm out
+    assert call(f, "env.move_delta", [0.0, 0.0, 0.06])["ok"]
+    robot = MockPolymetisRobot((0.5, 0.0, 0.3, *DOWN), home_pose=(0.9, 0.0, 0.4, *DOWN))
+    r = call(facade(robot), "env.reset")
+    assert r["ok"] is False and r["info"]["begin_pose_outside_workspace"] is True
+
+
+def test_rotation_tilt_limit_wrap_and_flange_box_check():
+    robot = MockPolymetisRobot((0.5, 0.0, 0.3, *DOWN))
+    f = facade(robot)
+    assert call(f, "env.rotate_delta", [0.0, 0.2, 0.0])["ok"]
+    assert call(f, "env.rotate_delta", [0.0, 0.2, 0.0])["ok"]
+    with pytest.raises(ValueError, match="max_tilt_rad"):
+        call(f, "env.rotate_delta", [0.0, 0.2, 0.0])
+    assert tool_tilt(robot.pose[3:]) == pytest.approx(0.4)
+    assert call(f, "env.rotate_delta", [0.0, -0.2, 0.0])["ok"]  # back toward down
+    with pytest.raises(ValueError, match="without wrap-around"):
+        call(f, "env.rotate_delta", [0.0, 0.0, 2 * math.pi + 0.1])
+    for _ in range(20):
+        call(f, "env.rotate_delta", [0.0, 0.0, 0.2])
+    assert np.linalg.norm(f.controller.target_quat) == pytest.approx(1.0, abs=1e-12)
+    # With a 10 cm TCP offset, pitching swings the flange past xmax 0.75.
+    edge = MockPolymetisRobot((0.74, 0.0, 0.4, *DOWN))
+    f = facade(edge, cfg(robot={"tcp_offset_m": [0.0, 0.0, 0.1]}))
+    with pytest.raises(ValueError, match="rotation's flange"):
+        call(f, "env.rotate_delta", [0.0, 0.2, 0.0])
+    assert call(f, "env.rotate_delta", [0.0, -0.2, 0.0])["ok"]
+
+
+def test_shutdown_and_parent_death_stop_a_running_motion(monkeypatch):
+    for trigger in ("shutdown", "parent_death"):
+        robot = MockPolymetisRobot((0.5, 0.0, 0.3, *DOWN))
+        f = facade(
+            robot,
+            cfg(
+                limits={
+                    "tick_s": 0.01,
+                    "servo_step_m": 0.0005,
+                    "servo_step_rad": 0.0025,
+                }
+            ),
+            sleep=time.sleep,
+        )
+        hooks: dict = {}
+        monkeypatch.setattr(
+            env_server, "watch_parent_death", lambda cb: hooks.update(cb=cb)
+        )
+        monkeypatch.setattr(MainThreadServeMixin, "serve", lambda self, **kw: None)
+        f.serve(transport="http", host="127.0.0.1", port=0, parent_watch=True)
+        box: dict = {}
+        thread = threading.Thread(
+            target=lambda: box.update(r=call(f, "env.move_delta", [0.05, 0.0, 0.0]))
+        )
+        thread.start()
+        deadline = time.time() + 5
+        while len(robot.setpoints) < 10:
+            assert time.time() < deadline
+            time.sleep(0.005)
+        if trigger == "shutdown":
+            call(f, "shutdown")
+        else:
+            hooks["cb"]()
+        thread.join(timeout=5)
+        assert box["r"]["cancelled"] is True, trigger
+        assert f._shutdown_event.is_set()
+
+
+class FakePolymetis:
+    """Polymetis RobotInterface + GripperInterface for nuc_server guard tests."""
+
+    def __init__(self):
+        self.pos = np.array([0.5, 0.0, 0.3])
+        self.quat = np.array([1.0, 0.0, 0.0, 0.0])
+        self.q = np.array([0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785])
+        self.metadata = type("M", (), {"max_width": 0.08})()
+        self.calls: list = []
+
+    def get_ee_pose(self):
+        return self.pos.copy(), self.quat.copy()
+
+    def get_joint_positions(self):
+        return self.q.copy()
+
+    def __getattr__(self, name):
+        return lambda *a, **kw: self.calls.append((name, a, kw))
+
+
+def test_nuc_server_validates_every_command():
+    assert nuc_server.MAX_KX == control.MAX_KX and nuc_server.MAX_KXD == control.MAX_KXD
+    assert nuc_server.JOINT_MIN == control.JOINT_MIN
+    assert nuc_server.JOINT_MAX == control.JOINT_MAX
+    fake = FakePolymetis()
+    limits = nuc_server.NucLimits(
+        workspace_min=(0.3, -0.35, 0.1), workspace_max=(0.75, 0.35, 0.6), z_floor_m=0.14
+    )
+    s = nuc_server.FrankaServer(fake, fake, 0.1, 20.0, limits, np.asarray)
+    s.update_desired_ee_pose([0.505, 0.0, 0.3, 1.0, 0.0, 0.0, 0.0])
+    assert fake.calls[-1][0] == "update_desired_ee_pose"
+    bad = [
+        ([float("nan"), 0.0, 0.3, 1.0, 0.0, 0.0, 0.0], "finite"),
+        ([0.55, 0.0, 0.3, 1.0, 0.0, 0.0, 0.0], "jumps"),
+        ([0.5, 0.0, 0.3, 0.0, 1.0, 0.0, 0.0], "jumps"),
+        ([0.5, 0.0, 0.3, 2.0, 0.0, 0.0, 0.0], "unit length"),
+    ]
+    for pose, match in bad:
+        with pytest.raises(ValueError, match=match):
+            s.update_desired_ee_pose(pose)
+    fake.pos = np.array([0.5, 0.0, 0.145])
+    with pytest.raises(ValueError, match="outside the NUC workspace"):
+        s.update_desired_ee_pose([0.5, 0.0, 0.138, 1.0, 0.0, 0.0, 0.0])
+    s.update_desired_ee_pose([0.5, 0.0, 0.145, 1.0, 0.0, 0.0, 0.0])  # hold: accepted
+    with pytest.raises(ValueError, match="gains"):
+        s.start_cartesian_impedance([5000.0] * 3 + [15.0] * 3, [37.0] * 3 + [2.0] * 3)
+    s.start_cartesian_impedance(list(control.DEFAULT_KX), list(control.DEFAULT_KXD))
+    goal = [0.0, -0.5, 0.0, -2.6, 0.0, 2.07, 0.86]
+    with pytest.raises(ValueError, match="time_to_go"):
+        s.move_to_joint_positions(goal, 0.05)
+    with pytest.raises(ValueError, match="joint limits"):
+        s.move_to_joint_positions([0.0, -0.5, 0.0, -2.6, 0.0, 0.0, 0.86], 10.0)
+    s.move_to_joint_positions(goal, 4.0)
+    with pytest.raises(ValueError, match="jumps"):
+        s.update_desired_joint_pos(fake.q + 0.2)
+    s.update_desired_joint_pos(fake.q + 0.01)
+    with pytest.raises(ValueError, match="width"):
+        s.set_gripper_position(float("nan"))
 
 
 # -- cameras and perception -------------------------------------------------------

@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -30,12 +33,18 @@ function fakePi(flagValues: Record<string, unknown> = {}) {
 		appendEntry: () => {},
 		events: { emit: () => {}, on: () => () => {} },
 	} as unknown as ExtensionAPI;
+	const notes: string[] = [];
+	const dir = realpathSync(mkdtempSync(join(tmpdir(), "units-")));
 	const ctx = {
 		hasUI: true,
-		cwd: "/",
-		ui: { notify: () => {} },
+		cwd: dir,
+		ui: {
+			notify: (m: string) => notes.push(m),
+			setWidget: () => {},
+			select: async () => "done",
+		},
 		shutdown: () => {},
-		sessionManager: { getBranch: () => [] },
+		sessionManager: { getBranch: () => [], getSessionDir: () => dir },
 	};
 	async function emit(name: string, event: Record<string, unknown> = {}) {
 		let result: any;
@@ -47,7 +56,7 @@ function fakePi(flagValues: Record<string, unknown> = {}) {
 	}
 	const run = async (name: string, params: unknown) =>
 		(await tools.get(name).execute("id", params, undefined, undefined, ctx)) as any;
-	return { pi, emit, run, tools, active: () => active };
+	return { pi, emit, run, tools, notes, active: () => active };
 }
 
 const VECTORS: UnitsSpec["vectors"] = {
@@ -62,7 +71,15 @@ const VECTORS: UnitsSpec["vectors"] = {
 /** A toy arm: `apply` integrates the moves (or not, when blocked); `onClose` decides the closed width. */
 async function toyRobot(
 	flags: Record<string, unknown>,
-	o: { yaw?: number; onClose?: () => number; blocked?: boolean; prompt?: string } = {},
+	o: {
+		yaw?: number;
+		onClose?: () => number;
+		blocked?: boolean;
+		prompt?: string;
+		maxYaw?: number;
+		maxMove?: number;
+		reset?: () => Promise<Record<string, unknown>>;
+	} = {},
 ) {
 	// The Show-Harness step rules: fixed 2 cm steps unless a test turns variable_step on.
 	const f = fakePi({ units: true, "units-plugins": "recovery,auto_release,proprioception,plan", ...flags });
@@ -73,6 +90,8 @@ async function toyRobot(
 		vectors: VECTORS,
 		stepM: 0.02,
 		...(o.yaw ? { yawStepRad: o.yaw } : {}),
+		...(o.maxYaw !== undefined ? { maxYawRad: () => o.maxYaw as number } : {}),
+		...(o.maxMove !== undefined ? { maxMoveM: () => o.maxMove as number } : {}),
 		apply: async (move) => {
 			moves.push(move);
 			if (!o.blocked) for (let i = 0; i < 3; i++) pos[i] += move.delta[i];
@@ -96,6 +115,7 @@ async function toyRobot(
 		keepImages: 2,
 		start: async () => ["move_to", "segment", "finish"],
 		...(o.prompt ? { prompt: () => o.prompt } : {}),
+		...(o.reset ? { operator: { step: () => 0, reset: o.reset } } : {}),
 		result: () => ({}),
 		finish: {
 			description: "finish",
@@ -348,4 +368,111 @@ test("rotation: wrist-judged moves follow the turned gripper; MV_UP while holdin
 	await f.emit("session_start");
 	await f.run("act", { unit: "MV_FWD", target_in_wrist: true });
 	assert.deepEqual(f.moves.at(-1)?.delta, [0.02, 0, 0], "an episode reset clears the accumulated yaw");
+});
+
+test("rotation: no rotate command exceeds the robot's per-call limit; the realign runs in pieces", async () => {
+	const f = await toyRobot({ "units-plugins": "rotation" }, { yaw: Math.PI / 4, maxYaw: 0.5 });
+	await f.run("act", { unit: "ROTATE_CW", n: 3 });
+	assert.equal(f.moves.length, 6, "each 45 deg unit runs as two 22.5 deg commands");
+	await f.run("act", { unit: "GRASP" });
+	const up = await f.run("act", { unit: "MV_UP" });
+	assert.match(head(up), /MV_UP\(realign\)/);
+	const turns = f.moves.map((m) => m.yaw).filter((y) => y !== 0);
+	assert.ok(
+		turns.every((y) => Math.abs(y) <= 0.5 + 1e-9),
+		`every command within 0.5 rad: ${turns}`,
+	);
+	const back = turns.filter((y) => y < 0);
+	assert.equal(back.length, 5);
+	assert.ok(Math.abs(back.reduce((a, b) => a + b, 0) + (3 * Math.PI) / 4) < 1e-9, "the realign undoes the whole turn");
+	await f.run("act", { unit: "MV_UP" });
+	assert.deepEqual(f.moves.at(-1)?.delta, [0, 0, 0.02], "back at the start heading");
+	// An invalid limit refuses the turn instead of sending it whole.
+	const bad = await toyRobot({ "units-plugins": "" }, { yaw: 0.15, maxYaw: Number.NaN });
+	assert.match(
+		head(await bad.run("act", { unit: "ROTATE_CW" })),
+		/ROTATE_CW refused: the robot's per-call rotation limit/,
+	);
+	assert.equal(bad.moves.length, 0);
+});
+
+test("the 150 deg accumulated-yaw cap holds without the rotation plugin", async () => {
+	const f = await toyRobot({ "units-plugins": "" }, { yaw: 0.15 });
+	for (let i = 0; i < 3; i++) await f.run("act", { unit: "ROTATE_CW", n: 10 });
+	const total = f.moves.reduce((a, m) => a + m.yaw, 0);
+	assert.ok(total <= (150 * Math.PI) / 180, `total ${total} rad`);
+	assert.equal(f.moves.length, 17);
+	const refused = await f.run("act", { unit: "ROTATE_CW" });
+	assert.match(head(refused), /ROTATE_CW refused: the gripper is already turned 146 deg/);
+	await f.run("act", { unit: "ROTATE_CCW", n: 2 });
+	assert.equal(f.moves.length, 19, "turning back is allowed");
+});
+
+test("one act call travels at most the robot's per-call move limit in total", async () => {
+	const f = await toyRobot({}, { maxMove: 0.05 });
+	const r = await f.run("act", { unit: "MV_DOWN", n: 10 });
+	assert.equal(f.moves.length, 2);
+	assert.match(head(r), /MV_DOWN x2 of 10 \(stopped early\)/);
+	assert.match(head(r), /MV_DOWN not run: one act call moves at most 0\.05 m in total/);
+	const chunk = await toyRobot({ "units-plugins": "action_chunk" }, { maxMove: 0.03 });
+	await chunk.run("act", { unit: "MV_FWD", target_in_wrist: false, plan: ["MV_FWD", "MV_LEFT", "MV_DOWN"] });
+	assert.equal(chunk.moves.length, 1, "a chunk counts toward the same total");
+	const nan = await toyRobot({}, { maxMove: Number.NaN });
+	await nan.run("act", { unit: "MV_UP", n: 3 });
+	assert.equal(nan.moves.length, 1, "an invalid limit stops the repeat (the robot refuses the first unit itself)");
+});
+
+test("a scene reset clears the units state (yaw, gripper, plan)", async () => {
+	let fail = false;
+	const f = await toyRobot(
+		{ "units-plugins": "rotation,plan", operator: true },
+		{
+			yaw: Math.PI / 2,
+			reset: async () => {
+				if (fail) throw new Error("reset failed");
+				return { ok: true };
+			},
+		},
+	);
+	await f.run("plan", { stages: [{ motion: "GRASP", target: "cube", completion: "held" }] });
+	await f.run("act", { unit: "ROTATE_CW" });
+	await f.run("act", { unit: "GRASP" });
+	fail = true;
+	await f.run("request_scene_reset", { reason: "retry" });
+	await f.run("act", { unit: "MV_FWD", target_in_wrist: true });
+	assert.deepEqual(
+		f.moves.at(-1)?.delta.map((v) => Number(v.toFixed(6))),
+		[0, 0.02, 0],
+		"a failed reset keeps the state",
+	);
+	fail = false;
+	const r = await f.run("request_scene_reset", { reason: "retry" });
+	assert.match(r.content[0].text, /scene_reset_confirmed/);
+	await f.run("act", { unit: "MV_FWD", target_in_wrist: true });
+	assert.deepEqual(f.moves.at(-1)?.delta, [0.02, 0, 0], "yaw cleared");
+	const up = await f.run("act", { unit: "MV_UP" });
+	assert.doesNotMatch(head(up), /realign|STAGE/, "gripper and plan cleared");
+	assert.deepEqual(f.moves.at(-1)?.delta, [0, 0, 0.02]);
+});
+
+test("Franka and dual Franka refuse to start without a valid Z floor and workspace box", async () => {
+	for (const robot of [franka, dualFranka]) {
+		for (const [flags, error] of [
+			[{}, /--z-floor must be/],
+			[{ "z-floor": "abc" }, /--z-floor must be/],
+			[{ "z-floor": "0.14", "workspace-xy": "0.2,0.8,-0.4" }, /--workspace-xy must be/],
+			[{ "z-floor": "0.14", "workspace-xy": "0.2,0.8,-0.4,nan" }, /--workspace-xy must be/],
+			[{ "z-floor": "0.14", "workspace-xy": "0.8,0.2,-0.4,0.4" }, /--workspace-xy must be/],
+		] as const) {
+			const f = fakePi({ operator: true, python: "/nonexistent/python", ...flags });
+			robot(f.pi);
+			await f.emit("session_start");
+			assert.match(f.notes.join("\n"), error, JSON.stringify(flags));
+			assert.deepEqual(f.active(), []);
+		}
+		const ok = fakePi({ operator: true, python: "/nonexistent/python", "z-floor": "0.14" });
+		robot(ok.pi);
+		await ok.emit("session_start");
+		assert.doesNotMatch(ok.notes.join("\n"), /--z-floor|--workspace-xy/, "valid limits pass the check");
+	}
 });

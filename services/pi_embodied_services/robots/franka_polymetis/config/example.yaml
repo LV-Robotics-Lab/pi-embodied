@@ -19,7 +19,8 @@ robot:
   # centre is ~[0, 0, 0.1034] from panda_link8; changing this moves every limit.
   tcp_offset_m: [0.0, 0.0, 0.0]
 
-impedance:                   # Cartesian impedance gains (Show-Harness main_pi05.py)
+impedance:                   # Cartesian impedance gains (Show-Harness main_pi05.py);
+                             # at most 2x these values are accepted
   kx: [750, 750, 750, 15, 15, 15]
   kxd: [37, 37, 37, 2, 2, 2]
 
@@ -49,13 +50,17 @@ limits:                      # !! CAPTURE ON HARDWARE !!
   max_rotate_rad: 0.2        # largest rotate_delta per call (Show-Harness clamp)
   servo_step_m: 0.0025       # setpoint advance per tick: 0.05 m/s at tick_s 0.05
   servo_step_rad: 0.0125
-  tick_s: 0.05
+  tick_s: 0.05               # 0.001..0.1; step/tick <= 0.1 m/s and 0.5 rad/s
   settle_steps: 4            # re-commands of the final setpoint (Show-Harness DEFAULTS)
   settle_dt_s: 0.05
   move_tolerance_m: 0.01     # final error for ok: true (impedance sags a few mm)
   rotate_tolerance_rad: 0.05
   descent_stall_ratio: 0.7   # a descent that moved < 70% of the command is "blocked"
-  divergence_resync_m: 0.03  # measured vs setpoint gap that resyncs the setpoint
+  divergence_resync_m: 0.01  # measured vs setpoint gap that resyncs the setpoint
+  max_tracking_error_m: 0.015  # measured TCP lagging the setpoint by more (contact,
+                             # ~11 N at kx 750) stops the motion and re-anchors the
+                             # setpoint at the measured pose
+  max_tilt_rad: 0.5          # largest tool tilt from pointing straight down
 
 gripper:                     # Franka Hand, ~0.08 m stroke
   close_threshold_m: 0.07
@@ -69,7 +74,7 @@ reset:
   # [0.0, -0.5058451, 0.0, -2.6068573, 0.0, 2.0711833, 0.86116207]; verify the path
   # from your workspace to it is clear before using it.
   begin_joints: null
-  begin_time_s: 4.0
+  begin_time_s: 4.0          # minimum; longer when a joint would exceed 0.5 rad/s
   method: joint_stream       # joint_stream (stop-able) | move_to_joint_positions (blocking)
   lift_m: 0.05               # Cartesian lift before the joint move (kept inside the box)
 

@@ -637,7 +637,10 @@ export function gumi(
 		let result: AgentToolResult<unknown> | undefined;
 		for (const a of arms) {
 			if (step[a] === STILL) continue;
-			result = await (handle as UnitsHandle).run(a === ARM ? { unit: step[a] } : { unit: step[a], arm: a }, signal);
+			result = await (handle as UnitsHandle).run(
+				a === ARM ? { unit: step[a], operator: true } : { unit: step[a], arm: a, operator: true },
+				signal,
+			);
 		}
 		return result as AgentToolResult<unknown>;
 	}

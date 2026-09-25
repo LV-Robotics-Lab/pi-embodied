@@ -50,7 +50,11 @@ export type UnitsHandle = {
 	stepM: number;
 	yawStepRad?: number;
 	/** What one `act` call does (grounding, `apply`, recovery / auto_release, the units header), without the model. */
-	run: (params: { unit: string; n?: number; arm?: string }, signal?: AbortSignal) => Promise<AgentToolResult<unknown>>;
+	/** `operator: true` for a human's unit (GUMI): exactly what was pressed, no recovery/auto_release/variable step/rotation assists. */
+	run: (
+		params: { unit: string; n?: number; arm?: string; operator?: boolean },
+		signal?: AbortSignal,
+	) => Promise<AgentToolResult<unknown>>;
 	/** The robot's proprioception (`eef_xyz`, `gripper_width`, ...), per arm on two arms. */
 	state?: (arm?: string) => Promise<Record<string, unknown>>;
 };
@@ -416,11 +420,28 @@ export function units(
 		(params, signal) => act(params as ActParams, signal),
 	);
 
-	type ActParams = { unit: string; n?: number; arm?: string; target_in_wrist?: boolean; plan?: string[] };
+	type ActParams = {
+		unit: string;
+		n?: number;
+		arm?: string;
+		target_in_wrist?: boolean;
+		plan?: string[];
+		operator?: boolean;
+	};
 	/** `act`'s body; ../gumi (dashboard teleop, DAgger takeover) runs it too, through the handle below. */
 	async function act(params: ActParams, signal: AbortSignal | undefined): Promise<Result> {
-		const p = params as { unit: Unit; n?: number; arm?: string; target_in_wrist?: boolean; plan?: MoveUnit[] };
+		const p = params as {
+			unit: Unit;
+			n?: number;
+			arm?: string;
+			target_in_wrist?: boolean;
+			plan?: MoveUnit[];
+			operator?: boolean;
+		};
 		const { unit, arm, target_in_wrist: inWrist } = p;
+		// A human's unit (GUMI teleop) runs as pressed: the agent-side assists would override the operator
+		// (recovery reopens a GRASP that closed on air), as in Show-Harness's collectors.
+		const assist = (name: Plugin) => !p.operator && plugin(name);
 		const key = arm ?? "";
 		if (unit === "DONE")
 			return {
@@ -443,8 +464,8 @@ export function units(
 			const before = await read(arm);
 			const acc = yaw.get(key) ?? 0;
 			let label: string = u;
-			let move = ground(spec, u, isMove(u) ? stepFor(u, before, inWrist) : spec.stepM) as Move;
-			if (plugin("rotation")) {
+			let move = ground(spec, u, isMove(u) && !p.operator ? stepFor(u, before, inWrist) : spec.stepM) as Move;
+			if (assist("rotation")) {
 				// Holding and turned: MV_UP first turns back to the start heading.
 				if (u === "MV_UP" && closed.get(key) && Math.abs(acc) > NEUTRAL_YAW) {
 					move = { delta: [0, 0, 0], yaw: -acc, gripper: null };
@@ -480,14 +501,14 @@ export function units(
 				}
 			}
 			// recovery: a GRASP that closed on nothing is reopened at once.
-			if (u === "GRASP" && plugin("recovery") && empty(after)) {
+			if (u === "GRASP" && assist("recovery") && empty(after)) {
 				last = await reopen(arm, signal);
 				recent.push("RELEASE(recovery)");
 				note = NOTES.empty_grasp;
 				break;
 			}
 			// auto_release: a closed gripper that collapsed (the object slipped out) is reopened.
-			if (u !== "GRASP" && plugin("auto_release") && closed.get(key) && empty(after)) {
+			if (u !== "GRASP" && assist("auto_release") && closed.get(key) && empty(after)) {
 				last = await reopen(arm, signal);
 				recent.push("RELEASE(auto)");
 				note = NOTES.lost_grasp;

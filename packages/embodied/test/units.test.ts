@@ -194,6 +194,13 @@ test("recovery reopens a GRASP that closed on nothing", async () => {
 		g.moves.map((m) => m.gripper),
 		["close"],
 	);
+	// A human's GRASP (GUMI teleop) stays closed even with the plugin on.
+	const h = await toyRobot({}, { onClose: () => 0.001 });
+	await h.run("act", { unit: "GRASP", operator: true });
+	assert.deepEqual(
+		h.moves.map((m) => m.gripper),
+		["close"],
+	);
 });
 
 test("auto_release reopens a closed gripper whose object slipped out", async () => {

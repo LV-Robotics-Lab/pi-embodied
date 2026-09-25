@@ -45,7 +45,8 @@ molmo = [
     # LIBERO extra cannot supply: OpenPI pins transformers==4.53.2 exactly, and
     # 4.53.2 has no transformers.video_utils.make_batched_metadata. Install this
     # into its own environment and point the grounder at it over RPC.
-    "transformers>=4.57",
+    "transformers>=4.57,<5",  # Molmo2 remote code targets 4.57.1
+    "accelerate",  # molmo_server --offload-blocks
     "torch",
     "torchvision",
     "pillow>=10",

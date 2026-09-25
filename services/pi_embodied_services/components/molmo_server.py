@@ -15,7 +15,7 @@
 # Modified by pi-embodied: import paths rewritten; healthz service name; HTTP is
 # the only --transport; install and PYTHONPATH hints point at services/; the point
 # parser skips Molmo2's leading image index; activations are released after each call;
-# --max-gpu-memory offloads part of the weights for a shared GPU.
+# --offload-blocks keeps decoder blocks in host memory for a shared GPU.
 
 """RPC server owning the local Molmo visual-grounding model.
 
@@ -39,6 +39,7 @@ from __future__ import annotations
 import argparse
 import base64
 import io
+import json
 import logging
 import os
 import re
@@ -91,12 +92,12 @@ class MolmoFacade(RpcFacade):
 
     SERVICE_NAME = "molmo"
 
-    def __init__(self, checkpoint: str, max_gpu_memory: str | None = None) -> None:
+    def __init__(self, checkpoint: str, offload_blocks: int = 0) -> None:
         super().__init__()
-        self._load(checkpoint, max_gpu_memory)
+        self._load(checkpoint, offload_blocks)
         self._register_rpc()
 
-    def _load(self, checkpoint: str, max_gpu_memory: str | None = None) -> None:
+    def _load(self, checkpoint: str, offload_blocks: int = 0) -> None:
         try:
             import torch
             from transformers import AutoModelForImageTextToText, AutoProcessor
@@ -112,13 +113,30 @@ class MolmoFacade(RpcFacade):
             checkpoint, trust_remote_code=True, local_files_only=True
         )
         kwargs: dict[str, Any] = {}
-        if max_gpu_memory:
-            # Sharing a GPU: keep this much of the weights on it, the rest in host
-            # memory (needs accelerate).
-            kwargs = {
-                "device_map": "auto",
-                "max_memory": {0: max_gpu_memory, "cpu": "512GiB"},
+        if offload_blocks > 0:
+            # Sharing a GPU: keep the last decoder blocks in host memory (needs
+            # accelerate). Only whole decoder blocks move; the vision backbone
+            # reads its weights outside accelerate's hooks and must stay on the GPU.
+            with open(os.path.join(checkpoint, "model.safetensors.index.json")) as f:
+                names = json.load(f)["weight_map"]
+            blocks = 1 + max(
+                int(m.group(1))
+                for m in map(
+                    re.compile(r"model\.transformer\.blocks\.(\d+)\.").match, names
+                )
+                if m
+            )
+            device_map: dict[str, int | str] = {
+                "model.vision_backbone": 0,
+                "model.transformer.wte": 0,
+                "model.transformer.ln_f": 0,
+                "lm_head": 0,
             }
+            for i in range(blocks):
+                device_map[f"model.transformer.blocks.{i}"] = (
+                    "cpu" if i >= blocks - offload_blocks else 0
+                )
+            kwargs = {"device_map": device_map}
         model = AutoModelForImageTextToText.from_pretrained(
             checkpoint,
             trust_remote_code=True,
@@ -126,7 +144,7 @@ class MolmoFacade(RpcFacade):
             dtype=torch.bfloat16,
             **kwargs,
         )
-        model = (model if max_gpu_memory else model.to("cuda")).eval()
+        model = (model if offload_blocks > 0 else model.to("cuda")).eval()
         self._torch = torch
         self._model = model
         self._processor = processor
@@ -205,10 +223,11 @@ def _build_argparser() -> argparse.ArgumentParser:
         help="GPU device exposed through CUDA_VISIBLE_DEVICES.",
     )
     parser.add_argument(
-        "--max-gpu-memory",
-        default=None,
-        help="Cap the weights kept on the GPU (e.g. 13GiB) and offload the rest to "
-        "host memory, for a GPU shared with the VLA and SAM3.",
+        "--offload-blocks",
+        type=int,
+        default=0,
+        help="Keep this many decoder blocks (0.39 GB each for Molmo2-8B) in host "
+        "memory, for a GPU shared with the VLA and SAM3.",
     )
     parser.add_argument(
         "--parent-watch",
@@ -230,7 +249,7 @@ def main() -> None:
             "MOLMO_CHECKPOINT_PATH is not set; export the path to the Molmo "
             "weights before starting pi-embodied"
         )
-    facade = MolmoFacade(checkpoint, args.max_gpu_memory)
+    facade = MolmoFacade(checkpoint, args.offload_blocks)
     facade.serve(
         transport=args.transport,
         host=args.host,

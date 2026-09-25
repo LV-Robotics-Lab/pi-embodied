@@ -120,6 +120,10 @@ SAM3_CHECKPOINT_PATH=/ckpt/sam3/sam3.pt python -m pi_embodied_services.component
 # Molmo (own venv; only needs this package on PYTHONPATH)
 MOLMO_CHECKPOINT_PATH=/ckpt/Molmo2-8B PYTHONPATH=services \
 python -m pi_embodied_services.components.molmo_server --port 18400
+# On a GPU shared with the Pi0.5 VLA and SAM3 add `--offload-blocks 20` (the last 20 text
+# layers stay in host memory, ~7.7 GB less GPU); without it SAM3 runs out of memory and
+# every Flash anchor fails. Flash's `--molmo off` replays a recorded plan exactly instead.
+# RoboTwin's LingBot serve.sh also defaults to 18400: give one of them another port.
 
 # RoboCasa env (one per episode) and RLDX-1 VLA (shared, per-session state)
 python -m pi_embodied_services.robots.robocasa.env_server --task-name OpenDrawer --split target --seed 0

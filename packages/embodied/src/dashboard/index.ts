@@ -10,6 +10,12 @@
  * (STATUS_EVENT). The page state is rebuilt from the session branch at every session_start,
  * so reload, resume and fork show the right history.
  *
+ * The camera panel can also show a live stream (`GET /live`, multipart/x-mixed-replace PNG, at most
+ * --dashboard-live-fps frames per second, downscaled to `?w=`): the robot's env frames as it records
+ * them for the episode video (../video.ts FRAME_EVENT), so it follows every env step of a motion call
+ * or an operator's unit, not only tool results. It adds no robot RPC: a simulator only renders when
+ * it steps, and the stream sends the latest frame, skipping any a client is too slow for.
+ *
  * The new-task form sends `/robot-task <values>` for the robot's task fields, which starts a
  * new pi session carrying a `robot_task` entry; the robot reads it in place of its flags.
  *
@@ -29,9 +35,11 @@ import type {
 	MessageEndEvent,
 	MessageUpdateEvent,
 } from "@earendil-works/pi-coding-agent";
-import { type Gumi, type GumiState, gumi, observation, type Step as UnitStep } from "../gumi/index.ts";
+import { ARM, type Gumi, type GumiState, gumi, observation, parseSteps, type Step as UnitStep } from "../gumi/index.ts";
 import { encodePng } from "../png.ts";
-import { RESULT_ENTRY, type RobotStatus, STATUS_EVENT, TASK_ENTRY } from "../robot.ts";
+import { RESULT_ENTRY, type RobotStatus, rgbOf, STATUS_EVENT, TASK_ENTRY } from "../robot.ts";
+import type { NdArray } from "../rpc.ts";
+import { FRAME_EVENT, NOTE_EVENT, type VideoNote } from "../video.ts";
 
 const HUB = Symbol.for("pi-embodied.dashboard");
 
@@ -101,6 +109,23 @@ const textOf = (content: string | { type: string; text?: string }[]) =>
 
 const clip = (s: string, n = 4000) => (s.length > n ? `${s.slice(0, n)}… [${s.length - n} more chars]` : s);
 
+/** Downscale 8-bit RGB pixels by the integer box filter that brings them to at most `maxWidth`. */
+function shrinkRgb(rgb: Buffer, width: number, height: number, maxWidth: number) {
+	if (width <= maxWidth) return { rgb, width, height };
+	const f = Math.ceil(width / maxWidth);
+	const [w, h] = [Math.floor(width / f), Math.floor(height / f)];
+	const out = Buffer.alloc(w * h * 3);
+	for (let y = 0; y < h; y++)
+		for (let x = 0; x < w; x++)
+			for (let c = 0; c < 3; c++) {
+				let sum = 0;
+				for (let dy = 0; dy < f; dy++)
+					for (let dx = 0; dx < f; dx++) sum += rgb[((y * f + dy) * width + x * f + dx) * 3 + c];
+				out[(y * w + x) * 3 + c] = Math.round(sum / (f * f));
+			}
+	return { rgb: out, width: w, height: h };
+}
+
 /** Downscale a PNG from ../png.ts (8-bit RGB, filter 0) by an integer box filter; anything else is served as is. */
 function shrinkPng(png: Buffer, maxWidth: number): Buffer {
 	if (png.toString("ascii", 12, 16) !== "IHDR") return png;
@@ -116,22 +141,42 @@ function shrinkPng(png: Buffer, maxWidth: number): Buffer {
 	const raw = inflateSync(Buffer.concat(idat));
 	const stride = width * 3 + 1;
 	for (let y = 0; y < height; y++) if (raw[y * stride] !== 0) return png;
-	const f = Math.ceil(width / maxWidth);
-	const [w, h] = [Math.floor(width / f), Math.floor(height / f)];
-	const out = Buffer.alloc(w * h * 3);
-	for (let y = 0; y < h; y++)
-		for (let x = 0; x < w; x++)
-			for (let c = 0; c < 3; c++) {
-				let sum = 0;
-				for (let dy = 0; dy < f; dy++)
-					for (let dx = 0; dx < f; dx++) sum += raw[(y * f + dy) * stride + 1 + (x * f + dx) * 3 + c];
-				out[(y * w + x) * 3 + c] = Math.round(sum / (f * f));
-			}
-	return encodePng(out, w, h);
+	const rgb = Buffer.alloc(width * height * 3);
+	for (let y = 0; y < height; y++) raw.copy(rgb, y * width * 3, y * stride + 1, (y + 1) * stride);
+	const small = shrinkRgb(rgb, width, height, maxWidth);
+	return encodePng(small.rgb, small.width, small.height);
 }
 
-function createHub(server: Server, url: string, page: string) {
+/** One env frame (HxWxC) as a PNG at most `maxWidth` wide. */
+export function framePng(frame: NdArray, maxWidth: number): Buffer {
+	const img = rgbOf(frame);
+	const small = shrinkRgb(img.rgb, img.width, img.height, maxWidth);
+	return encodePng(small.rgb, small.width, small.height);
+}
+
+/** An operator request's steps as the video labels them (one arm: the unit; two: `L:MV_FWD R:STILL`). */
+function stepLabels(body: Record<string, unknown>, g: GumiState): string[] {
+	const arms = g.arms.length ? g.arms : [ARM];
+	try {
+		return parseSteps(
+			body,
+			arms,
+			g.vocabulary.filter((u) => u !== "DONE"),
+		).map((s) => (arms.length > 1 ? arms.map((a) => `${a[0].toUpperCase()}:${s[a]}`).join(" ") : s[arms[0]]));
+	} catch {
+		return [];
+	}
+}
+
+function createHub(server: Server, url: string, page: string, liveFps: number) {
 	const clients = new Set<ServerResponse>();
+	/** The latest env frame (../video.ts FRAME_EVENT), and the live-stream clients with the frame each has. */
+	let live: { frame: NdArray; seq: number } | undefined;
+	const watchers = new Set<{ res: ServerResponse; width: number; seq: number }>();
+	const liveCache = new Map<number, Buffer>();
+	let pump: ReturnType<typeof setInterval> | undefined;
+	/** Operator units still to run in the current /gumi/step request, for the episode video's labels. */
+	let operatorSteps: string[] = [];
 	const frameCache = new Map<string, Buffer>();
 	let pi: ExtensionAPI | undefined;
 	let ctx: ExtensionContext | undefined;
@@ -219,8 +264,32 @@ function createHub(server: Server, url: string, page: string) {
 	const validTask = (values: string[]) =>
 		values.length === (episode?.fields.length ?? -1) && values.every((v) => /^[\w.:-]+$/.test(v));
 
+	const note = (n: VideoNote) => pi?.events.emit(NOTE_EVENT, n);
+	/** Send each live client the latest frame, once; a client whose socket is still draining skips it. */
+	function sendLive() {
+		if (!live) return;
+		const { frame, seq } = live;
+		for (const w of watchers) {
+			if (w.seq === seq || w.res.writableNeedDrain) continue;
+			let png = liveCache.get(w.width);
+			if (!png) {
+				png = framePng(frame, w.width);
+				liveCache.set(w.width, png);
+			}
+			w.res.write(`--frame\r\nContent-Type: image/png\r\nContent-Length: ${png.length}\r\n\r\n`);
+			w.res.write(png);
+			w.res.write("\r\n");
+			w.seq = seq;
+		}
+	}
+
 	const hub = {
 		url,
+		/** An env frame the robot recorded; streamed to live clients at the next tick. */
+		frame(frame: NdArray) {
+			live = { frame, seq: (live?.seq ?? 0) + 1 };
+			liveCache.clear();
+		},
 		/** Bind to a fresh runtime and rebuild the page state from its session branch. */
 		attach(nextPi: ExtensionAPI, nextCtx: ExtensionContext, status: RobotStatus | undefined, g: Gumi) {
 			pi = nextPi;
@@ -234,9 +303,13 @@ function createHub(server: Server, url: string, page: string) {
 			callArgs.clear();
 			callStart.clear();
 			frameCache.clear();
+			live = undefined;
+			liveCache.clear();
 			episode = {
 				...taskEntry(nextCtx),
-				gen: (episode?.gen ?? 0) + 1,
+				// Frame URLs (/frame/<gen>/...) are cached by the browser: the first gen is the process start
+				// time, so another pi process on the same port never reuses an earlier episode's URLs.
+				gen: (episode?.gen ?? Date.now()) + 1,
 				ready: false,
 				ended: false,
 				claimed: null,
@@ -270,6 +343,9 @@ function createHub(server: Server, url: string, page: string) {
 			hub.detach();
 			for (const res of clients) res.end();
 			clients.clear();
+			for (const w of watchers) w.res.end();
+			watchers.clear();
+			clearInterval(pump);
 			server.closeAllConnections();
 			server.close();
 			delete (globalThis as Record<symbol, unknown>)[HUB];
@@ -301,6 +377,9 @@ function createHub(server: Server, url: string, page: string) {
 			steps.push(step);
 			images.push(frames);
 			send({ op: "step", step });
+			// The next unit of this request labels the frames from here on.
+			const next = operatorSteps.shift();
+			if (next !== undefined) note({ actor: "human", action: next });
 			add({ kind: "meta", text: `operator ${label}${isError ? ` failed: ${clip(text, 200)}` : ""}`, step: step.n });
 		},
 		setRunning(running: boolean) {
@@ -374,6 +453,25 @@ function createHub(server: Server, url: string, page: string) {
 				req.on("close", () => clients.delete(res));
 				return;
 			}
+			if (req.method === "GET" && url.pathname === "/live") {
+				res.writeHead(200, {
+					"Content-Type": "multipart/x-mixed-replace; boundary=frame",
+					"Cache-Control": "no-store",
+					Connection: "keep-alive",
+				});
+				const width = Math.min(1024, Math.max(64, Number(url.searchParams.get("w")) || 480));
+				const w = { res, width, seq: 0 };
+				watchers.add(w);
+				pump ??= setInterval(sendLive, 1000 / liveFps);
+				sendLive();
+				req.on("close", () => {
+					watchers.delete(w);
+					if (watchers.size) return;
+					clearInterval(pump);
+					pump = undefined;
+				});
+				return;
+			}
 			const frame = url.pathname.match(/^\/frame\/(\d+)\/(\d+)\/(\d+)$/);
 			if (req.method === "GET" && frame) {
 				const [gen, n, k] = frame.slice(1).map(Number);
@@ -429,7 +527,17 @@ function createHub(server: Server, url: string, page: string) {
 			if (url.pathname.startsWith("/gumi/") && teleop) {
 				const g = teleop;
 				try {
-					if (url.pathname === "/gumi/step") return reply(200, await g.step(body));
+					if (url.pathname === "/gumi/step") {
+						operatorSteps = stepLabels(body, g.state());
+						const first = operatorSteps.shift();
+						if (first !== undefined) note({ actor: "human", action: first });
+						try {
+							return reply(200, await g.step(body));
+						} finally {
+							operatorSteps = [];
+							note({ actor: null });
+						}
+					}
 					if (url.pathname === "/gumi/record")
 						return reply(200, g.record(String(body.action ?? ""), body.success));
 					if (url.pathname === "/gumi/control") return reply(200, g.control(String(body.action ?? "")));
@@ -455,7 +563,7 @@ function createHub(server: Server, url: string, page: string) {
 	return hub;
 }
 
-function startHub(host: string, port: number, language: string): Promise<Hub> {
+function startHub(host: string, port: number, language: string, liveFps: number): Promise<Hub> {
 	const lang = language === "zh-cn" ? "zh-cn" : "en";
 	const page = readFileSync(new URL("./page.html", import.meta.url), "utf8").replace("__LANG__", lang);
 	return new Promise((resolve, reject) => {
@@ -470,7 +578,7 @@ function startHub(host: string, port: number, language: string): Promise<Hub> {
 		server.listen(port, host, () => {
 			const { port: bound } = server.address() as { port: number };
 			const shown = host === "0.0.0.0" || host === "::" ? hostname() : host.includes(":") ? `[${host}]` : host;
-			hub = createHub(server, `http://${shown}:${bound}/`, page);
+			hub = createHub(server, `http://${shown}:${bound}/`, page, liveFps);
 			server.unref();
 			resolve(hub);
 		});
@@ -482,6 +590,11 @@ export default function dashboard(pi: ExtensionAPI) {
 	pi.registerFlag("dashboard-host", { type: "string", default: "127.0.0.1", description: "Dashboard bind address" });
 	pi.registerFlag("dashboard-port", { type: "string", default: "0", description: "Dashboard port (0 = any free)" });
 	pi.registerFlag("dashboard-language", { type: "string", default: "en", description: "Dashboard UI: en | zh-cn" });
+	pi.registerFlag("dashboard-live-fps", {
+		type: "string",
+		default: "5",
+		description: "Most frames per second of the dashboard's live camera stream",
+	});
 	let hub: Hub | undefined;
 	let status: RobotStatus | undefined;
 	const on = <T>(fn: (h: Hub) => T) => (hub ? fn(hub) : undefined);
@@ -494,6 +607,7 @@ export default function dashboard(pi: ExtensionAPI) {
 		status = data as RobotStatus;
 		on((h) => h.status(status as RobotStatus));
 	});
+	pi.events.on(FRAME_EVENT, (data) => on((h) => h.frame(data as NdArray)));
 
 	pi.on("session_start", async (_event, ctx) => {
 		if (pi.getFlag("dashboard") !== true) return;
@@ -503,6 +617,7 @@ export default function dashboard(pi: ExtensionAPI) {
 			String(pi.getFlag("dashboard-host")),
 			Number(pi.getFlag("dashboard-port")),
 			String(pi.getFlag("dashboard-language")),
+			Math.min(30, Math.max(0.2, Number(pi.getFlag("dashboard-live-fps")) || 5)),
 		);
 		hub = await slot[HUB];
 		hub.attach(pi, ctx, status, teleop);

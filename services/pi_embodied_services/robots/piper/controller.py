@@ -180,33 +180,53 @@ class PiperController:
     # -- state ------------------------------------------------------------
 
     def sync(self) -> list[str]:
-        """Reset the setpoint to the measured pose and (re)validate the joint backend."""
+        """Reset the setpoint to the measured pose and (re)validate the joint backend.
+
+        All-or-nothing: if any feedback read fails the setpoint stays invalid, so the
+        next call re-syncs (and raises again while feedback is stale) instead of moving.
+        """
+        self._target_pos = self._target_euler = self._q_cmd = None
         notes: list[str] = []
         pose = np.asarray(self.robot.get_ee_pose(), dtype=float)
-        self._target_pos = pose[:3].copy()
-        self._target_euler = quat_to_euler(pose[3:])
         width = float(self.robot.get_gripper_width())
+        backend, kin, q_cmd = "endpose", None, None
+        if self.limits.motion_backend == "joint_stream":
+            q = np.asarray(self.robot.get_joint_positions(), dtype=float)[:6]
+            kin, err = select_dh_variant(q, pose)
+            if err > 0.01:
+                kin = None
+                notes.append(
+                    f"joint_stream disabled: FK is {err * 1000:.1f} mm from the arm's "
+                    "own pose feedback; using endpose (MOVE P)"
+                )
+                logger.warning(notes[-1])
+            else:
+                backend, q_cmd = "joint_stream", q
+                margins = np.degrees(
+                    np.minimum(q - JOINT_LIMITS_RAD[:, 0], JOINT_LIMITS_RAD[:, 1] - q)
+                )
+                tight = [
+                    f"j{j + 1} {margins[j]:.1f} deg" for j in range(6) if margins[j] < 8
+                ]
+                if tight:
+                    notes.append(f"start pose near a joint limit ({', '.join(tight)})")
         self.gripper_closed = width < self.limits.close_threshold_m
-        self.backend, self._kin, self._q_cmd = "endpose", None, None
-        if self.limits.motion_backend != "joint_stream":
-            return notes
-        q = np.asarray(self.robot.get_joint_positions(), dtype=float)[:6]
-        kin, err = select_dh_variant(q, pose)
-        if err > 0.01:
-            notes.append(
-                f"joint_stream disabled: FK is {err * 1000:.1f} mm from the arm's own "
-                "pose feedback; using endpose (MOVE P)"
-            )
-            logger.warning(notes[-1])
-            return notes
-        self.backend, self._kin, self._q_cmd = "joint_stream", kin, q
-        margins = np.degrees(
-            np.minimum(q - JOINT_LIMITS_RAD[:, 0], JOINT_LIMITS_RAD[:, 1] - q)
-        )
-        tight = [f"j{j + 1} {margins[j]:.1f} deg" for j in range(6) if margins[j] < 8]
-        if tight:
-            notes.append(f"start pose near a joint limit ({', '.join(tight)})")
+        self.backend, self._kin, self._q_cmd = backend, kin, q_cmd
+        self._target_euler = quat_to_euler(pose[3:])
+        self._target_pos = pose[:3].copy()
         return notes
+
+    def _invalidate(self) -> None:
+        """Forget the setpoint after a motion failed or was aborted.
+
+        The next call re-syncs from measured state, so nothing streams toward a target
+        (or from joints) captured before the failure.
+        """
+        self._target_pos = self._target_euler = self._q_cmd = None
+        try:
+            self.robot.note_commanded_pose(None)
+        except Exception as exc:
+            logger.warning("forgetting the commanded pose failed: %s", exc)
 
     def _ensure_synced(self) -> None:
         if self._target_pos is None:
@@ -307,6 +327,9 @@ class PiperController:
             report.ok = False
             report.notes.append("stopped")
             self._hold_after_stop()
+        except BaseException:
+            self._invalidate()
+            raise
         post = np.asarray(self.robot.get_ee_pose(), dtype=float)
         out: dict[str, Any] = {
             "ok": report.ok,
@@ -418,6 +441,8 @@ class PiperController:
                         "reach fallback: IK failed at the first waypoint (arm at its "
                         "reach limit or bad seed) -> one EndPoseCtrl attempt"
                     )
+                    # A stop mid-MOVE P holds the measured pose, not the pre-move joints.
+                    self._q_cmd = None
                     self._drive_endpose()
                     self._q_cmd = np.asarray(self.robot.get_joint_positions(), float)[
                         :6
@@ -564,6 +589,9 @@ class PiperController:
                 f"target joints {goal.tolist()} are outside the joint limits"
             )
         start = np.asarray(self.robot.get_joint_positions(), dtype=float)[:6]
+        # The Cartesian setpoint is meaningless once the reset streams; a failure below
+        # leaves it invalid so the next step re-syncs from the measured pose.
+        self._invalidate()
         steps = max(2, int(round(lim.joint_stream_hz * max(0.1, lim.reset_time_s))))
         period = max(0.1, lim.reset_time_s) / steps
         cancelled = False

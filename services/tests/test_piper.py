@@ -53,16 +53,25 @@ class FakeArm:
         self.pose_offset = pose_offset
         self.object_width = object_width
         self.streamed = 0
+        self.stream_log: list[np.ndarray] = []
+        self.fail_at_stream: int | None = None
+        self.stale = False
         self.poses: list[np.ndarray] = []
         self.noted = None
         self.closed = False
 
+    def _check_fresh(self):
+        if self.stale:
+            raise RuntimeError("feedback is stale")
+
     def get_ee_pose(self):
+        self._check_fresh()
         p = self.pose.copy()
         p[0] += self.pose_offset
         return p
 
     def get_joint_positions(self):
+        self._check_fresh()
         return self.q.copy()
 
     def get_gripper_width(self):
@@ -74,7 +83,10 @@ class FakeArm:
             self.pose = np.asarray(pose7, float).copy()
 
     def stream_joints(self, q):
+        if self.fail_at_stream is not None and self.streamed >= self.fail_at_stream:
+            raise RuntimeError("feedback on /puppet/joint_left is 0.80s old")
         self.streamed += 1
+        self.stream_log.append(self.kin.fk_pose7(np.asarray(q, float)[:6])[:3])
         if not self.drop:
             self.q = np.asarray(q, float)[:6].copy()
             self.pose = self.kin.fk_pose7(self.q)
@@ -212,6 +224,56 @@ def test_stop_halts_the_joint_stream_between_waypoints():
     assert 0 < moved < 0.01, moved
     # The setpoint restarts from where the arm is, not where it was headed.
     np.testing.assert_allclose(c.target_pose[:3], arm.pose[:3], atol=1e-9)
+
+
+def assert_next_step_starts_from_measured(c, arm):
+    """The next 1 cm step streams only near the measured pose, never the old target."""
+    arm.fail_at_stream = None
+    start = arm.pose[:3].copy()
+    arm.stream_log.clear()
+    out = c.step([0.0, 0.0, 0.01])
+    assert out["ok"], out["notes"]
+    far = max(float(np.linalg.norm(p - start)) for p in arm.stream_log)
+    assert far < 0.011, far
+    np.testing.assert_allclose(arm.pose[:3], start + [0, 0, 0.01], atol=1e-3)
+
+
+def test_failure_mid_step_invalidates_the_setpoint():
+    arm = FakeArm()
+    c = controller(arm, speed_mps=0.05)
+    old_target = arm.pose[:3] + [0.04, 0.0, 0.0]
+    arm.fail_at_stream = 5
+    with pytest.raises(RuntimeError, match="old"):
+        c.step([0.04, 0.0, 0.0])
+    assert c._target_pos is None and c._q_cmd is None and arm.noted is None
+    assert np.linalg.norm(arm.pose[:3] - old_target) > 0.03
+    assert_next_step_starts_from_measured(c, arm)
+
+
+def test_failure_mid_reset_invalidates_the_setpoint():
+    arm = FakeArm()
+    c = controller(arm, reset_time_s=1.0)
+    home = arm.pose[:3].copy()
+    goal = HOME + [0.3, 0.2, -0.2, 0.0, 0.2, 0.0]
+    arm.fail_at_stream = 20
+    with pytest.raises(RuntimeError, match="old"):
+        c.move_to_joints(goal)
+    assert np.linalg.norm(arm.pose[:3] - home) > 0.02, "stopped away from the old pose"
+    assert_next_step_starts_from_measured(c, arm)
+
+
+def test_no_motion_after_a_failure_while_feedback_is_stale():
+    arm = FakeArm()
+    c = controller(arm)
+    arm.fail_at_stream = 2
+    with pytest.raises(RuntimeError):
+        c.step([0.02, 0.0, 0.0])
+    arm.fail_at_stream, arm.stale = None, True
+    streamed = arm.streamed
+    with pytest.raises(RuntimeError, match="stale"):
+        c.step([0.02, 0.0, 0.0])
+    assert arm.streamed == streamed and not arm.poses
+    assert c._target_pos is None
 
 
 def test_gripper_hold_empty_grasp_and_dropped_command():

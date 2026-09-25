@@ -440,9 +440,11 @@ function createHub(server: Server, url: string, page: string) {
 				}
 			}
 			if (url.pathname === "/interrupt") {
+				// Also an operator's GUMI batch, which runs while the agent is idle too.
+				const stopped = teleop?.stop() ?? false;
 				const idle = ctx.isIdle();
 				if (!idle) ctx.abort();
-				return reply(idle ? 200 : 202, { ok: true, interrupted: !idle });
+				return reply(idle && !stopped ? 200 : 202, { ok: true, interrupted: !idle || stopped });
 			}
 			return reply(404, { error: "not found" });
 		},

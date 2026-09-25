@@ -429,9 +429,11 @@ export type Mode = "agent" | "requested" | "human";
 /**
  * Who drives. The agent's robot tool calls pass `gate()` first: while the operator has the robot, or
  * an operator batch (`begin()` .. `end()`) is running, they wait (the agent is paused between
- * steps). A call is stale when the operator acted after the latest observation the agent saw
- * (`seen()`): it is dropped, as Show-Harness's runner drops a decision whose input generation
- * changed. `take()` during an agent call waits for it to finish ("requested") before the operator
+ * steps). A call is stale when the operator acted after the latest robot result the agent had when
+ * its model request started (`seen()` on robot results and drop notices, `decide()` at each
+ * request): it is dropped, as Show-Harness's runner drops a decision whose input generation
+ * changed. A non-robot result (e.g. `read`) carries no observation, so it never refreshes a
+ * decision. `take()` during an agent call waits for it to finish ("requested") before the operator
  * may act; `release()` during an operator batch takes effect when the batch ends.
  */
 export class Takeover {
@@ -442,7 +444,10 @@ export class Takeover {
 	generation = 0;
 	/** An operator batch is running: nothing of the agent's runs until it ends. */
 	operating = false;
+	/** The generation the agent's current decision rests on (its model request's). */
 	private observed = 0;
+	/** The generation of the latest robot result or drop notice the agent received. */
+	private informed = 0;
 	private busy = false;
 	private handBack = false;
 	private waiters: (() => void)[] = [];
@@ -476,10 +481,14 @@ export class Takeover {
 		this.generation++;
 		this.driven.push(...units);
 	}
-	/** The agent received a fresh observation (a tool result, or a new prompt). */
+	/** The agent received the robot's current state (a robot tool result, or a drop notice). */
 	seen() {
-		this.observed = this.generation;
+		this.informed = this.generation;
 		this.driven = [];
+	}
+	/** A model request starts: its decisions rest on what the agent had received so far. */
+	decide() {
+		this.observed = this.informed;
 	}
 
 	/** Before an agent robot call: wait while the operator drives; `stale` when they acted since the agent last looked. */
@@ -495,6 +504,7 @@ export class Takeover {
 				signal?.addEventListener("abort", done, { once: true });
 			});
 		}
+		// Every later call of a dropped request is stale too: it rests on the same observation.
 		const stale = this.generation !== this.observed;
 		const driven = [...this.driven];
 		if (stale) this.seen();
@@ -581,6 +591,8 @@ export function gumi(
 		| { step: Step; n: number; obs: Observation | undefined; state: StepInfo["state"]; closed: StepInfo["closed"] }
 		| undefined;
 	const takeover = new Takeover();
+	/** Stops the running operator batch (`stop()`), also while the agent is idle. */
+	let batch: AbortController | undefined;
 
 	const root = () => {
 		const v = pi.getFlag("gumi-record");
@@ -672,6 +684,11 @@ export function gumi(
 		const { stale, driven } = await takeover.gate(c.signal);
 		if (stale) {
 			publish();
+			if (!driven.length)
+				return {
+					block: true,
+					reason: `This ${event.toolName} call was decided before the operator's steps (reported above) and was not executed; decide again from the current observation.`,
+				};
 			const summary = `The operator took over and executed ${driven.length} step(s): ${driven.join(" ")}.`;
 			if (latest)
 				pi.sendUserMessage(
@@ -709,8 +726,14 @@ export function gumi(
 		// The cameras (the unit tool's result, or a robot observation that lists its `images`); not, e.g.,
 		// `point`'s marked image, which is no camera frame.
 		if (obs && (event.toolName === handle?.tool || Array.isArray(obs.json?.images))) latest = obs;
-		// Whatever the agent's tool returned is what it looks at next.
-		takeover.seen();
+		// A robot tool's result is the robot's current state as the agent sees it next.
+		if (handle?.tools().includes(event.toolName)) takeover.seen();
+		return undefined;
+	});
+
+	// A model request decides on what the agent has received by now.
+	pi.on("context", () => {
+		takeover.decide();
 		return undefined;
 	});
 
@@ -752,13 +775,16 @@ export function gumi(
 			const refused = handle.refuse();
 			if (refused) throw fail(409, refused);
 			takeover.begin();
+			batch = new AbortController();
+			// The agent's abort stops the batch too, as before.
+			const signal = ctx.signal ? AbortSignal.any([batch.signal, ctx.signal]) : batch.signal;
 			publish();
 			const results: { step: Step; ok: boolean; error?: string }[] = [];
 			try {
 				for (const step of steps) {
 					const label =
 						arms.length > 1 ? arms.map((a) => `${a[0].toUpperCase()}:${step[a]}`).join(" ") : step[ARM];
-					const why = handle.refuse();
+					const why = signal.aborted ? "stopped" : handle.refuse();
 					if (why) {
 						results.push({ step, ok: false, error: why });
 						publish(`${label} refused: ${why}`);
@@ -768,11 +794,17 @@ export function gumi(
 					// result exists, STOP (hold one step and look) produces it.
 					if (!latest && recorder?.active && handle.vocabulary.includes("STOP")) {
 						const first = arms[0];
-						const look = await handle.run(
-							first === ARM ? { unit: "STOP" } : { unit: "STOP", arm: first },
-							ctx.signal,
-						);
-						latest = observation(look);
+						try {
+							const look = await handle.run(
+								first === ARM ? { unit: "STOP" } : { unit: "STOP", arm: first },
+								signal,
+							);
+							latest = observation(look);
+						} catch (e) {
+							results.push({ step, ok: false, error: (e as Error).message });
+							publish(`${label} failed: ${(e as Error).message}`);
+							break;
+						}
 					}
 					const obs = latest;
 					const info: StepInfo = {
@@ -784,7 +816,7 @@ export function gumi(
 					const units = arms.map((a) => step[a]);
 					let result: AgentToolResult<unknown>;
 					try {
-						result = await execute(step, ctx.signal);
+						result = await execute(step, signal);
 					} catch (e) {
 						const error = (e as Error).message;
 						results.push({ step, ok: false, error });
@@ -808,6 +840,7 @@ export function gumi(
 					publish(`executed ${label}`);
 				}
 			} finally {
+				batch = undefined;
 				// A hand-back asked for during the batch takes effect now.
 				takeover.end();
 				publish();
@@ -856,6 +889,13 @@ export function gumi(
 				throw fail(409, (e as Error).message);
 			}
 			throw fail(422, "action must be start, save or discard");
+		},
+		/** Stop the running operator batch (the robot's RPC gets `stop`); false when none runs. */
+		stop() {
+			if (!batch) return false;
+			batch.abort();
+			publish("stopping the operator batch");
+			return true;
 		},
 		/** take | release. */
 		control(action: string) {

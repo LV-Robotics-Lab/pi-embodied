@@ -254,7 +254,10 @@ test("takeover: the agent waits while the operator drives; a decision older than
 	t.release();
 	await gate;
 	assert.deepEqual(passed, { stale: true, driven: ["MV_FWD", "GRASP"] });
-	// After the drop the agent decides on a fresh observation.
+	// The rest of that request rests on the same observation: dropped too, with no new steps.
+	assert.deepEqual(await t.gate(), { stale: true, driven: [] });
+	// The drop notice informed the agent; its next request decides on a fresh observation.
+	t.decide();
 	assert.deepEqual(await t.gate(), { stale: false, driven: [] });
 	t.done();
 	// Taking over and handing back without acting drops nothing.
@@ -268,6 +271,9 @@ test("takeover: the agent waits while the operator drives; a decision older than
 	assert.equal((await t.gate()).stale, true);
 	t.humanStep(["MV_UP"]);
 	t.seen();
+	// A robot result alone does not refresh a decision already made; the next request's does.
+	assert.equal((await t.gate()).stale, true);
+	t.decide();
 	assert.equal((await t.gate()).stale, false);
 	t.done();
 	// An abort while paused ends the wait.
@@ -345,9 +351,13 @@ function fakeRobot() {
 		stepM: 0.02,
 		tools: () => ["act", "move_to"],
 		refuse: () => g.refusal,
-		run: async (params) => {
+		run: async (params, signal) => {
 			calls.push(params);
-			if (slow) await new Promise<void>((r) => releases.push(r));
+			if (slow)
+				await new Promise<void>((r, reject) => {
+					releases.push(r);
+					signal?.addEventListener("abort", () => reject(new Error("stopped")), { once: true });
+				});
 			frame++;
 			return result([frame, frame + 50], ["agentview_high", "wrist_high"], {
 				robot0_eef_pos: [0, 0, frame / 1000],
@@ -387,6 +397,7 @@ test("gumi: teleop records (obs_t, a_t) through units.run; agent steps too; save
 	await f.emit("agent_start");
 	assert.equal(((await f.emit("tool_call", { toolName: "act", input: { unit: "STOP" } })) as any).block, true);
 	assert.equal(f.sent.length, 1);
+	await f.emit("context", { messages: [] });
 	assert.equal(await f.emit("tool_call", { toolName: "act", input: { unit: "MV_UP" } }), undefined);
 	await f.emit("tool_result", {
 		toolName: "act",
@@ -462,7 +473,8 @@ test("gumi: DAgger takeover pauses the agent between units, drops its stale call
 	assert.equal(msg.content[1].data, png(102));
 	// A marked `point` image is no camera frame: it does not become the next step's observation.
 	await f.emit("tool_result", { toolName: "point", input: {}, content: [{ type: "text", text: "{}" }, image(99)] });
-	// It decides again: that call runs and is recorded as the agent's.
+	// It decides again (a new model request): that call runs and is recorded as the agent's.
+	await f.emit("context", { messages: [] });
 	assert.equal(await f.emit("tool_call", { toolName: "act", input: { unit: "MV_DOWN" } }), undefined);
 	await f.emit("tool_result", { toolName: "act", input: { unit: "MV_DOWN" }, ...result([5, 6], []) });
 	const { dir } = g.record("save", false);
@@ -521,7 +533,8 @@ test("gumi: during a takeover every robot tool waits, and is dropped as stale if
 	);
 	assert.equal(f.sent.length, 1, "the current observation is steered in");
 	await f.emit("tool_execution_end", { toolName: "move_to" });
-	// Taken and handed back without acting: the held call runs.
+	// Taken and handed back without acting: the held call (of the next model request) runs.
+	await f.emit("context", { messages: [] });
 	g.control("take");
 	const again = pending(f, "move_to");
 	assert.equal(await again.held(), true);
@@ -598,4 +611,48 @@ test("gumi: a hand-back during an operator batch takes effect when the batch end
 	await robot.next();
 	await idle;
 	assert.equal((await early.decision)?.block, true);
+});
+
+test("gumi: a non-robot result does not refresh a decision the operator's steps overtook", async () => {
+	const f = fakePi({});
+	const g = gumi(f.pi);
+	const robot = fakeRobot();
+	await f.emit("session_start");
+	f.pi.events.emit(UNITS_EVENT, robot.handle);
+	f.setIdle(false);
+	await f.emit("agent_start");
+	await f.emit("tool_result", { toolName: "act", input: { unit: "STOP" }, ...result([1, 2], []) });
+	// The model is thinking (its request started) when the operator takes over and drives.
+	await f.emit("context", { messages: [] });
+	g.control("take");
+	await g.step({ command: "w" });
+	g.control("release");
+	// Its reply is [read, act]: read is no robot tool and carries no observation.
+	assert.equal(await f.emit("tool_call", { toolName: "read", input: {} }), undefined);
+	await f.emit("tool_result", { toolName: "read", input: {}, content: [{ type: "text", text: "notes" }] });
+	const act = (await f.emit("tool_call", { toolName: "act", input: { unit: "MV_DOWN" } })) as any;
+	assert.equal(act?.block, true);
+	assert.match(act.reason, /executed 1 step\(s\): MV_FWD/);
+	assert.deepEqual(
+		robot.calls.map((c) => c.unit),
+		["MV_FWD"],
+	);
+});
+
+test("gumi: stop() ends an operator batch while the agent is idle", async () => {
+	const f = fakePi({});
+	const g = gumi(f.pi);
+	const robot = fakeRobot();
+	await f.emit("session_start");
+	f.pi.events.emit(UNITS_EVENT, robot.handle);
+	assert.equal(g.stop(), false, "no batch runs");
+	robot.slow(true);
+	const batch = g.step({ command: "w*5" });
+	while (!robot.calls.length) await new Promise((r) => setTimeout(r, 1));
+	assert.equal(g.stop(), true);
+	const out = await batch;
+	assert.deepEqual([out.ok, out.executed, out.results.at(-1)?.error], [false, 0, "stopped"]);
+	assert.equal(robot.calls.length, 1, "no unit after the stop");
+	assert.equal(g.state().busy, false);
+	assert.equal(g.stop(), false);
 });

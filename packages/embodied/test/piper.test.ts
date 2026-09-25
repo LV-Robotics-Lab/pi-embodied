@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import piper, { headingToBase, PIPER_UNITS } from "../src/piper/index.ts";
+import piper, { headingToBase, PIPER_UNITS, piperViews } from "../src/piper/index.ts";
 import { defineRobot } from "../src/robot.ts";
 import type { Move, Vec3 } from "../src/units/index.ts";
 
@@ -212,4 +212,15 @@ test("the stall check compares heading-frame units in the base frame (45 and 90 
 		[0, 0.02, 0],
 	);
 	assert.deepEqual(headingToBase([0.02, 0, 0], {}), [0.02, 0, 0], "no heading (tool vertical): base frame");
+});
+
+test("heading-frame units describe front-view moves along the gripper heading, not image edges", () => {
+	const base = piperViews("base");
+	assert.match(base, /MV_FWD moves the gripper toward the image bottom/);
+	assert.doesNotMatch(base, /GRIPPER HEADING/);
+	const heading = piperViews("heading");
+	assert.match(heading, /FRONT camera: faces the arm.*Moves follow the GRIPPER HEADING/);
+	assert.doesNotMatch(heading, /MV_FWD moves the gripper toward the image bottom/);
+	// The wrist view is exact in the heading frame (Show-Harness wrist_frame leaves it as is).
+	for (const v of [base, heading]) assert.match(v, /WRIST camera: .*a target near the image TOP needs MV_FWD/);
 });

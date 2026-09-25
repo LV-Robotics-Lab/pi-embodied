@@ -329,7 +329,7 @@ test("an operator's unit passes the gates a tool call passes; every robot tool i
 	});
 	await g.emit("session_start");
 	const handle = unitsHandle(g);
-	assert.deepEqual([...handle.tools()].sort(), ["act", "move", "plan", "render"]);
+	assert.deepEqual([...handle.tools()].sort(), ["act", "move", "plan", "render", "request_scene_reset", "reset"]);
 	assert.equal(handle.refuse(), undefined);
 	// Operator units are no planner turns; the budget the agent spent still binds them.
 	await g.emit("turn_end");

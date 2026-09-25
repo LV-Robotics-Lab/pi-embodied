@@ -14,6 +14,7 @@ import { openSync, readFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type TSchema, Type } from "typebox";
 import { explore } from "../explore.ts";
@@ -154,10 +155,20 @@ export default function libero(pi: ExtensionAPI) {
 	const op = operator(pi, { step: () => envStep });
 	registerFlash(pi, () => ({ suite: cell.suite, task: cell.task }));
 
+	/** The running tool's abort signal; every robot RPC carries it so an abort stops motion between calls. */
+	let toolSignal: AbortSignal | undefined;
+	const call = <T = unknown>(
+		client: RpcClient,
+		method: string,
+		kwargs: Record<string, unknown> = {},
+		timeoutMs = 120_000,
+		args: unknown[] = [],
+	) => client.call<T>(method, kwargs, timeoutMs, args, toolSignal);
+
 	const states = () => obs.states.toArray();
 	const eef = () => states().slice(0, 3);
 	const gripper = () => Math.abs(states()[6]) + Math.abs(states()[7]);
-	const quat = async () => (await env.call<Record<string, NdArray>>("env.raw_obs")).robot0_eef_quat.toArray();
+	const quat = async () => (await call<Record<string, NdArray>>(env, "env.raw_obs")).robot0_eef_quat.toArray();
 
 	function absorb(ret: StepReturn, steps: number) {
 		obs = ret[0];
@@ -176,7 +187,7 @@ export default function libero(pi: ExtensionAPI) {
 
 	async function step(action: number[]) {
 		op.check();
-		const ret = await env.call<StepReturn>("env.step", {}, 60_000, [NdArray.f32(action)]);
+		const ret = await call<StepReturn>(env, "env.step", {}, 60_000, [NdArray.f32(action)]);
 		record(action, ret[0], scalar(ret[1]), done(ret[2]), done(ret[3]));
 		absorb(ret, 1);
 	}
@@ -191,11 +202,12 @@ export default function libero(pi: ExtensionAPI) {
 			task_descriptions: [prompt],
 		};
 		op.check();
-		const actions = await vla.call<NdArray>("vla.predict", {}, 120_000, [wire, { mode: "eval" }]);
+		const actions = await call<NdArray>(vla, "vla.predict", {}, 120_000, [wire, { mode: "eval" }]);
 		const chunk = new NdArray(actions.dtype, actions.shape.slice(1), actions.data);
 		const vlaId = fly.proposal(prompt, chunk);
 		op.check();
-		const [frames, rew, term, trunc, info] = await env.call<ChunkReturn>(
+		const [frames, rew, term, trunc, info] = await call<ChunkReturn>(
+			env,
 			"env.chunk_step",
 			{ return_all_frames: true },
 			120_000,
@@ -221,12 +233,12 @@ export default function libero(pi: ExtensionAPI) {
 		worldMaps.clear();
 		terminated = truncated = false;
 		envStep = 0;
-		[obs] = await env.call<[Obs, unknown]>("env.reset", {}, 300_000);
+		[obs] = await call<[Obs, unknown]>(env, "env.reset", {}, 300_000);
 	}
 
 	async function render(camera: Camera, size: number, depth: boolean) {
 		// The env returns [rgb, depth] with depth, and the bare rgb array without it.
-		const out = await env.call<NdArray | [NdArray, NdArray]>("env.render_camera", {
+		const out = await call<NdArray | [NdArray, NdArray]>(env, "env.render_camera", {
 			camera_name: CAMERAS[camera],
 			height: size,
 			width: size,
@@ -242,7 +254,7 @@ export default function libero(pi: ExtensionAPI) {
 		const cached = worldMaps.get(key);
 		if (cached?.envStep === envStep) return cached;
 		const { rgb, depth } = await render(camera, size, true);
-		const meta = await env.call<CameraMeta>("env.get_camera_meta", {
+		const meta = await call<CameraMeta>(env, "env.get_camera_meta", {
 			camera_name: CAMERAS[camera],
 			height: size,
 			width: size,
@@ -270,7 +282,7 @@ export default function libero(pi: ExtensionAPI) {
 	}
 
 	async function observe(result: Record<string, unknown>) {
-		const raw = await env.call<Record<string, NdArray>>("env.raw_obs");
+		const raw = await call<Record<string, NdArray>>(env, "env.raw_obs");
 		// One call at a time: concurrent calls interleave on the env server's worker pipe.
 		const frames = [await render("agentview", 1024, false), await render("wrist", 1024, false)];
 		const state = {
@@ -320,34 +332,40 @@ export default function libero(pi: ExtensionAPI) {
 			description,
 			parameters,
 			executionMode: "sequential",
-			async execute(_id, params) {
-				if (motion && (terminated || truncated)) {
-					return {
-						content: [
-							{
-								type: "text",
-								text: `Episode already ended (terminated=${terminated}, truncated=${truncated}).`,
-							},
-						],
-						details: { terminated, truncated },
-						terminate: finishing,
-					};
+			async execute(_id, params, signal) {
+				toolSignal = signal;
+				try {
+					return await execute(params);
+				} finally {
+					toolSignal = undefined;
 				}
-				const result = await run(params);
-				if (motion) return { ...(await observe(result)), terminate: finishing };
-				const { _image, ...rest } = result as { _image?: Buffer };
-				const content = [{ type: "text" as const, text: JSON.stringify(rest) }];
-				if (!_image) return { content, details: rest, terminate: finishing };
-				return {
-					content: [
-						...content,
-						{ type: "image" as const, data: _image.toString("base64"), mimeType: "image/png" },
-					],
-					details: rest,
-					terminate: finishing,
-				};
 			},
 		});
+
+		async function execute(params: unknown): Promise<AgentToolResult<unknown>> {
+			if (motion && (terminated || truncated)) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: `Episode already ended (terminated=${terminated}, truncated=${truncated}).`,
+						},
+					],
+					details: { terminated, truncated },
+					terminate: finishing,
+				};
+			}
+			const result = await run(params);
+			if (motion) return { ...(await observe(result)), terminate: finishing };
+			const { _image, ...rest } = result as { _image?: Buffer };
+			const content = [{ type: "text" as const, text: JSON.stringify(rest) }];
+			if (!_image) return { content, details: rest, terminate: finishing };
+			return {
+				content: [...content, { type: "image" as const, data: _image.toString("base64"), mimeType: "image/png" }],
+				details: rest,
+				terminate: finishing,
+			};
+		}
 	}
 
 	const xyz = Type.Array(Type.Number(), { minItems: 3, maxItems: 3, description: "World-frame [x, y, z] in meters" });
@@ -668,7 +686,7 @@ export default function libero(pi: ExtensionAPI) {
 			return {
 				camera: c,
 				resolution,
-				meta: await env.call("env.get_camera_meta", {
+				meta: await call(env, "env.get_camera_meta", {
 					camera_name: CAMERAS[c as Camera],
 					height: size,
 					width: size,
@@ -693,13 +711,13 @@ export default function libero(pi: ExtensionAPI) {
 			if (!text && !point) return { error: "give a text prompt or a point [row, col]" };
 			const map = await worldMap(c, 1024);
 			const png = encodePng(map.rgb, 1024, 1024);
-			const res = await sam3.call<{
+			const res = await call<{
 				found: boolean;
 				score?: number;
 				box?: number[];
 				mask_png_base64?: string;
 				reason?: string;
-			}>("sam3.segment", {
+			}>(sam3, "sam3.segment", {
 				image_base64: png.toString("base64"),
 				...(text ? { text_prompt: text } : { point }),
 				min_score,
@@ -848,6 +866,7 @@ export default function libero(pi: ExtensionAPI) {
 		claimed = undefined;
 		finishing = false;
 		ready = false;
+		recorded = "";
 		try {
 			await startEpisode();
 			ready = true;
@@ -908,13 +927,14 @@ export default function libero(pi: ExtensionAPI) {
 		}
 		env = new RpcClient(endpoint);
 		const proc = server;
-		const exited = new Promise<never>((_, reject) =>
-			proc?.once("exit", (code) => reject(new Error(`env server exited (${code})`))),
-		);
+		const exited = new Promise<never>((_, reject) => {
+			proc?.once("exit", (code) => reject(new Error(`env server exited (${code})`)));
+			proc?.once("error", (err) => reject(new Error(`env server failed to start: ${err.message}`)));
+		});
 		exited.catch(() => {});
 		await Promise.race([env.ready(), exited]);
 		await resetEpisode();
-		language = await env.call<string>("env.get_task_language");
+		language = await call<string>(env, "env.get_task_language");
 		fly.reset(obs, flyMeta());
 		pi.setActiveTools([...TOOLS, ...op.tools(), ...mem.tools]);
 	}
@@ -961,20 +981,38 @@ export default function libero(pi: ExtensionAPI) {
 		return pruned ? { messages: messages.reverse() } : undefined;
 	});
 
-	pi.on("agent_end", (_event, ctx) => {
-		const result = {
-			suite: cell.suite,
-			task: Number(cell.task),
-			seed: Number(cell.seed),
-			terminated,
-			truncated,
-			env_steps: envStep,
-			claimed: claimed?.status ?? null,
-			summary: claimed?.summary ?? null,
-			...op.result(),
-		};
-		pi.appendEntry("libero_result", result);
-		if (!ctx.hasUI) console.error(`[libero] ${JSON.stringify(result)}`);
+	pi.on("input", (_event, ctx) => {
+		if (ready) return undefined;
+		if (ctx.hasUI) ctx.ui.notify("LIBERO is not available; nothing was sent to the model.", "error");
+		return { action: "handled" };
+	});
+
+	const outcome = () => ({
+		suite: cell.suite,
+		task: Number(cell.task),
+		seed: Number(cell.seed),
+		// A failed startup is an infrastructure error, never a task failure.
+		env_error: !ready,
+		terminated,
+		truncated,
+		env_steps: envStep,
+		claimed: claimed?.status ?? null,
+		summary: claimed?.summary ?? null,
+		...op.result(),
+	});
+	let recorded = "";
+
+	// One entry per distinct outcome: a second agent run that changes nothing adds nothing.
+	pi.on("agent_end", () => {
+		const result = JSON.stringify(outcome());
+		if (result === recorded) return;
+		recorded = result;
+		pi.appendEntry("libero_result", outcome());
+	});
+
+	// The stderr line is the episode's final outcome, printed once.
+	pi.on("session_shutdown", (_event, ctx) => {
+		if (!ctx.hasUI) console.error(`[libero] ${JSON.stringify(outcome())}`);
 	});
 
 	explore(pi, {

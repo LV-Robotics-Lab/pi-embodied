@@ -4,6 +4,9 @@
  * `{__ndarray__: <base64 C-order bytes>, dtype, shape}`, scalars as `{__npscalar__}`.
  */
 
+import { Agent as HttpAgent, request as httpRequest } from "node:http";
+import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
+
 export class NdArray {
 	dtype: string;
 	shape: number[];
@@ -64,6 +67,47 @@ function decode(value: unknown): unknown {
 	return value;
 }
 
+/**
+ * Calls to one endpoint run one at a time. A robot env server may accept concurrent
+ * calls (RPent's facades allow parallel read-only calls) while its worker pipe does not.
+ */
+const queues = new Map<string, Promise<unknown>>();
+
+/**
+ * Robot services are local or on the tailnet: never go through HTTP_PROXY. fetch and, with
+ * NODE_USE_ENV_PROXY, Node's global agents would; explicit agents do not.
+ */
+const direct = { http: new HttpAgent({ keepAlive: true }), https: new HttpsAgent({ keepAlive: true }) };
+
+function post(url: string, body: string, timeoutMs: number, signal?: AbortSignal): Promise<string> {
+	return new Promise((resolve, reject) => {
+		if (signal?.aborted) return reject(new Error("aborted"));
+		const target = new URL(url);
+		const https = target.protocol === "https:";
+		const send = https ? httpsRequest : httpRequest;
+		const req = send(
+			target,
+			{
+				method: "POST",
+				agent: https ? direct.https : direct.http,
+				headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) },
+			},
+			(res) => {
+				const chunks: Buffer[] = [];
+				res.on("data", (c: Buffer) => chunks.push(c));
+				res.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+				res.on("error", reject);
+			},
+		);
+		const onAbort = () => req.destroy(new Error("aborted"));
+		signal?.addEventListener("abort", onAbort, { once: true });
+		req.setTimeout(timeoutMs, () => req.destroy(new Error(`timed out after ${timeoutMs} ms`)));
+		req.on("error", reject);
+		req.on("close", () => signal?.removeEventListener("abort", onAbort));
+		req.end(body);
+	});
+}
+
 export class RpcClient {
 	url: string;
 	/** Server-side session id, for servers that scope state per client (RoboCasa's VLA). */
@@ -79,16 +123,21 @@ export class RpcClient {
 		kwargs: Record<string, unknown> = {},
 		timeoutMs = 120_000,
 		args: unknown[] = [],
+		signal?: AbortSignal,
 	): Promise<T> {
-		const res = await fetch(this.url, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ method, args: encode(args), kwargs: encode(kwargs), session_id: this.session }),
-			signal: AbortSignal.timeout(timeoutMs),
-		});
-		const body = (await res.json()) as { ok: boolean; result?: unknown; error?: string };
-		if (!body.ok) throw new Error(`${method}: ${body.error}`);
-		return decode(body.result) as T;
+		const body = JSON.stringify({ method, args: encode(args), kwargs: encode(kwargs), session_id: this.session });
+		const previous = queues.get(this.url) ?? Promise.resolve();
+		const current = previous.catch(() => {}).then(() => post(this.url, body, timeoutMs, signal));
+		queues.set(this.url, current);
+		let text: string;
+		try {
+			text = await current;
+		} finally {
+			if (queues.get(this.url) === current) queues.delete(this.url);
+		}
+		const reply = JSON.parse(text) as { ok: boolean; result?: unknown; error?: string };
+		if (!reply.ok) throw new Error(`${method}: ${reply.error}`);
+		return decode(reply.result) as T;
 	}
 
 	async ready(timeoutMs = 300_000): Promise<void> {

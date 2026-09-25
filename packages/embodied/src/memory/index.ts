@@ -7,9 +7,9 @@
  *   pi -e packages/embodied/src/memory -p "/memory validate" --memory-dir memory/libero
  */
 
-import { existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readlinkSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { hasFiles, mergeMemory, rebuildIndex, str, validateMemory } from "./corpus.ts";
@@ -27,14 +27,15 @@ const ACCESS: Record<string, Access> = {
 
 type Access = "read" | "search" | "write";
 type Details = { terminated?: unknown; error?: unknown; result?: { error?: unknown }; camera?: unknown } | undefined;
-export type Guard = { root: string; home: string; inbox?: string };
+/** Canonical roots: the memory corpus, every robot's memory home, the run's output dir and the cell tag. */
+export type Guard = { root: string; home: string; output: string; tag: string; inbox?: string };
 export type MemoryOptions = {
 	/** Corpus name under the memory home, also the Hugging Face subdirectory (default "libero"). */
 	robot?: string;
 	/** Directory holding every robot's corpus (default $RPENT_ROOT/memory, else ~/.pi/embodied/memory). */
 	home?: () => string;
 	/** The current cell; without it there is no guard, sync, recipe or prompt (maintenance only). */
-	cell?: () => { tag: string; reference: string };
+	cell?: () => { tag: string; reference: string } | undefined;
 	/** State-advancing tools that belong in a recipe (plus successful `segment` calls). */
 	primitives?: readonly string[];
 	/** Exploration run: local profile, the cell's inbox becomes writable. */
@@ -47,7 +48,10 @@ const defaultHome = () => join(process.env.RPENT_ROOT || join(homedir(), ".pi", 
 // Access boundary (RPent's memory/tools.py) and recipes (write_recipe_from_states)
 // ---------------------------------------------------------------------------
 
-/** Canonical path: pi's tool path normalization, then symlinks resolved on the existing prefix. */
+/**
+ * Canonical path: pi's tool path normalization, then symlinks resolved on the existing prefix,
+ * dangling ones included (a write through them lands on their target). Throws on a symlink loop.
+ */
 export function canonicalPath(input: string | undefined, cwd: string): string {
 	let p = (input || ".").replace(/[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g, " ");
 	if (p.startsWith("@")) p = p.slice(1);
@@ -55,21 +59,40 @@ export function canonicalPath(input: string | undefined, cwd: string): string {
 	if (p.startsWith("file://")) p = fileURLToPath(p);
 	let head = resolve(cwd, p);
 	const tail: string[] = [];
-	for (;;) {
+	for (let hops = 0; hops <= 40; ) {
 		try {
 			return join(realpathSync(head), ...tail);
-		} catch {
-			if (dirname(head) === head) return resolve(cwd, p);
+		} catch {}
+		let link: string | undefined;
+		try {
+			link = readlinkSync(head);
+		} catch {}
+		if (link !== undefined) {
+			head = resolve(dirname(head), link);
+			hops++;
+		} else if (dirname(head) === head) return resolve(cwd, p);
+		else {
 			tail.unshift(basename(head));
 			head = dirname(head);
 		}
 	}
+	throw new Error(`too many symbolic links: ${input}`);
 }
 
-/** Why `path` may not be accessed, or undefined. Only the memory home is policed. */
+/**
+ * Why `path` (canonical) may not be accessed, or undefined. Deny by default: only the published memory
+ * (read), the cell's inbox (exploration) and the cell's files in the output dir (`<tag>*`) are reachable.
+ */
 export function denied(path: string, access: Access, g: Guard): string | undefined {
 	const inside = (base: string) => path === base || path.startsWith(base + sep);
-	if (!inside(g.root)) return inside(g.home) ? `access to another robot's memory is denied: ${path}` : undefined;
+	if (!inside(g.root)) {
+		if (inside(g.home)) return `access to another robot's memory is denied: ${path}`;
+		if (path === g.output && access === "read") return undefined;
+		const name = basename(path);
+		const own = name === g.tag || name.startsWith(`${g.tag}.`) || name.startsWith(`${g.tag}_`);
+		if (dirname(path) === g.output && own) return undefined;
+		return `only the memory and this cell's ${g.tag}.* / ${g.tag}_* files in ${g.output} are accessible: ${path}`;
+	}
 	const parts = relative(g.root, path).split(sep).filter(Boolean);
 	const ownInbox = g.inbox !== undefined && parts[0] === "_internal" && parts[1] === "inbox" && parts[2] === g.inbox;
 	if (access === "write") return ownInbox ? undefined : `writing to memory is denied in this mode: ${path}`;
@@ -160,16 +183,19 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 
 	function locate(ctx: ExtensionContext) {
 		const dir = str(pi.getFlag("memory-dir"));
+		const out = str(pi.getFlag("output-dir")) || ctx.sessionManager.getSessionDir();
 		home = canonicalPath(opts.home?.() || defaultHome(), ctx.cwd);
 		root = canonicalPath(dir || join(home, opts.robot ?? "libero"), ctx.cwd);
-		outputDir = canonicalPath(str(pi.getFlag("output-dir")) || ctx.sessionManager.getSessionDir(), ctx.cwd);
+		outputDir = out ? canonicalPath(out, ctx.cwd) : "";
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
+		guard = undefined;
 		locate(ctx);
 		cell = opts.cell?.();
-		guard = undefined;
 		if (!cell) return;
+		if (!/^[\w.-]+$/.test(cell.tag) || /^\.+$/.test(cell.tag))
+			throw new Error(`invalid memory cell tag: ${cell.tag}`);
 		const explore = opts.explore?.() ?? false;
 		const requested = str(pi.getFlag("memory-profile")) || (explore ? "local" : "hf");
 		if (requested !== "hf" && requested !== "local") throw new Error(`unknown --memory-profile ${requested}`);
@@ -177,7 +203,7 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 		profile = requested;
 		if (profile === "hf" && pi.getFlag("memory-dir"))
 			throw new Error("--memory-dir requires --memory-profile local or --explore");
-		guard = { root, home, inbox: explore ? cell.tag : undefined };
+		guard = { root, home, output: outputDir, tag: cell.tag, inbox: explore ? cell.tag : undefined };
 		if (explore) return;
 		if (profile === "hf") await syncMemory(root, (m) => say(ctx, m, "warning"));
 		else if (
@@ -187,20 +213,28 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 			throw new Error(`local memory corpus not found at ${root}; run exploration first or use --memory-profile hf`);
 	});
 
+	// A robot's file tools fail closed: until session_start has established every root, nothing is reachable.
 	pi.on("tool_call", (event, ctx) => {
 		const access = ACCESS[event.toolName];
-		if (!guard || !access) return undefined;
-		const reason = denied(
-			canonicalPath(str((event.input as unknown as { path?: unknown }).path), ctx.cwd),
-			access,
-			guard,
-		);
-		return reason ? { block: true, reason } : undefined;
+		if (!access || !opts.cell) return undefined;
+		const g = guard;
+		if (!g || ![g.root, g.home, g.output].every(isAbsolute) || !g.tag)
+			return { block: true, reason: "file access is disabled: the memory guard has no memory, output dir or cell" };
+		try {
+			const reason = denied(
+				canonicalPath(str((event.input as unknown as { path?: unknown }).path), ctx.cwd),
+				access,
+				g,
+			);
+			return reason ? { block: true, reason } : undefined;
+		} catch (e) {
+			return { block: true, reason: `file access denied: ${(e as Error).message}` };
+		}
 	});
 
 	// Once the run has settled (continuations such as DISTIL included): export the recipe, merge drafts.
 	pi.on("agent_settled", async (_event, ctx) => {
-		if (!cell) return;
+		if (!cell || !outputDir) return;
 		const branch = ctx.sessionManager.getBranch();
 		const commands = recipe(branch, new Set(opts.primitives ?? []));
 		const path = join(outputDir, `${cell.tag}_recipe.jsonl`);

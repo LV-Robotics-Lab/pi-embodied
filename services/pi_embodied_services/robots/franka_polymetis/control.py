@@ -19,10 +19,12 @@
 # Modified by pi-embodied: token decoding removed (the pi units module grounds units);
 # per-call translation/rotation limits refuse instead of clamping; the setpoint is
 # ramped in bounded servo ticks and ``stop`` is polled between ticks; XY/Z workspace
-# box; a blocked descent re-anchors the setpoint; a controller restart that would
-# resume far from the measured pose aborts instead of retrying; configurable begin
-# pose for reset (stoppable joint stream or Polymetis move_to_joint_positions);
-# quaternion math in numpy (no scipy); results use the RLinf franka-env shapes.
+# box checked per axis; a tool tilt limit; every tick compares the measured TCP with
+# the setpoint and a blocked motion re-anchors the setpoint at the measured pose; at
+# most one controller restart per call; validated (finite, bounded) limits, gains and
+# begin joints; configurable begin pose for reset (stoppable joint stream or Polymetis
+# move_to_joint_positions) at a bounded joint speed; quaternion math in numpy (no
+# scipy); results use the RLinf franka-env shapes.
 
 """Cartesian-impedance setpoint control of one Franka through a Polymetis NUC.
 
@@ -44,7 +46,7 @@ from __future__ import annotations
 import math
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import Any
 
 import numpy as np
@@ -52,6 +54,19 @@ import numpy as np
 # Cartesian-impedance gains (xyz, rpy), Show-Harness core/franka/franka_session.py.
 DEFAULT_KX = (750.0, 750.0, 750.0, 15.0, 15.0, 15.0)
 DEFAULT_KXD = (37.0, 37.0, 37.0, 2.0, 2.0, 2.0)
+# Largest accepted gains: 2x the Show-Harness defaults (nuc_server.py repeats these).
+MAX_KX = (1500.0, 1500.0, 1500.0, 30.0, 30.0, 30.0)
+MAX_KXD = (74.0, 74.0, 74.0, 4.0, 4.0, 4.0)
+# Joint limits (rad): the intersection of the Franka Panda and FR3 datasheet ranges.
+JOINT_MIN = (-2.7437, -1.7628, -2.8973, -3.0421, -2.8065, 0.5445, -2.8973)
+JOINT_MAX = (2.7437, 1.7628, 2.8973, -0.1518, 2.8065, 3.7525, 2.8973)
+# Reset joint speed cap. A rest-to-rest profile peaks at up to 1.875x (min-jerk) its
+# mean speed, so a reset takes at least PEAK_TO_MEAN * distance / MAX_JOINT_SPEED.
+MAX_JOINT_SPEED_RAD_S = 0.5
+PEAK_TO_MEAN = 1.875
+# Setpoint speed caps (servo step / tick).
+MAX_SERVO_SPEED_M_S = 0.1
+MAX_SERVO_SPEED_RAD_S = 0.5
 
 # ---------------------------------------------------------------------------
 # Quaternions, scipy order [qx, qy, qz, qw]
@@ -124,6 +139,12 @@ def quat_angle(a: Any, b: Any) -> float:
     return float(np.linalg.norm(quat_to_rotvec(quat_mul(a, quat_conj(b)))))
 
 
+def tool_tilt(quat: Any) -> float:
+    """Angle (rad) between the tool z-axis and straight down (base -z)."""
+    down = -float(quat_rotate(quat, (0.0, 0.0, 1.0))[2])
+    return math.acos(max(-1.0, min(1.0, down)))
+
+
 def flange_to_tcp(pose7: Any, offset: Any) -> tuple[np.ndarray, np.ndarray]:
     """(TCP position, quaternion) from the pose Polymetis reports and a TCP offset."""
     p = np.asarray(pose7, dtype=np.float64)
@@ -155,7 +176,9 @@ class PolymetisLimits:
     move_tolerance_m: float = 0.01
     rotate_tolerance_rad: float = 0.05
     descent_stall_ratio: float = 0.7
-    divergence_resync_m: float = 0.03
+    divergence_resync_m: float = 0.01
+    max_tracking_error_m: float = 0.015
+    max_tilt_rad: float = 0.5
     tcp_offset_m: tuple[float, float, float] = (0.0, 0.0, 0.0)
     kx: tuple[float, ...] = DEFAULT_KX
     kxd: tuple[float, ...] = DEFAULT_KXD
@@ -174,6 +197,16 @@ class PolymetisLimits:
     reset_lift_m: float = 0.05
 
     def validate(self) -> None:
+        for f in fields(self):
+            value = getattr(self, f.name)
+            if value is None or isinstance(value, str):
+                continue
+            try:
+                arr = np.asarray(value, dtype=np.float64)
+            except (TypeError, ValueError):
+                raise ValueError(f"{f.name} must be numeric, got {value!r}") from None
+            if not np.all(np.isfinite(arr)):
+                raise ValueError(f"{f.name} must be finite, got {value!r}")
         if self.z_floor_m is None:
             raise ValueError(
                 "limits.z_floor_m is not set: rest the closed gripper on the table, "
@@ -189,22 +222,73 @@ class PolymetisLimits:
             raise ValueError("workspace_min/max must be [x, y, z] with min < max")
         if self.z_floor_m < lo[2] - 1e-9 or self.z_floor_m >= hi[2]:
             raise ValueError("z_floor_m must lie inside the workspace z range")
-        for name in ("max_move_m", "max_rotate_rad", "servo_step_m", "servo_step_rad"):
-            if not getattr(self, name) > 0:
-                raise ValueError(f"{name} must be > 0")
-        if self.servo_step_m > 0.01 or self.servo_step_rad > 0.05:
+
+        def bound(name: str, lo: float, hi: float) -> None:
+            value = getattr(self, name)
+            if not lo <= value <= hi:
+                raise ValueError(f"{name} must be in [{lo}, {hi}], got {value}")
+
+        bound("max_move_m", 1e-3, 0.2)
+        bound("max_rotate_rad", 1e-2, 0.5)
+        bound("servo_step_m", 1e-4, 0.01)
+        bound("servo_step_rad", 1e-4, 0.05)
+        bound("tick_s", 1e-3, 0.1)
+        if (
+            self.servo_step_m / self.tick_s > MAX_SERVO_SPEED_M_S + 1e-9
+            or self.servo_step_rad / self.tick_s > MAX_SERVO_SPEED_RAD_S + 1e-9
+        ):
             raise ValueError(
-                "servo_step_m > 0.01 or servo_step_rad > 0.05: the impedance setpoint "
-                "would jump too far per tick"
+                f"servo_step_m / tick_s must be <= {MAX_SERVO_SPEED_M_S} m/s and "
+                f"servo_step_rad / tick_s <= {MAX_SERVO_SPEED_RAD_S} rad/s"
             )
-        if self.begin_joints is not None and len(self.begin_joints) != 7:
-            raise ValueError("reset.begin_joints must list 7 joint angles (rad)")
+        if int(self.settle_steps) != self.settle_steps:
+            raise ValueError("settle_steps must be an integer")
+        bound("settle_steps", 1, 50)
+        bound("settle_dt_s", 0.0, 1.0)
+        bound("move_tolerance_m", 1e-3, 0.05)
+        bound("rotate_tolerance_rad", 5e-3, 0.2)
+        bound("descent_stall_ratio", 0.1, 1.0)
+        bound("divergence_resync_m", 2e-3, 0.05)
+        bound("max_tracking_error_m", 2e-3, 0.05)
+        bound("max_tilt_rad", 1e-2, math.pi / 2)
+        offset = np.asarray(self.tcp_offset_m)
+        if offset.shape != (3,) or np.any(np.abs(offset) > 0.3):
+            raise ValueError("robot.tcp_offset_m must be [x, y, z] within +-0.3 m")
+        kx, kxd = np.asarray(self.kx), np.asarray(self.kxd)
+        if kx.shape != (6,) or kxd.shape != (6,):
+            raise ValueError("impedance.kx / kxd must have 6 values")
+        if (
+            np.any(kx <= 0)
+            or np.any(kx > MAX_KX)
+            or np.any(kxd < 0)
+            or np.any(kxd > MAX_KXD)
+        ):
+            raise ValueError(
+                f"impedance gains out of range: 0 < kx <= {list(MAX_KX)}, "
+                f"0 <= kxd <= {list(MAX_KXD)} (2x the Show-Harness defaults)"
+            )
+        bound("gripper_close_threshold_m", 0.0, 0.1)
+        bound("grasp_open_width_m", 0.0, 0.1)
+        if self.empty_width_m is not None:
+            bound("empty_width_m", 0.0, 0.1)
+        bound("gripper_settle_s", 0.0, 10.0)
+        bound("gripper_min_settle_s", 0.0, 10.0)
+        bound("gripper_poll_s", 1e-3, 1.0)
+        bound("begin_time_s", 0.5, 60.0)
+        bound("reset_lift_m", 0.0, 0.2)
+        if self.begin_joints is not None:
+            q = np.asarray(self.begin_joints)
+            if q.shape != (7,):
+                raise ValueError("reset.begin_joints must list 7 joint angles (rad)")
+            if np.any(q <= JOINT_MIN) or np.any(q >= JOINT_MAX):
+                raise ValueError(
+                    f"reset.begin_joints {q.tolist()} are outside the Franka joint "
+                    f"limits {list(JOINT_MIN)} .. {list(JOINT_MAX)}"
+                )
         if self.reset_method not in ("joint_stream", "move_to_joint_positions"):
             raise ValueError(
                 "reset.method must be joint_stream or move_to_joint_positions"
             )
-        if len(self.kx) != 6 or len(self.kxd) != 6:
-            raise ValueError("impedance.kx / kxd must have 6 values")
 
 
 def is_controller_lost_error(exc: Exception) -> bool:
@@ -241,6 +325,7 @@ class PolymetisController:
         self.target_quat: np.ndarray | None = None
         self.gripper_open: bool | None = None
         self.restarts = 0
+        self._call_restarts = 0
 
     # -- frames ------------------------------------------------------------
 
@@ -274,13 +359,16 @@ class PolymetisController:
             self.gripper_open = self.width() >= self.limits.gripper_close_threshold_m
 
     def _command(self, pos: np.ndarray, quat: np.ndarray) -> None:
-        """Send one setpoint; restart a lost controller once (Show-Harness self-heal).
+        """Send one setpoint; restart a lost controller at most once per call.
 
         A restart starts impedance at the measured pose. The same setpoint is re-sent
-        only if it is within ``divergence_resync_m`` of that pose; otherwise (a reflex
-        stopped the arm somewhere else) the setpoint stays at the measured pose and
-        the call fails, so a restart never resumes a long move by itself.
+        only on the first restart of the call and only if it is within
+        ``divergence_resync_m`` of that pose. A far restart, or a second loss in the
+        same call (a reflex that recurs), leaves impedance holding the measured pose
+        and fails the call, so a restart never keeps pushing into an obstacle.
         """
+        if not (np.all(np.isfinite(pos)) and np.all(np.isfinite(quat))):
+            raise RuntimeError(f"refusing a non-finite setpoint {pos.tolist()}")
         pose = self._tcp_to_flange(pos, quat)
         try:
             self.robot.update_desired_ee_pose(pose)
@@ -289,7 +377,14 @@ class PolymetisController:
             if not is_controller_lost_error(exc):
                 raise
         self.restarts += 1
+        self._call_restarts += 1
         self.start_impedance()
+        if self._call_restarts > 1:
+            raise RuntimeError(
+                "the impedance controller was lost again in the same call (a reflex "
+                "or collision recurred); it holds the measured pose and the motion "
+                "aborted"
+            )
         gap = float(np.linalg.norm(self.target_pos - pos))
         if gap > self.limits.divergence_resync_m:
             raise RuntimeError(
@@ -312,6 +407,50 @@ class PolymetisController:
         ):
             self.sync()
 
+    def _displaced(self) -> bool:
+        """Whether the setpoint is off the measured pose by more than the tolerances."""
+        pos, quat = self.measured()
+        return (
+            float(np.linalg.norm(pos - self.target_pos)) > self.limits.move_tolerance_m
+            or quat_angle(quat, self.target_quat) > self.limits.rotate_tolerance_rad
+        )
+
+    def _reanchor(self) -> None:
+        """Setpoint := measured pose on all axes, so impedance stops pressing."""
+        self.target_pos, self.target_quat = self.measured()
+        self._command(self.target_pos, self.target_quat)
+
+    def _motion(self, body: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+        """Run one motion call; it never ends with the setpoint displaced into contact.
+
+        On an error the setpoint is re-anchored at the measured pose (impedance is
+        restarted there if the controller is gone) and the error propagates.
+        """
+        self._call_restarts = 0
+        try:
+            result = body()
+        except Exception:
+            try:
+                if self.target_pos is None or self._displaced():
+                    self.target_pos, self.target_quat = self.measured()
+                    self.robot.update_desired_ee_pose(
+                        self._tcp_to_flange(self.target_pos, self.target_quat)
+                    )
+            except Exception:
+                try:
+                    self.start_impedance()
+                except Exception:  # the original error is the one to report
+                    pass
+            raise
+        if self._displaced():
+            self._reanchor()
+            result["ok"] = False
+            result["reanchored"] = True
+        if self.target_pos is not None:
+            result["target_tcp_pose"] = self.target_pose().tolist()
+        result["controller_restarts"] = self._call_restarts
+        return result
+
     def _wait(self, seconds: float) -> None:
         if seconds > 0:
             self._sleep(seconds)
@@ -327,45 +466,83 @@ class PolymetisController:
 
     # -- limits ------------------------------------------------------------
 
-    def _outside(self, p: np.ndarray) -> float:
+    def _violation(self, p: np.ndarray) -> np.ndarray:
+        """Per-axis distance outside the box (the floor raises the z minimum)."""
+        if not np.all(np.isfinite(p)):
+            return np.full(3, np.inf)
         lo = np.asarray(self.limits.workspace_min, dtype=np.float64).copy()
         hi = np.asarray(self.limits.workspace_max, dtype=np.float64)
         lo[2] = max(lo[2], float(self.limits.z_floor_m))
-        return float(np.sum(np.maximum(0.0, lo - p) + np.maximum(0.0, p - hi)))
+        return np.maximum(0.0, lo - p) + np.maximum(0.0, p - hi)
 
-    def check_target(self, start: np.ndarray, target: np.ndarray) -> None:
-        """Refuse a target outside the box / below the floor unless it moves back in."""
-        out = self._outside(target)
-        if out > 1e-6 and out >= self._outside(start) - 1e-6:
+    def check_target(
+        self,
+        start: np.ndarray,
+        target: np.ndarray,
+        *,
+        strict: bool = True,
+        what: str = "the move",
+    ) -> None:
+        """Refuse a target outside the box / below the floor.
+
+        From outside the box (hand-guided, pushed) a target is allowed only if no axis
+        gets further out and, when ``strict``, the total distance outside shrinks.
+        """
+        out, was = self._violation(target), self._violation(start)
+        refused = not np.all(np.isfinite(out)) or bool(np.any(out > was + 1e-9))
+        if strict and out.sum() > 1e-6 and out.sum() >= was.sum() - 1e-6:
+            refused = True
+        if refused:
             lo, hi = self.limits.workspace_min, self.limits.workspace_max
             raise ValueError(
-                f"the move ends at {np.round(target, 4).tolist()}, outside the workspace "
+                f"{what} ends at {np.round(target, 4).tolist()}, outside the workspace "
                 f"(x {lo[0]}..{hi[0]}, y {lo[1]}..{hi[1]}, z {self.limits.z_floor_m}"
                 f"..{hi[2]} m); nothing was commanded"
             )
 
     # -- motion ------------------------------------------------------------
 
-    def _ramp(
-        self, pos: np.ndarray, quat: np.ndarray, dpos: np.ndarray, drot: np.ndarray
-    ) -> tuple[int, bool]:
-        """Walk the setpoint from (pos, quat) by (dpos, drot) in servo ticks."""
+    def _ticks(self, dpos: np.ndarray, drot: np.ndarray) -> int:
         lim = self.limits
-        n = max(
+        return max(
             1,
             math.ceil(float(np.linalg.norm(dpos)) / lim.servo_step_m - 1e-9),
             math.ceil(float(np.linalg.norm(drot)) / lim.servo_step_rad - 1e-9),
         )
+
+    def _ramp(
+        self, pos: np.ndarray, quat: np.ndarray, dpos: np.ndarray, drot: np.ndarray
+    ) -> tuple[int, str | None]:
+        """Walk the setpoint from (pos, quat) by (dpos, drot) in servo ticks.
+
+        Returns (ticks, None | "cancelled" | "blocked"). After every tick the measured
+        TCP is compared with the setpoint; a gap above ``max_tracking_error_m``
+        (contact) stops the ramp and re-anchors the setpoint at the measured pose.
+        """
+        lim = self.limits
+        n = self._ticks(dpos, drot)
         for i in range(1, n + 1):
             if self._stop():
-                return i - 1, True
+                return i - 1, "cancelled"
             f = i / n
             p = pos + dpos * f
-            q = quat_mul(quat_from_rotvec(drot * f), quat)
+            q = quat_normalize(quat_mul(quat_from_rotvec(drot * f), quat))
+            self.check_target(pos, p, strict=False)
             self._command(p, q)
             self.target_pos, self.target_quat = p, q
             self._wait(lim.tick_s)
-        return n, False
+            measured, _ = self.measured()
+            if float(np.linalg.norm(measured - p)) > lim.max_tracking_error_m:
+                self._reanchor()
+                return i, "blocked"
+        return n, None
+
+    def _blocked_note(self) -> str:
+        return (
+            f"blocked: the TCP lagged the setpoint by more than "
+            f"{self.limits.max_tracking_error_m} m (contact or an obstacle); the "
+            "motion stopped and the setpoint was re-anchored at the measured pose"
+        )
 
     def move_delta(self, delta_xyz: Any) -> dict[str, Any]:
         """Translate the TCP by a base-frame delta (m); refused beyond the limits."""
@@ -378,84 +555,115 @@ class PolymetisController:
                 f"delta_xyz moves {norm:.4f} m; the limit is {self.limits.max_move_m} m "
                 "per call (limits.max_move_m). Split the move; nothing was commanded"
             )
+        return self._motion(lambda: self._move(delta))
+
+    def _move(self, delta: np.ndarray) -> dict[str, Any]:
         self._prepare()
         start_pos, start_quat = self.measured()
         origin = self.target_pos.copy()
         target = origin + delta
         self.check_target(origin, target)
-        steps, cancelled = self._ramp(origin, self.target_quat, delta, np.zeros(3))
-        if not cancelled:
-            cancelled = not self._settle()
+        steps, stopped = self._ramp(origin, self.target_quat, delta, np.zeros(3))
+        if stopped is None and not self._settle():
+            stopped = "cancelled"
         final_pos, final_quat = self.measured()
         result: dict[str, Any] = {
             "ok": False,
             "requested_delta_xyz_base": delta.tolist(),
             "start_tcp_pose": np.concatenate([start_pos, start_quat]).tolist(),
             "final_tcp_pose": np.concatenate([final_pos, final_quat]).tolist(),
-            "target_tcp_pose": self.target_pose().tolist(),
             "final_error_m": float(np.linalg.norm(target - final_pos)),
             "steps_used": steps,
             "states": None,
         }
+        if stopped == "blocked":
+            result["blocked"] = True
+            result["note"] = self._blocked_note()
         # Show-Harness descend_travel + proprioception DESCEND_STALL_RATIO.
-        if delta[2] < -1e-3 and not cancelled:
+        if delta[2] < -1e-3 and stopped != "cancelled":
             travelled = float(start_pos[2] - final_pos[2])
             if travelled < self.limits.descent_stall_ratio * -delta[2]:
-                # Stop pressing: the setpoint stays at the height the arm reached.
-                self.target_pos = self.target_pos.copy()
-                self.target_pos[2] = final_pos[2]
-                self._command(self.target_pos, self.target_quat)
+                self._reanchor()  # stop pressing
                 result["descent_blocked"] = True
                 result["descent_travelled_m"] = travelled
                 result["note"] = (
                     f"descent blocked: moved {travelled:.4f} of {-delta[2]:.4f} m down; "
                     "the gripper is resting on something. The setpoint was re-anchored "
-                    "at the reached height"
+                    "at the measured pose"
                 )
         result["ok"] = (
-            not cancelled
+            stopped is None
             and not result.get("descent_blocked")
             and result["final_error_m"] <= self.limits.move_tolerance_m
         )
-        if cancelled:
+        if stopped == "cancelled":
             result["cancelled"] = True
         return result
 
     def rotate_delta(self, delta_rpy: Any) -> dict[str, Any]:
         """Rotate the TCP in place: target = R(xyz euler delta) * current (base frame)."""
+        lim = self.limits
         rpy = np.asarray(delta_rpy, dtype=np.float64).reshape(-1)
         if rpy.shape != (3,) or not np.all(np.isfinite(rpy)):
             raise ValueError("delta_rpy must be 3 finite values")
         drot = quat_to_rotvec(quat_from_euler_xyz(rpy))
-        angle = float(np.linalg.norm(drot))
-        if angle > self.limits.max_rotate_rad + 1e-9:
+        angle = max(float(np.linalg.norm(drot)), float(np.max(np.abs(rpy))))
+        if angle > lim.max_rotate_rad + 1e-9:
             raise ValueError(
                 f"delta_rpy rotates {angle:.4f} rad; the limit is "
-                f"{self.limits.max_rotate_rad} rad per call (limits.max_rotate_rad). "
-                "Split the rotation; nothing was commanded"
+                f"{lim.max_rotate_rad} rad per call and per component, without "
+                "wrap-around (limits.max_rotate_rad). Split the rotation; nothing was "
+                "commanded"
             )
+        return self._motion(lambda: self._rotate(rpy, drot))
+
+    def _check_rotation(self, pos: np.ndarray, quat: np.ndarray, drot: np.ndarray):
+        """Refuse a rotation that tilts the tool past ``max_tilt_rad`` or swings the
+        flange (the other end of ``tcp_offset_m``) further out of the box."""
+        lim = self.limits
+        tilt0 = tool_tilt(quat)
+        flange0 = self._tcp_to_flange(pos, quat)[:3]
+        n = self._ticks(np.zeros(3), drot)
+        for i in range(1, n + 1):
+            q = quat_normalize(quat_mul(quat_from_rotvec(drot * i / n), quat))
+            tilt = tool_tilt(q)
+            if tilt > lim.max_tilt_rad + 1e-9 and tilt > tilt0 + 1e-9:
+                raise ValueError(
+                    f"the rotation tilts the tool {tilt:.3f} rad from pointing straight "
+                    f"down; the limit is {lim.max_tilt_rad} rad (limits.max_tilt_rad); "
+                    "nothing was commanded"
+                )
+            self.check_target(
+                flange0,
+                self._tcp_to_flange(pos, q)[:3],
+                strict=False,
+                what="the rotation's flange",
+            )
+
+    def _rotate(self, rpy: np.ndarray, drot: np.ndarray) -> dict[str, Any]:
         self._prepare()
         start_pos, start_quat = self.measured()
-        origin_q = self.target_quat.copy()
-        target_q = quat_mul(quat_from_rotvec(drot), origin_q)
-        steps, cancelled = self._ramp(
-            self.target_pos.copy(), origin_q, np.zeros(3), drot
-        )
-        if not cancelled:
-            cancelled = not self._settle()
+        origin_p, origin_q = self.target_pos.copy(), self.target_quat.copy()
+        self._check_rotation(origin_p, origin_q, drot)
+        target_q = quat_normalize(quat_mul(quat_from_rotvec(drot), origin_q))
+        steps, stopped = self._ramp(origin_p, origin_q, np.zeros(3), drot)
+        if stopped is None and not self._settle():
+            stopped = "cancelled"
         final_pos, final_quat = self.measured()
         error = quat_angle(target_q, final_quat)
         result: dict[str, Any] = {
-            "ok": not cancelled and error <= self.limits.rotate_tolerance_rad,
+            "ok": stopped is None and error <= self.limits.rotate_tolerance_rad,
             "requested_delta_rpy_base": rpy.tolist(),
             "start_tcp_pose": np.concatenate([start_pos, start_quat]).tolist(),
             "final_tcp_pose": np.concatenate([final_pos, final_quat]).tolist(),
-            "target_tcp_pose": self.target_pose().tolist(),
             "final_error_rad": error,
             "steps_used": steps,
             "states": None,
         }
-        if cancelled:
+        if stopped == "blocked":
+            result["blocked"] = True
+            result["note"] = self._blocked_note()
+        if stopped == "cancelled":
             result["cancelled"] = True
         return result
 
@@ -529,12 +737,15 @@ class PolymetisController:
 
     def reset(self) -> dict[str, Any]:
         """Open, lift clear, move to ``begin_joints``, restart impedance at the begin pose."""
-        lim = self.limits
-        if lim.begin_joints is None:
+        if self.limits.begin_joints is None:
             raise ValueError(
                 "reset.begin_joints is not set: jog the arm to a safe begin pose, read "
                 "the joints (--read-pose) and write them to the config"
             )
+        return self._motion(self._reset)
+
+    def _reset(self) -> dict[str, Any]:
+        lim = self.limits
         info: dict[str, Any] = {"begin_joints": list(lim.begin_joints)}
         grip = self.set_gripper(open=True)
         info["gripper"] = grip
@@ -544,39 +755,63 @@ class PolymetisController:
         room = float(lim.workspace_max[2]) - float(self.target_pos[2])
         lift = max(0.0, min(lim.reset_lift_m, room))
         if lift > 1e-4:
-            _, cancelled = self._ramp(
+            _, stopped = self._ramp(
                 self.target_pos.copy(),
                 self.target_quat.copy(),
                 np.array([0.0, 0.0, lift]),
                 np.zeros(3),
             )
             info["lifted_m"] = lift
-            if cancelled:
-                return {"ok": False, "cancelled": True, "info": info}
+            if stopped == "blocked":
+                info["note"] = self._blocked_note()
+            if stopped:
+                return {"ok": False, stopped: True, "info": info}
         goal = np.asarray(lim.begin_joints, dtype=np.float64)
+        q0 = np.asarray(self.robot.get_joint_positions(), dtype=np.float64).reshape(-1)
+        if q0.shape != (7,) or not np.all(np.isfinite(q0)):
+            raise RuntimeError(
+                f"robot returned invalid joint positions {q0.tolist()}; reset refused"
+            )
+        # Never faster than MAX_JOINT_SPEED_RAD_S on any joint.
+        duration = max(
+            float(lim.begin_time_s),
+            PEAK_TO_MEAN * float(np.max(np.abs(goal - q0))) / MAX_JOINT_SPEED_RAD_S,
+        )
         info["method"] = lim.reset_method
-        if lim.reset_method == "move_to_joint_positions":
-            # Blocking on the NUC: not interruptible by ``stop``.
-            self.robot.move_to_joint_positions(goal, float(lim.begin_time_s))
-        else:
-            q0 = np.asarray(self.robot.get_joint_positions(), dtype=np.float64)
-            self.robot.start_joint_impedance(None, None)
-            n = max(1, math.ceil(lim.begin_time_s / max(lim.tick_s, 1e-3)))
-            for i in range(1, n + 1):
-                if self._stop():
-                    # Hold where the stream reached, then back to Cartesian control.
-                    self.start_impedance()
-                    return {"ok": False, "cancelled": True, "info": info}
-                f = 0.5 - 0.5 * math.cos(math.pi * i / n)  # rest-to-rest
-                self.robot.update_desired_joint_pos(q0 + (goal - q0) * f)
-                self._wait(lim.tick_s)
-            for _ in range(max(1, lim.settle_steps)):
-                self.robot.update_desired_joint_pos(goal)
-                self._wait(lim.settle_dt_s)
+        info["duration_s"] = duration
+        try:
+            if lim.reset_method == "move_to_joint_positions":
+                # Blocking on the NUC: not interruptible by ``stop``.
+                self.robot.move_to_joint_positions(goal, duration)
+            else:
+                self.robot.start_joint_impedance(None, None)
+                n = max(1, math.ceil(duration / lim.tick_s))
+                for i in range(1, n + 1):
+                    if self._stop():
+                        # Hold where the stream reached, then back to Cartesian control.
+                        self.start_impedance()
+                        return {"ok": False, "cancelled": True, "info": info}
+                    f = 0.5 - 0.5 * math.cos(math.pi * i / n)  # rest-to-rest
+                    self.robot.update_desired_joint_pos(q0 + (goal - q0) * f)
+                    self._wait(lim.tick_s)
+                for _ in range(max(1, lim.settle_steps)):
+                    self.robot.update_desired_joint_pos(goal)
+                    self._wait(lim.settle_dt_s)
+        except Exception:
+            self.start_impedance()  # never leave joint impedance running
+            raise
         self.start_impedance()
         joints = np.asarray(self.robot.get_joint_positions(), dtype=np.float64)
         info["joint_error_rad"] = float(np.max(np.abs(joints - goal)))
-        return {"ok": info["joint_error_rad"] <= 0.05, "info": info}
+        ok = info["joint_error_rad"] <= 0.05
+        if np.any(self._violation(self.target_pos) > 1e-6):
+            info["begin_pose_outside_workspace"] = True
+            info["note"] = (
+                f"the begin pose puts the TCP at {np.round(self.target_pos, 4).tolist()}, "
+                "outside the workspace box; fix reset.begin_joints or the box"
+            )
+            ok = False
+        return {"ok": ok, "info": info}
 
     # -- state -------------------------------------------------------------
 

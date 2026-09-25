@@ -11,7 +11,7 @@
 # session's `robot_result` entry. An episode is valid when the environment produced a result and
 # the planner did not fail (`env_error`, `planner_error` and a missing result are invalid),
 # whatever the outcome. Rerunning retries exactly the invalid episodes; valid ones are kept.
-# Each result records the model and thinking level, and the summary covers only the requested
+# Each result records the model, thinking level and --max-turns, and the summary covers only the requested
 # cells and refuses to mix configurations. Rates are per split and task-weighted (the mean of
 # per-task rates, the RoboCasa365 convention).
 set -uo pipefail
@@ -23,12 +23,14 @@ manifest=${TARGET50:-$SERVICES/pi_embodied_services/robots/robocasa/eval/target5
 PI=${PI:-pi}
 MAX_TURNS=${MAX_TURNS:-100}
 [ "$splits" = all ] && splits=atomic,composite_seen,composite_unseen
-model="" thinking=""
+model="" thinking="" turns=$MAX_TURNS
 args=("$@")
 for ((i = 0; i < ${#args[@]}; i++)); do
 	case ${args[i]} in
 	--model) model=${args[i + 1]:-} ;;
 	--thinking) thinking=${args[i + 1]:-} ;;
+	--model=*) model=${args[i]#*=} ;;
+	--thinking=*) thinking=${args[i]#*=} ;;
 	esac
 done
 export RLDX_MAX_CHUNKS=40 RLDX_SETTLE_PATIENCE=999 RLDX_ACTION_STEPS_PER_CHUNK=8
@@ -37,7 +39,7 @@ unset RLDX_RESET_SEED
 record() { # <dir> <exit code>: write result.json from the episode's session
 	node --input-type=module -e '
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
-const [dir, code, model, thinking] = process.argv.slice(1);
+const [dir, code, model, thinking, turns] = process.argv.slice(1);
 const results = [];
 for (const f of readdirSync(dir).filter((f) => f.endsWith(".jsonl"))) {
 	for (const line of readFileSync(`${dir}/${f}`, "utf8").split("\n")) {
@@ -50,19 +52,19 @@ const last = results.length === 1 ? results[0] : undefined;
 const status = results.length > 1 ? "duplicate_result"
 	: !last ? (Number(code) ? "env_error" : "missing")
 	: last.env_error ? "env_error" : last.planner_error ? "planner_error" : last.success ? "success" : "failure";
-const result = { ...(last ?? {}), status, exit_code: Number(code), model: model || null, thinking: thinking || null };
+const result = { ...(last ?? {}), status, exit_code: Number(code), model: model || null, thinking: thinking || null, max_turns: Number(turns) };
 writeFileSync(`${dir}/result.json`, `${JSON.stringify(result, null, 2)}\n`);
 console.log(JSON.stringify({ status, success: result.success, claimed: result.claimed, env_steps: result.env_steps }));
-' "$1" "$2" "$model" "$thinking"
+' "$1" "$2" "$model" "$thinking" "$turns"
 }
 
 valid() { # <dir>: 0 = a valid result of this configuration, 2 = a valid result of another one, 1 = none
 	node -e '
-const [path, model, thinking] = process.argv.slice(1);
+const [path, model, thinking, turns] = process.argv.slice(1);
 const r = JSON.parse(require("fs").readFileSync(path, "utf8"));
 if (r.status !== "success" && r.status !== "failure") process.exit(1);
-process.exit(r.model === (model || null) && r.thinking === (thinking || null) ? 0 : 2);
-' "$1/result.json" "$model" "$thinking" 2>/dev/null
+process.exit(r.model === (model || null) && r.thinking === (thinking || null) && r.max_turns === Number(turns) ? 0 : 2);
+' "$1/result.json" "$model" "$thinking" "$turns" 2>/dev/null
 }
 
 cells=$(node -e '
@@ -83,7 +85,7 @@ while read -r split task seed limit; do
 	valid "$dir"
 	case $? in
 	0) continue ;;
-	2) echo "$dir holds a result of another model or thinking level; use another out dir" >&2 && exit 1 ;;
+	2) echo "$dir holds a result of another model, thinking level or --max-turns; use another out dir" >&2 && exit 1 ;;
 	esac
 	rm -rf "$dir" && mkdir -p "$dir"
 	echo "== $split $task seed $seed"
@@ -106,7 +108,7 @@ const rows = cells.trim().split("\n").map((line) => {
 	}
 });
 const scoredRows = rows.filter((r) => r.status === "success" || r.status === "failure");
-const configs = new Set(scoredRows.map((r) => `${r.model}/${r.thinking}`));
+const configs = new Set(scoredRows.map((r) => `${r.model}/${r.thinking}/turns=${r.max_turns}`));
 if (configs.size > 1) {
 	console.log(`refusing to summarize: ${out} mixes configurations ${[...configs].join(", ")}`);
 	process.exit(1);

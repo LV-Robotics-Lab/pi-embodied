@@ -2,12 +2,15 @@
  * One physical Franka arm for pi.
  *
  *   pi -e packages/embodied/src/franka --task 1 --robot-config my_franka.yaml --robot-vla http://VLA_HOST:PORT
+ *   pi -e packages/embodied/src/franka --robot-backend polymetis --robot-config my_polymetis.yaml
  *
- * Starts the RLinf-backed env server (pi_embodied_services.robots.franka.env_server; Ray must
- * already run on the controller node) or attaches to one with --robot-env. The VLA is
- * attach-only. The server enforces the workspace limits, per-step clips and servo
- * tolerances from its runtime config; task definitions and easy_handeye calibration come from
- * the same services package. A real robot needs an operator: pi must have a UI, the operator confirms
+ * Starts an env server for --robot-backend: rlinf (default; pi_embodied_services.robots.franka.env_server,
+ * Ray must already run on the controller node) or polymetis (robots.franka_polymetis.env_server,
+ * Show-Harness's Polymetis NUC stack), or attaches to a running one with --robot-env. Both serve the
+ * same env.* RPC; the server's env.get_env_meta capabilities hide what it cannot serve (vla_grasp
+ * needs has_vla). Only one backend may drive the arm at a time. The VLA is attach-only. The
+ * server enforces the workspace limits, per-step clips and servo tolerances from its config;
+ * task definitions and easy_handeye calibration come from the same services package. A real robot needs an operator: pi must have a UI, the operator confirms
  * the reset motion, and --operator adds the verdict gate (see ../operator.ts). The
  * single-arm robot has no success signal; the result entry records the agent's claim and
  * the operator's verdict, if any. Mutating tools record a state step (robot state, external
@@ -67,6 +70,19 @@ type Setup = {
 	calibration_error?: string;
 };
 type Step = { blob: Json; dir: string; meta: Json | null; images: Record<string, string> };
+/** env.get_env_meta().capabilities; servers from before it are the RLinf backend. */
+type Caps = {
+	backend: string;
+	has_vla: boolean;
+	max_move_m?: number | null;
+	max_rotate_rad?: number | null;
+	table_z_m?: number | null;
+	[k: string]: unknown;
+};
+const BACKENDS: Record<string, string> = {
+	rlinf: "pi_embodied_services.robots.franka.env_server",
+	polymetis: "pi_embodied_services.robots.franka_polymetis.env_server",
+};
 
 /** Task and calibration from the services, validated like the services' parse_config. */
 const SETUP_PY = `
@@ -175,7 +191,14 @@ export default function franka(pi: ExtensionAPI) {
 	});
 	pi.registerFlag("robot-config", {
 		type: "string",
-		description: "Robot YAML (default: services/pi_embodied_services/robots/franka/config/example.yaml)",
+		description:
+			"Robot YAML (default: the backend's config/example.yaml under services/pi_embodied_services/robots/franka[_polymetis]/)",
+	});
+	pi.registerFlag("robot-backend", {
+		type: "string",
+		default: "",
+		description:
+			"Env server to start: rlinf (default) or polymetis; with --robot-env, the attached server's backend must match if set",
 	});
 	pi.registerFlag("robot-env", {
 		type: "string",
@@ -227,6 +250,7 @@ export default function franka(pi: ExtensionAPI) {
 	let setup: Setup | undefined;
 	let out = "";
 	let lastStates: unknown;
+	let caps: Caps = { backend: "rlinf", has_vla: true };
 	const steps: Step[] = [];
 	const task = () => robot.task.task;
 	const robot = defineRobot(pi, {
@@ -255,7 +279,13 @@ export default function franka(pi: ExtensionAPI) {
 			};
 			return SYSTEM.replace(/\{\{(\w+)\}\}/g, (m, k: string) => vars[k] ?? m);
 		},
-		result: () => ({ task: Number(task()), task_name: setup?.task.name ?? null, steps: steps.length, out }),
+		result: () => ({
+			task: Number(task()),
+			task_name: setup?.task.name ?? null,
+			backend: caps.backend,
+			steps: steps.length,
+			out,
+		}),
 		status: () => ({ step: steps.length - 1 }),
 		units: {
 			// Show-Harness configs/primitives_franka.yaml (base frame: MV_LEFT is base -y).
@@ -292,6 +322,9 @@ export default function franka(pi: ExtensionAPI) {
 	const remember = (states: unknown) => {
 		if (states !== undefined && states !== null) lastStates = states;
 	};
+	/** The tighter of the flag and the server's own per-call limit (it refuses larger calls). */
+	const maxMove = () => Math.min(Number(flag("max-move", "0.1")), caps.max_move_m ?? Number.POSITIVE_INFINITY);
+	const maxRotate = () => Math.min(Number(flag("max-rotate", "0.5")), caps.max_rotate_rad ?? Number.POSITIVE_INFINITY);
 	const check = (signal?: AbortSignal) => {
 		op.check();
 		if (signal?.aborted) throw new Error("tool operation interrupted");
@@ -466,7 +499,7 @@ export default function franka(pi: ExtensionAPI) {
 			const out: Json = {};
 			if (move.gripper) out.gripper = await motion("env.set_gripper", { open: move.gripper === "open" }, signal);
 			if (Math.hypot(...move.delta) > 0) {
-				checkMove(move.delta, Number(flag("max-move", "0.1")), setup?.task.constraints);
+				checkMove(move.delta, maxMove(), setup?.task.constraints);
 				checkWorkspace(move.delta);
 				out.move = await motion("env.move_delta", { delta_xyz: NdArray.f32(move.delta) }, signal);
 			}
@@ -484,7 +517,11 @@ export default function franka(pi: ExtensionAPI) {
 			eef_xyz: roundAll(vec(base.tcp_pose).slice(0, 3)),
 			...(width.length ? { gripper_width: round(width[0]) } : {}),
 			gripper_open: base.gripper_open ?? null,
-			...(flag("z-floor") ? { table_z: Number(flag("z-floor")) } : {}),
+			...(flag("z-floor")
+				? { table_z: Number(flag("z-floor")) }
+				: typeof caps.table_z_m === "number"
+					? { table_z: caps.table_z_m }
+					: {}),
 		};
 	}
 
@@ -732,7 +769,7 @@ export default function franka(pi: ExtensionAPI) {
 			step: s.blob.step_idx,
 			pixel_correspondence: pixels,
 			confidence: conf,
-			tcp_pose_source: "RLinf raw_base_state.tcp_pose",
+			tcp_pose_source: `${caps.backend} raw_base_state.tcp_pose`,
 			warnings: warnings(third, wrist),
 			point_base_wrist: wrist.point_base,
 		};
@@ -833,7 +870,7 @@ export default function franka(pi: ExtensionAPI) {
 							base_point_delta_mean_m: deltas.length ? round(mean(deltas)) : null,
 						}
 					: null,
-				tcp_pose_source: "RLinf raw_base_state.tcp_pose",
+				tcp_pose_source: `${caps.backend} raw_base_state.tcp_pose`,
 			};
 		},
 		false,
@@ -848,7 +885,7 @@ export default function franka(pi: ExtensionAPI) {
 		async ({ delta_xyz }, signal) => {
 			check(signal);
 			const delta = vec3(delta_xyz, "delta_xyz");
-			checkMove(vec(delta_xyz), Number(flag("max-move", "0.1")), setup?.task.constraints);
+			checkMove(vec(delta_xyz), maxMove(), setup?.task.constraints);
 			checkWorkspace(vec(delta_xyz));
 			return motion("env.move_delta", { delta_xyz: delta }, signal);
 		},
@@ -861,7 +898,7 @@ export default function franka(pi: ExtensionAPI) {
 		async ({ delta_rpy }, signal) => {
 			check(signal);
 			const delta = vec3(delta_rpy, "delta_rpy");
-			const limit = Number(flag("max-rotate", "0.5"));
+			const limit = maxRotate();
 			const norm = Math.hypot(...numbers(delta));
 			if (!(norm <= limit))
 				throw new Error(
@@ -899,6 +936,7 @@ export default function franka(pi: ExtensionAPI) {
 			max_chunks: Type.Optional(Type.Integer({ minimum: 1, maximum: 20, description: "Default 4" })),
 		}),
 		async ({ prompt, max_chunks = 4 }, signal) => {
+			if (!caps.has_vla) throw new Error(`the ${caps.backend} backend has no VLA action space`);
 			if (!vla) throw new Error("vla_grasp requires --robot-vla");
 			if (!prompt.trim()) throw new Error("prompt must be non-empty");
 			if (!(max_chunks >= 1 && max_chunks <= 20)) throw new Error("max_chunks must be between 1 and 20");
@@ -955,13 +993,16 @@ export default function franka(pi: ExtensionAPI) {
 		out = resolve(ctx.cwd, flag("out") || join(tmpdir(), "pi-embodied", `franka_t${task()}_${stamp}`));
 		mkdirSync(out, { recursive: true });
 		const endpoint = flag("robot-env");
+		const backend = flag("robot-backend").trim().toLowerCase();
+		if (backend && !BACKENDS[backend])
+			throw new Error(`--robot-backend must be one of ${Object.keys(BACKENDS).join(", ")}, got "${backend}"`);
 		const [envRpc, vlaRpc] = await Promise.all([
 			endpoint
 				? attach(endpoint)
 				: robot.serve({
 						python: r.python,
 						args: [
-							...["-m", "pi_embodied_services.robots.franka.env_server"],
+							...["-m", BACKENDS[backend || "rlinf"]],
 							...["--task-description", setup.task.instruction, ...(config ? ["--robot-config", config] : [])],
 						],
 						cwd: r.root,
@@ -970,9 +1011,16 @@ export default function franka(pi: ExtensionAPI) {
 					}),
 			flag("robot-vla") ? attach(flag("robot-vla")) : undefined,
 		]);
-		await envRpc.call("env.get_env_meta", {}, 30_000);
+		const meta = await envRpc.call<Json>("env.get_env_meta", {}, 30_000);
+		caps = { backend: "rlinf", has_vla: true, ...(meta.capabilities ?? {}) };
+		if (backend && caps.backend !== backend)
+			throw new Error(`--robot-env serves the ${caps.backend} backend, not --robot-backend ${backend}`);
+		if (!caps.has_vla && (vlaRpc || setup.task.name === "vla_grasp"))
+			throw new Error(
+				`the ${caps.backend} backend has no VLA action space: drop --robot-vla and use a task without vla_grasp`,
+			);
 		const go = await ctx.ui.confirm(
-			"Reset the Franka arm?",
+			`Reset the Franka arm (${caps.backend})?`,
 			"The arm will move to its configured reset pose. Clear the workspace and keep the emergency stop in reach.",
 		);
 		if (!go) throw new Error("operator declined the reset; the Franka tools stay disabled");
@@ -981,7 +1029,7 @@ export default function franka(pi: ExtensionAPI) {
 		vla = vlaRpc;
 		remember(reset.states);
 		await dumpState(null, null, null);
-		ctx.ui.notify(`Franka ready: task ${task()} (${setup.task.name}); steps under ${out}`, "info");
-		return TOOLS;
+		ctx.ui.notify(`Franka ready (${caps.backend}): task ${task()} (${setup.task.name}); steps under ${out}`, "info");
+		return TOOLS.filter((name) => name !== "vla_grasp" || caps.has_vla);
 	}
 }

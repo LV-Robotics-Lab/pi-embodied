@@ -14,7 +14,8 @@
 #
 # Modified by pi-embodied: import paths rewritten; healthz service name; HTTP is
 # the only --transport; ``stop`` reaches the worker's servo/chunk loops through a
-# Ray stop-flag actor polled between steps (results carry ``cancelled``).
+# Ray stop-flag actor polled between steps (results carry ``cancelled``);
+# ``get_env_meta`` reports ``capabilities`` (shared with franka_polymetis).
 
 """RPC server owning one RLinf single-Franka ``RealWorldEnv`` worker."""
 
@@ -97,6 +98,37 @@ class FrankaEnvFacade(BaseEnvFacade):
         request_stop = getattr(self._backend, "request_stop", None)
         if request_stop is not None:
             request_stop(generation)
+
+
+def rlinf_capabilities(eval_cfg: Any, action_scale: Any) -> dict[str, Any]:
+    """What this backend serves, in the shape franka_polymetis reports it.
+
+    RLinf clips each servo target into ``ee_pose_limit_min/max`` (it does not refuse)
+    and bounds no call's total motion (pi's --max-move does); ``servo_step_*`` is the
+    per-step ``action_scale``.
+    """
+    override = eval_cfg.get("override_cfg") or {}
+    lo = [float(v) for v in list(override.get("ee_pose_limit_min") or [])[:3]]
+    hi = [float(v) for v in list(override.get("ee_pose_limit_max") or [])[:3]]
+    main = eval_cfg.get("main_image_key")
+    names = sorted(str(n) for n in (override.get("camera_names") or {}).values())
+    return {
+        "backend": "rlinf",
+        "has_vla": True,
+        "cameras": {
+            "main": main,
+            **{f"extra_{i}": n for i, n in enumerate(n for n in names if n != main)},
+        },
+        "has_depth": bool(override.get("enable_camera_depth", False)),
+        "workspace": {"min": lo, "max": hi} if len(lo) == len(hi) == 3 else None,
+        "z_floor_m": lo[2] if len(lo) == 3 else None,
+        "table_z_m": None,
+        "max_move_m": None,
+        "max_rotate_rad": None,
+        "servo_step_m": float(action_scale[0]),
+        "servo_step_rad": float(action_scale[1]),
+        "empty_grasp_reopen_m": None,
+    }
 
 
 def _create_stop_flag() -> Any:
@@ -207,6 +239,10 @@ def _create_worker_class():
                 "action_dim": self.action_dim,
                 "action_scale": self.action_scale.tolist(),
                 "use_relative_frame": self.use_relative_frame,
+                "backend": "rlinf",
+                "capabilities": rlinf_capabilities(
+                    self.cfg.env.eval, self.action_scale
+                ),
             }
 
         def close_env(self) -> None:

@@ -124,6 +124,15 @@ def quat_angle(a: Any, b: Any) -> float:
     return float(np.linalg.norm(quat_to_rotvec(quat_mul(a, quat_conj(b)))))
 
 
+def flange_to_tcp(pose7: Any, offset: Any) -> tuple[np.ndarray, np.ndarray]:
+    """(TCP position, quaternion) from the pose Polymetis reports and a TCP offset."""
+    p = np.asarray(pose7, dtype=np.float64)
+    if p.shape != (7,) or not np.all(np.isfinite(p)):
+        raise RuntimeError(f"robot returned an invalid ee pose: {p.tolist()}")
+    q = quat_normalize(p[3:])
+    return p[:3] + quat_rotate(q, np.asarray(offset, dtype=np.float64)), q
+
+
 # ---------------------------------------------------------------------------
 # Limits
 # ---------------------------------------------------------------------------
@@ -172,7 +181,9 @@ class PolymetisLimits:
                 ".env_server --robot-config <yaml> --read-pose) and write it to the config"
             )
         if self.workspace_min is None or self.workspace_max is None:
-            raise ValueError("limits.workspace_min and limits.workspace_max are required")
+            raise ValueError(
+                "limits.workspace_min and limits.workspace_max are required"
+            )
         lo, hi = np.asarray(self.workspace_min), np.asarray(self.workspace_max)
         if lo.shape != (3,) or hi.shape != (3,) or not np.all(lo < hi):
             raise ValueError("workspace_min/max must be [x, y, z] with min < max")
@@ -189,7 +200,9 @@ class PolymetisLimits:
         if self.begin_joints is not None and len(self.begin_joints) != 7:
             raise ValueError("reset.begin_joints must list 7 joint angles (rad)")
         if self.reset_method not in ("joint_stream", "move_to_joint_positions"):
-            raise ValueError("reset.method must be joint_stream or move_to_joint_positions")
+            raise ValueError(
+                "reset.method must be joint_stream or move_to_joint_positions"
+            )
         if len(self.kx) != 6 or len(self.kxd) != 6:
             raise ValueError("impedance.kx / kxd must have 6 values")
 
@@ -231,18 +244,11 @@ class PolymetisController:
 
     # -- frames ------------------------------------------------------------
 
-    def _flange_to_tcp(self, pose7: Any) -> tuple[np.ndarray, np.ndarray]:
-        p = np.asarray(pose7, dtype=np.float64)
-        if p.shape != (7,) or not np.all(np.isfinite(p)):
-            raise RuntimeError(f"robot returned an invalid ee pose: {p.tolist()}")
-        q = quat_normalize(p[3:])
-        return p[:3] + quat_rotate(q, self._offset), q
-
     def _tcp_to_flange(self, pos: np.ndarray, quat: np.ndarray) -> np.ndarray:
         return np.concatenate([pos - quat_rotate(quat, self._offset), quat])
 
     def measured(self) -> tuple[np.ndarray, np.ndarray]:
-        return self._flange_to_tcp(self.robot.get_ee_pose())
+        return flange_to_tcp(self.robot.get_ee_pose(), self._offset)
 
     def width(self) -> float:
         return float(np.asarray(self.robot.get_gripper_position()).reshape(-1)[0])
@@ -256,7 +262,8 @@ class PolymetisController:
         except Exception:  # nothing running is fine
             pass
         self.robot.start_cartesian_impedance(
-            np.asarray(self.limits.kx, dtype=float), np.asarray(self.limits.kxd, dtype=float)
+            np.asarray(self.limits.kx, dtype=float),
+            np.asarray(self.limits.kxd, dtype=float),
         )
         self.sync()
 
@@ -299,7 +306,10 @@ class PolymetisController:
             self.sync()
             return
         pos, _ = self.measured()
-        if float(np.linalg.norm(pos - self.target_pos)) > self.limits.divergence_resync_m:
+        if (
+            float(np.linalg.norm(pos - self.target_pos))
+            > self.limits.divergence_resync_m
+        ):
             self.sync()
 
     def _wait(self, seconds: float) -> None:
@@ -428,7 +438,9 @@ class PolymetisController:
         start_pos, start_quat = self.measured()
         origin_q = self.target_quat.copy()
         target_q = quat_mul(quat_from_rotvec(drot), origin_q)
-        steps, cancelled = self._ramp(self.target_pos.copy(), origin_q, np.zeros(3), drot)
+        steps, cancelled = self._ramp(
+            self.target_pos.copy(), origin_q, np.zeros(3), drot
+        )
         if not cancelled:
             cancelled = not self._settle()
         final_pos, final_quat = self.measured()
@@ -487,9 +499,7 @@ class PolymetisController:
         self.robot.control_gripper(not open)  # Show-Harness: True = close
         self.gripper_open = bool(open)
         steps = 1
-        width, cancelled = self._await_gripper(
-            None if open else lim.grasp_open_width_m
-        )
+        width, cancelled = self._await_gripper(None if open else lim.grasp_open_width_m)
         result: dict[str, Any] = {"target_gripper_open": bool(open)}
         if (
             not open

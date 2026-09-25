@@ -84,6 +84,13 @@ franka = [
     "matplotlib>=3.8",
     "pillow>=10",
 ]
+franka-polymetis = [
+    # Franka on a Polymetis NUC (Show-Harness's stack); no RLinf, no VLA.
+    "zerorpc",
+    "pyrealsense2",
+    "omegaconf",
+    "opencv-python-headless",
+]
 robocasa = [
     "pi-embodied-services[rlinf]",
     "rpent-robocasa365 @ git+https://github.com/RLinf/robocasa.git@rpent",
@@ -108,6 +115,7 @@ include = ["pi_embodied_services*"]
 "pi_embodied_services.robots.robocasa" = ["eval/*.json", "eval/*.txt"]
 "pi_embodied_services.robots.robotwin" = ["eval/*.json"]
 "pi_embodied_services.robots.franka" = ["config/*.yaml"]
+"pi_embodied_services.robots.franka_polymetis" = ["config/*.yaml"]
 "pi_embodied_services.robots.dual_franka" = ["config/*.yaml"]
 
 [tool.uv]

@@ -159,9 +159,11 @@ class MockRGBD:
         rows = np.linspace(0, 255, self.height, dtype=np.float32)[:, None]
         cols = np.linspace(0, 255, self.width, dtype=np.float32)[None, :]
         rgb = np.stack(
-            [np.broadcast_to(rows, (self.height, self.width)),
-             np.broadcast_to(cols, (self.height, self.width)),
-             np.full((self.height, self.width), 128.0)],
+            [
+                np.broadcast_to(rows, (self.height, self.width)),
+                np.broadcast_to(cols, (self.height, self.width)),
+                np.full((self.height, self.width), 128.0),
+            ],
             axis=-1,
         ).astype(np.uint8)
         depth = np.full((self.height, self.width), self.depth_m, dtype=np.float32)

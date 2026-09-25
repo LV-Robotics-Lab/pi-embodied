@@ -50,7 +50,7 @@ Every service except the LingBot-VLA launcher speaks the same JSON-over-HTTP RPC
 | `shutdown` | - | `{"ok": true}`; the process exits after answering |
 
 Service names: `libero-env`, `robocasa-env`, `rldx-vla`, `robotwin-env`, `franka-env`,
-`dual-franka-env`, `pi05-vla`, `sam3`, `molmo`.
+`dual-franka-env`, `franka-polymetis-env`, `pi05-vla`, `sam3`, `molmo`.
 
 ### `stop` semantics
 
@@ -72,6 +72,7 @@ client's queued calls.
 | robocasa-env | queued calls | any running call (each is a single robosuite operation; there is no server-side chunk loop) |
 | robotwin-env | queued calls; `env.chunk_step` before each native action (`info.cancelled = true`) | the native action being executed (one `take_action`, i.e. one planned qpos/ee motion), `env.step`, `env.reset`, `env.plan_arm_path`, renders |
 | franka-env | queued calls; `env.move_delta` / `env.rotate_delta` / `env.set_gripper` before each servo step; `env.chunk_step` after each action | the servo step in progress (one RLinf `env.step`: one Cartesian target plus the pacing sleep, and up to 0.6 s when it toggles the gripper); `env.reset` (RLinf go-to-rest / joint reset) |
+| franka-polymetis-env | queued calls; `env.move_delta` / `env.rotate_delta` before each servo tick (setpoint advance <= `servo_step_m` / `servo_step_rad`) and during settle; `env.set_gripper` between width polls; `env.reset` between lift ticks and joint-stream ticks (`reset.method: joint_stream`) | the ZeroRPC call in flight (one setpoint); a gripper command already sent; `env.reset` with `reset.method: move_to_joint_positions` (blocking on the NUC) |
 | dual-franka-env | as franka-env; `env.recover_joint_posture` skips its return-to-start moves and reports `cancelled: true, ok: false` | as franka-env; in `recover_joint_posture` the two-arm joint reset and the gripper re-commands that restore the pre-recovery gripper state |
 | pi05-vla, rldx-vla, sam3, molmo | queued calls | a running inference |
 | LingBot-VLA (RoboTwin) | nothing (WebSocket server, no `/call`) | - |
@@ -150,7 +151,7 @@ wrapper; single-env servers strip the leading env dimension.
 
 | method | args | result |
 |---|---|---|
-| `env.get_env_meta` | - | `{"ok", "action_dim", "action_scale", "use_relative_frame"}` |
+| `env.get_env_meta` | - | `{"ok", "action_dim", "action_scale", "use_relative_frame", "backend", "capabilities"}` |
 | `env.reset` | - | `{"ok", "info", "robot_state", "states"}` (moves the arm) |
 | `env.get_robot_state` | - | `{"raw_base_state", "action_dim", "action_scale", "use_relative_frame"}` |
 | `env.get_observation` | - | live camera frames: `main_images`, `extra_view_images`, `main_depths`, `extra_view_depths` (empty dict on camera failure) |
@@ -159,6 +160,26 @@ wrapper; single-env servers strip the leading env dimension.
 | `env.rotate_delta` | `delta_rpy` float[3] (rad) | `{"ok", "requested_delta_rpy_base", "start_tcp_pose", "final_tcp_pose", "final_error_rad", "steps_used", "states"[, "cancelled"]}` |
 | `env.set_gripper` | kw `open` bool | `{"ok", "target_gripper_open", "steps_used", "robot_state", "states"[, "cancelled"]}` |
 | `env.chunk_step` | `actions` float[N,action_dim], kw `return_all_frames=false` | `{"observation", "terminated", "truncated", "info"[, "cancelled"]}` |
+
+### franka-polymetis-env (`robots/franka_polymetis/env_server.py`)
+
+The franka-env methods, argument and result shapes, on a Polymetis NUC (Show-Harness's
+stack). Differences: `env.get_env_meta` / `env.get_robot_state` report `action_dim`,
+`action_scale` = null and `backend: "polymetis"`; `env.chunk_step` always errors (no VLA
+action space); `states` is null. `env.move_delta` / `env.rotate_delta` refuse (error, nothing
+commanded) a call beyond `limits.max_move_m` / `max_rotate_rad` or ending outside the
+workspace box / below `z_floor_m`; results add `target_tcp_pose` and, for a descent that
+travelled < 70% of the command, `descent_blocked`, `descent_travelled_m`, `note`.
+`env.set_gripper` adds `gripper_width_m` and, when a close ends at or below
+`gripper.empty_width_m`, reopens and reports `grasp_empty: true, ok: false`. `env.reset`
+opens, lifts, moves to `reset.begin_joints` and returns `{"ok", "info", "robot_state",
+"states"}`. `env.get_camera_meta` has the franka-env layout (`cameras.<name>.intrinsic_K` of
+the letterboxed image, `raw_color_intrinsics`, `letterbox`, `observation_camera_map`).
+
+Both franka servers' `env.get_env_meta` carry `backend` and `capabilities`: `{"backend",
+"has_vla", "cameras" (observation key -> camera), "has_depth", "workspace" {min, max} | null,
+"z_floor_m", "table_z_m", "max_move_m", "max_rotate_rad" (per-call limits the server
+refuses beyond; null = none), "servo_step_m", "servo_step_rad", "empty_grasp_reopen_m"}`.
 
 ### dual-franka-env (`robots/dual_franka/env_server.py`)
 

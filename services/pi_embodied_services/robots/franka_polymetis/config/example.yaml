@@ -1,0 +1,79 @@
+# One Franka on a Polymetis NUC (Show-Harness configs/robot_franka.yaml,
+# configs/site/franka.yaml.example, configs/primitives_franka.yaml).
+#
+# The server refuses to start until limits.z_floor_m and the workspace box are set,
+# and refuses reset until reset.begin_joints is set. Copy this file, calibrate on the
+# hardware and pass it with --robot-config. Read live values without moving the arm:
+#   python -m pi_embodied_services.robots.franka_polymetis.env_server \
+#     --robot-config my_franka.yaml --read-pose
+# Poses/limits below are in the TCP frame = the pose the NUC's franka_server reports
+# (Polymetis's end-effector link) moved by robot.tcp_offset_m.
+
+robot:
+  nuc_ip: "192.168.1.100"   # the NUC running Polymetis + nuc_server.py (ZeroRPC)
+  nuc_port: 4242
+  rpc_timeout_s: 30
+  heartbeat_s: 20
+  # Offset from the reported pose to the TCP, in that pose's frame (m). Show-Harness
+  # uses [0, 0, 0] (its floors below are for that frame). A Franka Hand fingertip
+  # centre is ~[0, 0, 0.1034] from panda_link8; changing this moves every limit.
+  tcp_offset_m: [0.0, 0.0, 0.0]
+
+impedance:                   # Cartesian impedance gains (Show-Harness main_pi05.py)
+  kx: [750, 750, 750, 15, 15, 15]
+  kxd: [37, 37, 37, 2, 2, 2]
+
+cameras:                     # RealSense on the workstation: rs-enumerate-devices | grep Serial
+  image_size: 256            # square letterbox (Show-Harness camera_resolution); 0 = native
+  width: 640
+  height: 480
+  fps: 30
+  devices:
+    wrist:                   # wrist-mounted D405 (observation main_images)
+      serial: ""
+      main: true
+    third_person:            # third-person D435 (observation extra_view_images[0])
+      serial: ""
+
+limits:                      # !! CAPTURE ON HARDWARE !!
+  # Rest the closed gripper on the table and copy tcp_z_m from --read-pose.
+  # Show-Harness's reference rig: 0.14 (empty table), 0.154 (measured contact).
+  z_floor_m: null
+  # TCP box [x, y, z] in the robot base frame (m); moves that end outside are refused
+  # (a move from outside back toward the box is allowed). Reference-rig suggestion:
+  # [0.30, -0.35, 0.14] .. [0.75, 0.35, 0.60].
+  workspace_min: null
+  workspace_max: null
+  max_move_m: 0.08           # largest move_delta per call; bigger is refused (Show-Harness
+                             # clamp 0.05, raised to its 0.08 MV_UP lift)
+  max_rotate_rad: 0.2        # largest rotate_delta per call (Show-Harness clamp)
+  servo_step_m: 0.0025       # setpoint advance per tick: 0.05 m/s at tick_s 0.05
+  servo_step_rad: 0.0125
+  tick_s: 0.05
+  settle_steps: 4            # re-commands of the final setpoint (Show-Harness DEFAULTS)
+  settle_dt_s: 0.05
+  move_tolerance_m: 0.01     # final error for ok: true (impedance sags a few mm)
+  rotate_tolerance_rad: 0.05
+  descent_stall_ratio: 0.7   # a descent that moved < 70% of the command is "blocked"
+  divergence_resync_m: 0.03  # measured vs setpoint gap that resyncs the setpoint
+
+gripper:                     # Franka Hand, ~0.08 m stroke
+  close_threshold_m: 0.07
+  grasp_open_width_m: 0.06
+  empty_width_m: 0.005       # a close ending at/below this caught nothing -> reopen
+  settle_s: 2.5              # the Hand's width sensor lags ~1 s
+  min_settle_s: 0.5
+
+reset:
+  # 7 joint angles (rad). Show-Harness's arm home (poses.default) is
+  # [0.0, -0.5058451, 0.0, -2.6068573, 0.0, 2.0711833, 0.86116207]; verify the path
+  # from your workspace to it is clear before using it.
+  begin_joints: null
+  begin_time_s: 4.0
+  method: joint_stream       # joint_stream (stop-able) | move_to_joint_positions (blocking)
+  lift_m: 0.05               # Cartesian lift before the joint move (kept inside the box)
+
+perception:
+  calibration:               # easy_handeye YAMLs, as for the RLinf backend (see calibration.py)
+    external: ~/.ros/easy_handeye/fr3_external_apriltag_eye_on_base.yaml
+    wrist: ~/.ros/easy_handeye/fr3_wrist_apriltag_ee_eye_on_hand.yaml

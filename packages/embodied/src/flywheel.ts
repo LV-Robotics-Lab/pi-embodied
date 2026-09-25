@@ -30,6 +30,14 @@ type Obs = { main_images: NdArray; wrist_images?: NdArray | null; states: NdArra
 type Meta = { suite: string; task_id: number; seed: number; task_language: string };
 type Proposal = { created_step: number; primitive_id: number; instruction: string; actions: number[][] };
 
+/**
+ * The suite key of a LIBERO episode (its raw directory, `suite` in episode.json, the export's --suite).
+ * LIBERO-plus task indices name other tasks than standard/pro ones (plus libero_spatial task 0 is a
+ * table-texture variant; standard task 0 is the plain scene), so plus episodes get `<suite>_plus`.
+ * Standard and pro share the suite name: their task sets are identical.
+ */
+export const flywheelSuite = (suite: string, liberoType: string) => (liberoType === "plus" ? `${suite}_plus` : suite);
+
 const f32 = (v: number[]) => Buffer.from(Float32Array.from(v).buffer);
 const i32 = (v: number[]) => Buffer.from(Int32Array.from(v).buffer);
 const same = (a: number[], b: number[]) => a.length === b.length && a.every((x, i) => x === b[i]);
@@ -193,7 +201,8 @@ export function flywheel(pi: ExtensionAPI) {
 	pi.registerCommand("flywheel-export", {
 		description: "Export successful Flywheel episodes to LeRobot: [suite] [task] [dataset-id]",
 		handler: async (args, ctx) => {
-			const [suite = String(pi.getFlag("suite") ?? ""), task = String(pi.getFlag("task") ?? ""), id] = args
+			const current = flywheelSuite(String(pi.getFlag("suite") ?? ""), String(pi.getFlag("libero-type") ?? ""));
+			const [suite = current, task = String(pi.getFlag("task") ?? ""), id] = args
 				.trim()
 				.split(/\s+/)
 				.filter(Boolean);

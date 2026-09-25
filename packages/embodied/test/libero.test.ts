@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { latchSuccess } from "../src/libero/index.ts";
+import { flywheelSuite } from "../src/flywheel.ts";
+import { latchSuccess, memoryTag } from "../src/libero/index.ts";
 import { NdArray } from "../src/rpc.ts";
 import { finishMove } from "../src/units/index.ts";
 
@@ -33,4 +34,28 @@ test("after success only opening and lifting straight up still move the LIBERO a
 		move([0, 0, 0], null, 0.15),
 	])
 		assert.ok(!finishMove(m), JSON.stringify(m));
+});
+
+test("LIBERO memory cells keep standard/pro tags and give LIBERO-plus its own", () => {
+	// Standard and pro share cells (identical task sets); existing corpora stay valid.
+	assert.equal(memoryTag("libero_spatial", "0", "0", "standard"), "spatial_t0_s0");
+	assert.equal(memoryTag("libero_spatial", "0", "0", "pro"), "spatial_t0_s0");
+	assert.equal(memoryTag("libero_10_swap", "3", "7", "pro"), "10_swap_t3_s7");
+	// Plus task 0 of libero_spatial is a table-texture variant, not standard task 0.
+	const plus = memoryTag("libero_spatial", "0", "0", "plus");
+	assert.equal(plus, "spatial_plus_t0_s0");
+	// The memory guard owns `<tag>`, `<tag>.*` and `<tag>_*`: neither cell may own the other's files.
+	const std = memoryTag("libero_spatial", "0", "0", "pro");
+	for (const [a, b] of [
+		[std, plus],
+		[plus, std],
+	])
+		assert.ok(!b.startsWith(`${a}_`) && !b.startsWith(`${a}.`) && a !== b, `${a} owns ${b}`);
+	assert.equal(memoryTag("libero_10", "2401", "0", "plus"), "10_plus_t2401_s0");
+});
+
+test("LIBERO-plus Flywheel episodes get their own suite key", () => {
+	assert.equal(flywheelSuite("libero_spatial", "pro"), "libero_spatial");
+	assert.equal(flywheelSuite("libero_spatial", "standard"), "libero_spatial");
+	assert.equal(flywheelSuite("libero_spatial", "plus"), "libero_spatial_plus");
 });

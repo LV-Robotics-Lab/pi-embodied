@@ -280,11 +280,14 @@ async function start(program: Program, robot: FlashRobot, molmo: RpcClient | und
 	};
 }
 
+/** The episode Flash replays: --suite, --task and, when the robot has it, --libero-type. */
+type Cell = () => { suite: string; task: string; liberoType?: string };
+
 /**
- * LIBERO's Flash hook; `cell` reads its --suite and --task. Registers the --molmo and --flash-plans flags.
- * The robot passes it as `flash` in its spec, and ../robot.ts mounts ../flash with it.
+ * LIBERO's Flash hook; `cell` reads its --suite, --task and --libero-type. Registers the --molmo and
+ * --flash-plans flags. The robot passes it as `flash` in its spec, and ../robot.ts mounts ../flash with it.
  */
-export function liberoFlash(pi: ExtensionAPI, cell: () => { suite: string; task: string }): FlashHook<Program> {
+export function liberoFlash(pi: ExtensionAPI, cell: Cell): FlashHook<Program> {
 	pi.registerFlag("molmo", {
 		type: "string",
 		default: "http://127.0.0.1:18400",
@@ -297,7 +300,9 @@ export function liberoFlash(pi: ExtensionAPI, cell: () => { suite: string; task:
 	let molmo: RpcClient | undefined;
 	return {
 		load(cwd) {
-			const { suite, task } = cell();
+			const { suite, task, liberoType } = cell();
+			// Plans are keyed by pro suite and task index; a LIBERO-plus task index names another task.
+			if (liberoType === "plus") throw new Error("Flash plans are recorded on LIBERO-pro tasks, not LIBERO-plus");
 			const match = SUITE.exec(suite);
 			if (!match) throw new Error(`Flash plans cover libero_{10,goal,object,spatial}_{task,swap}, not ${suite}`);
 			const program = `${match[1]}_${match[2]}_t${task}`;
@@ -324,6 +329,6 @@ export function liberoFlash(pi: ExtensionAPI, cell: () => { suite: string; task:
 }
 
 /** Mount Flash with LIBERO's hook directly, for a LIBERO extension whose spec does not pass `flash`. */
-export function registerFlash(pi: ExtensionAPI, cell: () => { suite: string; task: string }) {
+export function registerFlash(pi: ExtensionAPI, cell: Cell) {
 	flash(pi, liberoFlash(pi, cell));
 }

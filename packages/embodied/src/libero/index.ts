@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
+import { flywheelSuite } from "../flywheel.ts";
 import { decodePngChannel, encodePng } from "../png.ts";
 import { defineRobot, mark, median, SERVICES } from "../robot.ts";
 import { NdArray, RpcClient } from "../rpc.ts";
@@ -71,6 +72,14 @@ export function latchSuccess(previous: number | undefined, terminated: boolean |
 	const i = (terminated instanceof NdArray ? terminated.toArray() : [terminated]).findIndex(Boolean);
 	return i < 0 ? undefined : stepsBefore + i + 1;
 }
+/**
+ * The memory cell of a LIBERO episode: `<suite>_t<task>_s<seed>` (`libero_` dropped), e.g. `spatial_t0_s0`.
+ * LIBERO-plus task indices (thousands per suite) name other tasks than standard/pro ones, so plus cells
+ * are `<suite>_plus_t<task>_s<seed>` and never read or write a standard/pro cell's audit, recipe or
+ * inbox. Standard and pro share cells: their task sets are identical.
+ */
+export const memoryTag = (suite: string, task: string, seed: string, liberoType: string) =>
+	`${suite.replace(/^libero_/, "")}${liberoType === "plus" ? "_plus" : ""}_t${task}_s${seed}`;
 const round = (v: number, d = 4) => Number(v.toFixed(d));
 const wrap = (a: number) => ((((a + Math.PI) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI)) - Math.PI;
 const clip = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
@@ -188,7 +197,7 @@ export default function libero(pi: ExtensionAPI) {
 	let tableZ: number | undefined;
 	const worldMaps = new Map<string, WorldMap>();
 
-	const tag = () => `${robot.task.suite.replace(/^libero_/, "")}_t${robot.task.task}_s${robot.task.seed}`;
+	const tag = () => memoryTag(robot.task.suite, robot.task.task, robot.task.seed, flag("libero-type", "pro"));
 	const robot = defineRobot(pi, {
 		name: "libero",
 		task: ["suite", "task", "seed"],
@@ -202,7 +211,11 @@ export default function libero(pi: ExtensionAPI) {
 		groundTruth: (names) => call(env, "env.ground_truth_poses", { names: names ?? null }),
 		// Observations carry the agentview, then the wrist view.
 		vdm: { views: 2, wrist: 1 },
-		flash: liberoFlash(pi, () => ({ suite: robot.task.suite, task: robot.task.task })),
+		flash: liberoFlash(pi, () => ({
+			suite: robot.task.suite,
+			task: robot.task.task,
+			liberoType: flag("libero-type", "pro"),
+		})),
 		operator: {
 			step: () => envStep,
 			// In simulation the operator's scene restore is the env's own reset to the episode's initial state.
@@ -350,7 +363,7 @@ export default function libero(pi: ExtensionAPI) {
 	}
 
 	const flyMeta = () => ({
-		suite: robot.task.suite,
+		suite: flywheelSuite(robot.task.suite, flag("libero-type", "pro")),
 		task_id: Number(robot.task.task),
 		seed: Number(robot.task.seed),
 		task_language: language,

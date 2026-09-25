@@ -434,3 +434,15 @@ test("LIBERO with Molmo re-localizes anchors, refines from the wrist, retries a 
 	assert.match(out.notes, /held offset \(0\.0169,0\.0229\)/);
 	assert.equal(out.finish.status, "success");
 });
+
+test("LIBERO Flash refuses a LIBERO-plus episode: plan task indices are pro ones", () => {
+	const plans = liberoPlans();
+	const hook = (liberoType: string) =>
+		liberoFlash(fakePi({ molmo: "off", "flash-plans": plans }).pi, () => ({
+			suite: "libero_goal_swap",
+			task: "3",
+			liberoType,
+		}));
+	assert.throws(() => hook("plus").load("/"), /not LIBERO-plus/);
+	assert.equal((hook("pro").load("/") as FlashProgram).name, "goal_swap_t3");
+});

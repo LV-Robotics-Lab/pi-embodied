@@ -19,7 +19,7 @@ import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type TSchema, Type } from "typebox";
 import { encodePng } from "../png.ts";
-import { freePort, median, pruneImages, round } from "../robot-util.ts";
+import { episode, freePort, median, pruneImages, round } from "../robot-util.ts";
 import { NdArray, RpcClient } from "../rpc.ts";
 
 const SYSTEM = readFileSync(new URL("./SYSTEM.md", import.meta.url), "utf8");
@@ -91,33 +91,10 @@ function pinv3(J: number[][]): number[][] {
 }
 
 /** RpcClient bound to one RPent RPC session (the RLDX server keys policy memory/RTC state by it). */
-class SessionRpc extends RpcClient {
-	session = `rpc_${randomUUID().replaceAll("-", "")}`;
-
-	override async call<T = unknown>(
-		method: string,
-		kwargs: Record<string, unknown> = {},
-		timeoutMs = 120_000,
-		args: unknown[] = [],
-	): Promise<T> {
-		const res = await fetch(this.url, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ method, args, kwargs, session_id: this.session }, (_k, v: unknown) =>
-				v instanceof NdArray ? { __ndarray__: v.data.toString("base64"), dtype: v.dtype, shape: v.shape } : v,
-			),
-			signal: AbortSignal.timeout(timeoutMs),
-		});
-		const body = JSON.parse(await res.text(), (_k, v: unknown) => {
-			if (!v || typeof v !== "object" || Array.isArray(v)) return v;
-			const o = v as Record<string, unknown>;
-			if (typeof o.__ndarray__ === "string")
-				return new NdArray(String(o.dtype), o.shape as number[], Buffer.from(o.__ndarray__, "base64"));
-			return "__npscalar__" in o ? o.__npscalar__ : v;
-		}) as { ok: boolean; result?: unknown; error?: string };
-		if (!body.ok) throw new Error(`${method}: ${body.error}`);
-		return body.result as T;
-	}
+function sessionRpc(endpoint: string): RpcClient {
+	const rpc = new RpcClient(endpoint);
+	rpc.session = `rpc_${randomUUID().replaceAll("-", "")}`;
+	return rpc;
 }
 
 export default function robocasa(pi: ExtensionAPI) {
@@ -154,7 +131,7 @@ export default function robocasa(pi: ExtensionAPI) {
 	pi.registerFlag("log-dir", { type: "string", default: tmpdir(), description: "Env server log directory" });
 
 	let env: RpcClient;
-	let vla: SessionRpc | undefined;
+	let vla: RpcClient | undefined;
 	let server: ChildProcess | undefined;
 	let obs: Raw;
 	let language = "";
@@ -174,8 +151,25 @@ export default function robocasa(pi: ExtensionAPI) {
 	let turns = 0;
 	let started: number | undefined;
 	let outOfBudget = false;
-	let reported = false;
 	let claimed: { status: string; summary: string } | undefined;
+	const ep = episode(pi, "robocasa", (ended) => ({
+		task_name: flag("task-name", ""),
+		split: flag("split", ""),
+		seed: Number(flag("seed", "0")),
+		task_language: language,
+		success: states[states.length - 1]?.success ?? false,
+		env_steps: envSteps,
+		states: states.length,
+		attempts: attempt,
+		turns,
+		ended,
+		planner_budget_exhausted: outOfBudget,
+		claimed: claimed?.status ?? null,
+		summary: claimed?.summary ?? null,
+		rldx_max_chunks: envInt("RLDX_MAX_CHUNKS", 70),
+		rldx_settle_patience: envInt("RLDX_SETTLE_PATIENCE", 999),
+		rldx_action_steps_per_chunk: envInt("RLDX_ACTION_STEPS_PER_CHUNK", 8),
+	}));
 
 	const vec = (key: string) => obs[key].toArray();
 	const eef = () => vec("robot0_eef_pos");
@@ -187,7 +181,7 @@ export default function robocasa(pi: ExtensionAPI) {
 	/** One env step with the PandaOmron 12-D action [eef_pos 3, eef_rot 3, gripper, base 3, torso, base_mode]. */
 	async function step(a: number[]) {
 		if (signal?.aborted) throw new Error("interrupted");
-		obs = (await env.call<[Raw, unknown, unknown, unknown]>("env.step", {}, 60_000, [a]))[0];
+		obs = (await env.call<[Raw, unknown, unknown, unknown]>("env.step", {}, 60_000, [a], signal))[0];
 		envSteps++;
 	}
 
@@ -318,8 +312,11 @@ export default function robocasa(pi: ExtensionAPI) {
 			async execute(_id, params, sig) {
 				if (!action) {
 					const { _state, ...rest } = (await run(params)) as { _state?: State };
-					if (_state) return view(_state);
-					return { content: [{ type: "text" as const, text: JSON.stringify(rest) }], details: rest };
+					if (_state) return ep.terminating(view(_state));
+					return ep.terminating({
+						content: [{ type: "text" as const, text: JSON.stringify(rest) }],
+						details: rest,
+					});
 				}
 				const t0 = Date.now();
 				let result: Record<string, unknown>;
@@ -332,7 +329,9 @@ export default function robocasa(pi: ExtensionAPI) {
 					signal = undefined;
 				}
 				const elapsed = round((Date.now() - t0) / 1000, 1);
-				return view(await capture({ action: name, ...params }, result, elapsed), { agent_elapsed_s: elapsed });
+				return ep.terminating(
+					view(await capture({ action: name, ...params }, result, elapsed), { agent_elapsed_s: elapsed }),
+				);
 			},
 		});
 	}
@@ -489,10 +488,13 @@ export default function robocasa(pi: ExtensionAPI) {
 		while (chunks < maxChunks) {
 			chunks++;
 			if (signal?.aborted) throw new Error("interrupted");
-			const actions = await vla.call<Record<string, NdArray>>("vla.predict", {}, 120_000, [
-				rldxObs(prompt, vdi),
-				{ reset_memory: [fresh] },
-			]);
+			const actions = await vla.call<Record<string, NdArray>>(
+				"vla.predict",
+				{},
+				120_000,
+				[rldxObs(prompt, vdi), { reset_memory: [fresh] }],
+				signal,
+			);
 			fresh = false;
 			const col = (key: string) => {
 				const arr = actions[key];
@@ -521,7 +523,7 @@ export default function robocasa(pi: ExtensionAPI) {
 					robot0_torso: motion.slice(3, 4),
 					robot0_base_mode: mode(i)[0] < 0.5 ? -1 : 1,
 				};
-				const a = await env.call<NdArray>("env.reassemble_env_action", {}, 30_000, [unmapped]);
+				const a = await env.call<NdArray>("env.reassemble_env_action", {}, 30_000, [unmapped], signal);
 				await step(a.toArray());
 				applied++;
 				await push();
@@ -950,6 +952,7 @@ export default function robocasa(pi: ExtensionAPI) {
 		executionMode: "sequential",
 		async execute(_id, params) {
 			claimed = params;
+			ep.end();
 			const success = states[states.length - 1]?.success ?? false;
 			return {
 				content: [{ type: "text", text: `Episode finished (success=${success}).` }],
@@ -968,7 +971,9 @@ export default function robocasa(pi: ExtensionAPI) {
 		vla = undefined;
 	}
 
-	pi.on("session_start", async () => {
+	pi.on("session_start", (_event, ctx) => ep.start(ctx, startEpisode));
+
+	async function startEpisode() {
 		await disconnect();
 		states = [];
 		envSteps = turns = 0;
@@ -976,10 +981,10 @@ export default function robocasa(pi: ExtensionAPI) {
 		hist = [];
 		vlaDesync = true;
 		attempt = 1;
-		outOfBudget = reported = false;
+		outOfBudget = false;
 		const [task, split, seed] = [flag("task-name", ""), flag("split", "target"), flag("seed", "0")];
 		if (!SPLITS.includes(split)) throw new Error(`--split must be one of ${SPLITS.join(", ")}`);
-		vla = new SessionRpc(flag("rldx", ""));
+		vla = sessionRpc(flag("rldx", ""));
 		let endpoint = pi.getFlag("env") as string | undefined;
 		if (!endpoint) {
 			const rpent = flag("rpent", "");
@@ -1044,7 +1049,7 @@ export default function robocasa(pi: ExtensionAPI) {
 			"finish",
 			"read",
 		]);
-	});
+	}
 
 	pi.on("before_agent_start", () => {
 		started ??= Date.now();
@@ -1073,41 +1078,11 @@ export default function robocasa(pi: ExtensionAPI) {
 		const late = limit > 0 && started !== undefined && Date.now() - started > limit * 1000;
 		if (event.toolName === "finish" || ((maxTurns <= 0 || turns < maxTurns) && !late)) return undefined;
 		outOfBudget = true;
+		ep.end();
 		return { block: true, reason: "Planner turn or time budget exhausted; the episode is over.", terminate: true };
 	});
 
 	pruneImages(pi, () => Number(flag("keep-images", "6")));
 
-	function report(hasUI: boolean, ended: string) {
-		reported = true;
-		const result = {
-			task_name: flag("task-name", ""),
-			split: flag("split", ""),
-			seed: Number(flag("seed", "0")),
-			task_language: language,
-			success: states[states.length - 1]?.success ?? false,
-			env_steps: envSteps,
-			states: states.length,
-			attempts: attempt,
-			turns,
-			ended,
-			planner_budget_exhausted: outOfBudget,
-			claimed: claimed?.status ?? null,
-			summary: claimed?.summary ?? null,
-			rldx_max_chunks: envInt("RLDX_MAX_CHUNKS", 70),
-			rldx_settle_patience: envInt("RLDX_SETTLE_PATIENCE", 999),
-			rldx_action_steps_per_chunk: envInt("RLDX_ACTION_STEPS_PER_CHUNK", 8),
-		};
-		try {
-			pi.appendEntry("robocasa_result", result);
-		} catch {}
-		if (!hasUI) console.error(`[robocasa] ${JSON.stringify(result)}`);
-	}
-
-	pi.on("agent_end", (_event, ctx) => report(ctx.hasUI, "agent_end"));
-
-	pi.on("session_shutdown", async (_event, ctx) => {
-		if (!reported && states.length) report(ctx.hasUI, "shutdown"); // e.g. killed by a cell timeout
-		await disconnect();
-	});
+	pi.on("session_shutdown", disconnect);
 }

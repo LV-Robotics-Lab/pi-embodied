@@ -20,6 +20,7 @@ import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type TSchema, Type } from "typebox";
 import { encodePng } from "../png.ts";
+import { episode } from "../robot-util.ts";
 import { NdArray, RpcClient } from "../rpc.ts";
 
 const SYSTEM = readFileSync(new URL("./SYSTEM.md", import.meta.url), "utf8");
@@ -389,6 +390,23 @@ export default function robotwin(pi: ExtensionAPI) {
 	let started: number | undefined;
 	let outOfBudget = false;
 	let claimed: { status: string; summary: string } | undefined;
+	let signal: AbortSignal | undefined; // the running tool's abort signal
+	const ep = episode(pi, "robotwin", () => ({
+		task_name: flag("task-name", ""),
+		task_config: flag("task-config", ""),
+		seed: Number(flag("seed", "0")),
+		task_language: language,
+		success: success(),
+		budget_exhausted: exhausted(),
+		planner_budget_exhausted: outOfBudget,
+		take_action_cnt: status().take_action_cnt,
+		policy_actions: policyActions,
+		native_actions: nativeActions,
+		states: snapshots.length,
+		turns,
+		claimed: claimed?.status ?? null,
+		summary: claimed?.summary ?? null,
+	}));
 
 	const status = () => info.episode_status;
 	const success = () => status().eval_success === true;
@@ -430,7 +448,7 @@ export default function robotwin(pi: ExtensionAPI) {
 			const offset = u.arm === "left" ? 0 : 7;
 			if (u.arm_qpos) action.splice(offset, 6, ...u.arm_qpos);
 			if (u.gripper !== undefined) action[offset + 6] = u.gripper;
-			const ret = await env.call<StepReturn>("env.step", { action_type: "qpos" }, MUTATE_MS, [f64(action)]);
+			const ret = await env.call<StepReturn>("env.step", { action_type: "qpos" }, MUTATE_MS, [f64(action)], signal);
 			info = ret[4];
 			executed += ret[4].executed_actions ?? 0;
 			if (success() || exhausted()) break;
@@ -452,6 +470,8 @@ export default function robotwin(pi: ExtensionAPI) {
 			"env.plan_arm_path",
 			{ arm, target_pose: target },
 			READ_MS,
+			[],
+			signal,
 		);
 		if (planned.status !== "Success" || !planned.position)
 			return {
@@ -581,21 +601,31 @@ export default function robotwin(pi: ExtensionAPI) {
 			description,
 			parameters,
 			executionMode: "sequential",
-			async execute(_id, params) {
+			async execute(_id, params, sig) {
 				if (kind === "act" && (success() || exhausted())) {
-					return {
+					return ep.terminating({
 						content: [
 							{
-								type: "text",
+								type: "text" as const,
 								text: `Episode is terminal (eval_success=${success()}, budget_exhausted=${exhausted()}); call finish.`,
 							},
 						],
 						details: {},
-					};
+					});
 				}
-				const result = await run(params);
-				if (kind === "read") return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
-				return present(await capture({ action: name, ...(params as object) }, result));
+				signal = sig;
+				let result: Record<string, unknown>;
+				try {
+					result = await run(params);
+				} finally {
+					signal = undefined;
+				}
+				if (kind === "read")
+					return ep.terminating({
+						content: [{ type: "text" as const, text: JSON.stringify(result) }],
+						details: result,
+					});
+				return ep.terminating(present(await capture({ action: name, ...(params as object) }, result)));
 			},
 		});
 	}
@@ -622,8 +652,12 @@ export default function robotwin(pi: ExtensionAPI) {
 		async execute(_id, params) {
 			const i = params.step === undefined ? -1 : params.step;
 			const snap = snapshots[i < 0 ? snapshots.length + i : i];
-			if (!snap) return { content: [{ type: "text", text: `state step ${i} not available` }], details: {} };
-			return present(snap);
+			if (!snap)
+				return ep.terminating({
+					content: [{ type: "text" as const, text: `state step ${i} not available` }],
+					details: {},
+				});
+			return ep.terminating(present(snap));
 		},
 	});
 
@@ -776,6 +810,7 @@ export default function robotwin(pi: ExtensionAPI) {
 			let executed = 0;
 			let nativePrompt: string | null = null;
 			for (let i = 0; i < chunks && !success() && !exhausted(); i++) {
+				if (signal?.aborted) throw new Error("interrupted");
 				nativePrompt = await env.call<string>("env.get_task_language", {}, READ_MS);
 				const views: NdArray[] = [];
 				for (const v of VIEWS)
@@ -800,6 +835,7 @@ export default function robotwin(pi: ExtensionAPI) {
 					{ action_type: "ee", return_all_frames: false },
 					MUTATE_MS,
 					[chunk],
+					signal,
 				);
 				info = ret[4];
 				const count = ret[4].executed_actions ?? 0;
@@ -872,6 +908,7 @@ export default function robotwin(pi: ExtensionAPI) {
 		executionMode: "sequential",
 		async execute(_id, params) {
 			claimed = params;
+			ep.end();
 			const requested = params.status.toLowerCase() === "success";
 			const result = {
 				status: success() ? "success" : requested ? "failure" : params.status,
@@ -884,7 +921,9 @@ export default function robotwin(pi: ExtensionAPI) {
 		},
 	});
 
-	pi.on("session_start", async () => {
+	pi.on("session_start", (_event, ctx) => ep.start(ctx, startEpisode));
+
+	async function startEpisode() {
 		server?.kill();
 		lingbot?.ws.close();
 		lingbot = undefined;
@@ -968,7 +1007,7 @@ export default function robotwin(pi: ExtensionAPI) {
 			"finish",
 			...(memory && existsSync(memory) ? ["read", "ls"] : []),
 		]);
-	});
+	}
 
 	pi.on("session_shutdown", () => {
 		server?.kill();
@@ -1006,6 +1045,7 @@ export default function robotwin(pi: ExtensionAPI) {
 		const late = started !== undefined && Date.now() - started > Number(flag("time-limit", "4800")) * 1000;
 		if (event.toolName === "finish" || (turns < Number(flag("max-turns", "100")) && !late)) return undefined;
 		outOfBudget = true;
+		ep.end();
 		return { block: true, reason: "Planner turn or time budget exhausted; the episode is over.", terminate: true };
 	});
 
@@ -1023,26 +1063,5 @@ export default function robotwin(pi: ExtensionAPI) {
 			return { ...m, content };
 		});
 		return pruned ? { messages: messages.reverse() } : undefined;
-	});
-
-	pi.on("agent_end", (_event, ctx) => {
-		const result = {
-			task_name: flag("task-name", ""),
-			task_config: flag("task-config", ""),
-			seed: Number(flag("seed", "0")),
-			task_language: language,
-			success: info ? success() : false,
-			budget_exhausted: info ? exhausted() : false,
-			planner_budget_exhausted: outOfBudget,
-			take_action_cnt: info ? status().take_action_cnt : 0,
-			policy_actions: policyActions,
-			native_actions: nativeActions,
-			states: snapshots.length,
-			turns,
-			claimed: claimed?.status ?? null,
-			summary: claimed?.summary ?? null,
-		};
-		pi.appendEntry("robotwin_result", result);
-		if (!ctx.hasUI) console.error(`[robotwin] ${JSON.stringify(result)}`);
 	});
 }

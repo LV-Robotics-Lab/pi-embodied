@@ -1,14 +1,14 @@
 /**
- * Helpers shared by robots that run RPent services: starting or attaching to an RPent RPC
- * server, reading RPent's own Python definitions, numpy payloads, camera frames, rigid
- * transforms, tool results and camera-frame pruning.
+ * Helpers shared by robots that run RPent services: the episode lifecycle, starting or
+ * attaching to an RPent RPC server, reading RPent's own Python definitions, numpy payloads,
+ * camera frames, rigid transforms, tool results and camera-frame pruning.
  */
 
 import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { closeSync, openSync } from "node:fs";
 import { createServer } from "node:net";
 import { promisify } from "node:util";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { NdArray, RpcClient } from "./rpc.ts";
 
 export type Json = Record<string, any>;
@@ -25,6 +25,92 @@ export const median = (v: number[]) => {
 	return s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2;
 };
 export const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+// ---------------------------------------------------------------------------
+// episode lifecycle
+
+/**
+ * A robot's episode lifecycle, failing closed. Call it before registering any other handler.
+ * - Every session starts with no active tools, and every tool call and prompt is refused until
+ *   `start` succeeds. A failed start is shown in the UI, or without one printed to stderr as
+ *   `[name] unavailable: ...` with exit code 1.
+ * - pi stops early only when every result in a batch terminates: robot tools return
+ *   `terminating(result)` so a batch that calls `finish` ends with it, `finish` calls `end()`,
+ *   and nothing but `finish` runs after the episode ended.
+ * - `result()` becomes the session's single `<name>_result` entry (and, without a UI, a
+ *   `[name] {...}` stderr line): at the first agent_end after the episode ended, otherwise at
+ *   session_shutdown once an agent has run. A robot that never started writes no result.
+ */
+export function episode(pi: ExtensionAPI, name: string, result: (ended: "agent_end" | "shutdown") => Json) {
+	let ready = false;
+	let ran = false;
+	let ended = false;
+	let reported = false;
+	let finishing = false;
+
+	function report(hasUI: boolean, when: "agent_end" | "shutdown") {
+		if (!ready || !ran || reported) return;
+		reported = true;
+		const r = result(when);
+		try {
+			pi.appendEntry(`${name}_result`, r);
+		} catch {}
+		if (!hasUI) console.error(`[${name}] ${JSON.stringify(r)}`);
+	}
+
+	pi.on("session_start", () => {
+		ready = ran = ended = reported = finishing = false;
+		pi.setActiveTools([]);
+	});
+	pi.on("input", (_event, ctx) => {
+		if (ready) return undefined;
+		if (ctx.hasUI) ctx.ui.notify(`${name} is not available; see the startup error.`, "error");
+		return { action: "handled" as const };
+	});
+	pi.on("agent_start", () => {
+		ran = true;
+	});
+	pi.on("message_end", (event) => {
+		const m = event.message;
+		if (m.role === "assistant") finishing = m.content.some((c) => c.type === "toolCall" && c.name === "finish");
+	});
+	pi.on("tool_call", (event) => {
+		if (!ready) return { block: true, reason: `${name} is not available.`, terminate: true };
+		if (ended && event.toolName !== "finish")
+			return { block: true, reason: "The episode is finished.", terminate: true };
+		return undefined;
+	});
+	pi.on("agent_end", (_event, ctx) => {
+		if (ended) report(ctx.hasUI, "agent_end");
+	});
+	pi.on("session_shutdown", (_event, ctx) => report(ctx.hasUI, "shutdown"));
+
+	return {
+		ready: () => ready,
+		/** Run the robot's startup; on failure the session keeps no tools. */
+		async start(ctx: ExtensionContext, run: () => Promise<void>) {
+			try {
+				await run();
+				ready = true;
+			} catch (err) {
+				pi.setActiveTools([]);
+				const text = `unavailable: ${message(err)}`;
+				if (ctx.hasUI) ctx.ui.notify(`${name} ${text}`, "error");
+				else {
+					console.error(`[${name}] ${text}`);
+					process.exitCode = 1;
+					ctx.shutdown();
+				}
+			}
+		},
+		/** The episode is over (`finish`, or a spent budget): only `finish` may still run. */
+		end() {
+			ended = true;
+		},
+		/** A tool result that ends its batch when the batch also calls `finish`. */
+		terminating: <T extends object>(r: T) => ({ ...r, terminate: finishing }),
+	};
+}
 
 // ---------------------------------------------------------------------------
 // RPent processes
@@ -92,6 +178,22 @@ export async function attach(endpoint: string, readyMs = 300_000): Promise<RpcCl
 	const rpc = new RpcClient(endpoint);
 	await rpc.ready(readyMs);
 	return rpc;
+}
+
+/**
+ * Refuse a real-robot `move_delta` larger than one call may move, in meters. RPent clips each
+ * servo step on the server (0.02 m) but bounds no call's total; its tasks document the per-call
+ * limit only in the prompt ("Keep translation commands at or below 0.02 m per call"). The
+ * tighter of that and `cap` applies.
+ */
+export function checkMove(delta: number[], cap: number, constraints: string[] = []) {
+	const documented = constraints.map((c) => /translation commands at or below ([\d.]+) m per call/i.exec(c)?.[1]);
+	const limit = Math.min(cap, ...documented.filter((v) => v !== undefined).map(Number));
+	const norm = Math.hypot(...delta);
+	if (!(norm <= limit))
+		throw new Error(
+			`delta_xyz moves ${round(norm, 4)} m; the limit is ${limit} m per call. Split the motion into smaller calls.`,
+		);
 }
 
 // ---------------------------------------------------------------------------

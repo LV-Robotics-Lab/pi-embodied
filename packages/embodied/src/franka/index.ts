@@ -25,6 +25,8 @@ import { encodePng } from "../png.ts";
 import {
 	apply,
 	attach,
+	checkMove,
+	episode,
 	f32,
 	gridOf,
 	inv3,
@@ -194,6 +196,11 @@ export default function franka(pi: ExtensionAPI) {
 		description: "Step artifact directory (default: a new directory under the OS temp dir)",
 	});
 	pi.registerFlag("keep-images", { type: "string", default: "4", description: "Camera frames kept in context" });
+	pi.registerFlag("max-move", {
+		type: "string",
+		default: "0.1",
+		description: "Largest move_delta per call, m (a task's documented limit applies if tighter)",
+	});
 
 	let env: RpcClient | undefined;
 	let vla: RpcClient | undefined;
@@ -203,10 +210,19 @@ export default function franka(pi: ExtensionAPI) {
 	let lastStates: unknown;
 	let claimed: { status: string; summary: string } | undefined;
 	const steps: Step[] = [];
+	const ep = episode(pi, "franka", () => ({
+		task: Number(flag("task", "0")),
+		task_name: setup?.task.name ?? null,
+		steps: steps.length,
+		claimed: claimed?.status ?? null,
+		summary: claimed?.summary ?? null,
+		out,
+		...op.result(),
+	}));
 	const op = operator(pi, { step: () => steps.length });
 
-	const call = <T = Json>(method: string, kwargs: Json = {}, timeoutMs = 30_000) =>
-		(env as RpcClient).call<T>(method, kwargs, timeoutMs);
+	const call = <T = Json>(method: string, kwargs: Json = {}, timeoutMs = 30_000, signal?: AbortSignal) =>
+		(env as RpcClient).call<T>(method, kwargs, timeoutMs, [], signal);
 	const remember = (states: unknown) => {
 		if (states !== undefined && states !== null) lastStates = states;
 	};
@@ -230,8 +246,8 @@ export default function franka(pi: ExtensionAPI) {
 		return state;
 	}
 
-	async function motion(method: string, kwargs: Json, timeoutMs = 120_000): Promise<Json> {
-		const result = await call(method, kwargs, timeoutMs);
+	async function motion(method: string, kwargs: Json, signal?: AbortSignal, timeoutMs = 120_000): Promise<Json> {
+		const result = await call(method, kwargs, timeoutMs, signal);
 		remember(result.states);
 		return result;
 	}
@@ -329,36 +345,39 @@ export default function franka(pi: ExtensionAPI) {
 			parameters,
 			executionMode: "sequential",
 			async execute(_id, params, signal, _onUpdate, ctx) {
-				if (!env || !steps.length)
-					return toolResult({ error: "robot not initialized; see the session start error" });
-				const started = performance.now();
-				let result: Json;
-				let failed = false;
-				try {
-					result = await run(params, signal, ctx);
-				} catch (err) {
-					result = { error: message(err) };
-					failed = true;
-				}
-				if (!mutating) {
-					const { _pngs, ...rest } = result;
-					return toolResult(rest, _pngs ?? []);
-				}
-				const elapsed = round((performance.now() - started) / 1000, 2);
-				try {
-					const { output, pngs } = view(await dumpState({ action: name, ...params }, result, elapsed));
-					output.agent_elapsed_s = elapsed;
-					if (failed) for (const [k, v] of Object.entries(result)) output[k] ??= v;
-					return toolResult(output, pngs);
-				} catch (err) {
-					return toolResult({
-						...result,
-						state_capture_error: message(err),
-						error: result.error ?? `failed to capture state after ${name}: ${message(err)}`,
-					});
-				}
+				return ep.terminating(await outcome(params, signal, ctx));
 			},
 		});
+
+		async function outcome(params: any, signal: AbortSignal | undefined, ctx: ExtensionContext) {
+			if (!env || !steps.length) return toolResult({ error: "robot not initialized; see the session start error" });
+			const started = performance.now();
+			let result: Json;
+			let failed = false;
+			try {
+				result = await run(params, signal, ctx);
+			} catch (err) {
+				result = { error: message(err) };
+				failed = true;
+			}
+			if (!mutating) {
+				const { _pngs, ...rest } = result;
+				return toolResult(rest, _pngs ?? []);
+			}
+			const elapsed = round((performance.now() - started) / 1000, 2);
+			try {
+				const { output, pngs } = view(await dumpState({ action: name, ...params }, result, elapsed));
+				output.agent_elapsed_s = elapsed;
+				if (failed) for (const [k, v] of Object.entries(result)) output[k] ??= v;
+				return toolResult(output, pngs);
+			} catch (err) {
+				return toolResult({
+					...result,
+					state_capture_error: message(err),
+					error: result.error ?? `failed to capture state after ${name}: ${message(err)}`,
+				});
+			}
+		}
 	}
 
 	const stepParam = Type.Optional(Type.Integer({ description: "State step (default -1 = latest)" }));
@@ -720,7 +739,9 @@ export default function franka(pi: ExtensionAPI) {
 		Type.Object({ delta_xyz: xyz }),
 		async ({ delta_xyz }, signal) => {
 			check(signal);
-			return motion("env.move_delta", { delta_xyz: vec3(delta_xyz, "delta_xyz") });
+			const delta = vec3(delta_xyz, "delta_xyz");
+			checkMove(vec(delta_xyz), Number(flag("max-move", "0.1")), setup?.task.constraints);
+			return motion("env.move_delta", { delta_xyz: delta }, signal);
 		},
 	);
 
@@ -730,7 +751,7 @@ export default function franka(pi: ExtensionAPI) {
 		Type.Object({ delta_rpy: xyz }),
 		async ({ delta_rpy }, signal) => {
 			check(signal);
-			return motion("env.rotate_delta", { delta_rpy: vec3(delta_rpy, "delta_rpy") });
+			return motion("env.rotate_delta", { delta_rpy: vec3(delta_rpy, "delta_rpy") }, signal);
 		},
 	);
 
@@ -740,7 +761,7 @@ export default function franka(pi: ExtensionAPI) {
 		Type.Object({}),
 		async (_p, signal) => {
 			check(signal);
-			return motion("env.set_gripper", { open: true });
+			return motion("env.set_gripper", { open: true }, signal);
 		},
 	);
 
@@ -750,7 +771,7 @@ export default function franka(pi: ExtensionAPI) {
 		Type.Object({}),
 		async (_p, signal) => {
 			check(signal);
-			return motion("env.set_gripper", { open: false });
+			return motion("env.set_gripper", { open: false }, signal);
 		},
 	);
 
@@ -783,9 +804,10 @@ export default function franka(pi: ExtensionAPI) {
 					states: f32(states).batched(),
 					task_descriptions: [prompt || setup?.task.instruction],
 				};
-				const actions = await vla.call<NdArray>("vla.predict", {}, 120_000, [wire, { mode: "eval" }]);
+				const actions = await vla.call<NdArray>("vla.predict", {}, 120_000, [wire, { mode: "eval" }], signal);
 				const chunk = f32(new NdArray(actions.dtype, actions.shape.slice(1), actions.data));
-				const result = await call("env.chunk_step", { actions: chunk, return_all_frames: false }, 300_000);
+				check(signal);
+				const result = await call("env.chunk_step", { actions: chunk, return_all_frames: false }, 300_000, signal);
 				const next = result.observation;
 				remember(Array.isArray(next) ? next.at(-1)?.states : next?.states);
 				chunks.push(result);
@@ -813,15 +835,19 @@ export default function franka(pi: ExtensionAPI) {
 		executionMode: "sequential",
 		async execute(_id, params) {
 			claimed = params;
+			ep.end();
 			return { ...toolResult({ _finish: true, ...params }), terminate: true };
 		},
 	});
 
 	// ---- lifecycle
 
-	pi.on("session_start", async (_event, ctx) => {
+	pi.on("session_start", (_event, ctx) => ep.start(ctx, () => startRobot(ctx)));
+
+	async function startRobot(ctx: ExtensionContext) {
 		claimed = undefined;
-		if (env) return; // the physical robot stays where it is across /new, /resume and /fork
+		// The physical robot stays where it is across /new, /resume and /fork.
+		if (env) return pi.setActiveTools([...TOOLS, ...op.tools()]);
 		if (!ctx.hasUI)
 			throw new Error("franka drives a real robot: run pi interactively (or over RPC) so an operator is present");
 		const rpent = flag("rpent");
@@ -862,7 +888,7 @@ export default function franka(pi: ExtensionAPI) {
 		await dumpState(null, null, null);
 		pi.setActiveTools([...TOOLS, ...op.tools()]);
 		ctx.ui.notify(`Franka ready: task ${task} (${setup.task.name}); steps under ${out}`, "info");
-	});
+	}
 
 	pi.on("session_shutdown", () => {
 		server?.kill();
@@ -882,16 +908,4 @@ export default function franka(pi: ExtensionAPI) {
 	});
 
 	pruneImages(pi, () => Number(flag("keep-images", "4")));
-
-	pi.on("agent_end", () => {
-		pi.appendEntry("franka_result", {
-			task: Number(flag("task", "0")),
-			task_name: setup?.task.name ?? null,
-			steps: steps.length,
-			claimed: claimed?.status ?? null,
-			summary: claimed?.summary ?? null,
-			out,
-			...op.result(),
-		});
-	});
 }

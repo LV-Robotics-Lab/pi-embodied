@@ -5,7 +5,8 @@
 #   eval.sh <out-dir> <splits|all> [pi args...]
 #   eval.sh runs/t50 all --model openai/gpt-5.5 --thinking xhigh --memory-dir target50-memory/robocasa
 # TASKS=OpenDrawer,CloseFridge and SEEDS=1,2 narrow the matrix. Re-running retries exactly the
-# cells without a valid result (infrastructure failures); task failures and timeouts are final.
+# cells without a valid result (startup and infrastructure failures); task failures and timeouts
+# are final. Rates are over valid cells; the others are reported and make the script exit 1.
 set -uo pipefail
 out=$1 splits=$2
 shift 2
@@ -54,13 +55,21 @@ while read -r split task seed limit; do
 	node -e '
 const fs = require("fs");
 const [dir, manifest, split, task, seed, limit, code, elapsed, model, effort, turns] = process.argv.slice(1);
-const lines = fs.readFileSync(`${dir}/stderr.log`, "utf8").split("\n").filter((l) => l.startsWith("[robocasa] "));
-const r = lines.length ? JSON.parse(lines[lines.length - 1].slice(11)) : null;
-const available = r !== null && typeof r.success === "boolean";
+const lines = fs.readFileSync(`${dir}/stderr.log`, "utf8").split("\n");
+const unavailable = lines.find((l) => l.startsWith("[robocasa] unavailable: "));
+// pi writes exactly one robocasa_result per episode.
+const results = lines.filter((l) => l.startsWith("[robocasa] {")).map((l) => JSON.parse(l.slice(11)));
+const r = results.length === 1 ? results[0] : null;
+const available = !unavailable && r !== null && typeof r.success === "boolean";
 const success = available && r.success;
-const reason = success ? "completed"
-	: code === "124" || code === "137" || r?.planner_budget_exhausted ? "planner_timeout"
+const reason = unavailable ? "startup_failure"
+	: success ? "completed"
+	: available && (code === "124" || code === "137" || r.planner_budget_exhausted) ? "planner_timeout"
 	: code === "0" && available ? "completed" : "infrastructure_error";
+const error = unavailable ? unavailable.slice(11)
+	: results.length > 1 ? `${results.length} robocasa_result lines, expected 1`
+	: !available ? `no robocasa_result (pi exit ${code})`
+	: reason === "infrastructure_error" ? `pi exit ${code}` : null;
 const record = {
 	schema_version: "1.0",
 	protocol_id: JSON.parse(fs.readFileSync(manifest, "utf8")).protocol_id,
@@ -70,6 +79,7 @@ const record = {
 	seed: Number(seed),
 	valid: available && reason !== "infrastructure_error",
 	success,
+	error,
 	success_source: "state.success",
 	termination_reason: reason,
 	elapsed_s: Number(elapsed),
@@ -83,7 +93,7 @@ const record = {
 };
 fs.writeFileSync(`${dir}/result.json.tmp`, `${JSON.stringify(record, null, 2)}\n`);
 fs.renameSync(`${dir}/result.json.tmp`, `${dir}/result.json`);
-console.log(JSON.stringify({ success, reason, valid: record.valid, exit: Number(code) }));
+console.log(JSON.stringify({ success, reason, valid: record.valid, exit: Number(code), error }));
 ' "$dir" "$manifest" "$split" "$task" "$seed" "$limit" "$code" "$(($(date +%s) - start))" "$model" "$effort" "$MAX_TURNS"
 done <<<"$cells"
 
@@ -93,24 +103,36 @@ const fs = require("fs");
 const [manifest, out] = process.argv.slice(1);
 const m = JSON.parse(fs.readFileSync(manifest, "utf8"));
 const rates = [];
-const summary = { protocol_id: m.protocol_id, splits: {}, missing_or_invalid: 0 };
+const summary = { protocol_id: m.protocol_id, splits: {}, startup_failures: 0, errors: 0 };
+const invalid = [];
 for (const [name, split] of Object.entries(m.splits)) {
 	let ok = 0;
 	let valid = 0;
 	for (const t of split.tasks) {
 		let taskOk = 0;
+		let taskValid = 0;
 		for (const s of split.seeds) {
 			let r = null;
 			try { r = JSON.parse(fs.readFileSync(`${out}/${name}/${t}_s${s}/result.json`, "utf8")); } catch {}
-			if (!r?.valid) { summary.missing_or_invalid++; continue; }
+			if (!r?.valid) {
+				if (r?.termination_reason === "startup_failure") summary.startup_failures++;
+				else summary.errors++;
+				invalid.push(`${r?.termination_reason ?? "missing"}: ${name} ${t} s${s}: ${r?.error ?? "no result.json"}`);
+				continue;
+			}
 			valid++;
+			taskValid++;
 			if (r.success) { ok++; taskOk++; }
 		}
-		rates.push(taskOk / split.seeds.length);
+		if (taskValid) rates.push(taskOk / taskValid);
 	}
-	summary.splits[name] = { successes: ok, valid_cells: valid, expected_cells: split.cell_count, success_rate: +(ok / split.cell_count).toFixed(6) };
+	summary.splits[name] = { successes: ok, valid_cells: valid, expected_cells: split.cell_count, success_rate: valid ? +(ok / valid).toFixed(6) : null };
 }
-summary.task_weighted_success_rate = +(rates.reduce((a, b) => a + b, 0) / rates.length).toFixed(6);
+summary.task_weighted_success_rate = rates.length ? +(rates.reduce((a, b) => a + b, 0) / rates.length).toFixed(6) : null;
 console.log(JSON.stringify(summary, null, 2));
-if (summary.missing_or_invalid) console.log(`incomplete: ${summary.missing_or_invalid} of ${m.total_cells} cells have no valid result (counted as failures above)`);
+for (const line of invalid) console.log(line);
+if (invalid.length) {
+	console.log(`incomplete: ${invalid.length} of ${m.total_cells} cells have no valid result (excluded from the rates above); re-run to retry them`);
+	process.exit(1);
+}
 ' "$manifest" "$out"

@@ -25,6 +25,8 @@ import { decodePngChannel, encodePng } from "../png.ts";
 import {
 	apply,
 	attach,
+	checkMove,
+	episode,
 	f32,
 	type Grid,
 	gridOf,
@@ -218,6 +220,11 @@ export default function dualFranka(pi: ExtensionAPI) {
 		description: "Step artifact directory (default: a new directory under the OS temp dir)",
 	});
 	pi.registerFlag("keep-images", { type: "string", default: "4", description: "Camera frames kept in context" });
+	pi.registerFlag("max-move", {
+		type: "string",
+		default: "0.1",
+		description: "Largest move_delta per call and arm, m (a task's documented limit applies if tighter)",
+	});
 
 	let env: RpcClient | undefined;
 	let vla: RpcClient | undefined;
@@ -229,10 +236,23 @@ export default function dualFranka(pi: ExtensionAPI) {
 	let lastStates: unknown;
 	let claimed: { status: string; summary: string } | undefined;
 	const steps: Step[] = [];
+	const ep = episode(pi, "dual_franka", () => {
+		const operatorResult = op.result() as Json;
+		return {
+			task: Number(flag("task", "0")),
+			task_name: setup?.task.name ?? null,
+			steps: steps.length,
+			solved: operatorResult.operator_verdict === "success",
+			claimed: claimed?.status ?? null,
+			summary: claimed?.summary ?? null,
+			out,
+			...operatorResult,
+		};
+	});
 	const op = operator(pi, { step: () => steps.length });
 
-	const call = <T = Json>(method: string, kwargs: Json = {}, timeoutMs = 30_000) =>
-		(env as RpcClient).call<T>(method, kwargs, timeoutMs);
+	const call = <T = Json>(method: string, kwargs: Json = {}, timeoutMs = 30_000, signal?: AbortSignal) =>
+		(env as RpcClient).call<T>(method, kwargs, timeoutMs, [], signal);
 	const remember = (states: unknown) => {
 		if (states !== undefined && states !== null) lastStates = states;
 	};
@@ -256,8 +276,8 @@ export default function dualFranka(pi: ExtensionAPI) {
 		return state;
 	}
 
-	async function motion(method: string, kwargs: Json, timeoutMs = 120_000): Promise<Json> {
-		const result = await call(method, kwargs, timeoutMs);
+	async function motion(method: string, kwargs: Json, signal?: AbortSignal, timeoutMs = 120_000): Promise<Json> {
+		const result = await call(method, kwargs, timeoutMs, signal);
 		remember(result.states);
 		return result;
 	}
@@ -402,36 +422,39 @@ export default function dualFranka(pi: ExtensionAPI) {
 			parameters,
 			executionMode: "sequential",
 			async execute(_id, params, signal, _onUpdate, ctx) {
-				if (!env || !steps.length)
-					return toolResult({ error: "robot not initialized; see the session start error" });
-				const started = performance.now();
-				let result: Json;
-				let failed = false;
-				try {
-					result = await run(params, signal, ctx);
-				} catch (err) {
-					result = { error: message(err) };
-					failed = true;
-				}
-				if (!mutating) {
-					const { _pngs, ...rest } = result;
-					return toolResult(rest, _pngs ?? []);
-				}
-				const elapsed = round((performance.now() - started) / 1000, 2);
-				try {
-					const { output, pngs } = view(await dumpState({ action: name, ...params }, result, elapsed));
-					output.agent_elapsed_s = elapsed;
-					if (failed) for (const [k, v] of Object.entries(result)) output[k] ??= v;
-					return toolResult(output, pngs);
-				} catch (err) {
-					return toolResult({
-						...result,
-						state_capture_error: message(err),
-						error: result.error ?? `failed to capture state after ${name}: ${message(err)}`,
-					});
-				}
+				return ep.terminating(await outcome(params, signal, ctx));
 			},
 		});
+
+		async function outcome(params: any, signal: AbortSignal | undefined, ctx: ExtensionContext) {
+			if (!env || !steps.length) return toolResult({ error: "robot not initialized; see the session start error" });
+			const started = performance.now();
+			let result: Json;
+			let failed = false;
+			try {
+				result = await run(params, signal, ctx);
+			} catch (err) {
+				result = { error: message(err) };
+				failed = true;
+			}
+			if (!mutating) {
+				const { _pngs, ...rest } = result;
+				return toolResult(rest, _pngs ?? []);
+			}
+			const elapsed = round((performance.now() - started) / 1000, 2);
+			try {
+				const { output, pngs } = view(await dumpState({ action: name, ...params }, result, elapsed));
+				output.agent_elapsed_s = elapsed;
+				if (failed) for (const [k, v] of Object.entries(result)) output[k] ??= v;
+				return toolResult(output, pngs);
+			} catch (err) {
+				return toolResult({
+					...result,
+					state_capture_error: message(err),
+					error: result.error ?? `failed to capture state after ${name}: ${message(err)}`,
+				});
+			}
+		}
 	}
 
 	const stepParam = Type.Optional(Type.Integer({ description: "State step (default -1 = latest)" }));
@@ -948,7 +971,9 @@ export default function dualFranka(pi: ExtensionAPI) {
 		Type.Object({ arm, delta_xyz: xyz }),
 		async (p, signal) => {
 			check(signal);
-			return motion("env.move_delta", { arm: armName(p.arm), delta_xyz: vec3(p.delta_xyz, "delta_xyz") });
+			const delta = vec3(p.delta_xyz, "delta_xyz");
+			checkMove(vec(p.delta_xyz), Number(flag("max-move", "0.1")), setup?.task.constraints);
+			return motion("env.move_delta", { arm: armName(p.arm), delta_xyz: delta }, signal);
 		},
 	);
 
@@ -958,7 +983,7 @@ export default function dualFranka(pi: ExtensionAPI) {
 		Type.Object({ arm, delta_rpy: xyz }),
 		async (p, signal) => {
 			check(signal);
-			return motion("env.rotate_delta", { arm: armName(p.arm), delta_rpy: vec3(p.delta_rpy, "delta_rpy") });
+			return motion("env.rotate_delta", { arm: armName(p.arm), delta_rpy: vec3(p.delta_rpy, "delta_rpy") }, signal);
 		},
 	);
 
@@ -968,7 +993,7 @@ export default function dualFranka(pi: ExtensionAPI) {
 		Type.Object({ arm }),
 		async (p, signal) => {
 			check(signal);
-			return motion("env.set_gripper", { arm: armName(p.arm), open: true });
+			return motion("env.set_gripper", { arm: armName(p.arm), open: true }, signal);
 		},
 	);
 
@@ -978,7 +1003,7 @@ export default function dualFranka(pi: ExtensionAPI) {
 		Type.Object({ arm }),
 		async (p, signal) => {
 			check(signal);
-			return motion("env.set_gripper", { arm: armName(p.arm), open: false });
+			return motion("env.set_gripper", { arm: armName(p.arm), open: false }, signal);
 		},
 	);
 
@@ -994,6 +1019,7 @@ export default function dualFranka(pi: ExtensionAPI) {
 			return motion(
 				"env.recover_joint_posture",
 				{ reason: String(reason), return_to_start: Boolean(return_to_start) },
+				signal,
 				240_000,
 			);
 		},
@@ -1062,7 +1088,7 @@ export default function dualFranka(pi: ExtensionAPI) {
 				states: f32(states).batched(),
 				task_descriptions: [effective],
 			};
-			const predicted = await vla.call<NdArray>("vla.predict", {}, 120_000, [wire, { mode: "eval" }]);
+			const predicted = await vla.call<NdArray>("vla.predict", {}, 120_000, [wire, { mode: "eval" }], signal);
 			const actions = new NdArray(predicted.dtype, predicted.shape.slice(1), predicted.data);
 			if (actions.shape.length !== 2 || actions.shape[1] !== 20)
 				throw new Error(`${skill} expected [chunk, 20] actions, got [${actions.shape}]`);
@@ -1084,6 +1110,7 @@ export default function dualFranka(pi: ExtensionAPI) {
 					"env.chunk_step",
 					{ actions: NdArray.f32(row, [1, 20]), return_all_frames: false },
 					300_000,
+					signal,
 				);
 				const next = result.observation;
 				remember(Array.isArray(next) ? next.at(-1)?.states : next?.states);
@@ -1228,15 +1255,19 @@ export default function dualFranka(pi: ExtensionAPI) {
 		executionMode: "sequential",
 		async execute(_id, params) {
 			claimed = params;
+			ep.end();
 			return { ...toolResult({ _finish: true, ...params, ...op.result() }), terminate: true };
 		},
 	});
 
 	// ---- lifecycle
 
-	pi.on("session_start", async (_event, ctx) => {
+	pi.on("session_start", (_event, ctx) => ep.start(ctx, () => startRobot(ctx)));
+
+	async function startRobot(ctx: ExtensionContext) {
 		claimed = undefined;
-		if (env) return; // the physical robot stays where it is across /new, /resume and /fork
+		// The physical robot stays where it is across /new, /resume and /fork.
+		if (env) return pi.setActiveTools([...TOOLS, ...op.tools(), "finish", "read"]);
 		if (!ctx.hasUI)
 			throw new Error(
 				"dual_franka drives real robots: run pi interactively (or over RPC) so an operator is present",
@@ -1286,7 +1317,7 @@ export default function dualFranka(pi: ExtensionAPI) {
 		await dumpState(null, null, null);
 		pi.setActiveTools([...TOOLS, ...op.tools(), "finish", "read"]);
 		ctx.ui.notify(`Dual Franka ready: task ${task} (${setup.task.name}); steps under ${out}`, "info");
-	});
+	}
 
 	pi.on("session_shutdown", () => {
 		server?.kill();
@@ -1307,18 +1338,4 @@ export default function dualFranka(pi: ExtensionAPI) {
 	});
 
 	pruneImages(pi, () => Number(flag("keep-images", "4")));
-
-	pi.on("agent_end", () => {
-		const operatorResult = op.result() as Json;
-		pi.appendEntry("dual_franka_result", {
-			task: Number(flag("task", "0")),
-			task_name: setup?.task.name ?? null,
-			steps: steps.length,
-			solved: operatorResult.operator_verdict === "success",
-			claimed: claimed?.status ?? null,
-			summary: claimed?.summary ?? null,
-			out,
-			...operatorResult,
-		});
-	});
 }

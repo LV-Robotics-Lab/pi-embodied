@@ -36,7 +36,9 @@ def endpoint() -> str:
 
 
 def get_json(url: str):
-    with urllib.request.urlopen(urllib.request.Request(url, headers=HEADERS), timeout=60) as r:
+    with urllib.request.urlopen(
+        urllib.request.Request(url, headers=HEADERS), timeout=60
+    ) as r:
         return json.load(r)
 
 
@@ -54,23 +56,44 @@ def sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def fetch(repo: str, revision: str, files: list[dict], dest: Path, strip: str = "") -> None:
+def fetch(
+    repo: str, revision: str, files: list[dict], dest: Path, strip: str = ""
+) -> None:
     dest.mkdir(parents=True, exist_ok=True)
     for f in files:
         name = f["rfilename"]
         out = dest / name[len(strip) :]
         size = f.get("size")
         lfs = (f.get("lfs") or {}).get("sha256")
-        if out.exists() and out.stat().st_size == size and (not lfs or sha256(out) == lfs):
+        if (
+            out.exists()
+            and out.stat().st_size == size
+            and (not lfs or sha256(out) == lfs)
+        ):
             print(f"ok   {out} ({size} B)")
             continue
         url = f"{endpoint()}/{repo}/resolve/{revision}/{name}"
         out.parent.mkdir(parents=True, exist_ok=True)
         if size and size > BIG and shutil.which("aria2c"):
             subprocess.run(
-                ["aria2c", "-x16", "-s16", "-k8M", "--file-allocation=none", "--continue=true",
-                 "--max-tries=0", "--retry-wait=5", "--timeout=60", "--console-log-level=warn",
-                 "--summary-interval=60", "-d", str(out.parent), "-o", out.name, url],
+                [
+                    "aria2c",
+                    "-x16",
+                    "-s16",
+                    "-k8M",
+                    "--file-allocation=none",
+                    "--continue=true",
+                    "--max-tries=0",
+                    "--retry-wait=5",
+                    "--timeout=60",
+                    "--console-log-level=warn",
+                    "--summary-interval=60",
+                    "-d",
+                    str(out.parent),
+                    "-o",
+                    out.name,
+                    url,
+                ],
                 check=True,
             )
         else:
@@ -88,8 +111,14 @@ def fetch(repo: str, revision: str, files: list[dict], dest: Path, strip: str = 
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--adapter", default="qwen3_5_2b_sim", help="Folder in showlab/Show-Harness-VLMs")
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    p.add_argument(
+        "--adapter",
+        default="qwen3_5_2b_sim",
+        help="Folder in showlab/Show-Harness-VLMs",
+    )
     p.add_argument("--dest", default="/root/autodl-tmp/checkpoints")
     p.add_argument("--no-base", action="store_true", help="Only the adapter")
     args = p.parse_args()
@@ -99,11 +128,15 @@ def main() -> None:
     prefix = f"{args.adapter}/"
     mine = [f for f in files if f["rfilename"].startswith(prefix)]
     if not mine:
-        folders = sorted({f["rfilename"].split("/")[0] for f in files if "/" in f["rfilename"]})
+        folders = sorted(
+            {f["rfilename"].split("/")[0] for f in files if "/" in f["rfilename"]}
+        )
         raise SystemExit(f"no adapter {args.adapter!r}; released: {', '.join(folders)}")
     adapter_dir = dest / "Show-Harness-VLMs" / args.adapter
     fetch(ADAPTER_REPO, ADAPTER_REVISION, mine, adapter_dir, strip=prefix)
-    base = json.loads((adapter_dir / "adapter_config.json").read_text())["base_model_name_or_path"]
+    base = json.loads((adapter_dir / "adapter_config.json").read_text())[
+        "base_model_name_or_path"
+    ]
     print(f"adapter {args.adapter} -> {adapter_dir} (base {base})")
     if args.no_base:
         return

@@ -24,7 +24,8 @@ two loaded extensions that register the same flag or tool, so they cannot all be
 Shared modules:
 
 - `src/memory/`: RPent-compatible memory (`MEMORY.md`, global/suite/task layers,
-  validation, merge, index), synced from `RLinf/RPent-memory`; `/memory sync|validate|index|merge`.
+  validation, merge, index), synced from `RLinf/RPent-memory` into `$PI_EMBODIED_MEMORY`
+  (default `~/.pi/embodied/memory`); `/memory sync|validate|index|merge`.
   Its guard denies file tools by default: only the memory, the cell's files in the output dir,
   and (real robots) the robot's own step artifacts are reachable.
 - `src/explore.ts`: exploration mode (`--explore`, `/explore`): reset budget, finish
@@ -33,7 +34,8 @@ Shared modules:
 - `src/operator.ts`: human-in-the-loop (`--operator`): verdict and scene-reset requests as
   `ctx.ui.select` dialogs (TUI or RPC client), plus `/success /failure /abort /done /continue /operator`.
 - `src/video.ts`: episode video (ffmpeg). `src/flywheel.ts`: Flywheel data in RPent's
-  LIBERO-only schema, with LeRobot export (LIBERO only, as in RPent).
+  LIBERO-only schema (default root `~/.pi/embodied/datacollection`), with LeRobot export
+  (LIBERO only, as in RPent; `/flywheel-export` runs `pi_embodied_services.flywheel` with `--python`).
 - `src/dashboard/`: live web dashboard (`--dashboard`) for any robot.
 - `src/libero/flash.ts`: Flash replay without an LLM (`--model flash/replay`).
 
@@ -43,11 +45,13 @@ produced a result and the planner did not fail, and rerun the others.
 
 ## LIBERO
 
-Needs an [RPent](https://github.com/RLinf/RPent) checkout with its LIBERO, Pi0.5 and SAM3
-services installed; the extension speaks their HTTP RPC directly.
+Needs the repository's Python services (`services/`, package `pi_embodied_services`) installed
+with the `[libero]` extra (see services/README.md); the extension speaks their HTTP RPC directly.
+Robots spawn their env servers from `--services` (env `PI_EMBODIED_SERVICES`, default the repo's
+`services/`) with `PYTHONPATH` set to it; `serve.sh` and `eval.sh` default to the same directory.
 
 ```bash
-export RPENT_ROOT=/path/to/RPent RPENT_PYTHON=/path/to/venv/bin/python
+export PI_EMBODIED_PYTHON=services/.venv-libero/bin/python
 PI05_CHECKPOINT_PATH=... SAM3_CHECKPOINT_PATH=... packages/embodied/src/libero/serve.sh
 
 pi -e packages/embodied/src/libero --suite libero_10_task --task 2 --seed 0             # interactive
@@ -62,17 +66,17 @@ in a new session. Boolean flags take the next word as their value; write them as
 
 ## Other robots
 
-- RoboCasa: RPent's `[robocasa]` extra (Python 3.10), kitchen assets, the RLDX-1-FT-RC365
+- RoboCasa: the services' `[robocasa]` extra (Python 3.10), kitchen assets, the RLDX-1-FT-RC365
   checkpoint; `src/robocasa/serve.sh`, `src/robocasa/eval.sh` runs Target50.
-- RoboTwin: RPent's `[robotwin]` extra (Python 3.11), RoboTwin assets, the LingBot-VLA
+- RoboTwin: the services' `[robotwin]` extra (Python 3.11), RoboTwin assets, the LingBot-VLA
   RoboTwin checkpoint; `src/robotwin/serve.sh`, `src/robotwin/eval.sh`.
-- Franka / dual Franka: RPent's `[franka]` extra, a Ray cluster on the controller nodes,
+- Franka / dual Franka: the services' `[franka]` extra, a Ray cluster on the controller nodes,
   hand-eye calibration, and an operator at the emergency stop. Flags use a `--robot-`
   prefix (`--robot-env`, `--robot-vla`, `--robot-sam3`, `--robot-config`).
 
 An abort (Esc, `/abort`, a session switch) stops a robot between RPC calls and asks the server to
-`stop` its running call where the server has that method; today's RPent servers finish the call
-they are running (bounded by their own step clips and timeouts). At session end the base asks the
+`stop` its running call; what each server can interrupt mid-call is listed in
+services/PROTOCOL.md (the rest finish the call, bounded by their own step clips and timeouts). At session end the base asks the
 server it started to `shutdown`, which closes the environment (and the real arm's RLinf worker)
 before the process exits.
 

@@ -32,7 +32,7 @@ export type Guard = { root: string; home: string; output: string; tag: string; i
 export type MemoryOptions = {
 	/** Corpus name under the memory home, also the Hugging Face subdirectory (default "libero"). */
 	robot?: string;
-	/** Directory holding every robot's corpus (default $RPENT_ROOT/memory, else ~/.pi/embodied/memory). */
+	/** Directory holding every robot's corpus (default $PI_EMBODIED_MEMORY, else ~/.pi/embodied/memory). */
 	home?: () => string;
 	/** The current cell; without it there is no guard, sync, recipe or prompt (maintenance only). */
 	cell?: () => { tag: string; reference: string } | undefined;
@@ -44,7 +44,7 @@ export type MemoryOptions = {
 	readable?: () => string[];
 };
 
-const defaultHome = () => join(process.env.RPENT_ROOT || join(homedir(), ".pi", "embodied"), "memory");
+const defaultHome = () => process.env.PI_EMBODIED_MEMORY || join(homedir(), ".pi", "embodied", "memory");
 
 // ---------------------------------------------------------------------------
 // Access boundary (RPent's memory/tools.py) and recipes (write_recipe_from_states)

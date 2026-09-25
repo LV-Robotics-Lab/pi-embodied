@@ -15,7 +15,7 @@ import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
 import { decodePngChannel, encodePng } from "../png.ts";
-import { defineRobot, median } from "../robot.ts";
+import { defineRobot, median, SERVICES } from "../robot.ts";
 import { NdArray, RpcClient } from "../rpc.ts";
 import { registerFlash } from "./flash.ts";
 
@@ -92,10 +92,14 @@ export default function libero(pi: ExtensionAPI) {
 	pi.registerFlag("vla", { type: "string", default: "http://127.0.0.1:18200", description: "Pi0.5 VLA server" });
 	pi.registerFlag("sam3", { type: "string", default: "http://127.0.0.1:18300", description: "SAM3 server" });
 	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
-	pi.registerFlag("rpent", { type: "string", default: process.env.RPENT_ROOT ?? "", description: "RPent checkout" });
+	pi.registerFlag("services", {
+		type: "string",
+		default: process.env.PI_EMBODIED_SERVICES ?? SERVICES,
+		description: "pi-embodied services dir",
+	});
 	pi.registerFlag("python", {
 		type: "string",
-		default: process.env.RPENT_PYTHON ?? "python",
+		default: process.env.PI_EMBODIED_PYTHON ?? "python",
 		description: "Python for the env server",
 	});
 
@@ -110,13 +114,11 @@ export default function libero(pi: ExtensionAPI) {
 	const worldMaps = new Map<string, WorldMap>();
 
 	const tag = () => `${robot.task.suite.replace(/^libero_/, "")}_t${robot.task.task}_s${robot.task.seed}`;
-	const rpentMemory = () => (flag("rpent", "") ? join(flag("rpent", ""), "memory") : "");
 	const robot = defineRobot(pi, {
 		name: "libero",
 		task: ["suite", "task", "seed"],
 		keepImages: 4,
 		memory: {
-			...(rpentMemory() ? { home: rpentMemory } : {}),
 			cell: () => ({ tag: tag(), reference: tag().replace(/_s\d+$/, "_s0") }),
 			primitives: PRIMITIVES,
 		},
@@ -825,15 +827,17 @@ export default function libero(pi: ExtensionAPI) {
 			env = new RpcClient(endpoint);
 			await env.ready();
 		} else {
-			const rpent = flag("rpent", "");
-			if (!rpent) throw new Error("set --rpent (or RPENT_ROOT) to an RPent checkout");
+			const services = flag("services", SERVICES);
 			env = await robot.serve({
 				python: flag("python", "python"),
-				args: ["robots/libero/env_server.py", "--suite", suite, "--task", task, "--seed", seed],
-				cwd: rpent,
+				args: [
+					...["-m", "pi_embodied_services.robots.libero.env_server"],
+					...["--suite", suite, "--task", task, "--seed", seed],
+				],
+				cwd: services,
 				env: {
 					...process.env,
-					PYTHONPATH: rpent,
+					PYTHONPATH: services,
 					LIBERO_TYPE: flag("libero-type", "pro"),
 					MUJOCO_GL: "egl",
 					ROBOT_PLATFORM: "LIBERO",

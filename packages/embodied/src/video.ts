@@ -4,7 +4,7 @@
  * tool call that stepped the env when --action-clips is set. Files go to
  * `<--video-dir>/<session id>/`, or next to the session file (`<session>.jsonl` ->
  * `<session>/`). Encoding pipes raw RGB into ffmpeg: --ffmpeg, else `ffmpeg` on PATH,
- * else the binary bundled with imageio-ffmpeg in the RPent venv (--python; what RPent uses).
+ * else the binary bundled with imageio-ffmpeg in the services venv (--python; what RPent uses).
  */
 
 import { execFileSync, spawn } from "node:child_process";
@@ -68,7 +68,7 @@ export function episodeVideo(pi: ExtensionAPI) {
 		try {
 			ffmpeg ||=
 				String(pi.getFlag("ffmpeg") || "") ||
-				findFfmpeg(String(pi.getFlag("python") || process.env.RPENT_PYTHON || "python"));
+				findFfmpeg(String(pi.getFlag("python") || process.env.PI_EMBODIED_PYTHON || "python"));
 			mkdirSync(dir, { recursive: true });
 			await writeMp4(join(dir, name), clip, ffmpeg);
 			return join(dir, name);

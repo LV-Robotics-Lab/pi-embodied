@@ -3,11 +3,11 @@
  *
  *   pi -e packages/embodied/src/franka --task 1 --robot-config my_franka.yaml --robot-vla http://VLA_HOST:PORT
  *
- * Starts RPent's RLinf-backed env server (robots/franka/env_server.py; Ray must already run
- * on the controller node) or attaches to one with --robot-env. The VLA is attach-only, as in
- * RPent. The server enforces the workspace limits, per-step clips and servo tolerances from
- * RPent's runtime config; task definitions and easy_handeye calibration come from the same
- * RPent checkout. A real robot needs an operator: pi must have a UI, the operator confirms
+ * Starts the RLinf-backed env server (pi_embodied_services.robots.franka.env_server; Ray must
+ * already run on the controller node) or attaches to one with --robot-env. The VLA is
+ * attach-only, as in RPent. The server enforces the workspace limits, per-step clips and servo
+ * tolerances from its runtime config; task definitions and easy_handeye calibration come from
+ * the same services package. A real robot needs an operator: pi must have a UI, the operator confirms
  * the reset motion, and --operator adds the verdict gate (see ../operator.ts). RPent's
  * single-arm robot has no success signal; the result entry records the agent's claim and
  * the operator's verdict, if any. Mutating tools record a state step (robot state, external
@@ -36,12 +36,13 @@ import {
 	numbers,
 	plain,
 	pose7,
-	type Rpent,
 	rgbOf,
 	round,
 	roundAll,
-	rpentEnv,
-	rpentJson,
+	SERVICES,
+	type Services,
+	servicesEnv,
+	servicesJson,
 	sub,
 	toolResult,
 	u8,
@@ -66,16 +67,16 @@ type Setup = {
 };
 type Step = { blob: Json; dir: string; meta: Json | null; images: Record<string, string> };
 
-/** Task and calibration from the RPent checkout, validated the way RPent's parse_config does. */
+/** Task and calibration from the services, validated the way RPent's parse_config does. */
 const SETUP_PY = `
 import dataclasses, json, sys
-from robots.franka.runtime_config import set_robot_config_path, validate_calibration_sources
-from robots.franka.tasks import get_franka_task
+from pi_embodied_services.robots.franka.runtime_config import set_robot_config_path, validate_calibration_sources
+from pi_embodied_services.robots.franka.tasks import get_franka_task
 set_robot_config_path(sys.argv[2] or None)
 validate_calibration_sources()
 out = {"task": dataclasses.asdict(get_franka_task(int(sys.argv[1])))}
 try:
-    from robots.franka.perception import load_calibration_bundle
+    from pi_embodied_services.robots.franka.perception import load_calibration_bundle
     out["calibration"] = load_calibration_bundle()
 except Exception as exc:
     out["calibration_error"] = str(exc)
@@ -173,7 +174,7 @@ export default function franka(pi: ExtensionAPI) {
 	});
 	pi.registerFlag("robot-config", {
 		type: "string",
-		description: "RPent robot YAML (default: RPent's robots/franka/config/example.yaml)",
+		description: "Robot YAML (default: services/pi_embodied_services/robots/franka/config/example.yaml)",
 	});
 	pi.registerFlag("robot-env", {
 		type: "string",
@@ -183,11 +184,15 @@ export default function franka(pi: ExtensionAPI) {
 		type: "string",
 		description: "External Franka Pi0.5 VLA server (attach-only; enables vla_grasp)",
 	});
-	pi.registerFlag("rpent", { type: "string", default: process.env.RPENT_ROOT ?? "", description: "RPent checkout" });
+	pi.registerFlag("services", {
+		type: "string",
+		default: process.env.PI_EMBODIED_SERVICES ?? SERVICES,
+		description: "pi-embodied services dir",
+	});
 	pi.registerFlag("python", {
 		type: "string",
-		default: process.env.RPENT_PYTHON ?? "python",
-		description: "Python with RPent's [franka] extra",
+		default: process.env.PI_EMBODIED_PYTHON ?? "python",
+		description: "Python with the services' [franka] extra",
 	});
 	pi.registerFlag("out", {
 		type: "string",
@@ -217,7 +222,6 @@ export default function franka(pi: ExtensionAPI) {
 		keepImages: 4,
 		// RPent's franka memory is read-only and its prompt names none; the guard also opens the step artifacts.
 		memory: {
-			home: () => (flag("rpent") ? join(flag("rpent"), "memory") : ""),
 			cell: () => ({ tag: `franka_t${task()}`, reference: "" }),
 			primitives: [],
 			readable: () => [out],
@@ -860,12 +864,10 @@ export default function franka(pi: ExtensionAPI) {
 	async function startRobot(ctx: ExtensionContext) {
 		if (!ctx.hasUI)
 			throw new Error("franka drives a real robot: run pi interactively (or over RPC) so an operator is present");
-		const rpent = flag("rpent");
-		if (!rpent) throw new Error("set --rpent (or RPENT_ROOT) to an RPent checkout");
-		const r: Rpent = { root: rpent, python: flag("python", "python") };
+		const r: Services = { root: flag("services"), python: flag("python", "python") };
 		const configFlag = pi.getFlag("robot-config");
 		const config = typeof configFlag === "string" && configFlag ? resolve(ctx.cwd, configFlag) : "";
-		setup = await rpentJson<Setup>(r, SETUP_PY, [task(), config]);
+		setup = await servicesJson<Setup>(r, SETUP_PY, [task(), config]);
 		const stamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15);
 		out = resolve(ctx.cwd, flag("out") || join(tmpdir(), "pi-embodied", `franka_t${task()}_${stamp}`));
 		mkdirSync(out, { recursive: true });
@@ -876,11 +878,11 @@ export default function franka(pi: ExtensionAPI) {
 				: robot.serve({
 						python: r.python,
 						args: [
-							...["-m", "robots.franka.env_server"],
+							...["-m", "pi_embodied_services.robots.franka.env_server"],
 							...["--task-description", setup.task.instruction, ...(config ? ["--robot-config", config] : [])],
 						],
 						cwd: r.root,
-						env: rpentEnv(r),
+						env: servicesEnv(r),
 						log: () => join(out, "franka_env_server.log"),
 					}),
 			flag("robot-vla") ? attach(flag("robot-vla")) : undefined,

@@ -5,11 +5,11 @@
  *   pi -e packages/embodied/src/dual_franka --operator --task 3 --robot-config my_rig.yaml \
  *     --robot-vla http://127.0.0.1:18210 --robot-sam3 http://127.0.0.1:18310
  *
- * Starts RPent's RLinf-backed env server (robots/dual_franka/env_server.py; the two-node Ray
- * cluster must already run) or attaches to one with --robot-env. The server enforces the
- * workspace limits, per-step clips, servo tolerances and joint-health thresholds from RPent's
- * runtime config; task definitions, easy_handeye calibration and localization bounds come
- * from the same RPent checkout. Coordinates are in the shared right_base frame. Success is
+ * Starts the RLinf-backed env server (pi_embodied_services.robots.dual_franka.env_server; the
+ * two-node Ray cluster must already run) or attaches to one with --robot-env. The server
+ * enforces the workspace limits, per-step clips, servo tolerances and joint-health thresholds
+ * from its runtime config; task definitions, easy_handeye calibration and localization bounds
+ * come from the same services package. Coordinates are in the shared right_base frame. Success is
  * the operator's verdict (../operator.ts, required via --operator): finish is refused until
  * the operator has judged the current state. The operator also confirms the reset motion.
  */
@@ -36,12 +36,13 @@ import {
 	numbers,
 	plain,
 	type Rgb,
-	type Rpent,
 	rgbOf,
 	round,
 	roundAll,
-	rpentEnv,
-	rpentJson,
+	SERVICES,
+	type Services,
+	servicesEnv,
+	servicesJson,
 	sub,
 	toolResult,
 	u8,
@@ -72,17 +73,17 @@ type Setup = {
 type Step = { blob: Json; dir: string; meta: Json | null; views: string[] };
 type Boundary = "grasp" | "handoff" | "place";
 
-/** Task, calibration and perception config from the RPent checkout (RPent's parse_config checks). */
+/** Task, calibration and perception config from the services (RPent's parse_config checks). */
 const SETUP_PY = `
 import dataclasses, json, sys
-from robots.dual_franka.runtime_config import DEFAULT_CONFIG
-from robots.dual_franka.tasks import get_dual_franka_task
-from robots.franka.runtime_config import describe_calibration_source, set_robot_config_path, validate_calibration_sources
+from pi_embodied_services.robots.dual_franka.runtime_config import DEFAULT_CONFIG
+from pi_embodied_services.robots.dual_franka.tasks import get_dual_franka_task
+from pi_embodied_services.robots.franka.runtime_config import describe_calibration_source, set_robot_config_path, validate_calibration_sources
 set_robot_config_path(sys.argv[2] or DEFAULT_CONFIG)
 validate_calibration_sources()
 out = {"task": dataclasses.asdict(get_dual_franka_task(int(sys.argv[1])))}
 try:
-    from robots.dual_franka import perception as p
+    from pi_embodied_services.robots.dual_franka import perception as p
     bundle = p.load_calibration_bundle()
     out["cameras"] = {k: {"T_right_camera": p._transform_to_matrix(v["transformation"]), "localization_validity": v.get("localization_validity") or {}} for k, v in bundle.items() if isinstance(v, dict) and "transformation" in v}
     out["projection_views"] = p._projection_cameras()
@@ -192,7 +193,7 @@ export default function dualFranka(pi: ExtensionAPI) {
 	pi.registerFlag("task", { type: "string", default: "0", description: "RPent dual-Franka task id (0, 1, 3, 4, 5)" });
 	pi.registerFlag("robot-config", {
 		type: "string",
-		description: "RPent robot YAML (default: RPent's robots/dual_franka/config/example.yaml)",
+		description: "Robot YAML (default: services/pi_embodied_services/robots/dual_franka/config/example.yaml)",
 	});
 	pi.registerFlag("robot-env", {
 		type: "string",
@@ -206,11 +207,15 @@ export default function dualFranka(pi: ExtensionAPI) {
 		type: "string",
 		description: "SAM3 server for segment (serve.sh: http://127.0.0.1:18310)",
 	});
-	pi.registerFlag("rpent", { type: "string", default: process.env.RPENT_ROOT ?? "", description: "RPent checkout" });
+	pi.registerFlag("services", {
+		type: "string",
+		default: process.env.PI_EMBODIED_SERVICES ?? SERVICES,
+		description: "pi-embodied services dir",
+	});
 	pi.registerFlag("python", {
 		type: "string",
-		default: process.env.RPENT_PYTHON ?? "python",
-		description: "Python with RPent's [franka] extra",
+		default: process.env.PI_EMBODIED_PYTHON ?? "python",
+		description: "Python with the services' [franka] extra",
 	});
 	pi.registerFlag("out", {
 		type: "string",
@@ -237,7 +242,6 @@ export default function dualFranka(pi: ExtensionAPI) {
 		keepImages: 4,
 		// RPent's evaluation prompt names no memory; the guard also opens the step artifacts.
 		memory: {
-			home: () => (flag("rpent") ? join(flag("rpent"), "memory") : ""),
 			cell: () => ({ tag: `dual_franka_t${task()}`, reference: "" }),
 			primitives: MOTION,
 			readable: () => [out],
@@ -1271,13 +1275,15 @@ export default function dualFranka(pi: ExtensionAPI) {
 			);
 		if (pi.getFlag("operator") !== true)
 			throw new Error("dual_franka needs --operator: success on this robot is the operator's verdict");
-		const rpent = flag("rpent");
-		if (!rpent) throw new Error("set --rpent (or RPENT_ROOT) to an RPent checkout");
 		// Ray must not re-run uv for workers on the pre-provisioned nodes (RPent's env override).
-		const r: Rpent = { root: rpent, python: flag("python", "python"), env: { RAY_ENABLE_UV_RUN_RUNTIME_ENV: "0" } };
+		const r: Services = {
+			root: flag("services"),
+			python: flag("python", "python"),
+			env: { RAY_ENABLE_UV_RUN_RUNTIME_ENV: "0" },
+		};
 		const configFlag = pi.getFlag("robot-config");
 		const config = typeof configFlag === "string" && configFlag ? resolve(ctx.cwd, configFlag) : "";
-		setup = await rpentJson<Setup>(r, SETUP_PY, [task(), config]);
+		setup = await servicesJson<Setup>(r, SETUP_PY, [task(), config]);
 		const vlaEndpoint = flag("robot-vla");
 		if (setup.task.vla_instruction !== null && !vlaEndpoint)
 			throw new Error(`task ${task()} runs named VLA skills: start dual_franka/serve.sh and pass --robot-vla`);
@@ -1291,11 +1297,11 @@ export default function dualFranka(pi: ExtensionAPI) {
 				: robot.serve({
 						python: r.python,
 						args: [
-							...["-m", "robots.dual_franka.env_server"],
+							...["-m", "pi_embodied_services.robots.dual_franka.env_server"],
 							...["--task-description", setup.task.instruction, ...(config ? ["--robot-config", config] : [])],
 						],
 						cwd: r.root,
-						env: rpentEnv(r),
+						env: servicesEnv(r),
 						log: () => join(out, "dual_franka_env_server.log"),
 					}),
 			vlaEndpoint ? attach(vlaEndpoint) : undefined,

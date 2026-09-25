@@ -1,13 +1,15 @@
 /**
  * The robot base. `defineRobot(pi, spec)` gives every robot the same episode lifecycle and mounts
  * the shared modules it asks for; the robot itself only registers its flags, tools and
- * observations. Also the helpers robots use for RPent services: RPC servers, RPent's Python
- * definitions, numpy payloads, camera frames, rigid transforms and tool results.
+ * observations. Also the helpers robots use for the Python services (../../../services): RPC
+ * servers, the services' Python definitions, numpy payloads, camera frames, rigid transforms and
+ * tool results.
  */
 
 import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { closeSync, openSync } from "node:fs";
 import { createServer } from "node:net";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -23,8 +25,10 @@ export type Json = Record<string, any>;
 export type Mat = number[][];
 export type Rgb = { width: number; height: number; rgb: Buffer };
 export type Grid = { height: number; width: number; data: Float32Array };
-/** An RPent checkout and the Python that has its dependencies. */
-export type Rpent = { root: string; python: string; env?: Record<string, string> };
+/** The repository's services/ directory (the `pi_embodied_services` package). */
+export const SERVICES = fileURLToPath(new URL("../../../services", import.meta.url));
+/** The services directory and the Python that has their dependencies. */
+export type Services = { root: string; python: string; env?: Record<string, string> };
 
 export const round = (v: number, d = 5) => Number(Number(v).toFixed(d));
 export const roundAll = (v: number[], d = 5) => v.map((x) => round(x, d));
@@ -368,7 +372,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 			});
 		},
 		/**
-		 * Start `python ...args --transport http --host 127.0.0.1 --port <free> --parent-watch` (an RPent
+		 * Start `python ...args --transport http --host 127.0.0.1 --port <free> --parent-watch` (a service
 		 * RPC server; it exits with pi) and wait for healthz. It is stopped at the next start and at shutdown.
 		 */
 		async serve(o: {
@@ -403,10 +407,10 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 }
 
 // ---------------------------------------------------------------------------
-// RPent processes
+// service processes
 
 /**
- * Stop an RPent server so it cleans up (RPent's `close()` / `close_env()`: the sim, or the real
+ * Stop a service so it cleans up (RPent's `close()` / `close_env()`: the sim, or the real
  * arm's RLinf worker): `stop` interrupts a running call where the server has that method, the
  * built-in `shutdown` (queued behind any call still running) closes the env and exits. A server
  * still up 30 s later gets EOF on stdin (--parent-watch: close without waiting for a running call),
@@ -423,8 +427,8 @@ export async function shutdown(proc: ChildProcess, rpc: RpcClient) {
 	if (!(await Promise.race([exited, wait(5_000)]))) proc.kill("SIGKILL");
 }
 
-/** The environment of an RPent process: the checkout on PYTHONPATH, plus `r.env`. */
-export function rpentEnv(r: Rpent): NodeJS.ProcessEnv {
+/** The environment of a service process: the services dir on PYTHONPATH, plus `r.env`. */
+export function servicesEnv(r: Services): NodeJS.ProcessEnv {
 	return { ...process.env, PYTHONPATH: [r.root, process.env.PYTHONPATH].filter(Boolean).join(":"), ...r.env };
 }
 
@@ -439,17 +443,17 @@ export function freePort(): Promise<number> {
 	});
 }
 
-/** Run `python -c code ...args` in the RPent checkout; the last stdout line is JSON. */
-export async function rpentJson<T>(r: Rpent, code: string, args: string[]): Promise<T> {
+/** Run `python -c code ...args` in the services dir; the last stdout line is JSON. */
+export async function servicesJson<T>(r: Services, code: string, args: string[]): Promise<T> {
 	const { stdout } = await promisify(execFile)(r.python, ["-c", code, ...args], {
 		cwd: r.root,
-		env: rpentEnv(r),
+		env: servicesEnv(r),
 		maxBuffer: 64 << 20,
 	});
 	return JSON.parse(stdout.trim().split("\n").pop() ?? "") as T;
 }
 
-/** Attach to a running RPent service and wait for healthz. */
+/** Attach to a running service and wait for healthz. */
 export async function attach(endpoint: string, readyMs = 300_000): Promise<RpcClient> {
 	const rpc = new RpcClient(endpoint);
 	await rpc.ready(readyMs);

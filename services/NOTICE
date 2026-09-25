@@ -1,0 +1,15 @@
+pi-embodied services
+Copyright 2026 The pi-embodied Authors
+
+This directory (services/) is licensed under the Apache License, Version 2.0
+(see LICENSE in this directory). The rest of the pi repository is licensed
+separately (see the repository root LICENSE).
+
+This product includes software developed by the RPent Authors
+(https://github.com/RLinf/RPent), Copyright 2026 The RPent Authors, licensed
+under the Apache License, Version 2.0. The code under
+services/pi_embodied_services/ was copied from RPent at upstream commit
+eecf206959008700a315f58dc98146f147006f09 (2026-09-24) and modified; every
+modified file carries a "Modified by pi-embodied" notice below its license
+header. The data files under robots/*/eval/ and robots/*/config/ are copied
+from the same commit unchanged.

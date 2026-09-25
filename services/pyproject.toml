@@ -1,0 +1,144 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pi-embodied-services"
+dynamic = ["version"]
+description = "Robot environment and model RPC services for pi-embodied (migrated from RPent)"
+readme = { file = "README.md", content-type = "text/markdown" }
+requires-python = ">=3.10,<3.13"
+license = { file = "LICENSE" }
+authors = [{ name = "pi-embodied contributors" }, { name = "RPent Contributors" }]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Environment :: GPU :: NVIDIA CUDA :: 12",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+]
+# Server-side only: RPent's planner dependencies (claude-agent-sdk,
+# openai-codex, pydantic-ai, mcp, prompt-toolkit, fastapi, httpx, ...) are
+# intentionally absent.
+dependencies = [
+    "numpy",
+    "scipy",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "pytest-timeout",
+]
+rlinf = [
+    "rpent-rlinf",
+]
+sam3 = [
+    "sam3 @ git+https://github.com/RLinf/sam3.git@main",
+    "einops>=0.8.0",
+    "pycocotools",
+    "torch",
+    "torchvision",
+    "pillow>=10",
+]
+molmo = [
+    # Molmo's remote code uses transformers' video-processing API, which the
+    # LIBERO extra cannot supply: OpenPI pins transformers==4.53.2 exactly, and
+    # 4.53.2 has no transformers.video_utils.make_batched_metadata. Install this
+    # into its own environment and point the grounder at it over RPC.
+    "transformers>=4.57",
+    "torch",
+    "torchvision",
+    "pillow>=10",
+]
+libero = [
+    "pi-embodied-services[rlinf,sam3]",
+    "rpent-openpi @ git+https://github.com/RLinf/openpi.git@rpent",
+    "rpent-libero @ git+https://github.com/RLinf/LIBERO.git@rpent",
+    # MuJoCo 3.4+ changes LIBERO settling, misplacing objects and reducing task success; see https://github.com/RLinf/RLinf/issues/1460.
+    "mujoco==3.3.0",
+]
+libero-pro = [
+    "pi-embodied-services[libero]",
+    "rpent-liberopro @ git+https://github.com/RLinf/LIBERO-PRO.git@rpent",
+]
+libero-plus = [
+    # LIBERO-plus requires robosuite<1.5, so it cannot inherit the standard LIBERO extra.
+    "pi-embodied-services[rlinf,sam3]",
+    "rpent-openpi @ git+https://github.com/RLinf/openpi.git@rpent",
+    "rlinf-liberoplus",
+    "mujoco==3.3.0",
+    "h5py",
+]
+franka = [
+    "rlinf[franka] @ git+https://github.com/RLinf/RLinf.git@bde6c918642abf9a4776cb1d5fabcc5087dfe195",
+    "rpent-openpi @ git+https://github.com/RLinf/openpi.git@rpent",
+    "franky-control @ https://github.com/Brunch-Life/franky/releases/download/wheels-libfranka-0.19.0/franky_control-1.1.3-cp310-cp310-manylinux_2_28_x86_64.whl ; python_version == '3.10' and sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "franky-control @ https://github.com/Brunch-Life/franky/releases/download/wheels-libfranka-0.19.0/franky_control-1.1.3-cp311-cp311-manylinux_2_28_x86_64.whl ; python_version == '3.11' and sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "franky-control @ https://github.com/Brunch-Life/franky/releases/download/wheels-libfranka-0.19.0/franky_control-1.1.3-cp312-cp312-manylinux_2_28_x86_64.whl ; python_version == '3.12' and sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "matplotlib>=3.8",
+    "pillow>=10",
+]
+robocasa = [
+    "pi-embodied-services[rlinf]",
+    "rpent-robocasa365 @ git+https://github.com/RLinf/robocasa.git@rpent",
+    "rlinf-rldx @ git+https://github.com/RLinf/RLDX-1.git@rpent",
+    "robosuite @ git+https://github.com/RLinf/robosuite.git@rpent",
+]
+robotwin = [
+    "pi-embodied-services[rlinf]",
+    "rlinf-robotwin-runtime==0.1.1",
+    "rlinf-lingbotvla==0.1.1",
+    "nvidia-curobo @ git+https://github.com/NVlabs/curobo.git@v0.7.8",
+]
+
+[tool.setuptools.dynamic]
+version = { attr = "pi_embodied_services.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pi_embodied_services*"]
+
+[tool.setuptools.package-data]
+"pi_embodied_services.robots.robocasa" = ["eval/*.json", "eval/*.txt"]
+"pi_embodied_services.robots.robotwin" = ["eval/*.json"]
+"pi_embodied_services.robots.franka" = ["config/*.yaml"]
+"pi_embodied_services.robots.dual_franka" = ["config/*.yaml"]
+
+[tool.uv]
+prerelease = "allow"
+
+# Each robot extra pulls a separately pinned VLA runtime whose Torch,
+# Transformers, Tokenizers, or Diffusers versions are mutually incompatible.
+conflicts = [
+    [{ extra = "franka" }, { extra = "libero" }],
+    [{ extra = "franka" }, { extra = "libero-pro" }],
+    [{ extra = "franka" }, { extra = "libero-plus" }],
+    [{ extra = "franka" }, { extra = "robocasa" }],
+    [{ extra = "franka" }, { extra = "robotwin" }],
+    [{ extra = "robocasa" }, { extra = "robotwin" }],
+]
+
+[tool.uv.extra-build-dependencies]
+nvidia-curobo = ["torch==2.7.1"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+timeout = 60
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+extend-exclude = ["**/eval/*.json"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501", "E741"]
+
+[tool.ruff.lint.per-file-ignores]
+# RPent imports the RoboTwin runtime after defining helpers, on purpose.
+"pi_embodied_services/robots/robotwin/env_server.py" = ["E402"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["pi_embodied_services"]

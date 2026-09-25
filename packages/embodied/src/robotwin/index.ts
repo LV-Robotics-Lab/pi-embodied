@@ -18,7 +18,7 @@ import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
 import { encodePng } from "../png.ts";
-import { attach, defineRobot, median, u8 } from "../robot.ts";
+import { attach, defineRobot, median, SERVICES, u8 } from "../robot.ts";
 import { NdArray, type RpcClient } from "../rpc.ts";
 
 const read = (name: string) => readFileSync(new URL(name, import.meta.url), "utf8");
@@ -351,10 +351,14 @@ export default function robotwin(pi: ExtensionAPI) {
 	});
 	pi.registerFlag("lingbot", { type: "string", default: "ws://127.0.0.1:18400", description: "LingBot-VLA server" });
 	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
-	pi.registerFlag("rpent", { type: "string", default: process.env.RPENT_ROOT ?? "", description: "RPent checkout" });
+	pi.registerFlag("services", {
+		type: "string",
+		default: process.env.PI_EMBODIED_SERVICES ?? SERVICES,
+		description: "pi-embodied services dir",
+	});
 	pi.registerFlag("python", {
 		type: "string",
-		default: process.env.RPENT_PYTHON ?? "python",
+		default: process.env.PI_EMBODIED_PYTHON ?? "python",
 		description: "Python for the env server",
 	});
 
@@ -376,7 +380,6 @@ export default function robotwin(pi: ExtensionAPI) {
 		imageStub: "[older camera frame omitted; view_env_state(step) re-reads it]",
 		budget: { turns: 100, seconds: 4800 },
 		memory: {
-			home: () => (flag("rpent", "") ? join(flag("rpent", ""), "memory") : ""),
 			cell: () => ({ tag: tag(cell().seed), reference: local() ? tag("0") : `${cell().task}_s0` }),
 			primitives: ["lingbot_act", "move_to", "rotate_wrist", "set_gripper", "release"],
 		},
@@ -930,19 +933,18 @@ export default function robotwin(pi: ExtensionAPI) {
 		const endpoint = pi.getFlag("env") as string | undefined;
 		if (endpoint) env = await attach(endpoint, 900_000);
 		else {
-			const rpent = flag("rpent", "");
+			const services = flag("services", SERVICES);
 			const assets = flag("assets", "");
-			if (!rpent) throw new Error("set --rpent (or RPENT_ROOT) to an RPent checkout");
 			if (!assets) throw new Error("set --assets (or ROBOTWIN_ASSETS_PATH) to the RoboTwin asset snapshot");
 			env = await robot.serve({
 				python: flag("python", "python"),
 				args: [
-					"robots/robotwin/env_server.py",
+					...["-m", "pi_embodied_services.robots.robotwin.env_server"],
 					...["--task-name", task, "--task-config", config, "--seed", seed],
 					...["--max-episode-steps", flag("max-episode-steps", "10000"), "--assets-path", assets],
 				],
-				cwd: rpent,
-				env: { ...process.env, PYTHONPATH: rpent, ROBOTWIN_ASSETS_PATH: assets },
+				cwd: services,
+				env: { ...process.env, PYTHONPATH: services, ROBOTWIN_ASSETS_PATH: assets },
 				log: (port) => join(tmpdir(), `pi-embodied-robotwin-${task}-s${seed}-${port}.log`),
 				readyMs: 900_000,
 			});

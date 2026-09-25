@@ -1,22 +1,25 @@
 /**
  * Flywheel data collection (RPent's --collect-flywheel-data). Records every env transition
  * of the episode, the VLA chunks that proposed actions, and the primitive (tool call) that
- * ran them, in RPent's raw episode format so RPent's own `rpent-flywheel` validates and
- * exports it:
+ * ran them, in RPent's raw episode format, which pi_embodied_services.flywheel validates and
+ * exports:
  *
  *   <root>/raw/libero/<suite>/task_NN/seed_NNN/episode_<utc>_<hex>/
  *     transitions.npz  proposals.npz  episode.json
  *
  * The episode is written when the session ends. /flywheel-export runs
- * `rpent-flywheel export-lerobot`, which keeps each successful episode up to its first
- * `terminated` step and writes a LeRobot dataset (needs lerobot>=0.3.3,<0.4).
+ * `python -m pi_embodied_services.flywheel.cli export-lerobot` in the services dir (--services,
+ * with --python), which keeps each successful episode up to its first `terminated` step and
+ * writes a LeRobot dataset (needs lerobot>=0.3.3,<0.4 in that Python).
  */
 
 import { randomBytes } from "node:crypto";
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Npy, writeNpz } from "./npz.ts";
+import { SERVICES } from "./robot.ts";
 import type { NdArray } from "./rpc.ts";
 
 const IMAGE = [256, 256, 3];
@@ -143,16 +146,11 @@ export function flywheel(pi: ExtensionAPI) {
 	});
 	pi.registerFlag("flywheel-root", {
 		type: "string",
-		description: "Flywheel data root (default <rpent>/datacollection)",
-	});
-	pi.registerFlag("flywheel-python", {
-		type: "string",
-		default: process.env.FLYWHEEL_PYTHON ?? process.env.RPENT_PYTHON ?? "python",
-		description: "Python with RPent and lerobot>=0.3.3,<0.4, for /flywheel-export",
+		description: "Flywheel data root (default ~/.pi/embodied/datacollection)",
 	});
 
-	const rpent = () => String(pi.getFlag("rpent") || process.env.RPENT_ROOT || ".");
-	const root = () => resolve(String(pi.getFlag("flywheel-root") || join(rpent(), "datacollection")));
+	const root = () =>
+		resolve(String(pi.getFlag("flywheel-root") || join(homedir(), ".pi", "embodied", "datacollection")));
 	let ep: Episode | undefined;
 	let tool: string | undefined;
 
@@ -195,10 +193,19 @@ export function flywheel(pi: ExtensionAPI) {
 				.trim()
 				.split(/\s+/)
 				.filter(Boolean);
-			const cli = ["-m", "rpent.flywheel.cli", "export-lerobot", "--data-root", root(), "--suite", suite];
+			const cli = [
+				"-m",
+				"pi_embodied_services.flywheel.cli",
+				"export-lerobot",
+				"--data-root",
+				root(),
+				"--suite",
+				suite,
+			];
 			cli.push("--task", task, ...(id ? ["--dataset-id", id] : []));
-			const python = String(pi.getFlag("flywheel-python"));
-			const res = await pi.exec("env", [`PYTHONPATH=${rpent()}`, python, ...cli], { cwd: rpent() });
+			const python = String(pi.getFlag("python") || process.env.PI_EMBODIED_PYTHON || "python");
+			const services = String(pi.getFlag("services") || process.env.PI_EMBODIED_SERVICES || SERVICES);
+			const res = await pi.exec("env", [`PYTHONPATH=${services}`, python, ...cli], { cwd: services });
 			ctx.ui.notify(res.code === 0 ? res.stdout.trim() : res.stderr.trim(), res.code === 0 ? "info" : "error");
 		},
 	});

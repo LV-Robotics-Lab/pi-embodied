@@ -15,7 +15,8 @@
  * coarse reading. Waypoints are replayed as offsets from their live anchor.
  *
  * Plans live in `--flash-plans` (default memory/libero/flash) as `<family>_<suite>_t<task>_{plan,anchors}.json`,
- * from flash-generate.ts or RPent's HF memory. Molmo is RPent's molmo_server.py in its own env.
+ * from flash-generate.ts or RPent's HF memory. Molmo runs in its own env:
+ * `python -m pi_embodied_services.components.molmo_server` (see services/README.md).
  */
 
 import { readFileSync } from "node:fs";

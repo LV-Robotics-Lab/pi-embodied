@@ -18,7 +18,7 @@ import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
 import { encodePng } from "../png.ts";
-import { attach, defineRobot, median, round } from "../robot.ts";
+import { attach, defineRobot, median, round, SERVICES } from "../robot.ts";
 import { NdArray, RpcClient } from "../rpc.ts";
 
 const read = (name: string) => readFileSync(new URL(name, import.meta.url), "utf8");
@@ -111,11 +111,15 @@ export default function robocasa(pi: ExtensionAPI) {
 	pi.registerFlag("hi-res", { type: "string", default: "0", description: "Hi-res agentview resolution (0 = off)" });
 	pi.registerFlag("rldx", { type: "string", default: "http://127.0.0.1:18500", description: "RLDX-1 VLA server" });
 	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
-	pi.registerFlag("rpent", { type: "string", default: process.env.RPENT_ROOT ?? "", description: "RPent checkout" });
+	pi.registerFlag("services", {
+		type: "string",
+		default: process.env.PI_EMBODIED_SERVICES ?? SERVICES,
+		description: "pi-embodied services dir",
+	});
 	pi.registerFlag("robocasa-python", {
 		type: "string",
-		default: process.env.ROBOCASA_PYTHON ?? process.env.RPENT_PYTHON ?? "python",
-		description: "Python of the RoboCasa venv (RPent's [robocasa] extra)",
+		default: process.env.ROBOCASA_PYTHON ?? process.env.PI_EMBODIED_PYTHON ?? "python",
+		description: "Python of the RoboCasa venv (the services' [robocasa] extra)",
 	});
 	pi.registerFlag("cuda-device", { type: "string", description: "GPU ordinal for MuJoCo EGL rendering" });
 	pi.registerFlag("log-dir", { type: "string", default: tmpdir(), description: "Env server log directory" });
@@ -146,7 +150,6 @@ export default function robocasa(pi: ExtensionAPI) {
 		keepImages: 6,
 		budget: { turns: 0, seconds: 0 },
 		memory: {
-			home: () => (flag("rpent", "") ? join(flag("rpent", ""), "memory") : ""),
 			cell: () => ({
 				tag: tag(),
 				reference: local() ? `${cell().task}_${cell().split}_s0` : `${cell().task}_s0`,
@@ -983,8 +986,7 @@ export default function robocasa(pi: ExtensionAPI) {
 		const rldxClient = sessionRpc(flag("rldx", ""));
 		vla = rldxClient;
 		const endpoint = pi.getFlag("env") as string | undefined;
-		const rpent = flag("rpent", "");
-		if (!endpoint && !rpent) throw new Error("set --rpent (or RPENT_ROOT) to an RPent checkout");
+		const services = flag("services", SERVICES);
 		const cuda = pi.getFlag("cuda-device") as string | undefined;
 		[env] = await Promise.all([
 			endpoint
@@ -992,15 +994,15 @@ export default function robocasa(pi: ExtensionAPI) {
 				: robot.serve({
 						python: flag("robocasa-python", "python"),
 						args: [
-							"robots/robocasa/env_server.py",
+							...["-m", "pi_embodied_services.robots.robocasa.env_server"],
 							...["--task-name", task, "--split", split, "--seed", seed],
 							...(cuda ? ["--cuda-device", cuda] : []),
 						],
-						cwd: rpent,
+						cwd: services,
 						// RLDX_RESET_SEED would replay a legacy paired scene instead of --seed.
 						env: {
 							...process.env,
-							PYTHONPATH: rpent,
+							PYTHONPATH: services,
 							MUJOCO_GL: "egl",
 							ROBOT_PLATFORM: "ROBOCASA",
 							RLDX_RESET_SEED: "",

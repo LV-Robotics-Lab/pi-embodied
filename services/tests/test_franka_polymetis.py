@@ -192,14 +192,19 @@ def test_results_carry_the_rlinf_keys_and_healthz_names_the_service():
 # -- motion and limits ----------------------------------------------------------
 
 
-def test_move_ramps_the_setpoint_in_servo_ticks_and_reaches_the_target():
+@pytest.mark.parametrize("smooth", [False, True])
+def test_move_ramps_the_setpoint_in_servo_ticks_and_reaches_the_target(smooth):
     robot = MockPolymetisRobot((0.5, 0.0, 0.3, *DOWN))
-    f = facade(robot)
+    f = facade(robot, cfg(smooth={"enabled": smooth}))
     before = len(robot.setpoints)
     r = call(f, "env.move_delta", [0.02, -0.01, 0.0])
     assert r["ok"] and r["final_error_m"] < 1e-9
-    assert r["steps_used"] == math.ceil(math.hypot(0.02, 0.01) / 0.0025)
-    steps = np.diff([p[:3] for p in robot.setpoints[before:]], axis=0)
+    # Linear: equal servo steps. Smooth: Show-Harness's 20 min-jerk waypoints.
+    assert r["steps_used"] == (
+        20 if smooth else math.ceil(math.hypot(0.02, 0.01) / 0.0025)
+    )
+    path = [(0.5, 0.0, 0.3)] + [p[:3] for p in robot.setpoints[before:]]
+    steps = np.diff(path, axis=0)
     assert np.max(np.linalg.norm(steps, axis=1)) <= 0.0025 + 1e-9
     np.testing.assert_allclose(robot.pose[:3], [0.52, -0.01, 0.3], atol=1e-9)
 
@@ -417,13 +422,193 @@ def test_stop_halts_the_joint_stream_reset():
     assert robot.joint_setpoints < 400 and robot.controller == "cartesian"
 
 
+# -- smooth motion (Show-Harness plugins/smooth) -------------------------------
+
+
+def controller(robot, stop=lambda: False, clock=lambda: 0.0, **smooth):
+    """A controller on the test CFG with a fake clock and no real sleeps."""
+    lim = limits_from_config(cfg(smooth=smooth))
+    c = control.PolymetisController(robot, lim, stop, sleep=lambda s: None, clock=clock)
+    c.start_impedance()
+    return c
+
+
+def xs(robot, start, x0=0.5):
+    """Setpoint x per command since ``start``, from the pre-move x."""
+    return np.array([x0] + [p[0] for p in robot.setpoints[start:]])
+
+
+def test_min_jerk_profile_shape():
+    n = 20
+    fr = np.array(control.smooth_fractions(n))
+    t = np.arange(1, n + 1) / n
+    # Show-Harness SmoothPlugin.plan(0, 0, 0): the classic min-jerk polynomial.
+    np.testing.assert_allclose(fr, 10 * t**3 - 15 * t**4 + 6 * t**5, atol=1e-12)
+    steps = np.diff(np.concatenate([[0.0], fr]))
+    assert fr[-1] == 1.0 and np.all(steps > 0)
+    # Rest to rest: near-zero first and last advances, 1.875x the mean at mid-move.
+    assert steps[0] < 0.03 / n and steps[-1] < 0.03 / n
+    assert np.max(steps) == pytest.approx(1.875 / n, rel=0.02)
+    np.testing.assert_allclose(steps, steps[::-1], atol=1e-12)
+    dense = np.diff(np.concatenate([[0.0], control.smooth_fractions(10000)]))
+    assert dense[0] * 10000 < 1e-6 and dense[-1] * 10000 < 1e-6  # zero end velocities
+    # Cruise boundaries: a chained middle move is a constant-rate line; a first
+    # (last) chained move leaves (arrives) at the cruise rate.
+    np.testing.assert_allclose(control.smooth_fractions(n, 1.0, 1.0), t, atol=1e-12)
+    first = np.diff(np.concatenate([[0.0], control.smooth_fractions(n, 0.0, 1.0)]))
+    last = np.diff(np.concatenate([[0.0], control.smooth_fractions(n, 1.0, 0.0)]))
+    assert first[0] < 0.03 / n and first[-1] == pytest.approx(1 / n, rel=0.05)
+    assert last[0] == pytest.approx(1 / n, rel=0.05) and last[-1] < 0.03 / n
+    # Never past the target, never backward, even for an aggressive cruise.
+    wild = np.array(control.smooth_fractions(n, 1.5, 1.5))
+    assert np.all(np.diff(wild) >= 0) and wild.max() == 1.0
+
+
+@pytest.mark.parametrize("dt_s", [0.05, 0.02])
+def test_smooth_ramp_never_exceeds_the_servo_step_cap(dt_s):
+    cap = 0.0025 * min(1.0, dt_s / 0.05)  # 2.5 mm per 50 ms tick, scaled to dt_s
+    cap_rad = 0.0125 * min(1.0, dt_s / 0.05)
+    for delta in ([0.08, 0.0, 0.0], [0.04, 0.04, 0.05], [0.002, 0.0, 0.0]):
+        robot = MockPolymetisRobot((0.5, 0.0, 0.3, *DOWN))
+        c = controller(robot, dt_s=dt_s)
+        start = len(robot.setpoints)
+        assert c.move_delta(delta)["ok"]
+        path = [(0.5, 0.0, 0.3)] + [p[:3] for p in robot.setpoints[start:]]
+        assert np.max(np.linalg.norm(np.diff(path, axis=0), axis=1)) <= cap + 1e-12
+    # 8 cm rest-to-rest peaks at 1.875x its mean speed: stretched to >= 3 s.
+    fractions, delay = c.plan(0.08, 0.0)
+    assert delay == dt_s and len(fractions) * delay >= 1.875 * 0.08 / 0.05 - 1e-9
+    # 2 cm: Show-Harness's 20 waypoints unless the cap needs more (>= 0.75 s).
+    duration = len(c.plan(0.02, 0.0)[0]) * dt_s
+    assert max(20 * dt_s, 0.75) <= duration + 1e-9 <= max(20 * dt_s, 0.75) + dt_s
+    # Rotations too.
+    robot = MockPolymetisRobot((0.5, 0.0, 0.3, *DOWN))
+    c = controller(robot, dt_s=dt_s)
+    start = len(robot.setpoints)
+    assert c.rotate_delta([0.0, 0.0, 0.2])["ok"]
+    quats = [DOWN] + [p[3:] for p in robot.setpoints[start:]]
+    assert max(quat_angle(a, b) for a, b in zip(quats, quats[1:])) <= cap_rad + 1e-9
+    # A chain of maximal moves, joins included.
+    robot = MockPolymetisRobot((0.4, 0.0, 0.3, *DOWN))
+    c = controller(robot, dt_s=dt_s)
+    start = len(robot.setpoints)
+    for i in range(3):
+        assert c.move_delta([0.08, 0.0, 0.0], continuous=i < 2)["ok"]
+    assert np.max(np.abs(np.diff(xs(robot, start, 0.4)))) <= cap + 1e-12
+
+
+def test_chained_moves_flow_without_stopping():
+    robot = MockPolymetisRobot((0.5, 0.0, 0.3, *DOWN))
+    c = controller(robot)
+    start = len(robot.setpoints)
+    r1 = c.move_delta([0.02, 0.0, 0.0], continuous=True)
+    assert r1["ok"] and r1["flowing"] and not r1["chained"]
+    assert len(robot.setpoints) - start == r1["steps_used"]  # no settle re-commands
+    r2 = c.move_delta([0.02, 0.0, 0.0], continuous=True)
+    assert r2["ok"] and r2["chained"] and r2["flowing"]
+    r3 = c.move_delta([0.02, 0.0, 0.0])
+    assert r3["ok"] and r3["chained"] and not r3["flowing"]
+    v = np.diff(xs(robot, start))
+    k1, k2 = r1["steps_used"], r1["steps_used"] + r2["steps_used"]
+    cruise = 0.02 / 20  # one move length per move duration
+    # Accelerate once, cruise through both joins, decelerate once, then settle.
+    assert v[0] < 0.03 * cruise
+    for j in (k1, k2):
+        assert v[j - 1] == pytest.approx(cruise, rel=0.05)
+        assert v[j] == pytest.approx(cruise, rel=0.05)
+    np.testing.assert_allclose(v[k1:k2], cruise, rtol=1e-9)
+    moving = v[: k2 + r3["steps_used"]]
+    assert np.all(moving[1:-1] > 0.03 * cruise)  # never at rest in between
+    assert np.all(v[k2 + r3["steps_used"] :] == 0) and len(v) - len(moving) == 4
+    np.testing.assert_allclose(robot.setpoints[-1][:3], [0.56, 0.0, 0.3], atol=1e-12)
+    # The same three moves rest to rest stop at every join.
+    robot = MockPolymetisRobot((0.5, 0.0, 0.3, *DOWN))
+    c = controller(robot)
+    start = len(robot.setpoints)
+    for _ in range(3):
+        assert "chained" in c.move_delta([0.02, 0.0, 0.0])
+    v = np.diff(xs(robot, start))
+    assert np.sum(v == 0) == 3 * 4 and v[20] < 0.03 * cruise
+
+
+def test_chain_breaks_on_turns_late_moves_rotations_and_the_gripper():
+    now = [0.0]
+    robot = MockPolymetisRobot((0.5, 0.0, 0.3, *DOWN))
+    c = controller(robot, clock=lambda: now[0])
+
+    def settled_before(result, start):
+        """The stream was brought to rest (4 settle re-commands) before the ramp."""
+        first = robot.setpoints[start : start + 4]
+        return all(np.allclose(p, first[0]) for p in first) and not result["chained"]
+
+    c.move_delta([0.02, 0.0, 0.0], continuous=True)
+    start = len(robot.setpoints)
+    r = c.move_delta([0.0, 0.02, 0.0], continuous=True)  # a turn: from rest
+    assert settled_before(r, start) and r["flowing"]
+    now[0] += 5.0  # past chain_window_s: the arm has long stopped
+    start = len(robot.setpoints)
+    r = c.move_delta([0.0, 0.02, 0.0])
+    assert not r["chained"] and robot.setpoints[start][1] < 0.0201  # no settle, no jump
+    assert not np.allclose(robot.setpoints[start], robot.setpoints[start + 1])
+    for action in (
+        lambda: c.rotate_delta([0.0, 0.0, 0.1]),
+        lambda: c.set_gripper(open=False),
+    ):
+        c.move_delta([0.02, 0.0, 0.0], continuous=True)
+        start = len(robot.setpoints)
+        gripper = len(robot.gripper_commands)
+        action()
+        first = robot.setpoints[start : start + 4]
+        assert len(first) == 4 and all(np.allclose(p, first[0]) for p in first)
+        assert len(robot.gripper_commands) <= gripper + 2
+    # blend off: continuous is ignored (Show-Harness's Franka default).
+    robot = MockPolymetisRobot((0.5, 0.0, 0.3, *DOWN))
+    c = controller(robot, blend=False)
+    assert c.move_delta([0.02, 0.0, 0.0], continuous=True)["flowing"] is False
+    # smooth off: the linear ramp, no chaining keys.
+    robot = MockPolymetisRobot((0.5, 0.0, 0.3, *DOWN))
+    r = controller(robot, enabled=False).move_delta([0.02, 0.0, 0.0], continuous=True)
+    assert r["ok"] and "flowing" not in r and r["steps_used"] == 8
+
+
+def test_stop_halts_a_smooth_and_a_chained_ramp_between_waypoints():
+    stop_at = [10**9]
+    robot = MockPolymetisRobot((0.5, 0.0, 0.3, *DOWN))
+    c = controller(robot, stop=lambda: len(robot.setpoints) >= stop_at[0])
+    start = len(robot.setpoints)
+    stop_at[0] = start + 7
+    r = c.move_delta([0.04, 0.0, 0.0])
+    assert r["cancelled"] and not r["ok"] and r["steps_used"] == 7
+    assert len(robot.setpoints) == start + 7  # nothing is sent after the stop
+    np.testing.assert_allclose(c.target_pos, robot.setpoints[-1][:3])
+    assert 0.5 < c.target_pos[0] < 0.51  # held mid-ramp
+    # Mid-chain: the stream is dropped; the next move starts from rest.
+    stop_at[0] = 10**9
+    assert c.move_delta([0.02, 0.0, 0.0], continuous=True)["flowing"]
+    stop_at[0] = len(robot.setpoints) + 5
+    r = c.move_delta([0.02, 0.0, 0.0], continuous=True)
+    assert r["cancelled"] and r["chained"] and not r["flowing"]
+    stop_at[0] = 10**9
+    r = c.move_delta([0.02, 0.0, 0.0])
+    assert r["ok"] and not r["chained"]
+
+
+def test_move_delta_continuous_over_rpc_and_smooth_meta():
+    f = facade()
+    meta = call(f, "env.get_env_meta")["smooth"]
+    assert meta["enabled"] and meta["chaining"] and meta["duration_s"] == 1.0
+    assert call(f, "env.move_delta", [0.02, 0.0, 0.0], continuous=True)["flowing"]
+    assert call(f, "env.move_delta", [0.02, 0.0, 0.0])["chained"]
+
+
 def test_a_recurring_reflex_fails_the_call_after_one_restart():
     robot = WallRobot((0.5, 0.0, 0.3, *DOWN), wall_x=0.51, reflex=True)
     f = facade(robot)
     with pytest.raises(RuntimeError, match="lost again in the same call"):
         call(f, "env.move_delta", [0.08, 0.0, 0.0])
     assert f.controller.restarts == 2  # one resume, then a restart to hold only
-    assert robot.controller == "cartesian" and len(robot.setpoints) < 10
+    planned = len(f.controller.plan(0.08, 0.0)[0])
+    assert robot.controller == "cartesian" and len(robot.setpoints) < planned / 2
     np.testing.assert_allclose(f.controller.target_pos, robot.pose[:3])
     # A single loss resumes and reports the restart.
     robot = MockPolymetisRobot((0.5, 0.0, 0.3, *DOWN))
@@ -438,7 +623,10 @@ def test_contact_stops_the_ramp_and_reanchors_on_all_axes():
     f = facade(robot)
     r = call(f, "env.move_delta", [0.06, 0.02, 0.0])
     assert r["ok"] is False and r["blocked"] is True
-    assert len(robot.setpoints) < 20  # stopped well before the 26-tick ramp ended
+    # Stopped well before the ramp ended.
+    assert len(robot.setpoints) < 0.7 * len(
+        f.controller.plan(math.hypot(0.06, 0.02), 0.0)[0]
+    )
     np.testing.assert_allclose(f.controller.target_pos, robot.pose[:3], atol=1e-12)
     np.testing.assert_allclose(robot.setpoints[-1], robot.pose)
     for _ in range(3):  # repeated pushes never leave the setpoint inside the wall
@@ -476,6 +664,11 @@ def test_contact_stops_the_ramp_and_reanchors_on_all_axes():
         ("reset", {"begin_joints": [float("nan")] * 7}, "finite"),
         ("reset", {"begin_joints": [0, -0.5, 0, -2.6, 0, 0.0, 0.86]}, "joint limits"),
         ("reset", {"begin_time_s": 0.1}, "begin_time_s"),
+        ("smooth", {"dt_s": 0.0}, "smooth_dt_s"),
+        ("smooth", {"substeps": 2.5}, "integer"),
+        ("smooth", {"enabled": "yes"}, "true or false"),
+        ("smooth", {"cruise": 3.0}, "smooth_cruise"),
+        ("smooth", {"window_s": 1.0}, "unknown smooth keys"),
     ],
 )
 def test_config_rejects_non_finite_and_out_of_range_values(section, values, match):

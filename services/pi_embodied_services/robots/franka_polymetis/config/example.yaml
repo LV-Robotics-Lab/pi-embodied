@@ -69,6 +69,17 @@ gripper:                     # Franka Hand, ~0.08 m stroke
   settle_s: 2.5              # the Hand's width sensor lags ~1 s
   min_settle_s: 0.5
 
+smooth:                      # Show-Harness plugins/smooth (plugins.smooth: true in
+                             # configs/robot_franka.yaml; core/launch.py smooth_* defaults)
+  enabled: true              # min-jerk setpoint ramp; false = equal servo_step_m steps
+  substeps: 20               # waypoints per move; substeps * dt_s = 1.0 s per move, made
+  dt_s: 0.05                 # longer when a waypoint would pass servo_step_m per tick_s
+  # Chaining: a move_delta with continuous: true ends at cruise speed (no settle) and
+  # the next move in about the same direction starts at it, so repeated units flow.
+  blend: true                # Show-Harness: default on for the Piper, off for the Franka
+  cruise: 1.0                # chained boundary speed, in move lengths per move duration
+  chain_window_s: 1.0        # the next move must start within this to chain
+
 reset:
   # 7 joint angles (rad). Show-Harness's arm home (poses.default) is
   # [0.0, -0.5058451, 0.0, -2.6068573, 0.0, 2.0711833, 0.86116207]; verify the path

@@ -18,7 +18,8 @@
 # Modified by pi-embodied: served as the pi-embodied ``franka-env`` RPC protocol (the
 # same methods and result shapes as robots/franka/env_server.py, the RLinf backend);
 # depth and projection metadata for back_project; safety limits, reset to a begin
-# pose and ``stop`` via control.py; test-only --mock.
+# pose and ``stop`` via control.py; test-only --mock; the ``smooth`` section holds
+# Show-Harness's smooth plugin settings (core/launch.py smooth_* keys).
 
 """RPC server owning one Franka on a Polymetis NUC and its two RealSense cameras.
 
@@ -120,6 +121,14 @@ _GRIPPER_KEYS = {
     "settle_s": "gripper_settle_s",
     "min_settle_s": "gripper_min_settle_s",
 }
+_SMOOTH_KEYS = {
+    "enabled": "smooth",
+    "substeps": "smooth_substeps",
+    "dt_s": "smooth_dt_s",
+    "blend": "smooth_blend",
+    "cruise": "smooth_cruise",
+    "chain_window_s": "smooth_chain_window_s",
+}
 _RESET_KEYS = {
     "begin_joints": "begin_joints",
     "begin_time_s": "begin_time_s",
@@ -151,6 +160,8 @@ def limits_from_config(cfg: dict[str, Any]) -> PolymetisLimits:
         kwargs[_GRIPPER_KEYS[key]] = value
     for key, value in _section(cfg, "reset", _RESET_KEYS).items():
         kwargs[_RESET_KEYS[key]] = _tuple(value)
+    for key, value in _section(cfg, "smooth", _SMOOTH_KEYS).items():
+        kwargs[_SMOOTH_KEYS[key]] = value
     impedance = _section(cfg, "impedance", ("kx", "kxd"))
     for key in ("kx", "kxd"):
         if key in impedance:
@@ -374,6 +385,22 @@ class FrankaPolymetisFacade(MainThreadServeMixin, BaseEnvFacade):
             "config_path": self._config_path,
             "task_description": self._task,
             "capabilities": self.capabilities(),
+            "smooth": self.smooth_meta(),
+        }
+
+    def smooth_meta(self) -> dict[str, Any]:
+        """The smooth-motion settings; ``chaining`` means move_delta takes
+        ``continuous`` (the RLinf backend does not)."""
+        lim = self.controller.limits
+        return {
+            "enabled": lim.smooth,
+            "substeps": lim.smooth_substeps,
+            "dt_s": lim.smooth_dt_s,
+            "duration_s": lim.smooth_substeps * lim.smooth_dt_s,
+            "blend": lim.smooth_blend,
+            "cruise": lim.smooth_cruise,
+            "chain_window_s": lim.smooth_chain_window_s,
+            "chaining": lim.smooth and lim.smooth_blend,
         }
 
     def get_robot_state(self) -> dict[str, Any]:
@@ -424,8 +451,8 @@ class FrankaPolymetisFacade(MainThreadServeMixin, BaseEnvFacade):
 
     # -- motion -----------------------------------------------------------
 
-    def move_delta(self, delta_xyz: Any) -> dict[str, Any]:
-        return self.controller.move_delta(delta_xyz)
+    def move_delta(self, delta_xyz: Any, continuous: bool = False) -> dict[str, Any]:
+        return self.controller.move_delta(delta_xyz, continuous=bool(continuous))
 
     def rotate_delta(self, delta_rpy: Any) -> dict[str, Any]:
         return self.controller.rotate_delta(delta_rpy)

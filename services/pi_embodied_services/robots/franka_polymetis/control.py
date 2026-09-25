@@ -14,8 +14,9 @@
 #
 # Adapted from Show-Harness:
 # interpreters/real_atomic_controller.py, interpreters/franka_atomic_controller.py,
-# core/franka/franka_session.py, core/launch.py (move_to_begin_franka) and
-# core/runners/real.py (descend_travel).
+# core/franka/franka_session.py, core/launch.py (move_to_begin_franka),
+# core/runners/real.py (descend_travel) and plugins/smooth/plugin.py (SmoothPlugin.plan,
+# the min-jerk / cruise profile) with the chaining of RealAtomicController._drive_to_target.
 # Modified by pi-embodied: token decoding removed (the pi units module grounds units);
 # per-call translation/rotation limits refuse instead of clamping; the setpoint is
 # ramped in bounded servo ticks and ``stop`` is polled between ticks; XY/Z workspace
@@ -24,7 +25,10 @@
 # most one controller restart per call; validated (finite, bounded) limits, gains and
 # begin joints; configurable begin pose for reset (stoppable joint stream or Polymetis
 # move_to_joint_positions) at a bounded joint speed; quaternion math in numpy (no
-# scipy); results use the RLinf franka-env shapes.
+# scipy); results use the RLinf franka-env shapes. The smooth profile is stretched in
+# time (more waypoints at the same delay) until no waypoint advances more than the servo
+# step cap, a chained move must arrive within ``smooth.chain_window_s`` of the previous
+# one, and there is no min_waypoint_m thinning (impedance setpoints are not quantized).
 
 """Cartesian-impedance setpoint control of one Franka through a Polymetis NUC.
 
@@ -38,7 +42,17 @@ the NUC's ``franka_server``): ``get_ee_pose`` -> [x, y, z, qx, qy, qz, qw],
 
 The controller keeps the commanded TCP setpoint (Show-Harness's target-pose
 accumulation) so repeated small moves do not integrate sensor noise, and walks it to
-each new target in servo ticks of at most ``servo_step_m`` / ``servo_step_rad``.
+each new target in waypoints of at most ``servo_step_m`` / ``servo_step_rad`` per
+``tick_s``: along a min-jerk profile when ``smooth`` is on (Show-Harness's smooth
+plugin), else in equal steps.
+
+Chaining (Show-Harness ``continuous`` + ``blend``): a translation sent with
+``continuous=True`` (another move in the same direction follows at once) ends at cruise
+speed without the settle re-commands; the next translation, if it arrives within
+``smooth_chain_window_s`` and points within ~25 deg of it (cos >= 0.9), starts at that
+speed, so the setpoint path is velocity-continuous and the arm does not stop between
+the two. Anything else (another direction, a rotation, the gripper, a reset, a late
+move) first brings the stream to rest.
 """
 
 from __future__ import annotations
@@ -67,6 +81,31 @@ PEAK_TO_MEAN = 1.875
 # Setpoint speed caps (servo step / tick).
 MAX_SERVO_SPEED_M_S = 0.1
 MAX_SERVO_SPEED_RAD_S = 0.5
+# Show-Harness chains a move only onto a stream flowing in (nearly) the same direction.
+CHAIN_MIN_COS = 0.9
+
+
+def smooth_fractions(n: int, v0: float = 0.0, v1: float = 0.0) -> list[float]:
+    """Show-Harness ``SmoothPlugin.plan``: ``n`` eased fractions in (0, 1].
+
+    ``s(t) = v0 t + a3 t^3 + a4 t^4 + a5 t^5`` with ``s(0) = 0``, ``s(1) = 1``,
+    ``s'(0) = v0``, ``s'(1) = v1`` and zero end accelerations; ``v0 = v1 = 0`` is the
+    classic min-jerk ``10t^3 - 15t^4 + 6t^5``, ``v0 = v1 = 1`` a constant-rate line.
+    Never steps backward, never passes the target, and lands exactly on it.
+    """
+    n = max(1, int(n))
+    a_, b_ = 1.0 - float(v0), float(v1) - float(v0)
+    a3, a4, a5 = 10.0 * a_ - 4.0 * b_, -15.0 * a_ + 7.0 * b_, 6.0 * a_ - 3.0 * b_
+    out: list[float] = []
+    prev = 0.0
+    for i in range(1, n + 1):
+        t = i / n
+        s = float(v0) * t + a3 * t**3 + a4 * t**4 + a5 * t**5
+        prev = min(1.0, max(s, prev))
+        out.append(prev)
+    out[-1] = 1.0
+    return out
+
 
 # ---------------------------------------------------------------------------
 # Quaternions, scipy order [qx, qy, qz, qw]
@@ -195,6 +234,12 @@ class PolymetisLimits:
     begin_time_s: float = 4.0
     reset_method: str = "joint_stream"
     reset_lift_m: float = 0.05
+    smooth: bool = True
+    smooth_substeps: int = 20
+    smooth_dt_s: float = 0.05
+    smooth_blend: bool = True
+    smooth_cruise: float = 1.0
+    smooth_chain_window_s: float = 1.0
 
     def validate(self) -> None:
         for f in fields(self):
@@ -289,6 +334,15 @@ class PolymetisLimits:
             raise ValueError(
                 "reset.method must be joint_stream or move_to_joint_positions"
             )
+        for name in ("smooth", "smooth_blend"):
+            if not isinstance(getattr(self, name), bool):
+                raise ValueError(f"{name} must be true or false")
+        if int(self.smooth_substeps) != self.smooth_substeps:
+            raise ValueError("smooth.substeps must be an integer")
+        bound("smooth_substeps", 1, 1000)
+        bound("smooth_dt_s", 1e-3, 0.1)
+        bound("smooth_cruise", 0.0, 1.5)
+        bound("smooth_chain_window_s", 0.0, 10.0)
 
 
 def is_controller_lost_error(exc: Exception) -> bool:
@@ -326,6 +380,10 @@ class PolymetisController:
         self.gripper_open: bool | None = None
         self.restarts = 0
         self._call_restarts = 0
+        # Chained motion (smooth + blend): direction and deadline of a translation
+        # that ended at cruise speed without settling (None = at rest).
+        self._stream_dir: np.ndarray | None = None
+        self._stream_until = 0.0
 
     # -- frames ------------------------------------------------------------
 
@@ -354,6 +412,7 @@ class PolymetisController:
 
     def sync(self) -> None:
         """Reset the setpoint to the measured pose (Show-Harness sync_from_robot)."""
+        self._stream_dir = None
         self.target_pos, self.target_quat = self.measured()
         if self.gripper_open is None:
             self.gripper_open = self.width() >= self.limits.gripper_close_threshold_m
@@ -417,6 +476,7 @@ class PolymetisController:
 
     def _reanchor(self) -> None:
         """Setpoint := measured pose on all axes, so impedance stops pressing."""
+        self._stream_dir = None
         self.target_pos, self.target_quat = self.measured()
         self._command(self.target_pos, self.target_quat)
 
@@ -430,6 +490,7 @@ class PolymetisController:
         try:
             result = body()
         except Exception:
+            self._stream_dir = None
             try:
                 if self.target_pos is None or self._displaced():
                     self.target_pos, self.target_quat = self.measured()
@@ -446,6 +507,8 @@ class PolymetisController:
             self._reanchor()
             result["ok"] = False
             result["reanchored"] = True
+            if "flowing" in result:
+                result["flowing"] = False
         if self.target_pos is not None:
             result["target_tcp_pose"] = self.target_pose().tolist()
         result["controller_restarts"] = self._call_restarts
@@ -463,6 +526,18 @@ class PolymetisController:
             self._command(self.target_pos, self.target_quat)
             self._wait(self.limits.settle_dt_s)
         return True
+
+    def _stream_live(self) -> bool:
+        """Whether a chained translation may still be flowing (within the window)."""
+        return self._stream_dir is not None and self._clock() <= self._stream_until
+
+    def end_stream(self) -> bool:
+        """Show-Harness end_stream: bring a chained motion to rest (settle at the
+        setpoint). A no-op at rest or once the chain window has passed. False when
+        stopped."""
+        live = self._stream_live()
+        self._stream_dir = None
+        return self._settle() if live else True
 
     # -- limits ------------------------------------------------------------
 
@@ -510,32 +585,72 @@ class PolymetisController:
             math.ceil(float(np.linalg.norm(drot)) / lim.servo_step_rad - 1e-9),
         )
 
-    def _ramp(
-        self, pos: np.ndarray, quat: np.ndarray, dpos: np.ndarray, drot: np.ndarray
-    ) -> tuple[int, str | None]:
-        """Walk the setpoint from (pos, quat) by (dpos, drot) in servo ticks.
+    def plan(
+        self, dist_m: float, angle_rad: float, v0: float = 0.0, v1: float = 0.0
+    ) -> tuple[list[float], float]:
+        """(fractions, delay) of one move's waypoints.
 
-        Returns (ticks, None | "cancelled" | "blocked"). After every tick the measured
-        TCP is compared with the setpoint; a gap above ``max_tracking_error_m``
-        (contact) stops the ramp and re-anchors the setpoint at the measured pose.
+        ``smooth``: Show-Harness's min-jerk / cruise profile over ``smooth_substeps``
+        waypoints ``smooth_dt_s`` apart, given more waypoints at the same delay (a longer
+        move) until no waypoint advances more than the servo cap scaled to that delay.
+        The count is sized for the rest-to-rest profile (the fastest peak, 1.875x the
+        mean), so equal moves of a chain get equal durations and speeds meet at the
+        joins. Otherwise: equal steps of at most the cap, ``tick_s`` apart.
         """
         lim = self.limits
-        n = self._ticks(dpos, drot)
-        for i in range(1, n + 1):
+        if not lim.smooth:
+            n = self._ticks(
+                np.array([dist_m, 0.0, 0.0]), np.array([angle_rad, 0.0, 0.0])
+            )
+            return [i / n for i in range(1, n + 1)], lim.tick_s
+        scale = min(1.0, lim.smooth_dt_s / lim.tick_s)
+        cap_m, cap_rad = lim.servo_step_m * scale, lim.servo_step_rad * scale
+        n = int(lim.smooth_substeps)
+        for _ in range(64):
+            worst = max(
+                float(np.max(np.diff([0.0, *smooth_fractions(n, a, b)])))
+                for a, b in ((0.0, 0.0), (v0, v1))
+            )
+            over = max(worst * dist_m / cap_m, worst * angle_rad / cap_rad)
+            if over <= 1.0 + 1e-9:
+                break
+            n = max(n + 1, math.ceil(n * over))
+        return smooth_fractions(n, v0, v1), lim.smooth_dt_s
+
+    def _ramp(
+        self,
+        pos: np.ndarray,
+        quat: np.ndarray,
+        dpos: np.ndarray,
+        drot: np.ndarray,
+        v0: float = 0.0,
+        v1: float = 0.0,
+    ) -> tuple[int, str | None]:
+        """Walk the setpoint from (pos, quat) by (dpos, drot) along :meth:`plan`.
+
+        Returns (waypoints, None | "cancelled" | "blocked"). ``stop`` is polled before
+        every waypoint. After each the measured TCP is compared with the setpoint; a gap
+        above ``max_tracking_error_m`` (contact) stops the ramp and re-anchors the
+        setpoint at the measured pose.
+        """
+        lim = self.limits
+        fractions, delay = self.plan(
+            float(np.linalg.norm(dpos)), float(np.linalg.norm(drot)), v0, v1
+        )
+        for i, f in enumerate(fractions, start=1):
             if self._stop():
                 return i - 1, "cancelled"
-            f = i / n
             p = pos + dpos * f
             q = quat_normalize(quat_mul(quat_from_rotvec(drot * f), quat))
             self.check_target(pos, p, strict=False)
             self._command(p, q)
             self.target_pos, self.target_quat = p, q
-            self._wait(lim.tick_s)
+            self._wait(delay)
             measured, _ = self.measured()
             if float(np.linalg.norm(measured - p)) > lim.max_tracking_error_m:
                 self._reanchor()
                 return i, "blocked"
-        return n, None
+        return len(fractions), None
 
     def _blocked_note(self) -> str:
         return (
@@ -544,8 +659,13 @@ class PolymetisController:
             "motion stopped and the setpoint was re-anchored at the measured pose"
         )
 
-    def move_delta(self, delta_xyz: Any) -> dict[str, Any]:
-        """Translate the TCP by a base-frame delta (m); refused beyond the limits."""
+    def move_delta(self, delta_xyz: Any, continuous: bool = False) -> dict[str, Any]:
+        """Translate the TCP by a base-frame delta (m); refused beyond the limits.
+
+        ``continuous``: another move in about the same direction follows at once (the
+        rest of a repeated unit), so with ``smooth`` and ``smooth_blend`` this one ends
+        at cruise speed without settling and the next starts at that speed.
+        """
         delta = np.asarray(delta_xyz, dtype=np.float64).reshape(-1)
         if delta.shape != (3,) or not np.all(np.isfinite(delta)):
             raise ValueError("delta_xyz must be 3 finite values")
@@ -555,17 +675,56 @@ class PolymetisController:
                 f"delta_xyz moves {norm:.4f} m; the limit is {self.limits.max_move_m} m "
                 "per call (limits.max_move_m). Split the move; nothing was commanded"
             )
-        return self._motion(lambda: self._move(delta))
+        return self._motion(lambda: self._move(delta, bool(continuous)))
 
-    def _move(self, delta: np.ndarray) -> dict[str, Any]:
+    def _move(self, delta: np.ndarray, continuous: bool = False) -> dict[str, Any]:
+        lim = self.limits
+        live, flowing = self._stream_live(), self._stream_dir
         self._prepare()
         start_pos, start_quat = self.measured()
         origin = self.target_pos.copy()
         target = origin + delta
         self.check_target(origin, target)
-        steps, stopped = self._ramp(origin, self.target_quat, delta, np.zeros(3))
-        if stopped is None and not self._settle():
+        norm = float(np.linalg.norm(delta))
+        blend = lim.smooth and lim.smooth_blend and norm > 1e-9
+        v0 = 0.0
+        if (
+            blend
+            and live
+            and self._stream_dir is not None  # _prepare did not resync
+            and float(np.dot(delta / norm, flowing)) >= CHAIN_MIN_COS
+        ):
+            v0 = lim.smooth_cruise
+        elif not self.end_stream():
+            return self._move_result(
+                delta, target, start_pos, start_quat, 0, "cancelled"
+            )
+        self._stream_dir = None
+        v1 = lim.smooth_cruise if blend and continuous else 0.0
+        steps, stopped = self._ramp(
+            origin, self.target_quat, delta, np.zeros(3), v0, v1
+        )
+        if stopped is None and v1 > 0.0:
+            # Flow into the next move: no settle, remember what the stream rides.
+            self._stream_dir = delta / norm
+            self._stream_until = self._clock() + lim.smooth_chain_window_s
+        elif stopped is None and not self._settle():
             stopped = "cancelled"
+        result = self._move_result(delta, target, start_pos, start_quat, steps, stopped)
+        if lim.smooth:
+            result["chained"] = v0 > 0.0
+            result["flowing"] = self._stream_dir is not None
+        return result
+
+    def _move_result(
+        self,
+        delta: np.ndarray,
+        target: np.ndarray,
+        start_pos: np.ndarray,
+        start_quat: np.ndarray,
+        steps: int,
+        stopped: str | None,
+    ) -> dict[str, Any]:
         final_pos, final_quat = self.measured()
         result: dict[str, Any] = {
             "ok": False,
@@ -646,7 +805,11 @@ class PolymetisController:
         origin_p, origin_q = self.target_pos.copy(), self.target_quat.copy()
         self._check_rotation(origin_p, origin_q, drot)
         target_q = quat_normalize(quat_mul(quat_from_rotvec(drot), origin_q))
-        steps, stopped = self._ramp(origin_p, origin_q, np.zeros(3), drot)
+        steps, stopped = 0, None
+        if not self.end_stream():  # a rotation never chains: start from rest
+            stopped = "cancelled"
+        if stopped is None:
+            steps, stopped = self._ramp(origin_p, origin_q, np.zeros(3), drot)
         if stopped is None and not self._settle():
             stopped = "cancelled"
         final_pos, final_quat = self.measured()
@@ -704,6 +867,15 @@ class PolymetisController:
     def set_gripper(self, *, open: bool) -> dict[str, Any]:
         """Open or close; a close that ends at/below ``empty_width_m`` is reopened."""
         lim = self.limits
+        # Bring a chained motion to rest before the fingers act (Show-Harness).
+        if not self.end_stream():
+            return {
+                "ok": False,
+                "cancelled": True,
+                "target_gripper_open": bool(open),
+                "steps_used": 0,
+                "gripper_width_m": self.width(),
+            }
         self.robot.control_gripper(not open)  # Show-Harness: True = close
         self.gripper_open = bool(open)
         steps = 1

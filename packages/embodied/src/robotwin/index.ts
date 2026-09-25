@@ -385,9 +385,12 @@ export default function robotwin(pi: ExtensionAPI) {
 		},
 		video: true,
 		explore: {
-			reset: async (result) => {
-				const [, reset] = await env.call<[unknown, Info]>("env.reset", {}, MUTATE_MS, [], robot.signal);
+			// The exploration `reset` tool is not a robot.tool, so robot.signal is unset here; use its own signal.
+			reset: async (result, _ctx, signal) => {
+				const [, reset] = await env.call<[unknown, Info]>("env.reset", {}, MUTATE_MS, [], signal);
 				info = reset;
+				// Action counts are per attempt, like the env's take_action_cnt that the reset zeroed.
+				policyActions = nativeActions = 0;
 				language = reset.instruction ?? (await env.call<string>("env.get_task_language"));
 				return present(await capture({ action: "reset" }, { ...result, success: true, instruction: language }));
 			},

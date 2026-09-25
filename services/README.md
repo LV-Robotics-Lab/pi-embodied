@@ -81,6 +81,22 @@ the same version first, then the extra:
 uv pip install torch==2.7.1 torchvision==0.22.1 --index-url https://download.pytorch.org/whl/cu128
 ```
 
+RoboTwin on sm_120 (verified on RTX 5090): `[robotwin]` alone builds cuRobo against the default
+torch, so install the runtime first and build cuRobo against the cu128 torch with a CUDA 12.8
+toolkit (the pip nvcc 12.8 wheel has no `nvcc`; CUDA 13 does not match a cu128 torch):
+
+```bash
+uv pip install -e "services[rlinf]" rlinf-robotwin-runtime==0.1.1 rlinf-lingbotvla==0.1.1
+CUDA_HOME=<cuda 12.8 toolkit> TORCH_CUDA_ARCH_LIST=12.0 SETUPTOOLS_SCM_PRETEND_VERSION=0.7.8 \
+  uv pip install --no-build-isolation "nvidia-curobo @ git+https://github.com/NVlabs/curobo.git@v0.7.8"
+```
+
+SAPIEN needs `libvulkan1`, and its bundled OIDN 2.0.1 denoiser has no sm_120 code (every frame
+logs "OIDN Error: unsupported device type: CUDA" and stays noisy): replace the libraries under
+SAPIEN's `oidn_library` with OIDN >= 2.3 (keep SAPIEN's file names); redo after reinstalling SAPIEN.
+`robotwin-download-assets` lists files through the Hugging Face tree API, which hf-mirror breaks;
+download the asset zips directly and unpack them with the runtime's extraction functions.
+
 ## Run
 
 Every RPC server takes `--transport http --host 127.0.0.1 --port <port>` (port `0` picks a

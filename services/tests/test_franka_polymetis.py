@@ -371,6 +371,34 @@ def test_gripper_state_is_measured_not_commanded():
     assert base["gripper_commanded_open"] is True
 
 
+def test_jammed_gripper_is_flagged():
+    # Fingers that ignore a close (still open, nothing grasped): jammed, not ok.
+    robot = MockPolymetisRobot((0.5, 0.0, 0.3, *DOWN))
+    robot.jammed = True
+    f = facade(robot)
+    r = call(f, "env.set_gripper", open=False)
+    assert r["gripper_jammed"] is True and r["ok"] is False
+    assert "gripper jammed" in r["note"]
+    # Fingers stuck closed on nothing ignore an open.
+    robot.jammed = False
+    call(f, "env.set_gripper", open=False)  # empty close: reopened
+    robot.width, robot.jammed = 0.0002, True
+    r = call(f, "env.set_gripper", open=True)
+    assert r["gripper_jammed"] is True and r["ok"] is False
+    # Not jammed: an open gripper told to open, a grasped object told to close again,
+    # and fingers that move.
+    robot.jammed, robot.width = False, 0.08
+    assert "gripper_jammed" not in call(f, "env.set_gripper", open=True)
+    held = MockPolymetisRobot((0.5, 0.0, 0.3, *DOWN), object_width=0.075)
+    g = facade(held)
+    call(g, "env.set_gripper", open=False)
+    held.jammed = True
+    r = call(g, "env.set_gripper", open=False)
+    assert "gripper_jammed" not in r and r["ok"] is True
+    r = call(facade(), "env.set_gripper", open=False)
+    assert "gripper_jammed" not in r and r["grasp_empty"] is True
+
+
 # -- reset ---------------------------------------------------------------------
 
 

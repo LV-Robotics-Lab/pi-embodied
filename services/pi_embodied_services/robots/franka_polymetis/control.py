@@ -909,8 +909,19 @@ class PolymetisController:
             ):
                 return cur, False
 
+    def _jammed(self, open: bool, before: float, after: float) -> bool:
+        """The fingers did not move toward the command (width within
+        ``gripper_motion_eps_m`` of where it started, still on the wrong side of
+        ``gripper_close_threshold_m``) and the gripper reports no grasped object."""
+        if abs(after - before) > self.limits.gripper_motion_eps_m:
+            return False
+        state = self.gripper_state()
+        return not state["grasped"] and state["closed"] == bool(open)
+
     def set_gripper(self, *, open: bool) -> dict[str, Any]:
-        """Open or close; a close that ends at/below ``empty_width_m`` is reopened."""
+        """Open or close; a close that ends at/below ``empty_width_m`` is reopened;
+        fingers that do not move as commanded within the settle time are
+        ``gripper_jammed``."""
         lim = self.limits
         # Bring a chained motion to rest before the fingers act (Show-Harness).
         if not self.end_stream():
@@ -921,11 +932,18 @@ class PolymetisController:
                 "steps_used": 0,
                 "gripper_width_m": self.width(),
             }
+        before = self.width()
         self.robot.control_gripper(not open)  # Show-Harness: True = close
         self.commanded_open = bool(open)
         steps = 1
         width, cancelled = self._await_gripper(None if open else lim.grasp_open_width_m)
         result: dict[str, Any] = {"target_gripper_open": bool(open)}
+        if not cancelled and self._jammed(open, before, width):
+            result["gripper_jammed"] = True
+            result["note"] = (
+                f"gripper jammed: the fingers stayed at {width:.4f} m after the "
+                f"{'open' if open else 'close'} command and nothing is grasped"
+            )
         if (
             not open
             and not cancelled
@@ -942,7 +960,9 @@ class PolymetisController:
                 f"{lim.empty_width_m} m (nothing between the fingers) and was reopened"
             )
         result.update(
-            ok=not cancelled and not result.get("grasp_empty"),
+            ok=not cancelled
+            and not result.get("grasp_empty")
+            and not result.get("gripper_jammed"),
             steps_used=steps,
             gripper_width_m=width,
         )

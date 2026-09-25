@@ -163,6 +163,24 @@ From pi, the robots in `packages/embodied` start the env servers themselves (`--
 `PI_EMBODIED_SERVICES`, default this directory; `--python` / `PI_EMBODIED_PYTHON` for the venv),
 and `packages/embodied/src/<robot>/serve.sh` starts the shared model servers the same way.
 
+## Fine-tuned mode
+
+Show-Harness's fine-tuned mode (`packages/embodied/src/finetuned`: a small VLM + LoRA picks one
+action unit per step) uses the scripts in `pi_embodied_services/finetuned/`. Training needs
+LLaMA-Factory in its own venv; install it once on the box with
+[`setup_llamafactory.sh`](pi_embodied_services/finetuned/setup_llamafactory.sh) (pinned
+LLaMA-Factory, torch 2.8.0+cu129, China mirrors; `LF_VENV` / `LF_ROOT` default to
+`/root/autodl-tmp/venvs/llamafactory` and `$LF_VENV/LlamaFactory`). `GIT_PROXY` routes its
+GitHub fetch of the pinned commit through a proxy:
+
+```bash
+GIT_PROXY=http://127.0.0.1:1056 bash services/pi_embodied_services/finetuned/setup_llamafactory.sh
+```
+
+Then `train.sh` turns GUMI recordings into a LoRA adapter, `serve.sh` serves base + adapter on an
+OpenAI-compatible vLLM endpoint, and `episode.sh` runs pi episodes against it (usage in each
+script's header).
+
 ## External dependencies that remain
 
 Not vendored; installed by the extras or provided by the host:

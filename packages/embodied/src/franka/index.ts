@@ -472,6 +472,9 @@ export default function franka(pi: ExtensionAPI) {
 			const { output, pngs } = view(await dumpState({ action: name, ...params }, result, elapsed));
 			output.agent_elapsed_s = elapsed;
 			if (failed) for (const [k, v] of Object.entries(result)) output[k] ??= v;
+			// A jammed gripper (polymetis: the fingers did not move as commanded, nothing grasped) heads the result.
+			const jam = [result, result.gripper].find((r) => r?.gripper_jammed === true);
+			if (jam) return toolResult({ gripper_jammed: true, gripper_note: jam.note, ...output }, pngs);
 			return toolResult(output, pngs);
 		} catch (err) {
 			return toolResult({

@@ -11,7 +11,7 @@
 # result schema (schema_version, protocol_id, evaluation_split, valid, success_source,
 # termination_reason, planner, runtime), built from the session's `robot_result` entry. The planner
 # is recorded as it ran: backend "pi", the model without its provider prefix, --thinking as
-# reasoning_effort, --max-turns.
+# reasoning_effort, --max-turns; the units mode (--units, --stateless) is recorded next to it.
 #
 # An episode is valid when the environment produced a result and the planner did not fail
 # (`env_error`, `planner_error`, a missing or duplicate result and a killed process are invalid,
@@ -35,7 +35,7 @@ PY=${PI_EMBODIED_PYTHON:-python3}
 [ "$splits" = all ] && splits=atomic,composite_seen,composite_unseen
 full=""
 [ "$splits" = atomic,composite_seen,composite_unseen ] && [ -z "${TASKS:-}${SEEDS:-}" ] && full=1
-model="" thinking="" turns=${MAX_TURNS:-100}
+model="" thinking="" turns=${MAX_TURNS:-100} units=false stateless=false
 args=("$@")
 for ((i = 0; i < ${#args[@]}; i++)); do
 	case ${args[i]} in
@@ -45,8 +45,21 @@ for ((i = 0; i < ${#args[@]}; i++)); do
 	--model=*) model=${args[i]#*=} ;;
 	--thinking=*) thinking=${args[i]#*=} ;;
 	--max-turns=*) turns=${args[i]#*=} ;;
+	--units) [[ ${args[i + 1]:---} == --* ]] && units=true || units=${args[i + 1]} ;;
+	--units=*) units=${args[i]#*=} ;;
+	# pi sets a boolean flag to true whatever value it is given (`--stateless=false` runs stateless)
+	# and takes a following word as that value: only the forms that say what pi runs are accepted.
+	--stateless) case ${args[i + 1]:-} in "" | -* | @* | true) stateless=true ;; *)
+		echo "--stateless takes no value: pi would run stateless and swallow '${args[i + 1]}'" >&2 && exit 2 ;;
+	esac ;;
+	--stateless=true) stateless=true ;;
+	--stateless=*)
+		echo "${args[i]}: pi ignores a boolean flag's value and would run stateless; omit --stateless for a stateful run" >&2
+		exit 2
+		;;
 	esac
 done
+[ "$units" = pure ] && units=true
 protocol() { # <expr>: a value from the manifest
 	node -e 'const m = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); console.log(eval(process.argv[2]))' "$manifest" "$1"
 }
@@ -54,13 +67,14 @@ export RLDX_MAX_CHUNKS=$(protocol m.runtime_protocol.rldx_max_chunks)
 export RLDX_SETTLE_PATIENCE=$(protocol m.runtime_protocol.rldx_settle_patience)
 export RLDX_ACTION_STEPS_PER_CHUNK=$(protocol m.runtime_protocol.rldx_action_steps_per_chunk)
 unset RLDX_RESET_SEED
+config=("$model" "$thinking" "$turns" "$units" "$stateless")
 # The protocol pins the task-memory snapshot (hf profile); PI_EMBODIED_MEMORY_REVISION overrides it.
 export PI_EMBODIED_MEMORY_REVISION=${PI_EMBODIED_MEMORY_REVISION:-$(protocol m.dependencies.task_memory.revision)}
 
 record() { # <dir> <exit code> <split> <task> <seed> <cell timeout> <elapsed s>: write result.json
 	node --input-type=module -e '
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
-const [dir, code, manifest, split, task, seed, limit, elapsed, model, thinking, turns] = process.argv.slice(1);
+const [dir, code, manifest, split, task, seed, limit, elapsed, model, thinking, turns, units, stateless] = process.argv.slice(1);
 const m = JSON.parse(readFileSync(manifest, "utf8"));
 const results = [];
 for (const f of readdirSync(dir).filter((f) => f.endsWith(".jsonl"))) {
@@ -110,20 +124,23 @@ const result = {
 	model: model || null,
 	thinking: thinking || null,
 	max_turns: Number(turns),
+	units,
+	stateless: stateless === "true",
 };
 writeFileSync(`${dir}/result.json`, `${JSON.stringify(result, null, 2)}\n`);
 console.log(JSON.stringify({ status, termination_reason: result.termination_reason, success: result.success, claimed: result.claimed, env_steps: result.env_steps }));
-' "$1" "$2" "$manifest" "$3" "$4" "$5" "$6" "$7" "$model" "$thinking" "$turns"
+' "$1" "$2" "$manifest" "$3" "$4" "$5" "$6" "$7" "${config[@]}"
 }
 
 valid() { # <dir>: 0 = a valid result of this configuration, 2 = a valid result of another one, 1 = none
 	node -e '
-const [path, protocolId, model, thinking, turns] = process.argv.slice(1);
+const [path, protocolId, model, thinking, turns, units, stateless] = process.argv.slice(1);
 const r = JSON.parse(require("fs").readFileSync(path, "utf8"));
 if (r.status !== "success" && r.status !== "failure") process.exit(1);
-const same = r.protocol_id === protocolId && r.model === (model || null) && r.thinking === (thinking || null) && r.max_turns === Number(turns);
+const same = r.protocol_id === protocolId && r.model === (model || null) && r.thinking === (thinking || null) && r.max_turns === Number(turns)
+	&& r.units === units && r.stateless === (stateless === "true");
 process.exit(same ? 0 : 2);
-' "$1/result.json" "$(protocol m.protocol_id)" "$model" "$thinking" "$turns" 2>/dev/null
+' "$1/result.json" "$(protocol m.protocol_id)" "${config[@]}" 2>/dev/null
 }
 
 cells=$(node -e '
@@ -145,15 +162,18 @@ while read -r split task seed limit; do
 	valid "$dir"
 	case $? in
 	0) continue ;;
-	2) echo "$dir holds a result of another protocol, model, thinking level or --max-turns (or an older result format); use another out dir" >&2 && exit 1 ;;
+	2) echo "$dir holds a result of another protocol, model, thinking level, --max-turns or units mode (or an older result format); use another out dir" >&2 && exit 1 ;;
 	esac
 	rm -rf "$dir" && mkdir -p "$dir"
 	echo "== $split $task seed $seed"
 	start=$SECONDS
 	# --time-limit ends the planner at the cell timeout (a planner_timeout); `timeout` is only the
-	# backstop for a hung process, and a killed episode is invalid.
-	timeout -k 30 $((limit + 900)) $PI -p --session-dir "$dir" -e "$here" --task-name "$task" --split target \
-		--seed "$seed" --max-turns "$turns" --time-limit "$limit" --log-dir "$dir" "$@" "Solve the task." \
+	# backstop for a hung process, and a killed episode is invalid. The prompt precedes the user's
+	# args: a bare boolean flag at their end would take it as its value.
+	backstop=()
+	command -v timeout >/dev/null && backstop=(timeout -k 30 $((limit + 900)))
+	${backstop[@]+"${backstop[@]}"} $PI -p --session-dir "$dir" -e "$here" --task-name "$task" --split target \
+		--seed "$seed" --max-turns "$turns" --time-limit "$limit" --log-dir "$dir" "Solve the task." "$@" \
 		</dev/null >"$dir/stdout.log" 2>"$dir/stderr.log"
 	code=$?
 	record "$dir" "$code" "$split" "$task" "$seed" "$limit" $((SECONDS - start))
@@ -171,7 +191,7 @@ const rows = cells.trim().split("\n").map((line) => {
 	}
 });
 const scoredRows = rows.filter((r) => r.status === "success" || r.status === "failure");
-const configs = new Set(scoredRows.map((r) => `${r.model}/${r.thinking}/turns=${r.max_turns}`));
+const configs = new Set(scoredRows.map((r) => `${r.model}/${r.thinking}/turns=${r.max_turns}/units=${r.units}${r.stateless ? "/stateless" : ""}`));
 if (configs.size > 1) {
 	console.log(`refusing to summarize: ${out} mixes configurations ${[...configs].join(", ")}`);
 	process.exit(1);

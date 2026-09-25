@@ -406,7 +406,7 @@ test("LIBERO with Molmo re-localizes anchors, refines from the wrist, retries a 
 	]);
 	assert.deepEqual(queries, [
 		"the bowl",
-		"the center of the the bowl directly below the gripper",
+		"the center of the bowl directly below the gripper",
 		"the body of the bowl held in the gripper",
 	]);
 	// Molmo's point (256, 256) of 512 is (512, 512) in the 1024 image; the profile runs down its column.

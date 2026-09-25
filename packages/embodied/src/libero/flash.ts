@@ -64,10 +64,12 @@ const FLASH_PICK_THRESHOLDS = {
 	gripper_open_thresh: 0.003,
 	descent_thresh: 0.0,
 };
+/** The object phrase without its leading article: the templates supply their own "the" ("the bowl" -> "bowl"). */
+const bare = (o: string) => o.trim().replace(/^(?:(?:the|a|an)\s+)+/i, "");
 const PROMPTS = {
 	survey: (o: string) => o,
-	refine: (o: string) => `the center of the ${o} directly below the gripper`,
-	held: (o: string) => `the body of the ${o} held in the gripper`,
+	refine: (o: string) => `the center of the ${bare(o)} directly below the gripper`,
+	held: (o: string) => `the body of the ${bare(o)} held in the gripper`,
 };
 const IMAGE = 1024;
 const SUITE = /^libero_(10|goal|object|spatial)_(task|swap)$/;

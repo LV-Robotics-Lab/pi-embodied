@@ -410,7 +410,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 // service processes
 
 /**
- * Stop a service so it cleans up (RPent's `close()` / `close_env()`: the sim, or the real
+ * Stop a service so it cleans up (the services' `close()` / `close_env()`: the sim, or the real
  * arm's RLinf worker): `stop` interrupts a running call where the server has that method, the
  * built-in `shutdown` (queued behind any call still running) closes the env and exits. A server
  * still up 30 s later gets EOF on stdin (--parent-watch: close without waiting for a running call),
@@ -461,8 +461,8 @@ export async function attach(endpoint: string, readyMs = 300_000): Promise<RpcCl
 }
 
 /**
- * Refuse a real-robot `move_delta` larger than one call may move, in meters. RPent clips each
- * servo step on the server (0.02 m) but bounds no call's total; its tasks document the per-call
+ * Refuse a real-robot `move_delta` larger than one call may move, in meters. The services clip each
+ * servo step on the server (0.02 m) but bound no call's total; their tasks document the per-call
  * limit only in the prompt ("Keep translation commands at or below 0.02 m per call"). The
  * tighter of that and `cap` applies.
  */
@@ -638,7 +638,7 @@ export function inv3(m: Mat): Mat {
 // ---------------------------------------------------------------------------
 // pi plumbing
 
-/** Tool result: JSON text (capped at 60 kB like RPent) followed by PNG images. */
+/** Tool result: JSON text (capped at 60 kB) followed by PNG images. */
 export function toolResult(out: Record<string, unknown>, pngs: Buffer[] = []) {
 	const details = plain(out) as Json;
 	let text = JSON.stringify(details, null, 2) ?? "null";

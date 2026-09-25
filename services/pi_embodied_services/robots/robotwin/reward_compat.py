@@ -27,13 +27,13 @@ def install_native_reward_compat(task_name: str) -> bool:
 
     task_module = importlib.import_module("robotwin.envs.place_fan")
     reward_factory = task_module.Reward
-    if getattr(reward_factory, "_rpent_place_fan_compat", False):
+    if getattr(reward_factory, "_pi_embodied_place_fan_compat", False):
         return False
 
     class PlaceFanRewardCompat(reward_factory):
         """Build the intended serial reward from the legacy arguments."""
 
-        _rpent_place_fan_compat = True
+        _pi_embodied_place_fan_compat = True
 
         def __new__(
             cls,

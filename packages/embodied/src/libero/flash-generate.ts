@@ -1,5 +1,5 @@
 /**
- * Generate one LIBERO Flash plan from one successful trace (RPent robots/libero/flash/generate.py).
+ * Generate one LIBERO Flash plan from one successful trace.
  *
  *   node src/libero/flash-generate.ts --audit <mem>/task_only/goal_swap_t3_s7.json \
  *     --recipe <mem>/task_only/goal_swap_t3_s7_recipe.jsonl --destination memory/libero/flash
@@ -353,7 +353,7 @@ export function generateFlashPlan(options: {
 	const audit = readJson(options.audit, "audit JSON") as Json;
 	if (!audit || typeof audit !== "object" || Array.isArray(audit))
 		throw new Error("audit JSON must contain one object");
-	// RPent explore audits write libero_terminated; evaluate audits write terminated. Either must be true.
+	// Explore audits write libero_terminated; evaluate audits write terminated. Either must be true.
 	if (audit.libero_terminated !== true && audit.terminated !== true)
 		throw new Error("Flash plans can only be generated from libero_terminated=true traces");
 	for (const [field, expected] of [

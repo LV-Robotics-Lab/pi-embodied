@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# Modified by pi-embodied: import paths rewritten from rpent/robots to pi_embodied_services.
+# Modified by pi-embodied: import paths rewritten to pi_embodied_services.
 
-"""Task definitions for the dual-Franka RPent extension."""
+"""Task definitions for the dual-Franka pi-embodied extension."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-# RPent example config for one physical Franka arm.
+# pi-embodied example config for one physical Franka arm.
 robot:
   ip: "172.16.0.2"
   end_effector:

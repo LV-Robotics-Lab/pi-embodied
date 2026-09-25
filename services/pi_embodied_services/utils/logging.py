@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# Modified by pi-embodied: import paths rewritten from rpent/robots to pi_embodied_services.
+# Modified by pi-embodied: import paths rewritten to pi_embodied_services.
 
 """Package logger for run output and ``run.log`` files."""
 
@@ -26,7 +26,7 @@ from pi_embodied_services.utils.config import get_repo_root
 
 # All loggers we configure live under this namespace so third-party
 # libraries (httpx, anthropic, urllib3, …) don't bleed into our output.
-_PKG_LOGGER_NAME = "rpent"
+_PKG_LOGGER_NAME = "pi_embodied"
 
 _log_initialized = False
 _output_dir: Path | None = None
@@ -80,7 +80,7 @@ class _CompactLevelFormatter(logging.Formatter):
 
 
 class _StripPkgPrefixFilter(logging.Filter):
-    """Strip the ``rpent.`` prefix from the logger name for display."""
+    """Strip the ``pi_embodied.`` prefix from the logger name for display."""
 
     _PREFIX = _PKG_LOGGER_NAME + "."
 
@@ -106,7 +106,7 @@ def init_output_dir(log_dir: str | Path | None = None, verbose: bool = False) ->
     _output_dir = Path(log_dir)
     if not _log_initialized and _output_dir.exists() and any(_output_dir.iterdir()):
         print(
-            f"Warning: RPent output directory is not empty: {_output_dir}; existing files may be overwritten!",
+            f"Warning: pi-embodied output directory is not empty: {_output_dir}; existing files may be overwritten!",
             file=sys.stderr,
             flush=True,
         )
@@ -156,7 +156,7 @@ def get_output_dir() -> Path:
 
 
 def get_logger(name: str = "") -> logging.Logger:
-    """Return a logger below the ``rpent`` namespace."""
+    """Return a logger below the ``pi_embodied`` namespace."""
     if name:
         return logging.getLogger(f"{_PKG_LOGGER_NAME}.{name}")
     return logging.getLogger(_PKG_LOGGER_NAME)

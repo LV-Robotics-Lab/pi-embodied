@@ -15,8 +15,8 @@
 # Modified by pi-embodied: reduced to the calibration and base-frame helpers
 # used by the dual-Franka env server and by pi-embodied's dual-Franka robot
 # (via ``python -c``); the planner-side back-projection/segmentation tools
-# (which need RPent's session/toolkit) are omitted. Function bodies are
-# verbatim from RPent.
+# (which need the upstream session/toolkit) are omitted. Function bodies are
+# unchanged.
 
 """Dual-Franka calibration and base-frame helpers."""
 

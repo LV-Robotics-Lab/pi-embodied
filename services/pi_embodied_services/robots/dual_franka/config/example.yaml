@@ -1,4 +1,4 @@
-# RPent example config for a dual-Franka setup.
+# pi-embodied example config for a dual-Franka setup.
 robot:
   arms:
     left:

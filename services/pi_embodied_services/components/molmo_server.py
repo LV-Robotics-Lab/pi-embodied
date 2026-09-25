@@ -182,7 +182,7 @@ class MolmoFacade(RpcFacade):
 
 
 def _build_argparser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="RPent local Molmo server")
+    parser = argparse.ArgumentParser(description="pi-embodied local Molmo server")
     parser.add_argument("--transport", choices=["http"], default="http")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8115)
@@ -210,7 +210,7 @@ def main() -> None:
     if not checkpoint:
         raise RuntimeError(
             "MOLMO_CHECKPOINT_PATH is not set; export the path to the Molmo "
-            "weights before starting RPent"
+            "weights before starting pi-embodied"
         )
     facade = MolmoFacade(checkpoint)
     facade.serve(

@@ -15,7 +15,7 @@
 # Modified by pi-embodied: import paths rewritten (contract.py); chunk_step takes
 # an optional ``should_stop`` callable polled before each native action.
 
-"""RPent/agent runtime extension over the RLinf training ``RoboTwinEnv``."""
+"""Agent runtime extension over the RLinf training ``RoboTwinEnv``."""
 
 from __future__ import annotations
 
@@ -72,7 +72,7 @@ def _execution_should_stop(status: dict[str, Any]) -> bool:
 
 
 class RoboTwinAgentEnv(RoboTwinEnv):
-    """RPent/agent runtime extension; preserves training RoboTwinEnv unchanged."""
+    """Agent runtime extension; preserves training RoboTwinEnv unchanged."""
 
     def _init_reset_state_ids(self) -> None:
         """Use requested seeds for the native vector env's language prewalk.

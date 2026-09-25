@@ -1,5 +1,5 @@
 /**
- * Exploration (RPent's --explore): enabled with --explore, driven by /explore.
+ * Exploration: enabled with --explore, driven by /explore.
  *
  *   pi -p -e packages/embodied/src/libero --explore --suite libero_10 --task 2 --seed 0 \
  *     --memory-dir memory/libero --output-dir runs/explore/10_t2_s0 --auto-merge-memory "/explore"

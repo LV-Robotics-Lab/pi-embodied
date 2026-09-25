@@ -69,7 +69,7 @@ test("merge publishes drafts, merges evidence, archives conflicts and task pairs
 	assert.ok(existsSync(join(root, "_internal", "conflicts", "lift-first__from_goal_t1_s0.md")));
 });
 
-test("guard mirrors RPent's memory boundary", () => {
+test("guard enforces the memory boundary", () => {
 	const g = { root: "/m/libero", home: "/m", output: "/tmp/run", tag: "10_t2_s0", inbox: "10_t2_s0" };
 	const ro = { ...g, inbox: undefined };
 	assert.equal(denied("/m/libero/MEMORY.md", "read", ro), undefined);

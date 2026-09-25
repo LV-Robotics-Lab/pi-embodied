@@ -1,12 +1,12 @@
 /**
- * RPent's memory corpus, the same on disk as RPent so the published RLinf/RPent-memory works as is:
+ * The memory corpus, in the on-disk layout of the published RLinf/RPent-memory dataset so it works as is:
  *
  *   <root>/MEMORY.md                                   index of global/ and suite/ (from frontmatter)
  *   <root>/global/<id>.md, <root>/suite/<id>.md        published leaves with YAML frontmatter
  *   <root>/task_only/<tag>.json + <tag>_recipe.jsonl   solved audit + recipe pairs
  *   <root>/_internal/{inbox/<tag>,merged/<tag>,conflicts}   exploration drafts, never read in evaluation
  *
- * Mirrors rpent/memory/manager.py: schema, merge, validate and index.
+ * Schema, merge, validate and index.
  */
 
 import {
@@ -140,7 +140,7 @@ export function mergeEvidence(old: Meta, draft: Meta): Meta {
 }
 
 // ---------------------------------------------------------------------------
-// Corpus operations (rpent-memory merge / validate / build-index / sync)
+// Corpus operations (merge / validate / build-index / sync)
 // ---------------------------------------------------------------------------
 
 function mdFiles(dir: string): string[] {

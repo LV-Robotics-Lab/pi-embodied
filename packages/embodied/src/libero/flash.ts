@@ -1,5 +1,5 @@
 /**
- * LIBERO Flash mode: replay a recorded plan with live grounding and no LLM (RPent robots/libero/flash).
+ * LIBERO Flash mode: replay a recorded plan with live grounding and no LLM.
  *
  *   pi -p -e src/libero --model flash/replay --suite libero_object_swap --task 3 --seed 0 \
  *     --molmo http://127.0.0.1:18400 "Solve the task."
@@ -15,7 +15,7 @@
  * coarse reading. Waypoints are replayed as offsets from their live anchor.
  *
  * Plans live in `--flash-plans` (default memory/libero/flash) as `<family>_<suite>_t<task>_{plan,anchors}.json`,
- * from flash-generate.ts or RPent's HF memory. Molmo runs in its own env:
+ * from flash-generate.ts or the HF memory dataset. Molmo runs in its own env:
  * `python -m pi_embodied_services.components.molmo_server` (see services/README.md).
  */
 

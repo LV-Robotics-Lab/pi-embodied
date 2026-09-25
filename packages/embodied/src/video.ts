@@ -1,10 +1,10 @@
 /**
- * Episode video as RPent records it: the agentview frame of every env step, written at
+ * Episode video: the agentview frame of every env step, written at
  * 20 fps to `episode.mp4` when the session ends, plus `action_<n>_<tool>.mp4` for each
  * tool call that stepped the env when --action-clips is set. Files go to
  * `<--video-dir>/<session id>/`, or next to the session file (`<session>.jsonl` ->
  * `<session>/`). Encoding pipes raw RGB into ffmpeg: --ffmpeg, else `ffmpeg` on PATH,
- * else the binary bundled with imageio-ffmpeg in the services venv (--python; what RPent uses).
+ * else the binary bundled with imageio-ffmpeg in the services venv (--python).
  */
 
 import { execFileSync, spawn } from "node:child_process";

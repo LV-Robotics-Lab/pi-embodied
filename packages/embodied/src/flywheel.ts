@@ -1,7 +1,7 @@
 /**
- * Flywheel data collection (RPent's --collect-flywheel-data). Records every env transition
+ * Flywheel data collection (--collect-flywheel-data). Records every env transition
  * of the episode, the VLA chunks that proposed actions, and the primitive (tool call) that
- * ran them, in RPent's raw episode format, which pi_embodied_services.flywheel validates and
+ * ran them, in the raw episode format, which pi_embodied_services.flywheel validates and
  * exports:
  *
  *   <root>/raw/libero/<suite>/task_NN/seed_NNN/episode_<utc>_<hex>/
@@ -85,7 +85,7 @@ function episode(root: string, meta: Meta, first: Obs) {
 }
 type Episode = ReturnType<typeof episode>;
 
-/** Write `ep` in RPent's schema-1 layout (via a `.partial` directory, like RPent). */
+/** Write `ep` in the schema-1 layout (via a `.partial` directory). */
 function write(ep: Episode): { path: string; step_count: number; is_success: boolean } {
 	const n = ep.actions.length;
 	const training = ep.terminated.indexOf(true) + 1;

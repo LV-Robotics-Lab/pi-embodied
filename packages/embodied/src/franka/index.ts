@@ -1,14 +1,14 @@
 /**
- * One physical Franka arm for pi (RPent's `franka` robot).
+ * One physical Franka arm for pi.
  *
  *   pi -e packages/embodied/src/franka --task 1 --robot-config my_franka.yaml --robot-vla http://VLA_HOST:PORT
  *
  * Starts the RLinf-backed env server (pi_embodied_services.robots.franka.env_server; Ray must
  * already run on the controller node) or attaches to one with --robot-env. The VLA is
- * attach-only, as in RPent. The server enforces the workspace limits, per-step clips and servo
+ * attach-only. The server enforces the workspace limits, per-step clips and servo
  * tolerances from its runtime config; task definitions and easy_handeye calibration come from
  * the same services package. A real robot needs an operator: pi must have a UI, the operator confirms
- * the reset motion, and --operator adds the verdict gate (see ../operator.ts). RPent's
+ * the reset motion, and --operator adds the verdict gate (see ../operator.ts). The
  * single-arm robot has no success signal; the result entry records the agent's claim and
  * the operator's verdict, if any. Mutating tools record a state step (robot state, external
  * and wrist RGB-D, camera metadata) under --out and return it with both images; file tools
@@ -67,7 +67,7 @@ type Setup = {
 };
 type Step = { blob: Json; dir: string; meta: Json | null; images: Record<string, string> };
 
-/** Task and calibration from the services, validated the way RPent's parse_config does. */
+/** Task and calibration from the services, validated like the services' parse_config. */
 const SETUP_PY = `
 import dataclasses, json, sys
 from pi_embodied_services.robots.franka.runtime_config import set_robot_config_path, validate_calibration_sources
@@ -96,7 +96,7 @@ const TOOLS = [
 	"vla_grasp",
 	"finish",
 ];
-/** Observation camera key -> saved image and depth artifact names (RPent's _CAMERA_ARTIFACTS). */
+/** Observation camera key -> saved image and depth artifact names. */
 const ARTIFACTS = { main: ["wrist", "wrist_depth"], extra_0: ["camera", "camera_depth"] } as const;
 
 function vec3(v: unknown, name: string): NdArray {
@@ -106,7 +106,7 @@ function vec3(v: unknown, name: string): NdArray {
 	return NdArray.f32(a);
 }
 
-/** `[H,W,3]` -> `[1,H,W,3]`, `[N,H,W,3]` -> `[1,N,H,W,3]` (RPent's _batch_views). */
+/** `[H,W,3]` -> `[1,H,W,3]`, `[N,H,W,3]` -> `[1,N,H,W,3]`. */
 function batchViews(v: unknown): NdArray | null {
 	if (!(v instanceof NdArray)) return null;
 	if (v.shape.length !== 3 && v.shape.length !== 4)
@@ -170,7 +170,7 @@ export default function franka(pi: ExtensionAPI) {
 	pi.registerFlag("task", {
 		type: "string",
 		default: "0",
-		description: "RPent Franka task id (0 smoke test, 1 VLA grasp)",
+		description: "Franka task id (0 smoke test, 1 VLA grasp)",
 	});
 	pi.registerFlag("robot-config", {
 		type: "string",
@@ -220,7 +220,7 @@ export default function franka(pi: ExtensionAPI) {
 		name: "franka",
 		task: ["task"],
 		keepImages: 4,
-		// RPent's franka memory is read-only and its prompt names none; the guard also opens the step artifacts.
+		// Franka memory is read-only and the prompt names none; the guard also opens the step artifacts.
 		memory: {
 			cell: () => ({ tag: `franka_t${task()}`, reference: "" }),
 			primitives: [],
@@ -266,7 +266,7 @@ export default function franka(pi: ExtensionAPI) {
 		if (signal?.aborted) throw new Error("tool operation interrupted");
 	};
 
-	// ---- env client (RPent's FrankaEnvClient: the server returns camera frames, the client caches states)
+	// ---- env client (the server returns camera frames, the client caches states)
 
 	async function observation(): Promise<Json> {
 		const obs = await call("env.get_observation");
@@ -287,7 +287,7 @@ export default function franka(pi: ExtensionAPI) {
 		return result;
 	}
 
-	// ---- state steps (RPent's dump_state / EnvState)
+	// ---- state steps (robot state dumps)
 
 	async function dumpState(command: Json | null, result: Json | null, elapsed: number | null): Promise<Step> {
 		const obs = await observation();
@@ -346,7 +346,7 @@ export default function franka(pi: ExtensionAPI) {
 		return s;
 	}
 
-	/** RPent's view_env_state: the step blob plus external then wrist image. */
+	/** view_env_state: the step blob plus external then wrist image. */
 	function view(s: Step) {
 		const output: Json = { ...s.blob };
 		const pngs: Buffer[] = [];
@@ -363,7 +363,7 @@ export default function franka(pi: ExtensionAPI) {
 
 	/**
 	 * Register a tool. Mutating tools run, then record a fresh state step and return it (errors
-	 * included, as RPent's toolkit does); read-only tools return their result or `{error}`,
+	 * included); read-only tools return their result or `{error}`,
 	 * plus any PNGs in `_pngs`.
 	 */
 	function tool<P extends TSchema>(
@@ -470,7 +470,7 @@ export default function franka(pi: ExtensionAPI) {
 		return vec(pose);
 	}
 
-	/** RPent's _resolve_camera_alias: observation key and camera name for an alias. */
+	/** Observation key and camera name for a camera alias. */
 	function resolveCamera(meta: Json, alias: "wrist" | "third_person"): ["main" | "extra_0", string | undefined] {
 		const map = meta.observation_camera_map ?? {};
 		const names = Object.keys(meta.cameras ?? {}).sort();
@@ -478,7 +478,7 @@ export default function franka(pi: ExtensionAPI) {
 		return ["main", map.main ?? names.find((n) => n.toLowerCase().includes("wrist"))];
 	}
 
-	/** RPent's _project_view_to_base: one pixel through depth, intrinsics and hand-eye calibration. */
+	/** Project one pixel through depth, intrinsics and hand-eye calibration. */
 	function projectView(s: Step, alias: "wrist" | "third_person", row: number, col: number): Json {
 		try {
 			if (!s.meta) throw new Error("camera metadata not found in the recorded state");
@@ -525,7 +525,7 @@ export default function franka(pi: ExtensionAPI) {
 		}
 	}
 
-	/** Mark the selected pixel on the step's image (RPent's selected_pixel.png). */
+	/** Mark the selected pixel on the step's image (selected_pixel.png). */
 	function overlay(s: Step, key: "main" | "extra_0", row: number, col: number): string | undefined {
 		try {
 			const name = ARTIFACTS[key][0];

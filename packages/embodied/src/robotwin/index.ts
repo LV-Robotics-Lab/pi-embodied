@@ -3,9 +3,9 @@
  *
  *   pi -e packages/embodied/src/robotwin --task-name beat_block_hammer --seed 100000
  *
- * Starts one RoboTwin env server per session (RPent's RLinf RoboTwin facade) and
+ * Starts one RoboTwin env server per session (the RLinf RoboTwin facade) and
  * attaches to a running LingBot-VLA WebSocket server (see serve.sh). Tools follow
- * RPent's RoboTwin primitives for the dual-arm aloha-agilex: `move_to` plans with
+ * the RoboTwin primitives for the dual-arm aloha-agilex: `move_to` plans with
  * the env's curobo planner (`env.plan_arm_path`) and executes qpos waypoints,
  * `lingbot_act` runs eef16 chunks. Every action returns a new numbered state with
  * the head and both wrist images; success is RoboTwin's own `eval_success`,
@@ -73,7 +73,7 @@ function qmult([w1, x1, y1, z1]: number[], [w2, x2, y2, z2]: number[]): number[]
 	];
 }
 
-/** World xyz per pixel from metric depth (NaN = no hit) and the OpenGL cam-to-world pose, as RPent does. */
+/** World xyz per pixel from metric depth (NaN = no hit) and the OpenGL cam-to-world pose. */
 function worldMap(depth: NdArray, meta: CameraMeta): WorldMap {
 	const [height, width] = depth.shape;
 	if (meta.height !== height || meta.width !== width)
@@ -855,7 +855,7 @@ export default function robotwin(pi: ExtensionAPI) {
 				const rows = Math.min(USE_LENGTH, actions.shape[0]);
 				const bytes = actions.data.length / actions.shape[0];
 				const chunk = new NdArray(actions.dtype, [rows, 16], actions.data.subarray(0, rows * bytes));
-				// RPent records the head frame after every native action for the episode video.
+				// Record the head frame after every native action for the episode video.
 				const ret = await env.call<StepReturn>(
 					"env.chunk_step",
 					{ action_type: "ee", return_all_frames: true },

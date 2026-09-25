@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# Modified by pi-embodied: import paths rewritten from rpent/robots to pi_embodied_services.
+# Modified by pi-embodied: import paths rewritten to pi_embodied_services.
 
-"""RPent configuration and RLinf adapter for a dual-Franka runtime.
+"""pi-embodied configuration and RLinf adapter for a dual-Franka runtime.
 
 Users edit only ``example.yaml`` (machine identity + workspace geometry).
 Developer defaults (node placement, primitive control, perception tuning,
@@ -37,13 +37,13 @@ from pi_embodied_services.robots.franka.runtime_config import (
 )
 
 # Fixed two-node placement (the RLinf cluster/placement is a training concern;
-# RPent only evaluates). Users do not change these.
+# pi-embodied only evaluates). Users do not change these.
 NODES = [0, 1]
 HARDWARE_NODE = 0
 LEFT_CONTROLLER_NODE = 0
 RIGHT_CONTROLLER_NODE = 1
 
-# Primitive-control knobs consumed by the RPent dual-Franka env server. RLinf
+# Primitive-control knobs consumed by the dual-Franka env server. RLinf
 # has no equivalent fields; ``max_step_*`` bound each interpolation step.
 CONTROL = {
     "move": {"timeout_s": 20.0, "tolerance_m": 0.006, "max_step_m": 0.02},
@@ -62,7 +62,7 @@ RECOVERY = {
     "return_tolerance_rad": 0.04,
 }
 
-# Raw env safety horizon. RPent owns task-level episode boundaries; RLinf
+# Raw env safety horizon. pi-embodied owns task-level episode boundaries; RLinf
 # auto-reset must stay disabled during long, multi-skill physical tasks because
 # reset opens both grippers and moves both arms home.
 EPISODE_STEPS = 300

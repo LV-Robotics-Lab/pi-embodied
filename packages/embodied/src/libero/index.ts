@@ -4,7 +4,7 @@
  *   pi -e packages/embodied/src/libero --suite libero_10 --task 2 --seed 0
  *
  * Starts one LIBERO env server per session and attaches to running Pi0.5 VLA and
- * SAM3 servers (see serve.sh). Tools follow RPent's LIBERO primitives. Every motion
+ * SAM3 servers (see serve.sh). Tools are the LIBERO primitives. Every motion
  * tool returns the new state with agentview and wrist images; success is LIBERO's
  * own `terminated` flag, recorded in the session's `robot_result` entry.
  */
@@ -261,7 +261,7 @@ export default function libero(pi: ExtensionAPI) {
 		return { rgb: flipRows(rgb.data, size, size * 3), depth: d };
 	}
 
-	/** Per-pixel world xyz for the current step, from metric depth + calibration (RPent's world map). */
+	/** Per-pixel world xyz for the current step, from metric depth + calibration (the world map). */
 	async function worldMap(camera: Camera, size: number): Promise<WorldMap> {
 		const key = `${camera}:${size}`;
 		const cached = worldMaps.get(key);

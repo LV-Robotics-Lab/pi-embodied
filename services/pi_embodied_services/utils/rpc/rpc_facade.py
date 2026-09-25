@@ -13,7 +13,7 @@
 # limitations under the License.
 #
 # Modified by pi-embodied: import paths rewritten; business calls now run strictly
-# one at a time behind a process-wide lock (RPent let read-only calls overlap);
+# one at a time behind a process-wide lock (read-only calls no longer overlap);
 # added the lock-free ``stop``/``cancel`` method and the stop generation that
 # long operations poll; ``healthz`` reports version and service name; the
 # pickle socket transport is removed (HTTP only).
@@ -367,7 +367,7 @@ class RpcFacade:
 
         Returns the bound server, whose ``server_address`` reflects the
         actually-bound ``(host, port)`` (useful when ``port == 0``). The
-        pickle socket transport RPent offered is removed: unpickling request
+        pickle socket transport is not offered: unpickling request
         frames is remote code execution for anyone who can reach the port.
         """
         from pi_embodied_services.utils.rpc.http_rpc import HttpRpcServer

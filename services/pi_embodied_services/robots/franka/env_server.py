@@ -180,13 +180,13 @@ def _create_worker_class():
             self, cfg: Any, controller_config: dict[str, Any], stop_flag: Any = None
         ):
             super().__init__()
-            from pi_embodied_services.robots.franka.rpent_env import (
-                register_rpent_franka_env,
+            from pi_embodied_services.robots.franka.franka_env import (
+                register_pi_franka_env,
             )
 
             self._stop = _StopPoller(stop_flag)
 
-            register_rpent_franka_env()
+            register_pi_franka_env()
             self.cfg = cfg
             self.controller = dict(controller_config)
             self.env = RealWorldEnv(
@@ -253,7 +253,7 @@ def _create_worker_class():
             return output
 
         def _raw_rlinf_env(self) -> Any:
-            """Return RPent's unwrapped RLinf environment compatibility layer."""
+            """Return the unwrapped RLinf environment compatibility layer."""
             return self.env.env.envs[0].unwrapped
 
         def get_observation(self) -> dict[str, Any]:
@@ -540,7 +540,7 @@ def _launch_worker(
     stop_flag = _create_stop_flag()
     worker = worker_class.create_group(cfg, controller_config, stop_flag).launch(
         cluster=cluster,
-        name="FrankaRPentEnvGroup",
+        name="FrankaPiEnvGroup",
         placement_strategy=placement,
     )
     worker.get_env_meta().wait()

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# Modified by pi-embodied: import paths rewritten from rpent/robots to pi_embodied_services.
+# Modified by pi-embodied: import paths rewritten to pi_embodied_services.
 
 """RPC client protocol: error type, transport-agnostic client base, response
 envelope validation.

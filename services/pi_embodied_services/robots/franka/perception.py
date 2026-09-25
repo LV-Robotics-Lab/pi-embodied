@@ -14,8 +14,8 @@
 #
 # Modified by pi-embodied: reduced to the hand-eye calibration loaders used by
 # pi-embodied's Franka robot (via ``python -c``); the planner-side RGB-D
-# back-projection tools (which need RPent's session/toolkit) are omitted.
-# Function bodies are verbatim from RPent.
+# back-projection tools (which need the upstream session/toolkit) are omitted.
+# Function bodies are unchanged.
 
 """Franka hand-eye calibration helpers."""
 

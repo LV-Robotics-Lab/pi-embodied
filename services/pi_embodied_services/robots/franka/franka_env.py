@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# Modified by pi-embodied: import paths rewritten from rpent/robots to pi_embodied_services.
+# Modified by pi-embodied: import paths rewritten to pi_embodied_services.
 
-"""RPent-specific single-Franka environment configuration and reset behavior."""
+"""pi-embodied single-Franka environment configuration and reset behavior."""
 
 from __future__ import annotations
 
@@ -56,8 +56,8 @@ def realsense_color_intrinsics(camera: RealSenseCamera) -> dict[str, Any]:
     }
 
 
-class RPentFrankaEnv(FrankaEnv):
-    """FrankaEnv variant used as the RPent real-robot contract."""
+class PiFrankaEnv(FrankaEnv):
+    """FrankaEnv variant used as the pi-embodied real-robot contract."""
 
     def get_live_camera_observation(
         self,
@@ -180,15 +180,15 @@ class RPentFrankaEnv(FrankaEnv):
         super().go_to_rest(joint_reset)
 
 
-def create_rpent_franka_env(
+def create_pi_franka_env(
     override_cfg: dict,
     worker_info: object,
     robot_info: object,
     env_idx: int,
     env_cfg: dict,
 ) -> gym.Env:
-    """Create the RPent-specific single-Franka environment."""
-    env = RPentFrankaEnv(
+    """Create the pi-embodied single-Franka environment."""
+    env = PiFrankaEnv(
         override_cfg=override_cfg,
         worker_info=worker_info,
         robot_info=robot_info,
@@ -197,12 +197,12 @@ def create_rpent_franka_env(
     return build_stack(env, env_cfg)
 
 
-def register_rpent_franka_env() -> None:
-    """Register the RPent-specific Franka environment with Gymnasium."""
-    if "RPentFrankaEnv-v1" not in gym.registry:
+def register_pi_franka_env() -> None:
+    """Register the pi-embodied Franka environment with Gymnasium."""
+    if "PiFrankaEnv-v1" not in gym.registry:
         register(
-            id="RPentFrankaEnv-v1",
+            id="PiFrankaEnv-v1",
             entry_point=(
-                "pi_embodied_services.robots.franka.rpent_env:create_rpent_franka_env"
+                "pi_embodied_services.robots.franka.franka_env:create_pi_franka_env"
             ),
         )

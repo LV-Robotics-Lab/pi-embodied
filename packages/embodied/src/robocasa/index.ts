@@ -5,7 +5,7 @@
  *
  * Starts one RoboCasa env server per session (PandaOmron mobile manipulator) and attaches
  * to a running RLDX-1 VLA server (see serve.sh) under a private RPC session, which holds
- * the policy's memory/RTC state. Tools follow RPent's RoboCasa primitives. Every action
+ * the policy's memory/RTC state. Tools are the RoboCasa primitives. Every action
  * returns a new numbered state with agentview, navview and wrist images; world maps are
  * kept per state for back-projection. Success is the env's own `_check_success()`
  * (`state.success`), recorded in the session's `robot_result` entry.
@@ -59,7 +59,7 @@ type State = {
 };
 type Frame = { state: Record<string, number[]>; video: Record<string, Buffer> };
 
-/** Integer from the environment (RPent's RLDX_* protocol knobs), else `fallback`. */
+/** Integer from the environment (the RLDX_* protocol knobs), else `fallback`. */
 const envInt = (name: string, fallback: number) => {
 	const v = process.env[name];
 	return v === undefined || v === "" ? fallback : Number.parseInt(v, 10);
@@ -92,7 +92,7 @@ function pinv3(J: number[][]): number[][] {
 	return inv.map((r) => [0, 1, 2].map((c) => r.reduce((s, v, k) => s + v * Jt[k][c], 0)));
 }
 
-/** RpcClient bound to one RPent RPC session (the RLDX server keys policy memory/RTC state by it). */
+/** RpcClient bound to one RPC session (the RLDX server keys policy memory/RTC state by it). */
 function sessionRpc(endpoint: string): RpcClient {
 	const rpc = new RpcClient(endpoint);
 	rpc.session = `rpc_${randomUUID().replaceAll("-", "")}`;
@@ -231,7 +231,7 @@ export default function robocasa(pi: ExtensionAPI) {
 		if (robot.signal?.aborted) throw new Error("interrupted");
 		obs = (await env.call<[Raw, unknown, unknown, unknown]>("env.step", {}, 60_000, [a], robot.signal))[0];
 		envSteps++;
-		// RPent records the 256x256 agentview after every env step for the episode video.
+		// Record the 256x256 agentview after every env step for the episode video.
 		robot.video.frame(new NdArray("uint8", [SIZE, SIZE, 3], await rgb(CAMERAS.agentview)));
 	}
 
@@ -244,7 +244,7 @@ export default function robocasa(pi: ExtensionAPI) {
 		return flipRows(img.data, size);
 	}
 
-	/** Top-down RGB and per-pixel world xyz (RPent's world map: T_p2w @ [col*z, row*z, z, 1]). */
+	/** Top-down RGB and per-pixel world xyz (world map: T_p2w @ [col*z, row*z, z, 1]). */
 	async function rgbd(camera: string, size: number): Promise<{ rgb: Buffer; map: WorldMap }> {
 		// One call at a time: concurrent calls interleave on the env server's worker pipe.
 		const [img, depth] = await env.call<[NdArray, NdArray]>(
@@ -470,7 +470,7 @@ export default function robocasa(pi: ExtensionAPI) {
 		return out;
 	}
 
-	/** RPent's RLDXSkill.run: closed-loop chunks until env success, the policy settles, or the chunk cap. */
+	/** RLDX skill run: closed-loop chunks until env success, the policy settles, or the chunk cap. */
 	async function rldx(p: {
 		prompt?: string;
 		base_clip: number | null;
@@ -1014,7 +1014,7 @@ export default function robocasa(pi: ExtensionAPI) {
 		const meta = await env.call<Record<string, unknown>>("env.get_env_meta", {}, 30_000);
 		if (meta.task_name !== task || meta.split !== split || Number(meta.seed) !== Number(seed))
 			throw new Error(`env server runs ${JSON.stringify(meta)}, not ${task}/${split}/s${seed}`);
-		// RPent resets on client connect and again in RoboCasaPrimitives; a seed's scene is the second one.
+		// The env resets on client connect and again in the primitives; a seed's scene is the second one.
 		await env.call("env.reset", {}, 120_000);
 		obs = await env.call<Raw>("env.reset", {}, 120_000);
 		language = (await env.call<string | null>("env.get_task_language")) ?? "";

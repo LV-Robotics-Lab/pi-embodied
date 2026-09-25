@@ -1,5 +1,5 @@
 /**
- * Human-in-the-loop operator (RPent's human_in_the_loop), enabled with --operator.
+ * Human-in-the-loop operator, enabled with --operator.
  *
  * The agent asks through tools, and pi asks the operator with a `ctx.ui.select` dialog, which the
  * TUI shows and an RPC client (e.g. a dashboard) answers as an `extension_ui_request`:
@@ -10,7 +10,7 @@
  * Unsolicited, /success /failure /abort end the episode at any time: in-flight motion stops at
  * its next env step (`check()`), later tool calls are refused, the verdict is recorded, and pi
  * exits. Every exchange is an `operator_event` session entry; `result()` goes into the robot's
- * result entry. Without a UI (print/json mode) requests get no answer, which RPent treats as abort.
+ * result entry. Without a UI (print/json mode) requests get no answer, which is treated as abort.
  */
 
 import { randomBytes } from "node:crypto";

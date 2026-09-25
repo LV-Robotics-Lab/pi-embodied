@@ -156,7 +156,7 @@ def _create_worker_class():
             )
             if self.per_arm_dim != 10 or self.action_dim != 2 * self.per_arm_dim:
                 raise ValueError(
-                    "dual-Franka RPent bridge requires the TCP rot6d env "
+                    "dual-Franka bridge requires the TCP rot6d env "
                     f"(20-D); got action_dim={self.action_dim}, "
                     f"per_arm_dim={self.per_arm_dim}"
                 )
@@ -647,7 +647,7 @@ def _create_worker_class():
 
         def _capture_perception_camera_snapshot(self) -> dict[str, dict[str, Any]]:
             # Deferred: the helper imports RLinf camera types with the single-arm env.
-            from pi_embodied_services.robots.franka.rpent_env import (
+            from pi_embodied_services.robots.franka.franka_env import (
                 realsense_color_intrinsics,
             )
 

@@ -5,7 +5,7 @@ import { test } from "node:test";
 import { RpcClient } from "../src/rpc.ts";
 
 /**
- * A fake RPent server: `slow` answers after 300 ms; it records every call's start and end, and the
+ * A fake robot server: `slow` answers after 300 ms; it records every call's start and end, and the
  * most calls it ran at once (the `stop` interrupt is meant to bypass the queue and is not counted).
  */
 async function fakeServer() {

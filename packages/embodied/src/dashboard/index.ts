@@ -1,5 +1,5 @@
 /**
- * Live dashboard for pi-embodied (RPent's `--dashboard`), for any robot defined with ../robot.ts.
+ * Live dashboard for pi-embodied (`--dashboard`), for any robot defined with ../robot.ts.
  *
  *   pi -e packages/embodied/src/libero -e packages/embodied/src/dashboard --dashboard \
  *     [--dashboard-host 0.0.0.0] [--dashboard-port 8765] [--dashboard-language zh-cn]

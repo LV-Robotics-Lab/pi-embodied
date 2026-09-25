@@ -44,7 +44,7 @@ def _on_parent_death() -> None:
 
 
 class LingBotVLAFacade(BaseVLAFacade):
-    """Adapt LingBot's native policy to the common RPent VLA facade."""
+    """Adapt LingBot's native policy to the common VLA facade."""
 
     SERVICE_NAME = "lingbot-vla"
 

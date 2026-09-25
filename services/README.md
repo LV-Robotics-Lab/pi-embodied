@@ -22,7 +22,7 @@ services/
       robotwin/             env_server.py, vla_server.py (LingBot), rlinf_env.py, contract.py,
                             eval/demo_randomized.json
       franka/               env_server.py, runtime_config.py, tasks.py, perception.py
-                            (calibration only), rpent_env.py, config/example.yaml
+                            (calibration only), franka_env.py, config/example.yaml
       dual_franka/          env_server.py, runtime_config.py, tasks.py, perception.py
                             (calibration only), config/example.yaml
   tests/                    dispatch lock / stop / healthz (no simulator)

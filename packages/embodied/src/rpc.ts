@@ -69,7 +69,7 @@ function decode(value: unknown): unknown {
 
 /**
  * Calls to one endpoint run one at a time: a robot env server may accept concurrent calls
- * (RPent's facades allow parallel read-only calls) while its worker pipe does not. A call is
+ * (read-only calls may run in parallel) while its worker pipe does not. A call is
  * sent only once the server has answered the previous one. An abort or timeout releases the
  * caller, never the endpoint: the server is still executing that call, so later calls keep
  * waiting for its answer, each within its own timeout (rather than failing at once, since the

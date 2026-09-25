@@ -325,7 +325,7 @@ def make_env(
     assets_path: str,
     max_episode_steps: int = 10000,
 ) -> RoboTwinAgentEnv:
-    """Construct the only simulator owner used by an RPent run."""
+    """Construct the only simulator owner used by a pi-embodied run."""
     # Temporary workaround for the pinned RoboTwin place_fan reward-construction
     # bug. Remove after the RoboTwin dependency includes the upstream fix.
     install_native_reward_compat(task_name)
@@ -373,7 +373,7 @@ def main() -> None:
         "--max-episode-steps",
         type=int,
         default=10000,
-        help="Episode action budget for the RPent RoboTwin agent runtime.",
+        help="Episode action budget for the RoboTwin agent runtime.",
     )
     parser.add_argument("--assets-path", required=True)
     parser.add_argument("--parent-watch", action="store_true")

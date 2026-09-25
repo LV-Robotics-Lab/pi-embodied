@@ -1,7 +1,7 @@
 /**
- * RPent's layered memory as a pi extension helper. A robot calls `memory(pi, { cell, primitives, ... })`:
+ * Layered memory as a pi extension helper. A robot calls `memory(pi, { cell, primitives, ... })`:
  * the agent reads memory with pi's built-in read/ls/grep/find and writes with write, a tool_call guard
- * enforces RPent's MemoryManager boundary, the published corpus is synced from Hugging Face, and the
+ * enforces the memory access boundary, the published corpus is synced from Hugging Face, and the
  * solved recipe is rebuilt from the session branch. Loaded on its own it only adds the command:
  *
  *   pi -e packages/embodied/src/memory -p "/memory validate" --memory-dir memory/libero
@@ -47,7 +47,7 @@ export type MemoryOptions = {
 const defaultHome = () => process.env.PI_EMBODIED_MEMORY || join(homedir(), ".pi", "embodied", "memory");
 
 // ---------------------------------------------------------------------------
-// Access boundary (RPent's memory/tools.py) and recipes (write_recipe_from_states)
+// Access boundary and recipes (write_recipe_from_states)
 // ---------------------------------------------------------------------------
 
 /**
@@ -131,7 +131,7 @@ function toolCalls(entries: SessionEntry[]): Call[] {
 /**
  * The command sequence after the last successful `reset` if it reached `terminated`, else undefined.
  * Contract: an executed primitive's result carries `details.terminated` (boolean); a failed call is
- * `isError` or has `details.error` / `details.result.error` and is dropped. Lines are RPent's
+ * `isError` or has `details.error` / `details.result.error` and is dropped. Lines are
  * `{"action": name, ...args}`, plus successful `segment` calls as `{action, prompt | point, camera}`.
  */
 export function recipe(

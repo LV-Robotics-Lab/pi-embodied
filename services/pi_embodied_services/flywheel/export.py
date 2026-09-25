@@ -96,7 +96,9 @@ def export_lerobot(
     try:
         from lerobot.datasets.lerobot_dataset import LeRobotDataset
     except ImportError as exc:
-        raise RuntimeError("install RPent with the 'flywheel' extra") from exc
+        raise RuntimeError(
+            "install pi-embodied-services with the 'flywheel' extra"
+        ) from exc
     parent.mkdir(parents=True, exist_ok=True)
 
     repo_id = f"{repo_id_prefix}-{dataset_id}"

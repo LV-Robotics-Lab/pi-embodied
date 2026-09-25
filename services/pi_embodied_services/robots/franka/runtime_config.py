@@ -12,13 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# Modified by pi-embodied: import paths rewritten from rpent/robots to pi_embodied_services.
+# Modified by pi-embodied: import paths rewritten to pi_embodied_services.
 
 """User-facing config, developer defaults, and RLinf adapter for one Franka.
 
 Users edit only ``example.yaml``: machine identity (robot IP, camera
 serials, gripper) and workspace geometry (target/reset poses, limits). The
-primitive-control knobs and the RLinf field values RPent deliberately tunes
+primitive-control knobs and the RLinf field values pi-embodied deliberately tunes
 live here as developer defaults and are applied as ``override_cfg`` over
 RLinf's own dataclass defaults, so they are never restated in the YAML.
 
@@ -84,7 +84,7 @@ def _calibration_mapping_from(perception: Any) -> dict[str, str]:
 def get_perception_calibration_mapping() -> dict[str, str]:
     """Return the robot-config ``perception.calibration`` YAML-source mapping.
 
-    Maps RPent camera keys (``base_camera``/``d455_camera`` for dual Franka,
+    Maps pi-embodied camera keys (``base_camera``/``d455_camera`` for dual Franka,
     ``external``/``wrist`` for single Franka) to easy_handeye YAML paths.
     Returns an empty mapping when the robot config has no such section.
     """
@@ -168,7 +168,7 @@ def validate_calibration_sources() -> None:
 # Developer defaults
 # ---------------------------------------------------------------------------
 
-# Primitive-control knobs consumed by the RPent Franka env server. RLinf has no
+# Primitive-control knobs consumed by the Franka env server. RLinf has no
 # equivalent fields, so these live here rather than in any RLinf dataclass.
 CONTROL = {
     "move": {"timeout_s": 15.0, "tolerance_m": 0.005},
@@ -198,11 +198,11 @@ _COMPLIANCE_PARAM = {
     "rotational_Ki": 0,
 }
 
-# ``env.eval.override_cfg`` values RPent sets away from RLinf's
+# ``env.eval.override_cfg`` values pi-embodied sets away from RLinf's
 # ``FrankaEnvConfig`` defaults. Keys are RLinf field names; anything omitted
 # here keeps RLinf's default.
 ENV_DEFAULTS = {
-    # RPent drives the cameras through its own env server; it does not run the
+    # pi-embodied drives the cameras through its own env server; it does not run the
     # in-process camera player.
     "enable_camera_player": False,
     # The back-projection primitives need per-pixel depth.
@@ -234,7 +234,7 @@ def strict_mapping(
 
     Args:
         config_cls: The RLinf dataclass whose fields define the valid keys.
-        mapping: The adapter keys built from the RPent YAML and defaults.
+        mapping: The adapter keys built from the pi-embodied YAML and defaults.
         where: Human-readable location for error messages.
 
     Raises:
@@ -289,7 +289,7 @@ def flatten_control(control: dict[str, Any]) -> dict[str, Any]:
 
 @dataclass(frozen=True)
 class FrankaRuntimeConfig:
-    """Generated RLinf adapter config and RPent primitive settings."""
+    """Generated RLinf adapter config and pi-embodied primitive settings."""
 
     rlinf: DictConfig
     controller: dict[str, Any]
@@ -385,7 +385,7 @@ def load_runtime_config(
                     "keyboard_reward_wrapper": None,
                     "use_relative_frame": True,
                     "video_cfg": {},
-                    "init_params": {"id": "RPentFrankaEnv-v1"},
+                    "init_params": {"id": "PiFrankaEnv-v1"},
                     "override_cfg": override_cfg,
                 }
             },

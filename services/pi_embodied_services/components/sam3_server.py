@@ -23,7 +23,7 @@ Run manually with::
         python -m pi_embodied_services.components.sam3_server \
         --transport http --host 127.0.0.1 --port 8114
 
-RPent normally starts this process automatically. The service exposes a
+pi-embodied normally starts this process automatically. The service exposes a
 ``sam3.segment`` RPC method over HTTP.
 """
 
@@ -318,7 +318,7 @@ class Sam3Facade(RpcFacade):
 
 
 def _build_argparser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="RPent local SAM 3.0 server")
+    parser = argparse.ArgumentParser(description="pi-embodied local SAM 3.0 server")
     parser.add_argument("--transport", choices=["http"], default="http")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8114)
@@ -354,7 +354,7 @@ def main() -> None:
     if not checkpoint:
         raise RuntimeError(
             "SAM3_CHECKPOINT_PATH is not set; export the path to sam3.pt "
-            "before starting RPent"
+            "before starting pi-embodied"
         )
     facade = Sam3Facade(checkpoint)
     facade.serve(

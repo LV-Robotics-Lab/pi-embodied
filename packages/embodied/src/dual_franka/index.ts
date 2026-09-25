@@ -1,5 +1,5 @@
 /**
- * Two physical Franka arms for pi (RPent's `dual_franka` robot, evaluation mode).
+ * Two physical Franka arms for pi (evaluation mode).
  *
  *   dual_franka/serve.sh                      # dual-Franka Pi0.5 VLA (+ SAM3) servers
  *   pi -e packages/embodied/src/dual_franka --operator --task 3 --robot-config my_rig.yaml \
@@ -73,7 +73,7 @@ type Setup = {
 type Step = { blob: Json; dir: string; meta: Json | null; views: string[] };
 type Boundary = "grasp" | "handoff" | "place";
 
-/** Task, calibration and perception config from the services (RPent's parse_config checks). */
+/** Task, calibration and perception config from the services (parse_config checks). */
 const SETUP_PY = `
 import dataclasses, json, sys
 from pi_embodied_services.robots.dual_franka.runtime_config import DEFAULT_CONFIG
@@ -116,7 +116,7 @@ const TOOLS = [
 	...MOTION,
 ];
 
-/** `left_wrist_0_rgb` -> `left_wrist` (RPent's _camera_alias_from_key). */
+/** `left_wrist_0_rgb` -> `left_wrist`. */
 function alias(key: unknown): string | undefined {
 	let k = String(key ?? "");
 	if (k.endsWith("_rgb")) k = k.slice(0, -4);
@@ -150,7 +150,7 @@ function coerceViews(configured: unknown): Record<string, View> {
 	);
 }
 
-/** RPent's _validate_localization_point: configured depth range and right_base tabletop volume. */
+/** Validate a localization point: configured depth range and right_base tabletop volume. */
 function validity(config: Json, depth: number, p: number[]) {
 	const d: number[] = config.depth_m ?? [0.15, 1.25];
 	const lo: number[] = config.right_base_xyz_min ?? [0.1, -0.85, 0.0];
@@ -190,7 +190,7 @@ const short = (v: unknown) =>
 
 export default function dualFranka(pi: ExtensionAPI) {
 	const flag = (name: string, fallback = "") => String(pi.getFlag(name) ?? fallback);
-	pi.registerFlag("task", { type: "string", default: "0", description: "RPent dual-Franka task id (0, 1, 3, 4, 5)" });
+	pi.registerFlag("task", { type: "string", default: "0", description: "Dual-Franka task id (0, 1, 3, 4, 5)" });
 	pi.registerFlag("robot-config", {
 		type: "string",
 		description: "Robot YAML (default: services/pi_embodied_services/robots/dual_franka/config/example.yaml)",
@@ -240,7 +240,7 @@ export default function dualFranka(pi: ExtensionAPI) {
 		name: "dual_franka",
 		task: ["task"],
 		keepImages: 4,
-		// RPent's evaluation prompt names no memory; the guard also opens the step artifacts.
+		// The evaluation prompt names no memory; the guard also opens the step artifacts.
 		memory: {
 			cell: () => ({ tag: `dual_franka_t${task()}`, reference: "" }),
 			primitives: MOTION,
@@ -293,7 +293,7 @@ export default function dualFranka(pi: ExtensionAPI) {
 		if (signal?.aborted) throw new Error("tool operation interrupted");
 	};
 
-	// ---- env client (RPent's DualFrankaEnvClient)
+	// ---- env client
 
 	async function observation(): Promise<Json> {
 		const obs = await call("env.get_observation");
@@ -314,7 +314,7 @@ export default function dualFranka(pi: ExtensionAPI) {
 		return result;
 	}
 
-	// ---- state steps (RPent's dual-Franka dump_state)
+	// ---- state steps (dual-Franka state dumps)
 
 	async function dumpState(command: Json | null, result: Json | null, elapsed: number | null): Promise<Step> {
 		const obs = await observation();
@@ -409,7 +409,7 @@ export default function dualFranka(pi: ExtensionAPI) {
 		return { height, width, data: new Float32Array(new Uint8Array(readFileSync(path)).buffer) };
 	}
 
-	/** RPent's view_env_state: step blob, every view as an artifact path, inline views as images. */
+	/** view_env_state: step blob, every view as an artifact path, inline views as images. */
 	function view(s: Step) {
 		const pol = policy(s.meta);
 		const output: Json = { ...s.blob, images: [], artifact_images: [] };
@@ -437,7 +437,7 @@ export default function dualFranka(pi: ExtensionAPI) {
 
 	/**
 	 * Register a tool. Mutating tools run, then record a fresh state step and return it (errors
-	 * included, as RPent's toolkit does); read-only tools return their result or `{error}`,
+	 * included); read-only tools return their result or `{error}`,
 	 * plus any PNGs in `_pngs`.
 	 */
 	function tool<P extends TSchema>(
@@ -557,7 +557,7 @@ export default function dualFranka(pi: ExtensionAPI) {
 		},
 	);
 
-	// ---- perception (RPent's dual-Franka perception.py)
+	// ---- perception
 
 	function projectionView(s: Step, camera: string): View {
 		const views =
@@ -594,7 +594,7 @@ export default function dualFranka(pi: ExtensionAPI) {
 		return c;
 	}
 
-	/** Both TCP positions and TCP-to-point deltas in right_base (RPent's _tcp_delta_fields). */
+	/** Both TCP positions and TCP-to-point deltas in right_base. */
 	function tcpDeltas(state: Json, point: number[]): Json {
 		const out: Json = {
 			tcp_delta_coordinate_frame: "right_base",
@@ -717,7 +717,7 @@ export default function dualFranka(pi: ExtensionAPI) {
 		},
 	);
 
-	/** RPent's _mask_to_camera_world: median right_base point of the valid, in-volume mask pixels. */
+	/** Median right_base point of the valid, in-volume mask pixels. */
 	function maskToWorld(s: Step, camera: string, mask: Uint8Array, depth: Grid, minValid: number): Json {
 		const cfg = projectionView(s, camera);
 		const rows: number[] = [];
@@ -1048,7 +1048,7 @@ export default function dualFranka(pi: ExtensionAPI) {
 		},
 	);
 
-	// ---- named VLA skills (RPent's _run_named_vla_skill)
+	// ---- named VLA skills
 
 	async function namedSkill(
 		skill: string,
@@ -1275,7 +1275,7 @@ export default function dualFranka(pi: ExtensionAPI) {
 			);
 		if (pi.getFlag("operator") !== true)
 			throw new Error("dual_franka needs --operator: success on this robot is the operator's verdict");
-		// Ray must not re-run uv for workers on the pre-provisioned nodes (RPent's env override).
+		// Ray must not re-run uv for workers on the pre-provisioned nodes (env override).
 		const r: Services = {
 			root: flag("services"),
 			python: flag("python", "python"),

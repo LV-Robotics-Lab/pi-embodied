@@ -1,5 +1,5 @@
 /**
- * Plain-HTTPS equivalent of RPent's MemoryManager.sync (huggingface_hub.snapshot_download of the
+ * Plain-HTTPS memory sync (the equivalent of huggingface_hub.snapshot_download of the
  * dataset, `<robot>/**` only), so no Python is needed and HF mirrors work.
  */
 

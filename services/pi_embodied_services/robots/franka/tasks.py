@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Task definitions for the single-Franka RPent extension."""
+"""Task definitions for the single-Franka pi-embodied extension."""
 
 from __future__ import annotations
 

@@ -278,6 +278,8 @@ export function operator(pi: ExtensionAPI, robot: Robot) {
 		return reason === undefined ? undefined : { block: true, reason };
 	});
 
+	// Not rebuilt from the branch (unlike the units state): the robot resets its scene at every
+	// session start, so a resumed or forked session is a new episode and starts unsealed.
 	pi.on("session_start", () => {
 		pending = undefined;
 		sealed = verdict = undefined;

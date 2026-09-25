@@ -4,7 +4,7 @@
  * The agent asks through tools, and pi asks the operator with a `ctx.ui.select` dialog, which the
  * TUI shows and an RPC client (e.g. a dashboard) answers as an `extension_ui_request`:
  *   request_operator_verdict  success | failure | continue | abort (+ optional notes)
- *   request_scene_reset       done | abort  (only if the robot passes `reset`)
+ *   request_scene_reset       done | abort  (only if the robot passes `reset`; `sceneReset` for a robot's own tool)
  *   finish                    without a verdict on the current state, pi asks for one first
  * A dismissed dialog can still be answered with /continue, /done or /operator <id> <answer>.
  * Unsolicited, /success /failure /abort end the episode at any time: in-flight motion stops at
@@ -190,8 +190,48 @@ export function operator(pi: ExtensionAPI, robot: Robot) {
 		},
 	});
 
-	const reset = robot.reset;
-	if (reset)
+	/**
+	 * Ask the operator to restore the scene, then reset the robot (`robot.reset`). The result of
+	 * request_scene_reset; also the scene reset of a robot whose exploration `reset` is the operator's.
+	 */
+	async function sceneReset(ctx: ExtensionContext, reason: string, expected_scene_state = "", signal?: AbortSignal) {
+		const reset = robot.reset;
+		if (!reset) return { error: "this robot has no operator scene reset" };
+		if (aborted) return { error: "operator aborted this run; finish without further motion" };
+		verdict = undefined;
+		sceneReady = false;
+		event("reset_requested", { reason, expected_scene_state });
+		const response = await ask(
+			ctx,
+			`Scene reset requested: ${reason}\nExpected scene: ${expected_scene_state}\nRestore the scene; the robot will then reset. Choose done once it is restored, or abort to stop this run.`,
+			"reset",
+			signal,
+		);
+		event("reset_response", { response });
+		const word = response?.trim().toLowerCase();
+		if (word !== "done") {
+			aborted = response === null || word === "abort";
+			return { error: "scene reset not confirmed", operator_aborted: aborted };
+		}
+		let robot_reset: Record<string, unknown>;
+		try {
+			robot_reset = await reset();
+		} catch (err) {
+			event("reset_failed", { error: String(err) });
+			return { error: "robot reset failed", robot_reset: String(err) };
+		}
+		attempt++;
+		sceneReady = true;
+		event("reset_completed");
+		return {
+			ok: true,
+			robot_reset,
+			scene_reset_confirmed: true,
+			notice: "Scene restored by operator; robot reset. Re-localize from the new images.",
+		};
+	}
+
+	if (robot.reset)
 		pi.registerTool({
 			name: "request_scene_reset",
 			label: "request_scene_reset",
@@ -203,38 +243,7 @@ export function operator(pi: ExtensionAPI, robot: Robot) {
 			}),
 			executionMode: "sequential",
 			async execute(_id, { reason, expected_scene_state = "" }, signal, _onUpdate, ctx) {
-				if (aborted) return text({ error: "operator aborted this run; finish without further motion" });
-				verdict = undefined;
-				sceneReady = false;
-				event("reset_requested", { reason, expected_scene_state });
-				const response = await ask(
-					ctx,
-					`Scene reset requested: ${reason}\nExpected scene: ${expected_scene_state}\nRestore the scene; the robot will then reset. Choose done once it is restored, or abort to stop this run.`,
-					"reset",
-					signal,
-				);
-				event("reset_response", { response });
-				const word = response?.trim().toLowerCase();
-				if (word !== "done") {
-					aborted = response === null || word === "abort";
-					return text({ error: "scene reset not confirmed", operator_aborted: aborted });
-				}
-				let robot_reset: Record<string, unknown>;
-				try {
-					robot_reset = await reset();
-				} catch (err) {
-					event("reset_failed", { error: String(err) });
-					return text({ error: "robot reset failed", robot_reset: String(err) });
-				}
-				attempt++;
-				sceneReady = true;
-				event("reset_completed");
-				return text({
-					ok: true,
-					robot_reset,
-					scene_reset_confirmed: true,
-					notice: "Scene restored by operator; robot reset. Re-localize from the new images.",
-				});
+				return text(await sceneReset(ctx, reason, expected_scene_state, signal));
 			},
 		});
 
@@ -255,7 +264,8 @@ export function operator(pi: ExtensionAPI, robot: Robot) {
 		}
 		if (aborted && name !== "finish")
 			return { block: true, reason: "operator aborted this run; finish without further motion" };
-		if (!sceneReady && name !== "finish" && name !== "request_scene_reset")
+		// Exploration's `reset` restores the scene too (through sceneReset on a real robot).
+		if (!sceneReady && name !== "finish" && name !== "request_scene_reset" && name !== "reset")
 			return { block: true, reason: "refused; request_scene_reset and obtain operator confirmation first" };
 		return undefined;
 	});
@@ -271,10 +281,12 @@ export function operator(pi: ExtensionAPI, robot: Robot) {
 
 	return {
 		/** Tool names to activate (empty without --operator). */
-		tools: () => (on() ? ["request_operator_verdict", ...(reset ? ["request_scene_reset"] : [])] : []),
+		tools: () => (on() ? ["request_operator_verdict", ...(robot.reset ? ["request_scene_reset"] : [])] : []),
 		/** Throws once the operator ended the run; call before every env step. */
 		check,
 		/** Operator fields for the robot's result entry. */
 		result,
+		/** request_scene_reset's flow (operator dialog, then `robot.reset`), for a robot's own reset tool. */
+		sceneReset,
 	};
 }

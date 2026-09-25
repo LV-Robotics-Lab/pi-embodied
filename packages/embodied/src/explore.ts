@@ -14,14 +14,23 @@
 
 import { existsSync, readdirSync } from "node:fs";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import type { ExtensionAPI, ExtensionCommandContext, SessionEntry } from "@earendil-works/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	ExtensionCommandContext,
+	ExtensionContext,
+	SessionEntry,
+} from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 const SESSION = "explore_session";
 
 type Robot = {
-	/** Restore the initial scene; return the new state as a tool result that embeds `result`. */
-	reset: (result: Record<string, unknown>) => Promise<AgentToolResult<unknown>>;
+	/** Restore the initial scene; return the new state as a tool result that embeds `result`. Throwing fails the reset. */
+	reset: (
+		result: Record<string, unknown>,
+		ctx: ExtensionContext,
+		signal?: AbortSignal,
+	) => Promise<AgentToolResult<unknown>>;
 	/** memory.ts `render`: fills {{output_dir}}, {{memory_dir}}, {{memory_inbox}}, {{recipe_tag}} and `extra`. */
 	render: (text: string, extra?: Record<string, string | number>) => string;
 	/** memory.ts `tools`: the built-in file tools the agent reads and writes memory with. */
@@ -32,6 +41,10 @@ type Robot = {
 	distil?: string;
 	/** Lines of the robot's single-episode prompt that exploration replaces. */
 	rewrite?: [RegExp, string][];
+	/** Defaults of --explore-sessions and --explore-attempts-per-session (3 and 5). */
+	budget?: { sessions: number; attempts: number };
+	/** The operator aborted the run: `finish` is no longer held back for the attempt budget. */
+	aborted?: () => boolean;
 };
 type Progress = {
 	n: number;
@@ -108,12 +121,12 @@ export function explore(pi: ExtensionAPI, robot: Robot) {
 	});
 	pi.registerFlag("explore-sessions", {
 		type: "string",
-		default: "3",
+		default: String(robot.budget?.sessions ?? 3),
 		description: "Independent sessions per exploration run",
 	});
 	pi.registerFlag("explore-attempts-per-session", {
 		type: "string",
-		default: "5",
+		default: String(robot.budget?.attempts ?? 5),
 		description: "Attempts per exploration session (0 = unlimited)",
 	});
 	const on = () => pi.getFlag("explore") === true;
@@ -144,6 +157,7 @@ export function explore(pi: ExtensionAPI, robot: Robot) {
 
 	function refuseFinish(p: Progress): string | undefined {
 		const b = budget();
+		if (robot.aborted?.()) return undefined;
 		if (p.solved) {
 			if (!robot.distil) return undefined;
 			if (!p.distilled) return "finish refused: run the DISTIL pass first; its instructions follow.";
@@ -167,17 +181,21 @@ export function explore(pi: ExtensionAPI, robot: Robot) {
 			reason: Type.String({ description: "Why this episode is unrecoverable and what will change" }),
 		}),
 		executionMode: "sequential",
-		async execute(_id, { reason }, _signal, _onUpdate, ctx) {
+		async execute(_id, { reason }, signal, _onUpdate, ctx) {
 			const p = progress(ctx.sessionManager.getBranch());
 			const refusal = refuseReset(p);
 			if (refusal) throw new Error(refusal);
 			const attempt = p.attempt + 1;
-			return robot.reset({
-				action: "reset",
-				reason,
-				attempt,
-				notice: `Episode restarted; this is attempt ${attempt}. The original layout was restored. Re-run perception before acting.`,
-			});
+			return robot.reset(
+				{
+					action: "reset",
+					reason,
+					attempt,
+					notice: `Episode restarted; this is attempt ${attempt}. The original layout was restored. Re-run perception before acting.`,
+				},
+				ctx,
+				signal,
+			);
 		},
 	});
 
@@ -233,7 +251,7 @@ export function explore(pi: ExtensionAPI, robot: Robot) {
 		const p = progress(ctx.sessionManager.getBranch());
 		const b = budget();
 		let text: string | undefined;
-		if (p.finished) text = undefined;
+		if (p.finished || robot.aborted?.()) text = undefined;
 		else if (p.solved)
 			text = robot.distil
 				? "The cell is solved. Complete the DISTIL pass, then call `finish`."

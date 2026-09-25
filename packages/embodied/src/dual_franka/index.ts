@@ -11,7 +11,12 @@
  * from its runtime config; task definitions, easy_handeye calibration and localization bounds
  * come from the same services package. Coordinates are in the shared right_base frame. Success is
  * the operator's verdict (../operator.ts, required via --operator): finish is refused until
- * the operator has judged the current state. The operator also confirms the reset motion.
+ * the operator has judged the current state. The operator also confirms the reset motion, and
+ * request_scene_reset asks the operator to restore the scene before the arms reset again.
+ *
+ * --explore (../explore.ts, `/explore`) runs operator-judged attempts: `reset` is the operator's
+ * scene reset, a success verdict is the solve (`terminated: true`), and the motion commands after
+ * the last reset are exported as the cell's recipe (../memory).
  */
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -51,6 +56,18 @@ import {
 import { NdArray, type RpcClient } from "../rpc.ts";
 
 const SYSTEM = readFileSync(new URL("./SYSTEM.md", import.meta.url), "utf8");
+const EXPLORE = readFileSync(new URL("./explore.md", import.meta.url), "utf8");
+/** The prompt's single-episode lines, which exploration replaces rather than contradicts. */
+const REWRITE: [RegExp, string][] = [
+	[
+		/^5\. Finish only when the success evidence is visible and consistent with state\.$/m,
+		"5. This is an exploration run: follow the Exploration workflow below. Success is only the operator's verdict.",
+	],
+	[
+		/^Call describe_dual_franka_setup before acting\..*$/m,
+		"Call describe_dual_franka_setup, then read the relevant memory and prior attempt notes and inspect view_env_state before the first motion. Follow the operator-confirmed exploration workflow. Do not finish successfully without a current operator verdict.",
+	],
+];
 
 type Task = {
 	name: string;
@@ -235,7 +252,11 @@ export default function dualFranka(pi: ExtensionAPI) {
 	let out = "";
 	let lastStates: unknown;
 	const steps: Step[] = [];
+	/** The first step after the last scene reset; perception refuses older steps. */
+	let attemptStart = 0;
 	const task = () => robot.task.task;
+	const exploring = () => pi.getFlag("explore") === true;
+	const judgedSuccess = () => (op.result() as Json).operator_verdict === "success";
 	const robot = defineRobot(pi, {
 		name: "dual_franka",
 		task: ["task"],
@@ -246,7 +267,27 @@ export default function dualFranka(pi: ExtensionAPI) {
 			primitives: MOTION,
 			readable: () => [out],
 		},
-		operator: { step: () => steps.length },
+		operator: { step: () => steps.length, reset: resetRobot },
+		explore: {
+			// The operator restores the scene; a failed or unconfirmed reset throws and starts no attempt.
+			reset: async (result, ctx, signal) => {
+				const r: Json = await op.sceneReset(ctx, String(result.reason ?? ""), setup?.task.setup ?? "", signal);
+				if (r.error) throw new Error(JSON.stringify(r));
+				const { output, pngs } = view(steps[steps.length - 1]);
+				return toolResult({ ...output, ...result, robot_reset: r.robot_reset, scene_reset_confirmed: true }, pngs);
+			},
+			prompt: () =>
+				EXPLORE.replace(/\{\{(task_id|task_name|instruction)\}\}/g, (_, k: string) =>
+					k === "task_id"
+						? task()
+						: k === "task_name"
+							? (setup?.task.name ?? "")
+							: (setup?.task.instruction ?? ""),
+				),
+			rewrite: REWRITE,
+			// RPent's real-robot defaults: every attempt costs the operator a manual scene reset.
+			budget: { sessions: 1, attempts: 3 },
+		},
 		start: startRobot,
 		stop: () => {
 			env = vla = sam3 = undefined;
@@ -291,7 +332,44 @@ export default function dualFranka(pi: ExtensionAPI) {
 	const check = (signal?: AbortSignal) => {
 		op.check();
 		if (signal?.aborted) throw new Error("tool operation interrupted");
+		if (exploring() && judgedSuccess())
+			throw new Error(
+				"motion refused: the operator judged this attempt a success. Write the audit and memory drafts, then call finish.",
+			);
 	};
+
+	/** The operator's request_scene_reset (after the operator confirmed the scene): RLinf's reset, then a fresh step. */
+	async function resetRobot(): Promise<Json> {
+		if (!env || !steps.length) throw new Error("dual_franka is not initialized; see the session start error");
+		const r = await call("env.reset", {}, 180_000);
+		if (r?.ok !== true || r.error) throw new Error(`env.reset failed: ${JSON.stringify(plain(r))}`);
+		const s = await dumpState({ action: "scene_reset" }, { ok: true }, null);
+		attemptStart = s.blob.step_idx;
+		return { ok: true, step: s.blob.step_idx };
+	}
+
+	/** A step to localize in: none from before the last scene reset. */
+	function freshStep(step?: number | null): Step {
+		const s = getStep(step);
+		if (s.blob.step_idx < attemptStart)
+			throw new Error(
+				`localization refused: step ${s.blob.step_idx} predates the last scene reset (step ${attemptStart}); use a fresh observation`,
+			);
+		return s;
+	}
+
+	// Exploration's success signal is `terminated` (../explore.ts, the memory recipe); here it is the operator's success verdict.
+	pi.on("tool_result", (event) => {
+		if (!exploring() || event.toolName !== "request_operator_verdict" || event.isError) return undefined;
+		const details = event.details as Json | undefined;
+		if (details?.status !== "success") return undefined;
+		const marked = { ...details, terminated: true };
+		return { details: marked, content: [{ type: "text" as const, text: JSON.stringify(marked) }] };
+	});
+	// In exploration `reset` is the scene reset: it counts attempts and bounds the recipe.
+	pi.on("before_agent_start", () => {
+		if (exploring()) pi.setActiveTools(pi.getActiveTools().filter((t) => t !== "request_scene_reset"));
+	});
 
 	// ---- env client
 
@@ -498,11 +576,11 @@ export default function dualFranka(pi: ExtensionAPI) {
 		Type.Object({}),
 		async () => {
 			const pol = policy(envMeta);
+			const resetTool = exploring() ? "reset" : "request_scene_reset";
 			return {
 				ok: true,
-				phase: "strict",
-				reset_policy:
-					"The runner reset the robot at startup. Do not call reset during a task unless reset is explicitly exposed and there is a clear robot-side reason.",
+				phase: exploring() ? "exploration" : "strict",
+				reset_policy: `The operator confirmed the scene and the runner reset the robot at session start. ${resetTool} asks the operator to restore the scene, then resets both arms; use it only for a new attempt${exploring() ? " (after closing out the failed one)" : " when the operator must restore the scene"}.`,
 				coordinate_frame: "right_base",
 				camera_aliases: envMeta.observation_camera_map ?? {},
 				projection_views: envMeta.projection_views ?? {},
@@ -529,7 +607,11 @@ export default function dualFranka(pi: ExtensionAPI) {
 						"optional; returns an error and falls back to manual camera projection when no SAM3 client is configured",
 					usage: "Use text prompt or one [row, col] positive camera point, then inspect the returned mask overlay before trusting point_xyz. SAM3 text grounding is phrase-sensitive; if a prompt returns a very low score, retry a shorter/rephrased prompt or point prompt rather than lowering min_score blindly.",
 				},
-				available_primitives: [...TOOLS, ...op.tools(), "finish"],
+				available_primitives: [
+					...TOOLS,
+					...op.tools().map((t) => (exploring() && t === "request_scene_reset" ? "reset" : t)),
+					"finish",
+				],
 				operator_guidance:
 					"Named VLA semantic boundaries are segment boundaries, not proof of physical success. Verify images, gripper widths/open flags, joint_health, and projection evidence after every action. recover_joint_posture re-commands and preserves each gripper's open/closed state; inspect its gripper_preserved result before continuing.",
 			};
@@ -635,7 +717,7 @@ export default function dualFranka(pi: ExtensionAPI) {
 		async ({ camera = "d455", row, col, target_name = "target", step, window_radius = 2 }) => {
 			camera = String(camera).trim();
 			if (!camera) throw new Error("camera must be a non-empty string");
-			const s = getStep(step);
+			const s = freshStep(step);
 			const cfg = projectionView(s, camera);
 			const depth = loadDepth(s, camera);
 			if (!depth)
@@ -836,7 +918,7 @@ export default function dualFranka(pi: ExtensionAPI) {
 			let png: Buffer;
 			let depth: Grid | undefined;
 			try {
-				s = getStep(step);
+				s = freshStep(step);
 				if (!s.views.includes(camera)) throw new Error(`${camera} image artifact is missing`);
 				depth = loadDepth(s, camera);
 				if (!depth) throw new Error(`${camera} depth artifact is missing`);
@@ -1309,15 +1391,15 @@ export default function dualFranka(pi: ExtensionAPI) {
 		]);
 		envMeta = plain(await envRpc.call<Json>("env.get_env_meta", {}, 30_000)) as Json;
 		const go = await ctx.ui.confirm(
-			"Reset both Franka arms?",
-			"RLinf's reset opens both grippers and moves both arms to the configured reset posture. Remove held objects, clear the workspace and keep both emergency stops in reach.",
+			exploring() ? "Restore the scene and reset both Franka arms?" : "Reset both Franka arms?",
+			`${exploring() ? `Exploration attempt 1: restore the tabletop to the task's initial layout (${setup.task.setup}). ` : ""}RLinf's reset opens both grippers and moves both arms to the configured reset posture. Remove held objects, clear the workspace and keep both emergency stops in reach.`,
 		);
 		if (!go) throw new Error("operator declined the reset; the dual-Franka tools stay disabled");
 		await envRpc.call("env.reset", {}, 180_000);
 		env = envRpc;
 		vla = vlaRpc;
 		sam3 = sam3Rpc;
-		await dumpState(null, null, null);
+		attemptStart = (await dumpState(null, null, null)).blob.step_idx;
 		ctx.ui.notify(`Dual Franka ready: task ${task()} (${setup.task.name}); steps under ${out}`, "info");
 		return [...TOOLS, "finish"];
 	}

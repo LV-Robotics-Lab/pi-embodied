@@ -91,10 +91,11 @@ export type RobotSpec = {
 	memory?: Omit<MemoryOptions, "robot" | "explore">;
 	/** Mount exploration (../explore.ts, needs memory): restart the episode, and the robot's exploration prompt. */
 	explore?: {
-		reset: (result: Json) => Promise<Result>;
+		reset: (result: Json, ctx: ExtensionContext, signal?: AbortSignal) => Promise<Result>;
 		prompt: () => string;
 		distil?: string;
 		rewrite?: [RegExp, string][];
+		budget?: { sessions: number; attempts: number };
 	};
 	/** Mount the human-in-the-loop operator (../operator.ts). */
 	operator?: { step: () => number; reset?: () => Promise<Json> };
@@ -194,7 +195,14 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		: undefined;
 	const video = spec.video ? episodeVideo(pi) : { frame: (_image: NdArray) => {} };
 	const fly = spec.flywheel ? flywheel(pi) : undefined;
-	const op = spec.operator ? operator(pi, spec.operator) : { tools: () => [], check: () => {}, result: () => ({}) };
+	const op = spec.operator
+		? operator(pi, spec.operator)
+		: {
+				tools: () => [],
+				check: () => {},
+				result: () => ({}),
+				sceneReset: async (..._args: unknown[]) => ({ error: "no operator is mounted" }),
+			};
 
 	const status = (): RobotStatus => ({
 		robot: name,
@@ -354,7 +362,13 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	pi.on("session_shutdown", stop);
 
 	// After the robot's before_agent_start and tool_call gate: exploration rewrites that prompt and guards `finish`.
-	if (spec.explore && mem) explore(pi, { ...spec.explore, render: mem.render, tools: mem.tools });
+	if (spec.explore && mem)
+		explore(pi, {
+			...spec.explore,
+			render: mem.render,
+			tools: mem.tools,
+			aborted: () => (op.result() as Json).operator_aborted === true,
+		});
 
 	pi.registerTool({
 		name: "finish",

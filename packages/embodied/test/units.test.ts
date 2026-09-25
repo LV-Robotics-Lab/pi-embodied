@@ -633,7 +633,9 @@ test("verifier: a success finish is checked once on the latest images; NOT compl
 		["m6"],
 		"the camera images after the retreat, not point's marked image",
 	);
-	const [retreated] = f.entries.find((e) => e.customType === VERIFY_ENTRY)?.data.retreat;
+	const verified = f.entries.find((e) => e.customType === VERIFY_ENTRY);
+	assert.ok(verified, "a units_verify entry");
+	const [retreated] = verified.data.retreat;
 	assert.equal(retreated.ran, "units: MV_UP x5");
 	// The replan starts from a clean plan and history, and the reason stays in the observation.
 	const r = head(await f.run("act", { unit: "MV_RIGHT" }));

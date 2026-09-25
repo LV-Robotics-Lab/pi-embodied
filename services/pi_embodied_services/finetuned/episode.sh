@@ -52,4 +52,4 @@ if [ -n "$LOCK" ]; then
   echo "$(date +%T) waiting for $LOCK"
   flock 9
 fi
-run
+run "$@"

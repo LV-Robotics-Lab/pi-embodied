@@ -9,7 +9,8 @@
 # Targets (the extra, the Python, and what else it fetches):
 #   libero          [libero] py3.11                      --weights: Pi0.5 LIBERO SFT, SAM3 (gated)
 #   libero-pro      [libero-pro] py3.11, LIBERO-PRO assets (patched downloader)   --weights: as libero
-#   libero-plus     [libero-plus] py3.11                 --weights: as libero
+#   libero-plus     [libero-plus] py3.11, LIBERO-plus assets (~6.4 GB zip, 9.5 GB unpacked; needs system
+#                   ImageMagick, e.g. apt install libmagickwand-6.q16-6)   --weights: as libero
 #   robocasa        [robocasa] py3.10, kitchen assets (~10 GB, robocasa-download-assets)   --weights: RLDX-1-FT-RC365 + RLDX-1-VLM
 #   robotwin        [robotwin] py3.11, RoboTwin assets   --weights: LingBot-VLA RoboTwin EEF
 #   maniskill       [maniskill] py3.11, real2sim rigs (robots/maniskill/fetch_real2sim.sh)
@@ -152,6 +153,28 @@ liberopro_assets() {
 	run "$venv/bin/liberopro-download-assets" --skip-existing
 }
 
+# liberoplus-download-assets rejects the published assets.zip (its tree sits under a deep build path,
+# not at the archive root), so fetch and unpack it here and link the package to it. The package
+# imports Wand, which needs the system ImageMagick library.
+liberoplus_assets() {
+	local dir=$wdir/liberoplus-assets
+	if [ -d "$dir/scenes" ]; then
+		note "LIBERO-plus assets present in $dir"
+	else
+		hf_get Sylvest/LIBERO-plus dd2bd61b7d9a6fef1abc52d606e983b41886a149 "$wdir/liberoplus-zip" assets.zip --repo-type dataset
+		run "$PY" -c 'import os, shutil, sys, zipfile
+z, d = sys.argv[1:]
+t = d + ".tmp"
+shutil.rmtree(t, True)
+zipfile.ZipFile(z).extractall(t)
+os.replace(next(r for r, ds, _ in os.walk(t) if "scenes" in ds), d)
+shutil.rmtree(t)' "$wdir/liberoplus-zip/assets.zip" "$dir"
+	fi
+	run "$venv/bin/liberoplus-download-assets" --link "$dir"
+	$dry || "$PY" -c 'import wand.image' 2>/dev/null ||
+		die "Wand cannot load ImageMagick: install it (Debian/Ubuntu: apt install libmagickwand-6.q16-6)"
+}
+
 note "target $target, services $SERVICES, venv $venv$($dry && echo ' (dry run)')"
 case $target in
 robolab)
@@ -182,9 +205,9 @@ llamafactory)
 	fi
 	pip_install -e "$SERVICES[$extra]" ${constraint[@]+"${constraint[@]}"}
 	case $target in
-	libero | libero-plus) if $weights; then libero_weights; fi ;;
-	libero-pro)
-		if $assets; then liberopro_assets; fi
+	libero) if $weights; then libero_weights; fi ;;
+	libero-pro | libero-plus)
+		if $assets; then ${target//-/}_assets; fi
 		if $weights; then libero_weights; fi
 		;;
 	robocasa)

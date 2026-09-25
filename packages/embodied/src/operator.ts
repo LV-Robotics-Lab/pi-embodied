@@ -247,6 +247,18 @@ export function operator(pi: ExtensionAPI, robot: Robot) {
 			},
 		});
 
+	/** Why tool `name` (or an operator's unit, as the unit tool) may not run now, else undefined. */
+	function refuse(name: string): string | undefined {
+		if (!on()) return undefined;
+		if (sealed) return "operator submitted a terminal verdict; the run is closing";
+		if (name === "finish") return undefined;
+		if (aborted) return "operator aborted this run; finish without further motion";
+		// Exploration's `reset` restores the scene too (through sceneReset on a real robot).
+		if (!sceneReady && name !== "request_scene_reset" && name !== "reset")
+			return "refused; request_scene_reset and obtain operator confirmation first";
+		return undefined;
+	}
+
 	pi.on("tool_call", async (event, ctx) => {
 		if (!on()) return undefined;
 		if (sealed) return { block: true, reason: "operator submitted a terminal verdict; the run is closing" };
@@ -262,12 +274,8 @@ export function operator(pi: ExtensionAPI, robot: Robot) {
 					reason: `finish refused; the operator did not judge the current state: ${JSON.stringify(asked)}`,
 				};
 		}
-		if (aborted && name !== "finish")
-			return { block: true, reason: "operator aborted this run; finish without further motion" };
-		// Exploration's `reset` restores the scene too (through sceneReset on a real robot).
-		if (!sceneReady && name !== "finish" && name !== "request_scene_reset" && name !== "reset")
-			return { block: true, reason: "refused; request_scene_reset and obtain operator confirmation first" };
-		return undefined;
+		const reason = refuse(name);
+		return reason === undefined ? undefined : { block: true, reason };
 	});
 
 	pi.on("session_start", () => {
@@ -286,6 +294,8 @@ export function operator(pi: ExtensionAPI, robot: Robot) {
 		check,
 		/** Operator fields for the robot's result entry. */
 		result,
+		/** Why a tool (or a dashboard operator's unit) may not run now: verdict closing, run aborted, scene not confirmed. */
+		refuse,
 		/** request_scene_reset's flow (operator dialog, then `robot.reset`), for a robot's own reset tool. */
 		sceneReset,
 	};

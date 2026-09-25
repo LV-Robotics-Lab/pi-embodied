@@ -214,6 +214,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 				check: () => {},
 				result: () => ({}),
 				sceneReset: async (..._args: unknown[]) => ({ error: "no operator is mounted" }),
+				refuse: (_name: string): string | undefined => undefined,
 			};
 
 	const status = (): RobotStatus => ({
@@ -227,6 +228,8 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		...(ready ? spec.status?.() : {}),
 	});
 
+	/** Every tool registered with `tool` (the robot's own and the units'): ../gumi holds them all during a takeover. */
+	const robotTools: string[] = [];
 	/** Register a sequential robot tool; its result terminates the batch when the batch also calls `finish`. */
 	function tool<P extends TSchema>(
 		toolName: string,
@@ -234,6 +237,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		parameters: P,
 		run: (params: Static<P>, signal: AbortSignal | undefined, ctx: ExtensionContext) => Promise<Result>,
 	) {
+		robotTools.push(toolName);
 		pi.registerTool({
 			name: toolName,
 			label: toolName,
@@ -253,7 +257,13 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 			},
 		});
 	}
-	const un = spec.units ? units(pi, spec.units, tool, () => task) : undefined;
+	// An operator's unit (../gumi) passes the gates an `act` call passes, without counting as a planner turn.
+	const un = spec.units
+		? units(pi, spec.units, tool, () => task, {
+				tools: () => robotTools,
+				refuse: () => refusal("act") ?? op.refuse("act"),
+			})
+		: undefined;
 	const publish = () => pi.events.emit(STATUS_EVENT, status());
 
 	async function stop() {
@@ -331,12 +341,12 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	pi.on("turn_end", () => {
 		turns++;
 	});
-	pi.on("tool_call", (event) => {
-		if (!ready) return { block: true, reason: `${name} is not available.`, terminate: true };
-		if (broken !== undefined)
-			return { block: true, reason: `The robot failed: ${broken}. The episode is over.`, terminate: true };
-		if (event.toolName === "finish") return undefined;
-		if (ended) return { block: true, reason: "The episode is finished.", terminate: true };
+	/** Why `toolName` may not run now (robot not up or broken, episode over, budget spent), else undefined. */
+	function refusal(toolName: string): string | undefined {
+		if (!ready) return `${name} is not available.`;
+		if (broken !== undefined) return `The robot failed: ${broken}. The episode is over.`;
+		if (toolName === "finish") return undefined;
+		if (ended) return "The episode is finished.";
 		const maxTurns = Number(pi.getFlag("max-turns"));
 		const limit = Number(pi.getFlag("time-limit"));
 		const late = limit > 0 && started !== undefined && Date.now() - started > limit * 1000;
@@ -345,7 +355,11 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		if (!(maxTurns > 0 && turns >= maxTurns) && !late && !spent) return undefined;
 		outOfBudget = late ? "time" : spent ? "cost" : "turns";
 		ended = true;
-		return { block: true, reason: `Planner ${outOfBudget} budget exhausted; the episode is over.`, terminate: true };
+		return `Planner ${outOfBudget} budget exhausted; the episode is over.`;
+	}
+	pi.on("tool_call", (event) => {
+		const reason = refusal(event.toolName);
+		return reason === undefined ? undefined : { block: true, reason, terminate: true };
 	});
 	pi.on("context", (event) => {
 		let keep = Number(pi.getFlag("keep-images"));

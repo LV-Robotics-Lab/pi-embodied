@@ -427,11 +427,12 @@ export class Recorder {
 export type Mode = "agent" | "requested" | "human";
 
 /**
- * Who drives. The agent's unit calls pass `gate()` first: while the operator has the robot they wait
- * (the agent is paused between steps). A call is stale when the operator acted after the latest
- * observation the agent saw (`seen()`): it is dropped, as Show-Harness's runner drops a decision
- * whose input generation changed. `take()` during an agent unit waits for it to finish
- * ("requested") before the operator may act.
+ * Who drives. The agent's robot tool calls pass `gate()` first: while the operator has the robot, or
+ * an operator batch (`begin()` .. `end()`) is running, they wait (the agent is paused between
+ * steps). A call is stale when the operator acted after the latest observation the agent saw
+ * (`seen()`): it is dropped, as Show-Harness's runner drops a decision whose input generation
+ * changed. `take()` during an agent call waits for it to finish ("requested") before the operator
+ * may act; `release()` during an operator batch takes effect when the batch ends.
  */
 export class Takeover {
 	mode: Mode = "agent";
@@ -439,16 +440,32 @@ export class Takeover {
 	driven: string[] = [];
 	/** Operator steps since boot. */
 	generation = 0;
+	/** An operator batch is running: nothing of the agent's runs until it ends. */
+	operating = false;
 	private observed = 0;
 	private busy = false;
+	private handBack = false;
 	private waiters: (() => void)[] = [];
 
 	take() {
+		this.handBack = false;
 		if (this.mode === "agent") this.mode = this.busy ? "requested" : "human";
 		return this.mode;
 	}
+	/** Hand back to the agent: now, or when the running operator batch ends. */
 	release() {
-		this.mode = "agent";
+		if (this.operating) this.handBack = true;
+		else this.mode = "agent";
+		for (const w of this.waiters.splice(0)) w();
+	}
+	/** An operator batch starts; it holds the agent until `end()`, whoever has control. */
+	begin() {
+		this.operating = true;
+	}
+	end() {
+		this.operating = false;
+		if (this.handBack) this.mode = "agent";
+		this.handBack = false;
 		for (const w of this.waiters.splice(0)) w();
 	}
 	/** The operator may drive now (the agent is not in the middle of a unit). */
@@ -465,9 +482,9 @@ export class Takeover {
 		this.driven = [];
 	}
 
-	/** Before an agent unit: wait while the operator drives; `stale` when they acted since the agent last looked. */
+	/** Before an agent robot call: wait while the operator drives; `stale` when they acted since the agent last looked. */
 	async gate(signal?: AbortSignal): Promise<{ stale: boolean; driven: string[] }> {
-		while (this.mode !== "agent") {
+		while (this.mode !== "agent" || this.operating) {
 			if (signal?.aborted) throw new Error("aborted while the operator had the robot");
 			await new Promise<void>((resolve) => {
 				const done = () => {
@@ -484,7 +501,7 @@ export class Takeover {
 		else this.busy = true;
 		return { stale, driven };
 	}
-	/** After an agent unit: a pending takeover becomes the operator's. */
+	/** After an agent robot call: a pending takeover becomes the operator's. */
 	done() {
 		this.busy = false;
 		if (this.mode === "requested") this.mode = "human";
@@ -557,7 +574,6 @@ export function gumi(
 	let saved = 0;
 	let last: string | null = null;
 	let message = "";
-	let busy = false;
 	let task: Record<string, unknown> = {};
 	let solved = false;
 	let robotName = "robot";
@@ -576,7 +592,7 @@ export function gumi(
 		arms,
 		vocabulary: handle?.vocabulary ?? [],
 		mode: takeover.mode,
-		busy,
+		busy: takeover.operating,
 		recording: recorder?.dir ?? null,
 		steps: recorder?.steps.length ?? 0,
 		saved,
@@ -648,10 +664,11 @@ export function gumi(
 		for (const [a, u] of Object.entries(step)) if (u === "GRASP" || u === "RELEASE") closed[a] = u === "GRASP";
 	}
 
-	// The DAgger gate: the agent's unit tool waits while the operator drives, and a call decided
-	// before the operator acted is dropped; the agent gets the current observation instead.
+	// The DAgger gate: every robot tool (`act`, and the robot's own motion and perception tools)
+	// waits while the operator drives, and a call decided before the operator acted is dropped; the
+	// agent gets the current observation instead.
 	pi.on("tool_call", async (event, c) => {
-		if (!handle || event.toolName !== handle.tool) return undefined;
+		if (!handle?.tools().includes(event.toolName)) return undefined;
 		const { stale, driven } = await takeover.gate(c.signal);
 		if (stale) {
 			publish();
@@ -666,9 +683,10 @@ export function gumi(
 				);
 			return {
 				block: true,
-				reason: `${summary} This ${handle.tool} call was decided on an older observation and was not executed; decide again from the current observation.`,
+				reason: `${summary} This ${event.toolName} call was decided on an older observation and was not executed; decide again from the current observation.`,
 			};
 		}
+		if (event.toolName !== handle.tool) return undefined;
 		const parsed = actSteps(event.input, arms);
 		pending = parsed ? { ...parsed, obs: latest, state: await stateNow(latest), closed: { ...closed } } : undefined;
 		publish();
@@ -680,7 +698,6 @@ export function gumi(
 		if (handle && event.toolName === handle.tool) {
 			const p = pending;
 			pending = undefined;
-			takeover.done();
 			if (p && !event.isError) {
 				if (recorder?.active && p.obs)
 					recorder.add(p.obs, p.step, { src: "agent", dagger: false, closed: p.closed, state: p.state, n: p.n });
@@ -695,6 +712,13 @@ export function gumi(
 		// Whatever the agent's tool returned is what it looks at next.
 		takeover.seen();
 		return undefined;
+	});
+
+	// Every robot call ends here, also one a later tool_call handler blocked (it gets no tool_result).
+	pi.on("tool_execution_end", (event) => {
+		if (!handle?.tools().includes(event.toolName)) return;
+		takeover.done();
+		publish();
 	});
 
 	/** The operator's calls (the dashboard's /gumi/* endpoints). Errors carry an HTTP status. */
@@ -723,12 +747,23 @@ export function gumi(
 						? "waiting for the agent's current unit to finish"
 						: "the agent is driving: take over first",
 				);
-			if (busy) throw fail(409, "busy with the previous step");
-			busy = true;
+			if (takeover.operating) throw fail(409, "busy with the previous step");
+			// The gates an agent's call passes: robot up and not broken, episode not over, budget left, scene confirmed.
+			const refused = handle.refuse();
+			if (refused) throw fail(409, refused);
+			takeover.begin();
 			publish();
 			const results: { step: Step; ok: boolean; error?: string }[] = [];
 			try {
 				for (const step of steps) {
+					const label =
+						arms.length > 1 ? arms.map((a) => `${a[0].toUpperCase()}:${step[a]}`).join(" ") : step[ARM];
+					const why = handle.refuse();
+					if (why) {
+						results.push({ step, ok: false, error: why });
+						publish(`${label} refused: ${why}`);
+						break;
+					}
 					// obs_t: the observation the policy would see now (the latest robot result); before any
 					// result exists, STOP (hold one step and look) produces it.
 					if (!latest && recorder?.active && handle.vocabulary.includes("STOP")) {
@@ -747,8 +782,6 @@ export function gumi(
 						state: await stateNow(obs),
 					};
 					const units = arms.map((a) => step[a]);
-					const label =
-						arms.length > 1 ? arms.map((a) => `${a[0].toUpperCase()}:${step[a]}`).join(" ") : step[ARM];
 					let result: AgentToolResult<unknown>;
 					try {
 						result = await execute(step, ctx.signal);
@@ -775,7 +808,8 @@ export function gumi(
 					publish(`executed ${label}`);
 				}
 			} finally {
-				busy = false;
+				// A hand-back asked for during the batch takes effect now.
+				takeover.end();
 				publish();
 			}
 			const failed = results.find((r) => !r.ok);
@@ -829,10 +863,12 @@ export function gumi(
 				takeover.take();
 				publish(takeover.mode === "human" ? "operator has the robot" : "takeover requested");
 			} else if (action === "release") {
-				if (busy) throw fail(409, "busy with the previous step");
-				const n = takeover.driven.length;
 				takeover.release();
-				publish(`handed back to the agent after ${n} operator unit(s)`);
+				publish(
+					takeover.operating
+						? "handing back to the agent after the current batch"
+						: `handed back to the agent after ${takeover.driven.length} operator unit(s)`,
+				);
 			} else throw fail(422, "action must be take or release");
 			return { ok: true, state: state() };
 		},

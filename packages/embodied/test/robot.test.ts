@@ -7,6 +7,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { defineRobot, RESULT_ENTRY, type RobotSpec, STATUS_EVENT, TASK_ENTRY } from "../src/robot.ts";
 import { RpcUnavailable } from "../src/rpc.ts";
+import { UNITS_EVENT, type UnitsHandle, type UnitsSpec } from "../src/units/index.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
@@ -290,4 +291,64 @@ test("a spent cost budget ends the episode and the result carries the cost", asy
 	const [result] = f.entries.filter((e) => e.type === RESULT_ENTRY).map((e) => e.data);
 	assert.equal(result.planner_budget_exhausted, "cost");
 	assert.equal(result.cost_usd, 0.06);
+});
+
+const unitsSpec: UnitsSpec = {
+	vectors: {
+		MV_FWD: [1, 0, 0],
+		MV_BACK: [-1, 0, 0],
+		MV_LEFT: [0, -1, 0],
+		MV_RIGHT: [0, 1, 0],
+		MV_UP: [0, 0, 1],
+		MV_DOWN: [0, 0, -1],
+	},
+	stepM: 0.02,
+	apply: async () => ({ content: [{ type: "text", text: "moved" }], details: {} }),
+};
+const unitsHandle = (f: ReturnType<typeof fakePi>) =>
+	f.events.filter((e) => e.channel === UNITS_EVENT).at(-1)?.data as UnitsHandle;
+
+test("an operator's unit passes the gates a tool call passes; every robot tool is listed for the takeover", async (t) => {
+	const f = fakePi();
+	t.after(f.restore);
+	toy(
+		f.pi,
+		async () => {
+			throw new Error("no simulator");
+		},
+		{ units: unitsSpec },
+	);
+	await f.emit("session_start");
+	assert.equal(unitsHandle(f).refuse(), "toy is not available.");
+
+	const g = fakePi({ "max-turns": "1" });
+	t.after(g.restore);
+	const robot = toy(g.pi, async () => ["move", "finish"], { units: unitsSpec });
+	robot.tool("render", "render", Type.Object({}), async () => {
+		throw new RpcUnavailable("env.render: timed out");
+	});
+	await g.emit("session_start");
+	const handle = unitsHandle(g);
+	assert.deepEqual([...handle.tools()].sort(), ["act", "move", "plan", "render"]);
+	assert.equal(handle.refuse(), undefined);
+	// Operator units are no planner turns; the budget the agent spent still binds them.
+	await g.emit("turn_end");
+	assert.equal(handle.refuse(), "Planner turns budget exhausted; the episode is over.");
+
+	const h = fakePi();
+	t.after(h.restore);
+	const other = toy(h.pi, async () => ["move", "finish"], { units: unitsSpec });
+	other.tool("render", "render", Type.Object({}), async () => {
+		throw new RpcUnavailable("env.render: timed out");
+	});
+	await h.emit("session_start");
+	await assert.rejects(h.tools.get("render").execute("1", {}, undefined, undefined, {}), RpcUnavailable);
+	assert.match(unitsHandle(h).refuse() ?? "", /The robot failed: env\.render: timed out/);
+
+	const k = fakePi();
+	t.after(k.restore);
+	toy(k.pi, async () => ["move", "finish"], { units: unitsSpec });
+	await k.emit("session_start");
+	await k.tools.get("finish").execute("1", { status: "success", summary: "ok" });
+	assert.equal(unitsHandle(k).refuse(), "The episode is finished.");
 });

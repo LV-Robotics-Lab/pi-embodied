@@ -324,13 +324,30 @@ function fakePi(flags: Record<string, unknown>) {
 function fakeRobot() {
 	const calls: { unit: string; arm?: string }[] = [];
 	let frame = 100;
+	/** Set to hold each unit until `next()` lets it finish. */
+	let slow = false;
+	const releases: (() => void)[] = [];
+	const g = {
+		refusal: undefined as string | undefined,
+		slow: (v: boolean) => {
+			slow = v;
+		},
+		/** Let the oldest held unit finish. */
+		next: async () => {
+			while (!releases.length) await new Promise((r) => setTimeout(r, 1));
+			(releases.shift() as () => void)();
+		},
+	};
 	const handle: UnitsHandle = {
 		tool: "act",
 		arms: [],
 		vocabulary: SINGLE,
 		stepM: 0.02,
+		tools: () => ["act", "move_to"],
+		refuse: () => g.refusal,
 		run: async (params) => {
 			calls.push(params);
+			if (slow) await new Promise<void>((r) => releases.push(r));
 			frame++;
 			return result([frame, frame + 50], ["agentview_high", "wrist_high"], {
 				robot0_eef_pos: [0, 0, frame / 1000],
@@ -339,7 +356,7 @@ function fakeRobot() {
 		},
 		state: async () => ({ eef_xyz: [0, 0, frame / 1000], gripper_width: 0.08 }),
 	};
-	return { handle, calls };
+	return Object.assign(g, { handle, calls });
 }
 
 test("gumi: teleop records (obs_t, a_t) through units.run; agent steps too; save marks success", async () => {
@@ -425,6 +442,7 @@ test("gumi: DAgger takeover pauses the agent between units, drops its stale call
 	assert.equal(g.state().mode, "requested");
 	await assert.rejects(g.step({ unit: "w" }), (e: any) => e.status === 409);
 	await f.emit("tool_result", { toolName: "act", input: { unit: "MV_LEFT" }, ...result([3, 4], []) });
+	await f.emit("tool_execution_end", { toolName: "act" });
 	assert.equal(g.state().mode, "human");
 	// The agent's next call is held while the operator drives.
 	let held = true;
@@ -462,4 +480,122 @@ test("gumi: DAgger takeover pauses the agent between units, drops its stale call
 		],
 	);
 	assert.equal(readFileSync(join(dir, lines[3].agentview)).toString("base64"), png(102));
+});
+
+/** Resolves to the tool_call decision; `held()` is true while it has not come back. */
+function pending(f: ReturnType<typeof fakePi>, toolName: string, input: Record<string, unknown> = {}) {
+	let done = false;
+	const decision = f.emit("tool_call", { toolName, input }).finally(() => {
+		done = true;
+	}) as Promise<{ block: boolean; reason: string } | undefined>;
+	const held = async () => {
+		await new Promise((r) => setTimeout(r, 10));
+		return !done;
+	};
+	return { decision, held };
+}
+
+test("gumi: during a takeover every robot tool waits, and is dropped as stale if the operator acted", async () => {
+	const f = fakePi({});
+	const g = gumi(f.pi);
+	const robot = fakeRobot();
+	await f.emit("session_start");
+	f.pi.events.emit(UNITS_EVENT, robot.handle);
+	f.setIdle(false);
+	await f.emit("agent_start");
+	await f.emit("tool_result", { toolName: "act", input: { unit: "STOP" }, ...result([1, 2], []) });
+	g.control("take");
+	assert.equal(g.state().mode, "human");
+	// The robot's own motion tool (not only `act`) is held; a tool that is no robot tool is not.
+	const move = pending(f, "move_to", { x: 0.4 });
+	assert.equal(await move.held(), true);
+	assert.equal(await f.emit("tool_call", { toolName: "read", input: {} }), undefined);
+	await g.step({ command: "w g" });
+	assert.equal(await move.held(), true);
+	g.control("release");
+	const decision = await move.decision;
+	assert.equal(decision?.block, true);
+	assert.match(
+		decision?.reason ?? "",
+		/executed 2 step\(s\): MV_FWD GRASP\. This move_to call was decided on an older/,
+	);
+	assert.equal(f.sent.length, 1, "the current observation is steered in");
+	await f.emit("tool_execution_end", { toolName: "move_to" });
+	// Taken and handed back without acting: the held call runs.
+	g.control("take");
+	const again = pending(f, "move_to");
+	assert.equal(await again.held(), true);
+	g.control("release");
+	assert.equal(await again.decision, undefined);
+	// A call a later handler blocked gets no tool_result; its end still frees the takeover.
+	await f.emit("tool_execution_end", { toolName: "move_to" });
+	g.control("take");
+	assert.equal(g.state().mode, "human");
+});
+
+test("gumi: operator units pass the robot's gates (not ready, broken, ended, scene), refused with 409", async () => {
+	const f = fakePi({});
+	const g = gumi(f.pi);
+	const robot = fakeRobot();
+	await f.emit("session_start");
+	f.pi.events.emit(UNITS_EVENT, robot.handle);
+	for (const why of [
+		"toy is not available.",
+		"The robot failed: env server exited (1). The episode is over.",
+		"The episode is finished.",
+		"refused; request_scene_reset and obtain operator confirmation first",
+	]) {
+		robot.refusal = why;
+		await assert.rejects(g.step({ command: "w" }), (e: any) => e.status === 409 && e.message === why);
+	}
+	assert.equal(robot.calls.length, 0, "nothing ran");
+	assert.equal(g.state().busy, false);
+	// The robot breaking mid-batch stops the batch before its next unit.
+	robot.refusal = undefined;
+	robot.slow(true);
+	const batch = g.step({ command: "w*3" });
+	await robot.next();
+	robot.refusal = "The robot failed: env server exited (1). The episode is over.";
+	const out = await batch;
+	assert.deepEqual([out.ok, out.executed, out.results.at(-1)?.error], [false, 1, robot.refusal]);
+	assert.deepEqual(
+		robot.calls.map((c) => c.unit),
+		["MV_FWD"],
+	);
+});
+
+test("gumi: a hand-back during an operator batch takes effect when the batch ends", async () => {
+	const f = fakePi({});
+	const g = gumi(f.pi);
+	const robot = fakeRobot();
+	await f.emit("session_start");
+	f.pi.events.emit(UNITS_EVENT, robot.handle);
+	f.setIdle(false);
+	await f.emit("agent_start");
+	await f.emit("tool_result", { toolName: "act", input: { unit: "STOP" }, ...result([1, 2], []) });
+	g.control("take");
+	const call = pending(f, "act", { unit: "MV_DOWN" });
+	robot.slow(true);
+	const batch = g.step({ command: "w*2 a" });
+	await robot.next();
+	// Released after the first unit: the batch keeps the robot, the agent stays held.
+	assert.equal(g.control("release").state.mode, "human");
+	assert.equal(g.state().message, "handing back to the agent after the current batch");
+	assert.equal(await call.held(), true);
+	await robot.next();
+	assert.equal(await call.held(), true);
+	await robot.next();
+	assert.equal((await batch).executed, 3);
+	assert.equal(g.state().mode, "agent");
+	assert.match((await call.decision)?.reason ?? "", /executed 3 step\(s\): MV_FWD MV_FWD MV_LEFT/);
+	await f.emit("tool_execution_end", { toolName: "act" });
+	// Without a takeover (the agent idle), an agent started mid-batch waits for the batch too.
+	f.setIdle(true);
+	const idle = g.step({ command: "q e" });
+	await robot.next();
+	const early = pending(f, "move_to");
+	assert.equal(await early.held(), true);
+	await robot.next();
+	await idle;
+	assert.equal((await early.decision)?.block, true);
 });

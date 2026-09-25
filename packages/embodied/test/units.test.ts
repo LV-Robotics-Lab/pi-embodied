@@ -8,7 +8,15 @@ import { Type } from "typebox";
 import dualFranka from "../src/dual_franka/index.ts";
 import franka from "../src/franka/index.ts";
 import { defineRobot } from "../src/robot.ts";
-import { compensate, ground, latestTurn, type Move, type UnitsSpec } from "../src/units/index.ts";
+import {
+	compensate,
+	ground,
+	latestTurn,
+	type Move,
+	UNITS_EVENT,
+	type UnitsHandle,
+	type UnitsSpec,
+} from "../src/units/index.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
@@ -18,6 +26,7 @@ function fakePi(flagValues: Record<string, unknown> = {}) {
 	const flags: Record<string, unknown> = {};
 	const tools = new Map<string, any>();
 	let active: string[] = [];
+	const emitted = new Map<string, unknown>();
 	const pi = {
 		on: (name: string, fn: Handler) => handlers.set(name, [...(handlers.get(name) ?? []), fn]),
 		registerFlag: (name: string, o: { default?: unknown }) => {
@@ -31,7 +40,7 @@ function fakePi(flagValues: Record<string, unknown> = {}) {
 		},
 		getActiveTools: () => active,
 		appendEntry: () => {},
-		events: { emit: () => {}, on: () => () => {} },
+		events: { emit: (channel: string, data: unknown) => emitted.set(channel, data), on: () => () => {} },
 	} as unknown as ExtensionAPI;
 	const notes: string[] = [];
 	const dir = realpathSync(mkdtempSync(join(tmpdir(), "units-")));
@@ -56,7 +65,7 @@ function fakePi(flagValues: Record<string, unknown> = {}) {
 	}
 	const run = async (name: string, params: unknown) =>
 		(await tools.get(name).execute("id", params, undefined, undefined, ctx)) as any;
-	return { pi, emit, run, tools, notes, active: () => active };
+	return { pi, emit, run, tools, notes, emitted, active: () => active };
 }
 
 const VECTORS: UnitsSpec["vectors"] = {
@@ -475,4 +484,27 @@ test("Franka and dual Franka refuse to start without a valid Z floor and workspa
 		await ok.emit("session_start");
 		assert.doesNotMatch(ok.notes.join("\n"), /--z-floor|--workspace-xy/, "valid limits pass the check");
 	}
+});
+
+test("an operator's unit waits for the operator's scene confirmation, like the agent's act", async () => {
+	let fail = true;
+	const f = await toyRobot(
+		{ operator: true },
+		{
+			reset: async () => {
+				if (fail) throw new Error("reset failed");
+				return { ok: true };
+			},
+		},
+	);
+	const handle = f.emitted.get(UNITS_EVENT) as UnitsHandle;
+	assert.equal(handle.refuse(), undefined);
+	// A reset that did not complete leaves the scene unconfirmed: the agent's act and the operator's units are refused.
+	await f.run("request_scene_reset", { reason: "retry" });
+	const refusal = "refused; request_scene_reset and obtain operator confirmation first";
+	assert.equal((await f.emit("tool_call", { toolName: "act", input: { unit: "MV_FWD" } }))?.reason, refusal);
+	assert.equal(handle.refuse(), refusal);
+	fail = false;
+	await f.run("request_scene_reset", { reason: "retry" });
+	assert.equal(handle.refuse(), undefined);
 });

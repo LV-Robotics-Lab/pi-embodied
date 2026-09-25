@@ -57,6 +57,10 @@ export type UnitsHandle = {
 	) => Promise<AgentToolResult<unknown>>;
 	/** The robot's proprioception (`eef_xyz`, `gripper_width`, ...), per arm on two arms. */
 	state?: (arm?: string) => Promise<Record<string, unknown>>;
+	/** Every robot tool (`act` and the robot's own): ../gumi holds them all while the operator drives. */
+	tools: () => readonly string[];
+	/** Why an operator's unit may not run now (the gates an `act` call passes), else undefined. */
+	refuse: () => string | undefined;
 };
 
 // ---------------------------------------------------------------------------
@@ -254,6 +258,7 @@ export function units(
 	spec: UnitsSpec,
 	tool: ToolRegistrar,
 	task: () => Record<string, string> = () => ({}),
+	base: Pick<UnitsHandle, "tools" | "refuse"> = { tools: () => ["act"], refuse: () => undefined },
 ) {
 	const instruction = () =>
 		spec.instruction?.() ??
@@ -567,6 +572,7 @@ export function units(
 		yawStepRad: spec.yawStepRad,
 		run: act,
 		state: spec.state,
+		...base,
 	};
 	pi.on("session_start", () => pi.events.emit(UNITS_EVENT, handle));
 

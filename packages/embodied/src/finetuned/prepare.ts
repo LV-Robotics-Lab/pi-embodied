@@ -13,7 +13,7 @@
  * `<out>/<task>/rollout_NNN/` with `agentview/NNNN.png`, `wrist/NNNN.png`, `actions.jsonl` ({token,
  * gripper_closed, agentview, wrist} plus the recorded fields) and `metadata.json` (`task_text` for
  * train/scripts/prepare_dataset.sh). Each frame goes through the SAME camera transform the provider
- * applies at inference (./views.ts: the recording robot's ROBOT_VIEWS, or --agentview / --wrist), so
+ * applies at inference (./views.ts: the recording robot's viewsFor(), or --agentview / --wrist), so
  * training and deployment images are identical pixel for pixel. Rows are kept in order as recorded;
  * tokens outside the single-arm vocabulary (ROTATE_*, STILL) are left for the converter to skip.
  */
@@ -22,7 +22,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSy
 import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { encodePng } from "../png.ts";
-import { ROBOT_VIEWS } from "./index.ts";
+import { viewsFor } from "./index.ts";
 import { decodePng, formatView, parseView, prepareView, type ViewSpec } from "./views.ts";
 
 type Json = Record<string, any>;
@@ -158,7 +158,7 @@ function main() {
 		const task = values.task ?? meta.task_text ?? meta.task;
 		if (typeof task !== "string" || !task) throw new Error(`${run}: no task in metadata.json; pass --task`);
 		const robot = values.robot ?? meta.robot ?? "";
-		const d = ROBOT_VIEWS[robot];
+		const d = viewsFor(robot, String(meta.robot_task?.["env-id"] ?? ""));
 		if (!d && !(values.agentview && values.wrist))
 			throw new Error(`${run}: no camera transform for robot "${robot}"; pass --agentview and --wrist`);
 		const views = {

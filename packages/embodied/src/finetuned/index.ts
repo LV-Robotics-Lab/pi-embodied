@@ -122,6 +122,16 @@ export const ROBOT_VIEWS: Record<string, { agentview: ViewSpec; wrist: ViewSpec 
 	},
 };
 const DEFAULT_VIEWS = ROBOT_VIEWS.robolab;
+/** No transform: the frames already are what the adapter was trained on (`--ft-agentview raw --ft-wrist raw`). */
+export const RAW_VIEWS: { agentview: ViewSpec; wrist: ViewSpec } = {
+	agentview: parseView("raw"),
+	wrist: parseView("raw"),
+};
+/** ManiSkill env ids of RLinf's real2sim rigs, whose env server renders the Show-Harness training frames. */
+export const REAL2SIM_RIGS = new Set(["BlockPAP-v1", "BlockStack-v1"]);
+/** The training camera transform for a robot (and its ManiSkill env id); undefined if uncalibrated. */
+export const viewsFor = (robot: string, envId = "") =>
+	robot === "maniskill" && REAL2SIM_RIGS.has(envId) ? RAW_VIEWS : ROBOT_VIEWS[robot];
 
 // ---------------------------------------------------------------------------
 // the request and the reply (core/vlm/mvtoken_roles.py, core/vlm/vlm_client.py)
@@ -362,6 +372,7 @@ export default function finetuned(pi: ExtensionAPI) {
 	pi.registerFlag("ft-max-steps", { type: "string", default: "80", description: "Policy decisions per episode" });
 
 	let robot = "";
+	let envId = "";
 	let over = false;
 	let steps = 0;
 	let recent: string[] = [];
@@ -373,7 +384,7 @@ export default function finetuned(pi: ExtensionAPI) {
 		steps = ids = 0;
 		recent = [];
 		pending = undefined;
-		robot = "";
+		robot = envId = "";
 	});
 	pi.on("before_agent_start", (_event, ctx) => {
 		if (ctx.model?.provider !== "finetuned") return;
@@ -381,10 +392,12 @@ export default function finetuned(pi: ExtensionAPI) {
 			.getBranch()
 			.filter((e) => e.type === "custom" && e.customType === TASK_ENTRY)
 			.pop();
-		robot = String((task?.type === "custom" && (task.data as Json)?.robot) || "");
+		const data = task?.type === "custom" ? ((task.data as Json) ?? {}) : {};
+		robot = String(data.robot || "");
+		envId = String(data["env-id"] || "");
 		const warn = (s: string) => (ctx.hasUI ? ctx.ui.notify(s, "warning") : console.error(`[finetuned] ${s}`));
 		if (!pi.getActiveTools().includes("act")) warn("the `act` tool is not active: run the robot with --units");
-		if (!ROBOT_VIEWS[robot] && !flag("ft-agentview") && !flag("ft-wrist"))
+		if (!robotViews() && !flag("ft-agentview") && !flag("ft-wrist"))
 			warn(
 				`no calibrated camera transform for robot "${robot}"; using ${formatView(DEFAULT_VIEWS.wrist)} for the wrist`,
 			);
@@ -394,8 +407,10 @@ export default function finetuned(pi: ExtensionAPI) {
 		const p = flag("ft-prompt") || "v3";
 		return PROMPTS[p] ?? readFileSync(p, "utf8").trim();
 	};
+	/** ManiSkill's real2sim rigs send training-exact frames (their env server applies the rig's transform). */
+	const robotViews = () => viewsFor(robot, envId);
 	const views = () => {
-		const d = ROBOT_VIEWS[robot] ?? DEFAULT_VIEWS;
+		const d = robotViews() ?? DEFAULT_VIEWS;
 		return [
 			flag("ft-agentview") ? parseView(flag("ft-agentview")) : d.agentview,
 			flag("ft-wrist") ? parseView(flag("ft-wrist")) : d.wrist,

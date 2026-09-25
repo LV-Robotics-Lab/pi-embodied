@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # episode.sh <robot> <out dir> [pi args...]: serve a fine-tuned adapter (serve.sh), run one pi episode
-# per seed with `--model finetuned/$ADAPTER`, then stop the server. The whole run holds the GPU1 lock.
+# per seed with `--model finetuned/local --ft-model $ADAPTER`, then stop the server. The whole run holds the GPU1 lock.
 #
 #   SEEDS="0 1" bash episode.sh maniskill /root/autodl-tmp/runs/finetuned/pickcube --env-id PickCube-v1
 #
@@ -40,7 +40,7 @@ run() {
     echo "$(date +%T) episode $robot ${SEED_FLAG:---seed} $seed -> $d"
     node packages/coding-agent/dist/cli.js -p --session-dir "$d" \
       -e "packages/embodied/src/$robot" -e packages/embodied/src/finetuned "${dash[@]}" \
-      --units=true --model "finetuned/$ADAPTER" --ft-endpoint "http://127.0.0.1:$PORT/v1" \
+      --units=true --model finetuned/local --ft-model "$ADAPTER" --ft-endpoint "http://127.0.0.1:$PORT/v1" \
       "${SEED_FLAG:---seed}" "$seed" "$@" "${PROMPT:-Solve the task.}" \
       < /dev/null > "$d/stdout.log" 2> "$d/stderr.log"
     echo "$(date +%T) pi exit $? $(grep -h -o "\[$robot\] .*" "$d/stderr.log" | tail -1)"

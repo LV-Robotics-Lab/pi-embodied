@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # train.sh: GUMI recordings -> Show-Harness training set -> LLaMA-Factory LoRA SFT -> an adapter serve.sh serves.
 #
-#   SH=/root/autodl-tmp/refs/Show-Harness NAME=pick_cube_gumi \
+#   NAME=pick_cube_gumi \
 #     bash train.sh /root/autodl-tmp/runs/gumi/<session>/rollouts [more GUMI record dirs...]
 #
 # 1. packages/embodied/src/finetuned/prepare.ts: every single-arm GUMI run -> <DATA>/rollouts/<task>/rollout_NNN
@@ -13,17 +13,22 @@
 #    train/scripts/train.sh on GPU $GPU while holding $LOCK (STEP=prepare stops after step 2).
 # Then: LORA=$NAME=<DATA>/saves/<NAME>/<checkpoint> bash serve.sh, and pi --model finetuned/local --ft-model $NAME.
 #
-#   SH=        Show-Harness checkout (github.com/showlab/Show-Harness @137d571) with LLaMA-Factory set up
-#              once by its train/scripts/setup_llamafactory.sh (third_party/LlamaFactory + .venv)
+#   SH=        Show-Harness checkout (github.com/showlab/Show-Harness @137d571; train/ and prompts/ are
+#              what is read), default /root/autodl-tmp/refs/show-harness-137d571
+#   LF_VENV=/root/autodl-tmp/venvs/llamafactory   LF_ROOT=$LF_VENV/LlamaFactory: LLaMA-Factory and its
+#              venv, installed once by ./setup_llamafactory.sh (register_dataset.py writes LF_ROOT/data)
 #   NAME=      dataset / adapter name (required)       DATA=/root/autodl-tmp/data/finetuned/$NAME
 #   VERSION=v3 prompt version (must match --ft-prompt at inference)
 #   BASE_CONFIG=qwen3_5_2b_sim.yaml   MODEL_PATH=/root/autodl-tmp/checkpoints/Qwen3.5-2B   EPOCHS= (keep)
+#   SET="key=value ..." more yaml keys replaced or added, e.g. a smoke run: SET="max_steps=30 save_steps=10"
 #   GPU=1  LOCK=/root/autodl-tmp/locks/gpu1.lock   STEP=all|prepare (stop before registering; no LLaMA-Factory needed)
 #   PREPARE_ARGS= (e.g. --robot maniskill)   PYTHON= (any python3; the converter is stdlib only)
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PI="${PI:-$(cd "$HERE/../../.." && pwd)}"
-SH="${SH:?SH (Show-Harness checkout) is required}"
+SH="${SH:-/root/autodl-tmp/refs/show-harness-137d571}"
+export LF_VENV="${LF_VENV:-/root/autodl-tmp/venvs/llamafactory}"
+export LF_ROOT="${LF_ROOT:-$LF_VENV/LlamaFactory}"
 NAME="${NAME:?NAME (dataset/adapter name) is required}"
 DATA="${DATA:-/root/autodl-tmp/data/finetuned/$NAME}"
 VERSION="${VERSION:-v3}"
@@ -32,7 +37,7 @@ MODEL_PATH="${MODEL_PATH:-/root/autodl-tmp/checkpoints/Qwen3.5-2B}"
 GPU="${GPU:-1}"
 LOCK="${LOCK-/root/autodl-tmp/locks/gpu1.lock}"
 PY="${PYTHON:-$(command -v python3 || echo /root/miniconda3/bin/python)}"
-[ $# -gt 0 ] || { echo "usage: SH=... NAME=... bash train.sh <gumi record dir>..." >&2; exit 2; }
+[ $# -gt 0 ] || { echo "usage: NAME=... bash train.sh <gumi record dir>..." >&2; exit 2; }
 export PATH=/root/autodl-tmp/tools/node/bin:$PATH
 
 echo "[1/3] GUMI -> rollouts ($DATA/rollouts)"
@@ -53,7 +58,7 @@ done
   --task-map "${maps[@]}" --output "$DATA/rollouts.json"
 [ "${STEP:-all}" = prepare ] && exit 0
 "$PY" "$SH/train/data_preparation/register_dataset.py" "$NAME" --samples "$DATA/rollouts.json" \
-  --lf-root "${LF_ROOT:-$SH/third_party/LlamaFactory}"
+  --lf-root "$LF_ROOT"
 
 echo "[3/3] LoRA SFT on GPU $GPU"
 CONFIG="$DATA/$NAME.yaml"
@@ -63,7 +68,12 @@ sed -e "s|^dataset:.*|dataset: $NAME|" \
     -e "s|^report_to:.*|report_to: none|" \
     ${EPOCHS:+-e "s|^num_train_epochs:.*|num_train_epochs: $EPOCHS|"} \
     "$SH/train/configs/$BASE_CONFIG" > "$CONFIG"
-train() { CONFIG="$CONFIG" GPU="$GPU" MODEL_PATH="$MODEL_PATH" bash "$SH/train/scripts/train.sh"; }
+for kv in ${SET:-}; do
+  k="${kv%%=*}" v="${kv#*=}"
+  if grep -q "^$k:" "$CONFIG"; then sed -i "s|^$k:.*|$k: $v|" "$CONFIG"; else echo "$k: $v" >> "$CONFIG"; fi
+done
+# DATA_PREP_PYTHON: their llamafactory_env.sh dies under set -e on a box without python3 on PATH.
+train() { CONFIG="$CONFIG" GPU="$GPU" MODEL_PATH="$MODEL_PATH" DATA_PREP_PYTHON="$PY" bash "$SH/train/scripts/train.sh"; }
 if [ -n "$LOCK" ]; then
   exec 9> "$LOCK"
   echo "waiting for $LOCK"

@@ -32,11 +32,11 @@ for ((i = 0; i < ${#args[@]}; i++)); do
 	--time-limit=*) limit=${args[i]#*=} limited=1 ;;
 	esac
 done
-# --time-limit (default $TIME_LIMIT, 1800 s) ends the planner gracefully, as a failure; `timeout`
-# is only the backstop for a hung process, and a killed episode is invalid.
+# --time-limit (default $TIME_LIMIT, 1800 s; 0 = none) ends the planner gracefully, as a failure;
+# `timeout` is only the backstop for a hung process, and a killed episode is invalid.
 [ -n "$limited" ] || set -- "$@" --time-limit "$limit"
 backstop=()
-command -v timeout >/dev/null && backstop=(timeout -k 30 $((limit + 900)))
+[ "$limit" -gt 0 ] && command -v timeout >/dev/null && backstop=(timeout -k 30 $((limit + 900)))
 mkdir -p "$out"
 
 record() { # <dir> <exit code>: write result.json from the episode's session

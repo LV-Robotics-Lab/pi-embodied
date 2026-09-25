@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { test } from "node:test";
-import { RpcClient, RpcUnavailable } from "../src/rpc.ts";
+import { forgetUnresponsive, RpcClient, RpcUnavailable } from "../src/rpc.ts";
 
 /**
  * A fake robot server: `slow` answers after 300 ms; it records every call's start and end, and the
@@ -85,9 +85,10 @@ test("a server that never answers is given up on, and later calls fail at once",
 	const srv = await fakeServer();
 	t.after(srv.close);
 	const rpc = new RpcClient(srv.url, { graceMs: 50 });
+	// The timeout itself is an ordinary error: a slow call is the model's to handle.
 	await assert.rejects(
 		rpc.call("hang", {}, 50),
-		(e) => e instanceof RpcUnavailable && /hang: timed out/.test(e.message),
+		(e: Error) => !(e instanceof RpcUnavailable) && /hang: timed out/.test(e.message),
 	);
 	// Queued behind the hung call until the grace period marks the endpoint unresponsive.
 	await assert.rejects(
@@ -101,6 +102,9 @@ test("a server that never answers is given up on, and later calls fail at once",
 		srv.log.map((e) => e.method),
 		[],
 	);
+	// A new episode gives it another chance.
+	forgetUnresponsive();
+	assert.equal(await rpc.call("fast"), "fast");
 });
 
 test("a refused connection is RpcUnavailable", async () => {

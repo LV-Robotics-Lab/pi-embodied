@@ -18,7 +18,7 @@ import { explore } from "./explore.ts";
 import { flywheel } from "./flywheel.ts";
 import { type MemoryOptions, memory } from "./memory/index.ts";
 import { operator } from "./operator.ts";
-import { NdArray, RpcClient, RpcUnavailable } from "./rpc.ts";
+import { forgetUnresponsive, NdArray, RpcClient, RpcUnavailable } from "./rpc.ts";
 import { episodeVideo } from "./video.ts";
 
 export type Json = Record<string, any>;
@@ -161,6 +161,8 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	pi.on("session_start", (_event, ctx) => {
 		ready = ran = ended = reported = finishing = false;
 		failed = broken = claimed = started = plannerError = outOfBudget = undefined;
+		// A service that stopped answering ended the last episode; this one may find it restarted.
+		forgetUnresponsive();
 		turns = 0;
 		pi.setActiveTools([]);
 		const picked = ctx.sessionManager

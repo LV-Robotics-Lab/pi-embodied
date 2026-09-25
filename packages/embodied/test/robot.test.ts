@@ -50,7 +50,7 @@ function fakePi(flagValues: Record<string, unknown> = {}, branch: unknown[] = []
 	async function emit(name: string, event: Record<string, unknown> = {}) {
 		let result: any;
 		for (const fn of handlers.get(name) ?? []) {
-			const r = await fn({ type: name, ...event }, ctx);
+			const r: any = await fn({ type: name, ...event }, ctx);
 			if (r !== undefined) result = r;
 			if (r && ((name === "tool_call" && r.block) || (name === "input" && r.action === "handled"))) return r;
 		}

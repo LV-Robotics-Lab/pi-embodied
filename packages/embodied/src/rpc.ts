@@ -83,11 +83,16 @@ const busy = new Map<string, { method: string; answered: Promise<unknown> }>();
  */
 const direct = { http: new HttpAgent({ keepAlive: true }), https: new HttpsAgent({ keepAlive: true }) };
 
-/** The service did not answer: unreachable, dropped the connection, timed out or stopped answering. */
+/** The service is gone: unreachable, dropped the connection, or stopped answering (see `call`). */
 export class RpcUnavailable extends Error {}
 
 /** Endpoints whose server stopped answering, with why; every later call to them fails at once. */
 const dead = new Map<string, string>();
+
+/** Give every endpoint marked unresponsive another chance (a new episode: services may have been restarted). */
+export function forgetUnresponsive() {
+	dead.clear();
+}
 
 /** One request and its full answer. `signal` only abandons a server that stopped answering. */
 function post(url: string, body: string, signal?: AbortSignal): Promise<string> {
@@ -133,8 +138,9 @@ export class RpcClient {
 	 * Call `method`. `timeoutMs` (counted from this call, queueing included) and `signal` end the
 	 * wait; a call that has not been sent by then is never sent, and one already sent keeps the
 	 * endpoint until the server answers it. A server that still has not answered `graceMs` later
-	 * (default: `timeoutMs`, at least 60 s) is given up on: the endpoint is marked unresponsive and every later call fails with
-	 * `RpcUnavailable`, as do timeouts and transport errors.
+	 * (default: `timeoutMs`, at least 60 s) is given up on: the endpoint is marked unresponsive
+	 * (until `forgetUnresponsive`) and every later call fails with `RpcUnavailable`, as do transport
+	 * errors. A timeout itself is an ordinary error.
 	 */
 	async call<T = unknown>(
 		method: string,
@@ -172,7 +178,7 @@ export class RpcClient {
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		let onAbort: (() => void) | undefined;
 		const released = new Promise<never>((_, reject) => {
-			const release = (why: string, unavailable: boolean) => {
+			const release = (why: string) => {
 				gaveUp = true;
 				if (sent) {
 					const graceMs = this.graceMs ?? Math.max(timeoutMs, 60_000);
@@ -182,19 +188,18 @@ export class RpcClient {
 					}, graceMs);
 					grace.unref();
 				}
-				const Failure = unavailable ? RpcUnavailable : Error;
 				reject(
-					new Failure(
+					new Error(
 						sent
 							? `${method}: ${why}; the server is still running it`
 							: `${method}: ${why} waiting for ${previous?.method ?? "the server"}, which the server is still running`,
 					),
 				);
 			};
-			timer = setTimeout(() => release(`timed out after ${timeoutMs} ms`, true), timeoutMs);
+			timer = setTimeout(() => release(`timed out after ${timeoutMs} ms`), timeoutMs);
 			onAbort = () => {
 				if (sent) void this.interrupt();
-				release("aborted", false);
+				release("aborted");
 			};
 			signal?.addEventListener("abort", onAbort, { once: true });
 		});

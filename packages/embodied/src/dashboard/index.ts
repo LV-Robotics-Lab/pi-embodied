@@ -65,7 +65,12 @@ type Episode = Omit<RobotStatus, "step" | "solved"> & {
 	envStep: number | null;
 	solved: boolean;
 	usage: { input: number; output: number; tools: number };
+	/** `provider/model · thinking` of the running agent. */
+	model: string | null;
 };
+
+const modelLabel = (pi: ExtensionAPI, ctx: ExtensionContext) =>
+	ctx.model ? `${ctx.model.provider}/${ctx.model.id} · ${pi.getThinkingLevel()}` : null;
 
 /** Process-wide dashboard; it outlives extension runtimes, which pi rebuilds on every session switch. */
 type Hub = ReturnType<typeof createHub>;
@@ -234,6 +239,7 @@ function createHub(server: Server, url: string, page: string) {
 				envStep: null,
 				solved: false,
 				usage: { input: 0, output: 0, tools: 0 },
+				model: modelLabel(nextPi, nextCtx),
 			};
 			const e = episode;
 			const task = Object.entries(e.task).map(([k, v]) => `${k} ${v}`);
@@ -264,6 +270,7 @@ function createHub(server: Server, url: string, page: string) {
 		setRunning(running: boolean) {
 			if (!episode) return;
 			episode.running = running;
+			if (pi && ctx) episode.model = modelLabel(pi, ctx);
 			touch();
 		},
 		agentEnd() {

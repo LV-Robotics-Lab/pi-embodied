@@ -56,6 +56,7 @@ tr.step.sel { background: var(--code); }
   <h1>pi-embodied · <span data-t="monitor"></span></h1>
   <span id="state" class="badge"></span>
   <span id="result" class="badge" hidden></span>
+  <span id="model" class="badge"></span>
   <span id="task" class="meta"></span>
   <span id="lang"></span>
   <span class="grow"></span>
@@ -232,6 +233,7 @@ function renderEpisode() {
     r.title = e.summary ?? "";
   }
   $("task").textContent = [e.robot, ...e.fields.map((k) => `${k} ${e.task[k]}`)].join(" · ") + (e.envStep === null ? "" : ` · ${T.envStep(e.envStep)}`);
+  $("model").textContent = e.model ?? "";
   $("lang").textContent = e.language ? `“${e.language}”` : "";
   $("usage").textContent = T.usage(e.usage);
   renderTaskFields(e);

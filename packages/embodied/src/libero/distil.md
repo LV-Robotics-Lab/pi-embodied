@@ -4,7 +4,7 @@ Write ONLY under `{{memory_inbox}}/` and `{{output_dir}}/`. Never create, edit, 
 
 Naming: a draft's `id` is the BARE slug, the filename without the `new_`/`suite_` prefix, the kind and any `_draft` suffix (`new_global_strategy_diagonal-face-perpendicular-push.md` has `id: diagonal-face-perpendicular-push`). Frontmatter must parse as YAML: never start a value with a quote unless the whole value is quoted, quote any value containing `: `, and `related:` is a plain list of bare ids (`[[id]]` is body-only syntax).
 
-First re-read `{{memory_inbox}}/wip/notes.md` and every `{{output_dir}}/attempts/*.json`. Each wall noted along the way is now decidable: say which ones the winning run went THROUGH (artefacts of the method) and which it went AROUND (real).
+First re-read `{{memory_inbox}}/wip/notes.md` and every `{{output_dir}}/attempts/{{recipe_tag}}/*.json`. Each wall noted along the way is now decidable: say which ones the winning run went THROUGH (artefacts of the method) and which it went AROUND (real).
 
 a. TASK LAYER. Write `{{output_dir}}/{{recipe_tag}}.json`, the audit of the winning episode. After `finish`, the recipe `{{output_dir}}/{{recipe_tag}}_recipe.jsonl` is exported from your tool calls after the LAST reset; the audit must describe that same trajectory.
    - `strategy_notes`: the winning sequence step by step, in trace order, with the parameters actually used; one opening sentence on how you localized. Failure history belongs in the suite write-up.

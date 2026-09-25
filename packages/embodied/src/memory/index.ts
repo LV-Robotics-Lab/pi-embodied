@@ -29,7 +29,7 @@ type Access = "read" | "search" | "write";
 type Details = { terminated?: unknown; error?: unknown; result?: { error?: unknown }; camera?: unknown } | undefined;
 /**
  * Canonical roots: the memory corpus, every robot's memory home, the run's output dir and the cell tag, plus read-only
- * dirs and, when exploring, the cell's inbox and the attempt archive (`<output>/attempts`, see ../explore.ts).
+ * dirs and, when exploring, the cell's inbox and its attempt archive (`<output>/attempts/<tag>`, see ../explore.ts).
  */
 export type Guard = {
 	root: string;
@@ -224,7 +224,7 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 			output: outputDir,
 			tag: cell.tag,
 			inbox: explore ? cell.tag : undefined,
-			attempts: explore && outputDir ? join(outputDir, "attempts") : undefined,
+			attempts: explore && outputDir ? join(outputDir, "attempts", cell.tag) : undefined,
 		};
 		if (explore) return;
 		if (profile === "hf") await syncMemory(root, (m) => say(ctx, m, "warning"));

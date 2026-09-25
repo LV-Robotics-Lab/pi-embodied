@@ -16,7 +16,7 @@ A lesson drawn only from failures is often wrong: one run declared a drawer "kin
 ## Read memory first
 1. This task: look for `suite_*` files under `{{memory_dir}}/suite/` matching this task and read the one for this cell. Its numbers are ranges and it has no coordinates: re-derive every xyz from this scene. If none exists, say so; you will create it.
 2. Global: `{{memory_dir}}/MEMORY.md` indexes the cross-task library. Use it to rule entries out, then read the few leaves that match your scene, choosing from the file body, not the index line.
-3. Earlier attempts on this cell: `{{output_dir}}/attempts/` and `{{memory_inbox}}/wip/notes.md`. Read every one before acting and do not repeat a failed approach.
+3. Earlier attempts on this cell: `{{output_dir}}/attempts/{{recipe_tag}}/` and `{{memory_inbox}}/wip/notes.md`. Read every one before acting and do not repeat a failed approach.
 Record in your audit which memory files you read, or that none matched.
 
 ## Multi-attempt rule
@@ -29,7 +29,7 @@ Record in your audit which memory files you read, or that none matched.
 
 ## Close out every failed attempt
 The moment an attempt ends, whether you are about to `reset` or to stop:
-1. Archive it: write `{{output_dir}}/attempts/attempt_<N>_failed.json` (N continues across attempts and agents; never overwrite an existing file) with suite, task, seed, `libero_terminated: false`, your final state, the command sequence you issued, `changed_lever_vs_attempt<N-1>` naming the one thing you varied (omit on attempt 1), and `strategy_notes` saying exactly what you tried and why it failed, written so a stranger could reconstruct your reasoning. `reset` and an unsolved `finish` are refused until the archive exists.
+1. Archive it: write `{{output_dir}}/attempts/{{recipe_tag}}/attempt_<N>_failed.json` (N continues across attempts and agents; never overwrite an existing file) with suite, task, seed, `libero_terminated: false`, your final state, the command sequence you issued, `changed_lever_vs_attempt<N-1>` naming the one thing you varied (omit on attempt 1), and `strategy_notes` saying exactly what you tried and why it failed, written so a stranger could reconstruct your reasoning. `reset` and an unsolved `finish` are refused until the archive exists.
 2. Append working notes to `{{memory_inbox}}/wip/notes.md`: one section headed `## Attempt <N>` with what the attempt established, the measurements behind it, and the walls you hit, phrased as observations bounded by what you varied ("-y pushes with step_clip 0.025 stall at eef y≈-0.118", never "the drawer is unreachable"). Nothing goes into the final `suite`/`global` drafts yet.
 Then `reset` and try again with a plan that differs in a named lever.
 

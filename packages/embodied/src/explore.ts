@@ -132,7 +132,7 @@ export function explore(pi: ExtensionAPI, robot: Robot) {
 	const on = () => pi.getFlag("explore") === true;
 	const budget = () => Number(pi.getFlag("explore-attempts-per-session")) || 0;
 	const sessions = () => Math.max(1, Number(pi.getFlag("explore-sessions")) || 1);
-	const dir = () => robot.render("{{output_dir}}/attempts");
+	const dir = () => robot.render("{{output_dir}}/attempts/{{recipe_tag}}");
 	let archived = 0;
 	let nudges = 0;
 	let nagged = false;

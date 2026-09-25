@@ -109,7 +109,7 @@ test("exploration's reset is the operator's scene reset, within the archive and 
 	const f = fakePi({ operator: true, explore: true, "output-dir": "run", python: "/nonexistent/python" });
 	dualFranka(f.pi);
 	await f.emit("session_start"); // the robot cannot start (no Python); memory and exploration can
-	const attempts = join(f.dir, "run", "attempts");
+	const attempts = join(f.dir, "run", "attempts", "dual_franka_t");
 
 	await assert.rejects(f.run("reset", { reason: "slipped" }), /Close out attempt 1 first/);
 	assert.equal(f.dialogs.length, 0, "an unarchived attempt never reaches the operator");
@@ -200,8 +200,8 @@ test("finish needs an operator verdict and, with attempts left, a success; an op
 	const resets: string[] = [];
 	realRobotToy(f, resets);
 	await f.emit("session_start");
-	mkdirSync(join(f.dir, "run", "attempts"), { recursive: true });
-	writeFileSync(join(f.dir, "run", "attempts", "attempt_1_failed.json"), "{}");
+	mkdirSync(join(f.dir, "run", "attempts", "dual_franka_t"), { recursive: true });
+	writeFileSync(join(f.dir, "run", "attempts", "dual_franka_t", "attempt_1_failed.json"), "{}");
 
 	f.answers.push("failure");
 	const failed = await f.emit("tool_call", { toolName: "finish" });

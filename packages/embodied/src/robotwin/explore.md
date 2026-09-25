@@ -5,11 +5,11 @@ This run is MULTI-ATTEMPT EXPLORE mode. Use fresh episodes to test materially di
 Before the first robot mutation:
 1. Inspect `view_env_state` (step 0) and its head image.
 2. Read relevant published task, suite, and global memory under `{{memory_dir}}/`.
-3. Read `{{memory_inbox}}/wip/` and `{{output_dir}}/attempts/` for notes from earlier attempts or sessions.
+3. Read `{{memory_inbox}}/wip/` and `{{output_dir}}/attempts/{{recipe_tag}}/` for notes from earlier attempts or sessions.
 Fresh observations and the current task_language override historical memory. Never replay stored coordinates across episodes.
 
 ## Memory
-During exploration, write working notes only below `{{memory_inbox}}/wip/`. Before each `reset`, write `{{output_dir}}/attempts/attempt_<N>_failed.json` (N continues across attempts and agents; never overwrite an existing file) with the attempt number, approach, commands and parameters tried, observed progress, bounded failure mechanism, and one meaningful change for the next attempt. Also append a concise handoff note to `{{memory_inbox}}/wip/notes.md` under `## Attempt <N>`. `reset` and an unsolved `finish` are refused until the archive exists. After success, write concise suite or global proposals directly under `{{memory_inbox}}/`. Never write directly into published memory directories.
+During exploration, write working notes only below `{{memory_inbox}}/wip/`. Before each `reset`, write `{{output_dir}}/attempts/{{recipe_tag}}/attempt_<N>_failed.json` (N continues across attempts and agents; never overwrite an existing file) with the attempt number, approach, commands and parameters tried, observed progress, bounded failure mechanism, and one meaningful change for the next attempt. Also append a concise handoff note to `{{memory_inbox}}/wip/notes.md` under `## Attempt <N>`. `reset` and an unsolved `finish` are refused until the archive exists. After success, write concise suite or global proposals directly under `{{memory_inbox}}/`. Never write directly into published memory directories.
 
 Every proposed file must begin with parseable YAML frontmatter.
 

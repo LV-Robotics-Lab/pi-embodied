@@ -4,7 +4,7 @@ Licensed under the Apache License, Version 2.0; see http://www.apache.org/licens
 
 Modified by pi-embodied: the zero-shot controller prompt (prompts/controller.txt), the wrist marker
 (core/prompting/wrist_marker.txt) and the proprioception, recovery, auto_release, variable_step,
-action_chunk, rotation, affordance, subgoal, deepplan and mem_text prompt fragments, rewritten for pi tools
+action_chunk, rotation, affordance, subgoal, deepplan, mem_text and video_ref prompt fragments, rewritten for pi tools
 (`act`, `point`, `plan`, `finish`). {{name}} placeholders are filled by index.ts; a [section] block
 is kept only when its plugin (or mode) is on.
 -->
@@ -68,9 +68,11 @@ GRIPPER:
 
 ATTENTION:
 - DONE only when the task's completion is already visible in the images.
-- Each `act` result starts with a units block: what ran, the recent units{{proprio_note}}. Read it before the next unit; a blocked move did not happen.
-- If the recent units show a GRASP that closed on nothing (GRASP, then RELEASE(recovery)), do not GRASP in place again: first reposition with MV_UP, MV_BACK, MV_DOWN or MV_FWD.
-- Do not undo the newest recent unit (MV_LEFT / MV_RIGHT, MV_FWD / MV_BACK) unless the images show it overshot the target. When the recent units alternate between opposite directions, re-judge the target's position from both views before moving again; do not descend while still off-center.
+- Each `act` result starts with a units block: what ran{{mem_note}}{{proprio_note}}. Read it before the next unit; a blocked move did not happen.
+[mem_text]
+- If the recent moves show GRASP(empty) (a GRASP that closed on nothing), do not GRASP in place again: first reposition with MV_UP, MV_BACK, MV_DOWN or MV_FWD.
+- Do not undo the newest recent move (MV_LEFT / MV_RIGHT, MV_FWD / MV_BACK) unless the images show it overshot the target. When the recent moves alternate between opposite directions, re-judge the target's position from both views before moving again; do not descend while still off-center.
+[/mem_text]
 [proprioception]
 - A MV_DOWN that lowered much less than commanded means the gripper already rests on something: do NOT MV_DOWN again.
 [/proprioception]
@@ -89,9 +91,13 @@ PLAN (`plan`): before acting, split the task into ordered visual stages (GRASP, 
 - Every DONE WHEN must be judgeable from the images: a stable visual relation, not a gripper event; distinguish similar objects.
 - Conditional tasks ("one of", "whichever", "find ... under", "if ... then"): plan the REVEAL stages, then ONE stage with motion REASON whose description is the complete rule ("IF <visible condition> THEN <what the rest of the plan becomes>", including the case where nothing is left), then one placeholder goal stage. On reaching REASON, judge the rule from the live images and send the concrete stages with `plan`.
 [/plan]
+[video_ref]
+
+{{video_ref}}
+[/video_ref]
 [stateless]
 
-Only your latest step stays in context: everything you need is in the latest result (task, stage, recent units, state).
+Only your latest step stays in context: everything you need is in the latest result (task, stage, recent moves, state).
 [/stateless]
 [pure]
 

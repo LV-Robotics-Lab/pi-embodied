@@ -10,7 +10,9 @@
  * the robot's own tools: only `act`, `finish` and the enabled plugins' `point` / `plan` remain
  * (Show-Harness's pure mode) and the system prompt is ./SYSTEM.md. `--units=both` adds them to the
  * robot's tools and appends the units section to the robot's prompt. `--stateless` keeps only the
- * first user message and the latest observation turn in context.
+ * first user message and the latest observation turn in context. `act`'s parameters follow the
+ * enabled plugins. The episode state (gripper, accumulated yaw, plan, move history) is a
+ * `units_state` session entry whenever it changes, rebuilt at session start on resume and fork.
  *
  * Plugins (`--units-plugins`, default the robot's `plugins` or Show-Harness's zero-shot Franka set):
  * - recovery: reopen after a GRASP that closed on nothing.
@@ -25,18 +27,42 @@
  *   gripper), and MV_UP while holding first turns back (in commands within the robot's `maxYawRad`).
  * - plan: subgoal stages, with deepplan's REASON checkpoint.
  * - point: affordance pixels -> world xyz (robots with `point`).
+ * - mem_text: "Recent moves, newest first" in every result, with the history rules (no oscillation,
+ *   no GRASP in place after an empty one); off, the results carry no move history at all.
+ *
+ * Side VLM calls (./vlm.ts, `--units-vlm-model`, default the session's model):
+ * - `--units-verify=true|false|auto` (auto: on for dual-arm robots, as Show-Harness's dual runner): a `finish`
+ *   claiming success is checked once against the task on the latest camera images; a NOT complete
+ *   verdict refuses it with the verifier's reason and the agent replans (at most once per episode).
+ *   Every check is a `units_verify` session entry.
+ * - `--units-video-ref <mp4>`: `--units-video-ref-frames` frames sampled uniformly are distilled
+ *   into an ordered demo brief (arm, grasp part, destination) that the prompt tells the agent to
+ *   replicate; the brief is a `units_video_ref` session entry. A failed extraction fails closed.
  *
  * Copyright 2026 The Show-Harness Authors (github.com/showlab/Show-Harness @137d571).
  * Licensed under the Apache License, Version 2.0.
  * Modified by pi-embodied: core/action_units.py, interpreters/ (unit -> base-frame motion) and
  * plugins/{recovery,auto_release,proprioception,variable_step,action_chunk,rotation,affordance,
- * subgoal,deepplan} ported as pi tools.
+ * subgoal,deepplan,mem_text} ported as pi tools; the final task check and plugins/video_ref in ./vlm.ts.
  */
 
 import { readFileSync } from "node:fs";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import { type ImageContent, StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
+import {
+	askVlm,
+	type DemoBrief,
+	parseJson,
+	parseVerdict,
+	renderBrief,
+	sampleFrames,
+	VIDEO_REF_FRAMES,
+	validateBrief,
+	verifyPrompt,
+	videoRefPrompt,
+} from "./vlm.ts";
 
 /** `pi.events` channel on which this module publishes the robot's `UnitsHandle` at every session start. */
 export const UNITS_EVENT = "pi-embodied:units";
@@ -61,6 +87,8 @@ export type UnitsHandle = {
 	tools: () => readonly string[];
 	/** Why an operator's unit may not run now (the gates an `act` call passes), else undefined. */
 	refuse: () => string | undefined;
+	/** view_select is on this session: `act` takes `view` and passes it on as `Move.view`. */
+	viewSelect?: boolean;
 };
 
 // ---------------------------------------------------------------------------
@@ -83,10 +111,11 @@ export const PLUGINS = [
 	"rotation",
 	"plan",
 	"point",
+	"mem_text",
 ] as const;
 export type Plugin = (typeof PLUGINS)[number];
 /**
- * Show-Harness configs/robot_franka.yaml (zero-shot), plus rotation: here ROTATE_* are offered
+ * Show-Harness configs/robot_franka.yaml (zero-shot, mem_text on), plus rotation: here ROTATE_* are offered
  * whenever the robot has a yaw step, and the plugin keeps wrist-judged moves right after a turn.
  * Affordance (point) is off there too.
  */
@@ -98,17 +127,25 @@ export const DEFAULT_PLUGINS: readonly Plugin[] = [
 	"action_chunk",
 	"rotation",
 	"plan",
+	"mem_text",
 ];
 
-/** One grounded unit: a base-frame translation (m), a yaw about base +z (rad), a gripper command. */
+/**
+ * One grounded unit: a base-frame translation (m), a yaw about base +z (rad), a gripper command.
+ * `continuous`: the same MV_* unit runs next in this act call, so the robot may flow through the join.
+ */
 export type Move = {
 	delta: Vec3;
 	yaw: number;
 	gripper: "open" | "close" | null;
 	arm?: string;
-	/** Another move in the same direction follows at once: servers that chain moves may keep the arm moving. */
 	continuous?: boolean;
+	/** view_select: the view that guided the move (act's `view`, robots with `viewSelect`). */
+	view?: GuideView;
 };
+/** Show-Harness plugins/view_select: WRIST (rule A, the wrist view) or FRONT (rule B, the third-person view). */
+export const GUIDE_VIEWS = ["WRIST", "FRONT"] as const;
+export type GuideView = (typeof GUIDE_VIEWS)[number];
 type Result = AgentToolResult<unknown>;
 export type State = Record<string, unknown>;
 
@@ -145,6 +182,17 @@ export type UnitsSpec = {
 	maxYawRad?: () => number;
 	/** The robot's largest translation per call, m: one `act` call travels at most this in total. */
 	maxMoveM?: () => number;
+	/**
+	 * The robot flows through `continuous` moves: it returns before the arm settles, so the measured
+	 * position lags the command and the stall check waits for the chain's last move.
+	 */
+	chains?: () => boolean;
+	/**
+	 * view_select (Show-Harness plugins/view_select), read at session start: when true, `act` takes
+	 * `view` (which view guided the move) and passes it on in `Move.view`; the robot picks the move's
+	 * frame from it and explains it in `views`.
+	 */
+	viewSelect?: () => boolean;
 	/** Robots that execute `delta` in another frame: the base-frame translation it becomes from `state` (proprioception). */
 	baseDelta?: (delta: Vec3, state: State | undefined) => Vec3;
 	/** Affordance: mark [row, col] fractions (0..1) in a camera image; the marked PNG and world xyz per point. */
@@ -195,6 +243,17 @@ const MAX_YAW = (150 * Math.PI) / 180;
 const NEUTRAL_YAW = (2 * Math.PI) / 180;
 /** The most commands one turn is split into (the 150 deg cap in 5 deg commands). */
 const MAX_YAW_PIECES = 30;
+/** mem_text: moves the "Recent moves" line shows (configs/robot_franka.yaml mem_text_len). */
+const MEM_LEN = 5;
+/** mem_text: the history entry of a GRASP that closed on nothing (core/runners/real.py EMPTY_GRASP_LABEL). */
+const EMPTY_GRASP = "GRASP(empty)";
+/** Verifier: NOT complete verdicts that refuse `finish` per episode (v0.max_replans). */
+const MAX_REPLANS = 1;
+/** Session entries of the verifier's checks and the video_ref brief. */
+export const VERIFY_ENTRY = "units_verify";
+export const VIDEO_REF_ENTRY = "units_video_ref";
+/** Session entry of the episode state (gripper, accumulated yaw, plan, history), rebuilt on resume and fork. */
+export const STATE_ENTRY = "units_state";
 const NOTES = {
 	empty_grasp: "Empty close; do not retry on an edge/corner. Recenter body and confirm depth.",
 	lost_grasp: "Grasp lost; return to GRASP, recenter the object body, then confirm depth.",
@@ -292,6 +351,28 @@ export function units(
 		default: String(spec.coarseStepM ?? 0.04),
 		description: "variable_step: the coarse MV_* step, m",
 	});
+	// A string flag: pi sets a boolean flag to true whatever its value, so a default-on check could not be turned off.
+	pi.registerFlag("units-verify", {
+		type: "string",
+		default: "auto",
+		description:
+			"Units mode: check a success `finish` with one VLM call on the latest images, NOT complete refuses it once (true, false, auto = dual-arm robots)",
+	});
+	pi.registerFlag("units-vlm-model", {
+		type: "string",
+		default: "",
+		description: "Model (provider/id) of the verifier and video_ref calls (default: the session's model)",
+	});
+	pi.registerFlag("units-video-ref", {
+		type: "string",
+		default: "",
+		description: "Units mode: a demo video (mp4) distilled into an ordered brief the agent replicates",
+	});
+	pi.registerFlag("units-video-ref-frames", {
+		type: "string",
+		default: String(VIDEO_REF_FRAMES),
+		description: "video_ref: frames sampled uniformly from the demo video",
+	});
 	/** "pure" (--units / --units=true), "both", or undefined (off). */
 	const mode = (): "pure" | "both" | undefined => {
 		const v = pi.getFlag("units");
@@ -306,6 +387,11 @@ export function units(
 		(name !== "point" || spec.point !== undefined) &&
 		(name !== "rotation" || Boolean(spec.yawStepRad));
 	const armNames = spec.arms ?? [];
+	/** --units-verify: on, off, or auto (Show-Harness's dual runner verifies, its single-arm runners do not). */
+	const verifying = () => {
+		const v = String(pi.getFlag("units-verify") ?? "auto");
+		return v === "auto" ? armNames.length > 1 : v === "true";
+	};
 	const coarse = () => Number(pi.getFlag("units-coarse-step")) || spec.stepM;
 	const high = spec.highAboveTableM ?? 0.08;
 	const wristSignal = () => plugin("variable_step") || plugin("action_chunk") || plugin("rotation");
@@ -322,6 +408,14 @@ export function units(
 	let stages: Stage[] = [];
 	let stage = 0;
 	let targets: Target[] = [];
+	/** Verifier: refusals so far and the latest refusal's reason (shown until a new plan). */
+	let replans = 0;
+	let verdict = "";
+	/** The latest camera images a robot tool returned (the verifier's view). */
+	let images: ImageContent[] = [];
+	/** video_ref: the brief (extracted once per video and frame count) and why it failed. */
+	let demo: { key: string; brief: DemoBrief; indices: number[]; model: string } | undefined;
+	let demoError: string | undefined;
 	/** A new episode or scene reset: the arm is back at its start heading with the gripper open, no plan. */
 	const reset = () => {
 		closed = new Map();
@@ -331,8 +425,74 @@ export function units(
 		stages = [];
 		stage = 0;
 		targets = [];
+		replans = 0;
+		verdict = "";
+		images = [];
 	};
-	pi.on("session_start", reset);
+	/** mem_text: record a unit in the move history (newest last). */
+	const remember = (u: string) => {
+		recent = [...recent, u].slice(-MEM_LEN);
+	};
+	/** The state a resumed or forked session continues from (not the verifier's images, which the next result renews). */
+	const snapshot = () =>
+		JSON.stringify({
+			closed: Object.fromEntries(closed),
+			yaw: Object.fromEntries(yaw),
+			recent,
+			note,
+			stages,
+			stage,
+			targets,
+			replans,
+			verdict,
+		});
+	let saved = snapshot();
+	/** Append the state entry when it changed: the accumulated yaw must survive a resume (the wrist stays turned). */
+	const save = () => {
+		const now = snapshot();
+		if (now === saved) return;
+		saved = now;
+		pi.appendEntry(STATE_ENTRY, JSON.parse(now));
+	};
+	pi.on("session_start", (_event, ctx) => {
+		reset();
+		demoError = undefined;
+		const branch = ctx.sessionManager.getBranch();
+		const custom = (type: string) =>
+			branch
+				.filter((e) => e.type === "custom" && e.customType === type)
+				.map((e) => (e.type === "custom" ? (e.data as Record<string, unknown>) : {}));
+		const last = custom(STATE_ENTRY).pop() as Partial<Record<string, unknown>> | undefined;
+		if (last) {
+			const numbers = (o: unknown) =>
+				new Map(
+					Object.entries((o ?? {}) as Record<string, unknown>).filter(([, v]) => typeof v === "number"),
+				) as Map<string, number>;
+			closed = new Map(
+				Object.entries((last.closed ?? {}) as Record<string, unknown>).map(([k, v]) => [k, v === true]),
+			);
+			yaw = numbers(last.yaw);
+			recent = Array.isArray(last.recent) ? last.recent.map(String) : [];
+			note = String(last.note ?? "");
+			stages = Array.isArray(last.stages) ? (last.stages as Stage[]) : [];
+			stage = Number(last.stage) || 0;
+			targets = Array.isArray(last.targets) ? (last.targets as Target[]) : [];
+			replans = Number(last.replans) || 0;
+			verdict = String(last.verdict ?? "");
+		}
+		saved = snapshot();
+		// A brief extracted earlier in this branch is reused (same video and frame count).
+		const brief = custom(VIDEO_REF_ENTRY)
+			.filter((e) => e.brief)
+			.pop();
+		if (brief)
+			demo = {
+				key: `${brief.video_path}#${brief.num_frames}`,
+				brief: brief.brief as DemoBrief,
+				indices: (brief.sampled_indices as number[]) ?? [],
+				model: String(brief.model ?? ""),
+			};
+	});
 
 	/** Proprioception, or undefined when the robot has none or cannot read it now. */
 	const read = async (arm: string | undefined) => spec.state?.(arm).catch(() => undefined);
@@ -407,40 +567,54 @@ export function units(
 				);
 		}
 		if (note) out.push(`Recovery: ${note}`);
-		out.push(`Recent units: ${recent.slice(-5).join(", ") || "none"}`);
+		if (verdict) out.push(`Verifier: the task is NOT complete: ${verdict}`);
+		if (plugin("mem_text")) out.push(`Recent moves, newest first: ${[...recent].reverse().join(", ") || "none"}`);
 		out.push(`TASK: ${instruction()}`);
 		return text(out.join("\n"));
 	}
 
-	const props: Record<string, TSchema> = {
-		unit: Type.Union(
-			vocab.map((u) => Type.Literal(u)),
-			{ description: "The action unit" },
-		),
-		n: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_REPEAT, description: "Repeat count (default 1)" })),
-	};
-	if (wristSignal())
-		props.target_in_wrist = Type.Optional(
-			Type.Boolean({ description: "WRIST CHECK: is the TARGET visible in the wrist view?" }),
+	/** `act`'s parameters for the enabled plugins (a disabled plugin's parameter is not offered). */
+	function actSchema() {
+		const props: Record<string, TSchema> = {
+			unit: StringEnum(vocab, { description: "The action unit" }),
+			n: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_REPEAT, description: "Repeat count (default 1)" })),
+		};
+		if (wristSignal())
+			props.target_in_wrist = Type.Optional(
+				Type.Boolean({ description: "WRIST CHECK: is the TARGET visible in the wrist view?" }),
+			);
+		if (plugin("action_chunk"))
+			props.plan = Type.Optional(
+				Type.Array(StringEnum(MOVE_UNITS), {
+					maxItems: CHUNK_STEPS,
+					description: `Only with target_in_wrist false: up to ${CHUNK_STEPS} MV_* moves run in order (replaces unit and n)`,
+				}),
+			);
+		if (armNames.length) props.arm = StringEnum(armNames, { description: "Which arm the unit drives" });
+		if (spec.viewSelect?.())
+			props.view = Type.Optional(
+				StringEnum(GUIDE_VIEWS, {
+					description:
+						"VIEW SELECT: the view that guided this move, WRIST (the wrist view) or FRONT (the front view)",
+				}),
+			);
+		return Type.Object(props);
+	}
+	let registered = "";
+	/** (Re-)register `act` when its schema changed: at load from the flag defaults, at session start from the flags. */
+	function registerAct() {
+		const schema = actSchema();
+		if (JSON.stringify(schema) === registered) return;
+		registered = JSON.stringify(schema);
+		tool(
+			"act",
+			`Execute one action unit (${vocab.join(", ")}), repeated n times. MV_* move the gripper ~${Math.round(spec.stepM * 100)} cm${spec.yawStepRad ? `, ROTATE_* turn it ~${Math.round((spec.yawStepRad * 180) / Math.PI)} deg` : ""}; GRASP closes, RELEASE opens, STOP holds one step, DONE means the task is complete (call finish). Returns the new images and state.`,
+			schema,
+			(params, signal) => actAndSave(params as ActParams, signal),
 		);
-	if (plugin("action_chunk"))
-		props.plan = Type.Optional(
-			Type.Array(Type.Union(MOVE_UNITS.map((u) => Type.Literal(u))), {
-				maxItems: CHUNK_STEPS,
-				description: `Only with target_in_wrist false: up to ${CHUNK_STEPS} MV_* moves run in order (replaces unit and n)`,
-			}),
-		);
-	if (armNames.length)
-		props.arm = Type.Union(
-			armNames.map((a) => Type.Literal(a)),
-			{ description: "Which arm the unit drives" },
-		);
-	tool(
-		"act",
-		`Execute one action unit (${vocab.join(", ")}), repeated n times. MV_* move the gripper ~${Math.round(spec.stepM * 100)} cm${spec.yawStepRad ? `, ROTATE_* turn it ~${Math.round((spec.yawStepRad * 180) / Math.PI)} deg` : ""}; GRASP closes, RELEASE opens, STOP holds one step, DONE means the task is complete (call finish). Returns the new images and state.`,
-		Type.Object(props),
-		(params, signal) => act(params as ActParams, signal),
-	);
+	}
+	registerAct();
+	pi.on("session_start", registerAct);
 
 	type ActParams = {
 		unit: string;
@@ -449,7 +623,16 @@ export function units(
 		target_in_wrist?: boolean;
 		plan?: string[];
 		operator?: boolean;
+		view?: string;
 	};
+	/** `act`, then the state entry (the agent's and the operator's units both change the episode state). */
+	async function actAndSave(params: ActParams, signal: AbortSignal | undefined) {
+		try {
+			return await act(params, signal);
+		} finally {
+			save();
+		}
+	}
 	/** `act`'s body; ../gumi (dashboard teleop, DAgger takeover) runs it too, through the handle below. */
 	async function act(params: ActParams, signal: AbortSignal | undefined): Promise<Result> {
 		const p = params as {
@@ -459,12 +642,23 @@ export function units(
 			target_in_wrist?: boolean;
 			plan?: MoveUnit[];
 			operator?: boolean;
+			view?: GuideView;
 		};
 		const { unit, arm, target_in_wrist: inWrist } = p;
 		// A human's unit (GUMI teleop) runs as pressed: the agent-side assists would override the operator
 		// (recovery reopens a GRASP that closed on air), as in Show-Harness's collectors.
 		const assist = (name: Plugin) => !p.operator && plugin(name);
 		const key = arm ?? "";
+		// The schema offers these only with their plugins; a stale or hand-written call is refused, not silently dropped.
+		if (p.plan !== undefined && !plugin("action_chunk"))
+			throw new Error("act: `plan` needs the action_chunk plugin (--units-plugins)");
+		if (p.view !== undefined && !(spec.viewSelect?.() && (GUIDE_VIEWS as readonly string[]).includes(p.view)))
+			throw new Error("act: `view` needs the robot's view select (WRIST or FRONT)");
+		if (p.target_in_wrist !== undefined && !wristSignal())
+			throw new Error(
+				"act: `target_in_wrist` needs the variable_step, action_chunk or rotation plugin (--units-plugins)",
+			);
+		if (demoError) return { content: [text(`video_ref failed: ${demoError}`)], details: { unit, error: demoError } };
 		if (unit === "DONE")
 			return {
 				content: [text("DONE: if the images show the task complete, call `finish` now; otherwise keep acting.")],
@@ -488,7 +682,7 @@ export function units(
 		let travelled = 0;
 		// A recovery note lasts until the next GRASP.
 		if (queue.includes("GRASP")) note = "";
-		for (const u of queue) {
+		for (const [index, u] of queue.entries()) {
 			const before = await read(arm);
 			const acc = yaw.get(key) ?? 0;
 			let label: string = u;
@@ -518,6 +712,8 @@ export function units(
 				break;
 			}
 			if (arm) move.arm = arm;
+			if (p.view) move.view = p.view;
+			if (isMove(u) && label === u && queue[index + 1] === u) move.continuous = true;
 			for (let i = 0; i < parts; i++) {
 				const piece: Move = i ? { ...move, delta: [0, 0, 0], gripper: null } : move;
 				last = await spec.apply(parts > 1 ? { ...piece, yaw: move.yaw / parts } : piece, signal);
@@ -526,7 +722,8 @@ export function units(
 			}
 			travelled += dist;
 			ran.push(label);
-			recent.push(label);
+			// mem_text records moves, turns and grasps (not STOP / RELEASE), as core/runners/real.py.
+			if (isMove(u) || u === "GRASP" || u === "ROTATE_CW" || u === "ROTATE_CCW") remember(u);
 			if (move.gripper) closed.set(key, move.gripper === "close");
 			const after = await read(arm);
 			if (last && halted(last)) break;
@@ -534,7 +731,9 @@ export function units(
 			const [p0, p1] = [eef(before), eef(after)];
 			const base = spec.baseDelta?.(move.delta, before) ?? move.delta;
 			const commanded = Math.hypot(...base);
-			if (plugin("proprioception") && p0 && p1 && commanded > 0) {
+			// A chained move returned before the arm settled: its lagging position is not a stall.
+			const settling = move.continuous === true && spec.chains?.() === true;
+			if (plugin("proprioception") && !settling && p0 && p1 && commanded > 0) {
 				const moved = [0, 1, 2].reduce((s, k) => s + (p1[k] - p0[k]) * base[k], 0) / commanded;
 				if (moved < commanded * STALL_RATIO) {
 					lines.push(
@@ -548,14 +747,14 @@ export function units(
 			// recovery: a GRASP that closed on nothing is reopened at once.
 			if (u === "GRASP" && assist("recovery") && empty(after)) {
 				last = await reopen(arm, signal);
-				recent.push("RELEASE(recovery)");
+				// The fresh approach starts from a clean history holding only the failed GRASP.
+				recent = [EMPTY_GRASP];
 				note = NOTES.empty_grasp;
 				break;
 			}
 			// auto_release: a closed gripper that collapsed (the object slipped out) is reopened.
 			if (u !== "GRASP" && assist("auto_release") && closed.get(key) && empty(after)) {
 				last = await reopen(arm, signal);
-				recent.push("RELEASE(auto)");
 				note = NOTES.lost_grasp;
 				break;
 			}
@@ -577,11 +776,12 @@ export function units(
 		vocabulary: vocab,
 		stepM: spec.stepM,
 		yawStepRad: spec.yawStepRad,
-		run: act,
+		run: actAndSave,
 		state: spec.state,
+		viewSelect: false,
 		...base,
 	};
-	pi.on("session_start", () => pi.events.emit(UNITS_EVENT, handle));
+	pi.on("session_start", () => pi.events.emit(UNITS_EVENT, { ...handle, viewSelect: spec.viewSelect?.() === true }));
 
 	if (spec.point) {
 		const { cameras, locate } = spec.point;
@@ -589,10 +789,7 @@ export function units(
 			"point",
 			"Affordance: mark the exact gripper contact point(s) in one camera's current image, [y, x] on a 0-1000 grid (y from the top, x from the left). Returns the marked image and the world xyz per point where the robot has depth; later act results report the gripper-to-point offset. A new call with the same label replaces that point.",
 			Type.Object({
-				camera: Type.Union(
-					cameras.map((c) => Type.Literal(c)),
-					{ description: `Camera (${cameras.join(", ")})` },
-				),
+				camera: StringEnum(cameras, { description: `Camera (${cameras.join(", ")})` }),
 				points: Type.Array(
 					Type.Object({
 						label: Type.String({ description: "What the point is, e.g. 'bowl rim' or 'place spot'" }),
@@ -611,6 +808,7 @@ export function units(
 					xyz: xyz[i] ? xyz[i].map(r3) : null,
 				}));
 				targets = [...targets.filter((t) => !marked.some((m) => m.label === t.label)), ...marked].slice(-4);
+				save();
 				const content: Result["content"] = [text(JSON.stringify({ points: marked }))];
 				if (image) content.push({ type: "image", data: image.toString("base64"), mimeType: "image/png" });
 				return { content, details: { points: marked } };
@@ -641,6 +839,10 @@ export function units(
 		async ({ stages: next, done }) => {
 			if (done && stage < stages.length) stage++;
 			if (next?.length) stages = [...stages.slice(0, stage), ...next];
+			// A new stage starts with a clean move history (core/runners/real.py); a new plan answers the verifier.
+			if (done || next?.length) recent = [];
+			if (next?.length) verdict = "";
+			save();
 			const lines = stages.map(
 				(s, i) =>
 					`${i === stage ? ">" : i < stage ? "x" : " "} ${i + 1}. [${s.motion}] ${s.target}: ${s.completion}`,
@@ -648,6 +850,111 @@ export function units(
 			return { content: [text(lines.length ? lines.join("\n") : "No plan yet.")], details: { stage, stages } };
 		},
 	);
+
+	// The verifier judges the latest camera images: the newest robot tool result that carries any
+	// (`point`'s marked image is not a camera view).
+	pi.on("tool_result", (event) => {
+		if (!mode() || event.toolName === "point" || !Array.isArray(event.content)) return undefined;
+		const shown = event.content.filter((c): c is ImageContent => c.type === "image");
+		if (shown.length) images = shown;
+		return undefined;
+	});
+
+	// The final task check (core/runners/dual.py _completion_outcome): a success claim is judged once
+	// more from the images; NOT complete refuses `finish` (with the reason) while the replan budget lasts.
+	pi.on("tool_call", async (event, ctx) => {
+		if (event.toolName !== "finish" || !mode() || !verifying()) return undefined;
+		const status = (event.input as { status?: unknown }).status;
+		if (status !== undefined && status !== "success") return undefined;
+		const entry: Record<string, unknown> = { status, replans, cameras: images.length };
+		let refuse = false;
+		if (!images.length) entry.skipped = "no camera images yet";
+		else {
+			const started = Date.now();
+			try {
+				const reply = await askVlm(
+					ctx,
+					String(pi.getFlag("units-vlm-model") ?? ""),
+					pi.getThinkingLevel(),
+					verifyPrompt(instruction(), armNames, images.length),
+					images,
+					ctx.signal,
+				);
+				const v = parseVerdict(reply.text);
+				Object.assign(entry, { model: reply.model, complete: v.complete, reason: v.reason, raw: reply.text });
+				if (!v.available) entry.unavailable = true;
+				refuse = !v.complete && replans < MAX_REPLANS;
+			} catch (err) {
+				// A verifier failure never turns a finished episode into a replan.
+				Object.assign(entry, { complete: true, error: err instanceof Error ? err.message : String(err) });
+			}
+			entry.ms = Date.now() - started;
+		}
+		entry.refused = refuse;
+		pi.appendEntry(VERIFY_ENTRY, entry);
+		if (!refuse) return undefined;
+		replans++;
+		verdict = String(entry.reason ?? "");
+		// Replan from the live scene: the old plan and move history no longer apply.
+		stages = [];
+		stage = 0;
+		recent = [];
+		note = "";
+		save();
+		return {
+			block: true,
+			reason: `finish refused: the verifier judged the task NOT complete (${verdict}). Replan the remaining work from the live images${plugin("plan") ? " (send new stages with `plan`)" : ""} and continue with \`act\`; call \`finish\` again once the task is visibly complete. This is the only refusal.`,
+		};
+	});
+
+	// video_ref: extract the demo brief once, before the first prompt that needs it (plugins/video_ref).
+	pi.on("before_agent_start", async (_event, ctx) => {
+		const path = String(pi.getFlag("units-video-ref") ?? "");
+		if (!mode() || !path) return undefined;
+		const frames = Number(pi.getFlag("units-video-ref-frames")) || VIDEO_REF_FRAMES;
+		const key = `${path}#${frames}`;
+		if (demo?.key === key || demoError) return undefined;
+		try {
+			const { indices, images: shown } = await sampleFrames(path, frames, String(pi.getFlag("ffmpeg") || "ffmpeg"));
+			const prompt = videoRefPrompt(shown.length, armNames);
+			const errors: string[] = [];
+			// A reply that is not a usable brief is asked once more (their guided-JSON try, then free JSON).
+			for (let i = 0; i < 2 && demo?.key !== key; i++) {
+				const reply = await askVlm(
+					ctx,
+					String(pi.getFlag("units-vlm-model") ?? ""),
+					pi.getThinkingLevel(),
+					prompt,
+					shown,
+					ctx.signal,
+				);
+				try {
+					demo = { key, brief: validateBrief(parseJson(reply.text), armNames), indices, model: reply.model };
+				} catch (err) {
+					errors.push(err instanceof Error ? err.message : String(err));
+				}
+			}
+			if (!demo || demo.key !== key) throw new Error(errors.join(" | "));
+			pi.appendEntry(VIDEO_REF_ENTRY, {
+				video_path: path,
+				num_frames: frames,
+				sampled_indices: demo.indices,
+				model: demo.model,
+				brief: demo.brief,
+			});
+		} catch (err) {
+			// A replication run without the brief would silently become ordinary planning: fail closed.
+			demoError = `could not extract a demo brief from ${path}: ${err instanceof Error ? err.message : String(err)}`;
+			pi.appendEntry(VIDEO_REF_ENTRY, { video_path: path, num_frames: frames, error: demoError });
+			if (ctx.hasUI) ctx.ui.notify(`video_ref: ${demoError}`, "error");
+			else {
+				console.error(`[units] video_ref: ${demoError}`);
+				process.exitCode = 1;
+				ctx.shutdown();
+			}
+		}
+		return undefined;
+	});
 
 	pi.on("context", (event) => {
 		if (!mode() || pi.getFlag("stateless") !== true) return undefined;
@@ -657,7 +964,11 @@ export function units(
 
 	return {
 		mode,
-		reset,
+		/** A scene reset: the arm is back at its start heading with the gripper open, no plan. */
+		reset: () => {
+			reset();
+			save();
+		},
 		/** The units tools: act and the enabled plugins' tools (pure mode adds finish). */
 		tools: () => ["act", ...(plugin("point") ? ["point"] : []), ...(plugin("plan") ? ["plan"] : [])],
 		/** Pure mode: the whole prompt. Both mode: the section appended to the robot's prompt. */
@@ -675,6 +986,8 @@ export function units(
 					plugin(name) && (!["recovery", "auto_release"].includes(name) || spec.emptyWidthM !== undefined),
 				);
 			p = section(p, "stateless", pi.getFlag("stateless") === true);
+			const brief = demo?.key.startsWith(`${pi.getFlag("units-video-ref")}#`) ? demo.brief : undefined;
+			p = section(p, "video_ref", brief !== undefined);
 			const vars: Record<string, string> = {
 				arm: armNames.length ? `with ${armNames.length} arms` : "arm",
 				task: instruction(),
@@ -686,6 +999,8 @@ export function units(
 				yaw_deg: String(Math.round(((spec.yawStepRad ?? 0) * 180) / Math.PI)),
 				arms: armNames.join(", "),
 				proprio_note: plugin("proprioception") ? ", the gripper's height and width, blocked moves" : "",
+				mem_note: plugin("mem_text") ? ", the recent moves (newest first)" : "",
+				video_ref: brief ? renderBrief(brief, armNames) : "",
 			};
 			return p.replace(/\{\{(\w+)\}\}/g, (m, k: string) => vars[k] ?? m).trim();
 		},

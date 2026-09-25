@@ -253,6 +253,8 @@ export default function franka(pi: ExtensionAPI) {
 	let out = "";
 	let lastStates: unknown;
 	let caps: Caps = { backend: "rlinf", has_vla: true };
+	/** env.get_env_meta().smooth.chaining: move_delta takes `continuous` (polymetis smooth + blend). */
+	let chaining = false;
 	const steps: Step[] = [];
 	const task = () => robot.task.task;
 	const robot = defineRobot(pi, {
@@ -301,6 +303,8 @@ export default function franka(pi: ExtensionAPI) {
 			},
 			stepM: 0.02,
 			yawStepRad: 0.15,
+			// A continuous move_delta returns before the arm settles (Polymetis smooth chaining).
+			chains: () => chaining,
 			maxYawRad: () => maxRotate(),
 			maxMoveM: () => moveLimit(maxMove(), setup?.task.constraints),
 			apply: (move, signal) => unitStep(move, signal),
@@ -500,7 +504,11 @@ export default function franka(pi: ExtensionAPI) {
 			if (Math.hypot(...move.delta) > 0) {
 				checkMove(move.delta, maxMove(), setup?.task.constraints);
 				checkWorkspace(move.delta);
-				out.move = await motion("env.move_delta", { delta_xyz: NdArray.f32(move.delta) }, signal);
+				out.move = await motion(
+					"env.move_delta",
+					{ delta_xyz: NdArray.f32(move.delta), ...(chaining && move.continuous ? { continuous: true } : {}) },
+					signal,
+				);
 			}
 			if (move.yaw) {
 				if (!(Math.abs(move.yaw) <= maxRotate()))
@@ -1012,6 +1020,7 @@ export default function franka(pi: ExtensionAPI) {
 		]);
 		const meta = await envRpc.call<Json>("env.get_env_meta", {}, 30_000);
 		caps = { backend: "rlinf", has_vla: true, ...(meta.capabilities ?? {}) };
+		chaining = meta.smooth?.chaining === true;
 		if (backend && caps.backend !== backend)
 			throw new Error(`--robot-env serves the ${caps.backend} backend, not --robot-backend ${backend}`);
 		if (!caps.has_vla && (vlaRpc || setup.task.name === "vla_grasp"))

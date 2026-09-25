@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,20 +14,27 @@ import {
 	ground,
 	latestTurn,
 	type Move,
+	STATE_ENTRY,
 	UNITS_EVENT,
 	type UnitsHandle,
 	type UnitsSpec,
+	VERIFY_ENTRY,
+	VIDEO_REF_ENTRY,
 } from "../src/units/index.ts";
+import { parseVerdict, renderBrief, validateBrief } from "../src/units/vlm.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
-/** A stub pi that runs handlers in registration order, like pi's runner. */
-function fakePi(flagValues: Record<string, unknown> = {}) {
+/** A stub pi that runs handlers in registration order, like pi's runner; `vlm` answers side model calls in order. */
+function fakePi(flagValues: Record<string, unknown> = {}, vlm: (string | Error)[] = [], branch: any[] = []) {
 	const handlers = new Map<string, Handler[]>();
 	const flags: Record<string, unknown> = {};
 	const tools = new Map<string, any>();
 	let active: string[] = [];
 	const emitted = new Map<string, unknown>();
+	const entries: { customType: string; data: any }[] = [];
+	/** The side model calls: the model and the user message. */
+	const asked: { model: string; content: any[] }[] = [];
 	const pi = {
 		on: (name: string, fn: Handler) => handlers.set(name, [...(handlers.get(name) ?? []), fn]),
 		registerFlag: (name: string, o: { default?: unknown }) => {
@@ -39,7 +47,11 @@ function fakePi(flagValues: Record<string, unknown> = {}) {
 			active = names;
 		},
 		getActiveTools: () => active,
-		appendEntry: () => {},
+		appendEntry: (customType: string, data: unknown) => {
+			entries.push({ customType, data });
+			branch.push({ type: "custom", customType, data });
+		},
+		getThinkingLevel: () => "low",
 		events: { emit: (channel: string, data: unknown) => emitted.set(channel, data), on: () => () => {} },
 	} as unknown as ExtensionAPI;
 	const notes: string[] = [];
@@ -53,7 +65,19 @@ function fakePi(flagValues: Record<string, unknown> = {}) {
 			select: async () => "done",
 		},
 		shutdown: () => {},
-		sessionManager: { getBranch: () => [], getSessionDir: () => dir },
+		sessionManager: { getBranch: () => branch, getSessionDir: () => dir },
+		model: { provider: "relay", id: "planner" },
+		modelRegistry: {
+			find: (provider: string, id: string) => ({ provider, id }),
+			streamSimple: (model: { provider: string; id: string }, context: { messages: { content: any[] }[] }) => ({
+				result: async () => {
+					asked.push({ model: `${model.provider}/${model.id}`, content: context.messages[0].content });
+					const reply = vlm.shift() ?? "";
+					if (reply instanceof Error) return { stopReason: "error", errorMessage: reply.message, content: [] };
+					return { stopReason: "stop", content: [{ type: "text", text: reply }] };
+				},
+			}),
+		},
 	};
 	async function emit(name: string, event: Record<string, unknown> = {}) {
 		let result: any;
@@ -65,7 +89,11 @@ function fakePi(flagValues: Record<string, unknown> = {}) {
 	}
 	const run = async (name: string, params: unknown) =>
 		(await tools.get(name).execute("id", params, undefined, undefined, ctx)) as any;
-	return { pi, emit, run, tools, notes, emitted, active: () => active };
+	/** A flag given on the command line: pi parses flags after the extensions load. */
+	const setFlag = (name: string, value: unknown) => {
+		flags[name] = value;
+	};
+	return { pi, emit, run, tools, notes, emitted, entries, asked, branch, setFlag, active: () => active };
 }
 
 const VECTORS: UnitsSpec["vectors"] = {
@@ -81,17 +109,26 @@ const VECTORS: UnitsSpec["vectors"] = {
 async function toyRobot(
 	flags: Record<string, unknown>,
 	o: {
+		vlm?: (string | Error)[];
+		branch?: any[];
 		yaw?: number;
 		onClose?: () => number;
 		blocked?: boolean;
 		prompt?: string;
 		maxYaw?: number;
 		maxMove?: number;
+		chains?: boolean;
+		arms?: string[];
+		viewSelect?: boolean;
 		reset?: () => Promise<Record<string, unknown>>;
 	} = {},
 ) {
 	// The Show-Harness step rules: fixed 2 cm steps unless a test turns variable_step on.
-	const f = fakePi({ units: true, "units-plugins": "recovery,auto_release,proprioception,plan", ...flags });
+	const f = fakePi(
+		{ units: true, "units-plugins": "recovery,auto_release,proprioception,plan,mem_text", ...flags },
+		o.vlm,
+		o.branch,
+	);
 	const moves: Move[] = [];
 	const pos = [0.5, 0, 0.2];
 	let width = 0.08;
@@ -101,6 +138,9 @@ async function toyRobot(
 		...(o.yaw ? { yawStepRad: o.yaw } : {}),
 		...(o.maxYaw !== undefined ? { maxYawRad: () => o.maxYaw as number } : {}),
 		...(o.maxMove !== undefined ? { maxMoveM: () => o.maxMove as number } : {}),
+		...(o.chains !== undefined ? { chains: () => o.chains as boolean } : {}),
+		...(o.arms ? { arms: o.arms } : {}),
+		...(o.viewSelect !== undefined ? { viewSelect: () => o.viewSelect as boolean } : {}),
 		apply: async (move) => {
 			moves.push(move);
 			if (!o.blocked) for (let i = 0; i < 3; i++) pos[i] += move.delta[i];
@@ -189,10 +229,15 @@ test("act repeats a unit n times and reports proprioception", async () => {
 	const f = await toyRobot({});
 	const r = await f.run("act", { unit: "MV_LEFT", n: 3 });
 	assert.equal(f.moves.length, 3);
-	assert.deepEqual(f.moves[0], { delta: [0, -0.02, 0], yaw: 0, gripper: null });
+	assert.deepEqual(f.moves[0], { delta: [0, -0.02, 0], yaw: 0, gripper: null, continuous: true });
+	assert.deepEqual(
+		f.moves.map((m) => m.continuous),
+		[true, true, undefined],
+		"continuous while the same MV_* unit runs next in this call",
+	);
 	assert.match(head(r), /^units: MV_LEFT x3\n/);
 	assert.match(head(r), /20\.0 cm above the table; width 8\.0 cm, commanded OPEN/);
-	assert.match(head(r), /Recent units: MV_LEFT, MV_LEFT, MV_LEFT/);
+	assert.match(head(r), /Recent moves, newest first: MV_LEFT, MV_LEFT, MV_LEFT/);
 	assert.equal(r.content[1].text, "obs", "the robot's observation follows the units block");
 	const done = await f.run("act", { unit: "DONE" });
 	assert.match(done.content[0].text, /call `finish`/);
@@ -338,6 +383,10 @@ test("action_chunk: a plan of distinct moves runs only while the target is not i
 		],
 	);
 	assert.match(head(far), /^units: MV_FWD, MV_LEFT, MV_DOWN\n/);
+	assert.ok(
+		f.moves.every((m) => !m.continuous),
+		"distinct moves do not chain",
+	);
 	const near = await f.run("act", { unit: "MV_LEFT", target_in_wrist: true, plan: ["MV_FWD", "MV_FWD"] });
 	assert.equal(f.moves.length, 4, "near the target one unit runs");
 	assert.deepEqual(f.moves.at(-1)?.delta, [0, -0.02, 0]);
@@ -507,4 +556,333 @@ test("an operator's unit waits for the operator's scene confirmation, like the a
 	fail = false;
 	await f.run("request_scene_reset", { reason: "retry" });
 	assert.equal(handle.refuse(), undefined);
+});
+
+test("mem_text: recent moves newest first, the history rules, and resets on empty grasps and stages", async () => {
+	const f = await toyRobot({}, { onClose: () => 0.001 });
+	await f.run("act", { unit: "MV_LEFT" });
+	await f.run("act", { unit: "STOP" });
+	const r = head(await f.run("act", { unit: "MV_FWD", n: 2 }));
+	assert.match(r, /Recent moves, newest first: MV_FWD, MV_FWD, MV_LEFT\n/, "STOP is not a move");
+	// An empty GRASP leaves only itself in the history, so the model sees it and does not grasp in place again.
+	assert.match(head(await f.run("act", { unit: "GRASP" })), /Recent moves, newest first: GRASP\(empty\)\n/);
+	for (let i = 0; i < 6; i++) await f.run("act", { unit: "MV_UP" });
+	assert.match(head(await f.run("act", { unit: "STOP" })), /newest first: MV_UP, MV_UP, MV_UP, MV_UP, MV_UP\n/);
+	await f.run("plan", { stages: [{ motion: "GRASP", target: "cube", completion: "held" }] });
+	assert.match(head(await f.run("act", { unit: "STOP" })), /newest first: none\n/, "a new stage starts clean");
+	const prompt = (await f.emit("before_agent_start")).systemPrompt as string;
+	assert.match(
+		prompt,
+		/If the recent moves show GRASP\(empty\) \(a GRASP that closed on nothing\), do not GRASP in place again/,
+	);
+	assert.match(
+		prompt,
+		/Do not undo the newest recent move \(MV_LEFT \/ MV_RIGHT, MV_FWD \/ MV_BACK\) unless the images show it overshot/,
+	);
+	assert.match(prompt, /units block: what ran, the recent moves \(newest first\), the gripper's height/);
+	// Off: no move history anywhere.
+	const off = await toyRobot({ "units-plugins": "proprioception" });
+	assert.doesNotMatch(head(await off.run("act", { unit: "MV_LEFT" })), /Recent/);
+	assert.doesNotMatch((await off.emit("before_agent_start")).systemPrompt, /undo the newest|recent moves/);
+	// Stateless: the history lives in the observation, so it stays in the kept turn.
+	const s = await toyRobot({ stateless: true });
+	await s.run("act", { unit: "MV_LEFT" });
+	assert.match(head(await s.run("act", { unit: "MV_BACK" })), /newest first: MV_BACK, MV_LEFT/);
+	assert.match(
+		(await s.emit("before_agent_start")).systemPrompt,
+		/Do not undo the newest recent move[\s\S]*latest result \(task, stage, recent moves/,
+	);
+	assert.match(String(s.pi.getFlag("units-plugins")), /mem_text/);
+	const defaults = fakePi({ units: "true" });
+	franka(defaults.pi);
+	assert.match(
+		String(defaults.pi.getFlag("units-plugins")),
+		/(^|,)mem_text(,|$)/,
+		"on by default, as in Show-Harness",
+	);
+});
+
+test("verifier: a success finish is checked once on the latest images; NOT complete refuses it once", async () => {
+	const no = '```json\n{"complete": false, "reason": "the soup can is beside the basket"}\n```';
+	const f = await toyRobot({ "units-verify": "true", "units-vlm-model": "selfhost/muse" }, { vlm: [no, no] });
+	await f.run("plan", { stages: [{ motion: "GRASP", target: "soup", completion: "held" }] });
+	const obs = await f.run("act", { unit: "MV_LEFT" });
+	await f.emit("tool_result", { toolName: "act", content: obs.content });
+	await f.emit("tool_result", {
+		toolName: "point",
+		content: [{ type: "image", data: "marked", mimeType: "image/png" }],
+	});
+	const first = await f.emit("tool_call", { toolName: "finish", input: { status: "success", summary: "done" } });
+	assert.equal(first?.block, true);
+	assert.match(first.reason, /verifier judged the task NOT complete \(the soup can is beside the basket\)/);
+	assert.match(first.reason, /send new stages with `plan`/);
+	assert.equal(f.asked.length, 1);
+	assert.equal(f.asked[0].model, "selfhost/muse");
+	assert.match(f.asked[0].content[0].text, /TASK: put the cube in the bowl[\s\S]*Return JSON only/);
+	assert.deepEqual(
+		f.asked[0].content.slice(1).map((c: any) => c.data),
+		[""],
+		"the camera images of the latest robot result, not point's marked image",
+	);
+	// The replan starts from a clean plan and history, and the reason stays in the observation.
+	const r = head(await f.run("act", { unit: "MV_RIGHT" }));
+	assert.doesNotMatch(r, /STAGE/);
+	assert.match(r, /Verifier: the task is NOT complete: the soup can is beside the basket/);
+	assert.match(r, /newest first: MV_RIGHT\n/);
+	// The replan budget is one: the second NOT complete is recorded but lets finish through.
+	assert.equal(
+		await f.emit("tool_call", { toolName: "finish", input: { status: "success", summary: "done" } }),
+		undefined,
+	);
+	const checks = f.entries.filter((e) => e.customType === VERIFY_ENTRY).map((e) => e.data);
+	assert.deepEqual(
+		checks.map((c) => [c.complete, c.refused, c.model]),
+		[
+			[false, true, "selfhost/muse"],
+			[false, false, "selfhost/muse"],
+		],
+	);
+	// A failure claim is not checked; without the flag nothing is checked.
+	assert.equal(
+		await f.emit("tool_call", { toolName: "finish", input: { status: "failure", summary: "x" } }),
+		undefined,
+	);
+	assert.equal(f.asked.length, 2);
+	const off = await toyRobot({}, { vlm: [no] });
+	await off.emit("tool_result", { toolName: "act", content: obs.content });
+	assert.equal(
+		await off.emit("tool_call", { toolName: "finish", input: { status: "success", summary: "" } }),
+		undefined,
+	);
+	assert.equal(off.asked.length, 0);
+});
+
+test("verifier: an unavailable or failed check accepts the finish; dual-arm robots verify by default", async () => {
+	for (const reply of ["I think it is done.", new Error("503")]) {
+		const f = await toyRobot({ "units-verify": "true" }, { vlm: [reply] });
+		const obs = await f.run("act", { unit: "STOP" });
+		await f.emit("tool_result", { toolName: "act", content: obs.content });
+		assert.equal(
+			await f.emit("tool_call", { toolName: "finish", input: { status: "success", summary: "" } }),
+			undefined,
+		);
+		const [check] = f.entries.filter((e) => e.customType === VERIFY_ENTRY).map((e) => e.data);
+		assert.equal(check.complete, true);
+		assert.equal(check.refused, false);
+		assert.equal(f.asked[0].model, "relay/planner", "the session's model by default");
+	}
+	const none = await toyRobot({ "units-verify": "true" }, { vlm: ['{"complete": false, "reason": "x"}'] });
+	assert.equal(
+		await none.emit("tool_call", { toolName: "finish", input: { status: "success", summary: "" } }),
+		undefined,
+	);
+	assert.equal(none.entries.find((e) => e.customType === VERIFY_ENTRY)?.data.skipped, "no camera images yet");
+	assert.deepEqual(parseVerdict('noise "complete": false, more'), {
+		complete: false,
+		reason: 'noise "complete": false, more',
+		available: true,
+	});
+	// auto: dual-arm robots verify, single-arm ones do not; the toy robot has one arm.
+	const img = [{ type: "image", data: "", mimeType: "image/png" }];
+	const claim = { toolName: "finish", input: { status: "success", summary: "" } };
+	const one = await toyRobot({}, { vlm: ['{"complete": false, "reason": "x"}'] });
+	await one.emit("tool_result", { toolName: "act", content: img });
+	assert.equal(await one.emit("tool_call", claim), undefined);
+	assert.equal(one.asked.length, 0);
+	assert.equal(one.pi.getFlag("units-verify"), "auto");
+	const two = await toyRobot({}, { arms: ["left", "right"], vlm: ['{"complete": false, "reason": "x"}'] });
+	await two.emit("tool_result", { toolName: "act", content: img });
+	assert.equal((await two.emit("tool_call", claim))?.block, true);
+	const off = await toyRobot({ "units-verify": "false" }, { arms: ["left", "right"], vlm: ["{}"] });
+	await off.emit("tool_result", { toolName: "act", content: img });
+	assert.equal(await off.emit("tool_call", claim), undefined);
+	assert.equal(off.asked.length, 0);
+});
+
+const hasFfmpeg = (() => {
+	try {
+		execFileSync("ffmpeg", ["-version"], { stdio: "ignore" });
+		return true;
+	} catch {
+		return false;
+	}
+})();
+
+test(
+	"video_ref: uniform frames -> one analyst call -> the demo brief in the prompt",
+	{ skip: !hasFfmpeg },
+	async () => {
+		const dir = realpathSync(mkdtempSync(join(tmpdir(), "video-ref-")));
+		const mp4 = join(dir, "demo.mp4");
+		execFileSync("ffmpeg", [
+			"-v",
+			"error",
+			"-f",
+			"lavfi",
+			"-i",
+			"testsrc=size=640x360:rate=20",
+			"-frames:v",
+			"30",
+			mp4,
+		]);
+		const brief = JSON.stringify({
+			task: "put the soup in the basket",
+			operations: [
+				{ action: "pick up", object: "red soup can", grasp: "body", destination: "-" },
+				{ action: "place", object: "red soup can", grasp: "-", destination: "inside the basket" },
+			],
+		});
+		const f = await toyRobot({ "units-video-ref": mp4 }, { vlm: [brief] });
+		const prompt = (await f.emit("before_agent_start")).systemPrompt as string;
+		assert.match(prompt, /REFERENCE DEMO -- a demonstration video of this task was analyzed\. REPLICATE it\./);
+		assert.match(prompt, /1\. pick up red soup can -- grasp body\n2\. place red soup can -> inside the basket\n/);
+		assert.equal(f.asked.length, 1);
+		const images = f.asked[0].content.filter((c: any) => c.type === "image");
+		assert.equal(images.length, 8);
+		assert.match(f.asked[0].content[0].text, /ROLE: DemoVideoAnalyst\nYou see 8 frames[\s\S]*performed by ONE arm/);
+		assert.doesNotMatch(f.asked[0].content[0].text, /"arm"/);
+		const width = Buffer.from(images[0].data, "base64").readUInt32BE(16);
+		assert.equal(width, 512, "frames are downscaled to 512 px");
+		const [entry] = f.entries.filter((e) => e.customType === VIDEO_REF_ENTRY).map((e) => e.data);
+		assert.deepEqual(entry.sampled_indices, [0, 4, 8, 12, 17, 21, 25, 29]);
+		// Once per video: the next prompt reuses the brief.
+		await f.emit("before_agent_start");
+		assert.equal(f.asked.length, 1);
+		// Two unusable replies fail closed: act refuses and the error is shown.
+		const bad = await toyRobot({ "units-video-ref": mp4 }, { vlm: ["no json", '{"task": ""}'] });
+		await bad.emit("before_agent_start");
+		assert.equal(bad.asked.length, 2);
+		assert.match(bad.notes.join("\n"), /video_ref: could not extract a demo brief/);
+		assert.match(head(await bad.run("act", { unit: "MV_LEFT" })), /video_ref failed/);
+		assert.equal(bad.moves.length, 0);
+		const missing = await toyRobot({ "units-video-ref": join(dir, "nope.mp4") }, { vlm: [brief] });
+		await missing.emit("before_agent_start");
+		assert.equal(missing.asked.length, 0);
+		assert.match(missing.notes.join("\n"), /could not extract/);
+	},
+);
+
+test("video_ref: dual-arm briefs carry the arm and the cross-arm sequencing rule", () => {
+	const b = validateBrief(
+		{
+			task: "t",
+			operations: [
+				{ arm: "LEFT", action: "hold", object: "box", grasp: "edge", destination: "-" },
+				{ arm: "middle", action: "open", object: "lid" },
+				"junk",
+			],
+		},
+		["left", "right"],
+	);
+	assert.deepEqual(
+		b.operations.map((o) => o.arm),
+		["left", "both"],
+	);
+	const text = renderBrief(b, ["left", "right"]);
+	assert.match(text, /1\. LEFT hold box -- grasp edge\n2\. BOTH open lid\n/);
+	assert.match(text, /give this arm a WAIT stage first/);
+	assert.throws(() => validateBrief({ task: "t", operations: [] }, []), /missing task\/operations/);
+});
+
+test("act's schema follows the plugins the flags enable, with string enums; disabled params are refused", async () => {
+	// pi parses flags after load: the schema built from the defaults is rebuilt at session start.
+	const f = fakePi({ units: "true" });
+	franka(f.pi);
+	const props = () => f.tools.get("act").parameters.properties;
+	assert.ok(props().plan && props().target_in_wrist, "the default plugins offer plan and target_in_wrist");
+	assert.equal(props().unit.type, "string");
+	assert.ok(props().unit.enum.includes("ROTATE_CW"));
+	assert.equal(props().unit.anyOf, undefined, "no anyOf literal unions");
+	assert.deepEqual(props().plan.items.enum, ["MV_FWD", "MV_BACK", "MV_LEFT", "MV_RIGHT", "MV_UP", "MV_DOWN"]);
+	f.setFlag("units-plugins", "proprioception");
+	await f.emit("session_start");
+	assert.equal(props().plan, undefined);
+	assert.equal(props().target_in_wrist, undefined);
+	const d = fakePi({ units: "true" });
+	dualFranka(d.pi);
+	assert.deepEqual(d.tools.get("act").parameters.properties.arm.enum, ["left", "right"]);
+	const t = await toyRobot({ "units-plugins": "proprioception" });
+	await assert.rejects(t.run("act", { unit: "MV_FWD", plan: ["MV_FWD"] }), /`plan` needs the action_chunk plugin/);
+	await assert.rejects(
+		t.run("act", { unit: "MV_FWD", target_in_wrist: true }),
+		/`target_in_wrist` needs the variable_step, action_chunk or rotation plugin/,
+	);
+	assert.equal(t.moves.length, 0);
+});
+
+test("the units state survives a resume or fork: turned wrist, closed gripper, plan, history", async () => {
+	const f = await toyRobot({ "units-plugins": "rotation,plan,mem_text,proprioception" }, { yaw: Math.PI / 4 });
+	await f.run("plan", { stages: [{ motion: "LIFT", target: "cube", completion: "cube above the table" }] });
+	await f.run("act", { unit: "ROTATE_CW", n: 2 });
+	await f.run("act", { unit: "GRASP" });
+	const states = f.entries.filter((e) => e.customType === STATE_ENTRY);
+	assert.deepEqual(states.at(-1)?.data.yaw, { "": Math.PI / 2 });
+	assert.deepEqual(states.at(-1)?.data.closed, { "": true });
+	const count = states.length;
+	await f.run("act", { unit: "STOP" });
+	assert.equal(f.entries.filter((e) => e.customType === STATE_ENTRY).length, count, "unchanged state adds no entry");
+	// Resume: a new process on the same branch.
+	const g = await toyRobot(
+		{ "units-plugins": "rotation,plan,mem_text,proprioception" },
+		{ yaw: Math.PI / 4, branch: [...f.branch] },
+	);
+	const r = head(await g.run("act", { unit: "MV_FWD", target_in_wrist: true }));
+	assert.match(r, /Gripper turned 90 deg from its start heading/, "the model is told the wrist is still turned");
+	assert.deepEqual(
+		g.moves[0].delta.map((v) => Number(v.toFixed(6))),
+		[0, 0.02, 0],
+		"wrist-judged moves still compensate the turn",
+	);
+	assert.match(r, /STAGE 1\/1 \[LIFT\]/);
+	assert.match(r, /commanded CLOSE/);
+	assert.match(r, /newest first: MV_FWD, GRASP, ROTATE_CW, ROTATE_CW/);
+	assert.match(
+		head(await g.run("act", { unit: "MV_UP" })),
+		/MV_UP\(realign\)/,
+		"holding and turned: MV_UP turns back first",
+	);
+	// A scene reset is recorded too, so a later resume starts straight.
+	const h = await toyRobot(
+		{ "units-plugins": "rotation,plan,mem_text", operator: true },
+		{ yaw: Math.PI / 4, branch: [...f.branch], reset: async () => ({ ok: true }) },
+	);
+	await h.run("request_scene_reset", { reason: "retry" });
+	const k = await toyRobot({ "units-plugins": "rotation,plan,mem_text" }, { yaw: Math.PI / 4, branch: [...h.branch] });
+	const fresh = head(await k.run("act", { unit: "MV_FWD", target_in_wrist: true }));
+	assert.doesNotMatch(fresh, /Gripper turned|STAGE/);
+	assert.deepEqual(k.moves[0].delta, [0.02, 0, 0]);
+});
+
+test("a chaining robot's continuous moves skip the stall check until the chain's last move", async () => {
+	// A blocked arm: the robot that chains returns before settling, so only the last move is judged.
+	const f = await toyRobot({}, { blocked: true, chains: true });
+	const r = await f.run("act", { unit: "MV_DOWN", n: 3 });
+	assert.deepEqual(
+		f.moves.map((m) => m.continuous),
+		[true, true, undefined],
+	);
+	assert.match(head(r), /MV_DOWN x3\n/);
+	assert.match(head(r), /Last MV_DOWN lowered 0\.0 of 2\.0 cm -> already in contact/);
+	// A robot that settles every move is judged per move (Show-Harness keeps chaining off by default).
+	const g = await toyRobot({}, { blocked: true, chains: false });
+	await g.run("act", { unit: "MV_DOWN", n: 3 });
+	assert.equal(g.moves.length, 1);
+});
+
+test("view_select: act's `view` reaches the robot as Move.view, only when the robot selects views", async () => {
+	const f = await toyRobot({}, { viewSelect: true });
+	assert.deepEqual(f.tools.get("act").parameters.properties.view.enum, ["WRIST", "FRONT"]);
+	assert.equal((f.emitted.get(UNITS_EVENT) as UnitsHandle).viewSelect, true, "robots detect the hook on the handle");
+	await f.run("act", { unit: "MV_FWD", view: "WRIST" });
+	await f.run("act", { unit: "MV_LEFT" });
+	assert.deepEqual(
+		f.moves.map((m) => m.view),
+		["WRIST", undefined],
+	);
+	await assert.rejects(f.run("act", { unit: "MV_FWD", view: "SIDE" }), /`view` needs the robot's view select/);
+	const off = await toyRobot({}, { viewSelect: false });
+	assert.equal(off.tools.get("act").parameters.properties.view, undefined);
+	assert.equal((off.emitted.get(UNITS_EVENT) as UnitsHandle).viewSelect, false);
+	await assert.rejects(off.run("act", { unit: "MV_FWD", view: "WRIST" }), /`view` needs the robot's view select/);
+	assert.equal(off.moves.length, 0);
 });

@@ -144,12 +144,23 @@ export type Move = {
 	/** view_select: the view that guided the move (act's `view`, robots with `viewSelect`). */
 	view?: GuideView;
 	/**
-	 * The finish sequence after a success claim: the verifier's retreat lift, and the RELEASE / MV_UP
-	 * the agent sends after a finish was refused for holding. A robot that ends motion at its own
-	 * success signal may still allow these (they cannot change a latched outcome).
+	 * The verifier's retreat lift before its check. A robot that ends motion at its own success
+	 * signal may still allow it (see finishMove; it cannot change a latched outcome).
 	 */
 	retreat?: boolean;
 };
+/**
+ * The finish sequence a robot may still run after its success signal: opening the gripper and
+ * lifting straight up (Show-Harness RELEASE -> RETREAT), and the verifier's retreat. It reads only
+ * the move, so a replay that skips a refused `finish` runs the same steps.
+ */
+export function finishMove(move: Move) {
+	const [dx, dy, dz] = move.delta;
+	return (
+		move.retreat === true ||
+		(move.gripper !== "close" && !move.yaw && !dx && !dy && (move.gripper === "open" || dz > 0))
+	);
+}
 /** Show-Harness plugins/view_select: WRIST (rule A, the wrist view) or FRONT (rule B, the third-person view). */
 export const GUIDE_VIEWS = ["WRIST", "FRONT"] as const;
 export type GuideView = (typeof GUIDE_VIEWS)[number];
@@ -428,9 +439,8 @@ export function units(
 	/** Verifier: refusals so far and the latest refusal's reason (shown until a new plan). */
 	let replans = 0;
 	let verdict = "";
-	/** Success claims refused for holding, and whether the finish sequence (RELEASE, MV_UP) is under way. */
+	/** Success claims refused for holding. */
 	let holdRefusals = 0;
-	let wrapUp = false;
 	/** The latest camera images a robot tool returned (the verifier's view). */
 	let images: ImageContent[] = [];
 	/** video_ref: the brief (extracted once per video and frame count) and why it failed. */
@@ -448,7 +458,6 @@ export function units(
 		replans = 0;
 		verdict = "";
 		holdRefusals = 0;
-		wrapUp = false;
 		images = [];
 	};
 	/** mem_text: record a unit in the move history (newest last). */
@@ -468,7 +477,6 @@ export function units(
 			replans,
 			verdict,
 			holdRefusals,
-			wrapUp,
 		});
 	let saved = snapshot();
 	/** Append the state entry when it changed: the accumulated yaw must survive a resume (the wrist stays turned). */
@@ -504,7 +512,6 @@ export function units(
 			replans = Number(last.replans) || 0;
 			verdict = String(last.verdict ?? "");
 			holdRefusals = Number(last.holdRefusals) || 0;
-			wrapUp = last.wrapUp === true;
 		}
 		saved = snapshot();
 		// A brief extracted earlier in this branch is reused (same video and frame count).
@@ -705,7 +712,7 @@ export function units(
 		const halted = (r: Result, m?: Move) => {
 			const d = r.details as { error?: unknown; terminated?: unknown } | undefined;
 			// The finish sequence runs past the robot's success signal while the robot still moves (returns images).
-			const moved = m?.retreat === true && r.content.some((c) => c.type === "image");
+			const moved = m !== undefined && finishMove(m) && r.content.some((c) => c.type === "image");
 			return Boolean(d?.error || (d?.terminated && !moved));
 		};
 		/** Path length so far: one call travels at most the robot's per-call translation limit. */
@@ -743,7 +750,7 @@ export function units(
 			}
 			if (arm) move.arm = arm;
 			if (p.view) move.view = p.view;
-			if (p.retreat || (wrapUp && (u === "RELEASE" || u === "MV_UP"))) move.retreat = true;
+			if (p.retreat) move.retreat = true;
 			if (isMove(u) && label === u && queue[index + 1] === u) move.continuous = true;
 			for (let i = 0; i < parts; i++) {
 				const piece: Move = i ? { ...move, delta: [0, 0, 0], gripper: null } : move;
@@ -938,7 +945,6 @@ export function units(
 		const placement = stages.some((s) => PLACEMENT.includes(s.motion.toUpperCase()));
 		if (placement && holding.length && holdRefusals < MAX_HOLD_REFUSALS) {
 			holdRefusals++;
-			wrapUp = true;
 			pi.appendEntry(VERIFY_ENTRY, { status, replans, holding: holding.map((a) => a || "arm"), refused: "holding" });
 			save();
 			const which = armNames.length ? ` (${holding.join(", ")} arm)` : "";

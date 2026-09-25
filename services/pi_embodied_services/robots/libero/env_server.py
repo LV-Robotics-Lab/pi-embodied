@@ -68,7 +68,9 @@ def build_env_cfg(
             "env_type": "libero",
             "task_suite_name": task_suite_name,
             "auto_reset": False,
-            "ignore_terminations": False,
+            # Keep stepping after success (a units finish releases and lifts); success is
+            # reported from RLinf's latched success_once instead (LiberoEnvFacade._succeeded).
+            "ignore_terminations": True,
             "max_steps_per_rollout_epoch": max_episode_steps,
             "max_episode_steps": max_episode_steps,
             "use_rel_reward": False,
@@ -229,10 +231,15 @@ class LiberoEnvFacade(BaseEnvFacade):
         obs = self._strip_obs(to_numpy_tree(obs))
         return obs, to_numpy_tree(info)
 
+    def _succeeded(self, info) -> np.bool_:
+        """LIBERO's success at or before this step. With ``ignore_terminations`` RLinf zeroes
+        ``terminations`` and keeps stepping; its ``episode.success_once`` still latches success."""
+        return np.bool_(self._strip(to_numpy_tree(info)["episode"]["success_once"]))
+
     def step(self, action):
-        obs, rew, term, trunc, info = self._env.step(self._expand_action(action))
+        obs, rew, _term, trunc, info = self._env.step(self._expand_action(action))
         obs = self._strip_obs(to_numpy_tree(obs))
-        term = self._strip(to_numpy_tree(term))
+        term = self._succeeded(info)
         trunc = self._strip(to_numpy_tree(trunc))
         return (
             obs,
@@ -254,11 +261,11 @@ class LiberoEnvFacade(BaseEnvFacade):
         the leading env dim is stripped — the agent reduces across the
         chunk itself.
         """
-        obs_list, rew, term, trunc, info = self._env.chunk_step(
+        obs_list, rew, _term, trunc, info = self._env.chunk_step(
             self._expand_chunk(actions)
         )
         obs_list = [self._strip_obs(to_numpy_tree(o)) for o in obs_list]
-        term = self._strip(to_numpy_tree(term))
+        term = np.array([self._succeeded(i) for i in info], dtype=bool)
         trunc = self._strip(to_numpy_tree(trunc))
         obs_field = obs_list if return_all_frames else obs_list[-1]
         return (

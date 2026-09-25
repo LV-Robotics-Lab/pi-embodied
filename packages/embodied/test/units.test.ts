@@ -966,21 +966,17 @@ test("stage discipline: a success claim while holding is refused (not the replan
 	assert.equal(f.asked.length, 0, "no verifier call and no retreat while holding");
 	assert.equal(f.moves.length, 1);
 	assert.deepEqual(f.entries.filter((e) => e.customType === VERIFY_ENTRY).at(-1)?.data.refused, "holding");
-	// The finish sequence carries Move.retreat and is not halted by the latched success signal.
+	// The finish sequence (open, lift straight up) is not halted by the latched success signal; it
+	// needs no episode state, so a replay that skips the refused finish runs the same moves.
 	await f.run("act", { unit: "RELEASE" });
 	await f.run("act", { unit: "MV_UP", n: 2 });
 	assert.deepEqual(
-		f.moves.slice(1).map((m) => [m.gripper, m.retreat]),
-		[
-			["open", true],
-			[null, true],
-			[null, true],
-		],
+		f.moves.slice(1).map((m) => m.gripper ?? m.delta[2]),
+		["open", 0.02, 0.02],
 	);
 	// Other units still stop at the success signal.
 	await f.run("act", { unit: "MV_LEFT", n: 3 });
 	assert.equal(f.moves.length, 5);
-	assert.equal(f.moves.at(-1)?.retreat, undefined);
 	// Released: the retreat lifts and the verifier decides; the holding refusal did not use the replan.
 	assert.equal(await f.emit("tool_call", claim), undefined);
 	assert.equal(f.asked.length, 1);

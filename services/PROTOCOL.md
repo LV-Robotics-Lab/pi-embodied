@@ -117,6 +117,10 @@ wrapper; single-env servers strip the leading env dimension.
 `env.reset` reseeds the env worker's global numpy and Python RNGs with the episode seed, so every
 reset restores the same state and the same actions give bitwise-identical transitions in any process.
 
+The env runs with `ignore_terminations: True`: it keeps stepping after success, and `terminated` is
+RLinf's latched `success_once` ("LIBERO success at or before this step"). Only `truncated` (max
+episode steps) ends an episode.
+
 ### robocasa-env (`robots/robocasa/env_server.py`)
 
 | method | args | result |

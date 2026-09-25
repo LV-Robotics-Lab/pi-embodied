@@ -40,7 +40,12 @@ export async function askVlm(
 			{ messages: [{ role: "user", content, timestamp: Date.now() }] },
 			{
 				signal,
-				...(reasoning && reasoning !== "off" ? { reasoning: reasoning as ThinkingLevel } : {}),
+				// A reasoning model that cannot turn reasoning off gets the lowest level (e.g. under replay/session).
+				...(reasoning && reasoning !== "off"
+					? { reasoning: reasoning as ThinkingLevel }
+					: model.reasoning
+						? { reasoning: "low" as ThinkingLevel }
+						: {}),
 			},
 		)
 		.result();

@@ -18,7 +18,7 @@ import { type Static, type TSchema, Type } from "typebox";
 import { decodePngChannel, encodePng } from "../png.ts";
 import { defineRobot, mark, median, SERVICES } from "../robot.ts";
 import { NdArray, RpcClient } from "../rpc.ts";
-import type { Move } from "../units/index.ts";
+import { finishMove, type Move } from "../units/index.ts";
 import { vlaSeeds } from "../vla-seed.ts";
 import { liberoFlash } from "./flash.ts";
 
@@ -62,6 +62,15 @@ type CameraMeta = { intrinsic_K: number[][]; extrinsic_cam2world: number[][]; de
 type WorldMap = { envStep: number; size: number; rgb: Buffer; xyz: Float32Array };
 
 const done = (v: boolean | NdArray) => (v instanceof NdArray ? v.toArray().some(Boolean) : Boolean(v));
+/**
+ * The env step at which LIBERO first reported success, latched: `previous` once set, else the
+ * first success in this step or chunk (`terminated`, per step) counted from `stepsBefore`.
+ */
+export function latchSuccess(previous: number | undefined, terminated: boolean | NdArray, stepsBefore: number) {
+	if (previous !== undefined) return previous;
+	const i = (terminated instanceof NdArray ? terminated.toArray() : [terminated]).findIndex(Boolean);
+	return i < 0 ? undefined : stepsBefore + i + 1;
+}
 const round = (v: number, d = 4) => Number(v.toFixed(d));
 const wrap = (a: number) => ((((a + Math.PI) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI)) - Math.PI;
 const clip = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
@@ -116,6 +125,8 @@ export default function libero(pi: ExtensionAPI) {
 	let sam3: RpcClient;
 	let obs: Obs;
 	let terminated = false;
+	/** The env step of the first success: the outcome, whatever happens after it (a release, a knock-over). */
+	let successStep: number | undefined;
 	let truncated = false;
 	let envStep = 0;
 	let language = "";
@@ -169,6 +180,7 @@ export default function libero(pi: ExtensionAPI) {
 			task: Number(robot.task.task),
 			seed: Number(robot.task.seed),
 			terminated,
+			success_step: successStep ?? null,
 			truncated,
 			env_steps: envStep,
 		}),
@@ -229,7 +241,8 @@ export default function libero(pi: ExtensionAPI) {
 
 	function absorb(ret: StepReturn, steps: number) {
 		obs = ret[0];
-		terminated ||= done(ret[2]);
+		successStep = latchSuccess(successStep, ret[2], envStep);
+		terminated = successStep !== undefined;
 		truncated ||= done(ret[3]);
 		envStep += steps;
 	}
@@ -292,6 +305,7 @@ export default function libero(pi: ExtensionAPI) {
 	async function resetEpisode(signal = robot.signal) {
 		worldMaps.clear();
 		terminated = truncated = false;
+		successStep = undefined;
 		grip = -1;
 		envStep = 0;
 		seeds.reset();
@@ -873,17 +887,19 @@ export default function libero(pi: ExtensionAPI) {
 	 * `delta` (holding the gripper command), turn the wrist by `yaw`, or hold one step (STOP).
 	 */
 	async function unitStep(move: Move) {
-		// The finish sequence after a success claim (../units Move.retreat) may still release and lift.
-		if (truncated || (terminated && !move.retreat))
+		// After success only the finish sequence moves (opening, lifting straight up); success stays latched.
+		const finishing = finishMove(move);
+		if (truncated || (terminated && !finishing))
 			return {
 				content: [{ type: "text" as const, text: `Episode already ended (terminated=${terminated}).` }],
 				details: { terminated, truncated },
 			};
 		let steps = 0;
+		const live = () => !truncated && (!terminated || finishing);
 		if (move.gripper) {
 			grip = move.gripper === "close" ? 1 : -1;
 			// Until the fingers stop moving (they stop on a grasped object), at most 15 steps.
-			for (let prev = Number.NaN; steps < 15 && !terminated && !truncated; ) {
+			for (let prev = Number.NaN; steps < 15 && live(); ) {
 				await step([0, 0, 0, 0, 0, 0, grip]);
 				steps++;
 				if (steps > 3 && Math.abs(gripper() - prev) < 5e-4) break;
@@ -892,7 +908,7 @@ export default function libero(pi: ExtensionAPI) {
 		}
 		if (Math.hypot(...move.delta) > 0) {
 			const target = eef().map((v, i) => v + move.delta[i]);
-			for (let k = 0; k < 25 && !terminated && !truncated; k++) {
+			for (let k = 0; k < 25 && live(); k++) {
 				const diff = target.map((v, i) => v - eef()[i]);
 				if (Math.hypot(...diff) < 0.004) break;
 				await step([...diff.map((d) => clip(clip(d, -0.025, 0.025) / 0.05, -1, 1)), 0, 0, 0, grip]);

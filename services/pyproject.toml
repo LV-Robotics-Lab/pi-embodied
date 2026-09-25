@@ -85,6 +85,15 @@ franka = [
     "matplotlib>=3.8",
     "pillow>=10",
 ]
+piper = [
+    # AgileX Piper over ROS topics (Show-Harness's Cobot Magic stack); ROS itself
+    # (rospy, the piper_msgs packages) comes from the host's ROS Noetic install.
+    "rospkg>=1.5.0",
+    "catkin_pkg>=1.0.0",
+]
+# RoboLab needs Isaac Sim + Isaac Lab from NVIDIA's index; its venv is built by a
+# script (see README), so this extra only marks the robot.
+robolab = []
 franka-polymetis = [
     # Franka on a Polymetis NUC (Show-Harness's stack); no RLinf, no VLA.
     "zerorpc",
@@ -118,6 +127,8 @@ include = ["pi_embodied_services*"]
 "pi_embodied_services.robots.franka" = ["config/*.yaml"]
 "pi_embodied_services.robots.franka_polymetis" = ["config/*.yaml"]
 "pi_embodied_services.robots.dual_franka" = ["config/*.yaml"]
+"pi_embodied_services.robots.piper" = ["config/*.yaml"]
+"pi_embodied_services.robots.robolab" = ["assets/*.usda", "assets/Props/*.usd"]
 
 [tool.uv]
 prerelease = "allow"

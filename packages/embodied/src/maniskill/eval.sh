@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Run ManiSkill episodes with pi in print mode and report ManiSkill-judged success (`success`).
-#   eval.sh <out-dir> <env-ids> <seeds> [pi args...]
+#   eval.sh <out-dir> <env-ids> <seeds> [pi args...]      (env-ids "-" = BlockPAP-v1, the default scene)
+#   eval.sh runs/ms - 0-9 --model <provider/model> --thinking low --scene table_tex=white
 #   eval.sh runs/ms PickCube-v1,StackCube-v1 0-9 --model <provider/model> --thinking low
 #   eval.sh runs/ms-units PickCube-v1 0-4,10-14 --units=true --model <provider/model> --thinking low
 #
@@ -12,6 +13,7 @@
 # and the summary covers only the requested cells and refuses to mix configurations.
 set -uo pipefail
 out=$1 envs=$2 seeds=$3
+[ "$envs" = - ] && envs=BlockPAP-v1
 shift 3
 here=$(cd "$(dirname "$0")" && pwd)
 PI=${PI:-pi}

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+	calibrate,
 	GRIPPER_STEPS,
 	grasped,
 	phases,
@@ -67,4 +68,27 @@ test("move_delta with a gripper change: the fingers settle first, holding still,
 	assert.deepEqual(phases(start, [0, 0, 0], false), [
 		{ target: start, minSteps: SERVO.minSteps, maxSteps: SERVO.minSteps },
 	]);
+});
+
+test("probe-axes: a short unit is scaled up to stepM, a mirrored axis is refused", () => {
+	const probes = MOVE_UNITS.map((unit) => ({
+		unit,
+		n: 4,
+		moved: VECTORS[unit].map((x) => x * 0.018 * 4) as [number, number, number],
+	}));
+	const c = calibrate(VECTORS, STEP_M, probes);
+	for (const unit of MOVE_UNITS) {
+		const move = ground({ vectors: c.vectors, stepM: STEP_M }, unit)!;
+		assert.ok(
+			close(
+				move.delta,
+				VECTORS[unit].map((x) => (x * STEP_M * STEP_M) / 0.018),
+			),
+		);
+	}
+	assert.equal((c.units.MV_FWD as { per_unit_m: number }).per_unit_m, 0.018);
+	const mirrored = probes.map((p) =>
+		p.unit === "MV_LEFT" ? { ...p, moved: [0, 0.08, 0] as [number, number, number] } : p,
+	);
+	assert.throws(() => calibrate(VECTORS, STEP_M, mirrored), /MV_LEFT/);
 });

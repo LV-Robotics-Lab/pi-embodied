@@ -57,6 +57,12 @@ uv pip install -e "services[robocasa]" \
 # unreachable, ModelScope `exuan2/robocasa` (kitchen_assets/) and `Twilighted/RLDX-Robocasa365`
 # hold byte-identical copies (same sizes / sha256 as Box and HF rev 587e9ec).
 
+# ManiSkill: the stock scenes need no assets; the Show-Harness real2sim rigs BlockPAP-v1
+# (default) / BlockStack-v1 come from github.com/AaronCaoZJ/RLinf (Apache-2.0):
+#   bash services/pi_embodied_services/robots/maniskill/fetch_real2sim.sh
+# (sparse-clones the rig code, fetches the table textures with sha256 checks, and writes
+# BlockStack's extended-finger Panda URDF, which is not published anywhere).
+
 # RoboTwin (SAPIEN 3.0.0b1, LingBot runtime, cuRobo built from GitHub against torch==2.7.1)
 uv venv services/.venv-robotwin --python 3.11 && source services/.venv-robotwin/bin/activate
 uv pip install -e "services[robotwin]"

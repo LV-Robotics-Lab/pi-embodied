@@ -9,12 +9,16 @@
 # 2. The wood tabletop textures pick_and_place.py loads from
 #    <root>/rlinf/envs/maniskill/assets/carrot/more_table/textures/<id>.png: the 21 PNGs of the HF
 #    dataset RLinf/maniskill_assets (11.9 MB, via hf-mirror), checked against their LFS sha256.
+# 3. BlockStack's panda_v2_extended.urdf (only in RLinf's own ManiSkill build), rebuilt from its
+#    spec into the ManiSkill venv's assets by scenes.write_extended_urdf (PYTHON= that venv).
 # Then point the env server at it: RLINF_ROOT=<dest> (scenes.py's default is the same path).
 set -euo pipefail
 
 DEST="${1:-/root/autodl-tmp/assets/RLinf-real2sim}"
 REPO=https://github.com/AaronCaoZJ/RLinf.git
 REV=fd52554870dc9c0dbd4243c052f5ec32c56f1340
+PYTHON="${PYTHON:-/root/autodl-tmp/venvs/maniskill/bin/python}"
+SERVICES="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 HF="${HF_ENDPOINT:-https://hf-mirror.com}/datasets/RLinf/maniskill_assets/resolve/c23fc1880ed7861686d4f995360101eaee4d18a0"
 
 if [ ! -d "$DEST/.git" ]; then
@@ -32,7 +36,8 @@ mkdir -p "$TEX"
 while read -r sha name; do
   f="$TEX/$name"
   if [ ! -f "$f" ] || [ "$(sha256sum "$f" | cut -d' ' -f1)" != "$sha" ]; then
-    curl -sSfL --retry 3 --max-time 120 -o "$f" "$HF/carrot/more_table/textures/$name"
+    # Assets never ride the code proxy.
+    env -u HTTPS_PROXY -u https_proxy -u ALL_PROXY -u all_proxy curl -sSfL --retry 3 --max-time 120 -o "$f" "$HF/carrot/more_table/textures/$name"
   fi
   [ "$(sha256sum "$f" | cut -d' ' -f1)" = "$sha" ] || { echo "sha256 mismatch: $f" >&2; exit 1; }
 done <<'EOF'
@@ -59,3 +64,4 @@ e805e65c68f97d88d54b8736fbaab939aeb4725e173fdbad9d13000f1d99f892 018.png
 c86d3be6a65125014ae0003d539a7b8943dadd161b3550d28ede2e3e7aa6d74c 021.png
 EOF
 echo "textures: $(ls "$TEX" | wc -l) files, $(du -sh "$TEX" | cut -f1) in $DEST/$TEX"
+echo "urdf: $(PYTHONPATH="$SERVICES" "$PYTHON" -m pi_embodied_services.robots.maniskill.scenes 2>/dev/null | tail -1)"

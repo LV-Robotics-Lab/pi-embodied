@@ -13,16 +13,17 @@
 # limitations under the License.
 #
 # Modified by pi-embodied: adapted from Show-Harness core/sim/maniskill_task.py and
-# core/sim/maniskill_scenes.py (stock scenes only; the RLinf real2sim rigs are not
-# public) into an RPC env server; the atomic-token controller lives in the pi robot.
+# core/sim/maniskill_scenes.py (the stock scenes here; the RLinf real2sim rigs in
+# ./scenes.py) into an RPC env server; the atomic-token controller lives in the pi robot.
 
 """RPC server wrapping one ManiSkill 3 env in ``pd_ee_delta_pos``.
 
 Action ``[dx, dy, dz, gripper]`` in [-1, 1]: a base-frame position delta normalised by
 the arm's 0.1 m bound, and the Panda mimic gripper (+1 open, -1 close). Observations
-carry the agentview (``base_camera``) and wrist (``hand_camera``) RGB, the TCP pose and
-the gripper opening; ``info`` is flattened to plain scalars (``success``,
-``is_grasped``, ...).
+carry the agentview (``base_camera``; ``external_cam`` on the RLinf rigs) and wrist
+(``hand_camera``) RGB, the TCP pose and the gripper opening; ``info`` is flattened to
+plain scalars (``success``, ``is_grasped``, ...). An env id of ./scenes.py (BlockPAP-v1,
+BlockStack-v1) runs that rig with Show-Harness's calibrated cameras, reset and views.
 """
 
 from __future__ import annotations
@@ -151,7 +152,7 @@ def center_wrist_camera() -> None:
 
 
 #: Agentview for the stock scenes. Show-Harness's calibrated ``external_cam`` exists only on
-#: the RLinf real2sim rigs (BlockPAP-v1 / BlockStack-v1, not public). The stock
+#: the RLinf real2sim rigs (BlockPAP-v1 / BlockStack-v1, ./scenes.py). The stock
 #: ``base_camera`` (eye [0.3, 0, 0.6], 128 px) faces the robot head-on, so the arm and
 #: gripper hide a cube under the TCP. This pose (compared against the stock camera and
 #: 7 others on PickCube/StackCube/PushCube seed 0, at reset and with the fingertips at the
@@ -187,24 +188,52 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         settle_steps: int = 8,
         wrist_rotation: int = 270,
         wrist_flip: str = "none",
+        scene: dict | None = None,
     ):
         super().__init__()
         import gymnasium as gym
         import mani_skill.envs  # noqa: F401 -- registers the stock env ids
 
-        if wrist_mount == "centered":
-            center_wrist_camera()
+        from pi_embodied_services.robots.maniskill import scenes
 
-        self._env = gym.make(
-            env_id,
-            num_envs=1,
-            obs_mode="rgb+segmentation",
-            control_mode=control_mode,
-            robot_uids=robot_uids,
-            sim_backend=sim_backend,
-            max_episode_steps=int(max_episode_steps),
-            sensor_configs=self._sensor_configs(agentview),
-        )
+        #: An RLinf real2sim rig (./scenes.py) and its options, or None for a stock scene.
+        self._rig = scenes.SCENES.get(env_id)
+        self._scene = None
+        self._cameras = CAMERAS
+        table_z = 0.0
+        if self._rig:
+            # The rig fixes the robot, both cameras and the view transform (its training
+            # contract); the stock-scene camera arguments do not apply.
+            self._scene = scenes.scene_options(env_id, **(scene or {}))
+            self._env = scenes.make_env(
+                env_id,
+                self._scene,
+                obs_mode="rgb+segmentation",
+                control_mode=control_mode,
+                sim_backend=sim_backend,
+                max_episode_steps=int(max_episode_steps),
+            )
+            self._cameras = scenes.CAMERAS
+            table_z = float(self._env.unwrapped.TABLE_Z)
+            robot_uids, agentview = self._rig.robot_uids, scenes.CAMERAS["agentview"]
+            wrist_mount = self._scene["wrist_mount"]
+            wrist_rotation = scenes.VIEWS["wrist"]["rotation"]
+            wrist_flip = scenes.VIEWS["wrist"]["flip"]
+        else:
+            if scene:
+                raise ValueError(f"--scene options apply to {list(scenes.SCENES)} only")
+            if wrist_mount == "centered":
+                center_wrist_camera()
+            self._env = gym.make(
+                env_id,
+                num_envs=1,
+                obs_mode="rgb+segmentation",
+                control_mode=control_mode,
+                robot_uids=robot_uids,
+                sim_backend=sim_backend,
+                max_episode_steps=int(max_episode_steps),
+                sensor_configs=self._sensor_configs(agentview),
+            )
         self._seed = int(seed)
         self._settle_steps = int(settle_steps)
         self._wrist_rotation = int(wrist_rotation)
@@ -224,6 +253,8 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
             "wrist_mount": wrist_mount,
             "wrist_rotation": self._wrist_rotation,
             "wrist_flip": wrist_flip,
+            "scene": self._scene,
+            "table_z": table_z,
             "action_space": list(self._env.action_space.shape),
         }
 
@@ -259,7 +290,14 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
 
         Their 4:3 wrist crop is not applied: after the 270 deg rotation the fingertips sit
         at the top and bottom of the left edge, and the crop would cut them off."""
-        rgb = _np(obs["sensor_data"][CAMERAS[name]]["rgb"])[0].astype(np.uint8)
+        rgb = _np(obs["sensor_data"][self._cameras[name]]["rgb"])[0].astype(np.uint8)
+        if self._rig:
+            from pi_embodied_services.robots.maniskill import scenes
+
+            v = scenes.VIEWS[name]
+            return scenes.prepare_view(
+                rgb, v["rotation"], v["flip"], v["crop"], self._view_size
+            )
         if name == "wrist":
             rgb = _orient(rgb, self._wrist_rotation, self._wrist_flip)
         return _letterbox(rgb, self._view_size) if self._view_size else rgb
@@ -298,26 +336,48 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
     def _step(self, action) -> tuple:
         a = np.asarray(action, dtype=np.float32).reshape(1, -1)
         obs, rew, term, trunc, info = self._env.step(a)
+        info = self._info(info)
+        if self._rig:
+            # BlockStack reports no grasp flag at all (BlockPAP only its lift-based
+            # is_cube_grasped): add ManiSkill's contact-based one for the carried object.
+            env = self._env.unwrapped
+            held = env.agent.is_grasping(getattr(env, self._rig.carried))
+            info["is_grasped"] = bool(_np(held).reshape(-1)[0])
         return (
             obs,
             float(_np(rew).reshape(-1)[0]),
             bool(_np(term).reshape(-1)[0]),
             bool(_np(trunc).reshape(-1)[0]),
-            self._info(info),
+            info,
         )
 
     # ---- gym-like surface ----
 
     def reset(self, seed: int | None = None):
         """Reset to ``seed`` (default: the launch seed), then hold still with the gripper
-        open for ``settle_steps`` (Show-Harness ``reset_maniskill``)."""
+        open for ``settle_steps`` (Show-Harness ``reset_maniskill``); an RLinf rig resets
+        like its training episodes (``scenes.reset``)."""
+        hold = np.array([0.0, 0.0, 0.0, OPEN], dtype=np.float32)
+        if self._rig:
+            from pi_embodied_services.robots.maniskill import scenes
+
+            last: list = []
+            self._meta["layout"] = scenes.reset(
+                self._env,
+                self._meta["env_id"],
+                self._scene,
+                self._seed if seed is None else int(seed),
+                lambda: last.append(self._step(hold)),
+            )
+            obs, info = last[-1][0], last[-1][4]
+            self.check_visible(obs)
+            return self._pack(obs), info
         obs, info = self._env.reset(seed=self._seed if seed is None else int(seed))
         info = self._info(info)
         goals = SHOW_GOALS.get(self._meta["env_id"], [])
         if goals:
             show_goals(self._env.unwrapped, goals)
             obs = self._env.unwrapped.get_obs()
-        hold = np.array([0.0, 0.0, 0.0, OPEN], dtype=np.float32)
         for _ in range(self._settle_steps):
             obs, _r, _te, _tr, info = self._step(hold)
         self.check_visible(obs)
@@ -325,10 +385,12 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
 
     def visible_pixels(self, obs: dict) -> dict:
         """Agentview pixels of each task actor (per-actor segmentation of base_camera)."""
-        seg = _np(obs["sensor_data"][CAMERAS["agentview"]]["segmentation"])[0, ..., 0]
+        seg = _np(obs["sensor_data"][self._cameras["agentview"]]["segmentation"])
+        seg = seg[0, ..., 0]
         env = self._env.unwrapped
         out = {}
-        for name in TASK_ACTORS.get(self._meta["env_id"], []):
+        actors = [self._rig.carried, self._rig.target] if self._rig else None
+        for name in actors or TASK_ACTORS.get(self._meta["env_id"], []):
             ids = _np(getattr(env, name).per_scene_id).reshape(-1)
             out[name] = int(np.isin(seg, ids).sum())
         return out
@@ -425,7 +487,7 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
     def get_camera_meta(self, camera_name: str = "agentview", **_: Any) -> dict:
         """OpenCV intrinsics and camera-to-world extrinsic of a sensor camera (raw sensor
         pixels, before the orientation and letterbox of ``render_camera``)."""
-        param = self._obs["sensor_param"][CAMERAS[camera_name]]
+        param = self._obs["sensor_param"][self._cameras[camera_name]]
         w2c = np.eye(4)
         w2c[:3] = _np(param["extrinsic_cv"])[0]
         return {
@@ -434,6 +496,8 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         }
 
     def get_task_language(self) -> str:
+        if self._rig:
+            return self._rig.instruction
         return INSTRUCTIONS.get(self._meta["env_id"], self._meta["env_id"])
 
     def get_env_meta(self) -> dict:
@@ -451,7 +515,7 @@ def main():
     p.add_argument("--transport", choices=["http"], default="http")
     p.add_argument("--host", type=str, default="127.0.0.1")
     p.add_argument("--port", type=int, default=0)
-    p.add_argument("--env-id", default="PickCube-v1")
+    p.add_argument("--env-id", default="BlockPAP-v1")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--robot-uids", default="panda_wristcam")
     p.add_argument(
@@ -477,6 +541,12 @@ def main():
         default="none",
     )
     p.add_argument(
+        "--scene",
+        default="",
+        help="RLinf rig options as key=value,... (scenes.py: table_tex, cam_t, traj_id, "
+        "layout, cam_jitter, wrist_mount, wrist_resolution); the rig ignores the camera flags",
+    )
+    p.add_argument(
         "--parent-watch",
         action="store_true",
         help="watch parent process via stdin pipe and exit when it dies",
@@ -494,6 +564,7 @@ def main():
         wrist_mount=args.wrist_mount,
         wrist_rotation=args.wrist_rotation,
         wrist_flip=args.wrist_flip,
+        scene=dict(kv.split("=", 1) for kv in args.scene.split(",") if kv) or None,
     )
     try:
         facade.serve(

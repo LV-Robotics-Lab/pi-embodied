@@ -91,6 +91,8 @@ maniskill = [
     "mani_skill==3.0.1",
     "torch",
     "pillow>=10",
+    # BlockPAP/BlockStack view transform (Show-Harness's cv2 letterbox)
+    "opencv-python-headless",
 ]
 piper = [
     # AgileX Piper over ROS topics (Show-Harness's Cobot Magic stack); ROS itself

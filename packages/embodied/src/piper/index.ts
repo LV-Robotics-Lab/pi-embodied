@@ -79,11 +79,16 @@ export function headingToBase(delta: Vec3, state: State | undefined): Vec3 {
 
 /**
  * How the Piper rig's views look, from Show-Harness plugins/ego (the rig's `is_ego` fix, learned on
- * hardware): the front camera and the wrist camera do not share one forward/back convention.
+ * hardware): the front camera and the wrist camera do not share one forward/back convention. With
+ * `units_frame: heading` the front-view directions follow the gripper heading (plugins/wrist_frame):
+ * image-edge directions are wrong there once the gripper is yawed.
  */
-const VIEWS = `- Image 1, FRONT camera: faces the arm, which enters from the TOP of the image. MV_FWD moves the gripper toward the image bottom, MV_BACK toward the image top, MV_LEFT / MV_RIGHT toward image left / right.
-- Image 2, WRIST camera: looks along the gripper at the fingertips (bottom of the image). MV_FWD advances the gripper, so a target near the image TOP needs MV_FWD and one between the image top and the fingers MV_BACK; MV_LEFT / MV_RIGHT move toward image left / right; MV_DOWN brings the fingers down onto what is centered between them.
+const FRONT_BASE = `- Image 1, FRONT camera: faces the arm, which enters from the TOP of the image. MV_FWD moves the gripper toward the image bottom, MV_BACK toward the image top, MV_LEFT / MV_RIGHT toward image left / right.`;
+const FRONT_HEADING = `- Image 1, FRONT camera: faces the arm, which enters from the TOP of the image. Moves follow the GRIPPER HEADING, the direction the gripper points, visible in this view: MV_FWD moves further ahead along the heading, MV_BACK back against it, MV_LEFT / MV_RIGHT to the heading's left / right. Only while the gripper points straight toward the image bottom are these the image bottom / top / left / right.`;
+const WRIST_VIEWS = `- Image 2, WRIST camera: looks along the gripper at the fingertips (bottom of the image). MV_FWD advances the gripper, so a target near the image TOP needs MV_FWD and one between the image top and the fingers MV_BACK; MV_LEFT / MV_RIGHT move toward image left / right; MV_DOWN brings the fingers down onto what is centered between them.
 - MV_UP / MV_DOWN change the gripper's height in both views.`;
+export const piperViews = (frame: "base" | "heading") =>
+	`${frame === "heading" ? FRONT_HEADING : FRONT_BASE}\n${WRIST_VIEWS}`;
 
 const TOOLS = ["view_env_state", "move_delta", "rotate_yaw", "open_gripper", "close_gripper", "finish"];
 
@@ -151,7 +156,9 @@ export default function piper(pi: ExtensionAPI) {
 		// The stall check compares commanded and measured motion in the base frame.
 		baseDelta: (delta, state) => (unitsFrame() === "heading" ? headingToBase(delta, state) : delta),
 		instruction: () => task?.instruction ?? "",
-		views: VIEWS,
+		get views() {
+			return piperViews(unitsFrame());
+		},
 		get emptyWidthM() {
 			return meta?.limits.empty_width_m ?? 0.005;
 		},

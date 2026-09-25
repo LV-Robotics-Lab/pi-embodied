@@ -70,8 +70,15 @@ test("merge publishes drafts, merges evidence, archives conflicts and task pairs
 });
 
 test("guard enforces the memory boundary", () => {
-	const g = { root: "/m/libero", home: "/m", output: "/tmp/run", tag: "10_t2_s0", inbox: "10_t2_s0" };
-	const ro = { ...g, inbox: undefined };
+	const g = {
+		root: "/m/libero",
+		home: "/m",
+		output: "/tmp/run",
+		tag: "10_t2_s0",
+		inbox: "10_t2_s0",
+		attempts: "/tmp/run/attempts",
+	};
+	const ro = { ...g, inbox: undefined, attempts: undefined };
 	assert.equal(denied("/m/libero/MEMORY.md", "read", ro), undefined);
 	assert.equal(denied("/m/libero/global/a.md", "read", ro), undefined);
 	assert.equal(denied("/m/libero", "read", ro), undefined);
@@ -91,6 +98,10 @@ test("guard enforces the memory boundary", () => {
 	assert.equal(denied("/m/libero/_internal/inbox/10_t2_s0/wip/notes.md", "write", g), undefined);
 	assert.equal(denied("/m/libero/_internal/inbox/10_t2_s0/wip/notes.md", "read", g), undefined);
 	assert.match(denied("/m/libero/_internal/inbox/other/x.md", "write", g) ?? "", /writing/);
+	assert.equal(denied("/tmp/run/attempts/attempt_1_failed.json", "write", g), undefined);
+	assert.equal(denied("/tmp/run/attempts", "search", g), undefined);
+	assert.match(denied("/tmp/run/attempts/attempt_1_failed.json", "write", ro) ?? "", /only the memory/);
+	assert.match(denied("/tmp/run/attempts2/x.json", "write", g) ?? "", /only the memory/);
 });
 
 test("recipe keeps successful primitives and segments after the last reset", () => {

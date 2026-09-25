@@ -64,6 +64,10 @@ uv pip install -e "services[franka,sam3]"
 
 # Molmo: its own venv (transformers>=4.57 conflicts with openpi's 4.53.2)
 uv pip install -e "services[molmo]"
+
+# Flywheel LeRobot export: its own venv (lerobot pins numpy 2 / huggingface-hub 1.x);
+# pass its python to pi as --flywheel-python
+uv pip install -e "services[flywheel]"
 ```
 
 `uv` reads the `[tool.uv]` conflict table, so `uv sync --extra <robot>` inside `services/`

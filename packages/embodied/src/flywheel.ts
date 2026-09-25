@@ -9,7 +9,7 @@
  *
  * The episode is written when the session ends. /flywheel-export runs
  * `python -m pi_embodied_services.flywheel.cli export-lerobot` in the services dir (--services,
- * with --python), which keeps each successful episode up to its first `terminated` step and
+ * with --flywheel-python, else --python), which keeps each successful episode up to its first `terminated` step and
  * writes a LeRobot dataset (needs lerobot>=0.3.3,<0.4 in that Python).
  */
 
@@ -148,6 +148,10 @@ export function flywheel(pi: ExtensionAPI) {
 		type: "string",
 		description: "Flywheel data root (default ~/.pi/embodied/datacollection)",
 	});
+	pi.registerFlag("flywheel-python", {
+		type: "string",
+		description: "Python with lerobot for /flywheel-export (default --python)",
+	});
 
 	const root = () =>
 		resolve(String(pi.getFlag("flywheel-root") || join(homedir(), ".pi", "embodied", "datacollection")));
@@ -203,10 +207,18 @@ export function flywheel(pi: ExtensionAPI) {
 				suite,
 			];
 			cli.push("--task", task, ...(id ? ["--dataset-id", id] : []));
-			const python = String(pi.getFlag("python") || process.env.PI_EMBODIED_PYTHON || "python");
+			// LeRobot's pins (numpy 2, huggingface-hub 1.x) conflict with the env servers', hence its own Python.
+			const python = String(
+				pi.getFlag("flywheel-python") || pi.getFlag("python") || process.env.PI_EMBODIED_PYTHON || "python",
+			);
 			const services = String(pi.getFlag("services") || process.env.PI_EMBODIED_SERVICES || SERVICES);
 			const res = await pi.exec("env", [`PYTHONPATH=${services}`, python, ...cli], { cwd: services });
-			ctx.ui.notify(res.code === 0 ? res.stdout.trim() : res.stderr.trim(), res.code === 0 ? "info" : "error");
+			const out = res.code === 0 ? res.stdout.trim() : res.stderr.trim() || `exit code ${res.code}`;
+			if (ctx.hasUI) ctx.ui.notify(out, res.code === 0 ? "info" : "error");
+			else {
+				console.error(`[flywheel] ${out}`);
+				if (res.code !== 0) process.exitCode = 1;
+			}
 		},
 	});
 

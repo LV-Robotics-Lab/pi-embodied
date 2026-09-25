@@ -35,7 +35,8 @@ Shared modules:
   `ctx.ui.select` dialogs (TUI or RPC client), plus `/success /failure /abort /done /continue /operator`.
 - `src/video.ts`: episode video (ffmpeg). `src/flywheel.ts`: Flywheel data in the
   LIBERO-only schema (default root `~/.pi/embodied/datacollection`), with LeRobot export
-  (LIBERO only; `/flywheel-export` runs `pi_embodied_services.flywheel` with `--python`).
+  (LIBERO only; `/flywheel-export` runs `pi_embodied_services.flywheel` with `--flywheel-python`,
+  default `--python`; LeRobot needs its own venv, see services/README.md).
 - `src/dashboard/`: live web dashboard (`--dashboard`) for any robot.
 - `src/libero/flash.ts`: Flash replay without an LLM (`--model flash/replay`).
 

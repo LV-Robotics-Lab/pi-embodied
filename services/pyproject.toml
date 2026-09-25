@@ -50,6 +50,12 @@ molmo = [
     "torchvision",
     "pillow>=10",
 ]
+flywheel = [
+    # LeRobot export of Flywheel episodes (/flywheel-export). Its numpy 2 and
+    # huggingface-hub 1.x pins break the LIBERO extra, so install it into its own
+    # environment and point pi's --flywheel-python at it.
+    "lerobot>=0.3.3,<0.4",
+]
 libero = [
     "pi-embodied-services[rlinf,sam3]",
     "rpent-openpi @ git+https://github.com/RLinf/openpi.git@rpent",

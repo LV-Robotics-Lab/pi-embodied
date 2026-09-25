@@ -124,7 +124,15 @@ export default function libero(pi: ExtensionAPI) {
 		},
 		video: true,
 		flywheel: true,
-		operator: { step: () => envStep },
+		operator: {
+			step: () => envStep,
+			// In simulation the operator's scene restore is the env's own reset to the episode's initial state.
+			reset: async () => {
+				await resetEpisode();
+				fly.reset(obs, flyMeta());
+				return { step: envStep, terminated, truncated };
+			},
+		},
 		explore: {
 			reset: async (result) => {
 				await resetEpisode();

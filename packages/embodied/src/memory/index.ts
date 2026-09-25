@@ -27,8 +27,19 @@ const ACCESS: Record<string, Access> = {
 
 type Access = "read" | "search" | "write";
 type Details = { terminated?: unknown; error?: unknown; result?: { error?: unknown }; camera?: unknown } | undefined;
-/** Canonical roots: the memory corpus, every robot's memory home, the run's output dir and the cell tag, plus read-only dirs. */
-export type Guard = { root: string; home: string; output: string; tag: string; inbox?: string; readable?: string[] };
+/**
+ * Canonical roots: the memory corpus, every robot's memory home, the run's output dir and the cell tag, plus read-only
+ * dirs and, when exploring, the cell's inbox and the attempt archive (`<output>/attempts`, see ../explore.ts).
+ */
+export type Guard = {
+	root: string;
+	home: string;
+	output: string;
+	tag: string;
+	inbox?: string;
+	attempts?: string;
+	readable?: string[];
+};
 export type MemoryOptions = {
 	/** Corpus name under the memory home, also the Hugging Face subdirectory (default "libero"). */
 	robot?: string;
@@ -83,11 +94,12 @@ export function canonicalPath(input: string | undefined, cwd: string): string {
 
 /**
  * Why `path` (canonical) may not be accessed, or undefined. Deny by default: only the published memory
- * (read), the cell's inbox (exploration) and the cell's files in the output dir (`<tag>*`) are reachable.
+ * (read), the cell's inbox and attempt archive (exploration) and the cell's files in the output dir (`<tag>*`) are reachable.
  */
 export function denied(path: string, access: Access, g: Guard): string | undefined {
 	const inside = (base: string) => path === base || path.startsWith(base + sep);
 	if (access !== "write" && g.readable?.some(inside)) return undefined;
+	if (g.attempts && inside(g.attempts)) return undefined;
 	if (!inside(g.root)) {
 		if (inside(g.home)) return `access to another robot's memory is denied: ${path}`;
 		if (path === g.output && access === "read") return undefined;
@@ -206,7 +218,14 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 		profile = requested;
 		if (profile === "hf" && pi.getFlag("memory-dir"))
 			throw new Error("--memory-dir requires --memory-profile local or --explore");
-		guard = { root, home, output: outputDir, tag: cell.tag, inbox: explore ? cell.tag : undefined };
+		guard = {
+			root,
+			home,
+			output: outputDir,
+			tag: cell.tag,
+			inbox: explore ? cell.tag : undefined,
+			attempts: explore && outputDir ? join(outputDir, "attempts") : undefined,
+		};
 		if (explore) return;
 		if (profile === "hf") await syncMemory(root, (m) => say(ctx, m, "warning"));
 		else if (

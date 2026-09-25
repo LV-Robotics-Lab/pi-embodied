@@ -18,7 +18,7 @@ import { explore } from "./explore.ts";
 import { flywheel } from "./flywheel.ts";
 import { type MemoryOptions, memory } from "./memory/index.ts";
 import { operator } from "./operator.ts";
-import { NdArray, RpcClient } from "./rpc.ts";
+import { NdArray, RpcClient, RpcUnavailable } from "./rpc.ts";
 import { episodeVideo } from "./video.ts";
 
 export type Json = Record<string, any>;
@@ -116,8 +116,10 @@ export type RobotSpec = {
  *   --time-limit budget, ends the episode, after which only `finish` runs.
  * - One `robot_result` entry per episode (and, without a UI, one `[name] {...}` stderr line): at the
  *   first agent_end after the episode ended, otherwise at session_shutdown once an agent ran, or
- *   `env_error: true` when the start failed. `planner_error` is set when the model's last reply
- *   was an error; evaluations treat both as invalid episodes, whatever the outcome.
+ *   `env_error: true` when the start failed. The robot breaking mid-episode (its env server exits,
+ *   or a service stops answering: `RpcUnavailable` from a tool) ends the episode with
+ *   `env_error: true` too. `planner_error` is set when the model's last reply was an error;
+ *   evaluations treat both as invalid episodes, whatever the outcome.
  * - The env server started with `serve`, pruning of older camera frames, the system prompt, the
  *   /robot-task command, the status published on `pi.events`, and the mounted modules.
  */
@@ -126,6 +128,8 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	let task: Record<string, string> = {};
 	let ready = false;
 	let failed: string | undefined;
+	/** The robot broke during the episode: its env server exited, or a service stopped answering. */
+	let broken: string | undefined;
 	let ran = false;
 	let ended = false;
 	let reported = false;
@@ -156,7 +160,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	// Registered before the modules, so the task is resolved before memory's session_start reads it.
 	pi.on("session_start", (_event, ctx) => {
 		ready = ran = ended = reported = finishing = false;
-		failed = claimed = started = plannerError = outOfBudget = undefined;
+		failed = broken = claimed = started = plannerError = outOfBudget = undefined;
 		turns = 0;
 		pi.setActiveTools([]);
 		const picked = ctx.sessionManager
@@ -218,6 +222,13 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		publish();
 	});
 
+	/** The robot broke mid-episode: end the episode; its result is an env_error. */
+	function fail(why: string) {
+		broken ??= why;
+		ended = true;
+		publish();
+	}
+
 	pi.on("before_agent_start", () => {
 		started ??= Date.now();
 		const systemPrompt = spec.prompt?.();
@@ -235,6 +246,8 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	});
 	pi.on("tool_call", (event) => {
 		if (!ready) return { block: true, reason: `${name} is not available.`, terminate: true };
+		if (broken !== undefined)
+			return { block: true, reason: `The robot failed: ${broken}. The episode is over.`, terminate: true };
 		if (event.toolName === "finish") return undefined;
 		if (ended) return { block: true, reason: "The episode is finished.", terminate: true };
 		const maxTurns = Number(pi.getFlag("max-turns"));
@@ -281,7 +294,9 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 						planner_budget_exhausted: outOfBudget ?? null,
 						planner_error: plannerError ?? null,
 						...op.result(),
-						env_error: false,
+						// A robot that broke mid-episode makes its outcome meaningless, like a failed start.
+						env_error: broken !== undefined,
+						...(broken !== undefined ? { error: broken } : {}),
 					};
 		try {
 			pi.appendEntry(RESULT_ENTRY, r);
@@ -365,6 +380,9 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 					signal = sig;
 					try {
 						return { ...(await run(params, sig, ctx)), terminate: finishing };
+					} catch (err) {
+						if (err instanceof RpcUnavailable) fail(err.message);
+						throw err;
 					} finally {
 						signal = undefined;
 					}
@@ -397,6 +415,10 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 			});
 			exited.catch(() => {});
 			await Promise.race([rpc.ready(o.readyMs), exited]);
+			// Stopping it clears `server` first; any other exit is the robot breaking mid-episode.
+			proc.once("exit", (code, sig) => {
+				if (server?.proc === proc) fail(`env server exited (${code ?? sig}); see ${log}`);
+			});
 			return rpc;
 		},
 		video,

@@ -83,8 +83,14 @@ const busy = new Map<string, { method: string; answered: Promise<unknown> }>();
  */
 const direct = { http: new HttpAgent({ keepAlive: true }), https: new HttpsAgent({ keepAlive: true }) };
 
-/** One request and its full answer. No timeout and no abort: the answer is what frees the endpoint. */
-function post(url: string, body: string): Promise<string> {
+/** The service did not answer: unreachable, dropped the connection, timed out or stopped answering. */
+export class RpcUnavailable extends Error {}
+
+/** Endpoints whose server stopped answering, with why; every later call to them fails at once. */
+const dead = new Map<string, string>();
+
+/** One request and its full answer. `signal` only abandons a server that stopped answering. */
+function post(url: string, body: string, signal?: AbortSignal): Promise<string> {
 	return new Promise((resolve, reject) => {
 		const target = new URL(url);
 		const https = target.protocol === "https:";
@@ -94,16 +100,17 @@ function post(url: string, body: string): Promise<string> {
 			{
 				method: "POST",
 				agent: https ? direct.https : direct.http,
+				signal,
 				headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) },
 			},
 			(res) => {
 				const chunks: Buffer[] = [];
 				res.on("data", (c: Buffer) => chunks.push(c));
 				res.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-				res.on("error", reject);
+				res.on("error", (err) => reject(new RpcUnavailable(`${url}: ${err.message}`)));
 			},
 		);
-		req.on("error", reject);
+		req.on("error", (err) => reject(new RpcUnavailable(`${url}: ${err.message}`)));
 		req.end(body);
 	});
 }
@@ -113,7 +120,11 @@ export class RpcClient {
 	/** Server-side session id, for servers that scope state per client (RoboCasa's VLA). */
 	session: string | null = null;
 
-	constructor(endpoint: string) {
+	/** How long a sent call that timed out or was aborted may stay unanswered before the endpoint is given up on. */
+	graceMs: number | undefined;
+
+	constructor(endpoint: string, o: { graceMs?: number } = {}) {
+		this.graceMs = o.graceMs;
 		const base = endpoint.includes("://") ? endpoint : `http://${endpoint}`;
 		this.url = `${base.replace(/\/$/, "")}/call`;
 	}
@@ -121,7 +132,9 @@ export class RpcClient {
 	/**
 	 * Call `method`. `timeoutMs` (counted from this call, queueing included) and `signal` end the
 	 * wait; a call that has not been sent by then is never sent, and one already sent keeps the
-	 * endpoint until the server answers it.
+	 * endpoint until the server answers it. A server that still has not answered `graceMs` later
+	 * (default: `timeoutMs`, at least 60 s) is given up on: the endpoint is marked unresponsive and every later call fails with
+	 * `RpcUnavailable`, as do timeouts and transport errors.
 	 */
 	async call<T = unknown>(
 		method: string,
@@ -131,41 +144,57 @@ export class RpcClient {
 		signal?: AbortSignal,
 	): Promise<T> {
 		if (signal?.aborted) throw new Error(`${method}: aborted`);
+		const down = dead.get(this.url);
+		if (down) throw new RpcUnavailable(`${method}: ${this.url} stopped answering (${down})`);
 		const body = JSON.stringify({ method, args: encode(args), kwargs: encode(kwargs), session_id: this.session });
 		const previous = busy.get(this.url);
 		let sent = false;
 		let gaveUp = false;
+		const abandon = new AbortController();
+		let grace: ReturnType<typeof setTimeout> | undefined;
 		const answered = (async () => {
 			await previous?.answered.catch(() => {});
 			if (gaveUp) return undefined;
+			const down = dead.get(this.url);
+			if (down) throw new RpcUnavailable(`${method}: ${this.url} stopped answering (${down})`);
 			sent = true;
-			return post(this.url, body);
+			return post(this.url, body, abandon.signal);
 		})();
 		const slot = { method, answered };
 		busy.set(this.url, slot);
 		answered
 			.catch(() => {})
 			.finally(() => {
+				clearTimeout(grace);
 				if (busy.get(this.url) === slot) busy.delete(this.url);
 			});
 
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		let onAbort: (() => void) | undefined;
 		const released = new Promise<never>((_, reject) => {
-			const release = (why: string) => {
+			const release = (why: string, unavailable: boolean) => {
 				gaveUp = true;
+				if (sent) {
+					const graceMs = this.graceMs ?? Math.max(timeoutMs, 60_000);
+					grace = setTimeout(() => {
+						dead.set(this.url, `${method} unanswered ${(timeoutMs + graceMs) / 1000} s after it was sent`);
+						abandon.abort();
+					}, graceMs);
+					grace.unref();
+				}
+				const Failure = unavailable ? RpcUnavailable : Error;
 				reject(
-					new Error(
+					new Failure(
 						sent
 							? `${method}: ${why}; the server is still running it`
 							: `${method}: ${why} waiting for ${previous?.method ?? "the server"}, which the server is still running`,
 					),
 				);
 			};
-			timer = setTimeout(() => release(`timed out after ${timeoutMs} ms`), timeoutMs);
+			timer = setTimeout(() => release(`timed out after ${timeoutMs} ms`, true), timeoutMs);
 			onAbort = () => {
 				if (sent) void this.interrupt();
-				release("aborted");
+				release("aborted", false);
 			};
 			signal?.addEventListener("abort", onAbort, { once: true });
 		});

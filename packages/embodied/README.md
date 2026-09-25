@@ -40,8 +40,11 @@ Shared modules:
 - `src/libero/flash.ts`: Flash replay without an LLM (`--model flash/replay`).
 
 Every robot result carries `robot`, `claimed`, `summary`, `turns`, `planner_budget_exhausted`,
-`planner_error` and `env_error`; the eval scripts count an episode only when the environment
-produced a result and the planner did not fail, and rerun the others.
+`planner_error` and `env_error` (also set when the env server exits or a service stops answering
+mid-episode); the eval scripts count an episode only when the environment produced a result and
+the planner did not fail, and rerun the others. LIBERO and RoboTwin episodes get
+`--time-limit ${TIME_LIMIT:-1800}` s (the episode ends as a failure) and a `timeout` backstop
+900 s later (the episode is invalid and rerun).
 
 ## LIBERO
 

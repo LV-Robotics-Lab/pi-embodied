@@ -49,7 +49,7 @@ for (const f of readdirSync(dir).filter((f) => f.endsWith(".jsonl"))) {
 	}
 }
 const last = results.length === 1 ? results[0] : undefined;
-const status = results.length > 1 ? "duplicate_result"
+const status = Number(code) === 124 ? "timeout" : results.length > 1 ? "duplicate_result"
 	: !last ? (Number(code) ? "env_error" : "missing")
 	: last.env_error ? "env_error" : last.planner_error ? "planner_error" : last.success ? "success" : "failure";
 const result = { ...(last ?? {}), status, exit_code: Number(code), model: model || null, thinking: thinking || null, max_turns: Number(turns) };
@@ -130,6 +130,6 @@ for (const split of new Set(rows.map((r) => r.split))) {
 	const ok = s.filter((r) => r.status === "success").length;
 	console.log(`${split}: success ${ok}/${s.length} (${rate(ok, s.length)}%)`);
 }
-console.log(`${[...configs][0] ?? "-"}: success ${n("success")}/${scored} (${rate(n("success"), scored)}%), task-weighted ${perTask.size ? (100 * weighted).toFixed(1) : "-"}%, claimed-but-failed ${lies}, invalid ${invalid} (env_error ${n("env_error")}, planner_error ${n("planner_error")}, missing ${n("missing")}, duplicate ${n("duplicate_result")}) of ${rows.length}`);
+console.log(`${[...configs][0] ?? "-"}: success ${n("success")}/${scored} (${rate(n("success"), scored)}%), task-weighted ${perTask.size ? (100 * weighted).toFixed(1) : "-"}%, claimed-but-failed ${lies}, invalid ${invalid} (env_error ${n("env_error")}, planner_error ${n("planner_error")}, timeout ${n("timeout")}, missing ${n("missing")}, duplicate ${n("duplicate_result")}) of ${rows.length}`);
 if (invalid) process.exit(1);
 ' "$out" "$cells"

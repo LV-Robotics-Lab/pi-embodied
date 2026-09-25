@@ -6,6 +6,7 @@ import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { defineRobot, RESULT_ENTRY, type RobotSpec, STATUS_EVENT, TASK_ENTRY } from "../src/robot.ts";
+import { RpcUnavailable } from "../src/rpc.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
@@ -246,4 +247,27 @@ test("a spent turn budget ends the episode; an unended episode reports at shutdo
 	assert.equal(g.entries.filter((e) => e.type === RESULT_ENTRY).length, 0, "not ended: no result yet");
 	await g.emit("session_shutdown");
 	assert.equal(g.entries.filter((e) => e.type === RESULT_ENTRY).length, 1);
+});
+
+test("a service that stops answering mid-episode ends it as an env_error", async (t) => {
+	const f = fakePi();
+	t.after(f.restore);
+	const robot = toy(f.pi, async () => ["move", "render"]);
+	robot.tool("render", "render", Type.Object({}), async () => {
+		throw new RpcUnavailable("env.render: timed out after 5 ms; the server is still running it");
+	});
+	await f.emit("session_start");
+	await f.emit("agent_start");
+	await f.tools.get("move").execute("1", { n: 2 }, undefined, undefined, {});
+	await assert.rejects(f.tools.get("render").execute("2", {}, undefined, undefined, {}), RpcUnavailable);
+	const blocked = await f.emit("tool_call", { toolName: "move" });
+	assert.equal(blocked?.terminate, true);
+	assert.match(blocked?.reason, /The robot failed: env\.render: timed out/);
+	await f.emit("agent_end");
+	await f.emit("session_shutdown");
+	const results = f.entries.filter((e) => e.type === RESULT_ENTRY).map((e) => e.data);
+	assert.equal(results.length, 1);
+	assert.equal(results[0].env_error, true);
+	assert.match(results[0].error, /env\.render: timed out/);
+	assert.equal(results[0].steps, 2);
 });

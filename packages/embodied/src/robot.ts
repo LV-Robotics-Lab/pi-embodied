@@ -260,7 +260,8 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	// An operator's unit (../gumi) passes the gates an `act` call passes, without counting as a planner turn.
 	const un = spec.units
 		? units(pi, spec.units, tool, () => task, {
-				tools: () => robotTools,
+				// Exploration's `reset` and the operator's `request_scene_reset` move the robot too.
+				tools: () => [...robotTools, "reset", "request_scene_reset"],
 				refuse: () => refusal("act") ?? op.refuse("act"),
 			})
 		: undefined;

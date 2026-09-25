@@ -37,6 +37,7 @@ the NUC's ``franka_server``): ``get_ee_pose`` -> [x, y, z, qx, qy, qz, qw],
 ``get_joint_positions``, ``update_desired_ee_pose(pose7)``,
 ``start_cartesian_impedance(Kx, Kxd)``, ``terminate_current_policy``,
 ``control_gripper(close)``, ``get_gripper_position`` -> [width_m],
+``get_gripper_state`` -> {width, is_grasped, is_moving} (Polymetis ``GripperState``),
 ``move_to_joint_positions(q, time_to_go)``, ``start_joint_impedance`` and
 ``update_desired_joint_pos(q)``.
 
@@ -398,7 +399,9 @@ class PolymetisController:
         self._yaw_inv = quat_conj(tcp_yaw_quat(limits.tcp_yaw_deg))
         self.target_pos: np.ndarray | None = None
         self.target_quat: np.ndarray | None = None
-        self.gripper_open: bool | None = None
+        # The last gripper command (True = open); None until one is sent. The state
+        # reports the measured gripper, this only as ``gripper_commanded_open``.
+        self.commanded_open: bool | None = None
         self.restarts = 0
         self._call_restarts = 0
         # Chained motion (smooth + blend): direction and deadline of a translation
@@ -421,6 +424,25 @@ class PolymetisController:
     def width(self) -> float:
         return float(np.asarray(self.robot.get_gripper_position()).reshape(-1)[0])
 
+    def gripper_state(self) -> dict[str, Any]:
+        """Measured gripper: width, grasp / moving flags (None when not reported) and
+        ``closed`` = grasped, or narrower than ``gripper_close_threshold_m``."""
+        raw = self.robot.get_gripper_state()
+        width = float(raw["width"])
+
+        def flag(key: str) -> bool | None:
+            v = raw.get(key)
+            return None if v is None else bool(v)
+
+        grasped = flag("is_grasped")
+        closed = bool(grasped) or width < self.limits.gripper_close_threshold_m
+        return {
+            "width": width,
+            "grasped": grasped,
+            "moving": flag("is_moving"),
+            "closed": closed,
+        }
+
     # -- controller --------------------------------------------------------
 
     def start_impedance(self) -> None:
@@ -439,8 +461,6 @@ class PolymetisController:
         """Reset the setpoint to the measured pose (Show-Harness sync_from_robot)."""
         self._stream_dir = None
         self.target_pos, self.target_quat = self.measured()
-        if self.gripper_open is None:
-            self.gripper_open = self.width() >= self.limits.gripper_close_threshold_m
 
     def _command(self, pos: np.ndarray, quat: np.ndarray) -> None:
         """Send one setpoint; restart a lost controller at most once per call.
@@ -902,7 +922,7 @@ class PolymetisController:
                 "gripper_width_m": self.width(),
             }
         self.robot.control_gripper(not open)  # Show-Harness: True = close
-        self.gripper_open = bool(open)
+        self.commanded_open = bool(open)
         steps = 1
         width, cancelled = self._await_gripper(None if open else lim.grasp_open_width_m)
         result: dict[str, Any] = {"target_gripper_open": bool(open)}
@@ -913,7 +933,7 @@ class PolymetisController:
             and width <= lim.empty_width_m
         ):
             self.robot.control_gripper(False)
-            self.gripper_open = True
+            self.commanded_open = True
             steps += 1
             width, cancelled = self._await_gripper(None)
             result["grasp_empty"] = True
@@ -1013,15 +1033,22 @@ class PolymetisController:
     # -- state -------------------------------------------------------------
 
     def state(self) -> dict[str, Any]:
-        """RLinf-shaped ``raw_base_state`` (tcp_pose xyzw, gripper_position, ...)."""
+        """RLinf-shaped ``raw_base_state`` (tcp_pose xyzw, gripper_position, ...).
+
+        The gripper keys are measured (``gripper_state``): ``gripper_position`` [width],
+        ``gripper_open`` / ``gripper_closed``, ``gripper_grasped``, ``gripper_moving``;
+        the last command is ``gripper_commanded_open`` (None before the first).
+        """
         pos, quat = self.measured()
-        width = self.width()
+        grip = self.gripper_state()
         out: dict[str, Any] = {
             "tcp_pose": np.concatenate([pos, quat]).tolist(),
-            "gripper_position": [width],
-            "gripper_open": bool(self.gripper_open)
-            if self.gripper_open is not None
-            else width >= self.limits.gripper_close_threshold_m,
+            "gripper_position": [grip["width"]],
+            "gripper_open": not grip["closed"],
+            "gripper_closed": grip["closed"],
+            "gripper_grasped": grip["grasped"],
+            "gripper_moving": grip["moving"],
+            "gripper_commanded_open": self.commanded_open,
             "arm_joint_position": np.asarray(
                 self.robot.get_joint_positions(), dtype=float
             ).tolist(),

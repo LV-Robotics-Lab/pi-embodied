@@ -343,6 +343,34 @@ def test_real_grasp_holds():
     assert robot.gripper_commands[-1] is True
 
 
+def test_gripper_state_is_measured_not_commanded():
+    # A close the fingers never execute (fault, or stopped before they moved): the
+    # command says closed, the fingers are still open.
+    robot = MockPolymetisRobot((0.5, 0.0, 0.3, *DOWN))
+    robot.jammed = True
+    f = facade(robot)
+    call(f, "env.set_gripper", open=False)
+    base = call(f, "env.get_robot_state")["raw_base_state"]
+    assert robot.gripper_commands[-1] is True
+    assert base["gripper_commanded_open"] is False
+    assert base["gripper_position"] == [pytest.approx(0.08)]
+    assert base["gripper_open"] is True and base["gripper_closed"] is False
+    assert base["gripper_grasped"] is False
+    # A wide object stops the fingers above the width threshold: closed per the
+    # gripper's grasp flag, and the width is where the fingers stopped.
+    robot = MockPolymetisRobot((0.5, 0.0, 0.3, *DOWN), object_width=0.075)
+    f = facade(robot)
+    call(f, "env.set_gripper", open=False)
+    base = call(f, "env.get_robot_state")["raw_base_state"]
+    assert base["gripper_position"] == [pytest.approx(0.075)]
+    assert base["gripper_grasped"] is True and base["gripper_moving"] is False
+    assert base["gripper_open"] is False and base["gripper_closed"] is True
+    call(f, "env.set_gripper", open=True)
+    base = call(f, "env.get_robot_state")["raw_base_state"]
+    assert base["gripper_open"] is True and base["gripper_grasped"] is False
+    assert base["gripper_commanded_open"] is True
+
+
 # -- reset ---------------------------------------------------------------------
 
 
@@ -906,6 +934,45 @@ def test_nuc_server_validates_every_command():
     s.update_desired_joint_pos(fake.q + 0.01)
     with pytest.raises(ValueError, match="width"):
         s.set_gripper_position(float("nan"))
+
+
+def test_gripper_state_travels_from_polymetis_to_the_client():
+    fake = FakePolymetis()
+    fake.get_state = lambda: type(
+        "GripperState", (), {"width": 0.041, "is_grasped": True, "is_moving": False}
+    )()
+    s = nuc_server.FrankaServer(
+        fake, fake, 0.1, 20.0, nuc_server.NucLimits(), np.asarray
+    )
+    assert "get_gripper_state" in nuc_server.READ_ONLY
+    served = s.get_gripper_state()
+    assert served == {
+        "width": pytest.approx(0.041),
+        "is_grasped": True,
+        "is_moving": False,
+        "prev_command_successful": None,
+    }
+
+    from pi_embodied_services.robots.franka_polymetis.hardware import PolymetisRobot
+
+    class NoSuchMethod(Exception):
+        name = "NameError"  # what zerorpc raises for a method the server lacks
+
+    class OldServer:
+        def get_gripper_state(self):
+            raise NoSuchMethod("get_gripper_state")
+
+        def get_gripper_position(self):
+            return 0.03
+
+    client = PolymetisRobot.__new__(PolymetisRobot)
+    client._gripper_state_rpc = True
+    client.server = type("New", (), {"get_gripper_state": lambda self: served})()
+    assert client.get_gripper_state()["is_grasped"] is True
+    client.server = OldServer()
+    old = {"width": pytest.approx(0.03), "is_grasped": None, "is_moving": None}
+    assert client.get_gripper_state() == old
+    assert client._gripper_state_rpc is False
 
 
 # -- cameras and perception -------------------------------------------------------

@@ -4,7 +4,8 @@ import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import dashboard from "../src/dashboard/index.ts";
 import { NdArray } from "../src/rpc.ts";
-import { FRAME_EVENT } from "../src/video.ts";
+import { UNITS_EVENT, type UnitsHandle } from "../src/units/index.ts";
+import { FRAME_EVENT, NOTE_EVENT, type VideoNote } from "../src/video.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
@@ -36,6 +37,7 @@ function fakePi(flagValues: Record<string, unknown> = {}) {
 		ui: { notify: (m: string) => notes.push(m) },
 		sessionManager: { getBranch: () => [] },
 		isIdle: () => true,
+		signal: undefined,
 	};
 	const emit = async (name: string, event: Record<string, unknown> = {}) => {
 		for (const fn of handlers.get(name) ?? []) await fn(event, ctx);
@@ -106,6 +108,63 @@ test("GET /live streams the latest env frame as multipart PNG, downscaled to ?w=
 		const png = body.subarray(body.indexOf(Buffer.from([0x89, 0x50, 0x4e, 0x47])));
 		// 80 px wide at w=64: a 2x box filter.
 		assert.deepEqual([png.readUInt32BE(16), png.readUInt32BE(20)], [40, 30]);
+	} finally {
+		await p.quit();
+	}
+});
+
+const post = (url: string, body: unknown) =>
+	new Promise<{ status: number; body: any }>((resolve, reject) => {
+		const req = request(url, { method: "POST", headers: { "Content-Type": "application/json" } }, (res) => {
+			let raw = "";
+			res.on("data", (c) => {
+				raw += c;
+			});
+			res.on("end", () => resolve({ status: res.statusCode ?? 0, body: JSON.parse(raw || "{}") }));
+		});
+		req.on("error", reject);
+		req.end(JSON.stringify(body));
+	});
+
+test("a second teleop request while a batch runs is refused and leaves the batch's video labels alone", async () => {
+	const p = fakePi();
+	const url = await p.start();
+	const notes: VideoNote[] = [];
+	p.pi.events.on(NOTE_EVENT, (n) => notes.push(n as VideoNote));
+	const releases: (() => void)[] = [];
+	const handle: UnitsHandle = {
+		tool: "act",
+		arms: [],
+		vocabulary: ["MV_FWD", "MV_UP", "STOP", "GRASP", "RELEASE", "DONE"],
+		stepM: 0.02,
+		tools: () => ["act"],
+		refuse: () => undefined,
+		run: async () => {
+			await new Promise<void>((r) => releases.push(r));
+			return { content: [{ type: "text", text: "{}" }], details: {} };
+		},
+	} as unknown as UnitsHandle;
+	p.pi.events.emit(UNITS_EVENT, handle);
+	const next = async () => {
+		while (!releases.length) await new Promise((r) => setTimeout(r, 1));
+		(releases.shift() as () => void)();
+	};
+	try {
+		const first = post(`${url}gumi/step`, { command: "w g" });
+		while (!releases.length) await new Promise((r) => setTimeout(r, 1));
+		assert.deepEqual(notes, [{ actor: "human", action: "MV_FWD" }]);
+		// The second request is refused (409) and emits nothing: the running unit keeps its label.
+		const second = await post(`${url}gumi/step`, { command: "q" });
+		assert.equal(second.status, 409);
+		assert.deepEqual(notes, [{ actor: "human", action: "MV_FWD" }]);
+		await next();
+		await next();
+		assert.equal((await first).body.executed, 2);
+		assert.deepEqual(notes, [
+			{ actor: "human", action: "MV_FWD" },
+			{ actor: "human", action: "GRASP" },
+			{ actor: null },
+		]);
 	} finally {
 		await p.quit();
 	}

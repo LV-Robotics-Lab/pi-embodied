@@ -163,3 +163,30 @@ test(
 		}
 	},
 );
+
+test("an agent call held and dropped during an operator takeover never labels the frames or sets the gripper", async () => {
+	const { pi, emit } = fakePi({});
+	const video = episodeVideo(pi);
+	await emit("session_start");
+	// pi announces the agent's GRASP; ../gumi's gate holds it while the operator drives.
+	await emit("tool_execution_start", { toolName: "act", args: { unit: "GRASP" } });
+	pi.events.emit(NOTE_EVENT, { actor: "human", action: "MV_UP" });
+	video.frame(frame(8, 8));
+	assert.deepEqual(video.note, { n: 1, actor: "human", action: "MV_UP", gripper: null, width: null });
+	// The operator's batch ends: the held call has not run, so the frames are not relabelled as its.
+	pi.events.emit(NOTE_EVENT, { actor: null });
+	assert.equal(video.note, undefined);
+	// Dropped as stale: blocked, no frames.
+	await emit("tool_execution_end", {
+		toolName: "act",
+		result: { content: [{ type: "text", text: "... was not executed" }] },
+	});
+	pi.events.emit(NOTE_EVENT, { actor: "human", action: "MV_FWD" });
+	assert.equal((video.note as Note | undefined)?.gripper, null);
+	pi.events.emit(NOTE_EVENT, { actor: null });
+	// An agent call that runs takes the label (and its gripper command) with its first frame.
+	await emit("tool_execution_start", { toolName: "act", args: { unit: "GRASP" } });
+	assert.equal(video.note, undefined);
+	video.frame(frame(8, 8));
+	assert.deepEqual(video.note, { n: 3, actor: "agent", action: "act GRASP", gripper: "CLOSED", width: null });
+});

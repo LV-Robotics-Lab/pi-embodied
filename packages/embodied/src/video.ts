@@ -203,6 +203,12 @@ export function episodeVideo(pi: ExtensionAPI) {
 	let note: Note | undefined;
 	/** The running agent tool's note: an operator batch that interrupts it hands the frames back to it. */
 	let agentNote: Note | undefined;
+	/**
+	 * The agent call pi announced but that has recorded no frame yet. pi announces a call before the
+	 * tool_call hooks run, so a call ../gumi holds during an operator takeover (and then drops as stale)
+	 * is announced too: it takes the label and the gripper command only with its first frame.
+	 */
+	let pendingAgent: { action: string; command: Note["gripper"] | undefined } | undefined;
 	let actions = 0;
 	let gripper: Note["gripper"] = null;
 	let handle: UnitsHandle | undefined;
@@ -266,7 +272,7 @@ export function episodeVideo(pi: ExtensionAPI) {
 		else dir = file ? file.replace(/\.jsonl$/, "") : join(tmpdir(), "pi-embodied", sm.getSessionId());
 		frames = [];
 		notes = [];
-		note = agentNote = undefined;
+		note = agentNote = pendingAgent = undefined;
 		actions = 0;
 		gripper = null;
 		clips = 0;
@@ -274,8 +280,12 @@ export function episodeVideo(pi: ExtensionAPI) {
 
 	pi.on("tool_execution_start", (event) => {
 		clipStart = frames.length;
+		agentNote = pendingAgent = undefined;
 		if (event.toolName === "finish") return;
-		agentNote = announce("agent", actionLabel(event.toolName, event.args), commanded(event.toolName, event.args));
+		pendingAgent = {
+			action: actionLabel(event.toolName, event.args),
+			command: commanded(event.toolName, event.args),
+		};
 	});
 
 	pi.on("tool_execution_end", (event, ctx) => {
@@ -287,7 +297,7 @@ export function episodeVideo(pi: ExtensionAPI) {
 		);
 		const last = said.find(Boolean);
 		if (last) gripper = last === "OPEN" ? "OPEN" : "CLOSED";
-		agentNote = undefined;
+		agentNote = pendingAgent = undefined;
 		if (!pi.getFlag("action-clips") || frames.length === clipStart) return;
 		const name = `action_${String(++clips).padStart(3, "0")}_${event.toolName}.mp4`;
 		saving.push(save(name, frames.slice(clipStart), ctx));
@@ -315,6 +325,11 @@ export function episodeVideo(pi: ExtensionAPI) {
 		},
 		/** One agentview frame (HxWx3 uint8) per env step, in step order. */
 		frame(image: NdArray) {
+			// The agent's call runs: its frames (none of an operator batch's) carry its label from here on.
+			if (pendingAgent && note === undefined) {
+				agentNote = announce("agent", pendingAgent.action, pendingAgent.command);
+				pendingAgent = undefined;
+			}
 			frames.push(image);
 			notes.push(note);
 			pi.events.emit(FRAME_EVENT, image);

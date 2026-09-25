@@ -30,7 +30,16 @@ for ((i = 0; i < ${#args[@]}; i++)); do
 	--time-limit=*) limit=${args[i]#*=} limited=1 ;;
 	--units) [[ ${args[i + 1]:---} == --* ]] && units=true || units=${args[i + 1]} ;;
 	--units=*) units=${args[i]#*=} ;;
-	--stateless | --stateless=true) stateless=true ;;
+	# pi sets a boolean flag to true whatever value it is given (`--stateless=false` runs stateless)
+	# and takes a following word as that value: only the forms that say what pi runs are accepted.
+	--stateless) case ${args[i + 1]:-} in "" | -* | @* | true) stateless=true ;; *)
+		echo "--stateless takes no value: pi would run stateless and swallow '${args[i + 1]}'" >&2 && exit 2 ;;
+	esac ;;
+	--stateless=true) stateless=true ;;
+	--stateless=*)
+		echo "${args[i]}: pi ignores a boolean flag's value and would run stateless; omit --stateless for a stateful run" >&2
+		exit 2
+		;;
 	esac
 done
 [ "$units" = pure ] && units=true
@@ -88,8 +97,9 @@ for env in ${envs//,/ }; do
 		esac
 		rm -rf "$dir" && mkdir -p "$dir"
 		echo "== $env seed $seed"
-		${backstop[@]+"${backstop[@]}"} $PI -p --session-dir "$dir" -e "$here" --env-id "$env" --seed "$seed" "$@" \
-			"Solve the task." </dev/null >"$dir/stdout.log" 2>"$dir/stderr.log"
+		# The prompt precedes the user's args: a bare boolean flag at their end would take it as its value.
+		${backstop[@]+"${backstop[@]}"} $PI -p --session-dir "$dir" -e "$here" --env-id "$env" --seed "$seed" "Solve the task." "$@" \
+			</dev/null >"$dir/stdout.log" 2>"$dir/stderr.log"
 		record "$dir" "$?"
 	done
 done

@@ -35,7 +35,7 @@ import type {
 	MessageEndEvent,
 	MessageUpdateEvent,
 } from "@earendil-works/pi-coding-agent";
-import { ARM, type Gumi, type GumiState, gumi, observation, parseSteps, type Step as UnitStep } from "../gumi/index.ts";
+import { type Gumi, type GumiState, gumi, observation, type Step as UnitStep } from "../gumi/index.ts";
 import { encodePng } from "../png.ts";
 import { RESULT_ENTRY, type RobotStatus, rgbOf, STATUS_EVENT, TASK_ENTRY } from "../robot.ts";
 import type { NdArray } from "../rpc.ts";
@@ -154,20 +154,6 @@ export function framePng(frame: NdArray, maxWidth: number): Buffer {
 	return encodePng(small.rgb, small.width, small.height);
 }
 
-/** An operator request's steps as the video labels them (one arm: the unit; two: `L:MV_FWD R:STILL`). */
-function stepLabels(body: Record<string, unknown>, g: GumiState): string[] {
-	const arms = g.arms.length ? g.arms : [ARM];
-	try {
-		return parseSteps(
-			body,
-			arms,
-			g.vocabulary.filter((u) => u !== "DONE"),
-		).map((s) => (arms.length > 1 ? arms.map((a) => `${a[0].toUpperCase()}:${s[a]}`).join(" ") : s[arms[0]]));
-	} catch {
-		return [];
-	}
-}
-
 function createHub(server: Server, url: string, page: string, liveFps: number) {
 	const clients = new Set<ServerResponse>();
 	/** The latest env frame (../video.ts FRAME_EVENT), and the live-stream clients with the frame each has. */
@@ -175,8 +161,6 @@ function createHub(server: Server, url: string, page: string, liveFps: number) {
 	const watchers = new Set<{ res: ServerResponse; width: number; seq: number }>();
 	const liveCache = new Map<number, Buffer>();
 	let pump: ReturnType<typeof setInterval> | undefined;
-	/** Operator units still to run in the current /gumi/step request, for the episode video's labels. */
-	let operatorSteps: string[] = [];
 	const frameCache = new Map<string, Buffer>();
 	let pi: ExtensionAPI | undefined;
 	let ctx: ExtensionContext | undefined;
@@ -264,7 +248,6 @@ function createHub(server: Server, url: string, page: string, liveFps: number) {
 	const validTask = (values: string[]) =>
 		values.length === (episode?.fields.length ?? -1) && values.every((v) => /^[\w.:-]+$/.test(v));
 
-	const note = (n: VideoNote) => pi?.events.emit(NOTE_EVENT, n);
 	/** Send each live client the latest frame, once; a client whose socket is still draining skips it. */
 	function sendLive() {
 		if (!live) return;
@@ -377,9 +360,6 @@ function createHub(server: Server, url: string, page: string, liveFps: number) {
 			steps.push(step);
 			images.push(frames);
 			send({ op: "step", step });
-			// The next unit of this request labels the frames from here on.
-			const next = operatorSteps.shift();
-			if (next !== undefined) note({ actor: "human", action: next });
 			add({ kind: "meta", text: `operator ${label}${isError ? ` failed: ${clip(text, 200)}` : ""}`, step: step.n });
 		},
 		setRunning(running: boolean) {
@@ -527,17 +507,7 @@ function createHub(server: Server, url: string, page: string, liveFps: number) {
 			if (url.pathname.startsWith("/gumi/") && teleop) {
 				const g = teleop;
 				try {
-					if (url.pathname === "/gumi/step") {
-						operatorSteps = stepLabels(body, g.state());
-						const first = operatorSteps.shift();
-						if (first !== undefined) note({ actor: "human", action: first });
-						try {
-							return reply(200, await g.step(body));
-						} finally {
-							operatorSteps = [];
-							note({ actor: null });
-						}
-					}
+					if (url.pathname === "/gumi/step") return reply(200, await g.step(body));
 					if (url.pathname === "/gumi/record")
 						return reply(200, g.record(String(body.action ?? ""), body.success));
 					if (url.pathname === "/gumi/control") return reply(200, g.control(String(body.action ?? "")));
@@ -601,6 +571,12 @@ export default function dashboard(pi: ExtensionAPI) {
 	const teleop = gumi(pi, {
 		onState: (s) => on((h) => h.gumiState(s)),
 		onStep: (label, step, result, isError) => on((h) => h.teleopStep(label, step, result, isError)),
+		// The operator unit the episode video labels the next frames with (../video.ts).
+		onAction: (label) =>
+			pi.events.emit(
+				NOTE_EVENT,
+				(label === null ? { actor: null } : { actor: "human", action: label }) satisfies VideoNote,
+			),
 	});
 	// The robot in this runtime publishes its status here; it may do so before the hub is attached.
 	pi.events.on(STATUS_EVENT, (data) => {

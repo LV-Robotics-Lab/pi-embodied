@@ -17,7 +17,8 @@
 # Modified by pi-embodied: the camera streams RGB plus depth aligned to color and
 # reports its color intrinsics and depth scale (back_project needs both); frames are
 # delivered in RGB order (rgb8 stream, no OpenCV); prints go to the logger; the
-# ZeroRPC client takes an explicit call timeout.
+# ZeroRPC client takes an explicit call timeout; the measured gripper state (width,
+# grasp and moving flags) is read with get_gripper_state.
 
 """Hardware handles: the NUC's Polymetis ``franka_server`` and RealSense RGB-D cameras.
 
@@ -57,6 +58,7 @@ class PolymetisRobot:
         self.server = zerorpc.Client(heartbeat=heartbeat_s, timeout=timeout_s)
         self.server.connect(f"tcp://{ip}:{int(port)}")
         self.endpoint = f"tcp://{ip}:{int(port)}"
+        self._gripper_state_rpc = True
 
     def get_ee_pose(self) -> np.ndarray:
         return np.asarray(self.server.get_ee_pose(), dtype=np.float64)
@@ -94,6 +96,28 @@ class PolymetisRobot:
         return np.asarray(self.server.get_gripper_position(), dtype=np.float64).reshape(
             1
         )
+
+    def get_gripper_state(self) -> dict[str, Any]:
+        """Measured {width, is_grasped, is_moving}; a NUC server without
+        ``get_gripper_state`` gives the width only (flags None)."""
+        if self._gripper_state_rpc:
+            try:
+                raw = self.server.get_gripper_state()
+                return {
+                    "width": float(raw["width"]),
+                    "is_grasped": raw.get("is_grasped"),
+                    "is_moving": raw.get("is_moving"),
+                }
+            except Exception as exc:
+                if getattr(exc, "name", "") != "NameError":  # zerorpc: no such method
+                    raise
+                logger.warning(
+                    "the NUC server has no get_gripper_state (update nuc_server.py); "
+                    "reporting the gripper width without the grasp flag"
+                )
+                self._gripper_state_rpc = False
+        width = float(self.get_gripper_position()[0])
+        return {"width": width, "is_grasped": None, "is_moving": None}
 
     def terminate_current_policy(self) -> None:
         self.server.terminate_current_policy()

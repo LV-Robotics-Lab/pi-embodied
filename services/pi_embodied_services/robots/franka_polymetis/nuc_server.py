@@ -165,6 +165,21 @@ class FrankaServer:
     def get_gripper_position(self):
         return float(self.gripper.get_state().width)
 
+    def get_gripper_state(self):
+        """The measured Polymetis ``GripperState`` (flags None if a field is absent)."""
+        s = self.gripper.get_state()
+
+        def flag(name):
+            v = getattr(s, name, None)
+            return None if v is None else bool(v)
+
+        return {
+            "width": float(s.width),
+            "is_grasped": flag("is_grasped"),
+            "is_moving": flag("is_moving"),
+            "prev_command_successful": flag("prev_command_successful"),
+        }
+
     # -- control -------------------------------------------------------------
 
     def move_to_joint_positions(self, positions, time_to_go):
@@ -247,6 +262,7 @@ READ_ONLY = (
     "get_joint_positions",
     "get_joint_velocities",
     "get_gripper_position",
+    "get_gripper_state",
 )
 
 

@@ -623,13 +623,17 @@ export type GumiState = {
 /**
  * Mount GUMI on this runtime: `--gumi-record <dir>`, the agent-side DAgger gate and agent-step
  * recording (tool_call / tool_result of the unit tool), and the operator's calls for the dashboard.
- * `onStep` hands each operator step's result to the dashboard (camera panel, timeline).
+ * `onStep` hands each operator step's result to the dashboard (camera panel, timeline); `onAction`
+ * names the operator step the next frames belong to (the episode video's label), and `null` when the
+ * running batch ends. Only the batch that runs reports them: a refused request (e.g. a second one
+ * while a batch runs) never touches the labels.
  */
 export function gumi(
 	pi: ExtensionAPI,
 	o: {
 		onState?: (s: GumiState) => void;
 		onStep?: (label: string, step: Step, result: AgentToolResult<unknown>, isError: boolean) => void;
+		onAction?: (label: string | null) => void;
 	} = {},
 ) {
 	pi.registerFlag("gumi-record", {
@@ -853,6 +857,7 @@ export function gumi(
 						publish(`${label} refused: ${why}`);
 						break;
 					}
+					o.onAction?.(label);
 					// obs_t: the observation the policy would see now (the latest robot result); before any
 					// result exists, STOP (hold one step and look) produces it.
 					if (!latest && recorder?.active && handle.vocabulary.includes("STOP")) {
@@ -904,6 +909,7 @@ export function gumi(
 				}
 			} finally {
 				batch = undefined;
+				o.onAction?.(null);
 				// A hand-back asked for during the batch takes effect now.
 				takeover.end();
 				publish();

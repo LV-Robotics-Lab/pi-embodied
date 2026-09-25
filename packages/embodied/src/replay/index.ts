@@ -15,14 +15,22 @@
  *
  * The calls are verbatim: results of this run never change them. Calls that never ran in the
  * recording are skipped with a note: those the robot base, the operator or ../gumi blocked (refused,
- * or dropped as stale after an operator takeover); replayed, they would move the robot where the
- * recorded run did not. Calls to pi's workspace-writing tools (write, edit, bash) are skipped too:
- * replayed, they would rewrite the recorded run's files. A replayed call that errors where the
- * recording's did not (the robot erred, broke, or stopped answering; or the run diverged) ends the
- * replay: no further motion is sent. An error the recording also had is noted and the replay goes on.
+ * or dropped as stale after an operator takeover), and every call of a reply that did not end
+ * normally (stopReason other than toolUse/stop: pi runs none of them; a reply cut at the output token
+ * limit may carry truncated arguments); replayed, they would move the robot where the recorded run did
+ * not. Calls to pi's workspace-writing tools (write, edit, bash) are skipped too: replayed, they would
+ * rewrite the recorded run's files. A replayed call whose outcome diverges from the recording's ends
+ * the replay at that call, even inside a multi-call turn (the rest of the turn is blocked unsent): one
+ * that errors where the recorded one did not (the robot erred, broke, or stopped answering), or that
+ * succeeds where the recorded one failed (the robot is now where the recording never went). An error
+ * the recording also had is noted and the replay goes on.
  *
  * The task comes from the robot's usual flags; a warning goes to stderr when the recording's
  * `robot_task` entry differs from this run's.
+ *
+ * This is Flash (../flash, `flash/replay`) without re-localization: Flash also sends recorded calls,
+ * but first lets the robot's hook rewrite each one against the live scene and retries failed picks.
+ * The two stay separate providers for now.
  */
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
@@ -61,6 +69,7 @@ const NOT_RUN = [
 	/^Tool execution was blocked$/,
 	/^Operation aborted$/,
 	/^Tool \S+ not found$/,
+	/^Tool call "\S+" was not executed: the response hit the output token limit/,
 	/^\S+ is not available\.$/,
 	/^The robot failed: [\s\S]*The episode is over\.$/,
 	/^The episode is finished\.$/,
@@ -121,15 +130,22 @@ export function loadRecording(path: string): Recording {
 	for (const e of branch) {
 		if (e.type === "custom" && e.customType === TASK_ENTRY) task = e.data as Json;
 		const m = e.type === "message" ? (e.message as AssistantMessage) : undefined;
-		// An errored or aborted reply's tool calls never ran.
-		if (m?.role !== "assistant" || m.stopReason === "error" || m.stopReason === "aborted") continue;
+		if (m?.role !== "assistant") continue;
+		// pi runs the calls of a reply that ended normally only: an errored or aborted reply's calls never
+		// ran, and a reply cut at the output token limit ("length") has calls whose arguments may be truncated.
+		const abnormal = m.stopReason === "toolUse" || m.stopReason === "stop" ? undefined : m.stopReason;
 		const calls: Call[] = [];
 		const blocked: Turn["blocked"] = [];
 		for (const c of m.content) {
 			if (c.type !== "toolCall") continue;
 			const r = results.get(c.id);
 			const error = r?.isError ? resultText(r) : undefined;
-			if (error !== undefined && NOT_RUN.some((p) => p.test(error.trim())))
+			if (abnormal !== undefined)
+				blocked.push({
+					name: c.name,
+					reason: `the reply ended with stopReason "${abnormal}"${abnormal === "length" ? ", so its arguments may be truncated" : ""}`,
+				});
+			else if (error !== undefined && NOT_RUN.some((p) => p.test(error.trim())))
 				blocked.push({ name: c.name, reason: brief(error) });
 			else calls.push({ name: c.name, arguments: c.arguments, ...(error !== undefined ? { error } : {}) });
 		}
@@ -181,6 +197,8 @@ export default function replay(pi: ExtensionAPI) {
 	let over = false;
 	let hasUI = false;
 	let emitted: { id: string; name: string; recorded?: string }[] = [];
+	/** Why the replay stopped inside the current batch: its first call whose outcome diverged from the recording. */
+	let halt: string | undefined;
 	let ids = 0;
 
 	const warn = (ctx: ExtensionContext | undefined, s: string) => {
@@ -193,7 +211,7 @@ export default function replay(pi: ExtensionAPI) {
 		cursor = ids = 0;
 		started = over = false;
 		emitted = [];
-		recording = loadError = undefined;
+		recording = loadError = halt = undefined;
 		const path = pi.getFlag("replay");
 		if (!path) return;
 		try {
@@ -224,23 +242,46 @@ export default function replay(pi: ExtensionAPI) {
 		if (started) over = true;
 	});
 
+	/** How this run's result of an emitted call diverged from the recording's, if it did. */
+	const divergence = (e: { name: string; recorded?: string }, isError: boolean, text: string) =>
+		isError && e.recorded === undefined
+			? `${e.name} failed: ${brief(text)}; it succeeded in the recording`
+			: !isError && e.recorded !== undefined
+				? `${e.name} succeeded; it failed in the recording (${brief(e.recorded)})`
+				: undefined;
+
+	// A multi-call turn stops at its first diverging call: the rest of the batch is blocked unsent.
+	// Robot tools and finish are sequential, so pi runs such a batch one call at a time and this hook
+	// sees each result before the next call is prepared.
+	pi.on("tool_result", (event) => {
+		const e = emitted.find((x) => x.id === event.toolCallId);
+		if (!e || halt !== undefined) return;
+		halt = divergence(e, event.isError, resultText(event));
+	});
+	pi.on("tool_call", (event) => {
+		if (halt === undefined || !emitted.some((x) => x.id === event.toolCallId)) return;
+		return { block: true, reason: `replay stopped (${halt}); this recorded call was not sent` };
+	});
+
 	/**
-	 * Errors among the results of the last replayed calls, as notes; `stop` when one failed where the
-	 * recording's call did not (or has no result): the robot erred or broke, or the run diverged.
+	 * Errors among the results of the last replayed calls, as notes; `stop` when an outcome diverged
+	 * from the recording's in either direction (a call failed where the recorded one succeeded: the robot
+	 * erred or broke; or succeeded where it failed: the robot is now where the recording never went).
 	 */
 	function failures(messages: Message[]): { notes: string[]; stop: boolean } {
 		const results = new Map<string, ToolResultMessage>();
 		for (const m of messages) if (m.role === "toolResult") results.set(m.toolCallId, m);
 		let stop = false;
-		const notes = emitted.flatMap(({ id, name, recorded }) => {
-			const m = results.get(id);
-			if (!m) return [`${name}: no result; continuing`];
-			if (!m.isError) return [];
-			if (recorded === undefined) {
+		const notes = emitted.flatMap((e) => {
+			const m = results.get(e.id);
+			if (stop) return [`${e.name} not sent`];
+			if (!m) return [`${e.name}: no result; continuing`];
+			const diverged = divergence(e, m.isError, resultText(m));
+			if (diverged !== undefined) {
 				stop = true;
-				return [`${name} failed: ${brief(resultText(m))}; it succeeded in the recording`];
+				return [diverged];
 			}
-			return [`${name} failed, as in the recording: ${brief(resultText(m))}; continuing`];
+			return m.isError ? [`${e.name} failed, as in the recording: ${brief(resultText(m))}; continuing`] : [];
 		});
 		return { notes, stop };
 	}
@@ -250,6 +291,7 @@ export default function replay(pi: ExtensionAPI) {
 		const failed = started ? failures(messages) : { notes: [], stop: false };
 		const notes = failed.notes;
 		emitted = [];
+		halt = undefined;
 		const end = (text: string) => ({
 			notes,
 			text: [...notes.map((n) => `replay: ${n}`), text].join("\n"),
@@ -271,7 +313,7 @@ export default function replay(pi: ExtensionAPI) {
 		if (failed.stop) {
 			over = true;
 			return end(
-				`Replay stopped: a call failed where the recorded one succeeded; no further recorded motion is sent (${cursor} of ${recording.turns.length} turns replayed).`,
+				`Replay stopped: a call's outcome diverged from the recording's; no further recorded motion is sent (${cursor} of ${recording.turns.length} turns replayed).`,
 			);
 		}
 		while (cursor < recording.turns.length) {

@@ -110,6 +110,24 @@ export function waypoints(start: number[], delta: Vec3): number[][] {
 	return Array.from({ length: n }, (_, i) => start.map((p, k) => p + (delta[k] * (i + 1)) / n));
 }
 
+/** One closed-loop servo call: drive to `target` in `minSteps`..`maxSteps` control steps. */
+export type Phase = { target: number[]; minSteps: number; maxSteps: number };
+/**
+ * The servo phases of one call. A gripper change is its own phase first, holding still at `start`
+ * for GRIPPER_STEPS until the fingers settle (Show-Harness's GRASP / RELEASE are separate tokens:
+ * the fingers never close while the arm travels); then the ~2 cm waypoints of the move. A call
+ * that neither moves nor changes the gripper (STOP) holds for one decision.
+ */
+export function phases(start: number[], delta: Vec3, gripperChanged: boolean): Phase[] {
+	const hold = (steps: number): Phase => ({ target: start, minSteps: steps, maxSteps: steps });
+	const out: Phase[] = gripperChanged ? [hold(GRIPPER_STEPS)] : [];
+	if (Math.hypot(...delta) > 0)
+		out.push(
+			...waypoints(start, delta).map((target) => ({ target, minSteps: SERVO.minSteps, maxSteps: SERVO.maxSteps })),
+		);
+	return out.length ? out : [hold(SERVO.minSteps)];
+}
+
 export default function maniskill(pi: ExtensionAPI) {
 	const flag = (name: string, fallback: string) => String(pi.getFlag(name) ?? fallback);
 	pi.registerFlag("env-id", { type: "string", default: "PickCube-v1", description: "ManiSkill env id" });
@@ -205,15 +223,12 @@ export default function maniskill(pi: ExtensionAPI) {
 		const before = gripper;
 		if (grip) gripper = grip === "open" ? 1 : -1;
 		const start = obs.tcp_pos.toArray();
-		// A pure gripper toggle holds still until the fingers settle; STOP holds one decision.
-		const hold = gripper !== before ? GRIPPER_STEPS : SERVO.minSteps;
-		const servo = norm > 0 ? SERVO : { ...SERVO, minSteps: hold, maxSteps: hold };
 		let steps = 0;
-		for (const target of waypoints(start, delta)) {
+		for (const { target, minSteps, maxSteps } of phases(start, delta, gripper !== before)) {
 			if (success) break;
 			const [frames, i] = await call<ServoReturn>(
 				"env.servo",
-				{ gain: GAIN, tol_m: servo.tolM, min_steps: servo.minSteps, max_steps: servo.maxSteps },
+				{ gain: GAIN, tol_m: SERVO.tolM, min_steps: minSteps, max_steps: maxSteps },
 				[target, gripper],
 				signal,
 			);
@@ -271,7 +286,7 @@ export default function maniskill(pi: ExtensionAPI) {
 	const xyz = Type.Array(Type.Number(), { minItems: 3, maxItems: 3 });
 	robot.tool(
 		"move_delta",
-		`Translate the gripper by a base-frame [dx, dy, dz] in metres (+x away from the base, +y toward the robot's left, +z up; at most ${MAX_MOVE_M} m per call), optionally opening or closing the gripper first. The orientation is locked. Returns the new state and images.`,
+		`Translate the gripper by a base-frame [dx, dy, dz] in metres (+x away from the base, +y toward the robot's left, +z up; at most ${MAX_MOVE_M} m per call), optionally opening or closing the gripper first (the arm holds still until the fingers settle, then moves). The orientation is locked. Returns the new state and images.`,
 		Type.Object({
 			delta_xyz: xyz,
 			gripper: Type.Optional(Type.Union([Type.Literal("open"), Type.Literal("close")])),

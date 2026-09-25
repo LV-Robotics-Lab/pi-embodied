@@ -40,7 +40,9 @@ logger = get_logger("env_server")
 
 #: Show-Harness core/sim/maniskill_scenes.py SCENES (stock ManiSkill rows): the task text.
 INSTRUCTIONS = {
-    "PickCube-v1": "pick up the red cube",
+    # PickCube's success is the cube inside a goal sphere (goal_thresh 2.5 cm, up to 0.3 m above
+    # the table), not the lift alone: the text names it, and SHOW_GOALS renders the sphere.
+    "PickCube-v1": "pick up the red cube and move it into the green goal sphere",
     "StackCube-v1": "stack the red cube on top of the green cube",
     "PushCube-v1": "push the cube to the goal marker",
     "PullCube-v1": "pull the cube to the goal marker",
@@ -51,13 +53,17 @@ CAMERAS = {"agentview": "base_camera", "wrist": "hand_camera"}
 #: The actors each task needs the model to see, by env attribute: checked in the agentview
 #: at every reset (``check_visible``).
 TASK_ACTORS = {
-    "PickCube-v1": ["cube"],
+    "PickCube-v1": ["cube", "goal_site"],
     "StackCube-v1": ["cubeA", "cubeB"],
     "PushCube-v1": ["obj", "goal_region"],
     "PullCube-v1": ["obj", "goal_region"],
     "PokeCube-v1": ["cube", "peg", "goal_region"],
     "LiftPegUpright-v1": ["peg"],
 }
+#: Success markers a task keeps in ``_hidden_objects`` (drawn for the human viewer only, never
+#: in the sensor cameras) although its success depends on them: shown to the cameras at every
+#: reset, so the model can see the goal (and ``check_visible`` can require it).
+SHOW_GOALS = {"PickCube-v1": ["goal_site"]}
 #: Fewest agentview pixels (640x480 sensor) a task actor may show; a 4 cm cube at the far
 #: edge of the workspace covers ~60.
 MIN_VISIBLE_PX = 20
@@ -70,6 +76,19 @@ def _np(value: Any) -> np.ndarray:
     if hasattr(value, "detach"):
         value = value.detach().cpu().numpy()
     return np.asarray(value)
+
+
+def show_goals(env, names: list[str]) -> None:
+    """Take the actors ``names`` of ``env`` (unwrapped) out of ``_hidden_objects`` and show them.
+
+    ManiSkill hides every hidden object before each sensor capture; ``_load_scene`` re-adds
+    them on a reconfiguring reset, so this runs after every reset."""
+    goals = [getattr(env, n) for n in names]
+    env._hidden_objects = [
+        o for o in env._hidden_objects if not any(o is g for g in goals)
+    ]
+    for g in goals:
+        g.show_visual()
 
 
 def _letterbox(image: np.ndarray, size: int) -> np.ndarray:
@@ -294,6 +313,10 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         open for ``settle_steps`` (Show-Harness ``reset_maniskill``)."""
         obs, info = self._env.reset(seed=self._seed if seed is None else int(seed))
         info = self._info(info)
+        goals = SHOW_GOALS.get(self._meta["env_id"], [])
+        if goals:
+            show_goals(self._env.unwrapped, goals)
+            obs = self._env.unwrapped.get_obs()
         hold = np.array([0.0, 0.0, 0.0, OPEN], dtype=np.float32)
         for _ in range(self._settle_steps):
             obs, _r, _te, _tr, info = self._step(hold)

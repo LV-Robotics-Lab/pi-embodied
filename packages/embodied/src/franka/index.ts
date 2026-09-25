@@ -527,6 +527,8 @@ export default function franka(pi: ExtensionAPI) {
 			eef_xyz: roundAll(vec(base.tcp_pose).slice(0, 3)),
 			...(width.length ? { gripper_width: round(width[0]) } : {}),
 			gripper_open: base.gripper_open ?? null,
+			gripper_grasped: base.gripper_grasped ?? null,
+			gripper_commanded_open: base.gripper_commanded_open ?? null,
 			table_z: Number(flag("z-floor")),
 		};
 	}

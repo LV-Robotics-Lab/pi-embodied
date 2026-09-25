@@ -16,8 +16,9 @@
 # core/franka/camera_utils.py (MockCamera).
 # Modified by pi-embodied: test-only (constructing either class outside a test run
 # raises); the robot tracks the commanded setpoint, models a surface the gripper
-# cannot descend through, an object between the fingers and a lost controller; the
-# camera returns a fixed RGB-D frame with intrinsics.
+# cannot descend through, an object between the fingers (the measured width stops at
+# it and the grasp flag is set), fingers that ignore commands (``jammed``) and a lost
+# controller; the camera returns a fixed RGB-D frame with intrinsics.
 
 """Test doubles for the Polymetis NUC and the RealSense cameras. Not a simulator.
 
@@ -69,6 +70,8 @@ class MockPolymetisRobot:
         self.gripper_commands: list[bool] = []
         self.starts = 0
         self.closed = False
+        self.grasped = False
+        self.jammed = False  # the fingers do not follow commands (measured != command)
 
     def get_ee_pose(self) -> np.ndarray:
         return self.pose.copy()
@@ -118,13 +121,20 @@ class MockPolymetisRobot:
 
     def control_gripper(self, close: bool) -> None:
         self.gripper_commands.append(bool(close))
+        if self.jammed:
+            return
         if close:
             self.width = 0.0002 if self.object_width is None else self.object_width
+            self.grasped = self.object_width is not None
         else:
             self.width = 0.08
+            self.grasped = False
 
     def get_gripper_position(self) -> np.ndarray:
         return np.array([self.width])
+
+    def get_gripper_state(self) -> dict[str, Any]:
+        return {"width": self.width, "is_grasped": self.grasped, "is_moving": False}
 
     def close(self) -> None:
         self.closed = True

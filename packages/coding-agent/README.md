@@ -67,4 +67,4 @@ Read [CONTRIBUTING.md](https://github.com/earendil-works/pi/blob/main/CONTRIBUTI
 
 ## License
 
-MIT
+Apache-2.0 (the repository `LICENSE`). Based on [pi](https://github.com/earendil-works/pi) by Mario Zechner, MIT (`LICENSE-MIT`).

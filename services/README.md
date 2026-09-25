@@ -4,8 +4,7 @@ The Python side of pi-embodied: the simulator/robot **env servers** and the **mo
 (VLA policies, SAM3, Molmo) that the TypeScript robots in `packages/embodied` talk to over
 HTTP.
 
-License: Apache-2.0 (`LICENSE`); this differs from the MIT license of the rest of the
-repository.
+License: Apache-2.0, like the rest of the repository (`LICENSE` at the root).
 
 Wire protocol, method list and `stop` semantics: [PROTOCOL.md](PROTOCOL.md).
 

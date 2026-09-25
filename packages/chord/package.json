@@ -53,7 +53,7 @@
 		"state"
 	],
 	"author": "Earendil Works",
-	"license": "MIT",
+	"license": "Apache-2.0",
 	"repository": {
 		"type": "git",
 		"url": "git+https://github.com/earendil-works/pi.git",

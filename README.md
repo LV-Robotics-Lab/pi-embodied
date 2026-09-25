@@ -107,7 +107,7 @@ I regularly publish my own `pi-mono` work sessions here:
 
 ## License
 
-MIT
+Apache-2.0 (`LICENSE`). Includes [pi](https://github.com/earendil-works/pi) by Mario Zechner, used under the MIT license (`LICENSE-MIT`).
 
 <p align="center">
   <a href="https://pi.dev">pi.dev</a> domain graciously donated by

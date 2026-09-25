@@ -8,23 +8,28 @@ import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import piperDual from "../src/piper/dual.ts";
-import piper, { headingToBase, motionFrame, PIPER_UNITS, piperViews } from "../src/piper/index.ts";
+import piper, { chains, headingToBase, motionFrame, PIPER_UNITS, piperViews } from "../src/piper/index.ts";
 import { defineRobot } from "../src/robot.ts";
-import type { Move, Vec3 } from "../src/units/index.ts";
+import { type Move, UNITS_EVENT, type Vec3 } from "../src/units/index.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
 /** The values of an enum schema (StringEnum or a union of literals). */
 const enumOf = (schema: any): string[] => schema.enum ?? schema.anyOf.map((u: any) => u.const);
 
-/** A stub pi (as in dual_franka.test.ts); `confirm` answers from `confirms`. No robot is reachable. */
-function fakePi(flagValues: Record<string, unknown> = {}, hasUI = true) {
+/**
+ * A stub pi (as in dual_franka.test.ts); `confirm` answers from `confirms`. No robot is reachable.
+ * `unitsHook: false` strips `viewSelect` from the units handle (a units module without the view hook).
+ */
+function fakePi(flagValues: Record<string, unknown> = {}, hasUI = true, o: { unitsHook?: boolean } = {}) {
 	const handlers = new Map<string, Handler[]>();
 	const flags: Record<string, unknown> = {};
 	const tools = new Map<string, any>();
 	const entries: { type: string; data: any }[] = [];
 	const notes: string[] = [];
 	const confirms: boolean[] = [];
+	const dialogs: string[] = [];
+	const listeners = new Map<string, ((data: unknown) => void)[]>();
 	let active: string[] = ["stale"];
 	const pi = {
 		on: (name: string, fn: Handler) => handlers.set(name, [...(handlers.get(name) ?? []), fn]),
@@ -39,7 +44,17 @@ function fakePi(flagValues: Record<string, unknown> = {}, hasUI = true) {
 		},
 		getActiveTools: () => active,
 		appendEntry: (type: string, data: any) => entries.push({ type, data }),
-		events: { emit: () => {}, on: () => () => {} },
+		events: {
+			emit: (channel: string, data: any) => {
+				const payload =
+					channel === UNITS_EVENT && o.unitsHook === false ? { ...data, viewSelect: undefined } : data;
+				for (const fn of listeners.get(channel) ?? []) fn(payload);
+			},
+			on: (channel: string, fn: (data: unknown) => void) => {
+				listeners.set(channel, [...(listeners.get(channel) ?? []), fn]);
+				return () => {};
+			},
+		},
 	} as unknown as ExtensionAPI;
 	const dir = realpathSync(mkdtempSync(join(tmpdir(), "piper-")));
 	let shutdown = false;
@@ -51,7 +66,10 @@ function fakePi(flagValues: Record<string, unknown> = {}, hasUI = true) {
 			setWidget: () => {},
 			input: async () => "",
 			select: async () => undefined,
-			confirm: async () => confirms.shift() ?? false,
+			confirm: async (title: string) => {
+				dialogs.push(title);
+				return confirms.shift() ?? false;
+			},
 		},
 		shutdown: () => {
 			shutdown = true;
@@ -74,7 +92,20 @@ function fakePi(flagValues: Record<string, unknown> = {}, hasUI = true) {
 	}
 	const run = (name: string, params: Record<string, unknown> = {}) =>
 		tools.get(name).execute("id", params, undefined, undefined, ctx);
-	return { pi, emit, run, tools, flags, entries, notes, confirms, dir, active: () => active, shut: () => shutdown };
+	return {
+		pi,
+		emit,
+		run,
+		tools,
+		flags,
+		entries,
+		notes,
+		confirms,
+		dialogs,
+		dir,
+		active: () => active,
+		shut: () => shutdown,
+	};
 }
 
 /** Start a session and return what the base recorded; restores process.exitCode. */
@@ -226,7 +257,8 @@ test("the stall check compares heading-frame units in the base frame (45 and 90 
  * A mocked Piper env server transport (the JSON RPC of ../src/rpc.ts): answers what the robot asks
  * with canned dual-arm (or single-arm) state and records every call. No robot, no ROS.
  */
-async function mockServer(o: { dual?: boolean; frame?: "base" | "heading" } = {}) {
+type ServerOpts = { dual?: boolean; frame?: "base" | "heading"; holding?: string; smooth?: boolean };
+async function mockServer(o: ServerOpts = {}) {
 	const dual = o.dual ?? true;
 	const calls: { method: string; kwargs: Record<string, any> }[] = [];
 	const img = { __ndarray__: Buffer.alloc(4 * 4 * 3, 90).toString("base64"), dtype: "uint8", shape: [4, 4, 3] };
@@ -239,6 +271,7 @@ async function mockServer(o: { dual?: boolean; frame?: "base" | "heading" } = {}
 		heading_yaw_rad: arm === "left" ? 0.785 : -0.785,
 		z_floor_m: arm === "left" ? 0.19 : 0.21,
 		halted: null,
+		holding_object: o.holding === arm,
 	});
 	const state = () => (dual ? { arms: { left: armState("left"), right: armState("right") } } : armState("left"));
 	const cameras = dual ? ["front", "wrist_left", "wrist_right"] : ["front", "wrist"];
@@ -255,6 +288,8 @@ async function mockServer(o: { dual?: boolean; frame?: "base" | "heading" } = {}
 					limits: { max_step_m: 0.05, max_yaw_rad: 0.2, z_floor_m: null, empty_width_m: 0.005 },
 					has_begin_pose: true,
 					tasks: { banana_handover: { instruction: "hand the banana over" } },
+					smooth: { enabled: o.smooth ?? true, blend: true },
+					motion_backend: dual ? { left: "joint_stream", right: "joint_stream" } : "joint_stream",
 				};
 			case "env.reset":
 				return { ok: true, robot_state: state() };
@@ -298,64 +333,63 @@ async function mockServer(o: { dual?: boolean; frame?: "base" | "heading" } = {}
 /** The dual robot attached to a mocked server, started with the operator's confirm. */
 async function dualStarted(
 	flags: Record<string, unknown> = {},
-	server: { dual?: boolean; frame?: "base" | "heading" } = {},
+	server: ServerOpts = {},
+	o: { unitsHook?: boolean; confirms?: boolean[] } = {},
 ) {
 	const m = await mockServer(server);
-	const f = fakePi({ operator: true, task: "banana_handover", "robot-env": m.url, ...flags });
+	const f = fakePi({ operator: true, task: "banana_handover", "robot-env": m.url, ...flags }, true, o);
 	piperDual(f.pi);
-	f.confirms.push(true);
+	f.confirms.push(...(o.confirms ?? [true]));
 	const started = await start(f);
 	return { f, m, started };
 }
 
-test(
-	"dual Piper: act takes the arm, STILL leaves the other arm alone, no rotation units",
-	{
-		todo: "asserts the units continuous hint, which lands with the units chaining change",
-	},
-	async () => {
-		const { f, m } = await dualStarted({ units: "both", "units-plugins": "" });
-		try {
-			const schema = f.tools.get("act").parameters.properties;
-			assert.deepEqual(enumOf(schema.arm), ["left", "right"]);
-			const vocab = enumOf(schema.unit);
-			assert.ok(vocab.includes("STILL") && !vocab.includes("ROTATE_CW"));
-			assert.deepEqual(
-				m.calls.slice(0, 3).map((c) => c.method),
-				["env.get_env_meta", "env.reset", "env.get_observation"],
-			);
-			assert.deepEqual(m.calls[1].kwargs, {}, "the start reset resets both arms");
+test("dual Piper: act takes the arm, STILL leaves the other arm alone, no rotation units", async () => {
+	const { f, m } = await dualStarted({ units: "both", "units-plugins": "" });
+	try {
+		const schema = f.tools.get("act").parameters.properties;
+		assert.deepEqual(enumOf(schema.arm), ["left", "right"]);
+		const vocab = enumOf(schema.unit);
+		assert.ok(vocab.includes("STILL") && !vocab.includes("ROTATE_CW"));
+		assert.deepEqual(
+			m.calls.slice(0, 4).map((c) => c.method),
+			["env.get_env_meta", "env.get_robot_state", "env.reset", "env.get_observation"],
+		);
+		assert.deepEqual(m.calls[2].kwargs, { both: true }, "the operator-confirmed start reset resets both arms");
 
-			const r = await f.run("act", { unit: "MV_FWD", arm: "right" });
-			assert.match(r.content[0].text, /units: MV_FWD x1 \(right arm\)/);
-			assert.deepEqual(m.steps(), [
-				{ delta_xyz: [0.02, 0, 0], yaw: 0, gripper: null, frame: "base", reopen_empty: false, arm: "right" },
-			]);
-			// Front, left wrist, right wrist.
-			assert.equal(r.content.filter((c: any) => c.type === "image").length, 3);
-			// The proprioception of the arm that moved.
-			const state = m.calls.filter((c) => c.method === "env.get_robot_state").map((c) => c.kwargs.arm);
-			assert.ok(state.length && state.every((a) => a === "right"), JSON.stringify(state));
+		const before = m.calls.length;
+		const r = await f.run("act", { unit: "MV_FWD", arm: "right" });
+		assert.match(r.content[0].text, /units: MV_FWD x1 \(right arm\)/);
+		assert.deepEqual(m.steps(), [
+			{ delta_xyz: [0.02, 0, 0], yaw: 0, gripper: null, frame: "base", reopen_empty: false, arm: "right" },
+		]);
+		// Front, left wrist, right wrist.
+		assert.equal(r.content.filter((c: any) => c.type === "image").length, 3);
+		// The proprioception of the arm that moved.
+		const state = m.calls
+			.slice(before)
+			.filter((c) => c.method === "env.get_robot_state")
+			.map((c) => c.kwargs.arm);
+		assert.ok(state.length && state.every((a) => a === "right"), JSON.stringify(state));
 
-			const still = await f.run("act", { unit: "STILL", arm: "left" });
-			assert.match(still.content[0].text, /STILL: the left arm holds/);
-			assert.equal(m.steps().length, 1, "STILL never reaches the robot");
+		const still = await f.run("act", { unit: "STILL", arm: "left" });
+		assert.match(still.content[0].text, /STILL: the left arm holds/);
+		assert.equal(m.steps().length, 1, "STILL never reaches the robot");
 
-			// A repeated MV_* flows through the join (the server's smooth chaining), the last one settles.
-			await f.run("act", { unit: "MV_UP", arm: "right", n: 2 });
-			const ups = m.steps().slice(-2);
-			assert.equal(ups[0].continuous, true);
-			assert.equal(ups[1].continuous, undefined);
+		// A repeated MV_* flows through the join (the server's smooth chaining), the last one settles.
+		await f.run("act", { unit: "MV_UP", arm: "right", n: 2 });
+		const ups = m.steps().slice(-2);
+		assert.equal(ups[0].continuous, true);
+		assert.equal(ups[1].continuous, undefined);
 
-			const grasp = await f.run("act", { unit: "GRASP", arm: "left" });
-			assert.equal(grasp.details.command.arm, "left");
-			assert.equal(m.steps().at(-1)?.gripper, "close");
-			assert.equal(m.steps().at(-1)?.arm, "left");
-		} finally {
-			m.close();
-		}
-	},
-);
+		const grasp = await f.run("act", { unit: "GRASP", arm: "left" });
+		assert.equal(grasp.details.command.arm, "left");
+		assert.equal(m.steps().at(-1)?.gripper, "close");
+		assert.equal(m.steps().at(-1)?.arm, "left");
+	} finally {
+		m.close();
+	}
+});
 
 test("dual Piper: per-arm refusals before any robot call", async () => {
 	const { f, m } = await dualStarted({ "max-move": "0.01", units: "both", "units-plugins": "" });
@@ -432,13 +466,11 @@ test("view_select refuses motion.units_frame: heading (Show-Harness run_real_dua
 	}
 });
 
-test("view_select end to end: act's view reaches the server as the move's frame (units hook)", async (t) => {
+test("view_select end to end: act's view reaches the server as the move's frame (units hook)", async () => {
 	const { f, m } = await dualStarted({ "view-select": true, units: "both", "units-plugins": "" });
 	try {
-		if (!f.tools.get("act").parameters.properties.view) {
-			t.skip("units has no view_select hook yet (scratchpad units-view-select.patch)");
-			return;
-		}
+		assert.ok(f.tools.get("act").parameters.properties.view, "the units view hook is present");
+		assert.ok(f.active().includes("act"));
 		await f.run("act", { unit: "MV_FWD", arm: "left", view: "WRIST" });
 		await f.run("act", { unit: "MV_LEFT", arm: "right", view: "FRONT" });
 		await f.run("act", { unit: "MV_UP", arm: "left" });
@@ -498,5 +530,86 @@ test("wrist_frame: in the heading frame the front view follows the gripper headi
 		} finally {
 			m.close();
 		}
+	}
+});
+
+test("view_select refuses to start when the units module has no view hook", async () => {
+	// Without the hook `act` has no `view`: every move would run in the base frame while the prompt
+	// says wrist-judged moves follow the gripper heading (45 deg off at the dual begin poses).
+	const { f, m } = await dualStarted(
+		{ "view-select": true, units: "both", "units-plugins": "" },
+		{},
+		{ unitsHook: false },
+	);
+	try {
+		assert.match(f.notes.join("\n"), /--view-select needs the units view hook/);
+		assert.equal(m.calls.filter((c) => c.method === "env.reset").length, 0, "nothing moved");
+		assert.deepEqual(f.active(), []);
+	} finally {
+		m.close();
+	}
+	// Without --view-select the same units module starts normally.
+	const ok = await dualStarted({ units: "both", "units-plugins": "" }, {}, { unitsHook: false });
+	try {
+		assert.ok(ok.f.active().includes("act"));
+	} finally {
+		ok.m.close();
+	}
+});
+
+test("chains follows the server's smooth chaining (the units stall check waits for chained moves)", async () => {
+	assert.equal(chains({ smooth: { enabled: true, blend: true }, motion_backend: "joint_stream" }), true);
+	assert.equal(chains({ smooth: { enabled: true, blend: false }, motion_backend: "joint_stream" }), false);
+	assert.equal(chains({ smooth: { enabled: true, blend: true }, motion_backend: "endpose" }), false);
+	assert.equal(
+		chains({ smooth: { enabled: true, blend: true }, motion_backend: { left: "joint_stream", right: "endpose" } }),
+		false,
+	);
+	assert.equal(chains(undefined), false);
+	// A chained MV_* lags the command when it returns: not reported as blocked.
+	const { f, m } = await dualStarted({ units: "both", "units-plugins": "proprioception" });
+	try {
+		const r = await f.run("act", { unit: "MV_FWD", arm: "left", n: 2 });
+		assert.equal(m.steps()[0].continuous, true);
+		assert.match(r.content[0].text, /units: MV_FWD x2/);
+	} finally {
+		m.close();
+	}
+});
+
+test("a reset never opens a gripper that holds an object without the operator", async () => {
+	// Declined: nothing moves and the robot stays tool-less.
+	const no = await dualStarted({}, { holding: "left" }, { confirms: [true, false] });
+	try {
+		assert.deepEqual(no.f.dialogs, ["Move both Piper arms?", "Open a gripper that holds an object?"]);
+		assert.match(no.f.notes.join("\n"), /reset refused: the left gripper holds an object/);
+		assert.equal(no.m.calls.filter((c) => c.method === "env.reset").length, 0);
+	} finally {
+		no.m.close();
+	}
+	const yes = await dualStarted({}, { holding: "left" }, { confirms: [true, true] });
+	try {
+		const reset = yes.m.calls.find((c) => c.method === "env.reset");
+		assert.deepEqual(reset?.kwargs, { both: true, release: true });
+	} finally {
+		yes.m.close();
+	}
+	// Nothing held: one confirm, no release.
+	const free = await dualStarted();
+	try {
+		assert.deepEqual(free.f.dialogs, ["Move both Piper arms?"]);
+		assert.deepEqual(free.m.calls.find((c) => c.method === "env.reset")?.kwargs, { both: true });
+	} finally {
+		free.m.close();
+	}
+});
+
+test("piper refuses a non-numeric --max-move or --max-yaw before touching the robot", async () => {
+	const { f, m } = await dualStarted({ "max-yaw": "abc" });
+	try {
+		assert.match(f.notes.join("\n"), /--max-yaw must be a positive number \(got 'abc'\)/);
+		assert.equal(m.calls.length, 0);
+	} finally {
+		m.close();
 	}
 });

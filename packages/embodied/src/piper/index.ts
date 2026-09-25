@@ -23,15 +23,20 @@
  * Views and motion frames (Show-Harness plugins/wrist_frame and plugins/view_select): with
  * `motion.units_frame: heading` (Show-Harness `motion_frame: wrist`, the default config) the front
  * view's directions are given relative to the gripper heading. --view-select (config
- * `units_frame: base`) lets the model report which view guided each move (`act`'s `view`, a units
- * hook): WRIST runs it in the heading frame, FRONT in the base frame, and the directions stay in
- * the base convention.
+ * `units_frame: base`) lets the model report which view guided each move (`act`'s `view`, the units
+ * view hook): WRIST runs it in the heading frame, FRONT in the base frame, and the directions stay in
+ * the base convention. The robot refuses to start with --view-select when the units module it runs
+ * with has no view hook (every move would silently run in the base frame).
+ *
+ * Reset: on two arms the start and the operator's scene reset reset both arms (the operator
+ * confirmed it); a gripper that holds an object is opened only after the operator confirms that too.
  */
 
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type TSchema, Type } from "typebox";
 import { encodePng } from "../png.ts";
@@ -52,7 +57,15 @@ import {
 	vec,
 } from "../robot.ts";
 import { NdArray, type RpcClient, RpcUnavailable } from "../rpc.ts";
-import { compensate, type Move, type MoveUnit, type State, type UnitsSpec, type Vec3 } from "../units/index.ts";
+import {
+	compensate,
+	type MoveUnit,
+	type State,
+	UNITS_EVENT,
+	type UnitsHandle,
+	type UnitsSpec,
+	type Vec3,
+} from "../units/index.ts";
 
 const SYSTEM = readFileSync(new URL("./SYSTEM.md", import.meta.url), "utf8");
 const SYSTEM_DUAL = readFileSync(new URL("./SYSTEM_DUAL.md", import.meta.url), "utf8");
@@ -71,6 +84,10 @@ type Meta = {
 	limits: { max_step_m: number; max_yaw_rad: number; z_floor_m: number | null; empty_width_m: number | null };
 	has_begin_pose: boolean;
 	tasks: Record<string, Task>;
+	/** The server's smooth joint stream (`enabled`, `blend`: chaining on). */
+	smooth?: { enabled?: boolean; blend?: boolean };
+	/** One arm: the backend; two arms: per arm. */
+	motion_backend?: string | Record<string, string>;
 };
 type Step = { blob: Json; images: Record<string, string> };
 
@@ -151,6 +168,18 @@ export function piperViews(frame: Frame, arms: readonly string[] = [], viewSelec
 	return lines.join("\n");
 }
 
+/** Whether the server chains `continuous` moves: smooth + blend on the joint-stream backend (every arm). */
+export function chains(meta: Pick<Meta, "smooth" | "motion_backend"> | undefined): boolean {
+	const b = meta?.motion_backend;
+	const backends = typeof b === "string" ? [b] : Object.values(b ?? {});
+	return (
+		meta?.smooth?.enabled === true &&
+		meta.smooth.blend === true &&
+		backends.length > 0 &&
+		backends.every((x) => x === "joint_stream")
+	);
+}
+
 /** The robot's own tools; two arms add halt_arm. */
 const TOOLS = ["view_env_state", "move_delta", "rotate_yaw", "open_gripper", "close_gripper", "finish"];
 
@@ -220,22 +249,28 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 	const steps: Step[] = [];
 	const taskName = () => robot.task.task;
 	const viewSelect = () => pi.getFlag("view-select") === true;
-	/**
-	 * Asks ../units for `act`'s `view` while --view-select is on, passed on as `Move.view` (the units
-	 * view_select hook, scratchpad units-view-select.patch; spread, so it is inert on a units module
-	 * without the hook).
-	 */
-	const viewSelectHook = { viewSelect };
 	/** The frame of the last unit move: the stall check converts that move's delta to the base frame. */
 	let lastFrame: Frame = "base";
+	/** The units module published a handle with the view hook this session (`UnitsHandle.viewSelect`). */
+	let unitsViewSelect = false;
+	/** The operator's dialogs (the reset confirms opening a gripper that holds something). */
+	let ui: ExtensionContext["ui"] | undefined;
+	// Registered before the robot (and its units) so it clears before the units publish their handle.
+	pi.on("session_start", () => {
+		unitsViewSelect = false;
+	});
+	pi.events.on(UNITS_EVENT, (h) => {
+		unitsViewSelect = (h as UnitsHandle).viewSelect === true;
+	});
 
 	const units: UnitsSpec = {
 		...PIPER_UNITS,
-		...viewSelectHook,
+		// Asks ../units for `act`'s `view` while --view-select is on, passed on as `Move.view`.
+		viewSelect,
 		...(dual ? { arms } : {}),
 		// The units layer runs its own recovery, so an empty close stays closed for it to see.
 		apply: (move, signal) => {
-			const view = (move as Move & { view?: unknown }).view;
+			const view = move.view;
 			const frame = motionFrame(view, unitsFrame(), viewSelect());
 			const command = { action: "unit", ...move, ...(viewSelect() && view ? { frame } : {}) };
 			return act(command, () => {
@@ -253,6 +288,8 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 		get emptyWidthM() {
 			return meta?.limits.empty_width_m ?? 0.005;
 		},
+		// The server's smooth stream chains `continuous` moves: they return before the arm settles.
+		chains: () => chains(meta),
 	};
 	const spec: RobotSpec = {
 		name: dual ? "piper_dual" : "piper",
@@ -428,10 +465,7 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 	/** Two arms: every motion tool takes the required `arm`; the other arm holds still. */
 	const armParam: Record<string, TSchema> = dual
 		? {
-				arm: Type.Union(
-					arms.map((a) => Type.Literal(a)),
-					{ description: "Which arm moves; the other holds still" },
-				),
+				arm: StringEnum(arms, { description: "Which arm moves; the other holds still" }),
 			}
 		: {};
 	type ArmP = { arm?: string };
@@ -488,9 +522,29 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 
 	// ---- lifecycle
 
-	/** Operator-confirmed reset (request_scene_reset): open the gripper, move to the begin pose. */
+	/**
+	 * Operator-confirmed reset (the start dialog, request_scene_reset): open the gripper(s), move to
+	 * the begin pose; both arms on the dual rig. A gripper that holds an object opens only after the
+	 * operator confirms it (the server refuses otherwise).
+	 */
 	async function resetArm(): Promise<Json> {
-		const r = await call<Json>("env.reset", {}, 120_000);
+		const s = await call<Json>("env.get_robot_state");
+		const states: Json[] = dual ? Object.values(s.arms ?? {}) : [s];
+		const held = states.filter((a) => a.holding_object === true).map((a) => String(a.arm ?? meta?.arm));
+		if (held.length) {
+			const which = `${held.join(" and ")} gripper${held.length > 1 ? "s hold" : " holds"}`;
+			const release = await ui?.confirm(
+				"Open a gripper that holds an object?",
+				`The ${which} an object; the reset opens it and drops it. Take the object out or secure it, then confirm.`,
+			);
+			if (!release)
+				throw new Error(`reset refused: the ${which} an object and the operator did not confirm opening it`);
+		}
+		const r = await call<Json>(
+			"env.reset",
+			{ ...(dual ? { both: true } : {}), ...(held.length ? { release: true } : {}) },
+			120_000,
+		);
 		if (!r.ok) throw new Error(`reset did not reach the begin pose: ${JSON.stringify(plain(r.move))}`);
 		await record({ action: "reset" }, r, null);
 		return { ok: true, step: steps.length - 1 };
@@ -501,6 +555,14 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 			throw new Error("piper drives a real robot: run pi interactively (or over RPC) so an operator is present");
 		if (pi.getFlag("operator") !== true)
 			throw new Error("piper drives a real robot: start pi with --operator so an operator judges every episode");
+		for (const name of ["max-move", "max-yaw"])
+			if (!(Number(flag(name)) > 0)) throw new Error(`--${name} must be a positive number (got '${flag(name)}')`);
+		// Without the units view hook `act` has no `view`: every move would run in the base frame while
+		// the prompt says wrist-judged moves follow the gripper heading.
+		if (viewSelect() && !unitsViewSelect)
+			throw new Error(
+				"--view-select needs the units view hook (act's `view`, UnitsHandle.viewSelect), which the units module in use does not have: every move would run in the base frame. Start without --view-select",
+			);
 		const r: Services = { root: flag("services"), python: flag("python", "python") };
 		const configFlag = flag("robot-config");
 		const config = configFlag ? resolve(ctx.cwd, configFlag) : "";
@@ -560,6 +622,7 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 		if (!go) throw new Error("operator declined the reset; the Piper tools stay disabled");
 		env = rpc;
 		meta = m;
+		ui = ctx.ui;
 		try {
 			await resetArm();
 		} catch (err) {

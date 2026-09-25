@@ -34,10 +34,16 @@ one arm moves per call; ``stop`` is lock-free and the running motion checks it
 between joint waypoints / settle ticks / gripper polls and returns
 ``cancelled: true`` after holding the arm where it is.
 
-Per-arm faults (two arms): a step that ends with a divergence or a dropped gripper
-command, or raises (stale feedback), halts that arm only: further motion of it is
-refused until ``reset`` of that arm, while the other arm keeps working. ``halt_arm``
-stops an arm the same way on request (e.g. its part of the task is done).
+Per-arm faults (two arms): a step that ends with a divergence, a reach fallback that
+fell short or a dropped gripper command, or raises after commanding the arm (stale
+feedback), halts that arm only: further motion of it is refused until a ``reset`` of
+that arm succeeds, while the other arm keeps working. A refusal that sent nothing (a
+too-long step, the yaw budget) does not halt. ``halt_arm`` stops an arm the same way on
+request (e.g. its part of the task is done).
+
+Reset: one arm (``arm``), or both only when asked (``both=True``). It opens the
+gripper, so a gripper that holds something (closed wider than ``empty_width_m``) is
+refused unless the caller passes ``release=True`` after the operator confirmed it.
 """
 
 from __future__ import annotations
@@ -359,6 +365,8 @@ class PiperEnvFacade(BaseEnvFacade):
 
     def _arm_state(self, side: str) -> dict[str, Any]:
         state = self._controllers[side].state()
+        # A reset opens the gripper: the client asks the operator first when this is true.
+        state["holding_object"] = self._holding(side) is not None
         status = getattr(self._robots[side], "arm_status", lambda: None)()
         if status is not None:
             state["arm_status"] = status
@@ -398,16 +406,23 @@ class PiperEnvFacade(BaseEnvFacade):
     # -- motion -----------------------------------------------------------
 
     def _guarded(self, side: str, run: Any) -> dict[str, Any]:
-        """Run one motion of ``side``; on two arms a fault halts that arm only."""
+        """Run one motion of ``side``; on two arms a fault halts that arm only.
+
+        A ``ValueError`` raised before any command reached the arm is a refusal of the
+        arguments (step too long, yaw budget, joint path), not a fault: no halt."""
         if side in self._halted:
             raise RuntimeError(
                 f"the {side} arm is halted ({self._halted[side]}); reset it before moving "
                 "it again. The other arm is not affected."
             )
+        sent = self._controllers[side].commands
         try:
             out = run()
         except Exception as exc:
-            if self._dual:
+            refused = (
+                isinstance(exc, ValueError) and self._controllers[side].commands == sent
+            )
+            if self._dual and not refused:
                 self._halted[side] = f"error: {exc}"
             raise
         if self._dual:
@@ -471,29 +486,82 @@ class PiperEnvFacade(BaseEnvFacade):
         self._controllers[side]._hold_after_stop()
         return {"ok": True, "arm": side, "halted": self._halted[side]}
 
+    def _holding(self, side: str) -> float | None:
+        """The gripper width (m) when ``side``'s gripper holds something, else None."""
+        c = self._controllers[side]
+        width = float(self._robots[side].get_gripper_width())
+        empty = c.limits.empty_width_m or 0.0
+        return width if empty < width < c.limits.close_threshold_m else None
+
     def _reset_arm(self, side: str) -> dict[str, Any]:
-        self._halted.pop(side, None)
-        grip = self._controllers[side].step(gripper="open")
-        move = self._move_joints(side, "begin")
+        """Open the gripper, then move to the begin pose. The arm's halt is cleared only
+        when both succeeded; a failed or cancelled reset leaves (or sets) it halted."""
+        c = self._controllers[side]
+        try:
+            grip = c.step(gripper="open")
+            move = (
+                self._move_joints(side, "begin")
+                if not grip.get("cancelled")
+                else {"ok": False, "cancelled": True, "notes": ["not started"]}
+            )
+        except Exception as exc:
+            if self._dual:
+                self._halted[side] = f"reset failed: {exc}"
+            raise
+        cancelled = bool(grip.get("cancelled") or move.get("cancelled"))
+        ok = bool(move.get("ok")) and bool(grip.get("ok")) and not cancelled
+        if ok:
+            self._halted.pop(side, None)
+        elif self._dual:
+            self._halted[side] = (
+                "reset cancelled"
+                if cancelled
+                else "reset failed: "
+                + "; ".join(
+                    grip.get("notes", []) + move.get("notes", [])
+                    or ["not at the begin pose"]
+                )
+            )
         return {
-            "ok": bool(move.get("ok")) and not grip.get("cancelled"),
+            "ok": ok,
             "gripper": grip,
             "move": move,
-            **({"cancelled": True} if move.get("cancelled") else {}),
+            **({"cancelled": True} if cancelled else {}),
         }
 
-    def reset(self, arm: str | None = None) -> dict[str, Any]:
-        """Open the gripper, then move to the begin pose; on two arms both (one after
-        the other) unless ``arm`` names one. Clears that arm's halt."""
-        if self._dual and arm is None:
+    def reset(
+        self, arm: str | None = None, both: bool = False, release: bool = False
+    ) -> dict[str, Any]:
+        """Open the gripper, then move to the begin pose.
+
+        Two arms: the named ``arm`` only, or both (one after the other) with
+        ``both=True``; a halt is cleared only by that arm's successful reset.
+        ``release``: the operator confirmed that a gripper holding an object may open
+        (without it such a reset is refused before any motion)."""
+        if self._dual and arm is None and not both:
+            raise ValueError(
+                "two arms: reset names its arm (arm='left' or arm='right'), or pass "
+                "both=True to reset both; nothing was commanded"
+            )
+        if both and arm is not None:
+            raise ValueError("pass arm or both=True, not both")
+        sides = list(self._controllers) if both else [self._side(arm)]
+        if not release:
+            held = {s: w for s in sides if (w := self._holding(s)) is not None}
+            if held:
+                what = ", ".join(f"{s} ({w:.3f} m)" for s, w in held.items())
+                raise ValueError(
+                    f"the gripper of the {what} arm holds an object: reset opens it and "
+                    "would drop it. Ask the operator, then pass release=True; nothing "
+                    "was commanded"
+                )
+        if self._dual and both:
             arms = {}
-            for side in self._controllers:
+            for side in sides:
                 arms[side] = self._reset_arm(side)
                 if not arms[side]["ok"]:
                     break
-            ok = len(arms) == len(self._controllers) and all(
-                r["ok"] for r in arms.values()
-            )
+            ok = len(arms) == len(sides) and all(r["ok"] for r in arms.values())
             return {
                 "ok": ok,
                 "arms": arms,
@@ -506,10 +574,11 @@ class PiperEnvFacade(BaseEnvFacade):
                     else {}
                 ),
             }
-        side = self._side(arm)
+        side = sides[0]
         out = self._reset_arm(side)
         return {
             **out,
+            **({"arm": side} if self._dual else {}),
             "robot_state": self.get_robot_state(side if self._dual else None),
         }
 

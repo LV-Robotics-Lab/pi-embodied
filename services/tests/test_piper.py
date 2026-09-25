@@ -21,6 +21,8 @@ import time
 
 import numpy as np
 import pytest
+import yaml
+from scipy.spatial.transform import Rotation as Rot
 
 from pi_embodied_services.robots.piper.controller import PiperController, PiperLimits
 from pi_embodied_services.robots.piper.env_server import (
@@ -46,7 +48,13 @@ class FakeArm:
     """
 
     def __init__(
-        self, drop=False, pose_offset=0.0, object_width=None, width=0.07, ident="usb-A"
+        self,
+        drop=False,
+        pose_offset=0.0,
+        object_width=None,
+        width=0.07,
+        ident="usb-A",
+        drop_pose=False,
     ):
         self.ident = ident
         self.kin = PiperKinematics(0x01)
@@ -54,6 +62,9 @@ class FakeArm:
         self.pose = self.kin.fk_pose7(self.q)
         self.width = width
         self.drop = drop
+        #: Ignore MOVE P only (a reach fallback that does not move the arm).
+        self.drop_pose = drop_pose
+        self.rot_log: list[np.ndarray] = []
         self.pose_offset = pose_offset
         self.object_width = object_width
         self.streamed = 0
@@ -83,14 +94,16 @@ class FakeArm:
 
     def command_pose(self, pose7):
         self.poses.append(np.asarray(pose7, float))
-        if not self.drop:
+        if not (self.drop or self.drop_pose):
             self.pose = np.asarray(pose7, float).copy()
 
     def stream_joints(self, q):
         if self.fail_at_stream is not None and self.streamed >= self.fail_at_stream:
             raise RuntimeError("feedback on /puppet/joint_left is 0.80s old")
         self.streamed += 1
-        self.stream_log.append(self.kin.fk_pose7(np.asarray(q, float)[:6])[:3])
+        pose = self.kin.fk_pose7(np.asarray(q, float)[:6])
+        self.stream_log.append(pose[:3])
+        self.rot_log.append(pose[3:])
         if not self.drop:
             self.q = np.asarray(q, float)[:6].copy()
             self.pose = self.kin.fk_pose7(self.q)
@@ -116,8 +129,8 @@ class FakeArm:
 def limits(**kw) -> PiperLimits:
     base = dict(
         z_floor_m=0.0,
-        speed_mps=2.0,
-        yaw_speed_radps=10.0,
+        speed_mps=0.3,
+        yaw_speed_radps=2.0,
         settle_steps=1,
         settle_dt_s=0.0,
         gripper_settle_s=0.0,
@@ -420,7 +433,7 @@ def dual_facade(left, right, per_arm=None):
     }
     cfg = {
         "cameras": {"front": "/camera_f/color/image_raw", "image_size": 32},
-        "limits": {"speed_mps": 2.0, "reset_time_s": 0.1},
+        "limits": {"speed_mps": 0.3, "reset_time_s": 0.1},
         "gripper": {"settle_s": 0.0},
         "motion": {"settle_steps": 1, "settle_dt_s": 0.0, "units_frame": "base"},
         "smooth": {"dt_s": 0.001},
@@ -549,7 +562,7 @@ def test_dual_halt_arm_and_reset_both():
     assert f.halt_arm(arm="left", reason="stage done")["halted"] == "halted: stage done"
     with pytest.raises(RuntimeError, match="halted: stage done"):
         f.step([0.01, 0.0, 0.0], arm="left")
-    out = f.reset()
+    out = f.reset(both=True)
     assert out["ok"] and set(out["arms"]) == {"left", "right"}
     np.testing.assert_allclose(left.q, HOME, atol=1e-9)
     np.testing.assert_allclose(right.q, HOME, atol=1e-9)
@@ -664,24 +677,24 @@ def test_facade_passes_continuous_and_reports_smooth():
 
 def test_accumulated_yaw_is_capped_from_the_reset_heading():
     arm = FakeArm()
-    c = controller(arm, max_yaw_rad=0.5, max_total_yaw_rad=np.radians(60))
+    c = controller(arm, max_yaw_rad=0.2, max_total_yaw_rad=np.radians(30))
     assert c.yaw_from_reset() == pytest.approx(0.0)
-    c.step(yaw=0.5)
-    c.step(yaw=0.5)
-    assert c.yaw_from_reset() == pytest.approx(1.0, abs=1e-6)
+    c.step(yaw=0.2)
+    c.step(yaw=0.2)
+    assert c.yaw_from_reset() == pytest.approx(0.4, abs=1e-3)
     streamed = arm.streamed
     with pytest.raises(
-        ValueError, match="would turn the gripper 86 deg .* limit is 60 deg"
+        ValueError, match="would turn the gripper 34 deg .* limit is 30 deg"
     ):
-        c.step(yaw=0.5)
+        c.step(yaw=0.2)
     assert arm.streamed == streamed, "nothing was commanded"
     # Turning back is always allowed, and a reset restarts the budget.
-    c.step(yaw=-0.5)
-    assert c.state()["yaw_from_reset_rad"] == pytest.approx(0.5, abs=1e-6)
-    c.step(yaw=0.5)
+    c.step(yaw=-0.2)
+    assert c.state()["yaw_from_reset_rad"] == pytest.approx(0.2, abs=1e-3)
+    c.step(yaw=0.2)
     c.move_to_joints(HOME)
     assert c.yaw_from_reset() == pytest.approx(0.0, abs=1e-6)
-    c.step(yaw=0.5)
+    c.step(yaw=0.2)
     with pytest.raises(ValueError, match="max_total_yaw_rad"):
         PiperLimits(z_floor_m=0.0, max_total_yaw_rad=4.0).validate()
 
@@ -776,3 +789,231 @@ def test_identity_sources(tmp_path):
     assert ros_io.arm_identity("left", "none") is None
     with pytest.raises(ValueError, match="ros.identity must be"):
         ros_io.arm_identity("left", "serial")
+
+
+# -- review fixes: stale setpoints, per-arm locks, reset scope, config, wrist ramp --
+
+
+def fail_ik_once(c):
+    """Make the first IK call fail (the arm at its reach limit), the rest real."""
+    real = c._kin.ik_bounded
+    calls = [0]
+
+    def ik(*a, **kw):
+        calls[0] += 1
+        return (None, 0.0) if calls[0] == 1 else real(*a, **kw)
+
+    c._kin.ik_bounded = ik
+
+
+def test_reach_fallback_shortfall_fails_and_the_next_step_starts_from_measured():
+    # HIGH 1: IK fails -> one MOVE P that does not arrive (5 cm short). The old code kept
+    # the setpoint at the target, so the next +z 1 cm step's first waypoint jumped ~5 cm.
+    arm = FakeArm(drop_pose=True)
+    c = controller(arm)
+    fail_ik_once(c)
+    start = arm.pose[:3].copy()
+    out = c.step([0.0, 0.0, 0.05])
+    assert not out["ok"], out["notes"]
+    assert any("50.0 mm short of its target" in n for n in out["notes"]), out["notes"]
+    np.testing.assert_allclose(arm.pose[:3], start, atol=1e-9)
+    np.testing.assert_allclose(c.target_pose[:3], arm.pose[:3], atol=1e-9)
+    # A later gripper command re-sends the measured pose, never the unreached one.
+    np.testing.assert_allclose(arm.noted[:3], start, atol=1e-9)
+    assert_next_step_starts_from_measured(c, arm)
+    # A MOVE P that arrives is fine.
+    ok = controller(FakeArm())
+    fail_ik_once(ok)
+    good = ok.step([0.0, 0.0, 0.02])
+    assert good["ok"], good["notes"]
+
+
+def test_dual_reach_fallback_shortfall_halts_that_arm():
+    left, right = FakeArm(drop_pose=True), FakeArm()
+    f = dual_facade(left, right)
+    fail_ik_once(f._controllers["left"])
+    out = f.step([0.0, 0.0, 0.05], arm="left")
+    assert out["halted"] and not out["ok"]
+    with pytest.raises(
+        RuntimeError, match="the left arm is halted .*short of its target"
+    ):
+        f.step([0.0, 0.0, 0.01], arm="left")
+    assert f.step([0.0, 0.0, 0.01], arm="right")["ok"]
+
+
+def test_a_waypoint_jump_is_refused_before_it_is_streamed():
+    arm = FakeArm()
+    c = controller(arm)
+    real = c._kin.ik_bounded
+    calls = [0]
+
+    def ik(*a, **kw):
+        calls[0] += 1
+        sol, dev = real(*a, **kw)
+        return (sol + [0.0, 0.1, 0.0, 0.0, 0.0, 0.0] if calls[0] == 3 else sol), dev
+
+    c._kin.ik_bounded = ik
+    with pytest.raises(RuntimeError, match="waypoint 3/50 would move the gripper"):
+        c.step([0.02, 0.0, 0.0])
+    assert arm.streamed == 2, "nothing past the previous waypoint was commanded"
+    assert c._target_pos is None
+    assert_next_step_starts_from_measured(c, arm)
+
+
+def test_every_move_starts_from_the_measured_pose_despite_an_fk_offset():
+    # Pose feedback 4 mm off the vendored FK (within the 1 cm joint_stream gate): the
+    # first waypoint starts at the measured joints, and the arm moves the commanded 2 cm.
+    arm = FakeArm(pose_offset=0.004)
+    c = controller(arm)
+    assert c.backend == "joint_stream"
+    fk0 = arm.kin.fk_pose7(arm.q)[:3]
+    start = arm.get_ee_pose()[:3]
+    out = c.step([0.0, 0.02, 0.0])
+    assert out["ok"], out["notes"]
+    assert np.linalg.norm(arm.stream_log[0] - fk0) < 1e-3
+    np.testing.assert_allclose(arm.get_ee_pose()[:3], start + [0, 0.02, 0], atol=1e-3)
+
+
+def max_tick_turn(arm, q0):
+    rots = [arm.kin.fk_pose7(q0)[3:], *arm.rot_log]
+    return max(
+        (Rot.from_quat(b) * Rot.from_quat(a).inv()).magnitude()
+        for a, b in zip(rots, rots[1:])
+    )
+
+
+def test_a_clipped_yaw_never_snaps_the_wrist():
+    # MEDIUM: HOME reaches ~0.53 rad of yaw; the second 0.5 rad turn is clipped at the
+    # reach boundary. The old setpoint kept the full 1.0 rad, and the next move's first
+    # waypoint snapped the wrist toward it in one tick.
+    arm = FakeArm()
+    c = controller(arm, max_yaw_rad=0.5, max_total_yaw_rad=np.radians(120))
+    c.step(yaw=0.5)
+    out = c.step(yaw=0.5)
+    assert any(n.startswith("reach clamp") for n in out["notes"]), out["notes"]
+    measured = Rot.from_quat(arm.pose[3:]).as_euler("xyz")[2]
+    assert np.remainder(c._target_euler[2] - measured + np.pi, 2 * np.pi) - np.pi == (
+        pytest.approx(0.0, abs=1e-3)
+    )
+    q0 = arm.q.copy()
+    arm.rot_log.clear()
+    c.step([0.0, 0.0, 0.01])
+    assert max_tick_turn(arm, q0) < np.radians(2), np.degrees(max_tick_turn(arm, q0))
+
+
+def test_argument_refusals_do_not_halt_an_arm_but_faults_do():
+    f = dual_facade(FakeArm(), FakeArm())
+    for c in f._controllers.values():
+        c.limits.max_total_yaw_rad = 0.3
+    with pytest.raises(ValueError, match="per call"):
+        f.step([0.1, 0, 0], arm="left")
+    f.step(yaw=0.2, arm="left")
+    with pytest.raises(ValueError, match="max_total_yaw_rad"):
+        f.step(yaw=0.2, arm="left")
+    with pytest.raises(ValueError, match="gripper"):
+        f.step(gripper="half", arm="left")
+    assert not f.get_env_meta()["halted"]
+    assert f.step([0.0, 0.0, 0.01], arm="left")["ok"]
+
+
+def test_a_failed_or_cancelled_reset_keeps_the_arm_halted():
+    left, right = FakeArm(), FakeArm()
+    f = dual_facade(left, right)
+    f.halt_arm(arm="left", reason="fault")
+    # Cancelled mid-reset (stop): still halted, and the arm does not move.
+    c = f._controllers["left"]
+    streamed = left.streamed
+    c.stop_requested = lambda: left.streamed >= streamed + 2
+    out = f.reset(arm="left")
+    assert out["cancelled"] and not out["ok"]
+    assert f.get_env_meta()["halted"]["left"] == "reset cancelled"
+    c.stop_requested = lambda: False
+    pose = left.pose.copy()
+    with pytest.raises(RuntimeError, match="the left arm is halted"):
+        f.step([0.0, 0.0, 0.01], arm="left")
+    np.testing.assert_allclose(left.pose, pose)
+    # Failed (stale feedback mid-reset): still halted.
+    left.fail_at_stream = left.streamed + 3
+    with pytest.raises(RuntimeError, match="old"):
+        f.reset(arm="left")
+    assert f.get_env_meta()["halted"]["left"].startswith("reset failed")
+    # Did not arrive (commands dropped): still halted.
+    left.fail_at_stream, left.drop = None, True
+    left.q = HOME + [0.2, 0.0, 0.0, 0.0, 0.0, 0.0]
+    left.pose = left.kin.fk_pose7(left.q)
+    assert not f.reset(arm="left")["ok"]
+    assert f.get_env_meta()["halted"]["left"].startswith("reset failed")
+    with pytest.raises(RuntimeError, match="the left arm is halted"):
+        f.step([0.0, 0.0, 0.01], arm="left")
+    # Only a successful reset clears it.
+    left.drop = False
+    assert f.reset(arm="left")["ok"]
+    assert f.step([0.0, 0.0, 0.01], arm="left")["ok"]
+
+
+def test_dual_reset_names_its_arm_and_never_drops_a_held_object():
+    left, right = FakeArm(object_width=0.03), FakeArm()
+    f = dual_facade(left, right)
+    assert f.step(gripper="close", arm="left")["gripper_width_m"] == 0.03
+    states = f.get_robot_state()["arms"]
+    assert states["left"]["holding_object"] and not states["right"]["holding_object"]
+    f.step([0.0, 0.0, 0.01], arm="right")
+    streamed = left.streamed
+    with pytest.raises(ValueError, match="reset names its arm"):
+        f.reset()
+    # Resetting the right arm leaves the left hand's object where it is.
+    assert f.reset(arm="right")["ok"]
+    assert left.width == 0.03 and left.streamed == streamed
+    # The left gripper holds something: refused before any motion without release.
+    with pytest.raises(ValueError, match="left \\(0.030 m\\) arm holds an object"):
+        f.reset(arm="left")
+    with pytest.raises(ValueError, match="holds an object"):
+        f.reset(both=True)
+    assert left.width == 0.03 and left.streamed == streamed
+    assert not f.get_env_meta()["halted"], "a refused reset halts nothing"
+    out = f.reset(both=True, release=True)
+    assert out["ok"] and left.width == 0.07
+    # One arm: the same guard.
+    one = facade(FakeArm(object_width=0.03), None)
+    one.step(gripper="close")
+    with pytest.raises(ValueError, match="holds an object"):
+        one.reset()
+    assert one.reset(release=True)["ok"]
+
+
+@pytest.mark.parametrize(
+    "key, value, match",
+    [
+        ("z_floor_m", ".nan", "z_floor_m must be a finite"),
+        ("z_floor_m", ".inf", "z_floor_m must be a finite"),
+        ("max_yaw_rad", "3.0", "max_yaw_rad"),
+        ("max_yaw_rad", "0.6", "must stay below pi"),
+        ("max_total_yaw_rad", ".nan", "max_total_yaw_rad"),
+        ("max_step_m", ".nan", "max_step_m"),
+        ("max_step_m", "0.5", "max_step_m"),
+        ("speed_mps", "5.0", "speed_mps"),
+        ("divergence_resync_m", ".nan", "divergence_resync_m"),
+        ("divergence_resync_m", "5.0", "divergence_resync_m"),
+        ("enable_z_floor", "'no'", "enable_z_floor"),
+        ("workspace_min", "[0, .nan, 0]", "finite"),
+        ("reset_time_s", "0.0", "reset_time_s"),
+        ("ori_flex_deg", "90", "ori_flex_rad"),
+        ("joint_stream_hz", ".nan", "joint_stream_hz"),
+    ],
+)
+def test_unsafe_config_values_refuse_to_start(tmp_path, key, value, match):
+    text = DEFAULT_CONFIG.read_text().replace("z_floor_m: null", "z_floor_m: 0.19")
+    text = text.replace("arm_id: null", "arm_id: usb-A")
+    path = tmp_path / "piper.yaml"
+    path.write_text(text)
+    load_config(path)
+    cfg = yaml.safe_load(text)
+    section = {"z_floor_m": "calibration"}.get(key, "limits")
+    if key in cfg["motion"]:
+        section = "motion"
+    cfg[section][key] = yaml.safe_load(value)
+    if key == "workspace_min":
+        cfg["limits"]["workspace_max"] = [1, 1, 1]
+    path.write_text(yaml.safe_dump(cfg))
+    with pytest.raises(ValueError, match=match):
+        load_config(path)

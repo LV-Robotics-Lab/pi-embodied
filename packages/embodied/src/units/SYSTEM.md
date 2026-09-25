@@ -27,6 +27,9 @@ ACTION UNITS (`act` with `unit` and an optional repeat count `n`, default 1):
 [yaw]
 - ROTATE_CW, ROTATE_CCW: turn the gripper about {{yaw_deg}} degrees clockwise / counter-clockwise as seen in the wrist view.
 [/yaw]
+[rt]
+- RT_ROLL_LEFT / RT_ROLL_RIGHT, RT_PITCH_FWD / RT_PITCH_BACK, RT_YAW_CW / RT_YAW_CCW: turn the gripper about {{rt_deg}} degrees about a world axis through the fingertips (roll about the MV_FWD axis, pitch about the MV_LEFT-MV_RIGHT axis, yaw about the vertical, clockwise / counter-clockwise seen from above).
+[/rt]
 - GRASP: close the gripper. RELEASE: open it.
 - STOP: hold still for one step and look again.
 - DONE: the task is complete; then call `finish`.

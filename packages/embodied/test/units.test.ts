@@ -8,9 +8,10 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import dualFranka from "../src/dual_franka/index.ts";
 import franka from "../src/franka/index.ts";
-import { defineRobot } from "../src/robot.ts";
+import { defineRobot, RESULT_ENTRY } from "../src/robot.ts";
 import {
 	compensate,
+	finishMove,
 	ground,
 	latestTurn,
 	type Move,
@@ -26,7 +27,12 @@ import { parseVerdict, renderBrief, validateBrief } from "../src/units/vlm.ts";
 type Handler = (event: any, ctx: any) => unknown;
 
 /** A stub pi that runs handlers in registration order, like pi's runner; `vlm` answers side model calls in order. */
-function fakePi(flagValues: Record<string, unknown> = {}, vlm: (string | Error)[] = [], branch: any[] = []) {
+function fakePi(
+	flagValues: Record<string, unknown> = {},
+	vlm: (string | Error)[] = [],
+	branch: any[] = [],
+	aborted = false,
+) {
 	const handlers = new Map<string, Handler[]>();
 	const flags: Record<string, unknown> = {};
 	const tools = new Map<string, any>();
@@ -65,6 +71,7 @@ function fakePi(flagValues: Record<string, unknown> = {}, vlm: (string | Error)[
 			select: async () => "done",
 		},
 		shutdown: () => {},
+		signal: aborted ? AbortSignal.abort() : undefined,
 		sessionManager: { getBranch: () => branch, getSessionDir: () => dir },
 		model: { provider: "relay", id: "planner" },
 		modelRegistry: {
@@ -116,6 +123,7 @@ async function toyRobot(
 		blocked?: boolean;
 		prompt?: string;
 		maxYaw?: number;
+		rt?: UnitsSpec["rt"];
 		maxMove?: number;
 		chains?: boolean;
 		arms?: string[];
@@ -125,6 +133,8 @@ async function toyRobot(
 		/** Every result reports the robot's success signal (terminated), as LIBERO does once solved. */
 		latched?: boolean;
 		reset?: () => Promise<Record<string, unknown>>;
+		/** The run was aborted (ctx.signal). */
+		aborted?: boolean;
 	} = {},
 ) {
 	// The Show-Harness step rules: fixed 2 cm steps unless a test turns variable_step on.
@@ -132,6 +142,7 @@ async function toyRobot(
 		{ units: true, "units-plugins": "recovery,auto_release,proprioception,plan,mem_text", ...flags },
 		o.vlm,
 		o.branch,
+		o.aborted,
 	);
 	const moves: Move[] = [];
 	const pos = [0.5, 0, 0.2];
@@ -141,6 +152,7 @@ async function toyRobot(
 		stepM: 0.02,
 		...(o.yaw ? { yawStepRad: o.yaw } : {}),
 		...(o.maxYaw !== undefined ? { maxYawRad: () => o.maxYaw as number } : {}),
+		...(o.rt ? { rt: o.rt } : {}),
 		...(o.maxMove !== undefined ? { maxMoveM: () => o.maxMove as number } : {}),
 		...(o.chains !== undefined ? { chains: () => o.chains as boolean } : {}),
 		...(o.arms ? { arms: o.arms } : {}),
@@ -672,20 +684,19 @@ test("verifier: a success finish is checked once on the latest images; NOT compl
 	assert.equal(off.asked.length, 0);
 });
 
-test("verifier: an unavailable or failed check accepts the finish; dual-arm robots verify by default", async () => {
-	for (const reply of ["I think it is done.", new Error("503")]) {
-		const f = await toyRobot({ "units-verify": "true" }, { vlm: [reply] });
-		const obs = await f.run("act", { unit: "STOP" });
-		await f.emit("tool_result", { toolName: "act", content: obs.content });
-		assert.equal(
-			await f.emit("tool_call", { toolName: "finish", input: { status: "success", summary: "" } }),
-			undefined,
-		);
-		const [check] = f.entries.filter((e) => e.customType === VERIFY_ENTRY).map((e) => e.data);
-		assert.equal(check.complete, true);
-		assert.equal(check.refused, false);
-		assert.equal(f.asked[0].model, "relay/planner", "the session's model by default");
-	}
+test("verifier: an unparseable verdict accepts the finish; dual-arm robots verify by default", async () => {
+	const f = await toyRobot({ "units-verify": "true" }, { vlm: ["I think it is done."] });
+	const obs = await f.run("act", { unit: "STOP" });
+	await f.emit("tool_result", { toolName: "act", content: obs.content });
+	assert.equal(
+		await f.emit("tool_call", { toolName: "finish", input: { status: "success", summary: "" } }),
+		undefined,
+	);
+	const [check] = f.entries.filter((e) => e.customType === VERIFY_ENTRY).map((e) => e.data);
+	assert.equal(check.complete, true);
+	assert.equal(check.unavailable, true);
+	assert.equal(check.refused, false);
+	assert.equal(f.asked[0].model, "relay/planner", "the session's model by default");
 	const none = await toyRobot(
 		{ "units-verify": "true" },
 		{ vlm: ['{"complete": false, "reason": "x"}'], refuseRetreat: true },
@@ -715,6 +726,72 @@ test("verifier: an unavailable or failed check accepts the finish; dual-arm robo
 	await off.emit("tool_result", { toolName: "act", content: img });
 	assert.equal(await off.emit("tool_call", claim), undefined);
 	assert.equal(off.asked.length, 0);
+});
+
+test("verifier: a failed VLM call is retried once, then refuses the finish; past the cap the finish ends unverified", async () => {
+	const claim = { toolName: "finish", input: { status: "success", summary: "" } };
+	const noCredits = () => new Error("You have no credits remaining");
+	// A transient failure: the retry answers and the verdict decides.
+	const flaky = await toyRobot(
+		{ "units-verify": "true" },
+		{ vlm: [noCredits(), '{"complete": true, "reason": "in"}'] },
+	);
+	await flaky.emit("tool_result", { toolName: "act", content: (await flaky.run("act", { unit: "STOP" })).content });
+	assert.equal(await flaky.emit("tool_call", claim), undefined);
+	assert.equal(flaky.asked.length, 2);
+	const [ok] = flaky.entries.filter((e) => e.customType === VERIFY_ENTRY).map((e) => e.data);
+	assert.equal(ok.retried, "You have no credits remaining");
+	assert.equal(ok.complete, true);
+	assert.equal(ok.verifier_error, undefined);
+	// A lasting failure: each finish asks twice and is refused (not the replan), twice; the third ends unverified.
+	const f = await toyRobot({ "units-verify": "true" }, { vlm: Array.from({ length: 6 }, noCredits) });
+	await f.emit("tool_result", { toolName: "act", content: (await f.run("act", { unit: "STOP" })).content });
+	for (let i = 0; i < 2; i++) {
+		const refused = await f.emit("tool_call", claim);
+		assert.equal(refused?.block, true);
+		assert.match(refused.reason, /verifier is unavailable \(You have no credits remaining\)/);
+		assert.match(refused.reason, /Call `finish` again to retry/);
+	}
+	assert.equal(await f.emit("tool_call", claim), undefined, "the cap lets the episode end");
+	assert.equal(f.asked.length, 6);
+	const checks = f.entries.filter((e) => e.customType === VERIFY_ENTRY).map((e) => e.data);
+	assert.deepEqual(
+		checks.map((c) => [c.refused, c.unverified, c.verifier_error, c.complete]),
+		Array.from({ length: 3 }, (_, i) => [i < 2, true, "You have no credits remaining", undefined]),
+	);
+	const state = f.entries.filter((e) => e.customType === STATE_ENTRY).pop()?.data;
+	assert.equal(state.verifierErrors, 2);
+	assert.equal(state.replans, 0, "not the verifier's replan");
+	assert.equal(state.finishVerified, false);
+	assert.equal(head(await f.run("act", { unit: "STOP" })).includes("NOT complete"), false);
+	// The robot result marks the finish unverified.
+	await f.run("finish", { status: "success", summary: "" });
+	await f.emit("agent_start");
+	await f.emit("agent_end");
+	const result = f.entries.find((e) => e.customType === RESULT_ENTRY)?.data;
+	assert.equal(result.finish_verified, false);
+	assert.equal(result.verifier_error, "You have no credits remaining");
+	// A verified finish says so.
+	const good = await toyRobot({ "units-verify": "true" }, { vlm: ['{"complete": true, "reason": "in"}'] });
+	await good.emit("tool_result", { toolName: "act", content: (await good.run("act", { unit: "STOP" })).content });
+	assert.equal(await good.emit("tool_call", claim), undefined);
+	await good.run("finish", { status: "success", summary: "" });
+	await good.emit("agent_start");
+	await good.emit("agent_end");
+	const verified = good.entries.find((e) => e.customType === RESULT_ENTRY)?.data;
+	assert.equal(verified.finish_verified, true);
+	assert.equal("verifier_error" in verified, false);
+});
+
+test("verifier: an aborted run propagates, without a retry or a refusal", async () => {
+	const f = await toyRobot({ "units-verify": "true" }, { vlm: [new Error("aborted"), "{}"], aborted: true });
+	await f.emit("tool_result", { toolName: "act", content: (await f.run("act", { unit: "STOP" })).content });
+	await assert.rejects(
+		f.emit("tool_call", { toolName: "finish", input: { status: "success", summary: "" } }),
+		/aborted/,
+	);
+	assert.equal(f.asked.length, 1);
+	assert.equal(f.entries.filter((e) => e.customType === VERIFY_ENTRY).length, 0);
 });
 
 const hasFfmpeg = (() => {
@@ -1002,4 +1079,57 @@ test("stage discipline: a success claim while holding is refused (not the replan
 	await off.run("plan", { stages: [{ motion: "PLACE", target: "bowl", completion: "in" }] });
 	await off.run("act", { unit: "GRASP" });
 	assert.equal(await off.emit("tool_call", claim), undefined);
+});
+
+test("RT_* turn about the robot's declared axes, only with --units-rt; a missing axis is refused", async () => {
+	const deg = Math.PI / 180;
+	const rt: UnitsSpec["rt"] = { stepRad: 10 * deg, axes: { roll: [1, 0, 0], yaw: [0, 0, 1] } };
+	const g = ground({ vectors: VECTORS, stepM: 0.02, rt }, "RT_ROLL_RIGHT");
+	assert.deepEqual(g?.rot, [-10 * deg, -0, -0]);
+	assert.equal(ground({ vectors: VECTORS, stepM: 0.02, rt }, "RT_YAW_CW")?.rot?.[2], -10 * deg);
+	assert.throws(() => ground({ vectors: VECTORS, stepM: 0.02, rt }, "RT_PITCH_FWD"), /about the pitch axis/);
+	assert.throws(() => ground({ vectors: VECTORS, stepM: 0.02 }, "RT_ROLL_LEFT"), /about the roll axis/);
+
+	// Off by default: not offered, and a call is refused with the flag to set.
+	const off = await toyRobot({}, { rt });
+	assert.doesNotMatch(JSON.stringify(off.tools.get("act").parameters), /RT_/);
+	await assert.rejects(off.run("act", { unit: "RT_ROLL_LEFT" }), /--units-rt=true/);
+
+	const f = await toyRobot({ "units-rt": "true", "units-plugins": "mem_text" }, { rt });
+	const schema = JSON.stringify(f.tools.get("act").parameters);
+	assert.match(schema, /RT_ROLL_LEFT/);
+	assert.match(schema, /RT_YAW_CCW/);
+	assert.doesNotMatch(schema, /RT_PITCH/, "no pitch axis, no pitch units");
+	assert.ok((f.emitted.get(UNITS_EVENT) as UnitsHandle).vocabulary.includes("RT_ROLL_LEFT"));
+	await assert.rejects(f.run("act", { unit: "RT_PITCH_FWD" }), /cannot turn its gripper about the pitch axis/);
+	assert.match((await f.emit("before_agent_start")).systemPrompt, /RT_ROLL_LEFT .* about 10 degrees/);
+
+	// Turns are motion (not the finish sequence) and enter the move history.
+	const r = await f.run("act", { unit: "RT_ROLL_LEFT", n: 2 });
+	assert.equal(f.moves.length, 2);
+	assert.deepEqual(
+		f.moves[0].rot?.map((v) => Number(v.toFixed(4))),
+		[0.1745, 0, 0],
+	);
+	assert.match(head(r), /Recent moves, newest first: RT_ROLL_LEFT, RT_ROLL_LEFT/);
+	assert.equal(finishMove(f.moves[0]), false);
+
+	// The 90 deg roll cap: 9 units in all, the 10th is refused.
+	const cap = await f.run("act", { unit: "RT_ROLL_LEFT", n: 10 });
+	assert.equal(f.moves.length, 9);
+	assert.match(head(cap), /RT_ROLL_LEFT refused: the gripper is already turned 90 deg about its roll axis/);
+	const state = f.entries.filter((e) => e.customType === STATE_ENTRY).pop()?.data;
+	assert.ok(Math.abs(state.roll[""] - Math.PI / 2) < 1e-9);
+
+	// RT_YAW shares the yaw accumulator (and its 150 deg cap) with ROTATE_*, and splits by rt.maxRad.
+	const s = await toyRobot({ "units-rt": "true", "units-plugins": "" }, { rt: { ...rt, maxRad: () => 0.1 } });
+	await s.run("act", { unit: "RT_YAW_CCW" });
+	assert.equal(s.moves.length, 2, "10 deg in two commands within 0.1 rad");
+	assert.ok(Math.abs((s.moves[0].rot?.[2] ?? 0) - 5 * deg) < 1e-12);
+	const yawed = s.entries.filter((e) => e.customType === STATE_ENTRY).pop()?.data;
+	assert.ok(Math.abs(yawed.yaw[""] - 10 * deg) < 1e-12);
+	const many = await s.run("act", { unit: "RT_YAW_CCW", n: 10 });
+	assert.match(head(many), /units: RT_YAW_CCW x10/);
+	const more = await s.run("act", { unit: "RT_YAW_CCW", n: 10 });
+	assert.match(head(more), /refused: the gripper is already turned 150 deg about its yaw axis/);
 });

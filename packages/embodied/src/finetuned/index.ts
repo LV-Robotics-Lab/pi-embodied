@@ -19,6 +19,15 @@
  * --ft-max-steps end the episode with `finish`. A reply that parses to no unit falls back to MV_DOWN
  * like the runner; a failed request (after retries) is a model error. Usage is zero; an abort ends it.
  *
+ * `--ft-prompt v5` runs the aaroncaozj LIBERO adapters (huggingface.co/aaroncaozj/qwen3_5_9b_mvtoken_libero)
+ * as their model card measures them: 15 units (the six moves, RT_ROLL/PITCH/YAW turns that the robot
+ * runs with --units-rt=true, GRASP, RELEASE, DONE), moves and turns in the recent-units history, the
+ * no-progress guard (an MV_* that moved the TCP < 5 mm twice in a row is withheld from the next
+ * decision through vLLM `structured_outputs` choice), no stop action (DONE is counted and asked again
+ * with DONE withheld; only env success or the step budget ends the episode) and an out-of-vocabulary
+ * reply asked again constrained to the vocabulary. Each rule is also a flag (--ft-stuck-guard-mm,
+ * --ft-ignore-done, --ft-oov, --ft-max-steps), off for v3/v4.
+ *
  * Every step appends a `finetuned_step` entry: the token, the raw reply, the exact prompt text and
  * the pixel fingerprint (sha1 of the uint8 HWC bytes) of each image sent, in wire order.
  *
@@ -29,7 +38,7 @@
  * copied verbatim into ./templates/.
  */
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import {
 	type Api,
 	type AssistantMessage,
@@ -45,6 +54,7 @@ import {
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { encodePng } from "../png.ts";
 import { TASK_ENTRY } from "../robot.ts";
+import { RT_UNITS, UNITS_EVENT, type UnitsHandle } from "../units/index.ts";
 import { decodePng, fingerprint, formatView, parseView, prepareView, type ViewSpec } from "./views.ts";
 
 type Json = Record<string, unknown>;
@@ -61,7 +71,26 @@ export const MVTOKEN_ACTIONS = [
 	"RELEASE",
 	"DONE",
 ] as const;
+/**
+ * The 15 units of the aaroncaozj LIBERO adapters (huggingface.co/aaroncaozj/qwen3_5_9b_mvtoken_libero,
+ * model card): six 2 cm moves, six 10 degree turns about a world axis through the TCP, GRASP,
+ * RELEASE, DONE. The tokens a template offers are matched against this superset.
+ */
+export const V5_ACTIONS = [
+	"MV_FWD",
+	"MV_BACK",
+	"MV_LEFT",
+	"MV_RIGHT",
+	"MV_UP",
+	"MV_DOWN",
+	...RT_UNITS,
+	"GRASP",
+	"RELEASE",
+	"DONE",
+] as const;
 const MOVES = new Set(["MV_FWD", "MV_BACK", "MV_LEFT", "MV_RIGHT", "MV_UP", "MV_DOWN"]);
+/** The units the "recent moves" history holds: moves, and (v5) turns, which the card says it needs. */
+const MOTION = new Set<string>([...MOVES, ...RT_UNITS]);
 /** The runner's reply-parse fallback and its opening unit. */
 export const FALLBACK = "MV_DOWN";
 const OPENING = "RELEASE";
@@ -81,6 +110,29 @@ export const PROMPTS: Record<string, string> = {
 	"v4-franka": readFileSync(new URL("./templates/v3_mvtoken_generator_lite.txt", import.meta.url), "utf8").trim(),
 	"v4-piper": readFileSync(new URL("./templates/v4_piper_mvtoken_lite.txt", import.meta.url), "utf8").trim(),
 };
+/**
+ * The v5 prompt (prompt_v5.txt of the gated HF dataset aaroncaozj/libero_show-harness_tokenized),
+ * vendored here once fetched; until then `--ft-prompt v5` needs `--ft-prompt-file`.
+ */
+export const V5_PROMPT = new URL("./templates/v5_libero_mvtoken.txt", import.meta.url);
+
+/**
+ * Inference-time rules per prompt version. v5 is the aaroncaozj LIBERO eval (model card, "How the
+ * numbers were measured"): the no-progress guard (--stuck-guard-mm 5), no stop action
+ * (--ignore-done), and an out-of-vocabulary reply asked again constrained to the vocabulary (the
+ * card leaves that to the serving stack). Its 200-decision budget is read from the card's
+ * "200 tokens ~ up to 4800" and is not a published setting.
+ */
+export type Preset = { maxSteps: number; stuckGuardMm: number; ignoreDone: boolean; oov: "fallback" | "reask" };
+const RUNNER: Preset = { maxSteps: 80, stuckGuardMm: 0, ignoreDone: false, oov: "fallback" };
+export const PRESETS: Record<string, Preset> = {
+	v3: RUNNER,
+	"v4-franka": RUNNER,
+	"v4-piper": RUNNER,
+	v5: { maxSteps: 200, stuckGuardMm: 5, ignoreDone: true, oov: "reask" },
+};
+/** Units plugins that change what a policy token does (step size, frame, extra gripper moves). */
+const GROUNDING_PLUGINS = ["variable_step", "action_chunk", "rotation", "recovery", "auto_release"];
 
 /** The released adapters (showlab/Show-Harness-VLMs), by the name serve.sh registers them under. */
 export const RELEASED = [
@@ -148,7 +200,7 @@ export function formatPrompt(template: string, fields: Record<string, string>): 
 
 /** mvtoken_roles._actions_from_prompt: the tokens the template offers (matched on the raw template). */
 export function allowedTokens(template: string): string[] {
-	const present = MVTOKEN_ACTIONS.filter((t) => new RegExp(`\\b${t}\\b`).test(template));
+	const present = V5_ACTIONS.filter((t) => new RegExp(`\\b${t}\\b`).test(template));
 	if (!present.length) throw new Error("the prompt offers none of the action tokens");
 	return present;
 }
@@ -156,8 +208,18 @@ export function allowedTokens(template: string): string[] {
 /** The recent-moves field: newest first, "none" when empty. */
 export const recentText = (recent: readonly string[]) => (recent.length ? recent.join(", ") : "none");
 
-/** The chat-completions body of VLMClient.complete_action_token: images first, then the prompt. */
-export function buildRequest(model: string, prompt: string, pngs: readonly Buffer[], temperature = 0) {
+/**
+ * The chat-completions body of VLMClient.complete_action_token: images first, then the prompt.
+ * `choice` constrains the reply to those tokens (vLLM `structured_outputs`; the card: a top-level
+ * `guided_choice` is silently ignored).
+ */
+export function buildRequest(
+	model: string,
+	prompt: string,
+	pngs: readonly Buffer[],
+	temperature = 0,
+	choice?: readonly string[],
+) {
 	return {
 		model,
 		messages: [
@@ -175,6 +237,7 @@ export function buildRequest(model: string, prompt: string, pngs: readonly Buffe
 		temperature,
 		max_tokens: MAX_TOKENS,
 		chat_template_kwargs: { ...NO_THINKING },
+		...(choice ? { structured_outputs: { choice: [...choice] } } : {}),
 	};
 }
 
@@ -346,7 +409,29 @@ export default function finetuned(pi: ExtensionAPI) {
 	pi.registerFlag("ft-prompt", {
 		type: "string",
 		default: "v3",
-		description: `Lite prompt the adapter was trained on (${Object.keys(PROMPTS).join(", ")}, or a template file)`,
+		description: `Prompt version the adapter was trained on (${Object.keys(PRESETS).join(", ")}, or a template file)`,
+	});
+	pi.registerFlag("ft-prompt-file", {
+		type: "string",
+		default: "",
+		description: "Template text for --ft-prompt's version (e.g. prompt_v5.txt); its rules stay the version's",
+	});
+	pi.registerFlag("ft-stuck-guard-mm", {
+		type: "string",
+		default: "auto",
+		description:
+			"No-progress guard: an MV_* that moved the TCP less than this twice in a row is withheld from the next decision (0 = off; auto: 5 for v5)",
+	});
+	pi.registerFlag("ft-ignore-done", {
+		type: "string",
+		default: "auto",
+		description: "DONE is counted and asked again with DONE withheld; only success or max steps end (auto: v5)",
+	});
+	pi.registerFlag("ft-oov", {
+		type: "string",
+		default: "auto",
+		description:
+			"A reply that is no unit: fallback (MV_DOWN, the runner) or reask (constrained to the vocabulary; auto: v5)",
 	});
 	pi.registerFlag("ft-task", { type: "string", default: "", description: "Task text (default: the robot's)" });
 	pi.registerFlag("ft-cameras", {
@@ -369,7 +454,11 @@ export default function finetuned(pi: ExtensionAPI) {
 		default: "",
 		description: "Execution-boundary token swap, e.g. MV_FWD,MV_BACK (the released ft adapters on the AgileX rig)",
 	});
-	pi.registerFlag("ft-max-steps", { type: "string", default: "80", description: "Policy decisions per episode" });
+	pi.registerFlag("ft-max-steps", {
+		type: "string",
+		default: "auto",
+		description: "Policy decisions per episode (auto: 80, v5 200)",
+	});
 
 	let robot = "";
 	let envId = "";
@@ -378,13 +467,26 @@ export default function finetuned(pi: ExtensionAPI) {
 	let recent: string[] = [];
 	let pending: string | undefined;
 	let ids = 0;
+	/** The robot's units layer (its vocabulary and proprioception), published at session start. */
+	let units: UnitsHandle | undefined;
+	pi.events.on(UNITS_EVENT, (h) => {
+		units = h as UnitsHandle;
+	});
+	/** Stuck guard: the TCP at the previous decision, the policy token executed since, and its stall run. */
+	let lastEef: number[] | undefined;
+	let lastToken = "";
+	let stall = { token: "", count: 0 };
+	let dones = 0;
 
 	pi.on("session_start", () => {
 		over = false;
-		steps = ids = 0;
+		steps = ids = dones = 0;
 		recent = [];
 		pending = undefined;
 		robot = envId = "";
+		lastEef = undefined;
+		lastToken = "";
+		stall = { token: "", count: 0 };
 	});
 	pi.on("before_agent_start", (_event, ctx) => {
 		if (ctx.model?.provider !== "finetuned") return;
@@ -401,11 +503,53 @@ export default function finetuned(pi: ExtensionAPI) {
 			warn(
 				`no calibrated camera transform for robot "${robot}"; using ${formatView(DEFAULT_VIEWS.wrist)} for the wrist`,
 			);
+		let offered: string[] = [];
+		try {
+			offered = allowedTokens(template()).filter((t) => t !== "DONE");
+		} catch (err) {
+			warn(err instanceof Error ? err.message : String(err));
+		}
+		const missing = units ? offered.filter((t) => !units?.vocabulary.includes(t)) : [];
+		if (missing.length)
+			warn(
+				`the robot's act does not offer ${missing.join(", ")} (RT_* need --units-rt=true and a robot that can turn); the episode ends if the policy emits one`,
+			);
+		const grounding = String(pi.getFlag("units-plugins") ?? "")
+			.split(",")
+			.map((s) => s.trim())
+			.filter((s) => GROUNDING_PLUGINS.includes(s));
+		if (preset() === PRESETS.v5 && grounding.length)
+			warn(
+				`units plugins ${grounding.join(", ")} change what a token does; the v5 eval ran none (--units-plugins "")`,
+			);
 	});
 
+	const version = () => flag("ft-prompt") || "v3";
 	const template = () => {
-		const p = flag("ft-prompt") || "v3";
+		const p = version();
+		if (flag("ft-prompt-file")) return readFileSync(flag("ft-prompt-file"), "utf8").trim();
+		if (p === "v5") {
+			if (!existsSync(V5_PROMPT))
+				throw new Error(
+					"--ft-prompt v5: prompt_v5.txt (gated HF dataset aaroncaozj/libero_show-harness_tokenized) is not vendored; pass --ft-prompt-file <path>",
+				);
+			return readFileSync(V5_PROMPT, "utf8").trim();
+		}
 		return PROMPTS[p] ?? readFileSync(p, "utf8").trim();
+	};
+	/** The version's rules (a template file path follows the runner's), with the explicit flags over them. */
+	const preset = () => PRESETS[version()] ?? RUNNER;
+	const rules = () => {
+		const d = preset();
+		const pick = (name: string) => (flag(name) === "auto" || !flag(name) ? undefined : flag(name));
+		const oov = pick("ft-oov") ?? d.oov;
+		if (oov !== "fallback" && oov !== "reask") throw new Error(`--ft-oov must be fallback or reask, got ${oov}`);
+		return {
+			maxSteps: Number(pick("ft-max-steps") ?? d.maxSteps) || d.maxSteps,
+			stuckGuardMm: Number(pick("ft-stuck-guard-mm") ?? d.stuckGuardMm) || 0,
+			ignoreDone: (pick("ft-ignore-done") ?? String(d.ignoreDone)) === "true",
+			oov,
+		};
 	};
 	/** ManiSkill's real2sim rigs send training-exact frames (their env server applies the rig's transform). */
 	const robotViews = () => viewsFor(robot, envId);
@@ -467,8 +611,34 @@ export default function finetuned(pi: ExtensionAPI) {
 		const details = (result.details ?? {}) as Json;
 		if (details.terminated === true || details.success === true)
 			return finish("success", `the environment reports success after ${steps} policy steps`, "env success");
-		const max = Number(flag("ft-max-steps")) || 80;
-		if (steps >= max) return finish("failure", `max_steps (${max}) reached without DONE`, `max_steps ${max} reached`);
+		const r = rules();
+		const max = r.maxSteps;
+		if (steps >= max)
+			return finish(
+				"failure",
+				`max_steps (${max}) reached without ${r.ignoreDone ? "env success" : "DONE"}`,
+				`max_steps ${max} reached`,
+			);
+
+		// Stuck guard: the displacement of the last executed MV_*, from the robot's proprioception.
+		const withheld = new Set<string>();
+		let movedMm: number | undefined;
+		if (r.stuckGuardMm > 0) {
+			const st = units?.state ? await units.state() : undefined;
+			const now = Array.isArray(st?.eef_xyz) ? (st.eef_xyz as number[]).map(Number) : undefined;
+			if (!now) throw new Error("--ft-stuck-guard-mm needs the robot's eef_xyz (units proprioception)");
+			if (lastEef && MOVES.has(lastToken)) {
+				movedMm = 1000 * Math.hypot(...now.map((v, i) => v - (lastEef as number[])[i]));
+				if (movedMm < r.stuckGuardMm)
+					stall =
+						stall.token === lastToken
+							? { token: lastToken, count: stall.count + 1 }
+							: { token: lastToken, count: 1 };
+				else stall = { token: "", count: 0 };
+			} else stall = { token: "", count: 0 };
+			lastEef = now;
+			if (stall.count >= 2) withheld.add(stall.token);
+		}
 
 		const tpl = template();
 		const allowed = allowedTokens(tpl);
@@ -480,20 +650,45 @@ export default function finetuned(pi: ExtensionAPI) {
 		const sent = prepareImages(images, cameras, views());
 		const adapter = flag("ft-model") || (modelId === "local" ? "" : modelId);
 		if (!adapter) throw new Error("finetuned/local needs --ft-model <adapter name>");
-		const body = buildRequest(
-			adapter,
-			prompt,
-			sent.map((s) => s.png),
-		);
-		const { text: raw, ms } = await complete(flag("ft-endpoint"), flag("ft-api-key"), body, signal);
-		let token: string;
+		/** One request; `choice` (the vocabulary minus what is withheld) constrains the reply. */
+		const ask = async (without: ReadonlySet<string> | undefined) => {
+			const choice = without ? allowed.filter((t) => !without.has(t)) : undefined;
+			const body = buildRequest(
+				adapter,
+				prompt,
+				sent.map((s) => s.png),
+				0,
+				choice,
+			);
+			const reply = await complete(flag("ft-endpoint"), flag("ft-api-key"), body, signal);
+			let parsed: string | undefined;
+			try {
+				parsed = parseToken(reply.text, allowed);
+			} catch {}
+			// A constrained reply outside its choice means the endpoint ignored structured_outputs.
+			if (choice && (parsed === undefined || !choice.includes(parsed)))
+				throw new Error(
+					`the endpoint ignored structured_outputs: asked for one of ${choice.join(", ")}, got ${JSON.stringify(reply.text)}`,
+				);
+			return { raw: reply.text, ms: reply.ms, token: parsed, choice };
+		};
+		const asks = [await ask(withheld.size ? withheld : undefined)];
 		let fallback = false;
-		try {
-			token = parseToken(raw, allowed);
-		} catch {
-			token = FALLBACK;
-			fallback = true;
+		// Out of vocabulary: ask again constrained to it (v5), or the runner's MV_DOWN.
+		if (asks[0].token === undefined) {
+			if (r.oov === "reask") asks.push(await ask(withheld));
+			else fallback = true;
 		}
+		// No stop action: a DONE is counted and asked again with DONE withheld.
+		let doneSeen = false;
+		if (r.ignoreDone && asks[asks.length - 1].token === "DONE") {
+			doneSeen = true;
+			dones++;
+			asks.push(await ask(new Set([...withheld, "DONE"])));
+		}
+		const token = asks[asks.length - 1].token ?? FALLBACK;
+		const raw = asks[0].raw;
+		const ms = asks.reduce((s, a) => s + a.ms, 0);
 		const step = steps++;
 		const executed = token === "DONE" ? token : swap(token);
 		pi.appendEntry(STEP_ENTRY, {
@@ -511,10 +706,27 @@ export default function finetuned(pi: ExtensionAPI) {
 				camera: ["agentview", "wrist"][slot] ?? `view${slot}`,
 				...fingerprint(s.view),
 			})),
+			...(asks.length > 1 ? { asks: asks.map((a) => ({ raw: a.raw, choice: a.choice ?? null })) } : {}),
+			...(withheld.size ? { withheld: [...withheld] } : {}),
+			...(movedMm !== undefined ? { moved_mm: Number(movedMm.toFixed(2)) } : {}),
+			...(doneSeen ? { done_ignored: dones } : {}),
 		});
-		const note = `step ${step}: ${token}${executed !== token ? ` (executed as ${executed})` : ""}${fallback ? ` (unparsable reply ${JSON.stringify(raw)}; fallback)` : ""} · ${ms} ms`;
+		const extra = [
+			withheld.size ? `withheld ${[...withheld].join(", ")} (no progress)` : "",
+			asks.length > 1 && !doneSeen ? `out-of-vocabulary ${JSON.stringify(raw)} asked again` : "",
+			doneSeen ? `DONE #${dones} ignored` : "",
+		].filter(Boolean);
+		const note = `step ${step}: ${token}${executed !== token ? ` (executed as ${executed})` : ""}${fallback ? ` (unparsable reply ${JSON.stringify(raw)}; fallback)` : ""}${extra.length ? ` (${extra.join("; ")})` : ""} · ${ms} ms`;
 		if (token === "DONE") return finish("success", `the policy emitted DONE after ${step} steps`, note);
-		if (MOVES.has(token)) recent = [token, ...recent].slice(0, RECENT_MOVES_MAX);
+		// A unit the robot's act does not offer (an RT_* on a robot that cannot turn) ends the episode.
+		if (units && !units.vocabulary.includes(executed))
+			return finish(
+				"failure",
+				`the policy emitted ${executed}, which this robot's act does not offer (RT_* need --units-rt=true and a robot that can turn about that axis)`,
+				note,
+			);
+		if (MOTION.has(token)) recent = [token, ...recent].slice(0, RECENT_MOVES_MAX);
+		lastToken = token;
 		const c = call("act", { unit: executed });
 		pending = c.id;
 		return { text: note, calls: [c] };

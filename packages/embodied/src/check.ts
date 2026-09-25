@@ -3,7 +3,7 @@
  *
  *   node packages/embodied/src/check.ts libero [--python P] [--services DIR] [--units] \
  *     [--model provider/id] [--dashboard-port 8779] [--vla URL] [--sam3 URL] [--endpoint name=URL ...]
- *   pi -e packages/embodied/src/libero -e packages/embodied/src/check.ts ...   then /robot-check
+ *   pi -e packages/embodied/src/libero ...   then /robot-check   (every robot: ./robot.ts registers it)
  *
  * Checks, per robot (SPECS): the services Python (its version, and importing the robot's env server
  * module and simulator packages the way the env server will), the checkpoint / asset paths the
@@ -487,8 +487,8 @@ export function formatTable(rows: readonly Row[]): string {
 	return lines.join("\n");
 }
 
-/** `/robot-check [robot]`: the checks for this pi's robot, with its command-line flags and running model. */
-export default function robotCheck(pi: ExtensionAPI) {
+/** `/robot-check [robot]`: the checks for this pi's robot (default `robot`), with its command-line flags and running model. */
+export function robotCheck(pi: ExtensionAPI, robot?: string) {
 	pi.registerCommand("robot-check", {
 		description: `Preflight check of the robot's services, paths, GPU, model servers and planner: /robot-check [${Object.keys(SPECS).join("|")}]`,
 		handler: async (args, ctx: ExtensionContext) => {
@@ -497,16 +497,16 @@ export default function robotCheck(pi: ExtensionAPI) {
 				.filter((e) => e.type === "custom" && e.customType === "robot_task")
 				.pop();
 			const named = entry?.type === "custom" ? String((entry.data as { robot?: unknown })?.robot ?? "") : "";
-			const robot = args.trim() || named;
-			if (!robot) {
+			const which = args.trim() || named || robot;
+			if (!which) {
 				ctx.ui.notify(`Usage: /robot-check <${Object.keys(SPECS).join("|")}>`, "error");
 				return;
 			}
-			ctx.ui.notify(`Checking ${robot}...`, "info");
+			ctx.ui.notify(`Checking ${which}...`, "info");
 			const dashboard = (globalThis as Record<symbol, unknown>)[Symbol.for("pi-embodied.dashboard")]
 				? "skip"
 				: undefined;
-			const rows = await runChecks(robot, parseFlags(process.argv.slice(2)), {
+			const rows = await runChecks(which, parseFlags(process.argv.slice(2)), {
 				planner: ctx.model
 					? { model: `${ctx.model.provider}/${ctx.model.id}`, baseUrl: ctx.model.baseUrl }
 					: undefined,

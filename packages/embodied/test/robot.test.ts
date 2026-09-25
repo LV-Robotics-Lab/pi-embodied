@@ -158,6 +158,8 @@ test("the task entry overrides the flags and is resolved before the robot starts
 	toy(g.pi, async () => ["move"]);
 	await g.emit("session_start");
 	assert.deepEqual(g.entries[0], { type: TASK_ENTRY, data: { robot: "toy", suite: "cli", seed: "0" } });
+	// Every robot gets /robot-task and /robot-check from the base.
+	assert.deepEqual([...g.commands.keys()].sort(), ["robot-check", "robot-task"]);
 });
 
 test("memory's session_start sees the resolved task", async (t) => {

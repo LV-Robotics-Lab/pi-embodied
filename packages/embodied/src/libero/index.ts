@@ -98,6 +98,36 @@ const pitchOf = (q: number[]) => {
 	const r = rotation(q);
 	return Math.atan2(r[1][2], -r[2][2]);
 };
+type Mat3 = number[][];
+const matmul = (a: Mat3, b: Mat3) => a.map((row) => [0, 1, 2].map((j) => row.reduce((s, v, k) => s + v * b[k][j], 0)));
+const transpose = (a: Mat3) => [0, 1, 2].map((i) => [0, 1, 2].map((j) => a[j][i]));
+/** Rodrigues: the rotation matrix of a rotation vector (axis x angle). */
+export function rotvecToMatrix(v: number[]): Mat3 {
+	const t = Math.hypot(...v);
+	if (t < 1e-12) return [1, 0, 0].map((_, i) => [0, 1, 2].map((j) => (i === j ? 1 : 0)));
+	const [x, y, z] = v.map((c) => c / t);
+	const [c, s, C] = [Math.cos(t), Math.sin(t), 1 - Math.cos(t)];
+	return [
+		[c + x * x * C, x * y * C - z * s, x * z * C + y * s],
+		[y * x * C + z * s, c + y * y * C, y * z * C - x * s],
+		[z * x * C - y * s, z * y * C + x * s, c + z * z * C],
+	];
+}
+/** The rotation vector of a rotation matrix (angle in [0, pi]). */
+export function matrixToRotvec(r: Mat3): number[] {
+	const t = Math.acos(clip((r[0][0] + r[1][1] + r[2][2] - 1) / 2, -1, 1));
+	const w = [r[2][1] - r[1][2], r[0][2] - r[2][0], r[1][0] - r[0][1]];
+	if (t < 1e-9) return [0, 0, 0];
+	if (Math.PI - t < 1e-6) {
+		// Half turn: the axis is the column of R + I with the largest norm.
+		const cols = [0, 1, 2].map((j) => [0, 1, 2].map((i) => r[i][j] + (i === j ? 1 : 0)));
+		const norms = cols.map((col) => Math.hypot(...col));
+		const a = cols[norms.indexOf(Math.max(...norms))];
+		const n = Math.hypot(...a);
+		return a.map((v) => (v / n) * t);
+	}
+	return w.map((v) => (v * t) / (2 * Math.sin(t)));
+}
 
 export default function libero(pi: ExtensionAPI) {
 	const flag = (name: string, fallback: string) => String(pi.getFlag(name) ?? fallback);
@@ -196,6 +226,11 @@ export default function libero(pi: ExtensionAPI) {
 			},
 			stepM: 0.02,
 			yawStepRad: 0.15,
+			// RT_* (--units-rt): 10 deg about a world axis through the TCP, as the aaroncaozj LIBERO adapters
+			// (model card). The signs are a guess until checked against their labelled states: RT_ROLL_LEFT
+			// tilts the gripper's top toward MV_LEFT (world -y), RT_PITCH_FWD toward MV_FWD (+x), RT_YAW_CCW
+			// is counter-clockwise seen from above.
+			rt: { stepRad: Math.PI / 18, axes: { roll: [1, 0, 0], pitch: [0, 1, 0], yaw: [0, 0, 1] } },
 			apply: (move) => unitStep(move),
 			state: async () => ({
 				eef_xyz: eef().map((v) => round(v)),
@@ -884,7 +919,7 @@ export default function libero(pi: ExtensionAPI) {
 
 	/**
 	 * One action unit (../units): drive the gripper, servo the EEF to its current position plus
-	 * `delta` (holding the gripper command), turn the wrist by `yaw`, or hold one step (STOP).
+	 * `delta` (holding the gripper command), turn the wrist by `yaw` or an RT_* `rot`, or hold one step (STOP).
 	 */
 	async function unitStep(move: Move) {
 		// After success only the finish sequence moves (opening, lifting straight up); success stays latched.
@@ -916,7 +951,26 @@ export default function libero(pi: ExtensionAPI) {
 			}
 		}
 		if (move.yaw) steps += (await rotate("yaw", undefined, move.yaw, grip, 25, 0.02, 0.1)).steps_used as number;
-		if (!move.gripper && !Math.hypot(...move.delta) && !move.yaw) {
+		if (move.rot && Math.hypot(...move.rot) > 0) {
+			// An RT_* turn: servo to rot * R0 (a world-frame rotation, the OSC delta convention) while
+			// holding the TCP position.
+			const hold = eef();
+			const goal = matmul(rotvecToMatrix(move.rot), rotation(await quat()));
+			for (let k = 0; k < 25 && live(); k++) {
+				const err = matrixToRotvec(matmul(goal, transpose(rotation(await quat()))));
+				const diff = hold.map((v, i) => v - eef()[i]);
+				const size = Math.hypot(...err);
+				if (size < 0.02 && Math.hypot(...diff) < 0.004) break;
+				const scale = size > 0.1 ? 0.1 / size : 1;
+				await step([
+					...diff.map((d) => clip(clip(d, -0.025, 0.025) / 0.05, -1, 1)),
+					...err.map((e) => clip((e * scale) / 0.1, -1, 1)),
+					grip,
+				]);
+				steps++;
+			}
+		}
+		if (!move.gripper && !Math.hypot(...move.delta) && !move.yaw && !move.rot?.some(Boolean)) {
 			await step([0, 0, 0, 0, 0, 0, grip]);
 			steps++;
 		}

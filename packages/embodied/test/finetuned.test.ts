@@ -16,10 +16,12 @@ import finetuned, {
 	RELEASED,
 	recentText,
 	STEP_ENTRY,
+	V5_ACTIONS,
 } from "../src/finetuned/index.ts";
 import { convertRun, findRuns } from "../src/finetuned/prepare.ts";
 import { decodePng, fingerprint, parseView, prepareView } from "../src/finetuned/views.ts";
 import { encodePng } from "../src/png.ts";
+import { UNITS, UNITS_EVENT, type UnitsHandle } from "../src/units/index.ts";
 
 /**
  * The reference: Show-Harness @137d571's own MvTokenController + VLMClient.complete_action_token
@@ -186,12 +188,24 @@ async function endpoint(replies: (string | { status: number; body: string })[]) 
 	return { url, bodies, close: () => new Promise<void>((resolve) => server.close(() => resolve())) };
 }
 
-function fakePi(flags: Record<string, string>, robot = "maniskill", tools = ["act", "finish"]) {
+function fakePi(
+	flags: Record<string, string>,
+	robot = "maniskill",
+	tools = ["act", "finish"],
+	units?: Partial<UnitsHandle>,
+) {
 	const handlers = new Map<string, Handler[]>();
 	const defaults: Record<string, unknown> = {};
 	const entries: { type: string; data: any }[] = [];
+	const listeners = new Map<string, ((data: unknown) => void)[]>();
 	let provider: any;
 	const pi = {
+		events: {
+			on: (channel: string, fn: (data: unknown) => void) => {
+				listeners.set(channel, [...(listeners.get(channel) ?? []), fn]);
+				return () => {};
+			},
+		},
 		on: (name: string, fn: Handler) => handlers.set(name, [...(handlers.get(name) ?? []), fn]),
 		registerFlag: (name: string, o: { default?: unknown }) => {
 			defaults[name] = o.default;
@@ -212,6 +226,8 @@ function fakePi(flags: Record<string, string>, robot = "maniskill", tools = ["ac
 	};
 	finetuned(pi);
 	const emit = async (name: string) => {
+		// The robot's units layer publishes its handle at session start, before the provider's handlers.
+		if (name === "session_start" && units) for (const fn of listeners.get(UNITS_EVENT) ?? []) fn(units);
 		for (const fn of handlers.get(name) ?? []) await fn({ type: name }, ctx);
 	};
 	const model = (id: string) => provider.getModels().find((m: any) => m.id === id);
@@ -388,4 +404,143 @@ test("prepare turns a GUMI run into a Show-Harness rollout with the provider's c
 	const meta = JSON.parse(readFileSync(join(r.out, "metadata.json"), "utf8"));
 	assert.equal(meta.task_text, TASK);
 	assert.deepEqual(findRuns(run), [run]);
+});
+
+const V5_TEMPLATE = `Task: {task}
+Recent moves, newest first: {recent_moves}
+Output one of: MV_FWD, MV_BACK, MV_LEFT, MV_RIGHT, MV_UP, MV_DOWN, RT_ROLL_LEFT, RT_ROLL_RIGHT, RT_PITCH_FWD, RT_PITCH_BACK, RT_YAW_CW, RT_YAW_CCW, GRASP, RELEASE, DONE`;
+
+/** A v5 run on a robot whose units layer reports `eef` (m) at each decision. */
+function v5Run(ep: { url: string }, eef: number[][], vocabulary: readonly string[] = UNITS, flags = {}) {
+	const file = join(mkdtempSync(join(tmpdir(), "v5-")), "prompt_v5.txt");
+	writeFileSync(file, `${V5_TEMPLATE}\n`);
+	return fakePi(
+		{ "ft-endpoint": ep.url, "ft-prompt": "v5", "ft-prompt-file": file, "units-plugins": "", ...flags },
+		"libero",
+		["act", "finish"],
+		{ vocabulary, state: async () => ({ eef_xyz: eef.shift() ?? [0, 0, 0] }) },
+	);
+}
+
+test("v5: 15 units, turns in the history, the no-progress guard, DONE and out-of-vocabulary asked again", async () => {
+	assert.deepEqual(
+		allowedTokens(V5_TEMPLATE),
+		V5_ACTIONS.map((t) => t),
+	);
+	const ep = await endpoint(["MV_DOWN", "MV_DOWN", "RT_YAW_CW", "DONE", "GRASP", "MV_STRETCH", "MV_UP"]);
+	// MV_DOWN moves 1 mm, then 1 mm again: withheld from the third decision.
+	const p = v5Run(ep, [
+		[0.5, 0, 0.2],
+		[0.5, 0, 0.199],
+		[0.5, 0, 0.198],
+		[0.5, 0, 0.198],
+		[0.5, 0, 0.198],
+		[0.5, 0, 0.198],
+	]);
+	try {
+		await p.emit("session_start");
+		await p.emit("before_agent_start");
+		assert.deepEqual(p.warnings, []);
+		const t0 = await p.turn([]);
+		const history: unknown[] = [t0, ...observation(t0)];
+		const units: string[] = [];
+		for (let i = 0; i < 5; i++) {
+			const m = await p.turn(history);
+			history.push(m, ...observation(m, i === 4 ? { terminated: true } : {}));
+			units.push(calls(m)[0].arguments.unit);
+		}
+		assert.deepEqual(units, ["MV_DOWN", "MV_DOWN", "RT_YAW_CW", "GRASP", "MV_UP"]);
+		const done = await p.turn(history);
+		assert.equal(calls(done)[0].arguments.status, "success");
+		assert.match(calls(done)[0].arguments.summary, /environment reports success/);
+
+		const b = ep.bodies.map((x) => x.body);
+		assert.equal(b.length, 7);
+		// Unconstrained unless something is withheld.
+		assert.equal(b[0].structured_outputs, undefined);
+		assert.deepEqual(
+			b[2].structured_outputs.choice,
+			V5_ACTIONS.filter((t) => t !== "MV_DOWN"),
+		);
+		// DONE counted, then asked again without it; the history holds the turn.
+		assert.deepEqual(
+			b[4].structured_outputs.choice,
+			V5_ACTIONS.filter((t) => t !== "DONE"),
+		);
+		assert.match(b[4].messages[0].content[2].text, /Recent moves, newest first: RT_YAW_CW, MV_DOWN, MV_DOWN\n/);
+		// Out of vocabulary: asked again, constrained to the whole vocabulary.
+		assert.equal(b[5].structured_outputs, undefined);
+		assert.deepEqual(b[6].structured_outputs.choice, [...V5_ACTIONS]);
+		const steps = p.entries.filter((e) => e.type === STEP_ENTRY).map((e) => e.data);
+		assert.deepEqual(
+			steps.map((s) => [s.token, s.withheld ?? null, s.moved_mm ?? null]),
+			[
+				["MV_DOWN", null, null],
+				["MV_DOWN", null, 1],
+				["RT_YAW_CW", ["MV_DOWN"], 1],
+				["GRASP", null, null],
+				["MV_UP", null, null],
+			],
+		);
+		assert.equal(steps[3].done_ignored, 1);
+		assert.equal(steps[4].asks[0].raw, "MV_STRETCH");
+	} finally {
+		await ep.close();
+	}
+});
+
+test("v5: the budget, an endpoint that ignores the constraint, and a robot that cannot turn", async () => {
+	// The step budget ends a v5 episode; the reason names env success, not DONE.
+	const b = await endpoint(["MV_FWD"]);
+	const budget = v5Run(b, [], UNITS, { "ft-max-steps": "1" });
+	try {
+		await budget.emit("session_start");
+		const t0 = await budget.turn([]);
+		const t1 = await budget.turn([t0, ...observation(t0)]);
+		assert.equal(calls(t1)[0].arguments.unit, "MV_FWD");
+		const t2 = await budget.turn([t0, ...observation(t0), t1, ...observation(t1)]);
+		assert.match(calls(t2)[0].arguments.summary, /max_steps \(1\) reached without env success/);
+	} finally {
+		await b.close();
+	}
+
+	// DONE asked again, but the endpoint answers DONE anyway: a model error, never a silent finish.
+	const ignoring = await endpoint(["DONE", "DONE"]);
+	const q = v5Run(ignoring, []);
+	try {
+		await q.emit("session_start");
+		const s0 = await q.turn([]);
+		const err = await q.turn([s0, ...observation(s0)]);
+		assert.equal(err.stopReason, "error");
+		assert.match(err.errorMessage, /ignored structured_outputs/);
+	} finally {
+		await ignoring.close();
+	}
+
+	// Without RT_* in the robot's act: a warning up front, and an emitted turn ends the episode with the reason.
+	const turnless = await endpoint(["RT_ROLL_LEFT"]);
+	const r = v5Run(
+		turnless,
+		[],
+		UNITS.filter((u) => !u.startsWith("RT_")),
+	);
+	try {
+		await r.emit("session_start");
+		await r.emit("before_agent_start");
+		assert.match(r.warnings.join("\n"), /does not offer RT_ROLL_LEFT.*--units-rt=true/);
+		const s0 = await r.turn([]);
+		const end = await r.turn([s0, ...observation(s0)]);
+		assert.equal(calls(end)[0].name, "finish");
+		assert.equal(calls(end)[0].arguments.status, "failure");
+		assert.match(calls(end)[0].arguments.summary, /RT_ROLL_LEFT, which this robot's act does not offer/);
+	} finally {
+		await turnless.close();
+	}
+
+	// v5 without the prompt text says where it comes from; plugins that regrind a token are flagged.
+	const none = fakePi({ "ft-prompt": "v5", "units-plugins": "variable_step,mem_text" }, "libero");
+	await none.emit("session_start");
+	await none.emit("before_agent_start");
+	assert.match(none.warnings.join("\n"), /prompt_v5\.txt .* is not vendored/);
+	assert.match(none.warnings.join("\n"), /units plugins variable_step change what a token does/);
 });

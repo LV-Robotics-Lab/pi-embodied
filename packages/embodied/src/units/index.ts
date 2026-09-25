@@ -25,6 +25,10 @@
  * - rotation (robots with a yaw step, which always get ROTATE_CW/CCW, capped at 150 deg accumulated
  *   yaw): wrist-judged MV_* are rotated by the accumulated yaw (the wrist camera turns with the
  *   gripper), and MV_UP while holding first turns back (in commands within the robot's `maxYawRad`).
+ * - `--units-rt` (not a plugin, off by default): RT_ROLL_*, RT_PITCH_*, RT_YAW_* turn the gripper a
+ *   fixed step about a base-frame axis through the TCP (robots with `rt`; a robot without an axis
+ *   refuses its units), in commands within `rt.maxRad`, capped at 150 deg accumulated yaw (shared
+ *   with ROTATE_*) and 90 deg accumulated roll or pitch.
  * - plan: subgoal stages, with deepplan's REASON checkpoint.
  * - point: affordance pixels -> world xyz (robots with `point`).
  * - mem_text: "Recent moves, newest first" in every result, with the history rules (no oscillation,
@@ -35,6 +39,9 @@
  *   claiming success first lifts every open gripper 10 cm (MV_UP through `act`, `Move.retreat`), then
  *   is checked once against the task on the retreated camera images; a NOT complete
  *   verdict refuses it with the verifier's reason and the agent replans (at most once per episode).
+ *   A check whose VLM call fails twice (no credits, network) refuses the finish as unverifiable
+ *   (not the replan), at most twice per episode; after that the finish ends the episode unverified
+ *   (`finish_verified: false` and `verifier_error` in the robot result).
  *   Every check is a `units_verify` session entry.
  * - `--units-video-ref <mp4>`: `--units-video-ref-frames` frames sampled uniformly are distilled
  *   into an ordered demo brief (arm, grasp part, destination) that the prompt tells the agent to
@@ -97,9 +104,42 @@ export type UnitsHandle = {
 
 export const MOVE_UNITS = ["MV_FWD", "MV_BACK", "MV_LEFT", "MV_RIGHT", "MV_UP", "MV_DOWN"] as const;
 export const ROTATE_UNITS = ["ROTATE_CW", "ROTATE_CCW"] as const;
+/**
+ * The RT_* units of the aaroncaozj LIBERO adapters (Show-Harness v5 vocabulary): a fixed turn about a
+ * base-frame axis through the TCP. Offered with --units-rt on robots that declare the axis (`rt`).
+ */
+export const RT_UNITS = [
+	"RT_ROLL_LEFT",
+	"RT_ROLL_RIGHT",
+	"RT_PITCH_FWD",
+	"RT_PITCH_BACK",
+	"RT_YAW_CW",
+	"RT_YAW_CCW",
+] as const;
 /** STOP holds the setpoint for one step; STILL (dual arm) leaves an arm alone; DONE ends the task. */
-export const UNITS = [...MOVE_UNITS, ...ROTATE_UNITS, "STOP", "GRASP", "RELEASE", "DONE", "STILL"] as const;
+export const UNITS = [
+	...MOVE_UNITS,
+	...ROTATE_UNITS,
+	...RT_UNITS,
+	"STOP",
+	"GRASP",
+	"RELEASE",
+	"DONE",
+	"STILL",
+] as const;
 export type MoveUnit = (typeof MOVE_UNITS)[number];
+export type RtUnit = (typeof RT_UNITS)[number];
+export type RtAxis = "roll" | "pitch" | "yaw";
+/** Each RT_* unit's axis and sign: +1 turns about the robot's `rt.axes` vector by the right-hand rule. */
+export const RT_TURNS: Record<RtUnit, { axis: RtAxis; sign: 1 | -1 }> = {
+	RT_ROLL_LEFT: { axis: "roll", sign: 1 },
+	RT_ROLL_RIGHT: { axis: "roll", sign: -1 },
+	RT_PITCH_FWD: { axis: "pitch", sign: 1 },
+	RT_PITCH_BACK: { axis: "pitch", sign: -1 },
+	RT_YAW_CCW: { axis: "yaw", sign: 1 },
+	RT_YAW_CW: { axis: "yaw", sign: -1 },
+};
+export const isRt = (u: string): u is RtUnit => u in RT_TURNS;
 export type Unit = (typeof UNITS)[number];
 export type Vec3 = [number, number, number];
 
@@ -139,6 +179,8 @@ export type Move = {
 	delta: Vec3;
 	yaw: number;
 	gripper: "open" | "close" | null;
+	/** An RT_* turn: a rotation vector (axis x angle, rad) about base-frame axes through the TCP. */
+	rot?: Vec3;
 	arm?: string;
 	continuous?: boolean;
 	/** view_select: the view that guided the move (act's `view`, robots with `viewSelect`). */
@@ -156,6 +198,7 @@ export type Move = {
  */
 export function finishMove(move: Move) {
 	const [dx, dy, dz] = move.delta;
+	if (move.rot?.some(Boolean)) return move.retreat === true;
 	return (
 		move.retreat === true ||
 		(move.gripper !== "close" && !move.yaw && !dx && !dy && (move.gripper === "open" || dz > 0))
@@ -198,6 +241,13 @@ export type UnitsSpec = {
 	yawCompensationSign?: number;
 	/** The robot's largest yaw per command, rad: longer turns are split into commands within it. */
 	maxYawRad?: () => number;
+	/**
+	 * RT_* units (--units-rt): radians per unit, the base-frame unit vector each axis turns about for
+	 * the positive unit (RT_ROLL_LEFT, RT_PITCH_FWD, RT_YAW_CCW; the sign convention lives in the
+	 * vector), and the largest turn per command. A robot omits an axis it cannot turn about; its units
+	 * are then refused.
+	 */
+	rt?: { stepRad: number; axes: Partial<Record<RtAxis, Vec3>>; maxRad?: () => number };
 	/** The robot's largest translation per call, m: one `act` call travels at most this in total. */
 	maxMoveM?: () => number;
 	/**
@@ -259,6 +309,8 @@ const CHUNK_STEPS = 3;
 /** rotation: soft guard on the accumulated yaw (Franka joint 7 is about +-166 deg), and "back at neutral". */
 const MAX_YAW = (150 * Math.PI) / 180;
 const NEUTRAL_YAW = (2 * Math.PI) / 180;
+/** RT_*: the accumulated roll or pitch guard (90 deg: the gripper pointing sideways). */
+const MAX_TILT = Math.PI / 2;
 /** The most commands one turn is split into (the 150 deg cap in 5 deg commands). */
 const MAX_YAW_PIECES = 30;
 /** mem_text: moves the "Recent moves" line shows (configs/robot_franka.yaml mem_text_len). */
@@ -277,6 +329,8 @@ const MAX_HOLD_REFUSALS = 2;
 const PLACEMENT = ["PLACE", "RELEASE", "RETREAT"];
 /** Verifier: NOT complete verdicts that refuse `finish` per episode (v0.max_replans). */
 const MAX_REPLANS = 1;
+/** Verifier: success claims refused because the check could not run, per episode (then the finish ends unverified). */
+const MAX_VERIFIER_ERRORS = 2;
 /** Session entries of the verifier's checks and the video_ref brief. */
 export const VERIFY_ENTRY = "units_verify";
 export const VIDEO_REF_ENTRY = "units_video_ref";
@@ -300,11 +354,18 @@ function section(prompt: string, name: string, on: boolean) {
 
 /** Ground a unit into a move (the interpreters' job), or undefined for units that do not move. */
 export function ground(
-	spec: Pick<UnitsSpec, "vectors" | "stepM" | "yawStepRad">,
+	spec: Pick<UnitsSpec, "vectors" | "stepM" | "yawStepRad" | "rt">,
 	unit: Unit,
 	stepM = spec.stepM,
 ): Move | undefined {
 	if (isMove(unit)) return { delta: spec.vectors[unit].map((x) => x * stepM) as Vec3, yaw: 0, gripper: null };
+	if (isRt(unit)) {
+		const { axis, sign } = RT_TURNS[unit];
+		const rt = spec.rt;
+		const v = rt?.axes[axis];
+		if (!rt || !v) throw new Error(`${unit}: this robot cannot turn its gripper about the ${axis} axis`);
+		return { delta: [0, 0, 0], yaw: 0, gripper: null, rot: v.map((x) => x * sign * rt.stepRad) as Vec3 };
+	}
 	if (unit === "ROTATE_CW" || unit === "ROTATE_CCW") {
 		if (!spec.yawStepRad) throw new Error(`${unit}: this robot has no yaw`);
 		return { delta: [0, 0, 0], yaw: unit === "ROTATE_CW" ? spec.yawStepRad : -spec.yawStepRad, gripper: null };
@@ -379,6 +440,11 @@ export function units(
 		default: String(spec.coarseStepM ?? 0.04),
 		description: "variable_step: the coarse MV_* step, m",
 	});
+	pi.registerFlag("units-rt", {
+		type: "string",
+		default: "false",
+		description: "Offer the RT_* roll/pitch/yaw units (the aaroncaozj LIBERO adapters) on robots that can turn",
+	});
 	// A string flag: pi sets a boolean flag to true whatever its value, so a default-on check could not be turned off.
 	pi.registerFlag("units-verify", {
 		type: "string",
@@ -423,14 +489,27 @@ export function units(
 	const coarse = () => Number(pi.getFlag("units-coarse-step")) || spec.stepM;
 	const high = spec.highAboveTableM ?? 0.08;
 	const wristSignal = () => plugin("variable_step") || plugin("action_chunk") || plugin("rotation");
-	const vocab = UNITS.filter(
-		(u) =>
-			(spec.yawStepRad || !(ROTATE_UNITS as readonly string[]).includes(u)) && (u !== "STILL" || armNames.length),
-	);
+	const rtOn = () => String(pi.getFlag("units-rt") ?? "false") === "true";
+	/** Why `act` refuses an RT_* unit, else undefined. */
+	const rtRefusal = (u: RtUnit) => {
+		if (!rtOn()) return `${u}: the RT_* units are off (--units-rt=true)`;
+		const { axis } = RT_TURNS[u];
+		return spec.rt?.axes[axis] ? undefined : `${u}: this robot cannot turn its gripper about the ${axis} axis`;
+	};
+	const vocab = () =>
+		UNITS.filter(
+			(u) =>
+				(spec.yawStepRad || !(ROTATE_UNITS as readonly string[]).includes(u)) &&
+				(u !== "STILL" || armNames.length) &&
+				(!isRt(u) || !rtRefusal(u)),
+		);
 
 	/** Per-arm episode state ("" = the single arm). */
 	let closed = new Map<string, boolean>();
 	let yaw = new Map<string, number>();
+	/** RT_*: accumulated roll and pitch (rad, signed as RT_ROLL_LEFT / RT_PITCH_FWD); RT_YAW_* add to `yaw`. */
+	let roll = new Map<string, number>();
+	let pitch = new Map<string, number>();
 	let recent: string[] = [];
 	let note = "";
 	let stages: Stage[] = [];
@@ -441,6 +520,11 @@ export function units(
 	let verdict = "";
 	/** Success claims refused for holding. */
 	let holdRefusals = 0;
+	/** Success claims refused because the verifier's VLM call failed, and its latest error. */
+	let verifierErrors = 0;
+	let verifierError = "";
+	/** Whether the latest success finish the verifier let through had a verdict (undefined: none checked). */
+	let finishVerified: boolean | undefined;
 	/** The latest camera images a robot tool returned (the verifier's view). */
 	let images: ImageContent[] = [];
 	/** video_ref: the brief (extracted once per video and frame count) and why it failed. */
@@ -450,6 +534,8 @@ export function units(
 	const reset = () => {
 		closed = new Map();
 		yaw = new Map();
+		roll = new Map();
+		pitch = new Map();
 		recent = [];
 		note = "";
 		stages = [];
@@ -458,6 +544,9 @@ export function units(
 		replans = 0;
 		verdict = "";
 		holdRefusals = 0;
+		verifierErrors = 0;
+		verifierError = "";
+		finishVerified = undefined;
 		images = [];
 	};
 	/** mem_text: record a unit in the move history (newest last). */
@@ -469,6 +558,8 @@ export function units(
 		JSON.stringify({
 			closed: Object.fromEntries(closed),
 			yaw: Object.fromEntries(yaw),
+			...(roll.size ? { roll: Object.fromEntries(roll) } : {}),
+			...(pitch.size ? { pitch: Object.fromEntries(pitch) } : {}),
 			recent,
 			note,
 			stages,
@@ -477,6 +568,9 @@ export function units(
 			replans,
 			verdict,
 			holdRefusals,
+			verifierErrors,
+			verifierError,
+			finishVerified,
 		});
 	let saved = snapshot();
 	/** Append the state entry when it changed: the accumulated yaw must survive a resume (the wrist stays turned). */
@@ -504,6 +598,8 @@ export function units(
 				Object.entries((last.closed ?? {}) as Record<string, unknown>).map(([k, v]) => [k, v === true]),
 			);
 			yaw = numbers(last.yaw);
+			roll = numbers(last.roll);
+			pitch = numbers(last.pitch);
 			recent = Array.isArray(last.recent) ? last.recent.map(String) : [];
 			note = String(last.note ?? "");
 			stages = Array.isArray(last.stages) ? (last.stages as Stage[]) : [];
@@ -512,6 +608,9 @@ export function units(
 			replans = Number(last.replans) || 0;
 			verdict = String(last.verdict ?? "");
 			holdRefusals = Number(last.holdRefusals) || 0;
+			verifierErrors = Number(last.verifierErrors) || 0;
+			verifierError = String(last.verifierError ?? "");
+			finishVerified = typeof last.finishVerified === "boolean" ? last.finishVerified : undefined;
 		}
 		saved = snapshot();
 		// A brief extracted earlier in this branch is reused (same video and frame count).
@@ -592,6 +691,11 @@ export function units(
 			out.push(
 				`Gripper turned ${Math.round(((yaw.get(arm ?? "") ?? 0) * 180) / Math.PI)} deg from its start heading.`,
 			);
+		const [tr, tp] = [roll.get(arm ?? "") ?? 0, pitch.get(arm ?? "") ?? 0];
+		if (rtOn() && (Math.abs(tr) > NEUTRAL_YAW || Math.abs(tp) > NEUTRAL_YAW))
+			out.push(
+				`Gripper tilted: roll ${Math.round((tr * 180) / Math.PI)} deg (+ = RT_ROLL_LEFT), pitch ${Math.round((tp * 180) / Math.PI)} deg (+ = RT_PITCH_FWD).`,
+			);
 		if (plugin("point") && targets.length) {
 			const p = eef(st);
 			for (const t of targets)
@@ -609,7 +713,7 @@ export function units(
 	/** `act`'s parameters for the enabled plugins (a disabled plugin's parameter is not offered). */
 	function actSchema() {
 		const props: Record<string, TSchema> = {
-			unit: StringEnum(vocab, { description: "The action unit" }),
+			unit: StringEnum(vocab(), { description: "The action unit" }),
 			n: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_REPEAT, description: "Repeat count (default 1)" })),
 		};
 		if (wristSignal())
@@ -641,7 +745,7 @@ export function units(
 		registered = JSON.stringify(schema);
 		tool(
 			"act",
-			`Execute one action unit (${vocab.join(", ")}), repeated n times. MV_* move the gripper ~${Math.round(spec.stepM * 100)} cm${spec.yawStepRad ? `, ROTATE_* turn it ~${Math.round((spec.yawStepRad * 180) / Math.PI)} deg` : ""}; GRASP closes, RELEASE opens, STOP holds one step, DONE means the task is complete (call finish). Returns the new images and state.`,
+			`Execute one action unit (${vocab().join(", ")}), repeated n times. MV_* move the gripper ~${Math.round(spec.stepM * 100)} cm${spec.yawStepRad ? `, ROTATE_* turn it ~${Math.round((spec.yawStepRad * 180) / Math.PI)} deg` : ""}${rtOn() && spec.rt ? `, RT_* turn it ~${Math.round((spec.rt.stepRad * 180) / Math.PI)} deg about a world axis through the fingertips (ROLL about the MV_FWD axis, PITCH about the MV_LEFT-MV_RIGHT axis, YAW about the vertical)` : ""}; GRASP closes, RELEASE opens, STOP holds one step, DONE means the task is complete (call finish). Returns the new images and state.`,
 			schema,
 			(params, signal) => actAndSave(params as ActParams, signal),
 		);
@@ -700,6 +804,8 @@ export function units(
 				details: { unit },
 			};
 		if (unit === "STILL") return { content: [text(`STILL: the ${arm ?? ""} arm holds.`)], details: { unit } };
+		const rtWhy = isRt(unit) ? rtRefusal(unit) : undefined;
+		if (rtWhy) throw new Error(`act: ${rtWhy}`);
 		const lines: string[] = [];
 		let queue: Unit[] = Array(Math.max(1, Math.min(MAX_REPEAT, Math.floor(p.n ?? 1)))).fill(unit);
 		if (p.plan?.length && plugin("action_chunk")) {
@@ -735,6 +841,20 @@ export function units(
 				lines.push(`${u} refused: the gripper is already turned ${Math.round((acc * 180) / Math.PI)} deg.`);
 				break;
 			}
+			// RT_*: the accumulated guards (yaw shared with ROTATE_*, measured about base +z; roll, pitch by unit).
+			const turn = isRt(u) && move.rot ? RT_TURNS[u] : undefined;
+			const tilts = turn?.axis === "roll" ? roll : pitch;
+			const turnBy =
+				turn && move.rot ? (turn.axis === "yaw" ? move.rot[2] : turn.sign * Math.hypot(...move.rot)) : 0;
+			if (turn) {
+				const now = turn.axis === "yaw" ? acc : (tilts.get(key) ?? 0);
+				if (Math.abs(now + turnBy) > (turn.axis === "yaw" ? MAX_YAW : MAX_TILT) + 1e-9) {
+					lines.push(
+						`${u} refused: the gripper is already turned ${Math.round((now * 180) / Math.PI)} deg about its ${turn.axis} axis.`,
+					);
+					break;
+				}
+			}
 			const dist = Math.hypot(...move.delta);
 			const maxMove = spec.maxMoveM?.();
 			if (maxMove !== undefined && travelled > 0 && !(travelled + dist <= maxMove + 1e-9)) {
@@ -743,9 +863,16 @@ export function units(
 			}
 			// A turn beyond the robot's per-command limit runs as equal commands within it.
 			const maxYaw = spec.maxYawRad?.();
-			const parts = move.yaw && maxYaw !== undefined ? Math.ceil(Math.abs(move.yaw) / maxYaw - 1e-9) : 1;
+			const maxRot = spec.rt?.maxRad?.();
+			const angle = move.rot ? Math.hypot(...move.rot) : 0;
+			const parts =
+				move.yaw && maxYaw !== undefined
+					? Math.ceil(Math.abs(move.yaw) / maxYaw - 1e-9)
+					: angle && maxRot !== undefined
+						? Math.ceil(angle / maxRot - 1e-9)
+						: 1;
 			if (!(parts >= 1 && parts <= MAX_YAW_PIECES)) {
-				lines.push(`${label} refused: the robot's per-call rotation limit is ${maxYaw} rad.`);
+				lines.push(`${label} refused: the robot's per-call rotation limit is ${move.rot ? maxRot : maxYaw} rad.`);
 				break;
 			}
 			if (arm) move.arm = arm;
@@ -754,14 +881,20 @@ export function units(
 			if (isMove(u) && label === u && queue[index + 1] === u) move.continuous = true;
 			for (let i = 0; i < parts; i++) {
 				const piece: Move = i ? { ...move, delta: [0, 0, 0], gripper: null } : move;
-				last = await spec.apply(parts > 1 ? { ...piece, yaw: move.yaw / parts } : piece, signal);
+				const rot = move.rot?.map((x) => x / parts) as Vec3 | undefined;
+				last = await spec.apply(
+					parts > 1 ? { ...piece, yaw: move.yaw / parts, ...(rot ? { rot } : {}) } : piece,
+					signal,
+				);
 				if (halted(last, move)) break;
 				if (move.yaw) yaw.set(key, (yaw.get(key) ?? 0) + move.yaw / parts);
+				if (turn?.axis === "yaw") yaw.set(key, (yaw.get(key) ?? 0) + turnBy / parts);
+				else if (turn) tilts.set(key, (tilts.get(key) ?? 0) + turnBy / parts);
 			}
 			travelled += dist;
 			ran.push(label);
 			// mem_text records moves, turns and grasps (not STOP / RELEASE), as core/runners/real.py.
-			if (isMove(u) || u === "GRASP" || u === "ROTATE_CW" || u === "ROTATE_CCW") remember(u);
+			if (isMove(u) || isRt(u) || u === "GRASP" || u === "ROTATE_CW" || u === "ROTATE_CCW") remember(u);
 			if (move.gripper) closed.set(key, move.gripper === "close");
 			const after = await read(arm);
 			if (last && halted(last, move)) break;
@@ -811,7 +944,7 @@ export function units(
 	const handle: UnitsHandle = {
 		tool: "act",
 		arms: armNames,
-		vocabulary: vocab,
+		vocabulary: vocab(),
 		stepM: spec.stepM,
 		yawStepRad: spec.yawStepRad,
 		run: actAndSave,
@@ -819,7 +952,9 @@ export function units(
 		viewSelect: false,
 		...base,
 	};
-	pi.on("session_start", () => pi.events.emit(UNITS_EVENT, { ...handle, viewSelect: spec.viewSelect?.() === true }));
+	pi.on("session_start", () =>
+		pi.events.emit(UNITS_EVENT, { ...handle, vocabulary: vocab(), viewSelect: spec.viewSelect?.() === true }),
+	);
 
 	if (spec.point) {
 		const { cameras, locate } = spec.point;
@@ -957,11 +1092,12 @@ export function units(
 		entry.retreat = await retreat(ctx.signal);
 		entry.cameras = images.length;
 		let refuse = false;
+		let failed = false;
 		if (!images.length) entry.skipped = "no camera images yet";
 		else {
 			const started = Date.now();
-			try {
-				const reply = await askVlm(
+			const ask = () =>
+				askVlm(
 					ctx,
 					String(pi.getFlag("units-vlm-model") ?? ""),
 					pi.getThinkingLevel(),
@@ -969,18 +1105,39 @@ export function units(
 					images,
 					ctx.signal,
 				);
+			try {
+				// A failed call (no credits, network) is asked once more; an aborted run is not.
+				const reply = await ask().catch((err) => {
+					if (ctx.signal?.aborted) throw err;
+					entry.retried = err instanceof Error ? err.message : String(err);
+					return ask();
+				});
 				const v = parseVerdict(reply.text);
 				Object.assign(entry, { model: reply.model, complete: v.complete, reason: v.reason, raw: reply.text });
 				if (!v.available) entry.unavailable = true;
 				refuse = !v.complete && replans < MAX_REPLANS;
 			} catch (err) {
-				// A verifier failure never turns a finished episode into a replan.
-				Object.assign(entry, { complete: true, error: err instanceof Error ? err.message : String(err) });
+				if (ctx.signal?.aborted) throw err;
+				// Fail closed: an unchecked finish is refused (not the replan) until the error budget is spent.
+				verifierError = err instanceof Error ? err.message : String(err);
+				entry.verifier_error = verifierError;
+				failed = verifierErrors < MAX_VERIFIER_ERRORS;
+				entry.unverified = true;
 			}
 			entry.ms = Date.now() - started;
 		}
-		entry.refused = refuse;
+		entry.refused = refuse || failed;
 		pi.appendEntry(VERIFY_ENTRY, entry);
+		if (failed) {
+			verifierErrors++;
+			save();
+			return {
+				block: true,
+				reason: `finish refused: the verifier is unavailable (${verifierError}), so the task could not be checked. Call \`finish\` again to retry the check. (This is not the verifier's NOT complete verdict.)`,
+			};
+		}
+		finishVerified = entry.model !== undefined && entry.unavailable !== true;
+		save();
 		if (!refuse) return undefined;
 		replans++;
 		verdict = String(entry.reason ?? "");
@@ -1053,6 +1210,11 @@ export function units(
 
 	return {
 		mode,
+		/** The robot result's verifier fields: whether the success finish was checked, and the call's latest error. */
+		result: () => ({
+			...(finishVerified !== undefined ? { finish_verified: finishVerified } : {}),
+			...(verifierError ? { verifier_error: verifierError } : {}),
+		}),
 		/** A scene reset: the arm is back at its start heading with the gripper open, no plan. */
 		reset: () => {
 			reset();
@@ -1067,6 +1229,7 @@ export function units(
 			p = section(p, "both", m === "both");
 			p = section(p, "arms", armNames.length > 0);
 			p = section(p, "yaw", Boolean(spec.yawStepRad));
+			p = section(p, "rt", rtOn() && Boolean(spec.rt));
 			p = section(p, "wrist", wristSignal());
 			for (const name of PLUGINS)
 				p = section(
@@ -1086,6 +1249,7 @@ export function units(
 				high_cm: (high * 100).toFixed(0),
 				chunk: String(CHUNK_STEPS),
 				yaw_deg: String(Math.round(((spec.yawStepRad ?? 0) * 180) / Math.PI)),
+				rt_deg: String(Math.round(((spec.rt?.stepRad ?? 0) * 180) / Math.PI)),
 				arms: armNames.join(", "),
 				proprio_note: plugin("proprioception") ? ", the gripper's height and width, blocked moves" : "",
 				mem_note: plugin("mem_text") ? ", the recent moves (newest first)" : "",

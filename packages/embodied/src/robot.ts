@@ -14,6 +14,7 @@ import { promisify } from "node:util";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Static, TSchema } from "typebox";
+import { robotCheck } from "./check.ts";
 import { explore } from "./explore.ts";
 import { type FlashHook, flash } from "./flash/index.ts";
 import { flywheel } from "./flywheel.ts";
@@ -128,7 +129,8 @@ export type RobotSpec = {
  *   `env_error: true` too. `planner_error` is set when the model's last reply was an error;
  *   evaluations treat both as invalid episodes, whatever the outcome.
  * - The env server started with `serve`, pruning of older camera frames, the system prompt, the
- *   /robot-task command, the status published on `pi.events`, and the mounted modules.
+ *   /robot-task and /robot-check (../check.ts) commands, the status published on `pi.events`, and
+ *   the mounted modules.
  */
 export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	const { name } = spec;
@@ -395,6 +397,8 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 				: {
 						robot: name,
 						...spec.result(when),
+						// The units verifier: whether the success finish was checked, and the call's error.
+						...un?.result(),
 						claimed: claimed?.status ?? null,
 						summary: claimed?.summary ?? null,
 						turns,
@@ -474,6 +478,8 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 			});
 		},
 	});
+
+	robotCheck(pi, name);
 
 	return {
 		/** This episode's task flag values (the /robot-task entry, else the flags). */

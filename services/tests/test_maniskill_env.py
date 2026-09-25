@@ -35,6 +35,8 @@ def test_pickcube_goal_is_shown_to_the_cameras_and_required_in_view():
     # The gate refuses an episode whose goal is out of the agentview.
     facade = object.__new__(ms.ManiskillEnvFacade)
     facade._meta = {"env_id": "PickCube-v1"}
+    # A stock scene, as __init__ sets them.
+    facade._cameras, facade._rig = ms.CAMERAS, None
     facade._env = type("Wrapped", (), {"unwrapped": env})()
     seg = np.zeros((1, 48, 64, 1), dtype=np.int32)
     seg[0, :10, :10] = 1  # the cube, 100 px; no goal pixels

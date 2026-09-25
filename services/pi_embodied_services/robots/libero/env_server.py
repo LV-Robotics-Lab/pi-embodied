@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import random
 import sys
 from typing import TYPE_CHECKING, Any
 
@@ -103,6 +104,32 @@ def build_env_cfg(
     return cfg
 
 
+def _seeding_globals(env_fn):
+    """Wrap a LIBERO worker ``env_fn`` so the env's ``seed()`` also seeds the
+    worker process's global numpy and Python RNGs.
+
+    LiberoEnv seeds its worker env right before every reset, but robosuite 1.5
+    only stores that seed while its reset draws from the global RNGs, which
+    each spawned worker leaves unseeded; the same actions then drift apart
+    between processes (measured: up to 8.8 cm over one 835-step episode).
+    With this every reset restores the same RNG state, so a replay is bitwise.
+    """
+
+    def fn():
+        env = env_fn()
+        seed_env = env.seed
+
+        def seed(value):
+            random.seed(value)
+            np.random.seed(int(value) % 2**32)
+            return seed_env(value)
+
+        env.seed = seed
+        return env
+
+    return fn
+
+
 def make_env(
     task_id: int,
     seed: int,
@@ -123,7 +150,12 @@ def make_env(
         seed=seed,
         max_episode_steps=max_episode_steps,
     )
-    return LiberoEnv(
+
+    class SeededLiberoEnv(LiberoEnv):
+        def get_env_fns(self):
+            return [_seeding_globals(fn) for fn in super().get_env_fns()]
+
+    return SeededLiberoEnv(
         cfg=cfg, num_envs=1, seed_offset=0, total_num_processes=1, worker_info=None
     )
 

@@ -114,6 +114,9 @@ wrapper; single-env servers strip the leading env dimension.
 | `env.get_camera_meta` | `camera_name="agentview"`, `height=256`, `width=256` | intrinsics/extrinsics dict or `null` |
 | `env.get_task_language` | - | str |
 
+`env.reset` reseeds the env worker's global numpy and Python RNGs with the episode seed, so every
+reset restores the same state and the same actions give bitwise-identical transitions in any process.
+
 ### robocasa-env (`robots/robocasa/env_server.py`)
 
 | method | args | result |
@@ -203,9 +206,9 @@ Same method names; poses are reported in the `right_base` frame. `arm` is `"left
 
 | service | method | args | result |
 |---|---|---|---|
-| pi05-vla | `vla.predict` | `obs` (openpi wire dict, encoded by the client), `options={"mode": "eval"}` | float32 action chunk from openpi's `predict_action_batch`, batch first (LIBERO: 5 steps x 7; dual Franka: 20 x 20) |
+| pi05-vla | `vla.predict` | `obs` (openpi wire dict, encoded by the client), `options={"mode": "eval"[, "seed": int]}` | float32 action chunk from openpi's `predict_action_batch`, batch first (LIBERO: 5 steps x 7; dual Franka: 20 x 20) |
 | rldx-vla | `vla.get_modality_config` | - | `{"video_delta_indices": [int], "hist_maxlen": int}` |
-| rldx-vla | `vla.predict` | `obs_dict`, `options` (must not contain `session_ids`) | dict of action arrays |
+| rldx-vla | `vla.predict` | `obs_dict`, `options` (must not contain `session_ids`; optional `"seed": int`) | dict of action arrays |
 | rldx-vla | `vla.reset_session` | - | `{"ok": true}` |
 | sam3 | `sam3.segment` | `image_base64` (PNG/JPEG bytes), exactly one of kw `text_prompt` str or `point` `[row, col]`, `min_score=0.2` | `{"found", "score"?, "box"?, "mask_png_base64"?, "mask_shape"? [H,W], "reason"?}` |
 | molmo | `molmo.ground` | `image_base64`, `query` str | `{"point_xy"? [x, y] pixels, "answer", "image_size" [W, H]}` |
@@ -213,4 +216,11 @@ Same method names; poses are reported in the `right_base` frame. `arm` is `"left
 LingBot-VLA (`robots/robotwin/vla_server.py`) is the upstream `deploy` WebSocket policy
 server: msgpack frames with openpi's numpy extension, server metadata
 (`vla_runtime_contract()`) first, then one reply per inference request; `GET /healthz` over
-HTTP on the same port. Inferences are serialized through the same one-call lock.
+HTTP on the same port. Inferences are serialized through the same one-call lock. An optional
+int `seed` key in the observation is removed before the policy sees it and seeds that inference.
+
+A VLA `seed` (int in [0, 2^32)) makes that one inference a function of its inputs: the server
+seeds torch (CPU and every CUDA device), numpy and Python `random` for the call and restores
+their previous states afterwards. Without it, sampling is unseeded as before. The robots send one
+per call (`--vla-seed`, see `packages/embodied/src/vla-seed.ts`) and record it as `vla_seeds` in
+the tool result.

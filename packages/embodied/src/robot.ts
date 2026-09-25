@@ -198,8 +198,17 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		: undefined;
 	const video = spec.video ? episodeVideo(pi) : { frame: (_image: NdArray) => {} };
 	const fly = spec.flywheel ? flywheel(pi) : undefined;
+	/** A successful scene reset also restarts the units state (accumulated yaw, gripper, plan). */
+	const resetsUnits =
+		<A extends unknown[], R>(reset: (...args: A) => Promise<R>) =>
+		async (...args: A) => {
+			const r = await reset(...args);
+			un?.reset();
+			return r;
+		};
+	const operatorReset = spec.operator?.reset;
 	const op = spec.operator
-		? operator(pi, spec.operator)
+		? operator(pi, { ...spec.operator, ...(operatorReset ? { reset: resetsUnits(operatorReset) } : {}) })
 		: {
 				tools: () => [],
 				check: () => {},
@@ -405,6 +414,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	if (spec.explore && mem)
 		explore(pi, {
 			...spec.explore,
+			reset: resetsUnits(spec.explore.reset),
 			render: mem.render,
 			tools: mem.tools,
 			aborted: () => (op.result() as Json).operator_aborted === true,
@@ -557,13 +567,34 @@ export async function attach(endpoint: string, readyMs = 300_000): Promise<RpcCl
  * tighter of that and `cap` applies.
  */
 export function checkMove(delta: number[], cap: number, constraints: string[] = []) {
-	const documented = constraints.map((c) => /translation commands at or below ([\d.]+) m per call/i.exec(c)?.[1]);
-	const limit = Math.min(cap, ...documented.filter((v) => v !== undefined).map(Number));
+	const limit = moveLimit(cap, constraints);
 	const norm = Math.hypot(...delta);
 	if (!(norm <= limit))
 		throw new Error(
 			`delta_xyz moves ${round(norm, 4)} m; the limit is ${limit} m per call. Split the motion into smaller calls.`,
 		);
+}
+
+/**
+ * The --workspace-xy box (off when empty) and the required --z-floor, validated: a malformed box or a
+ * missing or non-finite floor throws (the robot does not start, and no move runs without a floor).
+ */
+export function workspaceLimits(xy: string, zFloor: string): { box?: number[]; floor: number } {
+	const box = xy.trim() ? xy.split(",").map((v) => (v.trim() ? Number(v) : Number.NaN)) : undefined;
+	if (box && (box.length !== 4 || !box.every(Number.isFinite) || !(box[0] < box[1] && box[2] < box[3])))
+		throw new Error(`--workspace-xy must be "xmin,xmax,ymin,ymax" (finite, min < max), got "${xy}"`);
+	const floor = zFloor.trim() ? Number(zFloor) : Number.NaN;
+	if (!Number.isFinite(floor))
+		throw new Error(
+			`--z-floor must be the lowest safe TCP z in m (e.g. Show-Harness's empty-table 0.14), got "${zFloor}"`,
+		);
+	return { ...(box ? { box } : {}), floor };
+}
+
+/** The per-call translation limit `checkMove` applies: the tighter of `cap` and the task's documented limit. */
+export function moveLimit(cap: number, constraints: string[] = []) {
+	const documented = constraints.map((c) => /translation commands at or below ([\d.]+) m per call/i.exec(c)?.[1]);
+	return Math.min(cap, ...documented.filter((v) => v !== undefined).map(Number));
 }
 
 // ---------------------------------------------------------------------------

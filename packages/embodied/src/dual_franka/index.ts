@@ -38,6 +38,7 @@ import {
 	mark,
 	median,
 	message,
+	moveLimit,
 	numbers,
 	plain,
 	type Rgb,
@@ -52,6 +53,7 @@ import {
 	toolResult,
 	u8,
 	vec,
+	workspaceLimits,
 } from "../robot.ts";
 import { NdArray, type RpcClient } from "../rpc.ts";
 import type { Move } from "../units/index.ts";
@@ -244,6 +246,11 @@ export default function dualFranka(pi: ExtensionAPI) {
 		default: "0.1",
 		description: "Largest move_delta per call and arm, m (a task's documented limit applies if tighter)",
 	});
+	pi.registerFlag("max-rotate", {
+		type: "string",
+		default: "0.5",
+		description: "Largest rotate_delta per call and arm, rad (norm of delta_rpy)",
+	});
 
 	pi.registerFlag("workspace-xy", {
 		type: "string",
@@ -254,7 +261,8 @@ export default function dualFranka(pi: ExtensionAPI) {
 	pi.registerFlag("z-floor", {
 		type: "string",
 		default: "",
-		description: "Lowest right_base TCP z for move_delta and units, m ('' = off)",
+		description:
+			"Lowest right_base TCP z for move_delta and units, m (required: the robot does not start without it)",
 	});
 
 	let env: RpcClient | undefined;
@@ -337,6 +345,8 @@ export default function dualFranka(pi: ExtensionAPI) {
 			},
 			stepM: 0.02,
 			yawStepRad: 0.15,
+			maxYawRad: () => maxRotate(),
+			maxMoveM: () => moveLimit(Number(flag("max-move", "0.1")), setup?.task.constraints),
 			arms: ["left", "right"],
 			apply: (move, signal) => unitStep(move, signal),
 			state: async (arm) => {
@@ -346,7 +356,7 @@ export default function dualFranka(pi: ExtensionAPI) {
 					eef_xyz: roundAll(vec(a.tcp_pose).slice(0, 3)),
 					...(width.length ? { gripper_width: round(width[0]) } : {}),
 					gripper_open: a.gripper_open ?? null,
-					...(flag("z-floor") ? { table_z: Number(flag("z-floor")) } : {}),
+					table_z: Number(flag("z-floor")),
 				};
 			},
 			instruction: () => setup?.task.instruction ?? "",
@@ -369,6 +379,15 @@ export default function dualFranka(pi: ExtensionAPI) {
 		(env as RpcClient).call<T>(method, kwargs, timeoutMs, [], signal);
 	const remember = (states: unknown) => {
 		if (states !== undefined && states !== null) lastStates = states;
+	};
+	const maxRotate = () => Number(flag("max-rotate", "0.5"));
+	/** Refuse a rotation beyond --max-rotate (norm of delta_rpy, rad). */
+	const checkRotate = (rpy: number[]) => {
+		const norm = Math.hypot(...rpy);
+		if (!(norm <= maxRotate()))
+			throw new Error(
+				`delta_rpy rotates ${round(norm, 4)} rad; the limit is ${maxRotate()} rad per call. Split the rotation into smaller calls.`,
+			);
 	};
 	const check = (signal?: AbortSignal) => {
 		op.check();
@@ -607,21 +626,16 @@ export default function dualFranka(pi: ExtensionAPI) {
 
 	/** Refuse a move whose right_base target leaves the --workspace-xy box or goes below --z-floor (unless it moves back in). */
 	function checkWorkspace(arm: string, delta: number[]) {
-		const box = flag("workspace-xy").split(",").filter(Boolean).map(Number);
-		const floor = flag("z-floor") ? Number(flag("z-floor")) : undefined;
-		if (box.length !== 4 && floor === undefined) return;
-		if (box.length && (box.length !== 4 || !box.every(Number.isFinite)))
-			throw new Error(`--workspace-xy must be "xmin,xmax,ymin,ymax", got "${flag("workspace-xy")}"`);
+		const { box, floor } = workspaceLimits(flag("workspace-xy"), flag("z-floor"));
 		const tcp = vec(armState(arm).tcp_pose).slice(0, 3);
 		if (tcp.length !== 3) throw new Error(`the ${arm} arm's tcp_pose is missing from the latest state`);
 		const outside = (p: number[]) =>
-			(box.length === 4
-				? Math.max(0, box[0] - p[0], p[0] - box[1]) + Math.max(0, box[2] - p[1], p[1] - box[3])
-				: 0) + (floor !== undefined ? Math.max(0, floor - p[2]) : 0);
+			(box ? Math.max(0, box[0] - p[0], p[0] - box[1]) + Math.max(0, box[2] - p[1], p[1] - box[3]) : 0) +
+			Math.max(0, floor - p[2]);
 		const target = tcp.map((v, i) => v + delta[i]);
 		if (outside(target) > 1e-6 && outside(target) >= outside(tcp) - 1e-6)
 			throw new Error(
-				`the ${arm} move ends at [${roundAll(target, 3)}], outside the right_base workspace (x ${box[0]}..${box[1]}, y ${box[2]}..${box[3]}${floor !== undefined ? `, z >= ${floor}` : ""} m; --workspace-xy / --z-floor)`,
+				`the ${arm} move ends at [${roundAll(target, 3)}], outside the right_base workspace (${box ? `x ${box[0]}..${box[1]}, y ${box[2]}..${box[3]}, ` : ""}z >= ${floor} m; --workspace-xy / --z-floor)`,
 			);
 	}
 
@@ -638,8 +652,10 @@ export default function dualFranka(pi: ExtensionAPI) {
 				checkWorkspace(arm, move.delta);
 				out.move = await motion("env.move_delta", { arm, delta_xyz: NdArray.f32(move.delta) }, signal);
 			}
-			if (move.yaw)
+			if (move.yaw) {
+				checkRotate([0, 0, move.yaw]);
 				out.rotate = await motion("env.rotate_delta", { arm, delta_rpy: NdArray.f32([0, 0, move.yaw]) }, signal);
+			}
 			return out;
 		});
 	}
@@ -1175,7 +1191,9 @@ export default function dualFranka(pi: ExtensionAPI) {
 		Type.Object({ arm, delta_rpy: xyz }),
 		async (p, signal) => {
 			check(signal);
-			return motion("env.rotate_delta", { arm: armName(p.arm), delta_rpy: vec3(p.delta_rpy, "delta_rpy") }, signal);
+			const delta = vec3(p.delta_rpy, "delta_rpy");
+			checkRotate(numbers(delta));
+			return motion("env.rotate_delta", { arm: armName(p.arm), delta_rpy: delta }, signal);
 		},
 	);
 
@@ -1444,6 +1462,7 @@ export default function dualFranka(pi: ExtensionAPI) {
 			);
 		if (pi.getFlag("operator") !== true)
 			throw new Error("dual_franka needs --operator: success on this robot is the operator's verdict");
+		workspaceLimits(flag("workspace-xy"), flag("z-floor"));
 		// Ray must not re-run uv for workers on the pre-provisioned nodes (env override).
 		const r: Services = {
 			root: flag("services"),

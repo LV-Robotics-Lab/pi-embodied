@@ -36,6 +36,7 @@ import {
 	type Mat,
 	mark,
 	message,
+	moveLimit,
 	numbers,
 	plain,
 	pose7,
@@ -50,6 +51,7 @@ import {
 	toolResult,
 	u8,
 	vec,
+	workspaceLimits,
 } from "../robot.ts";
 import { NdArray, type RpcClient } from "../rpc.ts";
 import type { Move } from "../units/index.ts";
@@ -237,7 +239,7 @@ export default function franka(pi: ExtensionAPI) {
 		type: "string",
 		default: "",
 		description:
-			"Lowest TCP z for move_delta and units, m; also the table height for units' proprioception ('' = off; Show-Harness's empty-table floor is 0.14)",
+			"Lowest TCP z for move_delta and units, m; also the table height for units' proprioception (required: the robot does not start without it; Show-Harness's empty-table floor is 0.14)",
 	});
 	pi.registerFlag("max-rotate", {
 		type: "string",
@@ -299,6 +301,8 @@ export default function franka(pi: ExtensionAPI) {
 			},
 			stepM: 0.02,
 			yawStepRad: 0.15,
+			maxYawRad: () => maxRotate(),
+			maxMoveM: () => moveLimit(maxMove(), setup?.task.constraints),
 			apply: (move, signal) => unitStep(move, signal),
 			state: unitState,
 			instruction: () => setup?.task.instruction ?? "",
@@ -475,20 +479,15 @@ export default function franka(pi: ExtensionAPI) {
 
 	/** Refuse a move whose target leaves the --workspace-xy box or goes below --z-floor (unless it moves back in). */
 	function checkWorkspace(delta: number[]) {
-		const box = flag("workspace-xy").split(",").filter(Boolean).map(Number);
-		const floor = flag("z-floor") ? Number(flag("z-floor")) : undefined;
-		if (box.length !== 4 && floor === undefined) return;
-		if (box.length && (box.length !== 4 || !box.every(Number.isFinite)))
-			throw new Error(`--workspace-xy must be "xmin,xmax,ymin,ymax", got "${flag("workspace-xy")}"`);
+		const { box, floor } = workspaceLimits(flag("workspace-xy"), flag("z-floor"));
 		const tcp = tcpPose(steps[steps.length - 1]);
 		const outside = (p: number[]) =>
-			(box.length === 4
-				? Math.max(0, box[0] - p[0], p[0] - box[1]) + Math.max(0, box[2] - p[1], p[1] - box[3])
-				: 0) + (floor !== undefined ? Math.max(0, floor - p[2]) : 0);
+			(box ? Math.max(0, box[0] - p[0], p[0] - box[1]) + Math.max(0, box[2] - p[1], p[1] - box[3]) : 0) +
+			Math.max(0, floor - p[2]);
 		const target = tcp.slice(0, 3).map((v, i) => v + delta[i]);
 		if (outside(target) > 1e-6 && outside(target) >= outside(tcp) - 1e-6)
 			throw new Error(
-				`the move ends at [${roundAll(target, 3)}], outside the workspace (x ${box[0]}..${box[1]}, y ${box[2]}..${box[3]}${floor !== undefined ? `, z >= ${floor}` : ""} m; --workspace-xy / --z-floor)`,
+				`the move ends at [${roundAll(target, 3)}], outside the workspace (${box ? `x ${box[0]}..${box[1]}, y ${box[2]}..${box[3]}, ` : ""}z >= ${floor} m; --workspace-xy / --z-floor)`,
 			);
 	}
 
@@ -503,8 +502,11 @@ export default function franka(pi: ExtensionAPI) {
 				checkWorkspace(move.delta);
 				out.move = await motion("env.move_delta", { delta_xyz: NdArray.f32(move.delta) }, signal);
 			}
-			if (move.yaw)
+			if (move.yaw) {
+				if (!(Math.abs(move.yaw) <= maxRotate()))
+					throw new Error(`yaw ${round(move.yaw, 4)} rad exceeds the limit of ${maxRotate()} rad per call`);
 				out.rotate = await motion("env.rotate_delta", { delta_rpy: NdArray.f32([0, 0, move.yaw]) }, signal);
+			}
 			return out;
 		});
 	}
@@ -517,11 +519,7 @@ export default function franka(pi: ExtensionAPI) {
 			eef_xyz: roundAll(vec(base.tcp_pose).slice(0, 3)),
 			...(width.length ? { gripper_width: round(width[0]) } : {}),
 			gripper_open: base.gripper_open ?? null,
-			...(flag("z-floor")
-				? { table_z: Number(flag("z-floor")) }
-				: typeof caps.table_z_m === "number"
-					? { table_z: caps.table_z_m }
-					: {}),
+			table_z: Number(flag("z-floor")),
 		};
 	}
 
@@ -985,6 +983,7 @@ export default function franka(pi: ExtensionAPI) {
 	async function startRobot(ctx: ExtensionContext) {
 		if (!ctx.hasUI)
 			throw new Error("franka drives a real robot: run pi interactively (or over RPC) so an operator is present");
+		workspaceLimits(flag("workspace-xy"), flag("z-floor"));
 		const r: Services = { root: flag("services"), python: flag("python", "python") };
 		const configFlag = pi.getFlag("robot-config");
 		const config = typeof configFlag === "string" && configFlag ? resolve(ctx.cwd, configFlag) : "";

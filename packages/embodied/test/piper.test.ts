@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import piper, { PIPER_UNITS } from "../src/piper/index.ts";
+import { Type } from "typebox";
+import piper, { headingToBase, PIPER_UNITS } from "../src/piper/index.ts";
+import { defineRobot } from "../src/robot.ts";
+import type { Move, Vec3 } from "../src/units/index.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
@@ -106,7 +109,7 @@ test("piper refuses to start without --operator, before touching the robot", asy
 
 test("piper opts into action units with the Show-Harness primitives", () => {
 	assert.equal(PIPER_UNITS.stepM, 0.02);
-	assert.equal(PIPER_UNITS.yawStepRad, 0.15);
+	assert.ok(!("yawStepRad" in PIPER_UNITS), "Show-Harness never offers rotation on the Piper");
 	const v = PIPER_UNITS.vectors;
 	assert.deepEqual(v.MV_FWD, [1, 0, 0]);
 	assert.deepEqual(v.MV_LEFT, [0, 1, 0]);
@@ -148,7 +151,7 @@ test("with --units the act tool grounds units through the same per-call limits",
 	piper(f.pi);
 	assert.ok(f.tools.has("act"));
 	const params = f.tools.get("act").parameters.properties.unit.anyOf.map((u: any) => u.const);
-	assert.ok(params.includes("ROTATE_CW") && !params.includes("STILL"), "the Piper has yaw and one arm");
+	assert.ok(!params.includes("ROTATE_CW") && !params.includes("STILL"), "no rotation units and one arm");
 	// One MV_FWD is 2 cm, over the 1 cm --max-move: refused before any robot call.
 	const far = await f.run("act", { unit: "MV_FWD" });
 	assert.match(far.content[0].text, /units: MV_FWD x1/);
@@ -162,5 +165,51 @@ test("with --units the act tool grounds units through the same per-call limits",
 	assert.match(up.content[0].text, /units: MV_UP x1 of 2 \(stopped early\)/);
 	const started = await g.emit("before_agent_start", { systemPrompt: "base" });
 	assert.match(started.systemPrompt, /FRONT camera: faces the arm/);
-	assert.match(started.systemPrompt, /ROTATE_CW, ROTATE_CCW/);
+	assert.doesNotMatch(started.systemPrompt, /ROTATE_CW/);
+	assert.ok(g.tools.has("rotate_yaw"), "the robot's own rotate_yaw tool stays");
+});
+
+test("the stall check compares heading-frame units in the base frame (45 and 90 deg heading)", async () => {
+	for (const deg of [45, 90]) {
+		const heading = (deg * Math.PI) / 180;
+		const f = fakePi({ units: true, "units-plugins": "proprioception" });
+		const pos = [0.3, 0, 0.2];
+		const moves: Move[] = [];
+		defineRobot(f.pi, {
+			name: "heading",
+			task: [],
+			keepImages: 2,
+			start: async () => [],
+			result: () => ({}),
+			finish: {
+				description: "finish",
+				parameters: Type.Object({ status: Type.String(), summary: Type.String() }),
+				result: (p) => ({ content: [{ type: "text", text: p.status }], details: p }),
+			},
+			units: {
+				...PIPER_UNITS,
+				// A perfect Piper in `units_frame: heading`: the server rotates each delta by the gripper heading.
+				apply: async (move) => {
+					moves.push(move);
+					const d = headingToBase(move.delta, { heading_yaw_rad: heading });
+					for (let i = 0; i < 3; i++) pos[i] += d[i];
+					return { content: [{ type: "text", text: "obs" }], details: {} };
+				},
+				state: async () => ({ eef_xyz: [...pos], gripper_width: 0.05, heading_yaw_rad: heading }),
+				baseDelta: (delta: Vec3, state) => headingToBase(delta, state),
+			},
+		});
+		await f.emit("session_start");
+		for (const unit of ["MV_FWD", "MV_LEFT"]) {
+			const r = await f.run("act", { unit, n: 3 });
+			assert.match(r.content[0].text, new RegExp(`units: ${unit} x3\\n`), `${deg} deg ${unit}`);
+			assert.doesNotMatch(r.content[0].text, /blocked/, `${deg} deg ${unit}`);
+		}
+		assert.equal(moves.length, 6);
+	}
+	assert.deepEqual(
+		headingToBase([0.02, 0, 0], { heading_yaw_rad: Math.PI / 2 }).map((v) => Number(v.toFixed(6))),
+		[0, 0.02, 0],
+	);
+	assert.deepEqual(headingToBase([0.02, 0, 0], {}), [0.02, 0, 0], "no heading (tool vertical): base frame");
 });

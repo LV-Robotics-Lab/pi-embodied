@@ -20,9 +20,9 @@
  *   the wrist view (`act`'s `target_in_wrist`, Show-Harness's `WRIST: YES/NO` marker).
  * - action_chunk: while the target is not in the wrist view, `act` may commit `plan`, up to 3 MV_*
  *   moves run in order.
- * - rotation (robots with a yaw step, which always get ROTATE_CW/CCW): wrist-judged MV_* are rotated
- *   by the accumulated yaw (the wrist camera turns with the gripper), MV_UP while holding first turns
- *   back, and a soft guard caps the accumulated yaw at 150 deg.
+ * - rotation (robots with a yaw step, which always get ROTATE_CW/CCW, capped at 150 deg accumulated
+ *   yaw): wrist-judged MV_* are rotated by the accumulated yaw (the wrist camera turns with the
+ *   gripper), and MV_UP while holding first turns back (in commands within the robot's `maxYawRad`).
  * - plan: subgoal stages, with deepplan's REASON checkpoint.
  * - point: affordance pixels -> world xyz (robots with `point`).
  *
@@ -95,7 +95,7 @@ export const DEFAULT_PLUGINS: readonly Plugin[] = [
 /** One grounded unit: a base-frame translation (m), a yaw about base +z (rad), a gripper command. */
 export type Move = { delta: Vec3; yaw: number; gripper: "open" | "close" | null; arm?: string };
 type Result = AgentToolResult<unknown>;
-type State = Record<string, unknown>;
+export type State = Record<string, unknown>;
 
 export type UnitsSpec = {
 	/** Base-frame unit vector of each MV_* unit (calibrated so each matches its look in VIEWS). */
@@ -126,6 +126,12 @@ export type UnitsSpec = {
 	highAboveTableM?: number;
 	/** rotation: +1 rotates wrist-judged moves by +yaw (flip if a post-rotation move goes the wrong way). */
 	yawCompensationSign?: number;
+	/** The robot's largest yaw per command, rad: longer turns are split into commands within it. */
+	maxYawRad?: () => number;
+	/** The robot's largest translation per call, m: one `act` call travels at most this in total. */
+	maxMoveM?: () => number;
+	/** Robots that execute `delta` in another frame: the base-frame translation it becomes from `state` (proprioception). */
+	baseDelta?: (delta: Vec3, state: State | undefined) => Vec3;
 	/** Affordance: mark [row, col] fractions (0..1) in a camera image; the marked PNG and world xyz per point. */
 	point?: {
 		cameras: readonly string[];
@@ -172,6 +178,8 @@ const CHUNK_STEPS = 3;
 /** rotation: soft guard on the accumulated yaw (Franka joint 7 is about +-166 deg), and "back at neutral". */
 const MAX_YAW = (150 * Math.PI) / 180;
 const NEUTRAL_YAW = (2 * Math.PI) / 180;
+/** The most commands one turn is split into (the 150 deg cap in 5 deg commands). */
+const MAX_YAW_PIECES = 30;
 const NOTES = {
 	empty_grasp: "Empty close; do not retry on an edge/corner. Recenter body and confirm depth.",
 	lost_grasp: "Grasp lost; return to GRASP, recenter the object body, then confirm depth.",
@@ -298,7 +306,8 @@ export function units(
 	let stages: Stage[] = [];
 	let stage = 0;
 	let targets: Target[] = [];
-	pi.on("session_start", () => {
+	/** A new episode or scene reset: the arm is back at its start heading with the gripper open, no plan. */
+	const reset = () => {
 		closed = new Map();
 		yaw = new Map();
 		recent = [];
@@ -306,7 +315,8 @@ export function units(
 		stages = [];
 		stage = 0;
 		targets = [];
-	});
+	};
+	pi.on("session_start", reset);
 
 	/** Proprioception, or undefined when the robot has none or cannot read it now. */
 	const read = async (arm: string | undefined) => spec.state?.(arm).catch(() => undefined);
@@ -437,6 +447,12 @@ export function units(
 		}
 		let last: Result | undefined;
 		const ran: string[] = [];
+		const halted = (r: Result) => {
+			const d = r.details as { error?: unknown; terminated?: unknown } | undefined;
+			return Boolean(d?.error || d?.terminated);
+		};
+		/** Path length so far: one call travels at most the robot's per-call translation limit. */
+		let travelled = 0;
 		// A recovery note lasts until the next GRASP.
 		if (queue.includes("GRASP")) note = "";
 		for (const u of queue) {
@@ -444,32 +460,49 @@ export function units(
 			const acc = yaw.get(key) ?? 0;
 			let label: string = u;
 			let move = ground(spec, u, isMove(u) ? stepFor(u, before, inWrist) : spec.stepM) as Move;
-			if (plugin("rotation")) {
-				// Holding and turned: MV_UP first turns back to the start heading.
-				if (u === "MV_UP" && closed.get(key) && Math.abs(acc) > NEUTRAL_YAW) {
-					move = { delta: [0, 0, 0], yaw: -acc, gripper: null };
-					label = "MV_UP(realign)";
-				} else if (isMove(u) && inWrist !== false)
-					move.delta = compensate(move.delta, (spec.yawCompensationSign ?? 1) * acc);
-				else if (move.yaw && Math.abs(acc + move.yaw) > MAX_YAW) {
-					lines.push(`${u} refused: the gripper is already turned ${Math.round((acc * 180) / Math.PI)} deg.`);
-					break;
-				}
+			// Holding and turned: MV_UP first turns back to the start heading.
+			if (plugin("rotation") && u === "MV_UP" && closed.get(key) && Math.abs(acc) > NEUTRAL_YAW) {
+				move = { delta: [0, 0, 0], yaw: -acc, gripper: null };
+				label = "MV_UP(realign)";
+			} else if (plugin("rotation") && isMove(u) && inWrist !== false)
+				move.delta = compensate(move.delta, (spec.yawCompensationSign ?? 1) * acc);
+			else if (move.yaw && Math.abs(acc + move.yaw) > MAX_YAW) {
+				// The accumulated-yaw guard holds with or without the rotation plugin.
+				lines.push(`${u} refused: the gripper is already turned ${Math.round((acc * 180) / Math.PI)} deg.`);
+				break;
+			}
+			const dist = Math.hypot(...move.delta);
+			const maxMove = spec.maxMoveM?.();
+			if (maxMove !== undefined && travelled > 0 && !(travelled + dist <= maxMove + 1e-9)) {
+				lines.push(`${u} not run: one act call moves at most ${maxMove} m in total.`);
+				break;
+			}
+			// A turn beyond the robot's per-command limit runs as equal commands within it.
+			const maxYaw = spec.maxYawRad?.();
+			const parts = move.yaw && maxYaw !== undefined ? Math.ceil(Math.abs(move.yaw) / maxYaw - 1e-9) : 1;
+			if (!(parts >= 1 && parts <= MAX_YAW_PIECES)) {
+				lines.push(`${label} refused: the robot's per-call rotation limit is ${maxYaw} rad.`);
+				break;
 			}
 			if (arm) move.arm = arm;
-			last = await spec.apply(move, signal);
+			for (let i = 0; i < parts; i++) {
+				const piece: Move = i ? { ...move, delta: [0, 0, 0], gripper: null } : move;
+				last = await spec.apply(parts > 1 ? { ...piece, yaw: move.yaw / parts } : piece, signal);
+				if (halted(last)) break;
+				if (move.yaw) yaw.set(key, (yaw.get(key) ?? 0) + move.yaw / parts);
+			}
+			travelled += dist;
 			ran.push(label);
 			recent.push(label);
-			if (move.yaw) yaw.set(key, acc + move.yaw);
 			if (move.gripper) closed.set(key, move.gripper === "close");
 			const after = await read(arm);
-			const details = last.details as { error?: unknown; terminated?: unknown } | undefined;
-			if (details?.error || details?.terminated) break;
+			if (last && halted(last)) break;
 			// proprioception: a MV_* that barely moved is blocked (contact, floor, workspace limit).
 			const [p0, p1] = [eef(before), eef(after)];
-			const commanded = Math.hypot(...move.delta);
+			const base = spec.baseDelta?.(move.delta, before) ?? move.delta;
+			const commanded = Math.hypot(...base);
 			if (plugin("proprioception") && p0 && p1 && commanded > 0) {
-				const moved = [0, 1, 2].reduce((s, k) => s + (p1[k] - p0[k]) * move.delta[k], 0) / commanded;
+				const moved = [0, 1, 2].reduce((s, k) => s + (p1[k] - p0[k]) * base[k], 0) / commanded;
 				if (moved < commanded * STALL_RATIO) {
 					lines.push(
 						u === "MV_DOWN"
@@ -590,6 +623,7 @@ export function units(
 
 	return {
 		mode,
+		reset,
 		/** The units tools: act and the enabled plugins' tools (pure mode adds finish). */
 		tools: () => ["act", ...(plugin("point") ? ["point"] : []), ...(plugin("plan") ? ["plan"] : [])],
 		/** Pure mode: the whole prompt. Both mode: the section appended to the robot's prompt. */

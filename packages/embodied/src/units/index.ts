@@ -144,8 +144,9 @@ export type Move = {
 	/** view_select: the view that guided the move (act's `view`, robots with `viewSelect`). */
 	view?: GuideView;
 	/**
-	 * The verifier's retreat before its check: the lift runs after the robot claimed success, so a
-	 * robot that ends motion at its own success signal may still allow it (it cannot change a latched outcome).
+	 * The finish sequence after a success claim: the verifier's retreat lift, and the RELEASE / MV_UP
+	 * the agent sends after a finish was refused for holding. A robot that ends motion at its own
+	 * success signal may still allow these (they cannot change a latched outcome).
 	 */
 	retreat?: boolean;
 };
@@ -259,6 +260,10 @@ const EMPTY_GRASP = "GRASP(empty)";
  * so the gripper no longer occludes the drop point). A closed gripper is left in place.
  */
 const RETREAT_M = 0.1;
+/** Verifier: success claims refused for a still-closed gripper per episode (then the check runs anyway). */
+const MAX_HOLD_REFUSALS = 2;
+/** Plan stages that make a task a placement (Show-Harness subgoal: PLACE -> RELEASE -> RETREAT). */
+const PLACEMENT = ["PLACE", "RELEASE", "RETREAT"];
 /** Verifier: NOT complete verdicts that refuse `finish` per episode (v0.max_replans). */
 const MAX_REPLANS = 1;
 /** Session entries of the verifier's checks and the video_ref brief. */
@@ -423,6 +428,9 @@ export function units(
 	/** Verifier: refusals so far and the latest refusal's reason (shown until a new plan). */
 	let replans = 0;
 	let verdict = "";
+	/** Success claims refused for holding, and whether the finish sequence (RELEASE, MV_UP) is under way. */
+	let holdRefusals = 0;
+	let wrapUp = false;
 	/** The latest camera images a robot tool returned (the verifier's view). */
 	let images: ImageContent[] = [];
 	/** video_ref: the brief (extracted once per video and frame count) and why it failed. */
@@ -439,6 +447,8 @@ export function units(
 		targets = [];
 		replans = 0;
 		verdict = "";
+		holdRefusals = 0;
+		wrapUp = false;
 		images = [];
 	};
 	/** mem_text: record a unit in the move history (newest last). */
@@ -457,6 +467,8 @@ export function units(
 			targets,
 			replans,
 			verdict,
+			holdRefusals,
+			wrapUp,
 		});
 	let saved = snapshot();
 	/** Append the state entry when it changed: the accumulated yaw must survive a resume (the wrist stays turned). */
@@ -491,6 +503,8 @@ export function units(
 			targets = Array.isArray(last.targets) ? (last.targets as Target[]) : [];
 			replans = Number(last.replans) || 0;
 			verdict = String(last.verdict ?? "");
+			holdRefusals = Number(last.holdRefusals) || 0;
+			wrapUp = last.wrapUp === true;
 		}
 		saved = snapshot();
 		// A brief extracted earlier in this branch is reused (same video and frame count).
@@ -688,9 +702,11 @@ export function units(
 		}
 		let last: Result | undefined;
 		const ran: string[] = [];
-		const halted = (r: Result) => {
+		const halted = (r: Result, m?: Move) => {
 			const d = r.details as { error?: unknown; terminated?: unknown } | undefined;
-			return Boolean(d?.error || d?.terminated);
+			// The finish sequence runs past the robot's success signal while the robot still moves (returns images).
+			const moved = m?.retreat === true && r.content.some((c) => c.type === "image");
+			return Boolean(d?.error || (d?.terminated && !moved));
 		};
 		/** Path length so far: one call travels at most the robot's per-call translation limit. */
 		let travelled = 0;
@@ -727,12 +743,12 @@ export function units(
 			}
 			if (arm) move.arm = arm;
 			if (p.view) move.view = p.view;
-			if (p.retreat) move.retreat = true;
+			if (p.retreat || (wrapUp && (u === "RELEASE" || u === "MV_UP"))) move.retreat = true;
 			if (isMove(u) && label === u && queue[index + 1] === u) move.continuous = true;
 			for (let i = 0; i < parts; i++) {
 				const piece: Move = i ? { ...move, delta: [0, 0, 0], gripper: null } : move;
 				last = await spec.apply(parts > 1 ? { ...piece, yaw: move.yaw / parts } : piece, signal);
-				if (halted(last)) break;
+				if (halted(last, move)) break;
 				if (move.yaw) yaw.set(key, (yaw.get(key) ?? 0) + move.yaw / parts);
 			}
 			travelled += dist;
@@ -741,7 +757,7 @@ export function units(
 			if (isMove(u) || u === "GRASP" || u === "ROTATE_CW" || u === "ROTATE_CCW") remember(u);
 			if (move.gripper) closed.set(key, move.gripper === "close");
 			const after = await read(arm);
-			if (last && halted(last)) break;
+			if (last && halted(last, move)) break;
 			// proprioception: a MV_* that barely moved is blocked (contact, floor, workspace limit).
 			const [p0, p1] = [eef(before), eef(after)];
 			const base = spec.baseDelta?.(move.delta, before) ?? move.delta;
@@ -916,6 +932,21 @@ export function units(
 		if (event.toolName !== "finish" || !mode() || !verifying()) return undefined;
 		const status = (event.input as { status?: unknown }).status;
 		if (status !== undefined && status !== "success") return undefined;
+		// Stage discipline (Show-Harness subgoal): a placement is done only after PLACE -> RELEASE ->
+		// RETREAT, so a success claim while still holding is refused (not the verifier's replan).
+		const holding = (armNames.length ? armNames : [""]).filter((a) => closed.get(a));
+		const placement = stages.some((s) => PLACEMENT.includes(s.motion.toUpperCase()));
+		if (placement && holding.length && holdRefusals < MAX_HOLD_REFUSALS) {
+			holdRefusals++;
+			wrapUp = true;
+			pi.appendEntry(VERIFY_ENTRY, { status, replans, holding: holding.map((a) => a || "arm"), refused: "holding" });
+			save();
+			const which = armNames.length ? ` (${holding.join(", ")} arm)` : "";
+			return {
+				block: true,
+				reason: `finish refused: the gripper${which} is still closed on the object. A placement is complete only after PLACE -> RELEASE -> RETREAT: \`act\` RELEASE, then MV_UP to lift clear, then call \`finish\` again. (This is not the verifier's check.)`,
+			};
+		}
 		const entry: Record<string, unknown> = { status, replans };
 		entry.retreat = await retreat(ctx.signal);
 		entry.cameras = images.length;

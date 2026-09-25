@@ -873,7 +873,8 @@ export default function libero(pi: ExtensionAPI) {
 	 * `delta` (holding the gripper command), turn the wrist by `yaw`, or hold one step (STOP).
 	 */
 	async function unitStep(move: Move) {
-		if (terminated || truncated)
+		// The finish sequence after a success claim (../units Move.retreat) may still release and lift.
+		if (truncated || (terminated && !move.retreat))
 			return {
 				content: [{ type: "text" as const, text: `Episode already ended (terminated=${terminated}).` }],
 				details: { terminated, truncated },

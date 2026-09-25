@@ -122,6 +122,8 @@ async function toyRobot(
 		viewSelect?: boolean;
 		/** The robot refuses the verifier's retreat (e.g. an episode that already ended). */
 		refuseRetreat?: boolean;
+		/** Every result reports the robot's success signal (terminated), as LIBERO does once solved. */
+		latched?: boolean;
 		reset?: () => Promise<Record<string, unknown>>;
 	} = {},
 ) {
@@ -155,7 +157,7 @@ async function toyRobot(
 					{ type: "text", text: "obs" },
 					{ type: "image", data: `m${moves.length}`, mimeType: "image/png" },
 				],
-				details: {},
+				details: o.latched ? { terminated: true } : {},
 			};
 		},
 		state: async () => ({ eef_xyz: [...pos], gripper_width: width, table_z: 0 }),
@@ -945,4 +947,63 @@ test("verifier retreat: before the VLM call; a closed gripper stays; a refused r
 	await two.emit("tool_call", { toolName: "finish", input: { status: "success", summary: "" } });
 	assert.deepEqual([...new Set(two.moves.map((m) => m.arm))], ["left", "right"]);
 	assert.equal(two.moves.length, 10);
+});
+
+test("stage discipline: a success claim while holding is refused (not the replan); RELEASE and MV_UP then run past success", async () => {
+	const yes = '{"complete": true, "reason": "the cube is in the bowl"}';
+	const f = await toyRobot({ "units-verify": "true" }, { vlm: [yes], latched: true });
+	await f.run("plan", {
+		stages: [
+			{ motion: "PLACE", target: "bowl", completion: "cube in the bowl" },
+			{ motion: "RELEASE", target: "cube", completion: "fingers open" },
+		],
+	});
+	await f.run("act", { unit: "GRASP" });
+	const claim = { toolName: "finish", input: { status: "success", summary: "" } };
+	const held = await f.emit("tool_call", claim);
+	assert.equal(held?.block, true);
+	assert.match(held.reason, /still closed on the object[\s\S]*RELEASE, then MV_UP/);
+	assert.equal(f.asked.length, 0, "no verifier call and no retreat while holding");
+	assert.equal(f.moves.length, 1);
+	assert.deepEqual(f.entries.filter((e) => e.customType === VERIFY_ENTRY).at(-1)?.data.refused, "holding");
+	// The finish sequence carries Move.retreat and is not halted by the latched success signal.
+	await f.run("act", { unit: "RELEASE" });
+	await f.run("act", { unit: "MV_UP", n: 2 });
+	assert.deepEqual(
+		f.moves.slice(1).map((m) => [m.gripper, m.retreat]),
+		[
+			["open", true],
+			[null, true],
+			[null, true],
+		],
+	);
+	// Other units still stop at the success signal.
+	await f.run("act", { unit: "MV_LEFT", n: 3 });
+	assert.equal(f.moves.length, 5);
+	assert.equal(f.moves.at(-1)?.retreat, undefined);
+	// Released: the retreat lifts and the verifier decides; the holding refusal did not use the replan.
+	assert.equal(await f.emit("tool_call", claim), undefined);
+	assert.equal(f.asked.length, 1);
+	const check = f.entries.filter((e) => e.customType === VERIFY_ENTRY).at(-1)?.data;
+	assert.equal(check.replans, 0);
+	assert.equal(check.retreat[0].ran, "units: MV_UP x5");
+	// Without a placement plan, or after two holding refusals, the check runs as before.
+	const noPlan = await toyRobot({ "units-verify": "true" }, { vlm: [yes] });
+	const noPlanGrasp = await noPlan.run("act", { unit: "GRASP" });
+	await noPlan.emit("tool_result", { toolName: "act", content: noPlanGrasp.content });
+	assert.equal(await noPlan.emit("tool_call", claim), undefined);
+	assert.equal(noPlan.asked.length, 1);
+	const stubborn = await toyRobot({ "units-verify": "true" }, { vlm: [yes] });
+	await stubborn.run("plan", { stages: [{ motion: "PLACE", target: "bowl", completion: "in" }] });
+	const stubbornGrasp = await stubborn.run("act", { unit: "GRASP" });
+	await stubborn.emit("tool_result", { toolName: "act", content: stubbornGrasp.content });
+	assert.equal((await stubborn.emit("tool_call", claim))?.block, true);
+	assert.equal((await stubborn.emit("tool_call", claim))?.block, true);
+	assert.equal(await stubborn.emit("tool_call", claim), undefined);
+	assert.equal(stubborn.asked.length, 1);
+	// Off without the verifier.
+	const off = await toyRobot({ "units-verify": "false" }, {});
+	await off.run("plan", { stages: [{ motion: "PLACE", target: "bowl", completion: "in" }] });
+	await off.run("act", { unit: "GRASP" });
+	assert.equal(await off.emit("tool_call", claim), undefined);
 });

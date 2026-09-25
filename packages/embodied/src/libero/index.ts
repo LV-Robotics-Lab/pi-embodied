@@ -18,7 +18,8 @@ import { decodePngChannel, encodePng } from "../png.ts";
 import { defineRobot, mark, median, SERVICES } from "../robot.ts";
 import { NdArray, RpcClient } from "../rpc.ts";
 import type { Move } from "../units/index.ts";
-import { registerFlash } from "./flash.ts";
+import { vlaSeeds } from "../vla-seed.ts";
+import { liberoFlash } from "./flash.ts";
 
 const read = (name: string) => readFileSync(new URL(name, import.meta.url), "utf8");
 const SYSTEM = read("./SYSTEM.md");
@@ -95,6 +96,7 @@ export default function libero(pi: ExtensionAPI) {
 	pi.registerFlag("seed", { type: "string", default: "0", description: "Initial-state seed" });
 	pi.registerFlag("libero-type", { type: "string", default: "pro", description: "standard | pro | plus" });
 	pi.registerFlag("vla", { type: "string", default: "http://127.0.0.1:18200", description: "Pi0.5 VLA server" });
+	const seeds = vlaSeeds(pi, () => ["libero", robot.task]);
 	pi.registerFlag("sam3", { type: "string", default: "http://127.0.0.1:18300", description: "SAM3 server" });
 	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
 	pi.registerFlag("services", {
@@ -133,6 +135,7 @@ export default function libero(pi: ExtensionAPI) {
 		},
 		video: true,
 		flywheel: true,
+		flash: liberoFlash(pi, () => ({ suite: robot.task.suite, task: robot.task.task })),
 		operator: {
 			step: () => envStep,
 			// In simulation the operator's scene restore is the env's own reset to the episode's initial state.
@@ -143,8 +146,9 @@ export default function libero(pi: ExtensionAPI) {
 			},
 		},
 		explore: {
-			reset: async (result) => {
-				await resetEpisode();
+			// The exploration `reset` tool is not a robot.tool, so robot.signal is unset here; use its own signal.
+			reset: async (result, _ctx, signal) => {
+				await resetEpisode(signal);
 				fly.reset(obs, flyMeta());
 				return observe(result);
 			},
@@ -207,7 +211,6 @@ export default function libero(pi: ExtensionAPI) {
 	const { video, op } = robot;
 	const mem = robot.mem!;
 	const fly = robot.fly!;
-	registerFlash(pi, () => ({ suite: robot.task.suite, task: robot.task.task }));
 
 	/** Every robot RPC carries the running tool's abort signal, so an abort stops motion between calls. */
 	const call = <T = unknown>(
@@ -245,7 +248,7 @@ export default function libero(pi: ExtensionAPI) {
 		absorb(ret, 1);
 	}
 
-	/** One Pi0.5 forward pass with `prompt` as the instruction, executed as one action chunk. */
+	/** One Pi0.5 forward pass with `prompt` as the instruction, executed as one action chunk; returns its seed. */
 	async function vlaChunk(prompt: string) {
 		const wire = {
 			main_images: obs.main_images.batched(),
@@ -255,7 +258,9 @@ export default function libero(pi: ExtensionAPI) {
 			task_descriptions: [prompt],
 		};
 		op.check();
-		const actions = await call<NdArray>(vla, "vla.predict", {}, 120_000, [wire, { mode: "eval" }]);
+		const seed = seeds.next();
+		const options = seed === undefined ? { mode: "eval" } : { mode: "eval", seed };
+		const actions = await call<NdArray>(vla, "vla.predict", {}, 120_000, [wire, options]);
 		const chunk = new NdArray(actions.dtype, actions.shape.slice(1), actions.data);
 		const vlaId = fly.proposal(prompt, chunk);
 		op.check();
@@ -272,6 +277,7 @@ export default function libero(pi: ExtensionAPI) {
 			record(a.slice(i * width, (i + 1) * width), o, r[i], Boolean(te[i]), Boolean(tr[i]), vlaId, i);
 		});
 		absorb([frames[frames.length - 1], rew, term, trunc, info], chunk.shape[0]);
+		return seed;
 	}
 
 	const flyMeta = () => ({
@@ -281,13 +287,14 @@ export default function libero(pi: ExtensionAPI) {
 		task_language: language,
 	});
 
-	/** Restore the episode's initial scene (session start, exploration `reset`). */
-	async function resetEpisode() {
+	/** Restore the episode's initial scene (session start, exploration `reset`); `signal` aborts the env reset. */
+	async function resetEpisode(signal = robot.signal) {
 		worldMaps.clear();
 		terminated = truncated = false;
 		grip = -1;
 		envStep = 0;
-		[obs] = await call<[Obs, unknown]>(env, "env.reset", {}, 300_000);
+		seeds.reset();
+		[obs] = await env.call<[Obs, unknown]>("env.reset", {}, 300_000, [], signal);
 		tableZ = await surfaceZ().catch(() => undefined);
 	}
 
@@ -491,8 +498,9 @@ export default function libero(pi: ExtensionAPI) {
 			let minGrip = gripper();
 			let success = false;
 			let chunks = 0;
+			const vla_seeds: (number | null)[] = [];
 			while (chunks < max_chunks) {
-				await vlaChunk(prompt);
+				vla_seeds.push((await vlaChunk(prompt)) ?? null);
 				chunks++;
 				const z = eef()[2];
 				if (z < minZ) {
@@ -524,6 +532,7 @@ export default function libero(pi: ExtensionAPI) {
 				descent_m: round(start - minZ),
 				min_gripper_opening: round(minGrip),
 				final_gripper_opening: round(gripper()),
+				vla_seeds,
 			};
 		},
 	);
@@ -534,11 +543,12 @@ export default function libero(pi: ExtensionAPI) {
 		Type.Object({ prompt: Type.String({ description: "e.g. 'turn on the stove'" }), max_chunks: int("Default 20") }),
 		async ({ prompt, max_chunks = 20 }) => {
 			let chunks = 0;
+			const vla_seeds: (number | null)[] = [];
 			while (chunks < max_chunks && !terminated && !truncated) {
-				await vlaChunk(prompt);
+				vla_seeds.push((await vlaChunk(prompt)) ?? null);
 				chunks++;
 			}
-			return { name: "pi0_doubled", instruction: prompt, success: terminated, chunks_used: chunks };
+			return { name: "pi0_doubled", instruction: prompt, success: terminated, chunks_used: chunks, vla_seeds };
 		},
 	);
 

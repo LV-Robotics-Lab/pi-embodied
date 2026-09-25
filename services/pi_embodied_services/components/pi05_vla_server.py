@@ -39,7 +39,11 @@ import numpy as np
 import torch
 from omegaconf import OmegaConf
 
-from pi_embodied_services.components.vla_facade_base import BaseVLAFacade
+from pi_embodied_services.components.vla_facade_base import (
+    BaseVLAFacade,
+    inference_seed,
+    seeded,
+)
 from pi_embodied_services.utils.config import get_pi05_checkpoint_path
 from pi_embodied_services.utils.logging import get_logger
 
@@ -211,9 +215,11 @@ class Pi05VLAFacade(BaseVLAFacade):
 
         The caller (client) is responsible for encoding env-native obs into
         the openpi wire format (see ``Pi05VLAClient.encode_obs``).
+        ``options["seed"]`` (optional int) fixes the sampler's noise (the
+        flow_sde initial and per-step draws) for this call.
         """
         mode = (options or {}).get("mode", "eval")
-        with torch.no_grad():
+        with torch.no_grad(), seeded(inference_seed(options)):
             actions, _ = self._model.predict_action_batch(obs, mode=mode)
         return (
             actions.detach().cpu().numpy()

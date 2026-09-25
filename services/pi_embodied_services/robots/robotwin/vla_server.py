@@ -29,7 +29,11 @@ from typing import Any
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from pi_embodied_services.components.vla_facade_base import BaseVLAFacade
+from pi_embodied_services.components.vla_facade_base import (
+    BaseVLAFacade,
+    inference_seed,
+    seeded,
+)
 from pi_embodied_services.robots.robotwin.contract import (
     MODEL_SPEC,
     vla_runtime_contract,
@@ -53,13 +57,20 @@ class LingBotVLAFacade(BaseVLAFacade):
         super().__init__()
 
     def predict(self, obs, options=None):
-        del options
-        return self._policy.infer(obs)
+        # LingBot seeds its globals once at import (42), so unseeded actions
+        # depend on every earlier call since server start.
+        with seeded(inference_seed(options)):
+            return self._policy.infer(obs)
 
     def infer(self, obs):
-        """Compatibility entry point required by ``WebsocketPolicyServer``."""
+        """Compatibility entry point required by ``WebsocketPolicyServer``.
+
+        An optional ``seed`` key in the observation (int) makes this inference
+        deterministic; it is removed before the observation reaches LingBot.
+        """
+        options = {"seed": obs.pop("seed")} if "seed" in obs else None
         # Through the call lock, so websocket inferences never overlap.
-        return self._serve_dispatch("vla.predict", (obs, None), {})
+        return self._serve_dispatch("vla.predict", (obs, options), {})
 
 
 def main() -> None:

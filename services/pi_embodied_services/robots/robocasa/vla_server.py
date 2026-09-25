@@ -22,7 +22,11 @@ import os
 
 import numpy as np
 
-from pi_embodied_services.components.vla_facade_base import BaseVLAFacade
+from pi_embodied_services.components.vla_facade_base import (
+    BaseVLAFacade,
+    inference_seed,
+    seeded,
+)
 from pi_embodied_services.utils.logging import get_logger
 from pi_embodied_services.utils.rpc.rpc_facade import DEFAULT_SESSION_TIMEOUT_S
 
@@ -116,14 +120,19 @@ class RoboCasaVLAFacade(BaseVLAFacade):
         # The caller's session id is injected by the RPC facade and is the
         # single source of truth for RLDX memory/RTC isolation; reject any
         # caller-supplied session_ids so it cannot shadow the server-side one.
+        # ``seed`` (optional int) fixes the flow-matching noise of this call;
+        # it is consumed here, RLDX never sees it.
         options = dict(options or {})
+        seed = inference_seed(options)
+        options.pop("seed", None)
         if "session_ids" in options:
             raise ValueError(
                 "predict options must not contain 'session_ids'; the server "
                 "injects the caller's private session id from the RPC facade"
             )
         options["session_ids"] = [session_id]
-        actions, info = self.policy.get_action(obs_dict, options=options)
+        with seeded(seed):
+            actions, info = self.policy.get_action(obs_dict, options=options)
         return actions
 
     def reset_session(self, *, session_id):

@@ -20,6 +20,7 @@ import { type Static, type TSchema, Type } from "typebox";
 import { encodePng } from "../png.ts";
 import { attach, defineRobot, median, round, SERVICES } from "../robot.ts";
 import { NdArray, RpcClient } from "../rpc.ts";
+import { vlaSeeds } from "../vla-seed.ts";
 
 const read = (name: string) => readFileSync(new URL(name, import.meta.url), "utf8");
 const SYSTEM = read("./SYSTEM.md");
@@ -111,6 +112,7 @@ export default function robocasa(pi: ExtensionAPI) {
 	pi.registerFlag("hi-res", { type: "string", default: "0", description: "Hi-res agentview resolution (0 = off)" });
 	pi.registerFlag("rldx", { type: "string", default: "http://127.0.0.1:18500", description: "RLDX-1 VLA server" });
 	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
+	const seeds = vlaSeeds(pi, () => ["robocasa", robot.task]);
 	pi.registerFlag("services", {
 		type: "string",
 		default: process.env.PI_EMBODIED_SERVICES ?? SERVICES,
@@ -172,9 +174,10 @@ export default function robocasa(pi: ExtensionAPI) {
 		},
 		video: true,
 		explore: {
-			reset: async (result) => {
+			// The exploration `reset` tool is not a robot.tool, so robot.signal is unset here; use its own signal.
+			reset: async (result, _ctx, signal) => {
 				const t0 = Date.now();
-				const out = { ...result, ...(await resetEpisode()) };
+				const out = { ...result, ...(await resetEpisode(signal)) };
 				const elapsed = round((Date.now() - t0) / 1000, 1);
 				return view(await capture({ action: "reset" }, out, elapsed), { agent_elapsed_s: elapsed });
 			},
@@ -536,14 +539,17 @@ export default function robocasa(pi: ExtensionAPI) {
 		let graspObj: string | null = null;
 		let lastClose = false;
 		let chunks = 0;
+		const vla_seeds: (number | null)[] = [];
 		while (chunks < maxChunks) {
 			chunks++;
 			if (robot.signal?.aborted) throw new Error("interrupted");
+			const seed = seeds.next();
+			vla_seeds.push(seed ?? null);
 			const actions = await vla.call<Record<string, NdArray>>(
 				"vla.predict",
 				{},
 				120_000,
-				[rldxObs(prompt, vdi), { reset_memory: [fresh] }],
+				[rldxObs(prompt, vdi), { reset_memory: [fresh], ...(seed === undefined ? {} : { seed }) }],
 				robot.signal,
 			);
 			fresh = false;
@@ -627,6 +633,7 @@ export default function robocasa(pi: ExtensionAPI) {
 			effective_settle_patience: patience,
 			prompt_overridden: requested !== prompt,
 			...(requested !== prompt ? { requested_prompt: requested } : {}),
+			vla_seeds,
 		};
 	}
 
@@ -842,9 +849,10 @@ export default function robocasa(pi: ExtensionAPI) {
 	);
 
 	/** Exploration's `reset`: a freshly sampled scene; arm/base calibration and the RLDX session start over. */
-	async function resetEpisode() {
+	async function resetEpisode(signal?: AbortSignal) {
 		vlaDesync = true;
-		obs = await env.call<Raw>("env.reset", {}, 120_000);
+		obs = await env.call<Raw>("env.reset", {}, 120_000, [], signal);
+		seeds.reset();
 		posJac = fwdOffset = undefined;
 		await vla?.call("vla.reset_session", {}, 30_000).catch(() => undefined);
 		lastPrompt = undefined;
@@ -997,6 +1005,7 @@ export default function robocasa(pi: ExtensionAPI) {
 		hist = [];
 		vlaDesync = true;
 		attempt = 1;
+		seeds.reset();
 		const { task, split, seed } = cell();
 		if (!SPLITS.includes(split)) throw new Error(`--split must be one of ${SPLITS.join(", ")}`);
 		const rldxClient = sessionRpc(flag("rldx", ""));

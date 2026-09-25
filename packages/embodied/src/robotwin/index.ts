@@ -20,6 +20,7 @@ import { type Static, type TSchema, Type } from "typebox";
 import { encodePng } from "../png.ts";
 import { attach, defineRobot, median, SERVICES, u8 } from "../robot.ts";
 import { NdArray, type RpcClient } from "../rpc.ts";
+import { vlaSeeds } from "../vla-seed.ts";
 
 const read = (name: string) => readFileSync(new URL(name, import.meta.url), "utf8");
 const SYSTEM = read("./SYSTEM.md");
@@ -351,6 +352,7 @@ export default function robotwin(pi: ExtensionAPI) {
 	});
 	pi.registerFlag("lingbot", { type: "string", default: "ws://127.0.0.1:18400", description: "LingBot-VLA server" });
 	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
+	const seeds = vlaSeeds(pi, () => ["robotwin", robot.task]);
 	pi.registerFlag("services", {
 		type: "string",
 		default: process.env.PI_EMBODIED_SERVICES ?? SERVICES,
@@ -391,6 +393,7 @@ export default function robotwin(pi: ExtensionAPI) {
 				info = reset;
 				// Action counts are per attempt, like the env's take_action_cnt that the reset zeroed.
 				policyActions = nativeActions = 0;
+				seeds.reset();
 				language = reset.instruction ?? (await env.call<string>("env.get_task_language"));
 				return present(await capture({ action: "reset" }, { ...result, success: true, instruction: language }));
 			},
@@ -837,13 +840,17 @@ export default function robotwin(pi: ExtensionAPI) {
 			const policy = await vla();
 			let executed = 0;
 			let nativePrompt: string | null = null;
+			const vla_seeds: (number | null)[] = [];
 			for (let i = 0; i < chunks && !success() && !exhausted(); i++) {
 				if (robot.signal?.aborted) throw new Error("interrupted");
 				nativePrompt = await env.call<string>("env.get_task_language", {}, READ_MS);
 				const views: NdArray[] = [];
 				for (const v of VIEWS)
 					views.push(await env.call<NdArray>("env.render_camera", { camera_name: v, depth: false }, READ_MS));
+				const seed = seeds.next();
+				vla_seeds.push(seed ?? null);
 				const out = await policy.infer({
+					...(seed === undefined ? {} : { seed }),
 					"observation.images.cam_high": views[0],
 					"observation.images.cam_left_wrist": views[1],
 					"observation.images.cam_right_wrist": views[2],
@@ -879,6 +886,7 @@ export default function robotwin(pi: ExtensionAPI) {
 				prompt: nativePrompt,
 				agent_prompt_ignored: prompt !== undefined,
 				ignored_agent_prompt: prompt ?? null,
+				vla_seeds,
 			};
 		},
 	);
@@ -932,6 +940,7 @@ export default function robotwin(pi: ExtensionAPI) {
 	async function startEpisode() {
 		snapshots = [];
 		policyActions = nativeActions = 0;
+		seeds.reset();
 		const { task, config, seed } = cell();
 		const endpoint = pi.getFlag("env") as string | undefined;
 		if (endpoint) env = await attach(endpoint, 900_000);

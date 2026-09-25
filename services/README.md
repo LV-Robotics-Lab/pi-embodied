@@ -53,6 +53,9 @@ uv pip install -e "services[libero]"          # or [libero-pro] / [libero-plus]
 uv venv services/.venv-robocasa --python 3.10 && source services/.venv-robocasa/bin/activate
 uv pip install -e "services[robocasa]" \
     --constraint services/pi_embodied_services/robots/robocasa/eval/target50-constraints.txt
+# Kitchen assets come from Box.com and RLDX weights from Hugging Face; where those are
+# unreachable, ModelScope `exuan2/robocasa` (kitchen_assets/) and `Twilighted/RLDX-Robocasa365`
+# hold byte-identical copies (same sizes / sha256 as Box and HF rev 587e9ec).
 
 # RoboTwin (SAPIEN 3.0.0b1, LingBot runtime, cuRobo built from GitHub against torch==2.7.1)
 uv venv services/.venv-robotwin --python 3.11 && source services/.venv-robotwin/bin/activate

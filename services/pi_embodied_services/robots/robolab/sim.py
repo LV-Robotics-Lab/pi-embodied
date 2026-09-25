@@ -290,7 +290,7 @@ def _register_franka_rel_ik(task: str, camera_preset: str) -> float:
         pattern="*.py",
         env_prefix="",
         env_postfix="",
-        observations_cfg=observations,
+        observations_cfg=observations(),
         actions_cfg=actions,
         robot_cfg=FrankaPandaCfg,
         camera_cfg=[*scene_cameras, EgocentricMirroredCameraCfg],
@@ -319,8 +319,22 @@ def _camera_preset(name: str) -> list:
 # -- tensor/obs accessors ----------------------------------------------------
 
 
+def isaaclab_xyzw() -> bool:
+    """Isaac Lab 3 (Isaac Sim 6) orders quaternions ``(x, y, z, w)``; 2.x used ``(w, x, y, z)``."""
+    from importlib.metadata import version
+
+    return int(version("isaaclab").split(".")[0]) >= 3
+
+
+def lab_quat(wxyz) -> tuple[float, float, float, float]:
+    """A ``(w, x, y, z)`` quaternion in the installed Isaac Lab's order (for cfg ``rot=``)."""
+    w, x, y, z = (float(v) for v in wxyz)
+    return (x, y, z, w) if isaaclab_xyzw() else (w, x, y, z)
+
+
 def to_np(value: Any) -> np.ndarray:
     """Tensor (torch or warp) -> numpy, batch dim kept."""
+    value = getattr(value, "torch", value)  # Isaac Lab 3 ProxyArray
     if hasattr(value, "detach"):
         return value.detach().cpu().numpy()
     try:
@@ -371,11 +385,10 @@ def rl_tcp(env: Any) -> np.ndarray:
 
 
 def rl_ee_quat(env: Any) -> np.ndarray:
-    """The EE body's world orientation ``[qw, qx, qy, qz]``."""
+    """The EE body's world orientation ``[qw, qx, qy, qz]`` (whatever Isaac Lab's own order)."""
     robot = env.scene["robot"]
-    return to_np(robot.data.body_quat_w)[:, _ee_body_index(robot), :][0].astype(
-        np.float64
-    )
+    q = to_np(robot.data.body_quat_w)[:, _ee_body_index(robot), :][0].astype(np.float64)
+    return q[[3, 0, 1, 2]] if isaaclab_xyzw() else q
 
 
 def ee_tilt_deg(quat_wxyz: np.ndarray) -> float:
@@ -418,6 +431,28 @@ def rl_success(env: Any) -> bool:
         return bool(stored)
     manager = getattr(env, "termination_manager", None)
     return bool(manager is not None and to_np(manager.terminated).reshape(-1)[0])
+
+
+def rl_subtask(env: Any) -> dict | None:
+    """RoboLab's subtask progress for env 0 (``completed``/``total``/``score``/``info``), or None
+    when subtask tracking is off (``make_task(enable_subtask=True)`` registers the recorder term)."""
+    from robolab.core.events.subtask_recorder import SubtaskCompletionRecorderTerm
+
+    manager = getattr(env, "recorder_manager", None)
+    term = (
+        manager.get_term(SubtaskCompletionRecorderTerm)
+        if hasattr(manager, "get_term")
+        else None
+    )
+    if term is None or not getattr(term, "subtask_state_machines", None):
+        return None
+    info = term.infos[0]
+    return {
+        "completed": int(info.get("completed", 0)),
+        "total": int(info.get("total", 0)),
+        "score": round(float(info.get("score", 0.0)), 4),
+        "info": str(info.get("info", "")),
+    }
 
 
 def rl_instruction(env_cfg: Any) -> str:

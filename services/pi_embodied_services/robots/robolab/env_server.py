@@ -102,7 +102,9 @@ class RobolabEnvFacade(MainThreadServeMixin, BaseEnvFacade):
 
     def _state(self) -> dict:
         quat = sim.rl_ee_quat(self._env)
+        subtask = sim.rl_subtask(self._env) if self._meta.get("subtask") else None
         return {
+            **({"subtask": subtask} if subtask is not None else {}),
             "eef_pos": sim.rl_tcp(self._env).astype(np.float32),
             "eef_quat_wxyz": quat.astype(np.float32),
             "tilt_deg": round(sim.ee_tilt_deg(quat), 2),
@@ -315,6 +317,11 @@ def main():
         default="default",
         choices=["default", "vague", "specific"],
     )
+    p.add_argument(
+        "--enable-subtask",
+        action="store_true",
+        help="track RoboLab's subtask progress (partial-credit score; extra physics queries per step)",
+    )
     p.add_argument("--camera-preset", default="WRIST_LEFT", choices=sim.CAMERA_PRESETS)
     p.add_argument(
         "--cuda-device",
@@ -399,6 +406,7 @@ def main():
             rendering_type=args.rendering_type,
             output_dir=out,
             episode_length_s=args.episode_length_s,
+            enable_subtask=args.enable_subtask,
         )
         facade = RobolabEnvFacade(
             app=app,
@@ -407,6 +415,7 @@ def main():
                 "task": args.task,
                 "seed": args.seed,
                 "instruction_type": args.instruction_type,
+                "subtask": bool(args.enable_subtask),
                 "robot": "franka",
                 "agentview_camera": "front_cam",
                 "wrist_camera": "wrist_cam",

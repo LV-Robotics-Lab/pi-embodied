@@ -1,0 +1,511 @@
+diff --git a/robolab/core/environments/runtime.py b/robolab/core/environments/runtime.py
+index 94c059c..f637237 100644
+--- a/robolab/core/environments/runtime.py
++++ b/robolab/core/environments/runtime.py
+@@ -50,6 +50,12 @@ def _apply_render_settings(env_cfg: ManagerBasedEnvCfg, renderer: str, rendering
+     """
+     if renderer not in _RENDERER_TO_RTX_MODE:
+         raise ValueError(f"Unknown renderer '{renderer}'; expected one of {list(_RENDERER_TO_RTX_MODE)}.")
++    if not hasattr(env_cfg.sim, "render"):
++        # Isaac Lab 3 has no SimulationCfg.render (RTX globals moved to the renderer cfg); only the
++        # default realtime renderer is ported.
++        if renderer != "realtime" or rendering_mode is not None:
++            raise NotImplementedError("renderer/rendering_mode overrides are not ported to Isaac Lab 3")
++        return
+ 
+     if rendering_mode is not None:
+         env_cfg.sim.render.rendering_mode = rendering_mode
+diff --git a/robolab/core/environments/scene_fixture.py b/robolab/core/environments/scene_fixture.py
+index c5bf304..cdf1162 100644
+--- a/robolab/core/environments/scene_fixture.py
++++ b/robolab/core/environments/scene_fixture.py
+@@ -31,7 +31,7 @@ import isaaclab.sim as sim_utils
+ from isaaclab.assets import AssetBaseCfg
+ from isaaclab.sim.utils import clone
+ from isaaclab.utils import configclass
+-from isaacsim.core.utils.stage import get_current_stage
++from isaaclab.sim.utils.stage import get_current_stage
+ from pxr import Usd, UsdGeom
+ 
+ from robolab.constants import ASSET_DIR
+@@ -46,7 +46,7 @@ class TableFixtureCfg:
+     The pose is expressed in the frame selected by ``frame``: ``"origin"`` for
+     the env origin, ``"robot"`` for the robot root's init pose (the fixture
+     then follows e.g. a ground-rebased root). Translation in meters, rotation
+-    as a ``(w, x, y, z)`` quaternion.
++    as an ``(x, y, z, w)`` quaternion (Isaac Lab 3).
+     """
+ 
+     usd_path: str
+@@ -59,27 +59,27 @@ FRANKA_TABLE_FIXTURE = TableFixtureCfg(
+     usd_path=os.path.join(ASSET_DIR, "fixtures", "franka_table.usd"),
+     pos=(-0.087, 0.0, 0.0),
+     # 180 degrees about +Z, matching the pose authored in every task scene.
+-    rot=(6.123233995736766e-17, 0.0, 0.0, 1.0),
++    rot=(0.0, 0.0, 1.0, 6.123233995736766e-17),
+ )
+ 
+ 
+ def _quat_mul(
+     q1: tuple[float, float, float, float], q2: tuple[float, float, float, float]
+ ) -> tuple[float, float, float, float]:
+-    w1, x1, y1, z1 = q1
+-    w2, x2, y2, z2 = q2
++    x1, y1, z1, w1 = q1
++    x2, y2, z2, w2 = q2
+     return (
+-        w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+         w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+         w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+         w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
++        w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+     )
+ 
+ 
+ def _quat_rotate(q: tuple[float, float, float, float], v: tuple[float, float, float]) -> tuple[float, float, float]:
+-    w, x, y, z = q
+-    qv = _quat_mul(_quat_mul(q, (0.0, *v)), (w, -x, -y, -z))
+-    return qv[1:]
++    x, y, z, w = q
++    qv = _quat_mul(_quat_mul(q, (*v, 0.0)), (-x, -y, -z, w))
++    return qv[:3]
+ 
+ 
+ def table_fixture_asset(fixture: TableFixtureCfg | None, robot_cfg: type) -> AssetBaseCfg | None:
+diff --git a/robolab/core/events/basic_recorders.py b/robolab/core/events/basic_recorders.py
+index eb18076..b7efffd 100644
+--- a/robolab/core/events/basic_recorders.py
++++ b/robolab/core/events/basic_recorders.py
+@@ -156,15 +156,15 @@ class PostStepEndEffectorPoseRecorder(RecorderTerm):
+         # root sits at the env origin with identity rotation (Franka family) this is
+         # numerically identical to the old env-local recording.
+         ee_pos, ee_quat = subtract_frame_transforms(
+-            self._robot.data.root_pos_w,
+-            self._robot.data.root_quat_w,
+-            self._robot.data.body_pos_w[:, self._ee_body_idx, :],
+-            self._robot.data.body_quat_w[:, self._ee_body_idx, :],
++            self._robot.data.root_pos_w.torch,
++            self._robot.data.root_quat_w.torch,
++            self._robot.data.body_pos_w.torch[:, self._ee_body_idx, :],
++            self._robot.data.body_quat_w.torch[:, self._ee_body_idx, :],
+         )  # (num_envs, 3), (num_envs, 4)
+ 
+         # Get body velocity from articulation
+-        ee_lin_vel = self._robot.data.body_lin_vel_w[:, self._ee_body_idx, :]  # (num_envs, 3)
+-        ee_ang_vel = self._robot.data.body_ang_vel_w[:, self._ee_body_idx, :]  # (num_envs, 3)
++        ee_lin_vel = self._robot.data.body_lin_vel_w.torch[:, self._ee_body_idx, :]  # (num_envs, 3)
++        ee_ang_vel = self._robot.data.body_ang_vel_w.torch[:, self._ee_body_idx, :]  # (num_envs, 3)
+ 
+         return self._record_key, {
+             "position": ee_pos,
+@@ -202,8 +202,8 @@ class PostStepRobotRootPoseRecorder(RecorderTerm):
+         if self._robot is None:
+             return None, None
+ 
+-        root_pos = self._robot.data.root_pos_w - self._env.scene.env_origins[:, 0:3]  # (num_envs, 3), env-local
+-        root_quat = self._robot.data.root_quat_w  # (num_envs, 4), (w, x, y, z)
++        root_pos = self._robot.data.root_pos_w.torch - self._env.scene.env_origins[:, 0:3]  # (num_envs, 3), env-local
++        root_quat = self._robot.data.root_quat_w.torch  # (num_envs, 4), (x, y, z, w) on Isaac Lab 3
+         return "robot_root_pose", {
+             "position": root_pos,
+             "orientation": root_quat,
+diff --git a/robolab/core/scenes/utils.py b/robolab/core/scenes/utils.py
+index 8ab5168..5fff712 100644
+--- a/robolab/core/scenes/utils.py
++++ b/robolab/core/scenes/utils.py
+@@ -130,7 +130,8 @@ def _scrape_scene_cached(scene_path: str, objects_of_interest_tuple: tuple = Non
+             spawn=None,
+             init_state=RigidObjectCfg.InitialStateCfg(
+                 pos=obj_info['position'],
+-                rot=obj_info['rotation'],
++                # USD scrape is (w, x, y, z); Isaac Lab 3 cfgs take (x, y, z, w).
++                rot=(*obj_info['rotation'][1:], obj_info['rotation'][0]),
+                 lin_vel=(0.0, 0.0, 0.0),
+                 ang_vel=(0.0, 0.0, 0.0),
+             ),
+diff --git a/robolab/core/sensors/contact_sensor_utils.py b/robolab/core/sensors/contact_sensor_utils.py
+index 58434c1..e465f49 100644
+--- a/robolab/core/sensors/contact_sensor_utils.py
++++ b/robolab/core/sensors/contact_sensor_utils.py
+@@ -3,6 +3,8 @@
+ 
+ import torch
+ from isaaclab.sensors import ContactSensor, ContactSensorCfg
++# Isaac Lab 3: ContactSensor is a factory; scene sensors are backend (PhysX) instances of the base class.
++from isaaclab.sensors.contact_sensor.base_contact_sensor import BaseContactSensor
+ 
+ 
+ def create_contact_sensor_cfg(entity_1, entity_2, update_period=0.0, history_length=6, debug_vis=False):
+@@ -140,7 +142,7 @@ def get_contact_sensors(scene):
+     """
+     contact_sensors = {
+         name: sensor for name, sensor in scene.sensors.items()
+-        if isinstance(sensor, ContactSensor)
++        if isinstance(sensor, BaseContactSensor)
+     }
+     return contact_sensors
+ 
+diff --git a/robolab/core/task/predicate_logic.py b/robolab/core/task/predicate_logic.py
+index bddad2d..984176f 100644
+--- a/robolab/core/task/predicate_logic.py
++++ b/robolab/core/task/predicate_logic.py
+@@ -708,7 +708,7 @@ def upright(world, object: str, tolerance: float = 0.1, up_axis: str = "z", env_
+     axis_idx = axis_map[up_axis.lower()]
+ 
+     if env_id is not None:
+-        w, x, y, z = quat[0], quat[1], quat[2], quat[3]
++        x, y, z, w = quat[0], quat[1], quat[2], quat[3]  # Isaac Lab 3: xyzw
+         R = torch.tensor([
+             [1 - 2*(y*y + z*z), 2*(x*y - w*z), 2*(x*z + w*y)],
+             [2*(x*y + w*z), 1 - 2*(x*x + z*z), 2*(y*z - w*x)],
+@@ -723,8 +723,8 @@ def upright(world, object: str, tolerance: float = 0.1, up_axis: str = "z", env_
+             print(f"upright: '{object}' upright (up_axis={up_axis}, tol={tolerance}) -> {result}")
+         return result
+     else:
+-        # quat: (N, 4) wxyz format
+-        w, x, y, z = quat[:, 0], quat[:, 1], quat[:, 2], quat[:, 3]
++        # quat: (N, 4) xyzw format (Isaac Lab 3)
++        x, y, z, w = quat[:, 0], quat[:, 1], quat[:, 2], quat[:, 3]
+         # Build rotation matrices column for axis_idx
+         if axis_idx == 0:
+             up_z = 2*(x*z - w*y)  # R[2, 0]
+diff --git a/robolab/core/utils/usd_utils.py b/robolab/core/utils/usd_utils.py
+index 880bc40..4a79d01 100644
+--- a/robolab/core/utils/usd_utils.py
++++ b/robolab/core/utils/usd_utils.py
+@@ -9,7 +9,7 @@
+ from pxr import Gf, Usd, UsdGeom, UsdPhysics, UsdShade
+ 
+ try:
+-    import isaacsim.core.utils.stage as stage_utils  # type: ignore
++    import isaaclab.sim.utils.stage as stage_utils  # type: ignore  # Isaac Lab 3 (isaacsim.core.utils is deprecated)
+ except ImportError:  # pragma: no cover -- running outside Isaac-Sim
+     stage_utils = None  # noqa: N816 – keep original style for clarity
+ 
+diff --git a/robolab/core/world/world_state.py b/robolab/core/world/world_state.py
+index d349d81..c9b5780 100644
+--- a/robolab/core/world/world_state.py
++++ b/robolab/core/world/world_state.py
+@@ -32,35 +32,14 @@ except ImportError:
+ from isaaclab.envs import ManagerBasedRLEnv
+ from isaaclab.sensors.frame_transformer.frame_transformer import FrameTransformer
+ from isaaclab.utils.math import transform_points
+-from isaacsim.core.prims import XFormPrim
+ from pxr import Gf, Usd, UsdGeom
+ 
+-try:
+-    # IsaacLab 2.3 / IsaacSim 5.1 — scene extras are isaaclab.sim.views.XformPrimView
+-    from isaaclab.sim.views import XformPrimView
+-
+-    XFORM_PRIM_TYPES: tuple[type, ...] = (XFormPrim, XformPrimView)
+-
+-    def _get_scales_usd_float3_safe(self, indices=None) -> torch.Tensor:
+-        """Replacement for XformPrimView._get_scales_usd (IsaacLab 2.3.2.post1).
++# Isaac Lab 3 / Isaac Sim 6: scene extras are isaaclab.sim.views.FrameView (XformPrimView is its alias);
++# isaacsim.core.prims is deprecated and not on the extension path. Poses come back as ProxyArrays, (x, y, z, w).
++from isaaclab.sim.views import FrameView
+ 
+-        Upstream assigns ``prim.GetAttribute("xformOp:scale").Get()`` into a
+-        ``Vt.Vec3dArray``, which raises ``TypeError: No registered converter ...
+-        GfVec3d`` for any prim whose scale is authored as ``float3`` (Gf.Vec3f) —
+-        which is how all RoboLab scene assets author it. Only ``double3`` scales
+-        survive. Read through plain tuples instead; works for both precisions.
+-        """
+-        if indices is None or indices == slice(None):
+-            indices_list = self._ALL_INDICES
+-        else:
+-            indices_list = indices.tolist() if isinstance(indices, torch.Tensor) else list(indices)
+-        scales = [tuple(self._prims[i].GetAttribute("xformOp:scale").Get()) for i in indices_list]
+-        return torch.tensor(scales, dtype=torch.float32, device=self._device)
++XFORM_PRIM_TYPES: tuple[type, ...] = (FrameView,)
+ 
+-    XformPrimView._get_scales_usd = _get_scales_usd_float3_safe
+-except ImportError:
+-    # IsaacLab 2.2 / IsaacSim 5.0 — scene extras are isaacsim.core.prims.XFormPrim
+-    XFORM_PRIM_TYPES = (XFormPrim,)
+ 
+ import robolab.constants
+ import robolab.core.utils.usd_utils as usd_utils
+@@ -402,7 +381,7 @@ class WorldState:
+         raise ValueError(f"[WorldState] Prim at path '{prim_path}' not found in scene")
+ 
+     def get_pose(self, body_name: str, is_relative: bool = True, as_matrix: bool = False, env_id: int | None = None) -> tuple[torch.Tensor, torch.Tensor] | torch.Tensor:
+-        """Get pose in xyz, wxyz format.
++        """Get pose in xyz, xyzw format (Isaac Lab 3 order).
+ 
+         Args:
+             env_id: None → (num_envs, 3) and (num_envs, 4), int → (3,) and (4,)
+@@ -425,9 +404,9 @@ class WorldState:
+             if env_id is not None:
+                 # Clamp index — static extras may have fewer prims than envs
+                 idx = min(env_id, num_prims - 1)
+-                positions, orientations = body.get_world_poses(indices=[idx])
+-                pos = positions[0]
+-                quat = orientations[0]
++                positions, orientations = (getattr(a, "torch", a) for a in body.get_world_poses())
++                pos = positions[idx]
++                quat = orientations[idx]
+                 if not isinstance(pos, torch.Tensor):
+                     pos = torch.tensor(pos, dtype=torch.float32, device=self.env.device)
+                     quat = torch.tensor(quat, dtype=torch.float32, device=self.env.device)
+@@ -440,7 +419,7 @@ class WorldState:
+                 # XFormPrim — get all available poses then map to envs.
+                 # Static extras may have fewer prims than num_envs (e.g., shelf).
+                 # In that case, compute relative pose from prim 0 and replicate.
+-                positions, orientations = body.get_world_poses()
++                positions, orientations = (getattr(a, "torch", a) for a in body.get_world_poses())
+                 if num_prims >= self.env.num_envs:
+                     # One prim per env — straightforward
+                     all_pos, all_quat = [], []
+@@ -622,7 +601,7 @@ class WorldState:
+         """Contact check for one concrete sensor pair (no alias resolution)."""
+         contact_sensor = get_contact_sensor(self.env.scene, body1, body2)
+         if env_id is not None:
+-            force_matrix = contact_sensor.data.force_matrix_w[env_id]
++            force_matrix = contact_sensor.data.force_matrix_w.torch[env_id]
+             return torch.any(torch.abs(force_matrix) > force_threshold).item()
+         else:
+             # force_matrix_w documented shape: (num_envs, num_bodies, num_filter_bodies, 3).
+@@ -630,7 +609,7 @@ class WorldState:
+             # ever returns a different rank — silent shape drift here would
+             # collapse the env axis and report cross-env contact (every env in
+             # the batch reports True iff any one env has contact).
+-            force_matrix = contact_sensor.data.force_matrix_w
++            force_matrix = contact_sensor.data.force_matrix_w.torch
+             assert force_matrix.ndim == 4 and force_matrix.shape[-1] == 3, (
+                 f"in_contact: expected force_matrix_w shape (N, B, M, 3), "
+                 f"got {tuple(force_matrix.shape)}"
+@@ -677,7 +656,7 @@ class WorldState:
+                 print(f"[WorldState] Batch sensor for '{body}' not found. Available sensors: {available_sensors}. Found '{body}' in contact with: {objects_in_contact}")
+             return objects_in_contact
+ 
+-        force_matrix = batch_sensor.data.force_matrix_w[env_id]
++        force_matrix = batch_sensor.data.force_matrix_w.torch[env_id]
+         force_above_threshold = torch.abs(force_matrix) > force_threshold
+         any_force_per_body = torch.any(force_above_threshold, dim=-1)
+         in_contact_mask = torch.any(any_force_per_body, dim=0)
+@@ -707,11 +686,11 @@ class WorldState:
+         """
+         contact_sensor, is_reversed = get_contact_sensor_with_order(self.env.scene, body1, body2)
+         if env_id is not None:
+-            force_matrix = contact_sensor.data.force_matrix_w[env_id]
++            force_matrix = contact_sensor.data.force_matrix_w.torch[env_id]
+             net_force = force_matrix.sum(dim=(0, 1))  # (3,)
+         else:
+             # (num_envs, num_bodies, num_filter_bodies, 3) → (num_envs, 3)
+-            force_matrix = contact_sensor.data.force_matrix_w
++            force_matrix = contact_sensor.data.force_matrix_w.torch
+             net_force = force_matrix.sum(dim=(1, 2))  # (N, 3)
+ 
+         if is_reversed:
+diff --git a/robolab/robots/droid.py b/robolab/robots/droid.py
+index dfdc3d1..87c6519 100644
+--- a/robolab/robots/droid.py
++++ b/robolab/robots/droid.py
+@@ -55,7 +55,7 @@ _WRIST_CAM = TiledCameraCfg(
+         vertical_aperture=3.024,
+     ),
+     offset=TiledCameraCfg.OffsetCfg(
+-        pos=(0.011, -0.031, -0.074), rot=(-0.420, 0.570, 0.576, -0.409), convention="opengl"
++        pos=(0.011, -0.031, -0.074), rot=(0.570, 0.576, -0.409, -0.420), convention="opengl"
+     ),
+ )
+ 
+@@ -81,7 +81,7 @@ class DroidCfg:
+         ),
+         init_state=ArticulationCfg.InitialStateCfg(
+             pos=(0, 0, 0),
+-            rot=(1, 0, 0, 0),
++            rot=(0, 0, 0, 1),
+             joint_pos={
+                 "panda_joint1": 0.0,
+                 "panda_joint2": -1 / 5 * np.pi,
+@@ -198,6 +198,8 @@ def _to_torch(value):
+     """
+     if isinstance(value, torch.Tensor):
+         return value
++    if hasattr(value, "torch"):  # Isaac Lab 3 ProxyArray
++        return value.torch
+     return wp.to_torch(value)
+ 
+ 
+diff --git a/robolab/robots/franka.py b/robolab/robots/franka.py
+index b45f9b0..664f9fd 100644
+--- a/robolab/robots/franka.py
++++ b/robolab/robots/franka.py
+@@ -103,7 +103,7 @@ class FrankaCfg:
+                 name="contact_frame",
+                 offset=OffsetCfg(
+                     pos=[0.0, 0.0, 0.1034],
+-                    rot=[0.0, 0.0, 0.0, 1.0],
++                    rot=[0.0, 0.0, 1.0, 0.0],
+                 ),
+             ),
+             FrameTransformerCfg.FrameCfg(
+@@ -111,7 +111,7 @@ class FrankaCfg:
+                 name="acronym_frame",
+                 offset=OffsetCfg(
+                     pos=[0.0, 0.0, 0.0],
+-                    rot=[0.70711, 0.0, 0.0, -0.70711],
++                    rot=[0.0, 0.0, -0.70711, 0.70711],
+                 ),
+             ),
+             FrameTransformerCfg.FrameCfg(
+diff --git a/robolab/robots/franka_high_pd.py b/robolab/robots/franka_high_pd.py
+index 498944a..0a05564 100644
+--- a/robolab/robots/franka_high_pd.py
++++ b/robolab/robots/franka_high_pd.py
+@@ -91,7 +91,7 @@ class FrankaCfg:
+                 name="contact_frame",
+                 offset=OffsetCfg(
+                     pos=[0.0, 0.0, 0.1034],
+-                    rot=[0.0, 0.0, 0.0, 1.0],
++                    rot=[0.0, 0.0, 1.0, 0.0],
+                 ),
+             ),
+             FrameTransformerCfg.FrameCfg(
+@@ -99,7 +99,7 @@ class FrankaCfg:
+                 name="acronym_frame",
+                 offset=OffsetCfg(
+                     pos=[0.0, 0.0, 0.0],
+-                    rot=[0.70711, 0.0, 0.0, -0.70711],
++                    rot=[0.0, 0.0, -0.70711, 0.70711],
+                 ),
+             ),
+             FrameTransformerCfg.FrameCfg(
+diff --git a/robolab/robots/kinova_gen3.py b/robolab/robots/kinova_gen3.py
+index 3cc6958..b47ed86 100644
+--- a/robolab/robots/kinova_gen3.py
++++ b/robolab/robots/kinova_gen3.py
+@@ -51,7 +51,7 @@ _WRIST_CAM = TiledCameraCfg(
+     offset=TiledCameraCfg.OffsetCfg(
+         # Kortex's simulation-camera pose expressed in the bracelet frame.
+         pos=(0.0, -0.05639, -0.074575),
+-        rot=(0.5, 0.5, 0.5, -0.5),
++        rot=(0.5, 0.5, -0.5, 0.5),
+         convention="world",
+     ),
+ )
+@@ -83,7 +83,7 @@ class KinovaGen3Cfg:
+         ),
+         init_state=ArticulationCfg.InitialStateCfg(
+             pos=(0.0, 0.0, 0.0),
+-            rot=(1.0, 0.0, 0.0, 0.0),
++            rot=(0.0, 0.0, 0.0, 1.0),
+             joint_pos={
+                 "joint_1": 0.0,
+                 "joint_2": 0.26,
+diff --git a/robolab/variations/camera.py b/robolab/variations/camera.py
+index 97e29da..e1bcd34 100644
+--- a/robolab/variations/camera.py
++++ b/robolab/variations/camera.py
+@@ -51,7 +51,7 @@ class OverShoulderLeftCameraCfg:
+             vertical_aperture=3.024,
+         ),
+         offset=TiledCameraCfg.OffsetCfg(
+-            pos=(0.05, 0.57, 0.66), rot=(-0.393, -0.195, 0.399, 0.805), convention="opengl"
++            pos=(0.05, 0.57, 0.66), rot=(-0.195, 0.399, 0.805, -0.393), convention="opengl"
+         ),
+     )
+ 
+@@ -81,7 +81,7 @@ class OverShoulderRightCameraCfg:
+             vertical_aperture=3.024,
+         ),
+         offset=TiledCameraCfg.OffsetCfg(
+-            pos=(0.05, -0.57, 0.66), rot=(0.805, 0.399, -0.195, -0.393), convention="opengl"
++            pos=(0.05, -0.57, 0.66), rot=(0.399, -0.195, -0.393, 0.805), convention="opengl"
+         ),
+     )
+ 
+@@ -107,7 +107,7 @@ class HeadCameraCfg:
+             vertical_aperture=3.024,
+         ),
+         offset=TiledCameraCfg.OffsetCfg(
+-            pos=(1.5, 0.0, 1.0), rot=(0.0, 0.474, 0.0, 0.881), convention="opengl"
++            pos=(1.5, 0.0, 1.0), rot=(0.474, 0.0, 0.881, 0.0), convention="opengl"
+         ),
+     )
+ 
+@@ -130,7 +130,7 @@ class EgocentricWideAngleCameraCfg:
+             vertical_aperture=3.024,
+         ),
+         offset=TiledCameraCfg.OffsetCfg(
+-            pos=(0.15, 0.0, 0.5), rot=(0.653, 0.271, -0.271, -0.653), convention="opengl"
++            pos=(0.15, 0.0, 0.5), rot=(0.271, -0.271, -0.653, 0.653), convention="opengl"
+         ),
+     )
+ 
+@@ -153,7 +153,7 @@ class EgocentricMirroredWideAngleHighCameraCfg:
+             vertical_aperture=3.024,
+         ),
+         offset=TiledCameraCfg.OffsetCfg(
+-            pos=(0.9, 0, 1), rot=(0.653, 0.271, 0.271, 0.653), convention="opengl"
++            pos=(0.9, 0, 1), rot=(0.271, 0.271, 0.653, 0.653), convention="opengl"
+         ),
+     )
+ 
+@@ -171,7 +171,7 @@ class EgocentricMirroredWideAngleCameraCfg:
+             vertical_aperture=3.024,
+         ),
+         offset=TiledCameraCfg.OffsetCfg(
+-            pos=(0.9, 0, 0.5), rot=(0.653, 0.271, 0.271, 0.653), convention="opengl"
++            pos=(0.9, 0, 0.5), rot=(0.271, 0.271, 0.653, 0.653), convention="opengl"
+         ),
+     )
+ 
+@@ -192,7 +192,7 @@ class EgocentricMirroredCameraCfg:
+     ),
+     offset=TiledCameraCfg.OffsetCfg(
+         pos=(1.5, 0.0, 1.0),
+-        rot=(0.653, 0.271, 0.271, 0.653),
++        rot=(0.271, 0.271, 0.653, 0.653),
+         convention="opengl"
+     ),
+ )
+diff --git a/robolab/variations/lighting.py b/robolab/variations/lighting.py
+index a326aed..206bc3d 100644
+--- a/robolab/variations/lighting.py
++++ b/robolab/variations/lighting.py
+@@ -57,7 +57,7 @@ class FrontDirectionalLightCfg:
+     front_directional_light = AssetBaseCfg(
+         prim_path="/World/front_directional_light",
+         spawn=sim_utils.DistantLightCfg(intensity=3000, angle=0.53, exposure=3),
+-        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 5.0), rot=(0.7071, 0.0, 0.7071, 0.0)),
++        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 5.0), rot=(0.0, 0.7071, 0.0, 0.7071)),
+     )
+ 
+ @configclass
+@@ -66,7 +66,7 @@ class BehindDirectionalLightCfg:
+     behind_directional_light = AssetBaseCfg(
+         prim_path="/World/behind_directional_light",
+         spawn=sim_utils.DistantLightCfg(intensity=3000, angle=0.53, exposure=3),
+-        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 5.0), rot=(0.7071, 0.0, -0.7071, 0.0)),
++        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 5.0), rot=(0.0, -0.7071, 0.0, 0.7071)),
+     )
+ 
+ @configclass
+@@ -75,7 +75,7 @@ class TopDownDirectionalLightCfg:
+     top_down_directional_light = AssetBaseCfg(
+         prim_path="/World/top_down_directional_light",
+         spawn=sim_utils.DistantLightCfg(intensity=3000, angle=0.53, exposure=0.0),
+-        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 5.0), rot=(1.0, 0.0, 0.0, 0.0)),
++        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 5.0), rot=(0.0, 0.0, 0.0, 1.0)),
+     )
+ 
+ @configclass
+@@ -84,7 +84,7 @@ class LeftDirectionalLightCfg:
+     left_directional_light = AssetBaseCfg(
+         prim_path="/World/left_directional_light",
+         spawn=sim_utils.DistantLightCfg(intensity=3000, angle=0.53, exposure=3),
+-        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 5.0), rot=(0.7071, -0.7071, 0.0, 0.0)),
++        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 5.0), rot=(-0.7071, 0.0, 0.0, 0.7071)),
+     )
+ 
+ @configclass
+@@ -93,5 +93,5 @@ class RightDirectionalLightCfg:
+     right_directional_light = AssetBaseCfg(
+         prim_path="/World/right_directional_light",
+         spawn=sim_utils.DistantLightCfg(intensity=3000, angle=0.53, exposure=3),
+-        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 5.0), rot=(0.7071, 0.7071, 0.0, 0.0)),
++        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 5.0), rot=(0.7071, 0.0, 0.0, 0.7071)),
+     )

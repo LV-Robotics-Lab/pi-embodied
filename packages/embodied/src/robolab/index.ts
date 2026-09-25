@@ -5,8 +5,11 @@
  *   pi -e packages/embodied/src/robolab --units --task RubiksCubeTask   (Show-Harness action units)
  *
  * Starts one RoboLab env server per session (services/.../robots/robolab/env_server.py, the
- * `robolab` venv with Isaac Sim 5.0 / Isaac Lab 2.2; needs ROBOLAB_ROOT, and ROBOLAB_ISAAC_ASSETS
- * for an offline copy of Isaac's Franka USDs). Isaac Sim takes about a minute to come up (longer
+ * venv from robots/robolab/install_isaac61.sh: Isaac Sim 6.1 / Isaac Lab 3.0 with RoboLab patched by
+ * robolab-isaac61.patch; needs ROBOLAB_ROOT, and ROBOLAB_ISAAC_ASSETS for an offline copy of Isaac's
+ * Franka USDs). `--instruction-type` picks RoboLab's default/vague/specific phrasing, `--subtask`
+ * records its subtask progress (score) in the tool-result details and `robot_result`, never in the
+ * planner's context. Isaac Sim takes about a minute to come up (longer
  * on a cold shader cache). `move_delta` and the units hook `apply` share one motion path: a
  * base-frame delta in metres runs as ~2 cm relative-IK decisions with the orientation locked
  * (Show-Harness's calibration); every result carries the front and wrist images and the state;
@@ -21,6 +24,7 @@
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { encodePng } from "../png.ts";
@@ -46,7 +50,7 @@ export const MAX_MOVE_M = 0.3;
 /** A closed Panda hand at or below this width holds nothing, m. */
 export const EMPTY_WIDTH_M = 0.005;
 
-/** How the front and wrist cameras look (checked with an axis probe on BananaInBowlTask, seed 0). */
+/** How the front and wrist cameras look: verified on Isaac Sim 6.1 frames (BananaInBowlTask seed 0, 10 cm probe moves along each axis). */
 export const VIEWS = `Each result shows the front view (a fixed camera in front of the robot, facing it; the robot base is at the top of the image), then the wrist view (it looks straight down from the gripper, rotated so the fingers are at the top of the image).
 - Front view: MV_LEFT / MV_RIGHT move toward the image left / right, MV_FWD toward the image bottom (toward the camera), MV_BACK toward the image top (toward the robot base).
 - Wrist view: MV_LEFT / MV_RIGHT move the gripper toward the image left / right, MV_FWD toward the image bottom, MV_BACK toward the image top; an object centered in the image is under the gripper: MV_DOWN.`;
@@ -63,6 +67,8 @@ type Obs = {
 	terminated: boolean;
 	truncated: boolean;
 	env_steps: number;
+	/** RoboLab's subtask progress (`--subtask`): completed/total subtasks and the partial-credit score. */
+	subtask?: { completed: number; total: number; score: number; info: string };
 };
 type Moved = Obs & {
 	commanded_m: number[];
@@ -73,7 +79,15 @@ type Moved = Obs & {
 	cancelled?: boolean;
 	error?: string;
 };
-type Meta = { task: string; seed: number; instruction: string; episode_length_s: number; control_hz: number };
+type Meta = {
+	task: string;
+	seed: number;
+	instruction: string;
+	instruction_type: string;
+	subtask: boolean;
+	episode_length_s: number;
+	control_hz: number;
+};
 
 const round = (v: number, d = 4) => Number(v.toFixed(d));
 
@@ -81,6 +95,16 @@ export default function robolab(pi: ExtensionAPI) {
 	const flag = (name: string, fallback: string) => String(pi.getFlag(name) ?? fallback);
 	pi.registerFlag("task", { type: "string", default: "BananaInBowlTask", description: "RoboLab task class name" });
 	pi.registerFlag("seed", { type: "string", default: "0", description: "Env seed" });
+	pi.registerFlag("instruction-type", {
+		type: "string",
+		default: "default",
+		description: "Task phrasing: default, vague or specific (RoboLab's per-task instruction variants)",
+	});
+	pi.registerFlag("subtask", {
+		type: "boolean",
+		default: false,
+		description: "Track RoboLab's subtask progress (partial-credit score in results; extra physics queries)",
+	});
 	pi.registerFlag("cuda-device", {
 		type: "string",
 		default: "0",
@@ -113,7 +137,9 @@ export default function robolab(pi: ExtensionAPI) {
 			task: robot.task.task,
 			seed: Number(robot.task.seed),
 			instruction: meta?.instruction ?? null,
+			instruction_type: meta?.instruction_type ?? flag("instruction-type", "default"),
 			success: obs?.success ?? false,
+			...(obs?.subtask ? { subtask: obs.subtask } : {}),
 			truncated: obs?.truncated ?? false,
 			env_steps: obs?.env_steps ?? 0,
 		}),
@@ -122,7 +148,7 @@ export default function robolab(pi: ExtensionAPI) {
 			description:
 				"End the episode after checking the latest state. Success is RoboLab's task predicate, not this call.",
 			parameters: Type.Object({
-				status: Type.Union([Type.Literal("success"), Type.Literal("failure")]),
+				status: StringEnum(["success", "failure"] as const),
 				summary: Type.String(),
 			}),
 			result: (params) => ({
@@ -199,7 +225,9 @@ export default function robolab(pi: ExtensionAPI) {
 				{ type: "text" as const, text: JSON.stringify(details) },
 				...images.map((png) => ({ type: "image" as const, data: png.toString("base64"), mimeType: "image/png" })),
 			],
-			details,
+			// RoboLab's subtask judgement is the evaluator's, like `success` in Show-Harness: it goes to the
+			// session (details, robot_result), never into the planner's context.
+			details: obs.subtask ? { ...details, subtask: obs.subtask } : details,
 		};
 	}
 
@@ -215,7 +243,7 @@ export default function robolab(pi: ExtensionAPI) {
 		`Translate the gripper by a base-frame [dx, dy, dz] in metres (+x away from the base, +y toward the robot's left, +z up; at most ${MAX_MOVE_M} m per call), optionally opening or closing the gripper first. The orientation is locked. Returns the new state and images.`,
 		Type.Object({
 			delta_xyz: Type.Array(Type.Number(), { minItems: 3, maxItems: 3 }),
-			gripper: Type.Optional(Type.Union([Type.Literal("open"), Type.Literal("close")])),
+			gripper: Type.Optional(StringEnum(["open", "close"] as const)),
 		}),
 		async ({ delta_xyz, gripper }, signal) => {
 			if (obs.success) return observe({ error: "the task is already solved; call finish" });
@@ -234,6 +262,8 @@ export default function robolab(pi: ExtensionAPI) {
 				args: [
 					...["-m", "pi_embodied_services.robots.robolab.env_server"],
 					...["--task", task, "--seed", seed, "--cuda-device", flag("cuda-device", "0")],
+					...["--instruction-type", flag("instruction-type", "default")],
+					...(pi.getFlag("subtask") ? ["--enable-subtask"] : []),
 				],
 				cwd: services,
 				env: { ...process.env, PYTHONPATH: services, OMNI_KIT_ACCEPT_EULA: "YES" },
@@ -243,8 +273,11 @@ export default function robolab(pi: ExtensionAPI) {
 			});
 		}
 		meta = await env.call<Meta>("env.get_env_meta");
-		if (meta.task !== task || meta.seed !== Number(seed))
-			throw new Error(`env server runs ${meta.task} seed ${meta.seed}, not ${task} seed ${seed}`);
+		const instructionType = flag("instruction-type", "default");
+		if (meta.task !== task || meta.seed !== Number(seed) || meta.instruction_type !== instructionType)
+			throw new Error(
+				`env server runs ${meta.task} seed ${meta.seed} (${meta.instruction_type}), not ${task} seed ${seed} (${instructionType})`,
+			);
 		// The server comes up reset; a new session on an attached server resets it again.
 		[obs] = await env.call<[Obs, unknown]>("env.reset", {}, 300_000);
 		return ["view_env_state", "move_delta", "finish"];

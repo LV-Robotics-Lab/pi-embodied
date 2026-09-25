@@ -11,6 +11,7 @@ import maniskill from "../src/maniskill/index.ts";
 import piperDual from "../src/piper/dual.ts";
 import piper from "../src/piper/index.ts";
 import robocasa from "../src/robocasa/index.ts";
+import robolab from "../src/robolab/index.ts";
 import { defineRobot, toolSections } from "../src/robot.ts";
 import robotwin from "../src/robotwin/index.ts";
 
@@ -64,7 +65,7 @@ const markers = (text: string) => [...text.matchAll(/\[\/?tool:([\w|]+)\]/g)].fl
 const mentions = (text: string, tool: string) =>
 	(tool.includes("_") ? new RegExp(`\\b${tool}\\b`) : new RegExp(`\`${tool}\``)).test(text);
 
-/** Every robot prompt template (robolab's aside), the extension that registers its tools, and the
+/** Every robot prompt template, the extension that registers its tools, and the
  * tools always on (the rest can be excluded without the prompt naming them). */
 const ROBOTS: { robot: string; files: string[]; load: (pi: ExtensionAPI) => unknown; core?: string[] }[] = [
 	{
@@ -92,6 +93,7 @@ const ROBOTS: { robot: string; files: string[]; load: (pi: ExtensionAPI) => unkn
 		core: ["view_env_state", "move_delta", "open_gripper", "close_gripper", "finish"],
 	},
 	{ robot: "maniskill", files: ["maniskill/SYSTEM.md"], load: maniskill },
+	{ robot: "robolab", files: ["robolab/SYSTEM.md"], load: robolab, core: ["finish"] },
 	{ robot: "dual_franka", files: ["dual_franka/SYSTEM.md"], load: dualFranka },
 	{ robot: "piper", files: ["piper/SYSTEM.md"], load: piper },
 	{ robot: "piper dual", files: ["piper/SYSTEM_DUAL.md"], load: piperDual },

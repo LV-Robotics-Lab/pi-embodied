@@ -43,6 +43,8 @@ from isaaclab.sensors import TiledCameraCfg
 from isaaclab.utils import configclass, noise
 from robolab.robots.droid import BinaryJointPositionZeroToOneActionCfg, _to_torch
 
+from pi_embodied_services.robots.robolab.sim import lab_quat
+
 # -- wrist camera: ManiSkill's "centered" mount (3.5 cm along the hand's +X, 3.6 cm along +Z,
 # looking down the grasp axis), 256x256, 90 deg FOV. Raw frames show the fingertips entering
 # from the LEFT edge; the env server rotates them 270 deg CCW so they sit at the top.
@@ -63,7 +65,7 @@ _WRIST_CAM = TiledCameraCfg(
         vertical_aperture=WRIST_CAM_APERTURE,
     ),
     offset=TiledCameraCfg.OffsetCfg(
-        pos=WRIST_CAM_POS, rot=(1.0, 0.0, 0.0, 0.0), convention="ros"
+        pos=WRIST_CAM_POS, rot=lab_quat((1.0, 0.0, 0.0, 0.0)), convention="ros"
     ),
 )
 
@@ -103,7 +105,7 @@ def _quat_wxyz_from_matrix(matrix) -> tuple[float, float, float, float]:
     return (float(q[0]), float(q[1]), float(q[2]), float(q[3]))
 
 
-FRONT_CAM_QUAT = _quat_wxyz_from_matrix(FRONT_CAM_R)
+FRONT_CAM_QUAT = lab_quat(_quat_wxyz_from_matrix(FRONT_CAM_R))
 
 _FRONT_CAM = TiledCameraCfg(
     prim_path="{ENV_REGEX_NS}/front_cam",
@@ -171,7 +173,7 @@ class FrankaPandaCfg:
         ),
         init_state=ArticulationCfg.InitialStateCfg(
             pos=(0.0, 0.0, 0.0),
-            rot=(1.0, 0.0, 0.0, 0.0),
+            rot=lab_quat((1.0, 0.0, 0.0, 0.0)),
             joint_pos=dict(FRANKA_HOME_QPOS),
         ),
         soft_joint_pos_limit_factor=1.0,

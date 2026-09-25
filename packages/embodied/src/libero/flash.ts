@@ -1,20 +1,17 @@
 /**
- * LIBERO Flash mode: replay a recorded plan with live grounding and no LLM.
+ * LIBERO's Flash hook: how a recorded LIBERO plan meets the live scene (the replay itself is ../flash).
  *
  *   pi -p -e src/libero --model flash/replay --suite libero_object_swap --task 3 --seed 0 \
  *     --molmo http://127.0.0.1:18400 "Solve the task."
  *
- * Flash is the planner, and in pi the planner is the model: the LIBERO extension registers a
- * `flash/replay` provider whose every turn is the plan's next tool call (with zero usage; an abort
- * ends the replay). The LIBERO tools execute it, so the session, `finish`, and the `robot_result`
- * row are exactly those of an LLM run.
- *
  * Each anchor is re-read the way it was recorded: `segment` anchors by SAM3 (the segment tool), the
  * rest by Molmo pointing in the opening agentview image, profiled through back_project; the arm
  * then parks over each Molmo anchor and asks again from the wrist, kept only within 5 cm of the
- * coarse reading. Waypoints are replayed as offsets from their live anchor. With `--molmo off` nothing is
- * pointed at: point anchors stay where they were recorded and picks keep their recorded thresholds
- * without retries, so the plan replays its recorded calls verbatim (meaningful only on the recorded seed).
+ * coarse reading. Waypoints are replayed as offsets from their live anchor, and while an object is
+ * held, as offsets of the object rather than the gripper. A `pi0_pick` that does not take hold is
+ * retried by ../flash. With `--molmo off` nothing is pointed at: point anchors stay where they were
+ * recorded and picks keep their recorded thresholds without retries, so the plan replays its
+ * recorded calls verbatim (meaningful only on the recorded seed).
  *
  * Plans are `<family>_<suite>_t<task>_{plan,anchors}.json` in `--flash-plans`, else in the LIBERO memory root
  * (`--memory-dir`, or the synced HF memory) under `flash/` (flash-generate.ts) or `task_card/` (the HF
@@ -25,27 +22,21 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import {
-	type Api,
-	type AssistantMessage,
-	createAssistantMessageEventStream,
-	createProvider,
-	type Message,
-	type Model,
-	type SimpleStreamOptions,
-	type ToolCall,
-	type TranscriptContext,
-	type Usage,
-} from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+	type FlashCall,
+	type FlashHook,
+	type FlashPicks,
+	type FlashReply,
+	type FlashRobot,
+	flash,
+} from "../flash/index.ts";
 import { RpcClient } from "../rpc.ts";
 import type { PlanEntry } from "./flash-generate.ts";
 
 type Json = Record<string, unknown>;
 type XY = [number, number];
-type Call = { name: string; arguments: Json };
-type Reply = { json: Json; images: string[]; error?: string };
-type Program = { plan: PlanEntry[]; reference: Map<string, XY>; locatorOf: Map<string, string> };
+type Program = { name: string; plan: PlanEntry[]; reference: Map<string, XY>; locatorOf: Map<string, string> };
 
 /** A close reading further than this from the coarse one has found something else. */
 const REFINE_ACCEPT = 0.05;
@@ -58,7 +49,15 @@ const MAX_HELD = 0.06;
 /** Height-dependent parallax of a wrist reading of a held object. */
 const PARALLAX = { x: [0.0231, 0.061], y: [-0.0029, 0.2056] } as const;
 /** A pick that did not take hold is retried in place by replaying its approach. */
-const PICK_ATTEMPTS = 3;
+const PICKS: FlashPicks = {
+	isPick: (name) => name === "pi0_pick",
+	succeeded: (reply) => (reply.json.result as Json | undefined)?.success === true,
+	attempts: 3,
+	approach: ["move_to", "move_pose", "set_gripper", "rotate_wrist"],
+	keep: 6,
+	boundary: ["release", "pi0_doubled"],
+	release: "release",
+};
 const FLASH_PICK_THRESHOLDS = {
 	lift_thresh: 0.04,
 	gripper_closed_thresh: 0.07,
@@ -103,6 +102,7 @@ function load(dir: string, name: string): Program {
 	const plan = read("plan").plan as PlanEntry[];
 	const anchors = read("anchors").anchors as { phrase: string; locator: string; median_xy: XY }[];
 	return {
+		name,
 		plan,
 		reference: new Map(anchors.map((a) => [a.phrase, a.median_xy])),
 		locatorOf: new Map(anchors.map((a) => [a.phrase, a.locator])),
@@ -110,27 +110,15 @@ function load(dir: string, name: string): Program {
 }
 
 /**
- * The robot as the replay sees it: `act` hands tool calls to the model turn and resolves with their
- * results. Motion results carry `{result, terminated, state}` and the agentview + wrist images.
+ * Re-localize the program's anchors and return how its calls are rewritten. Motion results carry
+ * `{result, terminated, state}` and the agentview + wrist images.
  */
-async function replay(
-	act: (calls: Call[]) => Promise<Reply[]>,
-	molmo: RpcClient | undefined,
-	program: Program,
-	note: (s: string) => void,
-) {
+async function start(program: Program, robot: FlashRobot, molmo: RpcClient | undefined) {
 	const { plan, reference, locatorOf } = program;
-	let latest: Reply = { json: {}, images: [] };
-	const finished = () => latest.json.terminated === true || latest.json.truncated === true;
-	const solved = () => latest.json.terminated === true;
-
-	/** One motion tool; its result becomes the latest observation. Tool errors end the replay. */
-	async function move(name: string, args: Json): Promise<Json> {
-		const [reply] = await act([{ name, arguments: args }]);
-		if (reply.error !== undefined) throw new Error(`${name} failed: ${reply.error}`);
-		latest = reply;
-		return (reply.json.result ?? {}) as Json;
-	}
+	const { act, note } = robot;
+	const images = () => robot.latest().images;
+	const move = (name: string, args: Json) => robot.move({ name, arguments: args });
+	await molmo?.ready(30_000);
 
 	/** Molmo's point for `query` in a 1024 camera image, as [col, row] in that image. */
 	async function point(image: string | undefined, query: string): Promise<XY | undefined> {
@@ -158,7 +146,7 @@ async function replay(
 
 	/** A phrase's pixel profiled down a vertical line; readings below the top 3 cm left the object. */
 	async function locate(camera: "agentview" | "wrist", query: string): Promise<XY | undefined> {
-		const px = await point(latest.images[camera === "agentview" ? 0 : 1], query);
+		const px = await point(images()[camera === "agentview" ? 0 : 1], query);
 		if (!px) return undefined;
 		const line = Array.from({ length: 9 }, (_, i): XY => [px[0], px[1] - 45 + i * 11.25]);
 		const pts = await project(camera, line);
@@ -169,7 +157,7 @@ async function replay(
 
 	/** What is in the gripper, sampled on a grid, corrected for parallax. */
 	async function heldBody(query: string): Promise<XY | undefined> {
-		const px = await point(latest.images[1], query);
+		const px = await point(images()[1], query);
 		if (!px) return undefined;
 		const grid: XY[] = [];
 		for (const dc of [-40, 0, 40]) for (const dr of [-40, 0, 40]) grid.push([px[0] + dc, px[1] + dr]);
@@ -243,121 +231,58 @@ async function replay(
 	// The plan, with every anchored waypoint moved to its live anchor.
 	let offset: XY = [0, 0];
 	let heldPhrase = "object";
-	let recent: Call[] = [];
-	let skipSuffix = false;
-	for (const entry of plan) {
-		if (finished()) break;
-		const name = entry.action;
-		const args: Json = { ...entry.arguments };
-		if (skipSuffix) {
-			// A pick that never took hold must not fall through into its carry.
-			if (name === "release") {
-				skipSuffix = false;
-				recent = [];
-				continue;
-			}
-			if (name !== "pi0_pick") continue;
-			skipSuffix = false;
-		}
-		if (name === "move_to" || name === "move_pose") {
-			const xyz = Array.isArray(args.xyz) ? (args.xyz as number[]) : [];
-			if (xyz.length !== 3) continue;
-			let target: XY = [xyz[0], xyz[1]];
-			const phrase = entry.anchor;
-			const attached = phrase !== undefined && (entry.anchor_distance ?? 9) <= MAX_ATTACH;
-			if (attached && !live.has(phrase)) {
-				note(`${phrase} unavailable; stopping replay`);
-				break;
-			}
-			if (attached) {
-				const a = live.get(phrase) as XY;
-				const o = entry.offset ?? [0, 0];
-				target = [a[0] + o[0], a[1] + o[1]];
-			}
-			if ((args.gripper ?? -1) === 1) target = [target[0] - offset[0], target[1] - offset[1]];
-			if (Math.max(Math.abs(target[0]), Math.abs(target[1])) > REACH) continue;
-			args.xyz = [r4(target[0]), r4(target[1]), xyz[2]];
-			await move(name, args);
-		} else if (name === "segment" || name === "segment_point") {
-			continue;
-		} else if (name === "pi0_pick" || name === "pi0_doubled") {
-			const stripped = String(args.prompt ?? "").replace(/^(pick up|grasp)\s+the\s+/i, "");
-			heldPhrase = stripped.split(/\b(?:on|in|into|inside|by|and)\b/)[0].trim();
-			if (name === "pi0_pick" && molmo) Object.assign(args, FLASH_PICK_THRESHOLDS);
-			let result = await move(name, args);
-			if (name === "pi0_pick" && molmo && result.success !== true) {
-				for (let attempt = 1; attempt < PICK_ATTEMPTS && !finished(); attempt++) {
-					for (const again of recent) await move(again.name, { ...again.arguments });
-					result = await move(name, { ...args });
-					if (result.success === true) break;
+	return {
+		localized: live.size,
+		picks: molmo ? PICKS : undefined,
+		rewrite(entry: PlanEntry): FlashCall | "skip" | "stop" {
+			const name = entry.action;
+			const args: Json = { ...entry.arguments };
+			if (name === "move_to" || name === "move_pose") {
+				const xyz = Array.isArray(args.xyz) ? (args.xyz as number[]) : [];
+				if (xyz.length !== 3) return "skip";
+				let target: XY = [xyz[0], xyz[1]];
+				const phrase = entry.anchor;
+				const attached = phrase !== undefined && (entry.anchor_distance ?? 9) <= MAX_ATTACH;
+				if (attached && !live.has(phrase)) {
+					note(`${phrase} unavailable; stopping replay`);
+					return "stop";
 				}
-				if (result.success !== true) {
-					note("pick unconfirmed, skipping its carry");
-					skipSuffix = true;
+				if (attached) {
+					const a = live.get(phrase) as XY;
+					const o = entry.offset ?? [0, 0];
+					target = [a[0] + o[0], a[1] + o[1]];
 				}
+				if ((args.gripper ?? -1) === 1) target = [target[0] - offset[0], target[1] - offset[1]];
+				if (Math.max(Math.abs(target[0]), Math.abs(target[1])) > REACH) return "skip";
+				args.xyz = [r4(target[0]), r4(target[1]), xyz[2]];
+			} else if (name === "segment" || name === "segment_point") {
+				return "skip";
+			} else if (name === "pi0_pick" || name === "pi0_doubled") {
+				const stripped = String(args.prompt ?? "").replace(/^(pick up|grasp)\s+the\s+/i, "");
+				heldPhrase = stripped.split(/\b(?:on|in|into|inside|by|and)\b/)[0].trim();
+				if (name === "pi0_pick" && molmo) Object.assign(args, FLASH_PICK_THRESHOLDS);
 			}
-		} else if (name === "set_gripper") {
-			await move(name, args);
+			return { name, arguments: args };
+		},
+		async after(call: FlashCall, reply: FlashReply) {
+			if (call.name === "release") offset = [0, 0];
+			if (call.name !== "set_gripper") return;
 			const body = await heldBody(PROMPTS.held(heldPhrase));
-			const eef = (latest.json.state as { robot0_eef_pos?: number[] } | undefined)?.robot0_eef_pos;
+			const eef = (reply.json.state as { robot0_eef_pos?: number[] } | undefined)?.robot0_eef_pos;
 			const candidate: XY | undefined = body && eef ? [body[0] - eef[0], body[1] - eef[1]] : undefined;
 			if (candidate && Math.hypot(...candidate) <= MAX_HELD) {
 				offset = candidate;
 				note(`held offset (${offset[0].toFixed(4)},${offset[1].toFixed(4)})`);
 			} else offset = [0, 0];
-		} else if (name === "release") {
-			await move(name, args);
-			offset = [0, 0];
-		} else {
-			await move(name, args);
-		}
-		if (name === "release" || name === "pi0_pick" || name === "pi0_doubled") recent = [];
-		else if (["move_to", "move_pose", "set_gripper", "rotate_wrist"].includes(name))
-			recent = [...recent, { name, arguments: args }].slice(-6);
-	}
-	return { done: solved(), anchors: live.size, plan: plan.length };
+		},
+	};
 }
 
-/** Parse the tool results for `ids` out of the transcript the model turn received. */
-function repliesFor(messages: Message[], ids: string[]): Reply[] {
-	const byId = new Map<string, Message>();
-	for (const m of messages) if (m.role === "toolResult") byId.set(m.toolCallId, m);
-	return ids.map((id) => {
-		const m = byId.get(id);
-		if (!m || m.role !== "toolResult") return { json: {}, images: [], error: "no tool result" };
-		const text = m.content.flatMap((c) => (c.type === "text" ? [c.text] : [])).join("\n");
-		const images = m.content.flatMap((c) => (c.type === "image" ? [c.data] : []));
-		let json: Json;
-		try {
-			json = JSON.parse(text) as Json;
-		} catch {
-			// Motion tools answer "Episode already ended (terminated=.., truncated=..)" once LIBERO is done.
-			const ended = /^Episode already ended/.test(text);
-			const flags = { terminated: /terminated=true/.test(text), truncated: /truncated=true/.test(text) };
-			return ended ? { json: flags, images } : { json: {}, images, error: text };
-		}
-		return m.isError ? { json, images, error: text } : { json, images };
-	});
-}
-
-const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-/** Flash runs no model, so every turn reports zero usage. */
-const USAGE: Usage = { ...ZERO_COST, totalTokens: 0, cost: { ...ZERO_COST, total: 0 } };
-const MODEL: Model<"flash"> = {
-	id: "replay",
-	name: "Flash replay",
-	api: "flash",
-	provider: "flash",
-	baseUrl: "",
-	reasoning: false,
-	input: ["text", "image"],
-	cost: ZERO_COST,
-	contextWindow: 100_000_000,
-	maxTokens: 16_384,
-};
-
-/** Register the `flash/replay` model on the LIBERO extension; `cell` reads its --suite and --task. */
-export function registerFlash(pi: ExtensionAPI, cell: () => { suite: string; task: string }) {
+/**
+ * LIBERO's Flash hook; `cell` reads its --suite and --task. Registers the --molmo and --flash-plans flags.
+ * The robot passes it as `flash` in its spec, and ../robot.ts mounts ../flash with it.
+ */
+export function liberoFlash(pi: ExtensionAPI, cell: () => { suite: string; task: string }): FlashHook<Program> {
 	pi.registerFlag("molmo", {
 		type: "string",
 		default: "http://127.0.0.1:18400",
@@ -367,61 +292,10 @@ export function registerFlash(pi: ExtensionAPI, cell: () => { suite: string; tas
 		type: "string",
 		description: "Directory of Flash plans (default: <memory>/libero/flash, then task_card)",
 	});
-
-	type Turn = { text: string; calls: ToolCall[] };
-	let toModel: { resolve: (turn: Turn) => void; reject: (err: Error) => void } | undefined;
-	let toReplay: { resolve: (messages: Message[]) => void; reject: (err: Error) => void } | undefined;
-	let pending: string[] = [];
-	let notes: string[] = [];
-	let started = false;
-	let over = false;
-	let stopped: Error | undefined;
-	let calls = 0;
-	let cwd = process.cwd();
-
-	const say = (turn: Turn) => {
-		const f = toModel;
-		toModel = undefined;
-		f?.resolve(turn);
-	};
-	const flush = () => {
-		const text = notes.join("\n");
-		notes = [];
-		return text;
-	};
-	const toolCall = (c: Call): ToolCall => ({
-		type: "toolCall",
-		id: `flash_${++calls}`,
-		name: c.name,
-		arguments: c.arguments as ToolCall["arguments"],
-	});
-
-	/** An aborted turn ends the replay: the waiting turn fails, and the plan stops at its next call. */
-	function stop() {
-		stopped ??= new Error("Flash replay aborted");
-		over = true;
-		toModel?.reject(stopped);
-		toReplay?.reject(stopped);
-		toModel = toReplay = undefined;
-	}
-
-	async function act(calls: Call[]): Promise<Reply[]> {
-		if (stopped) throw stopped;
-		const toolCalls = calls.map(toolCall);
-		pending = toolCalls.map((c) => c.id);
-		const results = new Promise<Message[]>((resolve, reject) => {
-			toReplay = { resolve, reject };
-		});
-		say({ text: flush(), calls: toolCalls });
-		return repliesFor(await results, pending);
-	}
-
-	async function run() {
-		const t0 = Date.now();
-		const { suite, task } = cell();
-		let status: "success" | "failure" = "failure";
-		let summary: string;
-		try {
+	let molmo: RpcClient | undefined;
+	return {
+		load(cwd) {
+			const { suite, task } = cell();
 			const match = SUITE.exec(suite);
 			if (!match) throw new Error(`Flash plans cover libero_{10,goal,object,spatial}_{task,swap}, not ${suite}`);
 			const program = `${match[1]}_${match[2]}_t${task}`;
@@ -433,96 +307,21 @@ export function registerFlash(pi: ExtensionAPI, cell: () => { suite: string; tas
 			const plans = dirs.map((d) => resolve(cwd, d));
 			const loaded = load(plans.find((d) => existsSync(join(d, `${program}_plan.json`))) ?? plans[0], program);
 			const endpoint = String(pi.getFlag("molmo") ?? "");
-			const molmo = endpoint && endpoint !== "off" ? new RpcClient(endpoint) : undefined;
-			await molmo?.ready(30_000);
-			notes.push(`replaying the ${program} program`);
-			const out = await replay(act, molmo, loaded, (s) => notes.push(s));
-			status = out.done ? "success" : "failure";
-			summary =
-				`replayed the ${program} program: ${out.plan} actions, ${out.anchors} anchors re-localized, ` +
-				`${((Date.now() - t0) / 1000).toFixed(1)} s`;
-		} catch (err) {
-			if (stopped) return;
-			summary = `flash error: ${err instanceof Error ? err.message : String(err)}`;
-		}
-		over = true;
-		say({ text: flush(), calls: [toolCall({ name: "finish", arguments: { status, summary } })] });
-	}
+			molmo = endpoint && endpoint !== "off" ? new RpcClient(endpoint) : undefined;
+			return loaded;
+		},
+		start: (program, robot) => start(program, robot, molmo),
+		over: (latest) => latest.json.terminated === true || latest.json.truncated === true,
+		solved: (latest) => latest.json.terminated === true,
+		// Motion tools answer "Episode already ended (terminated=.., truncated=..)" once LIBERO is done.
+		textResult: (text) =>
+			/^Episode already ended/.test(text)
+				? { terminated: /terminated=true/.test(text), truncated: /truncated=true/.test(text) }
+				: undefined,
+	};
+}
 
-	/** The next turn of the replay: the plan's next tool calls, or `finish` once it is done. */
-	function next(messages: Message[], signal?: AbortSignal): Promise<Turn> {
-		if (signal?.aborted) stop();
-		if (over) return Promise.resolve({ text: "Flash replay already ran in this session.", calls: [] });
-		const turn = new Promise<Turn>((resolve, reject) => {
-			toModel = { resolve, reject };
-		});
-		signal?.addEventListener("abort", stop, { once: true });
-		if (!started) {
-			started = true;
-			void run();
-		} else {
-			const f = toReplay;
-			toReplay = undefined;
-			f?.resolve(messages);
-		}
-		return turn;
-	}
-
-	function streamSimple(model: Model<Api>, context: TranscriptContext, options?: SimpleStreamOptions) {
-		const stream = createAssistantMessageEventStream();
-		const message: AssistantMessage = {
-			role: "assistant",
-			content: [],
-			api: model.api,
-			provider: model.provider,
-			model: model.id,
-			usage: { ...USAGE, cost: { ...USAGE.cost } },
-			stopReason: "stop",
-			timestamp: Date.now(),
-		};
-		next(context.messages as Message[], options?.signal).then(
-			(turn) => {
-				stream.push({ type: "start", partial: message });
-				if (turn.text) {
-					message.content.push({ type: "text", text: turn.text });
-					stream.push({ type: "text_start", contentIndex: 0, partial: message });
-					stream.push({ type: "text_delta", contentIndex: 0, delta: turn.text, partial: message });
-					stream.push({ type: "text_end", contentIndex: 0, content: turn.text, partial: message });
-				}
-				for (const call of turn.calls) {
-					const contentIndex = message.content.push(call) - 1;
-					stream.push({ type: "toolcall_start", contentIndex, partial: message });
-					stream.push({ type: "toolcall_end", contentIndex, toolCall: call, partial: message });
-				}
-				message.stopReason = turn.calls.length ? "toolUse" : "stop";
-				stream.push({ type: "done", reason: message.stopReason, message });
-				stream.end();
-			},
-			(err: Error) => {
-				message.stopReason = options?.signal?.aborted ? "aborted" : "error";
-				message.errorMessage = err.message;
-				stream.push({ type: "error", reason: message.stopReason, error: message });
-				stream.end();
-			},
-		);
-		return stream;
-	}
-
-	pi.registerProvider(
-		createProvider({
-			id: "flash",
-			name: "Flash",
-			auth: { apiKey: { name: "Flash", resolve: async () => ({ auth: {} }) } },
-			models: [MODEL],
-			api: { stream: streamSimple, streamSimple },
-		}),
-	);
-
-	pi.on("session_start", (_event, ctx) => {
-		cwd = ctx.cwd;
-		started = over = false;
-		stopped = toModel = toReplay = undefined;
-		pending = [];
-		notes = [];
-	});
+/** Mount Flash with LIBERO's hook directly, for a LIBERO extension whose spec does not pass `flash`. */
+export function registerFlash(pi: ExtensionAPI, cell: () => { suite: string; task: string }) {
+	flash(pi, liberoFlash(pi, cell));
 }

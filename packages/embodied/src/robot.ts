@@ -15,6 +15,7 @@ import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Static, TSchema } from "typebox";
 import { explore } from "./explore.ts";
+import { type FlashHook, flash } from "./flash/index.ts";
 import { flywheel } from "./flywheel.ts";
 import { type MemoryOptions, memory } from "./memory/index.ts";
 import { operator } from "./operator.ts";
@@ -105,6 +106,8 @@ export type RobotSpec = {
 	flywheel?: boolean;
 	/** Mount Show-Harness action units (../units): --units=true leaves only `act`, `finish` and its plugins' tools; --units=both adds them. */
 	units?: UnitsSpec;
+	/** Mount Flash (../flash, `--model flash/replay`): the robot's plans and how it re-localizes them. */
+	flash?: FlashHook;
 };
 
 /**
@@ -198,6 +201,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		: undefined;
 	const video = spec.video ? episodeVideo(pi) : { frame: (_image: NdArray) => {} };
 	const fly = spec.flywheel ? flywheel(pi) : undefined;
+	if (spec.flash) flash(pi, spec.flash);
 	/** A successful scene reset also restarts the units state (accumulated yaw, gripper, plan). */
 	const resetsUnits =
 		<A extends unknown[], R>(reset: (...args: A) => Promise<R>) =>

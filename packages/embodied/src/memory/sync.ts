@@ -48,7 +48,9 @@ export async function syncMemory(dir: string, log: (m: string) => void, remote =
 		return res;
 	};
 	try {
-		const info = (await (await get(`${endpoint}/api/datasets/${repo}/revision/${encodeURIComponent(revision)}?blobs=true`)).json()) as {
+		const info = (await (
+			await get(`${endpoint}/api/datasets/${repo}/revision/${encodeURIComponent(revision)}?blobs=true`)
+		).json()) as {
 			sha: string;
 			siblings: HfFile[];
 		};

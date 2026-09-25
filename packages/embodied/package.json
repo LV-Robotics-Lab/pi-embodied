@@ -4,13 +4,31 @@
 	"license": "Apache-2.0",
 	"private": true,
 	"description": "Robots as pi extensions",
+	"keywords": [
+		"pi-package"
+	],
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/LV-Robotics-Lab/pi-embodied.git",
+		"directory": "packages/embodied"
+	},
 	"type": "module",
+	"files": [
+		"src",
+		"skills",
+		"README.md"
+	],
 	"pi": {
 		"extensions": [
-			"src/dashboard/index.ts"
+			"src/setup/index.ts"
+		],
+		"skills": [
+			"skills"
 		]
 	},
 	"peerDependencies": {
+		"@earendil-works/pi-agent-core": "*",
+		"@earendil-works/pi-ai": "*",
 		"@earendil-works/pi-coding-agent": "*",
 		"typebox": "*"
 	}

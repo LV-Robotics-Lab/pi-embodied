@@ -8,10 +8,57 @@ lifecycle, pruning of old camera frames, the file-tool guard, the status publish
 for the dashboard, and the shared modules below. Everything else (the agent loop, models,
 sessions, interactive/print/json/rpc modes) is pi.
 
-Load one robot per process with `-e`. Robots share flag and tool names (`--seed`, `--task`,
-`finish`, `move_to`, and the shared modules' `--operator`, `--memory-dir`, ...), and pi rejects
-two loaded extensions that register the same flag or tool, so they cannot all be listed in
-`pi.extensions`; `package.json` lists only the dashboard, which works with any robot.
+Load one robot per process (`-e`, or an experiment directory's settings). Robots share flag and
+tool names (`--seed`, `--task`, `finish`, `move_to`, and the shared modules' `--operator`,
+`--memory-dir`, ...), and pi rejects two loaded extensions that register the same flag or tool, so
+they cannot all be listed in `pi.extensions`; a robot also replaces the coding tools. The package
+manifest therefore loads only the onboarding extension (`src/setup`) and the
+`embodied-quickstart` skill.
+
+## Install and quickstart
+
+```bash
+pi install ./packages/embodied            # from a checkout; or npm:@lv-robotics/pi-embodied once published
+pi                                        # first start in a project: a notice points to /embodied-setup
+```
+
+`/embodied-setup` asks for the robot or benchmark (and what it needs: GPU, Isaac Sim, real hardware
+and an operator), the mode (tools, units, fine-tuned, flash), where the services run (here, or a
+remote GPU box over ssh) and the planner model. After you confirm, it writes the experiment
+directory's `.pi/settings.json` and asks the agent to follow the `embodied-quickstart` skill: run
+`services/setup.sh <robot>` (venv, pyproject extra, assets, `--weights` for checkpoints), then the
+preflight (`node src/check.ts <robot>`; `/robot-check` inside a robot session), and report the
+launch command. The agent runs each step with its bash tool, under your normal approvals.
+
+The experiment directory's settings load the robot through `extensions` and drop the onboarding
+extension with a delta entry for this package (pi's package filters only narrow what the manifest
+declares, so they cannot add a robot):
+
+```json
+{
+  "packages": [{ "source": "<package>", "autoload": false, "extensions": ["-src/setup/index.ts"] }],
+  "extensions": ["<package>/src/libero/index.ts", "<package>/src/dashboard/index.ts"],
+  "defaultProvider": "<provider>",
+  "defaultModel": "<model>"
+}
+```
+
+Settings cannot carry extension flags, so the task and mode stay on the command line, e.g.
+`cd <experiment dir> && source services/.venv-libero-pro/pi-embodied.env && pi --suite libero_10 --task 0 --seed 0 --units=true --dashboard=true`.
+Run the eval scripts outside that directory: they load the robot with `-e`, and loading it twice
+fails on duplicate tools.
+
+The package is publishable to npm (`keywords: ["pi-package"]`, host packages as `*` peers,
+`files` = src, skills, README), but it is not published. An npm install has no `services/`:
+setup clones this repository for them (`--services` / `PI_EMBODIED_SERVICES` point the robots at it).
+
+Docker images (planned, not built): one image per services venv, since the extras pin conflicting
+Torch/Transformers stacks. LIBERO / LIBERO-PRO / ManiSkill / RoboTwin on
+`nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04` (EGL and Vulkan runtime libraries; cuRobo builds need
+the devel image), RoboCasa on the same base with Python 3.10, RoboLab on NVIDIA's Isaac Sim 6.1
+container, Piper on `ros:noetic` with the `[piper]` extra. Each image runs `services/setup.sh
+<robot> --weights` at build time with weights in a mounted volume; pi runs outside and attaches
+with `--env` / `--vla` / `--sam3`. Real-arm robots (Franka, dual Franka) stay on the controller host.
 
 | Robot | Extension | Success signal | Shared modules |
 | --- | --- | --- | --- |
@@ -58,10 +105,17 @@ the planner did not fail, and rerun the others. LIBERO and RoboTwin episodes get
 `--time-limit ${TIME_LIMIT:-1800}` s (the episode ends as a failure) and a `timeout` backstop
 900 s later (the episode is invalid and rerun).
 
+`src/eval-parallel.sh` runs a robot's eval.sh matrix on N workers (`-j N --gpus 1`: several workers
+may share a GPU; each gets CUDA_VISIBLE_DEVICES and the EGL device on the same PCI bus), as an A/B
+over `--variant NAME=ARGS` (same cells, one subdirectory each), and reports success rate, Pass@k and
+invalid cells per variant; `--min-success N` fails a regression run, `--max-api-concurrency M` caps
+model calls across workers. Every cell is its own eval.sh call, so validity and reruns are eval.sh's.
+
 ## LIBERO
 
 Needs the repository's Python services (`services/`, package `pi_embodied_services`) installed
-with the `[libero]` extra (see services/README.md); the extension speaks their HTTP RPC directly.
+with the `[libero]` extra (`services/setup.sh libero`, or see services/README.md); the extension
+speaks their HTTP RPC directly.
 Robots spawn their env servers from `--services` (env `PI_EMBODIED_SERVICES`, default the repo's
 `services/`) with `PYTHONPATH` set to it; `serve.sh` and `eval.sh` default to the same directory.
 

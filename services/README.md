@@ -42,7 +42,9 @@ helpers.
 ## Install
 
 Each robot extra pins its own VLA runtime (Torch/Transformers versions differ), so use one
-venv per robot family. From the repository root:
+venv per robot family. `setup.sh <robot> [--weights] [--dry-run]` does the steps below for one
+robot (venv, extra, assets, checkpoints) and writes `<venv>/pi-embodied.env`; by hand, from the
+repository root:
 
 ```bash
 # LIBERO (+ SAM3 + Pi0.5 via RLinf's openpi fork; mujoco==3.3.0)

@@ -120,6 +120,8 @@ async function toyRobot(
 		chains?: boolean;
 		arms?: string[];
 		viewSelect?: boolean;
+		/** The robot refuses the verifier's retreat (e.g. an episode that already ended). */
+		refuseRetreat?: boolean;
 		reset?: () => Promise<Record<string, unknown>>;
 	} = {},
 ) {
@@ -142,6 +144,8 @@ async function toyRobot(
 		...(o.arms ? { arms: o.arms } : {}),
 		...(o.viewSelect !== undefined ? { viewSelect: () => o.viewSelect as boolean } : {}),
 		apply: async (move) => {
+			if (move.retreat && o.refuseRetreat)
+				return { content: [{ type: "text", text: "Episode already ended." }], details: { terminated: true } };
 			moves.push(move);
 			if (!o.blocked) for (let i = 0; i < 3; i++) pos[i] += move.delta[i];
 			if (move.gripper === "open") width = 0.08;
@@ -149,7 +153,7 @@ async function toyRobot(
 			return {
 				content: [
 					{ type: "text", text: "obs" },
-					{ type: "image", data: "", mimeType: "image/png" },
+					{ type: "image", data: `m${moves.length}`, mimeType: "image/png" },
 				],
 				details: {},
 			};
@@ -619,11 +623,18 @@ test("verifier: a success finish is checked once on the latest images; NOT compl
 	assert.equal(f.asked.length, 1);
 	assert.equal(f.asked[0].model, "selfhost/muse");
 	assert.match(f.asked[0].content[0].text, /TASK: put the cube in the bowl[\s\S]*Return JSON only/);
+	// The retreat ran first: 5 MV_UP (10 cm in 2 cm steps) through apply, and the check saw its images.
+	assert.deepEqual(
+		f.moves.slice(1).map((m) => [m.delta[2], m.retreat]),
+		Array(5).fill([0.02, true]),
+	);
 	assert.deepEqual(
 		f.asked[0].content.slice(1).map((c: any) => c.data),
-		[""],
-		"the camera images of the latest robot result, not point's marked image",
+		["m6"],
+		"the camera images after the retreat, not point's marked image",
 	);
+	const [retreated] = f.entries.find((e) => e.customType === VERIFY_ENTRY)?.data.retreat;
+	assert.equal(retreated.ran, "units: MV_UP x5");
 	// The replan starts from a clean plan and history, and the reason stays in the observation.
 	const r = head(await f.run("act", { unit: "MV_RIGHT" }));
 	assert.doesNotMatch(r, /STAGE/);
@@ -671,7 +682,10 @@ test("verifier: an unavailable or failed check accepts the finish; dual-arm robo
 		assert.equal(check.refused, false);
 		assert.equal(f.asked[0].model, "relay/planner", "the session's model by default");
 	}
-	const none = await toyRobot({ "units-verify": "true" }, { vlm: ['{"complete": false, "reason": "x"}'] });
+	const none = await toyRobot(
+		{ "units-verify": "true" },
+		{ vlm: ['{"complete": false, "reason": "x"}'], refuseRetreat: true },
+	);
 	assert.equal(
 		await none.emit("tool_call", { toolName: "finish", input: { status: "success", summary: "" } }),
 		undefined,
@@ -885,4 +899,48 @@ test("view_select: act's `view` reaches the robot as Move.view, only when the ro
 	assert.equal((off.emitted.get(UNITS_EVENT) as UnitsHandle).viewSelect, false);
 	await assert.rejects(off.run("act", { unit: "MV_FWD", view: "WRIST" }), /`view` needs the robot's view select/);
 	assert.equal(off.moves.length, 0);
+});
+
+test("verifier retreat: before the VLM call; a closed gripper stays; a refused retreat still verifies, noted", async () => {
+	const no = '{"complete": false, "reason": "x"}';
+	// Holding: no lift (a held object would leave its destination); the check runs on the latest images.
+	const held = await toyRobot({ "units-verify": "true" }, { vlm: [no] });
+	await held.run("act", { unit: "GRASP" });
+	const obs = await held.run("act", { unit: "STOP" });
+	await held.emit("tool_result", { toolName: "act", content: obs.content });
+	await held.emit("tool_call", { toolName: "finish", input: { status: "success", summary: "" } });
+	assert.equal(held.moves.length, 2);
+	const heldEntry = held.entries.find((e) => e.customType === VERIFY_ENTRY)?.data;
+	assert.match(heldEntry.retreat[0].skipped, /gripper closed/);
+	assert.equal(held.asked.length, 1);
+	// Refused (the episode already ended): recorded, and the check uses the images at hand.
+	const ended = await toyRobot({ "units-verify": "true" }, { vlm: [no], refuseRetreat: true });
+	const last = await ended.run("act", { unit: "MV_LEFT" });
+	await ended.emit("tool_result", { toolName: "act", content: last.content });
+	assert.equal(
+		(await ended.emit("tool_call", { toolName: "finish", input: { status: "success", summary: "" } }))?.block,
+		true,
+	);
+	const endedEntry = ended.entries.find((e) => e.customType === VERIFY_ENTRY)?.data;
+	assert.equal(endedEntry.retreat[0].refused, "Episode already ended.");
+	assert.deepEqual(
+		ended.asked[0].content.slice(1).map((c: any) => c.data),
+		["m1"],
+	);
+	// A per-call travel limit shortens the lift; variable_step lifts in coarse steps.
+	const short = await toyRobot(
+		{ "units-verify": "true", "units-plugins": "variable_step,proprioception" },
+		{ vlm: [no], maxMove: 0.08 },
+	);
+	await short.emit("tool_call", { toolName: "finish", input: { status: "success", summary: "" } });
+	assert.deepEqual(
+		short.moves.map((m) => m.delta[2]),
+		[0.04, 0.04],
+	);
+	assert.match(short.entries.find((e) => e.customType === VERIFY_ENTRY)?.data.retreat[0].ran, /MV_UP x2 of 3/);
+	// Two arms: each open gripper lifts, one arm after the other.
+	const two = await toyRobot({ "units-verify": "true" }, { arms: ["left", "right"], vlm: [no] });
+	await two.emit("tool_call", { toolName: "finish", input: { status: "success", summary: "" } });
+	assert.deepEqual([...new Set(two.moves.map((m) => m.arm))], ["left", "right"]);
+	assert.equal(two.moves.length, 10);
 });

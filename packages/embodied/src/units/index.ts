@@ -32,7 +32,8 @@
  *
  * Side VLM calls (./vlm.ts, `--units-vlm-model`, default the session's model):
  * - `--units-verify=true|false|auto` (auto: on for dual-arm robots, as Show-Harness's dual runner): a `finish`
- *   claiming success is checked once against the task on the latest camera images; a NOT complete
+ *   claiming success first lifts every open gripper 10 cm (MV_UP through `act`, `Move.retreat`), then
+ *   is checked once against the task on the retreated camera images; a NOT complete
  *   verdict refuses it with the verifier's reason and the agent replans (at most once per episode).
  *   Every check is a `units_verify` session entry.
  * - `--units-video-ref <mp4>`: `--units-video-ref-frames` frames sampled uniformly are distilled
@@ -142,6 +143,11 @@ export type Move = {
 	continuous?: boolean;
 	/** view_select: the view that guided the move (act's `view`, robots with `viewSelect`). */
 	view?: GuideView;
+	/**
+	 * The verifier's retreat before its check: the lift runs after the robot claimed success, so a
+	 * robot that ends motion at its own success signal may still allow it (it cannot change a latched outcome).
+	 */
+	retreat?: boolean;
 };
 /** Show-Harness plugins/view_select: WRIST (rule A, the wrist view) or FRONT (rule B, the third-person view). */
 export const GUIDE_VIEWS = ["WRIST", "FRONT"] as const;
@@ -247,6 +253,12 @@ const MAX_YAW_PIECES = 30;
 const MEM_LEN = 5;
 /** mem_text: the history entry of a GRASP that closed on nothing (core/runners/real.py EMPTY_GRASP_LABEL). */
 const EMPTY_GRASP = "GRASP(empty)";
+/**
+ * Verifier: the retreat before the check lifts each open gripper this far with MV_UP (Show-Harness
+ * judges a "fresh, retreated observation": RETREAT stages lift after RELEASE and finished arms go home,
+ * so the gripper no longer occludes the drop point). A closed gripper is left in place.
+ */
+const RETREAT_M = 0.1;
 /** Verifier: NOT complete verdicts that refuse `finish` per episode (v0.max_replans). */
 const MAX_REPLANS = 1;
 /** Session entries of the verifier's checks and the video_ref brief. */
@@ -624,6 +636,7 @@ export function units(
 		plan?: string[];
 		operator?: boolean;
 		view?: string;
+		retreat?: boolean;
 	};
 	/** `act`, then the state entry (the agent's and the operator's units both change the episode state). */
 	async function actAndSave(params: ActParams, signal: AbortSignal | undefined) {
@@ -643,6 +656,7 @@ export function units(
 			plan?: MoveUnit[];
 			operator?: boolean;
 			view?: GuideView;
+			retreat?: boolean;
 		};
 		const { unit, arm, target_in_wrist: inWrist } = p;
 		// A human's unit (GUMI teleop) runs as pressed: the agent-side assists would override the operator
@@ -713,6 +727,7 @@ export function units(
 			}
 			if (arm) move.arm = arm;
 			if (p.view) move.view = p.view;
+			if (p.retreat) move.retreat = true;
 			if (isMove(u) && label === u && queue[index + 1] === u) move.continuous = true;
 			for (let i = 0; i < parts; i++) {
 				const piece: Move = i ? { ...move, delta: [0, 0, 0], gripper: null } : move;
@@ -860,13 +875,50 @@ export function units(
 		return undefined;
 	});
 
+	/**
+	 * Lift every open gripper RETREAT_M with MV_UP through `act` (the robot's apply path and limits),
+	 * one arm after the other; the last result's images become the verifier's view. A refused or
+	 * blocked lift is recorded and the check runs on the images at hand.
+	 */
+	async function retreat(signal: AbortSignal | undefined) {
+		const log: Record<string, unknown>[] = [];
+		for (const arm of armNames.length ? armNames : [undefined]) {
+			const rec: Record<string, unknown> = arm ? { arm } : {};
+			log.push(rec);
+			if (closed.get(arm ?? "")) {
+				rec.skipped = "gripper closed: a held object stays where it is";
+				continue;
+			}
+			const step = plugin("variable_step") ? coarse() : spec.stepM;
+			const n = Math.min(MAX_REPEAT, Math.ceil(RETREAT_M / step - 1e-9));
+			try {
+				const r = await actAndSave({ unit: "MV_UP", n, retreat: true, ...(arm ? { arm } : {}) }, signal);
+				const shown = r.content.filter((c): c is ImageContent => c.type === "image");
+				const said = r.content
+					.filter((c) => c.type === "text")
+					.map((c) => (c as { text: string }).text)
+					.join("\n");
+				// Without new images the robot did not move (it refused the lift).
+				if (shown.length) {
+					images = shown;
+					rec.ran = said.split("\n")[0];
+				} else rec.refused = said.split("\n").at(-1);
+			} catch (err) {
+				rec.refused = err instanceof Error ? err.message : String(err);
+			}
+		}
+		return log;
+	}
+
 	// The final task check (core/runners/dual.py _completion_outcome): a success claim is judged once
 	// more from the images; NOT complete refuses `finish` (with the reason) while the replan budget lasts.
 	pi.on("tool_call", async (event, ctx) => {
 		if (event.toolName !== "finish" || !mode() || !verifying()) return undefined;
 		const status = (event.input as { status?: unknown }).status;
 		if (status !== undefined && status !== "success") return undefined;
-		const entry: Record<string, unknown> = { status, replans, cameras: images.length };
+		const entry: Record<string, unknown> = { status, replans };
+		entry.retreat = await retreat(ctx.signal);
+		entry.cameras = images.length;
 		let refuse = false;
 		if (!images.length) entry.skipped = "no camera images yet";
 		else {

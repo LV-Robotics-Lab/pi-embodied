@@ -67,6 +67,28 @@ function decode(value: unknown): unknown {
 	return value;
 }
 
+const NONFINITE: Record<string, number> = { NaN: Number.NaN, Infinity: Infinity, "-Infinity": -Infinity };
+const NONFINITE_TAG = "\u0000pi-nonfinite:";
+
+/**
+ * JSON.parse that also accepts the `NaN`, `Infinity` and `-Infinity` tokens Python's `json.dumps`
+ * emits for non-finite floats (standard JSON has none, so JSON.parse rejects the whole reply).
+ * Tokens inside strings are left alone.
+ */
+export function parseJson(text: string): unknown {
+	try {
+		return JSON.parse(text);
+	} catch (err) {
+		if (!/NaN|Infinity/.test(text)) throw err;
+	}
+	const tagged = text.replace(/"(?:[^"\\]|\\.)*"|-?Infinity|NaN/g, (m) =>
+		m.startsWith('"') ? m : JSON.stringify(NONFINITE_TAG + m),
+	);
+	return JSON.parse(tagged, (_k, v) =>
+		typeof v === "string" && v.startsWith(NONFINITE_TAG) ? NONFINITE[v.slice(NONFINITE_TAG.length)] : v,
+	);
+}
+
 /**
  * Calls to one endpoint run one at a time: a robot env server may accept concurrent calls
  * (read-only calls may run in parallel) while its worker pipe does not. A call is
@@ -210,7 +232,7 @@ export class RpcClient {
 			clearTimeout(timer);
 			if (onAbort) signal?.removeEventListener("abort", onAbort);
 		}
-		const reply = JSON.parse(text ?? "") as { ok: boolean; result?: unknown; error?: string };
+		const reply = parseJson(text ?? "") as { ok: boolean; result?: unknown; error?: string };
 		if (!reply.ok) throw new Error(`${method}: ${reply.error}`);
 		return decode(reply.result) as T;
 	}

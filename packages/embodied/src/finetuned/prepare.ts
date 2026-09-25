@@ -2,7 +2,12 @@
  * GUMI recordings -> Show-Harness rollouts that train/data_preparation/rollouts_to_alpaca.py reads.
  *
  *   node --experimental-strip-types packages/embodied/src/finetuned/prepare.ts \
- *     --out /root/autodl-tmp/data/finetuned/mydata/rollouts <gumi record dir>...
+ *     --out /root/autodl-tmp/data/finetuned/mydata/rollouts [--include-failures] <gumi record dir>...
+ *
+ * Only runs saved as successful are converted (`success: true` in summary.json, which GUMI writes
+ * when the operator saves with "success"); failed, stopped and unfinished runs (a session that ended
+ * while recording is saved with success false) are skipped with a note, since training on them would
+ * teach the failures. `--include-failures` converts them too.
  *
  * Finds every single-arm run (a directory with actions.jsonl) under the given directories and writes
  * `<out>/<task>/rollout_NNN/` with `agentview/NNNN.png`, `wrist/NNNN.png`, `actions.jsonl` ({token,
@@ -21,6 +26,17 @@ import { ROBOT_VIEWS } from "./index.ts";
 import { decodePng, formatView, parseView, prepareView, type ViewSpec } from "./views.ts";
 
 type Json = Record<string, any>;
+
+/** Whether GUMI saved `run` as successful: summary.json's (else metadata.json's) `success` is true. */
+export function runSucceeded(run: string): boolean {
+	for (const f of ["summary.json", "metadata.json"]) {
+		const path = join(run, f);
+		if (!existsSync(path)) continue;
+		const v = (JSON.parse(readFileSync(path, "utf8")) as Json).success;
+		if (v !== undefined) return v === true;
+	}
+	return false;
+}
 
 /** Every directory under `root` (itself included) that holds an actions.jsonl. */
 export function findRuns(root: string): string[] {
@@ -107,11 +123,12 @@ function main() {
 			robot: { type: "string" },
 			agentview: { type: "string" },
 			wrist: { type: "string" },
+			"include-failures": { type: "boolean", default: false },
 		},
 	});
 	if (!values.out || !positionals.length) {
 		console.error(
-			"usage: prepare.ts --out <dir> [--task T] [--robot R] [--agentview spec] [--wrist spec] <gumi dir>...",
+			"usage: prepare.ts --out <dir> [--task T] [--robot R] [--agentview spec] [--wrist spec] [--include-failures] <gumi dir>...",
 		);
 		process.exit(2);
 	}
@@ -119,7 +136,13 @@ function main() {
 	if (!runs.length) throw new Error(`no actions.jsonl under ${positionals.join(", ")}`);
 	const counters = new Map<string, number>();
 	let total = 0;
+	let unsuccessful = 0;
 	for (const run of runs) {
+		if (!values["include-failures"] && !runSucceeded(run)) {
+			unsuccessful++;
+			console.error(`skip ${run}: not saved as successful (failed or unfinished; --include-failures converts it)`);
+			continue;
+		}
 		const meta: Json = existsSync(join(run, "metadata.json"))
 			? JSON.parse(readFileSync(join(run, "metadata.json"), "utf8"))
 			: {};
@@ -151,6 +174,7 @@ function main() {
 		total += r.rows;
 	}
 	console.log(`${total} steps in ${counters.size} task dir(s) under ${values.out}`);
+	if (unsuccessful) console.error(`${unsuccessful} run(s) skipped as not successful`);
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === new URL(import.meta.url).pathname) main();

@@ -169,6 +169,8 @@ def limits_from_config(cfg: dict[str, Any]) -> PolymetisLimits:
     robot = cfg.get("robot") or {}
     if robot.get("tcp_offset_m") is not None:
         kwargs["tcp_offset_m"] = _tuple(robot["tcp_offset_m"])
+    if robot.get("tcp_yaw_deg") is not None:
+        kwargs["tcp_yaw_deg"] = float(robot["tcp_yaw_deg"])
     limits = PolymetisLimits(**kwargs)
     limits.validate()
     return limits
@@ -545,8 +547,9 @@ def read_pose(cfg: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("robot.nuc_ip is required")
     robot = PolymetisRobot(str(rc["nuc_ip"]), int(rc.get("nuc_port", 4242)))
     try:
-        offset = (cfg.get("robot") or {}).get("tcp_offset_m") or (0.0, 0.0, 0.0)
-        pos, quat = flange_to_tcp(robot.get_ee_pose(), offset)
+        offset = rc.get("tcp_offset_m") or (0.0, 0.0, 0.0)
+        yaw = float(rc.get("tcp_yaw_deg") or 0.0)
+        pos, quat = flange_to_tcp(robot.get_ee_pose(), offset, yaw)
         return {
             "tcp_pose_xyzw": np.concatenate([pos, quat]).round(5).tolist(),
             "tcp_z_m": round(float(pos[2]), 5),

@@ -13,9 +13,13 @@
  * the replay ends; a recording without `finish` ends with a text turn, and the robot reports the
  * episode at shutdown.
  *
- * The calls are verbatim: results of this run never change them. A call that is blocked or errors
- * is noted in the next turn's text and the replay goes on. Calls to pi's workspace-writing tools
- * (write, edit, bash) are skipped with a note: replayed, they would rewrite the recorded run's files.
+ * The calls are verbatim: results of this run never change them. Calls that never ran in the
+ * recording are skipped with a note: those the robot base, the operator or ../gumi blocked (refused,
+ * or dropped as stale after an operator takeover); replayed, they would move the robot where the
+ * recorded run did not. Calls to pi's workspace-writing tools (write, edit, bash) are skipped too:
+ * replayed, they would rewrite the recorded run's files. A replayed call that errors where the
+ * recording's did not (the robot erred, broke, or stopped answering; or the run diverged) ends the
+ * replay: no further motion is sent. An error the recording also had is noted and the replay goes on.
  *
  * The task comes from the robot's usual flags; a warning goes to stderr when the recording's
  * `robot_task` entry differs from this run's.
@@ -32,6 +36,7 @@ import {
 	type Model,
 	type SimpleStreamOptions,
 	type ToolCall,
+	type ToolResultMessage,
 	type TranscriptContext,
 	type Usage,
 } from "@earendil-works/pi-ai";
@@ -39,12 +44,37 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { TASK_ENTRY } from "../robot.ts";
 
 type Json = Record<string, unknown>;
-export type Call = { name: string; arguments: Json };
-export type Turn = { text: string; thinking: string; calls: Call[] };
+/** A recorded call; `error` is its recorded error result, if it had one. */
+export type Call = { name: string; arguments: Json; error?: string };
+/** `blocked`: the turn's calls that never ran in the recording, with the reason they were blocked. */
+export type Turn = { text: string; thinking: string; calls: Call[]; blocked: { name: string; reason: string }[] };
 export type Recording = { path: string; turns: Turn[]; task?: Json; finished: boolean };
 
 /** pi's tools that change the workstation, not the robot. */
 const SKIP = new Set(["write", "edit", "bash"]);
+/**
+ * Error results of calls that never executed: pi's own (a block without a reason, an abort before the
+ * call ran, an unknown tool) and the block reasons of the robot base (../robot.ts), the operator
+ * (../operator.ts), ../gumi's stale drop, the units verifier and the memory guard.
+ */
+const NOT_RUN = [
+	/^Tool execution was blocked$/,
+	/^Operation aborted$/,
+	/^Tool \S+ not found$/,
+	/^\S+ is not available\.$/,
+	/^The robot failed: [\s\S]*The episode is over\.$/,
+	/^The episode is finished\.$/,
+	/^Planner \w+ budget exhausted; the episode is over\.$/,
+	/^operator (submitted a terminal verdict|aborted this run)/,
+	/^refused; request_scene_reset/,
+	/^finish refused/,
+	/was not executed; decide again from the current observation\.$/,
+	/^file access (is disabled|denied)/,
+];
+const resultText = (m: { content: { type: string; text?: string }[] }) =>
+	m.content.flatMap((c) => (c.type === "text" && c.text ? [c.text] : [])).join(" ");
+const brief = (s: string) => s.replace(/\s+/g, " ").slice(0, 300);
+
 /** The custom entry recording which session this run replays. */
 export const REPLAY_ENTRY = "replay_source";
 
@@ -81,6 +111,11 @@ export function loadRecording(path: string): Recording {
 	const branch: Json[] = [];
 	for (let e = entries.at(-1); e; e = typeof e.parentId === "string" ? byId.get(e.parentId) : undefined)
 		branch.unshift(e);
+	const results = new Map<string, ToolResultMessage>();
+	for (const e of branch) {
+		const m = e.type === "message" ? (e.message as Message) : undefined;
+		if (m?.role === "toolResult") results.set(m.toolCallId, m);
+	}
 	const turns: Turn[] = [];
 	let task: Json | undefined;
 	for (const e of branch) {
@@ -88,11 +123,20 @@ export function loadRecording(path: string): Recording {
 		const m = e.type === "message" ? (e.message as AssistantMessage) : undefined;
 		// An errored or aborted reply's tool calls never ran.
 		if (m?.role !== "assistant" || m.stopReason === "error" || m.stopReason === "aborted") continue;
-		const calls = m.content.flatMap((c) => (c.type === "toolCall" ? [{ name: c.name, arguments: c.arguments }] : []));
-		if (!calls.length) continue;
+		const calls: Call[] = [];
+		const blocked: Turn["blocked"] = [];
+		for (const c of m.content) {
+			if (c.type !== "toolCall") continue;
+			const r = results.get(c.id);
+			const error = r?.isError ? resultText(r) : undefined;
+			if (error !== undefined && NOT_RUN.some((p) => p.test(error.trim())))
+				blocked.push({ name: c.name, reason: brief(error) });
+			else calls.push({ name: c.name, arguments: c.arguments, ...(error !== undefined ? { error } : {}) });
+		}
+		if (!calls.length && !blocked.length) continue;
 		const text = m.content.flatMap((c) => (c.type === "text" ? [c.text] : [])).join("\n");
 		const thinking = m.content.flatMap((c) => (c.type === "thinking" ? [c.thinking] : [])).join("\n");
-		turns.push({ text, thinking, calls });
+		turns.push({ text, thinking, calls, blocked });
 	}
 	const finished = turns.some((t) => t.calls.some((c) => c.name === "finish"));
 	return { path: file, turns, task, finished };
@@ -136,7 +180,7 @@ export default function replay(pi: ExtensionAPI) {
 	let started = false;
 	let over = false;
 	let hasUI = false;
-	let emitted: { id: string; name: string }[] = [];
+	let emitted: { id: string; name: string; recorded?: string }[] = [];
 	let ids = 0;
 
 	const warn = (ctx: ExtensionContext | undefined, s: string) => {
@@ -180,22 +224,31 @@ export default function replay(pi: ExtensionAPI) {
 		if (started) over = true;
 	});
 
-	/** Errors among the results of the last replayed calls, as notes. */
-	function failures(messages: Message[]): string[] {
-		const results = new Map<string, Message>();
+	/**
+	 * Errors among the results of the last replayed calls, as notes; `stop` when one failed where the
+	 * recording's call did not (or has no result): the robot erred or broke, or the run diverged.
+	 */
+	function failures(messages: Message[]): { notes: string[]; stop: boolean } {
+		const results = new Map<string, ToolResultMessage>();
 		for (const m of messages) if (m.role === "toolResult") results.set(m.toolCallId, m);
-		return emitted.flatMap(({ id, name }) => {
+		let stop = false;
+		const notes = emitted.flatMap(({ id, name, recorded }) => {
 			const m = results.get(id);
-			if (!m || m.role !== "toolResult") return [`${name}: no result`];
+			if (!m) return [`${name}: no result; continuing`];
 			if (!m.isError) return [];
-			const text = m.content.flatMap((c) => (c.type === "text" ? [c.text] : [])).join(" ");
-			return [`${name} failed: ${text.replace(/\s+/g, " ").slice(0, 300)}`];
+			if (recorded === undefined) {
+				stop = true;
+				return [`${name} failed: ${brief(resultText(m))}; it succeeded in the recording`];
+			}
+			return [`${name} failed, as in the recording: ${brief(resultText(m))}; continuing`];
 		});
+		return { notes, stop };
 	}
 
 	/** The next turn: the recording's next tool-call turn, or a closing text turn. */
 	function next(messages: Message[]): { notes: string[]; text: string; thinking: string; calls: ToolCall[] } {
-		const notes = started ? failures(messages).map((f) => `${f}; continuing`) : [];
+		const failed = started ? failures(messages) : { notes: [], stop: false };
+		const notes = failed.notes;
 		emitted = [];
 		const end = (text: string) => ({
 			notes,
@@ -215,8 +268,15 @@ export default function replay(pi: ExtensionAPI) {
 			over = true;
 			return end(loadError ?? "no --replay session given; nothing to replay.");
 		}
+		if (failed.stop) {
+			over = true;
+			return end(
+				`Replay stopped: a call failed where the recorded one succeeded; no further recorded motion is sent (${cursor} of ${recording.turns.length} turns replayed).`,
+			);
+		}
 		while (cursor < recording.turns.length) {
 			const turn = recording.turns[cursor++];
+			for (const b of turn.blocked) notes.push(`skipped ${b.name} (it never ran in the recording: ${b.reason})`);
 			for (const c of turn.calls)
 				if (SKIP.has(c.name)) notes.push(`skipped ${c.name} (it would rewrite the recorded run's files)`);
 			const calls = turn.calls
@@ -230,7 +290,8 @@ export default function replay(pi: ExtensionAPI) {
 					}),
 				);
 			if (!calls.length) continue;
-			emitted = calls.map((c) => ({ id: c.id, name: c.name }));
+			const kept = turn.calls.filter((c) => !SKIP.has(c.name));
+			emitted = calls.map((c, i) => ({ id: c.id, name: c.name, recorded: kept[i].error }));
 			const text = [...notes.map((n) => `replay: ${n}`), turn.text].filter(Boolean).join("\n");
 			return { notes, text, thinking: turn.thinking, calls };
 		}

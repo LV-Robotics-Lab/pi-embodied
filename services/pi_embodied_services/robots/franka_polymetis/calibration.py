@@ -36,8 +36,11 @@ gives the wrist matrix; eye-to-hand (pass the inverted base->gripper poses) give
 external one. For the wrist, the end-effector frame must be the frame whose poses were
 used to calibrate, and it must equal the TCP frame the server reports
 (``raw_base_state.tcp_pose``: Polymetis's end-effector link moved by
-``robot.tcp_offset_m``) -- a wrist calibration made against the RLinf/libfranka TCP
-(``O_T_EE``, flange + hand offset) needs ``tcp_offset_m`` set to that hand offset.
+``robot.tcp_offset_m`` and turned by ``robot.tcp_yaw_deg`` about its z-axis). A wrist
+calibration made against the RLinf/libfranka TCP (``O_T_EE`` = flange * Franka Hand
+``F_T_EE``: z 0.1034 m and -45 deg about z) needs both: ``tcp_offset_m: [0, 0,
+0.1034]`` and ``tcp_yaw_deg: -45``. The offset alone leaves the camera frame turned
+45 deg about the tool axis, i.e. several cm off for a camera ~10 cm from that axis.
 
     python -m pi_embodied_services.robots.franka_polymetis.calibration \\
         --matrix T_ee_wrist.json --eye-on-hand --out ~/.ros/easy_handeye/wrist.yaml

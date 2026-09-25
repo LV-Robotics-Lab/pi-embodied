@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { test } from "node:test";
-import { forgetUnresponsive, RpcClient, RpcUnavailable } from "../src/rpc.ts";
+import { forgetUnresponsive, parseJson, RpcClient, RpcUnavailable } from "../src/rpc.ts";
 
 /**
  * A fake robot server: `slow` answers after 300 ms; it records every call's start and end, and the
@@ -111,4 +111,25 @@ test("a refused connection is RpcUnavailable", async () => {
 	const srv = await fakeServer();
 	srv.close();
 	await assert.rejects(new RpcClient(srv.url).call("fast", {}, 1_000), RpcUnavailable);
+});
+
+test("NaN and Infinity from Python's json.dumps parse as numbers, not errors", async (t) => {
+	// json.dumps({"ok": True, "result": {...}}) with non-finite floats, a string that mentions them, and an escaped quote.
+	const body =
+		'{"ok": true, "result": {"q": [NaN, Infinity, -Infinity, 1.5], "note": "NaN \\" -Infinity", "e": 1e-3}}';
+	const server = createServer((req, res) => {
+		req.resume();
+		req.on("end", () => res.end(body));
+	});
+	await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+	t.after(() => server.close());
+	const result = await new RpcClient(`http://127.0.0.1:${(server.address() as AddressInfo).port}`).call<{
+		q: number[];
+		note: string;
+		e: number;
+	}>("state");
+	assert.deepEqual(result.q, [Number.NaN, Infinity, -Infinity, 1.5]);
+	assert.equal(result.note, 'NaN " -Infinity');
+	assert.equal(result.e, 0.001);
+	assert.throws(() => parseJson("{bad NaN"), SyntaxError);
 });

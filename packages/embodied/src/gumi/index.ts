@@ -16,12 +16,15 @@
  * Runs go to `<--gumi-record>/<MMDD>/task_<id>/<HH-MM-SS>/` (core/record/episode_logger.py's run_dir, UTC+8):
  *   images/agentview/0000.png, images/wrist/0000.png   the tool result's PNGs, byte for byte
  *                     (two arms: images/wrist_left/, images/wrist_right/ instead of one side-by-side wrist png)
- *   steps.jsonl       episode_logger records: {i, stage, act, eef, w, grip, ts, src[, dagger, n]}
+ *   steps.jsonl       episode_logger records: {i, stage, act, eef, w, grip, grip_measured, ts, src[, dagger, n]}
  *                     (two arms: {i, left: {act, eef, w, grip, src}, right: {...}, ts[, dagger]}); steps.json at close
  *   actions.jsonl     the GUMI collectors' records (core/teleop/{single,dual}.py), which
  *                     train/data_preparation/rollouts_to_alpaca.py reads: {step, token, kind, gripper_closed,
- *                     ee_pose, gripper_width, agentview, wrist, time, src[, dagger, n]} (two arms: {step,
- *                     agentview, wrist_left, wrist_right, time, left: {token, ...}, right: {...}})
+ *                     ee_pose, gripper_width, gripper_closed_measured, agentview, wrist, time, src[, dagger, n]}
+ *                     (two arms: {step, agentview, wrist_left, wrist_right, time, left: {token, ...}, right: {...}})
+ *                     `gripper_closed` / `grip` is the commanded state (the label, as GUMI records it);
+ *                     ee_pose, gripper_width and `gripper_closed_measured` / `grip_measured` are what the robot
+ *                     measured at obs_t (null when it reports no gripper state)
  *   metadata.json     task, robot, step size, tokens, sources, success; summary.json {success, steps, end_reason, ...}
  * Each record is (obs_t, a_t): the observation the unit was decided on, then the unit. `src` is "human" or
  * "agent"; operator steps taken over from a running agent carry `dagger` (true, or "L|R" on two arms), as
@@ -48,32 +51,75 @@ export const STILL = "STILL";
 export const ARM = "arm";
 export const DUAL = ["left", "right"] as const;
 
+/**
+ * The key bindings, by `KeyboardEvent.code`: the one table the dashboard's key handler and pad labels
+ * (sent in the GUMI state as `keys`) and the typed sequence aliases below are made from.
+ * One arm (web_teleop/static): WASD QE move, Z/X rotate, G grasp, R release, arrows as a second move
+ * cluster. Two arms (web_teleop_dual/static/index.html): the left hand's cluster for the left arm,
+ * IJKL UO NM Shift-R . for the right; Ctrl holds that arm STILL.
+ */
+const LEFT_KEYS: Record<string, string> = {
+	KeyW: "MV_FWD",
+	KeyS: "MV_BACK",
+	KeyA: "MV_LEFT",
+	KeyD: "MV_RIGHT",
+	KeyQ: "MV_UP",
+	KeyE: "MV_DOWN",
+	KeyZ: "ROTATE_CCW",
+	KeyX: "ROTATE_CW",
+	KeyG: "GRASP",
+	KeyR: "RELEASE",
+};
+const RIGHT_KEYS: Record<string, string> = {
+	KeyI: "MV_FWD",
+	KeyK: "MV_BACK",
+	KeyJ: "MV_LEFT",
+	KeyL: "MV_RIGHT",
+	KeyU: "MV_UP",
+	KeyO: "MV_DOWN",
+	KeyN: "ROTATE_CCW",
+	KeyM: "ROTATE_CW",
+	ShiftRight: "GRASP",
+	Period: "RELEASE",
+	ControlRight: STILL,
+};
+export const KEYS = {
+	single: {
+		...LEFT_KEYS,
+		ArrowUp: "MV_UP",
+		ArrowDown: "MV_DOWN",
+		ArrowLeft: "MV_LEFT",
+		ArrowRight: "MV_RIGHT",
+	} as Record<string, string>,
+	dual: {
+		left: { ...LEFT_KEYS, ShiftLeft: "GRASP", ControlLeft: STILL } as Record<string, string>,
+		right: RIGHT_KEYS,
+	},
+};
+/** The keys `arms` are driven with: code -> [arm, unit]. */
+export function keyMap(arms: readonly string[]): Record<string, [string, string]> {
+	const bound =
+		arms.length > 1
+			? arms.map((a, i) => [a, i ? KEYS.dual.right : KEYS.dual.left] as const)
+			: [[arms[0], KEYS.single] as const];
+	return Object.fromEntries(
+		bound.flatMap(([arm, keys]) =>
+			Object.entries(keys).map(([code, unit]): [string, [string, string]] => [code, [arm, unit]]),
+		),
+	);
+}
+/** A cluster's typeable keys (letters and `.`) as sequence aliases. */
+const typed = (keys: Record<string, string>) =>
+	Object.fromEntries(
+		Object.entries(keys).flatMap(([code, unit]) => {
+			const k = code === "Period" ? "." : /^Key([A-Z])$/.exec(code)?.[1];
+			return k ? [[k, unit]] : [];
+		}),
+	);
 /** The keyboard keys, typed: `w*3 a g` is pressing W three times, then A, then G. */
-export const ALIASES: Record<string, string> = {
-	W: "MV_FWD",
-	S: "MV_BACK",
-	A: "MV_LEFT",
-	D: "MV_RIGHT",
-	Q: "MV_UP",
-	E: "MV_DOWN",
-	Z: "ROTATE_CCW",
-	X: "ROTATE_CW",
-	G: "GRASP",
-	R: "RELEASE",
-	STAY: STILL,
-};
-/** The dual rig's right-hand cluster (web_teleop_dual/static/index.html), accepted after `R:`. */
-export const RIGHT_ALIASES: Record<string, string> = {
-	I: "MV_FWD",
-	K: "MV_BACK",
-	J: "MV_LEFT",
-	L: "MV_RIGHT",
-	U: "MV_UP",
-	O: "MV_DOWN",
-	N: "ROTATE_CCW",
-	M: "ROTATE_CW",
-	".": "RELEASE",
-};
+export const ALIASES: Record<string, string> = { ...typed(LEFT_KEYS), STAY: STILL };
+/** The dual rig's right-hand cluster, accepted after `R:`. */
+export const RIGHT_ALIASES: Record<string, string> = typed(RIGHT_KEYS);
 export const MAX_REPEAT = 64;
 /** Steps one request may carry (single arm: MAX_BATCH_TOKENS; two arms: MAX_PAIRS). */
 export const MAX_STEPS = { single: 64, dual: 24 };
@@ -243,19 +289,31 @@ function find(state: unknown, keys: string[], depth = 0): unknown {
 
 const EEF = ["eef_xyz", "ee_pose", "eef_pose", "tcp_pose", "eef_pos", "robot0_eef_pos", "eef", "ee_pos", "tcp_pos"];
 const WIDTH = ["gripper_width", "gripper_opening", "gripper_open_width", "robot0_gripper_qpos", "gripper"];
+/** The robot's measured gripper state: closed (`gripper_closed`) or open (`gripper_open`, negated). */
+const CLOSED = ["gripper_closed", "gripper_is_closed"];
+const OPEN = ["gripper_open", "gripper_is_open"];
 const r5 = (v: number) => Number(Number(v).toFixed(5));
 
-/** {ee_pose, gripper_width} of one arm from a state object (per-arm sub-object when there is one). */
-export function armState(state: unknown, arm: string) {
+/**
+ * The measured {ee_pose, gripper_width, gripper_closed_measured} of one arm from a state object
+ * (per-arm sub-object when there is one); `gripper_closed_measured` is null when the robot reports
+ * no gripper state.
+ */
+export function armState(state: unknown, arm: string): ArmState {
 	const own = state && typeof state === "object" && arm in state ? (state as Record<string, unknown>)[arm] : state;
 	const eef = find(own, EEF);
 	const w = find(own, WIDTH);
 	const width = Array.isArray(w) ? w.reduce((s: number, x) => s + Math.abs(Number(x)), 0) : Number(w);
+	const closed = find(own, CLOSED);
+	const open = find(own, OPEN);
 	return {
 		ee_pose: Array.isArray(eef) ? eef.map((x) => r5(Number(x))) : [],
 		gripper_width: Number.isFinite(width) ? r5(width) : 0,
+		gripper_closed_measured: typeof closed === "boolean" ? closed : typeof open === "boolean" ? !open : null,
 	};
 }
+export type ArmState = { ee_pose: number[]; gripper_width: number; gripper_closed_measured: boolean | null };
+const NO_STATE: ArmState = { ee_pose: [], gripper_width: 0, gripper_closed_measured: null };
 
 // ---------------------------------------------------------------------------
 // the recorder (core/record/episode_logger.py run dirs, with core/teleop/{single,dual}.py actions.jsonl)
@@ -267,8 +325,8 @@ type StepInfo = {
 	dagger: boolean;
 	/** Commanded gripper state of each arm when the step was taken (the recorded training label). */
 	closed: Record<string, boolean>;
-	/** Proprioception per arm at obs_t. */
-	state: Record<string, { ee_pose: number[]; gripper_width: number }>;
+	/** Measured proprioception per arm at obs_t (the robot's `units.state`). */
+	state: Record<string, ArmState>;
 	/** `act({unit, n})` with n > 1: one record for the decision, the count alongside. */
 	n?: number;
 };
@@ -339,12 +397,14 @@ export class Recorder {
 			: true;
 		// steps.jsonl: core/runners/mvtoken.py's record (dual: core/runners/dual.py's per-arm records).
 		const logged = (a: string) => {
-			const st = info.state[a] ?? { ee_pose: [], gripper_width: 0 };
+			const st = info.state[a] ?? NO_STATE;
+			const measured = st.gripper_closed_measured;
 			return {
 				act: step[a],
 				eef: st.ee_pose.slice(0, 3).map(r3),
 				w: st.gripper_width,
 				grip: info.closed[a] ? "CLOSED" : "OPEN",
+				grip_measured: measured === null ? null : measured ? "CLOSED" : "OPEN",
 				src: info.src,
 			};
 		};
@@ -361,7 +421,7 @@ export class Recorder {
 			token: step[a],
 			kind: kindOf(step[a]),
 			gripper_closed: info.closed[a] ?? false,
-			...(info.state[a] ?? { ee_pose: [], gripper_width: 0 }),
+			...(info.state[a] ?? NO_STATE),
 		});
 		const time = Number(ts.toFixed(3));
 		const action: Record<string, unknown> = this.dual
@@ -556,6 +616,8 @@ export type GumiState = {
 	last: string | null;
 	message: string;
 	root: string | null;
+	/** The key bindings for these arms (`keyMap`): KeyboardEvent.code -> [arm, unit]. */
+	keys: Record<string, [string, string]>;
 };
 
 /**
@@ -612,6 +674,7 @@ export function gumi(
 		last,
 		message,
 		root: root() ?? null,
+		keys: keyMap(arms),
 	});
 	const publish = (msg?: string) => {
 		if (msg !== undefined) message = msg;

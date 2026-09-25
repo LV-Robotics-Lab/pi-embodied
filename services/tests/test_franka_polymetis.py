@@ -490,7 +490,7 @@ def test_smooth_ramp_never_exceeds_the_servo_step_cap(dt_s):
     assert max(quat_angle(a, b) for a, b in zip(quats, quats[1:])) <= cap_rad + 1e-9
     # A chain of maximal moves, joins included.
     robot = MockPolymetisRobot((0.4, 0.0, 0.3, *DOWN))
-    c = controller(robot, dt_s=dt_s)
+    c = controller(robot, dt_s=dt_s, blend=True)
     start = len(robot.setpoints)
     for i in range(3):
         assert c.move_delta([0.08, 0.0, 0.0], continuous=i < 2)["ok"]
@@ -499,7 +499,7 @@ def test_smooth_ramp_never_exceeds_the_servo_step_cap(dt_s):
 
 def test_chained_moves_flow_without_stopping():
     robot = MockPolymetisRobot((0.5, 0.0, 0.3, *DOWN))
-    c = controller(robot)
+    c = controller(robot, blend=True)
     start = len(robot.setpoints)
     r1 = c.move_delta([0.02, 0.0, 0.0], continuous=True)
     assert r1["ok"] and r1["flowing"] and not r1["chained"]
@@ -534,7 +534,7 @@ def test_chained_moves_flow_without_stopping():
 def test_chain_breaks_on_turns_late_moves_rotations_and_the_gripper():
     now = [0.0]
     robot = MockPolymetisRobot((0.5, 0.0, 0.3, *DOWN))
-    c = controller(robot, clock=lambda: now[0])
+    c = controller(robot, clock=lambda: now[0], blend=True)
 
     def settled_before(result, start):
         """The stream was brought to rest (4 settle re-commands) before the ramp."""
@@ -574,7 +574,7 @@ def test_chain_breaks_on_turns_late_moves_rotations_and_the_gripper():
 def test_stop_halts_a_smooth_and_a_chained_ramp_between_waypoints():
     stop_at = [10**9]
     robot = MockPolymetisRobot((0.5, 0.0, 0.3, *DOWN))
-    c = controller(robot, stop=lambda: len(robot.setpoints) >= stop_at[0])
+    c = controller(robot, stop=lambda: len(robot.setpoints) >= stop_at[0], blend=True)
     start = len(robot.setpoints)
     stop_at[0] = start + 7
     r = c.move_delta([0.04, 0.0, 0.0])
@@ -594,7 +594,14 @@ def test_stop_halts_a_smooth_and_a_chained_ramp_between_waypoints():
 
 
 def test_move_delta_continuous_over_rpc_and_smooth_meta():
+    # Default (and example.yaml): min-jerk on, chaining off (Show-Harness's Franka).
+    assert yaml.safe_load(DEFAULT_CONFIG.read_text())["smooth"]["blend"] is False
     f = facade()
+    meta = call(f, "env.get_env_meta")["smooth"]
+    assert meta["enabled"] and not meta["blend"] and not meta["chaining"]
+    r = call(f, "env.move_delta", [0.02, 0.0, 0.0], continuous=True)
+    assert r["ok"] and r["flowing"] is False
+    f = facade(config=cfg(smooth={"blend": True}))
     meta = call(f, "env.get_env_meta")["smooth"]
     assert meta["enabled"] and meta["chaining"] and meta["duration_s"] == 1.0
     assert call(f, "env.move_delta", [0.02, 0.0, 0.0], continuous=True)["flowing"]
@@ -748,6 +755,59 @@ def test_rotation_tilt_limit_wrap_and_flange_box_check():
     with pytest.raises(ValueError, match="rotation's flange"):
         call(f, "env.rotate_delta", [0.0, 0.2, 0.0])
     assert call(f, "env.rotate_delta", [0.0, -0.2, 0.0])["ok"]
+
+
+def _pose_matrix(pose7) -> np.ndarray:
+    t = np.eye(4)
+    t[:3, :3] = np.stack([quat_rotate(pose7[3:], e) for e in np.eye(3)], 1)
+    t[:3, 3] = pose7[:3]
+    return t
+
+
+def test_rlinf_tcp_frame_needs_the_hand_yaw_for_wrist_calibration():
+    """A wrist extrinsic calibrated on RLinf (``T_tcp_cam``, TCP = libfranka O_T_EE =
+    flange * Trans(0, 0, 0.1034) * Rz(-45 deg)) lands the camera at the true pose only
+    when the Polymetis TCP carries the same yaw; the offset alone is cm off."""
+    yaw0 = quat_from_euler_xyz([0.0, 0.0, 0.3])
+    flange = np.array([0.5, 0.05, 0.35, *control.quat_mul(yaw0, DOWN)])
+    f_t_ee = np.eye(4)
+    f_t_ee[:3, :3] = _pose_matrix(
+        [0, 0, 0, *quat_from_euler_xyz([0, 0, -math.pi / 4])]
+    )[:3, :3]
+    f_t_ee[2, 3] = 0.1034
+    rlinf_tcp = _pose_matrix(flange) @ f_t_ee  # what RLinf reports as tcp_pose
+    t_tcp_cam = np.eye(4)  # D405 on the wrist: 9 cm off the tool axis, 4 cm up
+    t_tcp_cam[:3, 3] = [0.09, 0.0, -0.04]
+    truth = rlinf_tcp @ t_tcp_cam
+
+    hand = {"tcp_offset_m": [0.0, 0.0, 0.1034], "tcp_yaw_deg": -45.0}
+    robot = MockPolymetisRobot(flange)
+    f = facade(robot, cfg(robot=hand))
+    tcp = np.asarray(call(f, "env.get_robot_state")["raw_base_state"]["tcp_pose"])
+    np.testing.assert_allclose(_pose_matrix(tcp), rlinf_tcp, atol=1e-9)
+    np.testing.assert_allclose(_pose_matrix(tcp) @ t_tcp_cam, truth, atol=1e-9)
+    pos, quat = control.flange_to_tcp(flange, hand["tcp_offset_m"], -45.0)
+    np.testing.assert_allclose(_pose_matrix([*pos, *quat]), rlinf_tcp, atol=1e-9)
+
+    # Actions round-trip: a translation keeps the flange orientation (no 45 deg
+    # twist from the TCP yaw) and a base-z rotation turns the flange by the same.
+    assert call(f, "env.move_delta", [0.0, 0.0, 0.02])["ok"]
+    assert quat_angle(robot.pose[3:], flange[3:]) < 1e-9
+    np.testing.assert_allclose(robot.pose[:3], flange[:3] + [0, 0, 0.02], atol=1e-9)
+    assert call(f, "env.rotate_delta", [0.0, 0.0, 0.1])["ok"]
+    expected = control.quat_mul(quat_from_euler_xyz([0, 0, 0.1]), flange[3:])
+    assert quat_angle(robot.pose[3:], expected) < 1e-9
+
+    # Translation-only (the old config): the TCP origin agrees, the camera does not.
+    old = facade(
+        MockPolymetisRobot(flange), cfg(robot={"tcp_offset_m": [0, 0, 0.1034]})
+    )
+    tcp = call(old, "env.get_robot_state")["raw_base_state"]["tcp_pose"]
+    np.testing.assert_allclose(tcp[:3], rlinf_tcp[:3, 3], atol=1e-9)
+    cam_err = np.linalg.norm((_pose_matrix(tcp) @ t_tcp_cam)[:3, 3] - truth[:3, 3])
+    assert cam_err > 0.06  # 2 * 0.09 * sin(22.5 deg) = 6.9 cm
+    with pytest.raises(ValueError, match="tcp_yaw_deg"):
+        limits_from_config(cfg(robot={"tcp_yaw_deg": 270.0}))
 
 
 def test_shutdown_and_parent_death_stop_a_running_motion(monkeypatch):

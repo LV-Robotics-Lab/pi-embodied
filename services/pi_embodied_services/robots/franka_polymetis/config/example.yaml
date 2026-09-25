@@ -7,17 +7,24 @@
 #   python -m pi_embodied_services.robots.franka_polymetis.env_server \
 #     --robot-config my_franka.yaml --read-pose
 # Poses/limits below are in the TCP frame = the pose the NUC's franka_server reports
-# (Polymetis's end-effector link) moved by robot.tcp_offset_m.
+# (Polymetis's end-effector link) moved by robot.tcp_offset_m and turned by
+# robot.tcp_yaw_deg.
 
 robot:
   nuc_ip: "192.168.1.100"   # the NUC running Polymetis + nuc_server.py (ZeroRPC)
   nuc_port: 4242
   rpc_timeout_s: 30
   heartbeat_s: 20
-  # Offset from the reported pose to the TCP, in that pose's frame (m). Show-Harness
-  # uses [0, 0, 0] (its floors below are for that frame). A Franka Hand fingertip
-  # centre is ~[0, 0, 0.1034] from panda_link8; changing this moves every limit.
+  # TCP frame = reported pose * Trans(tcp_offset_m) * Rz(tcp_yaw_deg): offset in the
+  # reported pose's frame (m), then a turn about its z-axis (deg, within +-180).
+  # Show-Harness uses [0, 0, 0] / 0 (its floors below are for that frame). RLinf's
+  # tcp_pose is libfranka's O_T_EE, i.e. with a Franka Hand the fingertip centre
+  # [0, 0, 0.1034] from panda_link8 turned -45 deg (F_T_EE); a wrist hand-eye
+  # calibration made on the RLinf stack (perception.calibration.wrist) needs both
+  # values, the offset alone leaves the camera frame 45 deg off (~7 cm). Changing the
+  # offset moves every limit; the yaw only changes the reported/commanded orientation.
   tcp_offset_m: [0.0, 0.0, 0.0]
+  tcp_yaw_deg: 0.0
 
 impedance:                   # Cartesian impedance gains (Show-Harness main_pi05.py);
                              # at most 2x these values are accepted
@@ -76,7 +83,7 @@ smooth:                      # Show-Harness plugins/smooth (plugins.smooth: true
   dt_s: 0.05                 # longer when a waypoint would pass servo_step_m per tick_s
   # Chaining: a move_delta with continuous: true ends at cruise speed (no settle) and
   # the next move in about the same direction starts at it, so repeated units flow.
-  blend: true                # Show-Harness: default on for the Piper, off for the Franka
+  blend: false               # Show-Harness: default on for the Piper, off for the Franka
   cruise: 1.0                # chained boundary speed, in move lengths per move duration
   chain_window_s: 1.0        # the next move must start within this to chain
 

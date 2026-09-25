@@ -184,13 +184,31 @@ def tool_tilt(quat: Any) -> float:
     return math.acos(max(-1.0, min(1.0, down)))
 
 
-def flange_to_tcp(pose7: Any, offset: Any) -> tuple[np.ndarray, np.ndarray]:
-    """(TCP position, quaternion) from the pose Polymetis reports and a TCP offset."""
+# RLinf's Franka ``tcp_pose`` is libfranka's ``O_T_EE`` (RLinf/RLinf@807e5fd
+# rlinf/robotics/parts/arms/franka.py ``tcp_pose  # FrankaState.O_T_EE``, read in
+# franka_ros.py ``_on_arm_state_msg`` and franky.py ``get_state``). ``O_T_EE`` =
+# ``O_T_F * F_T_EE`` with the Franka Hand's ``F_T_EE`` (libfranka/Desk default,
+# franka_description franka_hand: hand joint rpy [0, 0, -pi/4], TCP z 0.1034 m):
+# 0.1034 m along the flange z-axis and -45 deg (-pi/4) about it. Polymetis reports
+# the flange (panda_link8), so matching RLinf needs both the offset and the yaw.
+def tcp_yaw_quat(yaw_deg: float) -> np.ndarray:
+    """Rotation of the TCP frame about the flange z-axis (``robot.tcp_yaw_deg``)."""
+    return quat_from_rotvec([0.0, 0.0, math.radians(float(yaw_deg))])
+
+
+def flange_to_tcp(
+    pose7: Any, offset: Any, yaw_deg: float = 0.0
+) -> tuple[np.ndarray, np.ndarray]:
+    """(TCP position, quaternion) from the pose Polymetis reports and the TCP
+    transform ``T_flange_tcp = Trans(offset) * Rz(yaw_deg)`` (offset in the flange
+    frame). libfranka's Franka Hand TCP (``O_T_EE``, what RLinf reports as
+    ``tcp_pose``) is ``offset = [0, 0, 0.1034]``, ``yaw_deg = -45``."""
     p = np.asarray(pose7, dtype=np.float64)
     if p.shape != (7,) or not np.all(np.isfinite(p)):
         raise RuntimeError(f"robot returned an invalid ee pose: {p.tolist()}")
     q = quat_normalize(p[3:])
-    return p[:3] + quat_rotate(q, np.asarray(offset, dtype=np.float64)), q
+    pos = p[:3] + quat_rotate(q, np.asarray(offset, dtype=np.float64))
+    return pos, quat_normalize(quat_mul(q, tcp_yaw_quat(yaw_deg)))
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +237,7 @@ class PolymetisLimits:
     max_tracking_error_m: float = 0.015
     max_tilt_rad: float = 0.5
     tcp_offset_m: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    tcp_yaw_deg: float = 0.0
     kx: tuple[float, ...] = DEFAULT_KX
     kxd: tuple[float, ...] = DEFAULT_KXD
     gripper_close_threshold_m: float = 0.07
@@ -237,7 +256,7 @@ class PolymetisLimits:
     smooth: bool = True
     smooth_substeps: int = 20
     smooth_dt_s: float = 0.05
-    smooth_blend: bool = True
+    smooth_blend: bool = False  # Show-Harness's Franka default: no chaining
     smooth_cruise: float = 1.0
     smooth_chain_window_s: float = 1.0
 
@@ -299,6 +318,7 @@ class PolymetisLimits:
         offset = np.asarray(self.tcp_offset_m)
         if offset.shape != (3,) or np.any(np.abs(offset) > 0.3):
             raise ValueError("robot.tcp_offset_m must be [x, y, z] within +-0.3 m")
+        bound("tcp_yaw_deg", -180.0, 180.0)
         kx, kxd = np.asarray(self.kx), np.asarray(self.kxd)
         if kx.shape != (6,) or kxd.shape != (6,):
             raise ValueError("impedance.kx / kxd must have 6 values")
@@ -375,6 +395,7 @@ class PolymetisController:
         self._sleep = sleep
         self._clock = clock
         self._offset = np.asarray(limits.tcp_offset_m, dtype=np.float64)
+        self._yaw_inv = quat_conj(tcp_yaw_quat(limits.tcp_yaw_deg))
         self.target_pos: np.ndarray | None = None
         self.target_quat: np.ndarray | None = None
         self.gripper_open: bool | None = None
@@ -388,10 +409,14 @@ class PolymetisController:
     # -- frames ------------------------------------------------------------
 
     def _tcp_to_flange(self, pos: np.ndarray, quat: np.ndarray) -> np.ndarray:
-        return np.concatenate([pos - quat_rotate(quat, self._offset), quat])
+        """Inverse of ``flange_to_tcp``: the flange pose7 Polymetis is commanded with."""
+        q = quat_normalize(quat_mul(quat, self._yaw_inv))
+        return np.concatenate([pos - quat_rotate(q, self._offset), q])
 
     def measured(self) -> tuple[np.ndarray, np.ndarray]:
-        return flange_to_tcp(self.robot.get_ee_pose(), self._offset)
+        return flange_to_tcp(
+            self.robot.get_ee_pose(), self._offset, self.limits.tcp_yaw_deg
+        )
 
     def width(self) -> float:
         return float(np.asarray(self.robot.get_gripper_position()).reshape(-1)[0])

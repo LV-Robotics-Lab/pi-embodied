@@ -1,19 +1,25 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { runSucceeded } from "../src/finetuned/prepare.ts";
 import {
+	ALIASES,
 	ARM,
 	actSteps,
 	armState,
 	DUAL,
 	gumi,
+	KEYS,
+	keyMap,
 	type Observation,
 	observation,
 	parseSteps,
 	Recorder,
+	RIGHT_ALIASES,
 	Takeover,
 	UNITS_EVENT,
 	type UnitsHandle,
@@ -119,11 +125,53 @@ test("observations: views by camera label, else by position; state from the robo
 	assert.deepEqual(armState({ state: { robot0_eef_pos: [0.1, 0.2, 0.3], robot0_gripper_qpos: [0.02, -0.02] } }, ARM), {
 		ee_pose: [0.1, 0.2, 0.3],
 		gripper_width: 0.04,
+		gripper_closed_measured: null,
 	});
-	assert.deepEqual(armState({ eef_xyz: [1, 2, 3], gripper_width: 0.05 }, ARM), {
+	assert.deepEqual(armState({ eef_xyz: [1, 2, 3], gripper_width: 0.05, gripper_closed: true }, ARM), {
 		ee_pose: [1, 2, 3],
 		gripper_width: 0.05,
+		gripper_closed_measured: true,
 	});
+	// dual_franka reports `gripper_open`.
+	assert.equal(armState({ left: { gripper_open: true } }, "left").gripper_closed_measured, false);
+});
+
+test("keys: one table for the dashboard's key handler and the typed sequence aliases", () => {
+	assert.deepEqual(ALIASES, {
+		W: "MV_FWD",
+		S: "MV_BACK",
+		A: "MV_LEFT",
+		D: "MV_RIGHT",
+		Q: "MV_UP",
+		E: "MV_DOWN",
+		Z: "ROTATE_CCW",
+		X: "ROTATE_CW",
+		G: "GRASP",
+		R: "RELEASE",
+		STAY: "STILL",
+	});
+	assert.deepEqual(RIGHT_ALIASES, {
+		I: "MV_FWD",
+		K: "MV_BACK",
+		J: "MV_LEFT",
+		L: "MV_RIGHT",
+		U: "MV_UP",
+		O: "MV_DOWN",
+		N: "ROTATE_CCW",
+		M: "ROTATE_CW",
+		".": "RELEASE",
+	});
+	const one = keyMap([ARM]);
+	assert.deepEqual([one.KeyW, one.ArrowUp, one.KeyI], [[ARM, "MV_FWD"], [ARM, "MV_UP"], undefined]);
+	const two = keyMap(DUAL);
+	assert.deepEqual(
+		[two.KeyW, two.ShiftLeft, two.KeyI, two.Period, two.ControlRight, two.ArrowUp],
+		[["left", "MV_FWD"], ["left", "GRASP"], ["right", "MV_FWD"], ["right", "RELEASE"], ["right", "STILL"], undefined],
+	);
+	// Every typed right alias is a bound key of the right arm, and vice versa for its letters.
+	for (const [k, u] of Object.entries(RIGHT_ALIASES))
+		assert.deepEqual(two[k === "." ? "Period" : `Key${k}`], ["right", u]);
+	assert.equal(Object.keys(KEYS.single).length, 14);
 });
 
 test("recorder: episode_logger run dir with steps.jsonl, and the actions.jsonl rollouts_to_alpaca.py reads", () => {
@@ -137,7 +185,7 @@ test("recorder: episode_logger run dir with steps.jsonl, and the actions.jsonl r
 		src,
 		dagger,
 		closed: { [ARM]: false },
-		state: { [ARM]: { ee_pose: [0.1, 0.2, 0.3], gripper_width: 0.08 } },
+		state: { [ARM]: { ee_pose: [0.1, 0.2, 0.3], gripper_width: 0.08, gripper_closed_measured: src === "human" } },
 	});
 	rec.add(obs, { [ARM]: "MV_FWD" }, info("agent"));
 	rec.add(obs, { [ARM]: "GRASP" }, info("human", true));
@@ -158,6 +206,7 @@ test("recorder: episode_logger run dir with steps.jsonl, and the actions.jsonl r
 			gripper_closed: false,
 			ee_pose: [0.1, 0.2, 0.3],
 			gripper_width: 0.08,
+			gripper_closed_measured: true,
 			agentview: "images/agentview/0001.png",
 			wrist: "images/wrist/0001.png",
 			time: 0,
@@ -175,6 +224,7 @@ test("recorder: episode_logger run dir with steps.jsonl, and the actions.jsonl r
 			eef: [0.1, 0.2, 0.3],
 			w: 0.08,
 			grip: "OPEN",
+			grip_measured: "CLOSED",
 			src: "human",
 			ts: 0,
 			dagger: true,
@@ -200,7 +250,10 @@ test("recorder, two arms: agentview + wrist_left/right and per-arm token records
 	const rec = new Recorder(root, DUAL);
 	const dir = rec.start({});
 	const obs = observation(result([1, 2, 3], ["d455", "left_wrist", "right_wrist"])) as Observation;
-	const state = { left: { ee_pose: [1], gripper_width: 0.01 }, right: { ee_pose: [2], gripper_width: 0.02 } };
+	const state = {
+		left: { ee_pose: [1], gripper_width: 0.01, gripper_closed_measured: null },
+		right: { ee_pose: [2], gripper_width: 0.02, gripper_closed_measured: null },
+	};
 	rec.add(obs, { left: "MV_FWD", right: "STILL" }, { src: "human", dagger: true, closed: { left: true }, state });
 	const [line] = readFileSync(join(dir, "actions.jsonl"), "utf8")
 		.trim()
@@ -214,6 +267,7 @@ test("recorder, two arms: agentview + wrist_left/right and per-arm token records
 		gripper_closed: true,
 		ee_pose: [1],
 		gripper_width: 0.01,
+		gripper_closed_measured: null,
 		src: "human",
 	});
 	assert.equal(line.right.token, "STILL");
@@ -364,7 +418,8 @@ function fakeRobot() {
 				robot0_gripper_qpos: [0.04, -0.04],
 			});
 		},
-		state: async () => ({ eef_xyz: [0, 0, frame / 1000], gripper_width: 0.08 }),
+		// The measured gripper never closes (the GRASP missed), whatever was commanded.
+		state: async () => ({ eef_xyz: [0, 0, frame / 1000], gripper_width: 0.08, gripper_closed: false }),
 	};
 	return Object.assign(g, { handle, calls });
 }
@@ -423,6 +478,13 @@ test("gumi: teleop records (obs_t, a_t) through units.run; agent steps too; save
 			["MV_UP", "agent"],
 		],
 	);
+	// After GRASP: commanded closed (the label), measured open (the robot's state), side by side.
+	assert.deepEqual(
+		[lines[3].gripper_closed, lines[3].gripper_closed_measured, lines[3].gripper_width],
+		[true, false, 0.08],
+	);
+	// The dashboard gets its key bindings from the state.
+	assert.deepEqual(g.state().keys.KeyG, [ARM, "GRASP"]);
 	// obs_t: each step's images are the ones before it ran (STOP's result for the first MV_FWD).
 	assert.equal(readFileSync(join(dir, lines[0].agentview)).toString("base64"), png(101));
 	assert.equal(readFileSync(join(dir, lines[1].agentview)).toString("base64"), png(102));
@@ -655,4 +717,48 @@ test("gumi: stop() ends an operator batch while the agent is idle", async () => 
 	assert.equal(robot.calls.length, 1, "no unit after the stop");
 	assert.equal(g.state().busy, false);
 	assert.equal(g.stop(), false);
+});
+
+test("prepare converts only runs saved as successful, unless --include-failures", () => {
+	const root = mkdtempSync(join(tmpdir(), "gumi-"));
+	const rec = new Recorder(root, [ARM]);
+	const obs = observation(result([10, 20], ["agentview", "wrist"])) as Observation;
+	const info = { src: "human" as const, dagger: false, closed: { [ARM]: false }, state: {} };
+	const run = (i: number, stop?: Record<string, unknown>) => {
+		const dir = rec.start({ task: "open the drawer", robot: "libero" }, i);
+		rec.add(obs, { [ARM]: "MV_FWD" }, info);
+		if (stop) rec.stop(stop);
+		else rec.dir = undefined; // still recording when the process died: no summary.json
+		return dir;
+	};
+	const ok = run(1, { success: true });
+	const failed = run(2, { success: false, end_reason: "saved" });
+	const shutdown = run(3, { success: false, end_reason: "session_shutdown" });
+	const open = run(4);
+	assert.deepEqual([ok, failed, shutdown, open].map(runSucceeded), [true, false, false, false]);
+	const prepare = (...extra: string[]) => {
+		const out = mkdtempSync(join(tmpdir(), "rollouts-"));
+		const r = spawnSync(
+			process.execPath,
+			[
+				"--experimental-strip-types",
+				join(import.meta.dirname, "../src/finetuned/prepare.ts"),
+				"--out",
+				out,
+				"--agentview",
+				"raw",
+				"--wrist",
+				"raw",
+				...extra,
+				root,
+			],
+			{ encoding: "utf8" },
+		);
+		assert.equal(r.status, 0, r.stderr);
+		return { rollouts: readdirSync(join(out, "open_the_drawer")).length, stderr: r.stderr };
+	};
+	const only = prepare();
+	assert.equal(only.rollouts, 1);
+	assert.match(only.stderr, /3 run\(s\) skipped as not successful/);
+	assert.equal(prepare("--include-failures").rollouts, 4);
 });

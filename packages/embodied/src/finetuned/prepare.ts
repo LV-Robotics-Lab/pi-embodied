@@ -2,7 +2,7 @@
  * GUMI recordings -> Show-Harness rollouts that train/data_preparation/rollouts_to_alpaca.py reads.
  *
  *   node --experimental-strip-types packages/embodied/src/finetuned/prepare.ts \
- *     --out /root/autodl-tmp/data/finetuned/mydata/rollouts [--include-failures] <gumi record dir>...
+ *     --out /root/autodl-tmp/data/finetuned/mydata/rollouts [--prompt v5] [--include-failures] <gumi record dir>...
  *
  * Only runs saved as successful are converted (`success: true` in summary.json, which GUMI writes
  * when the operator saves with "success"); failed, stopped and unfinished runs (a session that ended
@@ -16,13 +16,17 @@
  * applies at inference (./views.ts: the recording robot's viewsFor(), or --agentview / --wrist), so
  * training and deployment images are identical pixel for pixel. Rows are kept in order as recorded;
  * tokens outside the single-arm vocabulary (ROTATE_*, STILL) are left for the converter to skip.
+ * `--prompt` is the model the data trains (--ft-prompt's versions, default v3): RT_* turns (GUMI's
+ * --units-rt keys) are kept, token unchanged, for v5 (V5_ACTIONS, the 15 units) and dropped otherwise,
+ * since v3/v4 offer no turn.
  */
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { encodePng } from "../png.ts";
-import { viewsFor } from "./index.ts";
+import { isRt } from "../units/index.ts";
+import { MVTOKEN_ACTIONS, PRESETS, V5_ACTIONS, viewsFor } from "./index.ts";
 import { decodePng, formatView, parseView, prepareView, type ViewSpec } from "./views.ts";
 
 type Json = Record<string, any>;
@@ -36,6 +40,12 @@ export function runSucceeded(run: string): boolean {
 		if (v !== undefined) return v === true;
 	}
 	return false;
+}
+
+/** The tokens a prompt version trains: v5's 15 units, else the single-arm lite vocabulary. */
+export function trainedTokens(version: string): readonly string[] {
+	if (!(version in PRESETS)) throw new Error(`unknown prompt version ${version} (${Object.keys(PRESETS).join(", ")})`);
+	return version === "v5" ? V5_ACTIONS : MVTOKEN_ACTIONS;
 }
 
 /** Every directory under `root` (itself included) that holds an actions.jsonl. */
@@ -63,7 +73,9 @@ export function convertRun(
 	views: { agentview: ViewSpec; wrist: ViewSpec },
 	task: string,
 	meta: Json,
+	version = "v3",
 ) {
+	const tokens = trainedTokens(version);
 	const rows = readFileSync(join(run, "actions.jsonl"), "utf8")
 		.split("\n")
 		.filter((l) => l.trim())
@@ -74,8 +86,14 @@ export function convertRun(
 	const lines: string[] = [];
 	let repeats = 0;
 	const missing: number[] = [];
+	const turns: number[] = [];
 	rows.forEach((row, i) => {
 		if (typeof row.token !== "string") throw new Error(`${run}/actions.jsonl row ${i}: not a single-arm GUMI step`);
+		// An RT_* turn is a sample only for a model that can emit it (v5).
+		if (isRt(row.token) && !tokens.includes(row.token)) {
+			turns.push(i);
+			return;
+		}
 		// The converter needs both views of every sample; a step recorded without one is dropped.
 		if (typeof row.agentview !== "string" || typeof row.wrist !== "string") {
 			missing.push(i);
@@ -93,6 +111,8 @@ export function convertRun(
 	});
 	if (missing.length)
 		warnings.push(`${run}: dropped steps ${missing.join(", ")} (recorded without both camera views)`);
+	if (turns.length)
+		warnings.push(`${run}: dropped RT_* steps ${turns.join(", ")} (${version} has no turns; --prompt v5 keeps them)`);
 	if (repeats)
 		warnings.push(
 			`${run}: ${repeats} steps executed their unit n>1 times from one frame; each stays one sample (one history entry)`,
@@ -104,6 +124,7 @@ export function convertRun(
 			{
 				...meta,
 				task_text: task,
+				prompt_version: version,
 				source_run: run,
 				views: { agentview: formatView(views.agentview), wrist: formatView(views.wrist) },
 			},
@@ -123,15 +144,18 @@ function main() {
 			robot: { type: "string" },
 			agentview: { type: "string" },
 			wrist: { type: "string" },
+			prompt: { type: "string", default: "v3" },
 			"include-failures": { type: "boolean", default: false },
 		},
 	});
 	if (!values.out || !positionals.length) {
 		console.error(
-			"usage: prepare.ts --out <dir> [--task T] [--robot R] [--agentview spec] [--wrist spec] [--include-failures] <gumi dir>...",
+			"usage: prepare.ts --out <dir> [--task T] [--robot R] [--agentview spec] [--wrist spec] [--prompt v3|v5|...] [--include-failures] <gumi dir>...",
 		);
 		process.exit(2);
 	}
+	const version = values.prompt ?? "v3";
+	trainedTokens(version);
 	const runs = positionals.flatMap((p) => findRuns(resolve(p)));
 	if (!runs.length) throw new Error(`no actions.jsonl under ${positionals.join(", ")}`);
 	const counters = new Map<string, number>();
@@ -168,7 +192,7 @@ function main() {
 		const taskDir = join(resolve(values.out), slug(task));
 		const n = counters.get(taskDir) ?? 0;
 		counters.set(taskDir, n + 1);
-		const r = convertRun(run, taskDir, n, views, task, meta);
+		const r = convertRun(run, taskDir, n, views, task, meta, version);
 		for (const w of r.warnings) console.error(`warning: ${w}`);
 		console.log(`${basename(run)} -> ${r.out} (${r.rows} steps, "${task}")`);
 		total += r.rows;

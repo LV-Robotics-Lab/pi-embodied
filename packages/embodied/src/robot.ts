@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { Static, TSchema } from "typebox";
+import { type Static, type TSchema, Type } from "typebox";
 import { robotCheck } from "./check.ts";
 import { explore } from "./explore.ts";
 import { type FlashHook, flash } from "./flash/index.ts";
@@ -22,6 +22,8 @@ import { type MemoryOptions, memory } from "./memory/index.ts";
 import { operator } from "./operator.ts";
 import { forgetUnresponsive, NdArray, RpcClient, RpcUnavailable } from "./rpc.ts";
 import { type UnitsSpec, units } from "./units/index.ts";
+import { VLM_COST_EVENT } from "./units/vlm.ts";
+import { type VdmSpec, vdm } from "./vdm.ts";
 import { episodeVideo } from "./video.ts";
 
 export type Json = Record<string, any>;
@@ -131,6 +133,13 @@ export type RobotSpec = {
 	units?: UnitsSpec;
 	/** Mount Flash (../flash, `--model flash/replay`): the robot's plans and how it re-localizes them. */
 	flash?: FlashHook;
+	/** Mount visual differencing (../vdm.ts, `--vdm`): how many camera images an observation result carries, and the wrist one. */
+	vdm?: VdmSpec;
+	/**
+	 * Simulation only (CaP-X's S1 tier): the env call behind `ground_truth_poses` (the server's
+	 * `env.ground_truth_poses`). It registers `--privileged`; real robots leave it unset, so they have no such flag.
+	 */
+	groundTruth?: (names: string[] | undefined) => Promise<unknown>;
 };
 
 /**
@@ -194,8 +203,16 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	pi.registerFlag("max-cost", {
 		type: "string",
 		default: "0",
-		description: "Planner cost budget in USD, as pi prices replies from the model's cost in models.json (0 = none)",
+		description:
+			"Planner cost budget in USD (the planner's replies and the side VLM calls), as pi prices them from models.json (0 = none)",
 	});
+	if (spec.groundTruth)
+		pi.registerFlag("privileged", {
+			type: "boolean",
+			default: false,
+			description: "Simulation only: add ground_truth_poses (object poses from the simulator) and mark the result",
+		});
+	const privileged = () => spec.groundTruth !== undefined && pi.getFlag("privileged") === true;
 
 	// Registered before the modules, so the task is resolved before memory's session_start reads it.
 	pi.on("session_start", (_event, ctx) => {
@@ -293,6 +310,36 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 				refuse: () => refusal("act") ?? op.refuse("act"),
 			})
 		: undefined;
+	const vd = spec.vdm
+		? vdm(
+				pi,
+				spec.vdm,
+				() => [...robotTools, "reset", "request_scene_reset"],
+				() =>
+					spec.status?.().language ||
+					Object.entries(task)
+						.map(([k, v]) => `${k} ${v}`)
+						.join(", "),
+			)
+		: undefined;
+	let groundTruthRegistered = false;
+	/** `--privileged`: register `ground_truth_poses` at the first start that asks for it (off registers nothing), and name it. */
+	function groundTruth(): string[] {
+		const poses = spec.groundTruth;
+		if (!poses || !privileged()) return [];
+		if (!groundTruthRegistered) {
+			groundTruthRegistered = true;
+			tool(
+				"ground_truth_poses",
+				"Privileged simulator ground truth: world-frame poses of the scene's objects, as pos [x, y, z] in m and quat_xyzw. Omit names for every object; names must come from that list.",
+				Type.Object({
+					names: Type.Optional(Type.Array(Type.String(), { description: "Object names (default: all)" })),
+				}),
+				async ({ names }) => toolResult((await poses(names)) as Record<string, unknown>),
+			);
+		}
+		return ["ground_truth_poses"];
+	}
 	const publish = () => pi.events.emit(STATUS_EVENT, status());
 
 	async function stop() {
@@ -305,6 +352,9 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	pi.on("session_start", async (_event, ctx) => {
 		await stop();
 		try {
+			// A flag the robot cannot honour fails closed, before the robot boots.
+			const misconfigured = un?.configError();
+			if (misconfigured) throw new Error(misconfigured);
 			const tools = await spec.start(ctx);
 			// Pure units mode hides the robot's own tools and memory's (Show-Harness's pure mode).
 			const mode = un?.mode();
@@ -312,7 +362,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 				mode === "pure"
 					? [...(un?.tools() ?? []), "finish"]
 					: [...tools, ...(mem?.tools ?? []), ...(mode === "both" ? (un?.tools() ?? []) : [])];
-			pi.setActiveTools([...new Set([...own, ...op.tools()])]);
+			pi.setActiveTools([...new Set([...own, ...op.tools(), ...groundTruth()])]);
 			ready = true;
 		} catch (err) {
 			// Without a robot there is nothing to act on: no tools, and a non-interactive run exits.
@@ -372,6 +422,10 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	pi.on("turn_end", () => {
 		turns++;
 	});
+	// Side VLM calls (the units verifier and video_ref, ../vdm.ts) spend from the same budget.
+	pi.events.on(VLM_COST_EVENT, (usd) => {
+		cost += Number(usd) || 0;
+	});
 	/** Why `toolName` may not run now (robot not up or broken, episode over, budget spent), else undefined. */
 	function refusal(toolName: string): string | undefined {
 		if (!ready) return `${name} is not available.`;
@@ -415,14 +469,18 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	function report(hasUI: boolean, when: Ended) {
 		if (reported || (failed === undefined && !(ready && ran))) return;
 		reported = true;
+		// Ground truth was on offer (--privileged): not comparable with a run without it.
+		const mark = privileged() ? { privileged: true } : {};
 		const r =
 			failed !== undefined
-				? { robot: name, ...task, env_error: true, error: failed }
+				? { robot: name, ...task, ...mark, env_error: true, error: failed }
 				: {
 						robot: name,
 						...spec.result(when),
+						...mark,
 						// The units verifier: whether the success finish was checked, and the call's error.
 						...un?.result(),
+						...vd?.result(),
 						claimed: claimed?.status ?? null,
 						summary: claimed?.summary ?? null,
 						turns,

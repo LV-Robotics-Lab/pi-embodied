@@ -85,3 +85,69 @@ for (const [robot, positional, cell, env] of CELLS) {
 			assert.equal(run1([...args]).result?.units, units, args.join(" "));
 	});
 }
+
+test("libero/eval.sh records --vdm, --vdm-model and --vdm-wrist and refuses a value pi would ignore", () => {
+	const run1 = (args: string[]) => run("libero", ["libero_10_task", "0", "0"], "libero_10_task_t0_s0", args);
+	for (const args of [["--vdm=false"], ["--vdm", "false"], ["--vdm-wrist=0"]]) {
+		const r = run1(args);
+		assert.equal(r.status, 2, args.join(" "));
+		assert.match(r.stderr, /vdm/);
+		assert.equal(r.argv, undefined, "pi never ran");
+	}
+	const plain = run1([]).result;
+	assert.deepEqual([plain?.vdm, plain?.vdm_model, plain?.vdm_wrist], [false, null, false]);
+	const on = run1(["--vdm", "--vdm-model", "selfhost/muse", "--vdm-wrist"]).result;
+	assert.deepEqual([on?.vdm, on?.vdm_model, on?.vdm_wrist], [true, "selfhost/muse", true]);
+});
+
+/** eval.sh twice into one out dir, with a stand-in pi that records one successful episode: `first` args, then `second`. */
+function rerun(robot: string, positional: string[], env: Record<string, string>, first: string[], second: string[]) {
+	const dir = mkdtempSync(join(tmpdir(), "eval-"));
+	const pi = join(dir, "pi");
+	const entry = JSON.stringify({
+		type: "custom",
+		customType: "robot_result",
+		data: { robot, terminated: true, success: true, env_error: false, planner_error: null },
+	});
+	writeFileSync(
+		pi,
+		`#!/usr/bin/env bash\nwhile [ $# -gt 0 ]; do [ "$1" = --session-dir ] && dir=$2; shift; done\necho '${entry}' > "$dir/s.jsonl"\n`,
+	);
+	chmodSync(pi, 0o755);
+	const script = new URL(`../src/${robot}/eval.sh`, import.meta.url).pathname;
+	const once = (args: string[]) =>
+		spawnSync("bash", [script, join(dir, "out"), ...positional, ...args], {
+			env: { ...process.env, PI: pi, TIME_LIMIT: "0", ...env },
+			encoding: "utf8",
+		});
+	return [once(first), once(second)];
+}
+
+for (const [robot, positional, cell, env] of CELLS.filter(([r]) => ["libero", "robocasa", "maniskill"].includes(r))) {
+	test(`${robot}/eval.sh records --privileged and never mixes it with runs without it in one out dir`, () => {
+		const run1 = (args: string[]) => run(robot, positional, cell, args, env);
+		for (const args of [["--privileged=false"], ["--privileged", "false"]]) {
+			const r = run1(args);
+			assert.equal(r.status, 2, args.join(" "));
+			assert.match(r.stderr, /privileged/);
+			assert.equal(r.argv, undefined, "pi never ran");
+		}
+		assert.equal(run1([]).result?.privileged, false);
+		const on = run1(["--privileged"]);
+		assert.equal(on.result?.privileged, true);
+		assert.ok(on.argv?.includes("--privileged"), "pi runs privileged");
+		for (const [first, second] of [
+			[["--privileged"], []],
+			[[], ["--privileged"]],
+		]) {
+			const [a, b] = rerun(robot, positional, env ?? {}, first, second);
+			assert.equal(a.status, 0, a.stdout + a.stderr);
+			assert.equal(b.status, 1);
+			assert.match(b.stderr, /--privileged; use another out dir|--privileged \(or an older/);
+		}
+		// The same configuration keeps its valid result.
+		const [, same] = rerun(robot, positional, env ?? {}, ["--privileged"], ["--privileged"]);
+		assert.equal(same.status, 0, same.stdout + same.stderr);
+		assert.match(same.stdout, /\/privileged/);
+	});
+}

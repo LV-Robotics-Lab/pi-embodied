@@ -34,6 +34,7 @@ from typing import Any
 import numpy as np
 
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
+from pi_embodied_services.utils import ground_truth
 from pi_embodied_services.utils.logging import get_logger
 from pi_embodied_services.utils.rpc.main_thread_serve import MainThreadServeMixin
 
@@ -262,6 +263,7 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         super()._register_rpc()
         self._rpc["env.state"] = self.state
         self._rpc["env.servo"] = self.servo
+        self._rpc["env.ground_truth_poses"] = self.ground_truth_poses
 
     # ---- helpers ----
 
@@ -479,6 +481,29 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         """TCP pose, gripper opening and the current success flags (no stepping)."""
         info = self._info(self._env.unwrapped.evaluate())
         return {**self._state(), "info": info}
+
+    def ground_truth_poses(self, names=None) -> dict:
+        """World poses of ``names`` (default all) from the scene's own object list
+        (``--privileged``): its actors (goal markers included) and its articulations other
+        than the robot."""
+        env = self._env.unwrapped
+        objects = {
+            **env.scene.actors,
+            **{
+                k: a
+                for k, a in env.scene.articulations.items()
+                if a is not env.agent.robot
+            },
+        }
+        return ground_truth.respond(
+            {
+                name: ground_truth.pose(
+                    _np(o.pose.p).reshape(-1), _np(o.pose.q).reshape(-1)
+                )
+                for name, o in objects.items()
+            },
+            names,
+        )
 
     def render_camera(self, camera_name: str = "agentview", **_: Any):
         """Latest frame of ``agentview`` or ``wrist``, as the model sees it."""

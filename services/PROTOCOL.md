@@ -101,6 +101,12 @@ Calls with an unknown or missing session fail.
 `obs`, `info`: dicts of numpy arrays / scalars / strings as produced by the simulator
 wrapper; single-env servers strip the leading env dimension.
 
+`env.ground_truth_poses` (libero-env, robocasa-env, maniskill-env; simulation only, behind pi's
+`--privileged`, CaP-X's S1 tier): kw `names=null` (list of str; null or empty = every object) ->
+`{"frame": "world", "poses": {name: {"pos": [x, y, z], "quat_xyzw": [x, y, z, w]}}}`, simulator
+world frame, metres, rounded to 1e-5. The names are the simulator's own object list (per server
+below); an unknown name is an error that lists them.
+
 ### libero-env (`robots/libero/env_server.py`)
 
 | method | args | result |
@@ -113,6 +119,7 @@ wrapper; single-env servers strip the leading env dimension.
 | `env.render_camera` | `camera_name="agentview"`, `height=1024`, `width=1024`, `depth=false` | RLinf `render_camera` output: rgb uint8[H,W,3], or `[rgb, depth]` |
 | `env.get_camera_meta` | `camera_name="agentview"`, `height=256`, `width=256` | intrinsics/extrinsics dict or `null` |
 | `env.get_task_language` | - | str |
+| `env.ground_truth_poses` | kw `names=null` | poses of LIBERO's `obj_body_id` bodies (movable objects and fixtures), read in the env worker |
 
 `env.reset` reseeds the env worker's global numpy and Python RNGs with the episode seed, so every
 reset restores the same state and the same actions give bitwise-identical transitions in any process.
@@ -138,6 +145,10 @@ episode steps) ends an episode.
 | `env.get_success_criteria_text` | - | str (<= 9000 chars) |
 | `env.get_task_progress` | - | dict of scalar success-check variables |
 | `env.get_task_language` | - | str or null |
+| `env.ground_truth_poses` | kw `names=null` | poses of the kitchen's objects (`obj_body_id`) and fixtures (root bodies) |
+
+maniskill-env (`robots/maniskill/env_server.py`) serves `env.ground_truth_poses` over the scene's
+actors (goal markers included) and its articulations other than the robot.
 
 ### robotwin-env (`robots/robotwin/env_server.py`)
 

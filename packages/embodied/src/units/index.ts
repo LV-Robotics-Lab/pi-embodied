@@ -22,13 +22,14 @@
  *   the wrist view (`act`'s `target_in_wrist`, Show-Harness's `WRIST: YES/NO` marker).
  * - action_chunk: while the target is not in the wrist view, `act` may commit `plan`, up to 3 MV_*
  *   moves run in order.
- * - rotation (robots with a yaw step, which always get ROTATE_CW/CCW, capped at 150 deg accumulated
- *   yaw): wrist-judged MV_* are rotated by the accumulated yaw (the wrist camera turns with the
- *   gripper), and MV_UP while holding first turns back (in commands within the robot's `maxYawRad`).
- * - `--units-rt` (not a plugin, off by default): RT_ROLL_*, RT_PITCH_*, RT_YAW_* turn the gripper a
- *   fixed step about a base-frame axis through the TCP (robots with `rt`; a robot without an axis
- *   refuses its units), in commands within `rt.maxRad`, capped at 150 deg accumulated yaw (shared
- *   with ROTATE_*) and 90 deg accumulated roll or pitch.
+ * - rotation (robots with a yaw step, which get ROTATE_CW/CCW unless --units-rt, capped at 150 deg
+ *   accumulated yaw): wrist-judged MV_* are rotated by the accumulated yaw (the wrist camera turns with
+ *   the gripper), and MV_UP while holding first turns back (in commands within the robot's `maxYawRad`).
+ * - `--units-rt` (not a plugin, off by default) switches the turn vocabulary from ROTATE_CW/CCW (v3)
+ *   to RT_ROLL_*, RT_PITCH_*, RT_YAW_* (v5's 15 units): ROTATE_* are then neither offered nor run.
+ *   An RT_* unit turns the gripper a fixed step about a base-frame axis through the TCP (robots with
+ *   `rt`; a robot without an axis refuses its units), in commands within `rt.maxRad`, capped at
+ *   150 deg accumulated yaw (the accumulator ROTATE_* use) and 90 deg accumulated roll or pitch.
  * - plan: subgoal stages, with deepplan's REASON checkpoint.
  * - point: affordance pixels -> world xyz (robots with `point`).
  * - mem_text: "Recent moves, newest first" in every result, with the history rules (no oscillation,
@@ -67,6 +68,7 @@ import {
 	renderBrief,
 	sampleFrames,
 	VIDEO_REF_FRAMES,
+	VLM_COST_EVENT,
 	validateBrief,
 	verifyPrompt,
 	videoRefPrompt,
@@ -97,6 +99,8 @@ export type UnitsHandle = {
 	refuse: () => string | undefined;
 	/** view_select is on this session: `act` takes `view` and passes it on as `Move.view`. */
 	viewSelect?: boolean;
+	/** --units-rt is on: the turns are RT_* (those in `vocabulary`) instead of ROTATE_*. */
+	rt?: boolean;
 };
 
 // ---------------------------------------------------------------------------
@@ -496,10 +500,17 @@ export function units(
 		const { axis } = RT_TURNS[u];
 		return spec.rt?.axes[axis] ? undefined : `${u}: this robot cannot turn its gripper about the ${axis} axis`;
 	};
+	const isRotate = (u: string) => (ROTATE_UNITS as readonly string[]).includes(u);
+	/** --units-rt swaps the turn vocabulary: ROTATE_* (v3) or RT_* (v5), never both. */
+	const rotateRefusal = (u: string) =>
+		rtOn() && isRotate(u)
+			? `${u}: --units-rt replaces ROTATE_* with the RT_* turns (RT_YAW_* about the vertical)`
+			: undefined;
 	const vocab = () =>
 		UNITS.filter(
 			(u) =>
-				(spec.yawStepRad || !(ROTATE_UNITS as readonly string[]).includes(u)) &&
+				(spec.yawStepRad || !isRotate(u)) &&
+				!rotateRefusal(u) &&
 				(u !== "STILL" || armNames.length) &&
 				(!isRt(u) || !rtRefusal(u)),
 		);
@@ -745,7 +756,7 @@ export function units(
 		registered = JSON.stringify(schema);
 		tool(
 			"act",
-			`Execute one action unit (${vocab().join(", ")}), repeated n times. MV_* move the gripper ~${Math.round(spec.stepM * 100)} cm${spec.yawStepRad ? `, ROTATE_* turn it ~${Math.round((spec.yawStepRad * 180) / Math.PI)} deg` : ""}${rtOn() && spec.rt ? `, RT_* turn it ~${Math.round((spec.rt.stepRad * 180) / Math.PI)} deg about a world axis through the fingertips (ROLL about the MV_FWD axis, PITCH about the MV_LEFT-MV_RIGHT axis, YAW about the vertical)` : ""}; GRASP closes, RELEASE opens, STOP holds one step, DONE means the task is complete (call finish). Returns the new images and state.`,
+			`Execute one action unit (${vocab().join(", ")}), repeated n times. MV_* move the gripper ~${Math.round(spec.stepM * 100)} cm${spec.yawStepRad && !rtOn() ? `, ROTATE_* turn it ~${Math.round((spec.yawStepRad * 180) / Math.PI)} deg` : ""}${rtOn() && spec.rt ? `, RT_* turn it ~${Math.round((spec.rt.stepRad * 180) / Math.PI)} deg about a world axis through the fingertips (ROLL about the MV_FWD axis, PITCH about the MV_LEFT-MV_RIGHT axis, YAW about the vertical)` : ""}; GRASP closes, RELEASE opens, STOP holds one step, DONE means the task is complete (call finish). Returns the new images and state.`,
 			schema,
 			(params, signal) => actAndSave(params as ActParams, signal),
 		);
@@ -804,7 +815,7 @@ export function units(
 				details: { unit },
 			};
 		if (unit === "STILL") return { content: [text(`STILL: the ${arm ?? ""} arm holds.`)], details: { unit } };
-		const rtWhy = isRt(unit) ? rtRefusal(unit) : undefined;
+		const rtWhy = isRt(unit) ? rtRefusal(unit) : rotateRefusal(unit);
 		if (rtWhy) throw new Error(`act: ${rtWhy}`);
 		const lines: string[] = [];
 		let queue: Unit[] = Array(Math.max(1, Math.min(MAX_REPEAT, Math.floor(p.n ?? 1)))).fill(unit);
@@ -953,7 +964,12 @@ export function units(
 		...base,
 	};
 	pi.on("session_start", () =>
-		pi.events.emit(UNITS_EVENT, { ...handle, vocabulary: vocab(), viewSelect: spec.viewSelect?.() === true }),
+		pi.events.emit(UNITS_EVENT, {
+			...handle,
+			vocabulary: vocab(),
+			viewSelect: spec.viewSelect?.() === true,
+			rt: rtOn(),
+		}),
 	);
 
 	if (spec.point) {
@@ -1104,7 +1120,11 @@ export function units(
 					verifyPrompt(instruction(), armNames, images.length),
 					images,
 					ctx.signal,
-				);
+				).then((r) => {
+					// The call's cost counts toward the robot's --max-cost budget.
+					pi.events.emit(VLM_COST_EVENT, r.cost);
+					return r;
+				});
 			try {
 				// A failed call (no credits, network) is asked once more; an aborted run is not.
 				const reply = await ask().catch((err) => {
@@ -1174,6 +1194,7 @@ export function units(
 					shown,
 					ctx.signal,
 				);
+				pi.events.emit(VLM_COST_EVENT, reply.cost);
 				try {
 					demo = { key, brief: validateBrief(parseJson(reply.text), armNames), indices, model: reply.model };
 				} catch (err) {
@@ -1210,6 +1231,14 @@ export function units(
 
 	return {
 		mode,
+		/**
+		 * Why the robot must not start with these flags, else undefined: --units-rt on a robot that declares
+		 * no RT_* axis would drop ROTATE_* and offer no turn at all.
+		 */
+		configError: () =>
+			rtOn() && !Object.values(spec.rt?.axes ?? {}).some(Boolean)
+				? "--units-rt=true: this robot declares no RT_* axis (units `rt`); it would have no turn units at all. Drop --units-rt to keep ROTATE_CW/CCW."
+				: undefined,
 		/** The robot result's verifier fields: whether the success finish was checked, and the call's latest error. */
 		result: () => ({
 			...(finishVerified !== undefined ? { finish_verified: finishVerified } : {}),
@@ -1228,7 +1257,7 @@ export function units(
 			let p = section(TEMPLATE, "pure", m === "pure");
 			p = section(p, "both", m === "both");
 			p = section(p, "arms", armNames.length > 0);
-			p = section(p, "yaw", Boolean(spec.yawStepRad));
+			p = section(p, "yaw", Boolean(spec.yawStepRad) && !rtOn());
 			p = section(p, "rt", rtOn() && Boolean(spec.rt));
 			p = section(p, "wrist", wristSignal());
 			for (const name of PLUGINS)

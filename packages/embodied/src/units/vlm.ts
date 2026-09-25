@@ -21,23 +21,38 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 const run = promisify(execFile);
 const oneLine = (v: unknown) => (typeof v === "string" ? v : JSON.stringify(v)).split(/\s+/).join(" ").trim();
 
-/** One user message (text, then the images in order) to the model named `modelRef` ("provider/id", "" = the session's). */
+/**
+ * `pi.events` channel on which a side VLM call's cost (USD, a number) is published; ../robot.ts adds
+ * it to the episode's --max-cost budget. Every caller of `askVlm` emits the `cost` it returns.
+ */
+export const VLM_COST_EVENT = "pi-embodied:vlm-cost";
+/** A prompt with its own system prompt and interleaved text and images (the `images` argument follows them). */
+export type VlmPrompt = { system: string; content: (TextContent | ImageContent)[] };
+
+/**
+ * One user message (the prompt, then the images in order) to the model named `modelRef` ("provider/id",
+ * "" = the session's). `cost` is the reply's USD as pi prices it from models.json.
+ */
 export async function askVlm(
 	ctx: ExtensionContext,
 	modelRef: string,
 	reasoning: string,
-	prompt: string,
+	prompt: string | VlmPrompt,
 	images: ImageContent[],
 	signal?: AbortSignal,
-): Promise<{ text: string; model: string }> {
+): Promise<{ text: string; model: string; cost: number }> {
 	const slash = modelRef.indexOf("/");
 	const model = modelRef ? ctx.modelRegistry.find(modelRef.slice(0, slash), modelRef.slice(slash + 1)) : ctx.model;
 	if (!model) throw new Error(modelRef ? `unknown model ${modelRef}` : "no model selected");
-	const content: (TextContent | ImageContent)[] = [{ type: "text", text: prompt }, ...images];
+	const content: (TextContent | ImageContent)[] =
+		typeof prompt === "string" ? [{ type: "text", text: prompt }, ...images] : [...prompt.content, ...images];
 	const reply = await ctx.modelRegistry
 		.streamSimple(
 			model,
-			{ messages: [{ role: "user", content, timestamp: Date.now() }] },
+			{
+				...(typeof prompt === "string" ? {} : { systemPrompt: prompt.system }),
+				messages: [{ role: "user", content, timestamp: Date.now() }],
+			},
 			{
 				signal,
 				// A reasoning model that cannot turn reasoning off gets the lowest level (e.g. under replay/session).
@@ -55,7 +70,7 @@ export async function askVlm(
 		.filter((c): c is TextContent => c.type === "text")
 		.map((c) => c.text)
 		.join("\n");
-	return { text, model: `${model.provider}/${model.id}` };
+	return { text, model: `${model.provider}/${model.id}`, cost: reply.usage?.cost?.total ?? 0 };
 }
 
 /** The outermost JSON object in a reply (models wrap it in prose or code fences), or undefined. */

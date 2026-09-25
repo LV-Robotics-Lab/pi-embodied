@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
+from pi_embodied_services.utils import ground_truth
 from pi_embodied_services.utils.logging import get_logger
 from pi_embodied_services.utils.serialization import to_numpy_tree
 
@@ -132,6 +133,27 @@ def _seeding_globals(env_fn):
     return fn
 
 
+def _exposing_poses(env_fn):
+    """Wrap a LIBERO worker ``env_fn`` so the env answers ``ground_truth_poses()`` (through
+    the worker's ``env_call``): the world poses of every body in LIBERO's own object list,
+    ``obj_body_id`` (its movable objects and fixtures). The sim lives only in the worker
+    process. It never raises: an exception in the worker loop would kill the env."""
+
+    def fn():
+        env = env_fn()
+
+        def poses():
+            rob = env
+            while hasattr(rob, "env"):
+                rob = rob.env
+            return ground_truth.mujoco_body_poses(rob.sim, rob.obj_body_id)
+
+        env.ground_truth_poses = poses
+        return env
+
+    return fn
+
+
 def make_env(
     task_id: int,
     seed: int,
@@ -155,7 +177,9 @@ def make_env(
 
     class SeededLiberoEnv(LiberoEnv):
         def get_env_fns(self):
-            return [_seeding_globals(fn) for fn in super().get_env_fns()]
+            return [
+                _exposing_poses(_seeding_globals(fn)) for fn in super().get_env_fns()
+            ]
 
     return SeededLiberoEnv(
         cfg=cfg, num_envs=1, seed_offset=0, total_num_processes=1, worker_info=None
@@ -196,6 +220,7 @@ class LiberoEnvFacade(BaseEnvFacade):
                 "env.render_camera": self.render_camera,
                 "env.get_camera_meta": self.get_camera_meta,
                 "env.get_task_language": self.get_task_language,
+                "env.ground_truth_poses": self.ground_truth_poses,
             }
         )
         self._readonly_methods.add("env.get_task_language")
@@ -320,6 +345,14 @@ class LiberoEnvFacade(BaseEnvFacade):
 
     def get_task_language(self) -> str | None:
         return self._env.task_descriptions[self._env_idx]
+
+    def ground_truth_poses(self, names=None) -> dict:
+        """World poses of ``names`` (default all) from LIBERO's object list (``--privileged``).
+        Unknown names are refused here, before the worker is asked."""
+        worker = self._env.env.workers[self._env_idx]
+        return ground_truth.respond(
+            worker.env_call("ground_truth_poses", target="self"), names
+        )
 
 
 # ---------------------------------------------------------------------------

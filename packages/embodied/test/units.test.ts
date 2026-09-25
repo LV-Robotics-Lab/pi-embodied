@@ -15,6 +15,7 @@ import {
 	ground,
 	latestTurn,
 	type Move,
+	RT_UNITS,
 	STATE_ENTRY,
 	UNITS_EVENT,
 	type UnitsHandle,
@@ -1132,4 +1133,49 @@ test("RT_* turn about the robot's declared axes, only with --units-rt; a missing
 	assert.match(head(many), /units: RT_YAW_CCW x10/);
 	const more = await s.run("act", { unit: "RT_YAW_CCW", n: 10 });
 	assert.match(head(more), /refused: the gripper is already turned 150 deg about its yaw axis/);
+});
+
+test("--units-rt on a robot that declares no RT_* axis fails closed before the robot starts", async () => {
+	const bare = await toyRobot({ "units-rt": "true" }, { yaw: 0.15 });
+	assert.deepEqual(bare.active(), []);
+	assert.match(bare.notes.join("\n"), /toy unavailable: --units-rt=true: this robot declares no RT_\* axis/);
+	const empty = await toyRobot({ "units-rt": "true" }, { yaw: 0.15, rt: { stepRad: 0.1, axes: {} } });
+	assert.deepEqual(empty.active(), []);
+	// Without the flag it starts with ROTATE_*; with an axis it starts in RT mode.
+	assert.ok((await toyRobot({}, { yaw: 0.15 })).active().includes("act"));
+	const rt: UnitsSpec["rt"] = { stepRad: 0.1, axes: { yaw: [0, 0, 1] } };
+	assert.ok((await toyRobot({ "units-rt": "true" }, { yaw: 0.15, rt })).active().includes("act"));
+});
+
+test("--units-rt swaps the turn vocabulary: ROTATE_* (v3) or RT_* (v5), never both", async () => {
+	const rt: UnitsSpec["rt"] = { stepRad: Math.PI / 18, axes: { roll: [1, 0, 0], pitch: [0, 1, 0], yaw: [0, 0, 1] } };
+	const v3 = await toyRobot({}, { yaw: 0.15, rt });
+	const v3Act = v3.tools.get("act");
+	assert.match(JSON.stringify(v3Act.parameters), /ROTATE_CW/);
+	assert.match(v3Act.description, /ROTATE_\* turn it/);
+	assert.match((await v3.emit("before_agent_start")).systemPrompt, /ROTATE_CW, ROTATE_CCW: turn/);
+	assert.equal((v3.emitted.get(UNITS_EVENT) as UnitsHandle).rt, false);
+
+	const v5 = await toyRobot({ "units-rt": "true", "units-plugins": "" }, { yaw: 0.15, rt });
+	const act = v5.tools.get("act");
+	const handle = v5.emitted.get(UNITS_EVENT) as UnitsHandle;
+	assert.doesNotMatch(JSON.stringify(act.parameters), /ROTATE_/);
+	assert.doesNotMatch(act.description, /ROTATE_/);
+	assert.doesNotMatch((await v5.emit("before_agent_start")).systemPrompt, /ROTATE_/);
+	// v5's 15 units: six moves, six turns, GRASP, RELEASE, DONE (and STOP, the harness's look).
+	assert.deepEqual(
+		handle.vocabulary.filter((u) => u !== "STOP"),
+		["MV_FWD", "MV_BACK", "MV_LEFT", "MV_RIGHT", "MV_UP", "MV_DOWN", ...RT_UNITS, "GRASP", "RELEASE", "DONE"],
+	);
+	assert.equal(handle.rt, true);
+	await assert.rejects(v5.run("act", { unit: "ROTATE_CW" }), /--units-rt replaces ROTATE_\* with the RT_\* turns/);
+	await assert.rejects(handle.run({ unit: "ROTATE_CCW", operator: true }), /replaces ROTATE_/);
+	assert.equal(v5.moves.length, 0);
+	// The yaw cap is the one ROTATE_* use: 150 deg of RT_YAW_* in all.
+	await v5.run("act", { unit: "RT_YAW_CW", n: 10 });
+	const more = await v5.run("act", { unit: "RT_YAW_CW", n: 10 });
+	assert.match(
+		head(more),
+		/RT_YAW_CW x5 of 10 \(stopped early\)\nRT_YAW_CW refused: .* turned -150 deg about its yaw axis/,
+	);
 });

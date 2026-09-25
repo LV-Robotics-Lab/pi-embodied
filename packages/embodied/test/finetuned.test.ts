@@ -18,10 +18,10 @@ import finetuned, {
 	STEP_ENTRY,
 	V5_ACTIONS,
 } from "../src/finetuned/index.ts";
-import { convertRun, findRuns } from "../src/finetuned/prepare.ts";
+import { convertRun, findRuns, trainedTokens } from "../src/finetuned/prepare.ts";
 import { decodePng, fingerprint, parseView, prepareView } from "../src/finetuned/views.ts";
 import { encodePng } from "../src/png.ts";
-import { UNITS, UNITS_EVENT, type UnitsHandle } from "../src/units/index.ts";
+import { RT_UNITS, UNITS, UNITS_EVENT, type UnitsHandle } from "../src/units/index.ts";
 
 /**
  * The reference: Show-Harness @137d571's own MvTokenController + VLMClient.complete_action_token
@@ -404,6 +404,52 @@ test("prepare turns a GUMI run into a Show-Harness rollout with the provider's c
 	const meta = JSON.parse(readFileSync(join(r.out, "metadata.json"), "utf8"));
 	assert.equal(meta.task_text, TASK);
 	assert.deepEqual(findRuns(run), [run]);
+});
+
+test("prepare keeps RT_* turns for the v5 vocabulary (15 units) and drops them for v3", () => {
+	assert.equal(trainedTokens("v5").length, 15);
+	assert.ok(RT_UNITS.every((u) => trainedTokens("v5").includes(u)));
+	assert.ok(!RT_UNITS.some((u) => trainedTokens("v3").includes(u)));
+	assert.throws(() => trainedTokens("v9"), /unknown prompt version v9/);
+	const run = mkdtempSync(join(tmpdir(), "gumi-"));
+	mkdirSync(join(run, "images", "agentview"), { recursive: true });
+	mkdirSync(join(run, "images", "wrist"), { recursive: true });
+	writeFileSync(join(run, "images", "agentview", "0000.png"), png(agentRaw));
+	writeFileSync(join(run, "images", "wrist", "0000.png"), png(wristRaw));
+	const frame = { agentview: "images/agentview/0000.png", wrist: "images/wrist/0000.png" };
+	const tokens = ["MV_DOWN", "RT_PITCH_FWD", "ROTATE_CW", "RT_YAW_CCW", "GRASP"];
+	const rows = tokens.map((token, step) => ({ step, token, kind: "move", gripper_closed: false, ...frame }));
+	writeFileSync(join(run, "actions.jsonl"), `${rows.map((r) => JSON.stringify(r)).join("\n")}\n`);
+	const views = { agentview: SPECS[0], wrist: SPECS[1] };
+	const convert = (version?: string) => {
+		const out = mkdtempSync(join(tmpdir(), "rollouts-"));
+		const r = convertRun(run, join(out, "t"), 0, views, TASK, { robot: "libero" }, version);
+		const lines = readFileSync(join(r.out, "actions.jsonl"), "utf8")
+			.trim()
+			.split("\n")
+			.map((l) => JSON.parse(l));
+		const meta = JSON.parse(readFileSync(join(r.out, "metadata.json"), "utf8"));
+		return { r, lines, meta };
+	};
+	const v3 = convert();
+	// ROTATE_* stays for the converter to skip, as before; the images are renumbered densely.
+	assert.deepEqual(
+		v3.lines.map((l) => l.token),
+		["MV_DOWN", "ROTATE_CW", "GRASP"],
+	);
+	assert.deepEqual(
+		v3.lines.map((l) => l.agentview),
+		["agentview/0000.png", "agentview/0001.png", "agentview/0002.png"],
+	);
+	assert.match(v3.r.warnings.join(), /dropped RT_\* steps 1, 3 \(v3 has no turns/);
+	assert.equal(v3.meta.prompt_version, "v3");
+	const v5 = convert("v5");
+	assert.deepEqual(
+		v5.lines.map((l) => l.token),
+		tokens,
+	);
+	assert.deepEqual(v5.r.warnings, []);
+	assert.equal(v5.meta.prompt_version, "v5");
 });
 
 const V5_TEMPLATE = `Task: {task}

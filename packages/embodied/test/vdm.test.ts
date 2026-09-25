@@ -1,0 +1,276 @@
+import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
+import { test } from "node:test";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
+import { defineRobot, RESULT_ENTRY, type RobotSpec } from "../src/robot.ts";
+import type { UnitsSpec } from "../src/units/index.ts";
+import { HEADERS, VDM_ENTRY } from "../src/vdm.ts";
+
+type Handler = (event: any, ctx: any) => unknown;
+/** A faux VLM reply: its text and cost, or an error. */
+type Reply = { text: string; usd?: number } | Error;
+
+/** A stub pi that runs handlers in registration order, with a real event bus; `vlm` answers side model calls in order. */
+function fakePi(flagValues: Record<string, unknown>, vlm: Reply[] = []) {
+	const handlers = new Map<string, Handler[]>();
+	const flags: Record<string, unknown> = {};
+	const tools = new Map<string, any>();
+	const entries: { type: string; data: any }[] = [];
+	const asked: { model: string; system?: string; content: any[] }[] = [];
+	const bus = new EventEmitter();
+	const pi = {
+		on: (name: string, fn: Handler) => handlers.set(name, [...(handlers.get(name) ?? []), fn]),
+		registerFlag: (name: string, o: { default?: unknown }) => {
+			flags[name] = name in flagValues ? flagValues[name] : o.default;
+		},
+		getFlag: (name: string) => flags[name],
+		registerTool: (t: any) => tools.set(t.name, t),
+		registerCommand: () => {},
+		setActiveTools: () => {},
+		getActiveTools: () => [],
+		appendEntry: (type: string, data: any) => entries.push({ type, data }),
+		getThinkingLevel: () => "low",
+		events: {
+			emit: (channel: string, data: unknown) => bus.emit(channel, data),
+			on: (channel: string, fn: (data: unknown) => void) => {
+				bus.on(channel, fn);
+				return () => bus.off(channel, fn);
+			},
+		},
+	} as unknown as ExtensionAPI;
+	const ctx = {
+		hasUI: true,
+		ui: { notify: () => {}, setWidget: () => {} },
+		shutdown: () => {},
+		sessionManager: { getBranch: () => [], getSessionDir: () => "/tmp" },
+		model: { provider: "relay", id: "planner" },
+		modelRegistry: {
+			find: (provider: string, id: string) => ({ provider, id }),
+			streamSimple: (
+				model: { provider: string; id: string },
+				context: { systemPrompt?: string; messages: { content: any[] }[] },
+			) => ({
+				result: async () => {
+					asked.push({
+						model: `${model.provider}/${model.id}`,
+						system: context.systemPrompt,
+						content: context.messages[0].content,
+					});
+					const reply = vlm.shift() ?? { text: "" };
+					if (reply instanceof Error) return { stopReason: "error", errorMessage: reply.message, content: [] };
+					return {
+						stopReason: "stop",
+						content: [{ type: "text", text: reply.text }],
+						usage: { cost: { total: reply.usd ?? 0 } },
+					};
+				},
+			}),
+		},
+	};
+	async function emit(name: string, event: Record<string, unknown> = {}) {
+		let result: any;
+		for (const fn of handlers.get(name) ?? []) {
+			const r: any = await fn({ type: name, ...event }, ctx);
+			if (r !== undefined) result = r;
+			if (r && name === "tool_call" && r.block) return r;
+		}
+		return result;
+	}
+	return { pi, emit, tools, entries, asked, handlers };
+}
+
+const finish: RobotSpec["finish"] = {
+	description: "finish",
+	parameters: Type.Object({ status: Type.String(), summary: Type.String() }),
+	result: (p) => ({ content: [{ type: "text", text: p.status }], details: p }),
+};
+
+/** A LIBERO-shaped robot: observations carry the agentview then the wrist view; `segment` returns one overlay. */
+async function toy(flags: Record<string, unknown>, vlm: Reply[] = [], extra: Partial<RobotSpec> = {}) {
+	const f = fakePi(flags, vlm);
+	const robot = defineRobot(f.pi, {
+		name: "toy",
+		task: [],
+		keepImages: 4,
+		start: async () => ["move", "segment", "finish"],
+		result: () => ({}),
+		status: () => ({ language: "put the bowl on the plate" }),
+		finish,
+		vdm: { views: 2, wrist: 1 },
+		...extra,
+	});
+	for (const name of ["move", "segment"])
+		robot.tool(name, name, Type.Object({}), async () => ({ content: [], details: {} }));
+	await f.emit("session_start");
+	await f.emit("agent_start");
+	return f;
+}
+
+const image = (data: string) => ({ type: "image", data, mimeType: "image/png" });
+/** A robot tool result as pi's tool_result event carries it. */
+const observed = (toolName: string, ...images: string[]) => ({
+	toolName,
+	toolCallId: "id",
+	input: {},
+	isError: false,
+	details: {},
+	content: [{ type: "text", text: "{}" }, ...images.map(image)],
+});
+const texts = (content: any[]) => content.filter((c) => c.type === "text").map((c) => c.text);
+const images = (content: any[]) => content.filter((c) => c.type === "image").map((c) => c.data);
+const result = (f: Awaited<ReturnType<typeof toy>>) =>
+	f.entries.filter((e) => e.type === RESULT_ENTRY).map((e) => e.data)[0];
+
+test("--vdm off: results are untouched, no model is asked and nothing is written", async () => {
+	const f = await toy({});
+	assert.equal(await f.emit("tool_result", observed("move", "a0", "w0")), undefined);
+	assert.equal(await f.emit("tool_result", observed("move", "a1", "w1")), undefined);
+	assert.equal(f.asked.length, 0);
+	assert.deepEqual(
+		f.entries.filter((e) => e.type === VDM_ENTRY),
+		[],
+	);
+	await f.tools.get("finish").execute("id", { status: "success", summary: "" });
+	await f.emit("agent_end");
+	assert.equal(result(f).vdm, false);
+	assert.equal(result(f).vdm_calls, undefined);
+});
+
+test("a robot without a vdm spec registers no vdm flags", async () => {
+	const f = await toy({}, [], { vdm: undefined });
+	assert.equal(f.pi.getFlag("vdm"), undefined);
+	assert.equal(await f.emit("tool_result", observed("move", "a0", "w0")), undefined);
+});
+
+test("--vdm describes the first observation, then appends each diff and writes a vdm entry per call", async () => {
+	const f = await toy({ vdm: true }, [
+		{ text: "A bowl and a plate on the table.", usd: 0.01 },
+		{ text: "The gripper moved above the bowl. Not complete.", usd: 0.02 },
+	]);
+	const first = await f.emit("tool_result", observed("move", "a0", "w0"));
+	assert.deepEqual(images(first.content), ["a0", "w0"], "the camera images stay");
+	assert.equal(texts(first.content).at(-1), `${HEADERS.initial}\nA bowl and a plate on the table.`);
+	// The initial description: CaP-X's system prompt, the task, the main view only (no --vdm-wrist).
+	assert.equal(f.asked[0].model, "relay/planner");
+	assert.match(f.asked[0].system ?? "", /describes the initial state of the environment/);
+	assert.equal(f.asked[0].content[0].text, "put the bowl on the plate");
+	assert.deepEqual(images(f.asked[0].content), ["a0"]);
+
+	// A segmentation overlay (one image) and a non-robot tool are not observations.
+	assert.equal(await f.emit("tool_result", observed("segment", "overlay")), undefined);
+	assert.equal(await f.emit("tool_result", observed("read", "x", "y")), undefined);
+
+	const second = await f.emit("tool_result", observed("move", "a1", "w1"));
+	assert.equal(texts(second.content).at(-1), `${HEADERS.diff}\nThe gripper moved above the bowl. Not complete.`);
+	assert.match(f.asked[1].system ?? "", /difference between the current state/);
+	assert.deepEqual(images(f.asked[1].content), ["a0", "a1"], "previous then current agentview");
+	assert.deepEqual(texts(f.asked[1].content).slice(2), [
+		"Previous state (main camera):",
+		"Current state (main camera):",
+	]);
+	assert.equal(f.asked.length, 2);
+
+	const logged = f.entries.filter((e) => e.type === VDM_ENTRY).map((e) => e.data);
+	assert.deepEqual(
+		logged.map((e) => [e.kind, e.tool, e.model, e.text, e.cost_usd, e.wrist]),
+		[
+			["initial", "move", "relay/planner", "A bowl and a plate on the table.", 0.01, false],
+			["diff", "move", "relay/planner", "The gripper moved above the bowl. Not complete.", 0.02, false],
+		],
+	);
+	await f.tools.get("finish").execute("id", { status: "success", summary: "" });
+	await f.emit("agent_end");
+	const r = result(f);
+	assert.equal(r.vdm, true);
+	assert.equal(r.vdm_calls, 2);
+	assert.equal(r.vdm_errors, 0);
+	assert.equal(r.vdm_cost_usd, 0.03);
+	assert.equal(r.cost_usd, 0.03, "VDM calls count toward the episode's cost");
+});
+
+test("--vdm-wrist adds the wrist pair and --vdm-model picks the model", async () => {
+	const f = await toy({ vdm: true, "vdm-wrist": true, "vdm-model": "selfhost/muse" }, [
+		{ text: "scene" },
+		{ text: "diff" },
+	]);
+	await f.emit("tool_result", observed("move", "a0", "w0"));
+	await f.emit("tool_result", observed("move", "a1", "w1"));
+	assert.deepEqual(
+		f.asked.map((a) => a.model),
+		["selfhost/muse", "selfhost/muse"],
+	);
+	assert.deepEqual(images(f.asked[0].content), ["a0", "w0"]);
+	assert.deepEqual(texts(f.asked[0].content).slice(2), ["Main camera view:", "Wrist camera view:"]);
+	assert.deepEqual(images(f.asked[1].content), ["a0", "a1", "w0", "w1"]);
+	assert.equal(f.entries.find((e) => e.type === VDM_ENTRY)?.data.wrist, true);
+});
+
+test("a failed VDM call is noted in the result and the episode goes on", async () => {
+	const f = await toy({ vdm: true }, [new Error("402 no credits"), { text: "the bowl moved" }]);
+	const first = await f.emit("tool_result", observed("move", "a0", "w0"));
+	assert.equal(texts(first.content).at(-1), "[visual differencing unavailable: 402 no credits]");
+	assert.deepEqual(images(first.content), ["a0", "w0"]);
+	assert.equal(await f.emit("tool_call", { toolName: "move" }), undefined, "the next robot call runs");
+	// The failed call's frame is still the previous one: the next result is a diff against it.
+	const second = await f.emit("tool_result", observed("move", "a1", "w1"));
+	assert.equal(texts(second.content).at(-1), `${HEADERS.diff}\nthe bowl moved`);
+	assert.deepEqual(images(f.asked[1].content), ["a0", "a1"]);
+	const logged = f.entries.filter((e) => e.type === VDM_ENTRY).map((e) => e.data);
+	assert.equal(logged[0].error, "402 no credits");
+	assert.equal(logged[0].kind, "initial");
+	await f.tools.get("finish").execute("id", { status: "success", summary: "" });
+	await f.emit("agent_end");
+	assert.equal(result(f).vdm_errors, 1);
+	assert.equal(result(f).env_error, false);
+	assert.equal(result(f).planner_error, null);
+});
+
+test("VDM spend exhausts --max-cost like the planner's replies", async () => {
+	const f = await toy({ vdm: true, "max-cost": "0.05" }, [
+		{ text: "scene", usd: 0.03 },
+		{ text: "diff", usd: 0.03 },
+	]);
+	await f.emit("tool_result", observed("move", "a0", "w0"));
+	assert.equal(await f.emit("tool_call", { toolName: "move" }), undefined);
+	await f.emit("tool_result", observed("move", "a1", "w1"));
+	assert.match((await f.emit("tool_call", { toolName: "move" }))?.reason, /Planner cost budget exhausted/);
+	await f.emit("agent_end");
+	assert.equal(result(f).planner_budget_exhausted, "cost");
+	assert.equal(result(f).cost_usd, 0.06);
+});
+
+test("the units verifier's VLM call counts toward the episode's cost", async () => {
+	const units: UnitsSpec = {
+		vectors: {
+			MV_FWD: [1, 0, 0],
+			MV_BACK: [-1, 0, 0],
+			MV_LEFT: [0, -1, 0],
+			MV_RIGHT: [0, 1, 0],
+			MV_UP: [0, 0, 1],
+			MV_DOWN: [0, 0, -1],
+		},
+		stepM: 0.02,
+		apply: async () => ({ content: [{ type: "text", text: "obs" }, image("m")] as any, details: {} }),
+		state: async () => ({ eef_xyz: [0.5, 0, 0.3], gripper_width: 0.08, table_z: 0 }),
+		instruction: () => "put the cube in the bowl",
+	};
+	const f = await toy(
+		{ units: true, "units-verify": "true" },
+		[{ text: '{"complete":true,"reason":"ok"}', usd: 0.04 }],
+		{
+			units,
+			vdm: undefined,
+		},
+	);
+	await f.emit("tool_result", observed("act", "a0"));
+	assert.equal(
+		await f.emit("tool_call", { toolName: "finish", input: { status: "success", summary: "" } }),
+		undefined,
+	);
+	assert.equal(f.asked.length, 1);
+	await f.tools.get("finish").execute("id", { status: "success", summary: "" });
+	await f.emit("agent_end");
+	assert.equal(result(f).finish_verified, true);
+	assert.equal(result(f).cost_usd, 0.04);
+});

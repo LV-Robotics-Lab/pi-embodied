@@ -23,6 +23,7 @@
 # validate_target50.py (services/.../robocasa/eval) against <out>/target50.pi.json: the manifest with planner_reference
 # replaced by the planner that actually ran, everything else (protocol, matrix, timeouts, RLDX
 # settings, success source) unchanged. That validator's `overall.success_rate` is the Target50 score.
+# A --privileged run (simulator ground truth) is recorded as such and never shares an out dir with one without.
 set -uo pipefail
 out=$1 splits=$2
 shift 2
@@ -36,6 +37,7 @@ PY=${PI_EMBODIED_PYTHON:-python3}
 full=""
 [ "$splits" = atomic,composite_seen,composite_unseen ] && [ -z "${TASKS:-}${SEEDS:-}" ] && full=1
 model="" thinking="" turns=${MAX_TURNS:-100} units=false stateless=false
+privileged=false
 args=("$@")
 for ((i = 0; i < ${#args[@]}; i++)); do
 	case ${args[i]} in
@@ -57,6 +59,15 @@ for ((i = 0; i < ${#args[@]}; i++)); do
 		echo "${args[i]}: pi ignores a boolean flag's value and would run stateless; omit --stateless for a stateful run" >&2
 		exit 2
 		;;
+	# --privileged (simulator ground truth, ground_truth_poses) is a boolean like --stateless.
+	--privileged) case ${args[i + 1]:-} in "" | -* | @* | true) privileged=true ;; *)
+		echo "--privileged takes no value: pi would turn it on and swallow '${args[i + 1]}'" >&2 && exit 2 ;;
+	esac ;;
+	--privileged=true) privileged=true ;;
+	--privileged=*)
+		echo "${args[i]}: pi ignores a boolean flag's value and would turn it on; omit --privileged for a run without ground truth" >&2
+		exit 2
+		;;
 	esac
 done
 [ "$units" = pure ] && units=true
@@ -67,14 +78,14 @@ export RLDX_MAX_CHUNKS=$(protocol m.runtime_protocol.rldx_max_chunks)
 export RLDX_SETTLE_PATIENCE=$(protocol m.runtime_protocol.rldx_settle_patience)
 export RLDX_ACTION_STEPS_PER_CHUNK=$(protocol m.runtime_protocol.rldx_action_steps_per_chunk)
 unset RLDX_RESET_SEED
-config=("$model" "$thinking" "$turns" "$units" "$stateless")
+config=("$model" "$thinking" "$turns" "$units" "$stateless" "$privileged")
 # The protocol pins the task-memory snapshot (hf profile); PI_EMBODIED_MEMORY_REVISION overrides it.
 export PI_EMBODIED_MEMORY_REVISION=${PI_EMBODIED_MEMORY_REVISION:-$(protocol m.dependencies.task_memory.revision)}
 
 record() { # <dir> <exit code> <split> <task> <seed> <cell timeout> <elapsed s>: write result.json
 	node --input-type=module -e '
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
-const [dir, code, manifest, split, task, seed, limit, elapsed, model, thinking, turns, units, stateless] = process.argv.slice(1);
+const [dir, code, manifest, split, task, seed, limit, elapsed, model, thinking, turns, units, stateless, privileged] = process.argv.slice(1);
 const m = JSON.parse(readFileSync(manifest, "utf8"));
 const results = [];
 for (const f of readdirSync(dir).filter((f) => f.endsWith(".jsonl"))) {
@@ -126,6 +137,7 @@ const result = {
 	max_turns: Number(turns),
 	units,
 	stateless: stateless === "true",
+	privileged: privileged === "true",
 };
 writeFileSync(`${dir}/result.json`, `${JSON.stringify(result, null, 2)}\n`);
 console.log(JSON.stringify({ status, termination_reason: result.termination_reason, success: result.success, claimed: result.claimed, env_steps: result.env_steps }));
@@ -134,11 +146,11 @@ console.log(JSON.stringify({ status, termination_reason: result.termination_reas
 
 valid() { # <dir>: 0 = a valid result of this configuration, 2 = a valid result of another one, 1 = none
 	node -e '
-const [path, protocolId, model, thinking, turns, units, stateless] = process.argv.slice(1);
+const [path, protocolId, model, thinking, turns, units, stateless, privileged] = process.argv.slice(1);
 const r = JSON.parse(require("fs").readFileSync(path, "utf8"));
 if (r.status !== "success" && r.status !== "failure") process.exit(1);
 const same = r.protocol_id === protocolId && r.model === (model || null) && r.thinking === (thinking || null) && r.max_turns === Number(turns)
-	&& r.units === units && r.stateless === (stateless === "true");
+	&& r.units === units && r.stateless === (stateless === "true") && (r.privileged ?? false) === (privileged === "true");
 process.exit(same ? 0 : 2);
 ' "$1/result.json" "$(protocol m.protocol_id)" "${config[@]}" 2>/dev/null
 }
@@ -162,7 +174,7 @@ while read -r split task seed limit; do
 	valid "$dir"
 	case $? in
 	0) continue ;;
-	2) echo "$dir holds a result of another protocol, model, thinking level, --max-turns or units mode (or an older result format); use another out dir" >&2 && exit 1 ;;
+	2) echo "$dir holds a result of another protocol, model, thinking level, --max-turns, units mode or --privileged (or an older result format); use another out dir" >&2 && exit 1 ;;
 	esac
 	rm -rf "$dir" && mkdir -p "$dir"
 	echo "== $split $task seed $seed"
@@ -191,7 +203,7 @@ const rows = cells.trim().split("\n").map((line) => {
 	}
 });
 const scoredRows = rows.filter((r) => r.status === "success" || r.status === "failure");
-const configs = new Set(scoredRows.map((r) => `${r.model}/${r.thinking}/turns=${r.max_turns}/units=${r.units}${r.stateless ? "/stateless" : ""}`));
+const configs = new Set(scoredRows.map((r) => `${r.model}/${r.thinking}/turns=${r.max_turns}/units=${r.units}${r.stateless ? "/stateless" : ""}${r.privileged ? "/privileged" : ""}`));
 if (configs.size > 1) {
 	console.log(`refusing to summarize: ${out} mixes configurations ${[...configs].join(", ")}`);
 	process.exit(1);

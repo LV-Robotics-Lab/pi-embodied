@@ -260,6 +260,7 @@ export default function maniskill(pi: ExtensionAPI) {
 		task: ["env-id", "seed", "scene"],
 		keepImages: 4,
 		video: true,
+		groundTruth: (names) => call("env.ground_truth_poses", { names: names ?? null }),
 		start: startEpisode,
 		prompt: () =>
 			SYSTEM.replaceAll("{{task_language}}", language)

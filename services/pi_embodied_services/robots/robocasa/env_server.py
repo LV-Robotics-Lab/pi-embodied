@@ -26,6 +26,7 @@ import sys
 import numpy as np
 
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
+from pi_embodied_services.utils import ground_truth
 from pi_embodied_services.utils.logging import get_logger
 from pi_embodied_services.utils.rpc.main_thread_serve import MainThreadServeMixin
 
@@ -140,6 +141,7 @@ class RoboCasaEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         self._rpc["env.reassemble_env_action"] = self.reassemble_env_action
         self._rpc["env.get_success_criteria_text"] = self.get_success_criteria_text
         self._rpc["env.get_task_progress"] = self.get_task_progress
+        self._rpc["env.ground_truth_poses"] = self.ground_truth_poses
         # Read-only methods
         self._readonly_methods.update(
             [
@@ -373,6 +375,18 @@ class RoboCasaEnvFacade(MainThreadServeMixin, BaseEnvFacade):
             elif isinstance(v, (float, np.floating)):
                 prog[k] = round(float(v), 4)
         return prog
+
+    def ground_truth_poses(self, names=None):
+        """World poses of ``names`` (default all) from the kitchen's own object list
+        (``--privileged``): its objects (``obj_body_id``), then its fixtures' root bodies."""
+        env = self.env
+        ids = dict(env.obj_body_id)
+        for name, fixture in env.fixtures.items():
+            try:
+                ids.setdefault(name, env.sim.model.body_name2id(fixture.root_body))
+            except (KeyError, ValueError):
+                pass  # a fixture merged into another body has none of its own
+        return ground_truth.respond(ground_truth.mujoco_body_poses(env.sim, ids), names)
 
     def close(self):
         try:

@@ -36,7 +36,7 @@ import { join } from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type RobotStatus, STATUS_EVENT } from "../robot.ts";
-import { UNITS_EVENT, type UnitsHandle } from "../units/index.ts";
+import { isRt, UNITS_EVENT, type UnitsHandle } from "../units/index.ts";
 
 export { UNITS_EVENT, type UnitsHandle };
 
@@ -56,7 +56,8 @@ export const DUAL = ["left", "right"] as const;
  * (sent in the GUMI state as `keys`) and the typed sequence aliases below are made from.
  * One arm (web_teleop/static): WASD QE move, Z/X rotate, G grasp, R release, arrows as a second move
  * cluster. Two arms (web_teleop_dual/static/index.html): the left hand's cluster for the left arm,
- * IJKL UO NM Shift-R . for the right; Ctrl holds that arm STILL.
+ * IJKL UO NM Shift-R . for the right; Ctrl holds that arm STILL. With --units-rt the turns are RT_*
+ * instead (RT_KEYS below).
  */
 const LEFT_KEYS: Record<string, string> = {
 	KeyW: "MV_FWD",
@@ -96,23 +97,59 @@ export const KEYS = {
 		right: RIGHT_KEYS,
 	},
 };
-/** The keys `arms` are driven with: code -> [arm, unit]. */
-export function keyMap(arms: readonly string[]): Record<string, [string, string]> {
-	const bound =
+/**
+ * RT mode (--units-rt, pi-embodied): ../units swaps ROTATE_* for the RT_* turns (v5's vocabulary), and
+ * these keys overlay the cluster, one pair per axis. Yaw takes over the rotate keys by PHYSICAL
+ * direction, not by name, so a key turns the gripper the same way in both modes: Show-Harness's
+ * ROTATE_CW is +z (counter-clockwise seen from above; "CW" is its look in the downward wrist view),
+ * RT_YAW_CW is -z (clockwise seen from above; ../libero LIBERO_TURNS). So X (ROTATE_CW) becomes
+ * RT_YAW_CCW and Z (ROTATE_CCW) RT_YAW_CW; the right arm's M and N likewise. Roll and pitch take the
+ * number row above the cluster, positive turn (RT_TURNS sign +1) first: 1/2 roll left/right, 3/4 pitch
+ * fwd/back (the right arm 7/8, 9/0). An axis the robot cannot turn about (its RT_* not offered) leaves
+ * its keys unbound, and ROTATE_* are never bound.
+ */
+const LEFT_RT_KEYS: Record<string, string> = {
+	KeyZ: "RT_YAW_CW",
+	KeyX: "RT_YAW_CCW",
+	Digit1: "RT_ROLL_LEFT",
+	Digit2: "RT_ROLL_RIGHT",
+	Digit3: "RT_PITCH_FWD",
+	Digit4: "RT_PITCH_BACK",
+};
+const RIGHT_RT_KEYS: Record<string, string> = {
+	KeyN: "RT_YAW_CW",
+	KeyM: "RT_YAW_CCW",
+	Digit7: "RT_ROLL_LEFT",
+	Digit8: "RT_ROLL_RIGHT",
+	Digit9: "RT_PITCH_FWD",
+	Digit0: "RT_PITCH_BACK",
+};
+export const RT_KEYS = { single: LEFT_RT_KEYS, dual: { left: LEFT_RT_KEYS, right: RIGHT_RT_KEYS } };
+/**
+ * The keys `arms` are driven with: code -> [arm, unit]. `rt` is the vocabulary in RT mode (the RT_*
+ * keys of the units in it replace the rotate keys), undefined in v3 mode.
+ */
+export function keyMap(arms: readonly string[], rt?: readonly string[]): Record<string, [string, string]> {
+	const bound: [string, Record<string, string>][] =
 		arms.length > 1
-			? arms.map((a, i) => [a, i ? KEYS.dual.right : KEYS.dual.left] as const)
-			: [[arms[0], KEYS.single] as const];
+			? [
+					[arms[0], rt ? { ...KEYS.dual.left, ...RT_KEYS.dual.left } : KEYS.dual.left],
+					[arms[1], rt ? { ...KEYS.dual.right, ...RT_KEYS.dual.right } : KEYS.dual.right],
+				]
+			: [[arms[0], rt ? { ...KEYS.single, ...RT_KEYS.single } : KEYS.single]];
 	return Object.fromEntries(
 		bound.flatMap(([arm, keys]) =>
-			Object.entries(keys).map(([code, unit]): [string, [string, string]] => [code, [arm, unit]]),
+			Object.entries(keys)
+				.filter(([, unit]) => !rt || !isRt(unit) || rt.includes(unit))
+				.map(([code, unit]): [string, [string, string]] => [code, [arm, unit]]),
 		),
 	);
 }
-/** A cluster's typeable keys (letters and `.`) as sequence aliases. */
+/** A cluster's typeable keys (letters, digits and `.`) as sequence aliases. */
 const typed = (keys: Record<string, string>) =>
 	Object.fromEntries(
 		Object.entries(keys).flatMap(([code, unit]) => {
-			const k = code === "Period" ? "." : /^Key([A-Z])$/.exec(code)?.[1];
+			const k = code === "Period" ? "." : /^(?:Key|Digit)([A-Z0-9])$/.exec(code)?.[1];
 			return k ? [[k, unit]] : [];
 		}),
 	);
@@ -120,6 +157,9 @@ const typed = (keys: Record<string, string>) =>
 export const ALIASES: Record<string, string> = { ...typed(LEFT_KEYS), STAY: STILL };
 /** The dual rig's right-hand cluster, accepted after `R:`. */
 export const RIGHT_ALIASES: Record<string, string> = typed(RIGHT_KEYS);
+/** RT mode's keys typed (`1*3` turns roll left three times, `x` is RT_YAW_CCW; the right arm's `R:7`). */
+export const RT_ALIASES: Record<string, string> = typed(LEFT_RT_KEYS);
+export const RIGHT_RT_ALIASES: Record<string, string> = typed(RIGHT_RT_KEYS);
 export const MAX_REPEAT = 64;
 /** Steps one request may carry (single arm: MAX_BATCH_TOKENS; two arms: MAX_PAIRS). */
 export const MAX_STEPS = { single: 64, dual: 24 };
@@ -132,7 +172,7 @@ export const kindOf = (unit: string) =>
 		? "still"
 		: (GRIPPERS as readonly string[]).includes(unit)
 			? "gripper"
-			: (ROTATES as readonly string[]).includes(unit)
+			: (ROTATES as readonly string[]).includes(unit) || isRt(unit)
 				? "rotate"
 				: "move";
 
@@ -140,7 +180,7 @@ export const kindOf = (unit: string) =>
 function expand(words: string[], aliases: Record<string, string>): string[] {
 	const out: string[] = [];
 	for (const raw of words) {
-		const m = /^([A-Z_.]+)(?:\*(\d+))?$/.exec(raw.toUpperCase());
+		const m = /^([A-Z0-9_.]+)(?:\*(\d+))?$/.exec(raw.toUpperCase());
 		if (!m) throw new Error(`cannot parse '${raw}'; expected NAME or NAME*N (e.g. MV_FWD*3, w*3)`);
 		const n = m[2] === undefined ? 1 : Number(m[2]);
 		if (!(n >= 1 && n <= MAX_REPEAT)) throw new Error(`repeat count in '${raw}' must be 1..${MAX_REPEAT}`);
@@ -157,13 +197,19 @@ const words = (v: unknown): string[] => {
 };
 
 /**
- * A teleop request to steps. `arms` is [ARM] or DUAL; `vocabulary` the units the robot accepts.
+ * A teleop request to steps. `arms` is [ARM] or DUAL; `vocabulary` the units the robot accepts; `rt`:
+ * RT mode (--units-rt), whose aliases are RT_KEYS'.
  *   {command: "w*3 a g"}                     the sequence box; two arms: "L:w*3 R:i g" (an omitted arm is STILL)
  *   {units: "MV_FWD*2 GRASP"} / {unit: "w"}  one arm
  *   {left: "MV_FWD*3", right: "MV_UP"}       two arms, zipped and STILL-padded
  * Throws with the reason on anything else.
  */
-export function parseSteps(body: Record<string, unknown>, arms: readonly string[], vocabulary: readonly string[]) {
+export function parseSteps(
+	body: Record<string, unknown>,
+	arms: readonly string[],
+	vocabulary: readonly string[],
+	rt = false,
+) {
 	const dual = arms.length > 1;
 	let sides: Record<string, string[]>;
 	const armed = "left" in body || "right" in body;
@@ -196,17 +242,21 @@ export function parseSteps(body: Record<string, unknown>, arms: readonly string[
 	if ("none" in sides)
 		throw new Error("two arms: prefix every group with an arm, e.g. 'L:w*3 R:i' (omitted arm = STILL)");
 
-	const units = Object.fromEntries(
-		Object.entries(sides).map(([side, w]) => [
-			side,
-			expand(w, side === "right" ? { ...ALIASES, ...RIGHT_ALIASES } : ALIASES),
-		]),
-	);
 	const allowed = new Set([...vocabulary, ...(dual ? [STILL] : [])]);
+	// RT mode: the RT_* keys replace the rotate keys, and exist only where the robot offers the unit.
+	const offered = (a: Record<string, string>) =>
+		Object.fromEntries(Object.entries(a).filter(([, u]) => !isRt(u) || allowed.has(u)));
+	const left = rt ? offered({ ...ALIASES, ...RT_ALIASES }) : ALIASES;
+	const right = rt
+		? offered({ ...ALIASES, ...RT_ALIASES, ...RIGHT_ALIASES, ...RIGHT_RT_ALIASES })
+		: { ...ALIASES, ...RIGHT_ALIASES };
+	const units = Object.fromEntries(
+		Object.entries(sides).map(([side, w]) => [side, expand(w, side === "right" ? right : left)]),
+	);
 	const bad = [...new Set(Object.values(units).flat())].filter((u) => !allowed.has(u));
 	if (bad.length)
 		throw new Error(
-			`not a unit here: ${bad.join(", ")}; allowed: ${[...allowed].join(", ")} (keys: ${Object.entries(ALIASES)
+			`not a unit here: ${bad.join(", ")}; allowed: ${[...allowed].join(", ")} (keys: ${Object.entries(left)
 				.filter(([, u]) => allowed.has(u))
 				.map(([k, u]) => `${k.toLowerCase()}=${u}`)
 				.join(" ")})`,
@@ -616,6 +666,8 @@ export type GumiState = {
 	last: string | null;
 	message: string;
 	root: string | null;
+	/** RT mode (--units-rt): the turns are RT_* instead of ROTATE_*. */
+	rt: boolean;
 	/** The key bindings for these arms (`keyMap`): KeyboardEvent.code -> [arm, unit]. */
 	keys: Record<string, [string, string]>;
 };
@@ -678,7 +730,8 @@ export function gumi(
 		last,
 		message,
 		root: root() ?? null,
-		keys: keyMap(arms),
+		rt: handle?.rt === true,
+		keys: keyMap(arms, handle?.rt ? handle.vocabulary : undefined),
 	});
 	const publish = (msg?: string) => {
 		if (msg !== undefined) message = msg;
@@ -825,6 +878,7 @@ export function gumi(
 						body,
 						arms,
 						handle.vocabulary.filter((u) => u !== "DONE"),
+						handle.rt === true,
 					);
 				} catch (e) {
 					throw fail(422, (e as Error).message);

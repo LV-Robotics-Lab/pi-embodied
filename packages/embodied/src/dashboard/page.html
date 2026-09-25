@@ -82,7 +82,7 @@ tr.step.sel { background: var(--code); }
     </div>
     <div id="transcript" class="scroll"><div class="empty" data-t="noEvents"></div></div>
     <div class="teleop" id="teleop" hidden>
-      <div class="title"><span data-t="teleop"></span><span id="tpMode" class="badge"></span><span id="tpRec" class="badge"></span><span class="grow"></span>
+      <div class="title"><span data-t="teleop"></span><span id="tpMode" class="badge"></span><span id="tpRec" class="badge"></span><span id="tpTurns" class="badge meta"></span><span class="grow"></span>
         <label><input type="checkbox" id="tpKeys" style="width:auto" checked /> <span data-t="keys"></span></label>
         <button id="tpTake"></button>
       </div>
@@ -149,9 +149,11 @@ const COPY = {
     take: "Take over", release: "Hand back", waiting: "Waiting for the unit…",
     recOn: (r, n) => `REC ${r} · ${n} steps`, recOff: "not recording", recDisabled: "recording off (--gumi-record)",
     confirmDiscard: "Delete the rollout being recorded?", look: "Look",
-    help: "keys: W/S/A/D move · Q/E up/down · Z/X rotate · G grasp · R release · Space toggle gripper · hold to repeat",
-    helpDual: "left W/S/A/D Q/E Z/X, G or L-Shift grasp, R release, L-Ctrl STILL · right I/K/J/L U/O N/M, R-Shift grasp, . release, R-Ctrl STILL · hold to repeat",
+    help: "keys: W/S/A/D move · Q/E up/down · G grasp · R release · Space toggle gripper · hold to repeat",
+    helpDual: "left W/S/A/D Q/E, G or L-Shift grasp, R release, L-Ctrl STILL · right I/K/J/L U/O, R-Shift grasp, . release, R-Ctrl STILL · hold to repeat",
     arms: { arm: "arm", left: "left arm", right: "right arm" },
+    axes: { rotate: "rotate", roll: "roll", pitch: "pitch", yaw: "yaw" },
+    turns: (rt) => rt ? "turns: RT roll/pitch/yaw (v5, --units-rt)" : "turns: ROTATE (v3)",
   },
   "zh-cn": {
     monitor: "实时监控", reasoning: "智能体推理与工具调用", expand: "展开工具调用", autoscroll: "自动滚动",
@@ -175,9 +177,11 @@ const COPY = {
     take: "接管", release: "交还智能体", waiting: "等待当前动作结束…",
     recOn: (r, n) => `录制中 ${r} · ${n} 步`, recOff: "未录制", recDisabled: "未开启录制(--gumi-record)",
     confirmDiscard: "删除正在录制的轨迹?", look: "观察",
-    help: "按键:W/S/A/D 平移 · Q/E 上/下 · Z/X 旋转 · G 抓取 · R 松开 · 空格 切换夹爪 · 按住连续执行",
-    helpDual: "左臂 W/S/A/D Q/E Z/X,G 或左 Shift 抓取,R 松开,左 Ctrl 保持 · 右臂 I/K/J/L U/O N/M,右 Shift 抓取,. 松开,右 Ctrl 保持 · 按住连续执行",
+    help: "按键:W/S/A/D 平移 · Q/E 上/下 · G 抓取 · R 松开 · 空格 切换夹爪 · 按住连续执行",
+    helpDual: "左臂 W/S/A/D Q/E,G 或左 Shift 抓取,R 松开,左 Ctrl 保持 · 右臂 I/K/J/L U/O,右 Shift 抓取,. 松开,右 Ctrl 保持 · 按住连续执行",
     arms: { arm: "机械臂", left: "左臂", right: "右臂" },
+    axes: { rotate: "旋转", roll: "横滚", pitch: "俯仰", yaw: "偏航" },
+    turns: (rt) => rt ? "转动:RT 横滚/俯仰/偏航(v5,--units-rt)" : "转动:ROTATE(v3)",
   },
 };
 const T = COPY[document.documentElement.lang === "zh-cn" ? "zh-cn" : "en"];
@@ -367,14 +371,25 @@ try { $("stream").checked = localStorage.getItem("pi-embodied.stream") === "1"; 
 
 // ---- GUMI teleop: one unit per press, hold to repeat; two arms: one synchronized pair per step.
 const UNIT_LABEL = { MV_FWD: "FWD", MV_BACK: "BACK", MV_LEFT: "LEFT", MV_RIGHT: "RIGHT", MV_UP: "UP", MV_DOWN: "DOWN",
-  ROTATE_CCW: "CCW", ROTATE_CW: "CW", GRASP: "GRASP", RELEASE: "RELEASE", STOP: "", STILL: "STILL" };
+  ROTATE_CCW: "CCW", ROTATE_CW: "CW", GRASP: "GRASP", RELEASE: "RELEASE", STOP: "", STILL: "STILL",
+  RT_ROLL_LEFT: "ROLL+", RT_ROLL_RIGHT: "ROLL-", RT_PITCH_FWD: "PITCH+", RT_PITCH_BACK: "PITCH-", RT_YAW_CCW: "YAW+", RT_YAW_CW: "YAW-" };
+// The turn pairs: ROTATE_* (v3 mode), or RT_* with --units-rt; roll and pitch positive turn first (RT_TURNS),
+// the yaw pair in the rotate pair's physical order (Z/X: gumi/index.ts RT_KEYS). Only bound keys are shown.
+const TURN_PAIRS = [["rotate", "ROTATE_CCW", "ROTATE_CW"], ["yaw", "RT_YAW_CW", "RT_YAW_CCW"], ["roll", "RT_ROLL_LEFT", "RT_ROLL_RIGHT"], ["pitch", "RT_PITCH_FWD", "RT_PITCH_BACK"]];
 // Key bindings come from the server (gumi/index.ts KEYS, in the state as `keys`: code -> [arm, unit]).
 const ONE_SHOT = new Set(["GRASP", "RELEASE", "STOP", "STILL"]);
 const REPEAT_MS = 250;
 let G = null, padsKey = "", inFlight = false, timer = null;
 const held = new Map();   // key/button id -> [arm, unit], newest last
 const dual = () => G && G.arms.length > 1;
-const keyName = (code) => code.replace(/^Key/, "").replace(/^Arrow/, "").replace("Period", ".").replace("Left", "L-").replace("Right", "R-");
+const keyName = (code) => code.replace(/^(Key|Digit|Arrow)/, "").replace("Period", ".").replace("Left", "L-").replace("Right", "R-");
+const keyOf = (arm, unit) => Object.keys(G.keys ?? {}).find((k) => G.keys[k][0] === arm && G.keys[k][1] === unit && !k.startsWith("Arrow"));
+/** The bound turn keys, e.g. "Z/X rotate" or "Z/X yaw · 1/2 roll ± · 3/4 pitch ±" (two arms: per arm). */
+const turnHelp = () => G.arms.map((arm) => {
+  const pairs = TURN_PAIRS.map(([axis, pos, neg]) => [axis, keyOf(arm, pos), keyOf(arm, neg)]).filter(([, a, b]) => a && b)
+    .map(([axis, a, b]) => `${keyName(a)}/${keyName(b)} ${T.axes[axis]}${axis === "rotate" || axis === "yaw" ? "" : " ±"}`);
+  return pairs.length ? (dual() ? `${T.arms[arm] ?? arm} ` : "") + pairs.join(" · ") : "";
+}).filter(Boolean).join(" · ");
 
 function renderGumi(g) {
   G = g ?? null;
@@ -385,18 +400,18 @@ function renderGumi(g) {
   $("tpTake").textContent = G.mode === "agent" ? T.take : G.mode === "requested" ? T.waiting : T.release;
   $("tpRec").textContent = !G.root ? T.recDisabled : G.recording ? T.recOn(G.recording, G.steps) : T.recOff;
   $("tpRec").className = "badge " + (G.recording ? "rec" : "meta");
+  $("tpTurns").textContent = T.turns(G.rt === true);
   $("tpStart").disabled = !G.root || !!G.recording;
   $("tpSave").disabled = $("tpDiscard").disabled = !G.recording;
   $("tpCmd").placeholder = dual() ? T.seqPlaceholderDual : T.seqPlaceholder;
-  $("tpStatus").textContent = [G.message, G.last ? `last: ${G.last}` : "", dual() ? T.helpDual : T.help].filter(Boolean).join(" · ");
+  $("tpStatus").textContent = [G.message, G.last ? `last: ${G.last}` : "", dual() ? T.helpDual : T.help, turnHelp()].filter(Boolean).join(" · ");
   const key = G.arms.join() + "|" + G.vocabulary.join() + "|" + JSON.stringify(G.keys ?? {});
   if (key === padsKey) return;
   padsKey = key;
-  const keymap = G.keys ?? {};
   $("tpPads").replaceChildren(...G.arms.map((arm) => {
     const pad = el("div", "pad"); pad.append(el("b", "", T.arms[arm] ?? arm));
     for (const unit of G.vocabulary.filter((u) => u !== "DONE" && (u !== "STILL" || dual()))) {
-      const code = Object.keys(keymap).find((k) => keymap[k][0] === arm && keymap[k][1] === unit && !k.startsWith("Arrow"));
+      const code = keyOf(arm, unit);
       const b = el("button", "", unit === "STOP" ? T.look : UNIT_LABEL[unit] ?? unit);
       if (code) b.append(el("kbd", "", keyName(code)));
       b.title = unit; b.dataset.id = `btn:${arm}:${unit}`;

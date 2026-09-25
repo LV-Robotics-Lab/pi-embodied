@@ -20,16 +20,24 @@ import {
 	parseSteps,
 	Recorder,
 	RIGHT_ALIASES,
+	RIGHT_RT_ALIASES,
+	RT_ALIASES,
+	RT_KEYS,
 	Takeover,
 	UNITS_EVENT,
 	type UnitsHandle,
 	views,
 } from "../src/gumi/index.ts";
+import { LIBERO_TURNS, rotvecToMatrix, yawOf } from "../src/libero/index.ts";
 import { encodePng } from "../src/png.ts";
 import { STATUS_EVENT } from "../src/robot.ts";
+import { ground, RT_UNITS, type Unit } from "../src/units/index.ts";
 
 const SINGLE = ["MV_FWD", "MV_BACK", "MV_LEFT", "MV_RIGHT", "MV_UP", "MV_DOWN", "STOP", "GRASP", "RELEASE", "DONE"];
 const WITH_YAW = [...SINGLE, "ROTATE_CW", "ROTATE_CCW"];
+/** --units-rt (RT_* instead of ROTATE_*) on a robot with every axis (LIBERO), and on one without pitch. */
+const WITH_RT = [...SINGLE, ...RT_UNITS];
+const NO_PITCH = SINGLE.concat(RT_UNITS.filter((u) => !u.startsWith("RT_PITCH")));
 const units = (steps: Record<string, string>[], arm = ARM) => steps.map((s) => s[arm]);
 
 test("sequence box: keys, names and repeats expand to one unit per step", () => {
@@ -172,6 +180,104 @@ test("keys: one table for the dashboard's key handler and the typed sequence ali
 	for (const [k, u] of Object.entries(RIGHT_ALIASES))
 		assert.deepEqual(two[k === "." ? "Period" : `Key${k}`], ["right", u]);
 	assert.equal(Object.keys(KEYS.single).length, 14);
+});
+
+test("keys: --units-rt swaps the rotate keys for RT_* pairs, only for the axes the robot turns about", () => {
+	// v3 mode (--units-rt off): Z/X rotate, no RT key or alias.
+	const v3 = keyMap([ARM]);
+	assert.deepEqual([v3.KeyZ, v3.KeyX, v3.Digit1], [[ARM, "ROTATE_CCW"], [ARM, "ROTATE_CW"], undefined]);
+	assert.deepEqual(units(parseSteps({ command: "z" }, [ARM], WITH_YAW)), ["ROTATE_CCW"]);
+	assert.throws(() => parseSteps({ command: "1" }, [ARM], WITH_YAW), /not a unit here: 1;/);
+	// RT mode, every axis: Z/X yaw by physical direction (X = RT_YAW_CCW, the +z turn ROTATE_CW makes),
+	// 1/2 roll, 3/4 pitch (positive turn first); nothing is ROTATE_*.
+	const rt = keyMap([ARM], WITH_RT);
+	assert.deepEqual(
+		["KeyZ", "KeyX", "Digit1", "Digit2", "Digit3", "Digit4"].map((k) => rt[k]?.[1]),
+		["RT_YAW_CW", "RT_YAW_CCW", "RT_ROLL_LEFT", "RT_ROLL_RIGHT", "RT_PITCH_FWD", "RT_PITCH_BACK"],
+	);
+	assert.ok(!Object.values(rt).some(([, u]) => u.startsWith("ROTATE")));
+	assert.equal(Object.keys(rt).length, 14 + 4);
+	assert.deepEqual(units(parseSteps({ command: "1*2 4 x RT_YAW_CW" }, [ARM], WITH_RT, true)), [
+		"RT_ROLL_LEFT",
+		"RT_ROLL_LEFT",
+		"RT_PITCH_BACK",
+		"RT_YAW_CCW",
+		"RT_YAW_CW",
+	]);
+	assert.throws(() => parseSteps({ command: "ROTATE_CW" }, [ARM], WITH_RT, true), /not a unit here: ROTATE_CW/);
+	// An axis the robot cannot turn about: its pair is unbound, typing it is refused.
+	const noPitch = keyMap([ARM], NO_PITCH);
+	assert.deepEqual(
+		[noPitch.Digit1, noPitch.Digit3, noPitch.Digit4, noPitch.KeyZ],
+		[[ARM, "RT_ROLL_LEFT"], undefined, undefined, [ARM, "RT_YAW_CW"]],
+	);
+	assert.throws(() => parseSteps({ command: "1 3" }, [ARM], NO_PITCH, true), /not a unit here: 3;.* 1=RT_ROLL_LEFT/);
+	assert.throws(() => parseSteps({ command: "RT_PITCH_FWD" }, [ARM], NO_PITCH, true), /not a unit here: RT_PITCH_FWD/);
+	// No yaw axis: Z/X are unbound (not ROTATE_*, which RT mode does not offer).
+	const noYaw = SINGLE.concat(RT_UNITS.filter((u) => !u.startsWith("RT_YAW")));
+	assert.deepEqual([keyMap([ARM], noYaw).KeyZ, keyMap([ARM], noYaw).Digit1], [undefined, [ARM, "RT_ROLL_LEFT"]]);
+	assert.throws(() => parseSteps({ command: "z" }, [ARM], noYaw, true), /not a unit here: Z;/);
+	// Two arms: the left hand's Z/X 1-4, the right hand's N/M 7 8 9 0; typed after L: / R:.
+	const dualRt = [...WITH_RT, "STILL"];
+	const two = keyMap(DUAL, dualRt);
+	assert.deepEqual(
+		[two.KeyZ, two.Digit4, two.KeyN, two.KeyM, two.Digit7, two.Digit0],
+		[
+			["left", "RT_YAW_CW"],
+			["left", "RT_PITCH_BACK"],
+			["right", "RT_YAW_CW"],
+			["right", "RT_YAW_CCW"],
+			["right", "RT_ROLL_LEFT"],
+			["right", "RT_PITCH_BACK"],
+		],
+	);
+	assert.deepEqual([keyMap(DUAL).KeyN, keyMap(DUAL).Digit7], [["right", "ROTATE_CCW"], undefined]);
+	assert.deepEqual(parseSteps({ command: "L:3 R:m 7*2" }, DUAL, dualRt, true), [
+		{ left: "RT_PITCH_FWD", right: "RT_YAW_CCW" },
+		{ left: "STILL", right: "RT_ROLL_LEFT" },
+		{ left: "STILL", right: "RT_ROLL_LEFT" },
+	]);
+	// Every RT alias is its bound key, typed.
+	const code = (k: string) => (/\d/.test(k) ? `Digit${k}` : `Key${k}`);
+	for (const [k, u] of Object.entries(RT_ALIASES)) assert.deepEqual(two[code(k)], ["left", u]);
+	for (const [k, u] of Object.entries(RIGHT_RT_ALIASES)) assert.deepEqual(two[code(k)], ["right", u]);
+	assert.equal(Object.keys(RT_KEYS.dual.right).length, 6);
+});
+
+test("keys: on LIBERO (base +z up) each rotate key turns the gripper the same physical way in both modes", () => {
+	const spec = {
+		vectors: {
+			MV_FWD: [1, 0, 0],
+			MV_BACK: [-1, 0, 0],
+			MV_LEFT: [0, -1, 0],
+			MV_RIGHT: [0, 1, 0],
+			MV_UP: [0, 0, 1],
+			MV_DOWN: [0, 0, -1],
+		} as const,
+		stepM: 0.02,
+		...LIBERO_TURNS,
+	};
+	// LIBERO's yaw servo (move.yaw) measures the right-hand angle about base +z.
+	assert.ok(Math.abs(yawOf([0, 0, Math.sin(0.15), Math.cos(0.15)]) - 0.3) < 1e-12);
+	/** One unit's turn about base +z, rad: move.yaw, or the z-yaw of an RT_* world rotation vector. */
+	const turn = (unit: string) => {
+		const m = ground(spec as never, unit as Unit);
+		if (!m?.rot) return m?.yaw ?? 0;
+		const r = rotvecToMatrix(m.rot);
+		return Math.atan2(r[1][0], r[0][0]);
+	};
+	// Show-Harness: ROTATE_CW is +yaw about base +Z (configs/primitives_franka.yaml `ROTATE_CW: 1.0`).
+	assert.equal(turn("ROTATE_CW"), 0.15);
+	assert.equal(turn("ROTATE_CCW"), -0.15);
+	// RT_YAW_CCW: counter-clockwise seen from above, +z (unverified against the v5 dataset).
+	assert.ok(Math.abs(turn("RT_YAW_CCW") - Math.PI / 18) < 1e-12);
+	assert.ok(Math.abs(turn("RT_YAW_CW") + Math.PI / 18) < 1e-12);
+	const v3 = { ...keyMap([ARM]), ...keyMap(DUAL) };
+	const rt = { ...keyMap([ARM], [...SINGLE, ...RT_UNITS]), ...keyMap(DUAL, [...SINGLE, ...RT_UNITS, "STILL"]) };
+	for (const k of ["KeyZ", "KeyX", "KeyN", "KeyM"]) {
+		assert.ok(v3[k][1].startsWith("ROTATE") && rt[k][1].startsWith("RT_YAW"), k);
+		assert.equal(Math.sign(turn(v3[k][1])), Math.sign(turn(rt[k][1])), `${k}: ${v3[k][1]} vs ${rt[k][1]}`);
+	}
 });
 
 test("recorder: episode_logger run dir with steps.jsonl, and the actions.jsonl rollouts_to_alpaca.py reads", () => {
@@ -761,4 +867,103 @@ test("prepare converts only runs saved as successful, unless --include-failures"
 	assert.equal(only.rollouts, 1);
 	assert.match(only.stderr, /3 run\(s\) skipped as not successful/);
 	assert.equal(prepare("--include-failures").rollouts, 4);
+});
+
+test("gumi: RT_* keys with --units-rt; recorded token unchanged; prepare keeps them for v5, drops them for v3", async () => {
+	const root = mkdtempSync(join(tmpdir(), "gumi-"));
+	const f = fakePi({ "gumi-record": root });
+	const g = gumi(f.pi);
+	const robot = fakeRobot();
+	await f.emit("session_start");
+	f.pi.events.emit(UNITS_EVENT, robot.handle);
+	assert.deepEqual([g.state().rt, g.state().keys.Digit1], [false, undefined], "--units-rt off: no RT key");
+	f.pi.events.emit(UNITS_EVENT, { ...robot.handle, vocabulary: NO_PITCH, rt: true });
+	assert.equal(g.state().rt, true);
+	assert.deepEqual(
+		[g.state().keys.Digit1, g.state().keys.Digit3, g.state().keys.KeyX],
+		[[ARM, "RT_ROLL_LEFT"], undefined, [ARM, "RT_YAW_CCW"]],
+	);
+	f.pi.events.emit(STATUS_EVENT, { robot: "libero", task: {}, language: "turn the mug", solved: false });
+	g.record("start");
+	const out = await g.step({ command: "w 1*2 x" });
+	assert.equal(out.executed, 4);
+	assert.deepEqual(
+		robot.calls.map((c) => c.unit),
+		["STOP", "MV_FWD", "RT_ROLL_LEFT", "RT_ROLL_LEFT", "RT_YAW_CCW"],
+	);
+	await assert.rejects(g.step({ command: "3" }), (e: any) => e.status === 422 && /not a unit here: 3/.test(e.message));
+	const { dir } = g.record("save", true);
+	const read = (file: string) =>
+		readFileSync(join(dir, file), "utf8")
+			.trim()
+			.split("\n")
+			.map((l) => JSON.parse(l));
+	const actions = read("actions.jsonl");
+	assert.deepEqual(
+		actions.map((l) => [l.token, l.kind]),
+		[
+			["MV_FWD", "move"],
+			["RT_ROLL_LEFT", "rotate"],
+			["RT_ROLL_LEFT", "rotate"],
+			["RT_YAW_CCW", "rotate"],
+		],
+	);
+	assert.deepEqual(
+		read("steps.jsonl").map((l) => l.act),
+		["MV_FWD", "RT_ROLL_LEFT", "RT_ROLL_LEFT", "RT_YAW_CCW"],
+	);
+	assert.deepEqual(JSON.parse(readFileSync(join(dir, "metadata.json"), "utf8")).tokens, [
+		"MV_FWD",
+		"RT_ROLL_LEFT",
+		"RT_ROLL_LEFT",
+		"RT_YAW_CCW",
+	]);
+	const prepare = (...extra: string[]) => {
+		const out = mkdtempSync(join(tmpdir(), "rollouts-"));
+		const r = spawnSync(
+			process.execPath,
+			[
+				"--experimental-strip-types",
+				join(import.meta.dirname, "../src/finetuned/prepare.ts"),
+				"--out",
+				out,
+				"--agentview",
+				"raw",
+				"--wrist",
+				"raw",
+				...extra,
+				dir,
+			],
+			{ encoding: "utf8" },
+		);
+		assert.equal(r.status, 0, r.stderr);
+		const rollout = join(out, "turn_the_mug", "rollout_000");
+		const tokens = readFileSync(join(rollout, "actions.jsonl"), "utf8")
+			.trim()
+			.split("\n")
+			.map((l) => JSON.parse(l).token);
+		return { tokens, stderr: r.stderr, meta: JSON.parse(readFileSync(join(rollout, "metadata.json"), "utf8")) };
+	};
+	const v3 = prepare();
+	assert.deepEqual(v3.tokens, ["MV_FWD"]);
+	assert.match(v3.stderr, /dropped RT_\* steps 1, 2, 3 \(v3 has no turns/);
+	const v5 = prepare("--prompt", "v5");
+	assert.deepEqual(v5.tokens, ["MV_FWD", "RT_ROLL_LEFT", "RT_ROLL_LEFT", "RT_YAW_CCW"]);
+	assert.doesNotMatch(v5.stderr, /dropped/);
+	assert.equal(v5.meta.prompt_version, "v5");
+	const bad = spawnSync(
+		process.execPath,
+		[
+			"--experimental-strip-types",
+			join(import.meta.dirname, "../src/finetuned/prepare.ts"),
+			"--out",
+			root,
+			"--prompt",
+			"v9",
+			dir,
+		],
+		{ encoding: "utf8" },
+	);
+	assert.notEqual(bad.status, 0);
+	assert.match(bad.stderr, /unknown prompt version v9/);
 });

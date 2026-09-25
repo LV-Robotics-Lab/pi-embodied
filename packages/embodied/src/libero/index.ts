@@ -18,7 +18,7 @@ import { type Static, type TSchema, Type } from "typebox";
 import { decodePngChannel, encodePng } from "../png.ts";
 import { defineRobot, mark, median, SERVICES } from "../robot.ts";
 import { NdArray, RpcClient } from "../rpc.ts";
-import { finishMove, type Move } from "../units/index.ts";
+import { finishMove, type Move, type UnitsSpec } from "../units/index.ts";
 import { vlaSeeds } from "../vla-seed.ts";
 import { liberoFlash } from "./flash.ts";
 
@@ -90,7 +90,8 @@ function rotation([x, y, z, w]: number[]): number[][] {
 		[2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
 	];
 }
-const yawOf = (q: number[]) => {
+/** World yaw of an xyzw quaternion: the right-hand angle about base +z (unitStep's `move.yaw` servo). */
+export const yawOf = (q: number[]) => {
 	const r = rotation(q);
 	return Math.atan2(r[1][0], r[0][0]);
 };
@@ -98,6 +99,20 @@ const pitchOf = (q: number[]) => {
 	const r = rotation(q);
 	return Math.atan2(r[1][2], -r[2][2]);
 };
+/**
+ * The turn units on LIBERO (base +z up). ROTATE_CW is +yawStepRad about base +z, i.e. counter-clockwise
+ * seen from above, as Show-Harness executes it (configs/primitives_franka.yaml `ROTATE_CW: 1.0`, "Signs
+ * calibrated so the token matches the turn seen in the WRIST view"; interpreters/real_atomic_controller.py
+ * `_target_euler[2] += yaw  # yaw about base +Z`). RT_* (--units-rt): 10 deg about a world axis through
+ * the TCP, as the aaroncaozj LIBERO adapters' model card says; the card gives no sign and their dataset's
+ * labelled states are gated, so the signs here are unverified: RT_ROLL_LEFT tilts the gripper's top
+ * toward MV_LEFT (world -y), RT_PITCH_FWD toward MV_FWD (+x), RT_YAW_CCW is counter-clockwise seen from
+ * above (+z). Under these, ROTATE_CW and RT_YAW_CCW are the same physical turn.
+ */
+export const LIBERO_TURNS = {
+	yawStepRad: 0.15,
+	rt: { stepRad: Math.PI / 18, axes: { roll: [1, 0, 0], pitch: [0, 1, 0], yaw: [0, 0, 1] } },
+} satisfies Pick<UnitsSpec, "yawStepRad" | "rt">;
 type Mat3 = number[][];
 const matmul = (a: Mat3, b: Mat3) => a.map((row) => [0, 1, 2].map((j) => row.reduce((s, v, k) => s + v * b[k][j], 0)));
 const transpose = (a: Mat3) => [0, 1, 2].map((i) => [0, 1, 2].map((j) => a[j][i]));
@@ -149,6 +164,13 @@ export default function libero(pi: ExtensionAPI) {
 		default: process.env.PI_EMBODIED_PYTHON ?? "python",
 		description: "Python for the env server",
 	});
+	// 4 mm stops a 2 cm unit about 3.6 mm short (measured: 16.4 mm in 5 steps); the aaroncaozj adapters
+	// were labelled with full 2 cm steps.
+	pi.registerFlag("unit-tol", {
+		type: "string",
+		default: "0.004",
+		description: "Units mode: an MV_* servo stops within this distance of its target, m",
+	});
 
 	let env: RpcClient;
 	let vla: RpcClient;
@@ -177,6 +199,9 @@ export default function libero(pi: ExtensionAPI) {
 		},
 		video: true,
 		flywheel: true,
+		groundTruth: (names) => call(env, "env.ground_truth_poses", { names: names ?? null }),
+		// Observations carry the agentview, then the wrist view.
+		vdm: { views: 2, wrist: 1 },
 		flash: liberoFlash(pi, () => ({ suite: robot.task.suite, task: robot.task.task })),
 		operator: {
 			step: () => envStep,
@@ -225,12 +250,7 @@ export default function libero(pi: ExtensionAPI) {
 				MV_DOWN: [0, 0, -1],
 			},
 			stepM: 0.02,
-			yawStepRad: 0.15,
-			// RT_* (--units-rt): 10 deg about a world axis through the TCP, as the aaroncaozj LIBERO adapters
-			// (model card). The signs are a guess until checked against their labelled states: RT_ROLL_LEFT
-			// tilts the gripper's top toward MV_LEFT (world -y), RT_PITCH_FWD toward MV_FWD (+x), RT_YAW_CCW
-			// is counter-clockwise seen from above.
-			rt: { stepRad: Math.PI / 18, axes: { roll: [1, 0, 0], pitch: [0, 1, 0], yaw: [0, 0, 1] } },
+			...LIBERO_TURNS,
 			apply: (move) => unitStep(move),
 			state: async () => ({
 				eef_xyz: eef().map((v) => round(v)),
@@ -943,9 +963,10 @@ export default function libero(pi: ExtensionAPI) {
 		}
 		if (Math.hypot(...move.delta) > 0) {
 			const target = eef().map((v, i) => v + move.delta[i]);
+			const tol = Number(flag("unit-tol", "0.004")) || 0.004;
 			for (let k = 0; k < 25 && live(); k++) {
 				const diff = target.map((v, i) => v - eef()[i]);
-				if (Math.hypot(...diff) < 0.004) break;
+				if (Math.hypot(...diff) < tol) break;
 				await step([...diff.map((d) => clip(clip(d, -0.025, 0.025) / 0.05, -1, 1)), 0, 0, 0, grip]);
 				steps++;
 			}

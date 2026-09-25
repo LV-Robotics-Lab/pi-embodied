@@ -174,6 +174,7 @@ export default function robocasa(pi: ExtensionAPI) {
 			primitives: PRIMITIVES,
 		},
 		video: true,
+		groundTruth: (names) => env.call("env.ground_truth_poses", { names: names ?? null }, 60_000, [], robot.signal),
 		explore: {
 			// The exploration `reset` tool is not a robot.tool, so robot.signal is unset here; use its own signal.
 			reset: async (result, _ctx, signal) => {

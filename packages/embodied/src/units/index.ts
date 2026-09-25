@@ -101,7 +101,14 @@ export const DEFAULT_PLUGINS: readonly Plugin[] = [
 ];
 
 /** One grounded unit: a base-frame translation (m), a yaw about base +z (rad), a gripper command. */
-export type Move = { delta: Vec3; yaw: number; gripper: "open" | "close" | null; arm?: string };
+export type Move = {
+	delta: Vec3;
+	yaw: number;
+	gripper: "open" | "close" | null;
+	arm?: string;
+	/** Another move in the same direction follows at once: servers that chain moves may keep the arm moving. */
+	continuous?: boolean;
+};
 type Result = AgentToolResult<unknown>;
 export type State = Record<string, unknown>;
 

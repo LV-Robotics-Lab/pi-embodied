@@ -35,7 +35,6 @@ pre { margin: 4px 0; padding: 6px; background: var(--code); border-radius: 4px; 
 form, .composer { display: flex; gap: 6px; align-items: center; padding: 8px 12px; border-top: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
 textarea { flex: 1; min-width: 200px; resize: vertical; font: inherit; padding: 6px; background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; }
 input { font: inherit; padding: 4px 6px; width: 90px; background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; }
-input#suite { width: 130px; }
 button { font: inherit; padding: 4px 10px; border: 1px solid var(--line); border-radius: 4px; background: var(--bg); color: var(--fg); cursor: pointer; }
 button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
 .status { width: 100%; font-size: 12px; color: var(--muted); }
@@ -78,10 +77,7 @@ tr.step.sel { background: var(--code); }
     </div>
     <form id="newTask">
       <b data-t="newTask"></b>
-      <input id="suite" list="suites" required />
-      <datalist id="suites"><option>libero_spatial</option><option>libero_object</option><option>libero_goal</option><option>libero_10</option><option>libero_90</option></datalist>
-      <input id="taskNo" type="number" min="0" required />
-      <input id="seed" type="number" min="0" required />
+      <span id="taskFields"></span>
       <button class="primary" data-t="start"></button>
       <div class="status" id="taskStatus"></div>
     </form>
@@ -102,14 +98,14 @@ const COPY = {
   en: {
     monitor: "Live Monitor", reasoning: "Agent reasoning & tool calls", expand: "expand tool calls", autoscroll: "auto-scroll",
     noEvents: "No transcript events yet.", send: "Send", interrupt: "Interrupt", newTask: "New task",
-    suite: "suite", taskNo: "task", seed: "seed", start: "Start", camera: "Camera", followLatest: "follow latest",
+    start: "Start", camera: "Camera", followLatest: "follow latest",
     noFrame: "waiting for first frame…", timeline: "Action timeline", noActions: "No actions yet.",
-    placeholder: "Message the agent… (Enter send · Shift+Enter newline · Esc interrupt · /libero-task <suite> <task> <seed>)",
+    placeholder: "Message the agent… (Enter send · Shift+Enter newline · Esc interrupt · /robot-task …)",
     states: { idle: "idle", running: "running", detached: "switching", succeeded: "succeeded", finished: "finished" },
-    solved: "TASK SOLVED", notSolved: "not solved", truncated: "truncated", claimed: (s) => `claimed ${s}`,
+    solved: "TASK SOLVED", notSolved: "not solved", claimed: (s) => `claimed ${s}`,
     you: "You", thinking: (n) => `thinking · ${n.toLocaleString()} chars`, live: "● live", reconnecting: "○ reconnecting…",
     usage: (u) => `in ${u.input.toLocaleString()} · out ${u.output.toLocaleString()} · ${u.tools} tools`,
-    taskLabel: (e) => `${e.suite} · task ${e.task} · seed ${e.seed}`, envStep: (n) => `env step ${n}`,
+    envStep: (n) => `step ${n}`,
     confirmSwitch: "The agent is running. Abort this episode and start the new task?",
     sent: "Sent.", steered: "Queued: delivered after the current tool call.", interrupted: "Interrupt requested.",
     taskSent: "Starting a new session…", failed: (e) => `Failed: ${e}`, stepCaption: (s) => `#${s.n} ${s.name}`,
@@ -117,14 +113,14 @@ const COPY = {
   "zh-cn": {
     monitor: "实时监控", reasoning: "智能体推理与工具调用", expand: "展开工具调用", autoscroll: "自动滚动",
     noEvents: "暂无推理记录。", send: "发送", interrupt: "中断", newTask: "新任务",
-    suite: "suite", taskNo: "task", seed: "seed", start: "开始", camera: "相机画面", followLatest: "跟随最新",
+    start: "开始", camera: "相机画面", followLatest: "跟随最新",
     noFrame: "等待第一帧…", timeline: "动作时间线", noActions: "暂无动作。",
-    placeholder: "向智能体发送消息…(Enter 发送 · Shift+Enter 换行 · Esc 中断 · /libero-task <suite> <task> <seed>)",
+    placeholder: "向智能体发送消息…(Enter 发送 · Shift+Enter 换行 · Esc 中断 · /robot-task …)",
     states: { idle: "空闲", running: "运行中", detached: "切换中", succeeded: "执行成功", finished: "已完成" },
-    solved: "任务完成", notSolved: "未完成", truncated: "已截断", claimed: (s) => `智能体声明 ${s}`,
+    solved: "任务完成", notSolved: "未完成", claimed: (s) => `智能体声明 ${s}`,
     you: "你", thinking: (n) => `思考 · ${n.toLocaleString()} 字符`, live: "● 实时", reconnecting: "○ 正在重连…",
     usage: (u) => `输入 ${u.input.toLocaleString()} · 输出 ${u.output.toLocaleString()} · ${u.tools} 次工具调用`,
-    taskLabel: (e) => `${e.suite} · 任务 ${e.task} · 种子 ${e.seed}`, envStep: (n) => `环境步 ${n}`,
+    envStep: (n) => `步 ${n}`,
     confirmSwitch: "智能体正在运行。中止当前回合并开始新任务?",
     sent: "已发送。", steered: "已排队:当前工具调用结束后送达。", interrupted: "已请求中断。",
     taskSent: "正在新建会话…", failed: (e) => `失败:${e}`, stepCaption: (s) => `#${s.n} ${s.name}`,
@@ -136,7 +132,6 @@ const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls)
 const short = (v, n = 160) => { const s = typeof v === "string" ? v : JSON.stringify(v); return s && s.length > n ? s.slice(0, n) + "…" : s ?? ""; };
 for (const e of document.querySelectorAll("[data-t]")) e.textContent = T[e.dataset.t];
 $("msg").placeholder = T.placeholder;
-for (const k of ["suite", "taskNo", "seed"]) $(k).placeholder = T[k];
 
 let episode = null, steps = [], selected = null, tab = 0;
 const nodes = new Map();
@@ -181,14 +176,14 @@ function putStep(s) {
   steps[s.n] = s;
   $("noSteps").hidden = true;
   const tr = el("tr", "step");
-  const flags = [s.terminated ? "✓ terminated" : "", s.truncated ? "truncated" : "", s.isError ? "error" : ""].filter(Boolean).join(" ");
+  const flags = [s.solved ? "✓ solved" : "", s.isError ? "error" : ""].filter(Boolean).join(" ");
   const summary = el("td", "m");
   summary.append(el("b", "", s.name), ` ${short(s.args, 120)}`, el("br"), el("span", s.isError ? "bad" : "meta", `→ ${short(s.result, 200)}`));
   const full = el("pre", "", `args ${JSON.stringify(s.args, null, 2)}\nresult ${JSON.stringify(s.result, null, 2)}`); full.hidden = true;
   summary.append(full);
   tr.append(el("td", "", `#${s.n}`), summary,
     el("td", "meta", [s.envStep === null ? "" : T.envStep(s.envStep), s.ms === null ? "" : `${(s.ms / 1000).toFixed(1)}s`].filter(Boolean).join(" · ")),
-    el("td", s.terminated ? "ok" : s.isError || s.truncated ? "bad" : "", flags));
+    el("td", s.solved ? "ok" : s.isError ? "bad" : "", flags));
   tr.onclick = () => { full.hidden = !full.hidden; if (s.frames.length) select(s.n, true); };
   tr.id = `step-${s.n}`;
   $("timeline").append(tr);
@@ -210,25 +205,36 @@ function select(n, pin) {
   });
 }
 
+/** One input per task field of the robot, filled with the current episode's values once. */
+function renderTaskFields(e) {
+  const box = $("taskFields");
+  if (box.dataset.fields === e.fields.join(" ")) return;
+  box.dataset.fields = e.fields.join(" ");
+  box.replaceChildren(...e.fields.map((k) => {
+    const input = el("input"); input.name = k; input.placeholder = k; input.required = true; input.value = e.task[k] ?? "";
+    return input;
+  }));
+}
+
 function renderEpisode() {
   const e = episode; if (!e) return;
-  const ended = e.terminated || e.truncated || e.claimed;
-  const state = e.running ? "running" : !e.attached ? "detached" : e.terminated ? "succeeded" : ended ? "finished" : "idle";
+  const ended = e.solved || e.ended || e.claimed;
+  const state = e.running ? "running" : !e.attached ? "detached" : e.solved ? "succeeded" : ended ? "finished" : "idle";
   $("state").textContent = T.states[state];
   $("state").className = "badge " + ({ running: "run", succeeded: "ok", finished: "warn" }[state] ?? "meta");
   const r = $("result");
   r.hidden = !ended;
   if (ended) {
-    const parts = [e.terminated ? T.solved : e.truncated ? T.truncated : T.notSolved];
+    const parts = [e.solved ? T.solved : T.notSolved];
     if (e.claimed) parts.push(T.claimed(e.claimed));
     r.textContent = parts.join(" · ");
-    r.className = "badge " + (e.terminated ? "ok" : "bad");
+    r.className = "badge " + (e.solved ? "ok" : "bad");
     r.title = e.summary ?? "";
   }
-  $("task").textContent = T.taskLabel(e) + (e.envStep ? ` · ${T.envStep(e.envStep)}` : "");
+  $("task").textContent = [e.robot, ...e.fields.map((k) => `${k} ${e.task[k]}`)].join(" · ") + (e.envStep === null ? "" : ` · ${T.envStep(e.envStep)}`);
   $("lang").textContent = e.language ? `“${e.language}”` : "";
   $("usage").textContent = T.usage(e.usage);
-  if (!$("suite").value) { $("suite").value = e.suite; $("taskNo").value = e.task; $("seed").value = e.seed; }
+  renderTaskFields(e);
 }
 
 function connect() {
@@ -258,7 +264,7 @@ async function post(path, body) {
 }
 async function sendMessage() {
   const text = $("msg").value.trim(); if (!text) return;
-  if (text.startsWith("/libero-task") && episode?.running && !confirm(T.confirmSwitch)) return;
+  if (text.startsWith("/robot-task") && episode?.running && !confirm(T.confirmSwitch)) return;
   try { const r = await post("/message", { text }); $("msg").value = ""; $("msgStatus").textContent = r.steered ? T.steered : T.sent; }
   catch (err) { $("msgStatus").textContent = T.failed(err.message); }
 }
@@ -274,7 +280,8 @@ $("msg").onkeydown = (e) => {
 $("newTask").onsubmit = async (e) => {
   e.preventDefault();
   if (episode?.running && !confirm(T.confirmSwitch)) return;
-  try { await post("/task", { suite: $("suite").value.trim(), task: $("taskNo").value, seed: $("seed").value }); $("taskStatus").textContent = T.taskSent; }
+  const values = [...$("taskFields").querySelectorAll("input")].map((i) => i.value.trim());
+  try { await post("/task", { values }); $("taskStatus").textContent = T.taskSent; }
   catch (err) { $("taskStatus").textContent = T.failed(err.message); }
 };
 $("expand").onchange = () => { for (const p of document.querySelectorAll("#transcript pre.args")) p.hidden = !$("expand").checked; };

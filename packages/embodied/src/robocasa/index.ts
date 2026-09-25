@@ -8,21 +8,23 @@
  * the policy's memory/RTC state. Tools follow RPent's RoboCasa primitives. Every action
  * returns a new numbered state with agentview, navview and wrist images; world maps are
  * kept per state for back-projection. Success is the env's own `_check_success()`
- * (`state.success`), recorded in the session as a `robocasa_result` entry.
+ * (`state.success`), recorded in the session's `robot_result` entry.
  */
 
-import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { openSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { type TSchema, Type } from "typebox";
+import { type Static, type TSchema, Type } from "typebox";
 import { encodePng } from "../png.ts";
-import { episode, freePort, median, pruneImages, round } from "../robot-util.ts";
+import { attach, defineRobot, median, round } from "../robot.ts";
 import { NdArray, RpcClient } from "../rpc.ts";
 
-const SYSTEM = readFileSync(new URL("./SYSTEM.md", import.meta.url), "utf8");
+const read = (name: string) => readFileSync(new URL(name, import.meta.url), "utf8");
+const SYSTEM = read("./SYSTEM.md");
+const MEMORY = { hf: read("./memory-hf.md"), local: read("./memory-local.md") };
+const EXPLORE = read("./explore.md");
 const CAMERAS = { agentview: "robot0_agentview_left", navview: "mobilebase0_navview", wrist: "robot0_eye_in_hand" };
 const VLA_CAMERAS = ["robot0_agentview_left", "robot0_agentview_right", "robot0_eye_in_hand"];
 const SIZE = 256; // env camera and RLDX observation resolution
@@ -116,27 +118,13 @@ export default function robocasa(pi: ExtensionAPI) {
 		description: "Python of the RoboCasa venv (RPent's [robocasa] extra)",
 	});
 	pi.registerFlag("cuda-device", { type: "string", description: "GPU ordinal for MuJoCo EGL rendering" });
-	pi.registerFlag("memory-dir", {
-		type: "string",
-		description: "RoboCasa task memory (holds results/); default $RPENT_ROOT/memory/robocasa",
-	});
-	pi.registerFlag("allow-reset", { type: "boolean", default: false, description: "Enable the reset tool" });
-	pi.registerFlag("max-turns", { type: "string", default: "0", description: "Planner turn budget (0 = none)" });
-	pi.registerFlag("time-limit", {
-		type: "string",
-		default: "0",
-		description: "Planner wall-time budget, s (0 = none)",
-	});
-	pi.registerFlag("keep-images", { type: "string", default: "6", description: "Camera frames kept in context" });
 	pi.registerFlag("log-dir", { type: "string", default: tmpdir(), description: "Env server log directory" });
 
 	let env: RpcClient;
 	let vla: RpcClient | undefined;
-	let server: ChildProcess | undefined;
 	let obs: Raw;
 	let language = "";
 	let criteria = "";
-	let signal: AbortSignal | undefined;
 	let states: State[] = [];
 	let envSteps = 0;
 	let posJac: number[][] | undefined; // world dpos per unit arm-xyz action (columns = action axes)
@@ -148,28 +136,85 @@ export default function robocasa(pi: ExtensionAPI) {
 	let hist: Frame[] = [];
 	let lastPrompt: string | undefined;
 	let attempt = 1;
-	let turns = 0;
-	let started: number | undefined;
-	let outOfBudget = false;
-	let claimed: { status: string; summary: string } | undefined;
-	const ep = episode(pi, "robocasa", (ended) => ({
-		task_name: flag("task-name", ""),
-		split: flag("split", ""),
-		seed: Number(flag("seed", "0")),
-		task_language: language,
-		success: states[states.length - 1]?.success ?? false,
-		env_steps: envSteps,
-		states: states.length,
-		attempts: attempt,
-		turns,
-		ended,
-		planner_budget_exhausted: outOfBudget,
-		claimed: claimed?.status ?? null,
-		summary: claimed?.summary ?? null,
-		rldx_max_chunks: envInt("RLDX_MAX_CHUNKS", 70),
-		rldx_settle_patience: envInt("RLDX_SETTLE_PATIENCE", 999),
-		rldx_action_steps_per_chunk: envInt("RLDX_ACTION_STEPS_PER_CHUNK", 8),
-	}));
+	const cell = () => ({ task: robot.task["task-name"], split: robot.task.split, seed: robot.task.seed });
+	const tag = () => `${cell().task}_${cell().split}_s${cell().seed}`;
+	/** Local corpora (and exploration) key the seed-0 reference by split; the published HF corpus does not. */
+	const local = () => pi.getFlag("memory-profile") === "local" || pi.getFlag("explore") === true;
+	const robot = defineRobot(pi, {
+		name: "robocasa",
+		task: ["task-name", "split", "seed"],
+		keepImages: 6,
+		budget: { turns: 0, seconds: 0 },
+		memory: {
+			home: () => (flag("rpent", "") ? join(flag("rpent", ""), "memory") : ""),
+			cell: () => ({
+				tag: tag(),
+				reference: local() ? `${cell().task}_${cell().split}_s0` : `${cell().task}_s0`,
+			}),
+			primitives: PRIMITIVES,
+		},
+		video: true,
+		explore: {
+			reset: async (result) => {
+				const t0 = Date.now();
+				const out = { ...result, ...(await resetEpisode()) };
+				const elapsed = round((Date.now() - t0) / 1000, 1);
+				return view(await capture({ action: "reset" }, out, elapsed), { agent_elapsed_s: elapsed });
+			},
+			prompt: () => EXPLORE,
+		},
+		start: startEpisode,
+		stop: disconnect,
+		prompt: () => {
+			const mem = robot.mem!;
+			const explore = pi.getFlag("explore") === true;
+			const vars: Record<string, string> = {
+				task_language: language,
+				task_name: cell().task,
+				split: cell().split,
+				seed: cell().seed,
+				memory: explore ? "" : mem.render(MEMORY[mem.profile], { task_name: cell().task }).trim(),
+				success_criteria: criteria,
+				reset_mode: explore
+					? "`reset` restarts the episode with a freshly sampled scene; re-run perception after it."
+					: "You are running in no-reset mode: solve the scene in one shot. The reset tool is disabled.",
+			};
+			return SYSTEM.replace(/\{\{(\w+)\}\}/g, (m, k: string) => vars[k] ?? m);
+		},
+		result: (ended) => ({
+			task_name: cell().task,
+			split: cell().split,
+			seed: Number(cell().seed),
+			task_language: language,
+			success: states[states.length - 1]?.success ?? false,
+			env_steps: envSteps,
+			states: states.length,
+			attempts: attempt,
+			ended,
+			rldx_max_chunks: envInt("RLDX_MAX_CHUNKS", 70),
+			rldx_settle_patience: envInt("RLDX_SETTLE_PATIENCE", 999),
+			rldx_action_steps_per_chunk: envInt("RLDX_ACTION_STEPS_PER_CHUNK", 8),
+		}),
+		status: () => ({
+			language,
+			step: states.length - 1,
+			solved: states[states.length - 1]?.success ?? false,
+		}),
+		finish: {
+			description:
+				"Declare the task finished: when success (robocasa_terminated) becomes true, or when genuinely stuck after honest exploration. Give a 1-3 sentence summary of what worked and what failed. Success is the env's state.success, not this call.",
+			parameters: Type.Object({
+				status: Type.Union([Type.Literal("success"), Type.Literal("failure"), Type.Literal("stuck")]),
+				summary: Type.String(),
+			}),
+			result: (params) => ({
+				content: [
+					{ type: "text", text: `Episode finished (success=${states[states.length - 1]?.success ?? false}).` },
+				],
+				details: params,
+			}),
+		},
+	});
 
 	const vec = (key: string) => obs[key].toArray();
 	const eef = () => vec("robot0_eef_pos");
@@ -180,9 +225,11 @@ export default function robocasa(pi: ExtensionAPI) {
 
 	/** One env step with the PandaOmron 12-D action [eef_pos 3, eef_rot 3, gripper, base 3, torso, base_mode]. */
 	async function step(a: number[]) {
-		if (signal?.aborted) throw new Error("interrupted");
-		obs = (await env.call<[Raw, unknown, unknown, unknown]>("env.step", {}, 60_000, [a], signal))[0];
+		if (robot.signal?.aborted) throw new Error("interrupted");
+		obs = (await env.call<[Raw, unknown, unknown, unknown]>("env.step", {}, 60_000, [a], robot.signal))[0];
 		envSteps++;
+		// RPent records the 256x256 agentview after every env step for the episode video.
+		robot.video.frame(new NdArray("uint8", [SIZE, SIZE, 3], await rgb(CAMERAS.agentview)));
 	}
 
 	async function rgb(camera: string, size = SIZE): Promise<Buffer> {
@@ -300,39 +347,24 @@ export default function robocasa(pi: ExtensionAPI) {
 		name: string,
 		description: string,
 		parameters: P,
-		run: (p: any) => Promise<Record<string, unknown>>,
+		run: (p: Static<P>) => Promise<Record<string, unknown>>,
 		action = true,
 	) {
-		pi.registerTool({
-			name,
-			label: name,
-			description,
-			parameters,
-			executionMode: "sequential",
-			async execute(_id, params, sig) {
-				if (!action) {
-					const { _state, ...rest } = (await run(params)) as { _state?: State };
-					if (_state) return ep.terminating(view(_state));
-					return ep.terminating({
-						content: [{ type: "text" as const, text: JSON.stringify(rest) }],
-						details: rest,
-					});
-				}
-				const t0 = Date.now();
-				let result: Record<string, unknown>;
-				signal = sig;
-				try {
-					result = await run(params);
-				} catch (err) {
-					result = { error: err instanceof Error ? err.message : String(err), interrupted: sig?.aborted ?? false };
-				} finally {
-					signal = undefined;
-				}
-				const elapsed = round((Date.now() - t0) / 1000, 1);
-				return ep.terminating(
-					view(await capture({ action: name, ...params }, result, elapsed), { agent_elapsed_s: elapsed }),
-				);
-			},
+		robot.tool(name, description, parameters, async (params, sig) => {
+			if (!action) {
+				const { _state, ...rest } = (await run(params)) as { _state?: State };
+				if (_state) return view(_state);
+				return { content: [{ type: "text" as const, text: JSON.stringify(rest) }], details: rest };
+			}
+			const t0 = Date.now();
+			let result: Record<string, unknown>;
+			try {
+				result = await run(params);
+			} catch (err) {
+				result = { error: err instanceof Error ? err.message : String(err), interrupted: sig?.aborted ?? false };
+			}
+			const elapsed = round((Date.now() - t0) / 1000, 1);
+			return view(await capture({ action: name, ...params }, result, elapsed), { agent_elapsed_s: elapsed });
 		});
 	}
 
@@ -487,13 +519,13 @@ export default function robocasa(pi: ExtensionAPI) {
 		let chunks = 0;
 		while (chunks < maxChunks) {
 			chunks++;
-			if (signal?.aborted) throw new Error("interrupted");
+			if (robot.signal?.aborted) throw new Error("interrupted");
 			const actions = await vla.call<Record<string, NdArray>>(
 				"vla.predict",
 				{},
 				120_000,
 				[rldxObs(prompt, vdi), { reset_memory: [fresh] }],
-				signal,
+				robot.signal,
 			);
 			fresh = false;
 			const col = (key: string) => {
@@ -523,7 +555,7 @@ export default function robocasa(pi: ExtensionAPI) {
 					robot0_torso: motion.slice(3, 4),
 					robot0_base_mode: mode(i)[0] < 0.5 ? -1 : 1,
 				};
-				const a = await env.call<NdArray>("env.reassemble_env_action", {}, 30_000, [unmapped], signal);
+				const a = await env.call<NdArray>("env.reassemble_env_action", {}, 30_000, [unmapped], robot.signal);
 				await step(a.toArray());
 				applied++;
 				await push();
@@ -790,32 +822,24 @@ export default function robocasa(pi: ExtensionAPI) {
 		},
 	);
 
-	tool(
-		"reset",
-		"Restart the episode (new layout / object placement sampled). Arm and base calibration and the RLDX session state are reset. Only enabled with --allow-reset (exploration); evaluation must solve the scene in one shot.",
-		Type.Object({}),
-		async () => {
-			if (pi.getFlag("allow-reset") !== true)
-				return { error: "reset is DISABLED in this run (no-reset evaluation). Solve the scene in one shot." };
-			if (states[states.length - 1]?.success)
-				return { error: "reset refused", reason: "The task is already solved; finish." };
-			vlaDesync = true;
-			obs = await env.call<Raw>("env.reset", {}, 120_000);
-			posJac = fwdOffset = undefined;
-			await vla?.call("vla.reset_session", {}, 30_000).catch(() => undefined);
-			lastPrompt = undefined;
-			hist = [];
-			language = (await env.call<string | null>("env.get_task_language")) ?? "";
-			attempt++;
-			return {
-				ok: true,
-				reset: true,
-				eef: eef().map((v) => round(v)),
-				attempt,
-				notice: "Fresh episode started. Re-run perception before acting.",
-			};
-		},
-	);
+	/** Exploration's `reset`: a freshly sampled scene; arm/base calibration and the RLDX session start over. */
+	async function resetEpisode() {
+		vlaDesync = true;
+		obs = await env.call<Raw>("env.reset", {}, 120_000);
+		posJac = fwdOffset = undefined;
+		await vla?.call("vla.reset_session", {}, 30_000).catch(() => undefined);
+		lastPrompt = undefined;
+		hist = [];
+		language = (await env.call<string | null>("env.get_task_language")) ?? "";
+		attempt++;
+		return {
+			ok: true,
+			reset: true,
+			eef: eef().map((v) => round(v)),
+			attempt,
+			notice: "Fresh episode started. Re-run perception before acting.",
+		};
+	}
 
 	tool(
 		"view_env_state",
@@ -940,93 +964,49 @@ export default function robocasa(pi: ExtensionAPI) {
 		false,
 	);
 
-	pi.registerTool({
-		name: "finish",
-		label: "finish",
-		description:
-			"Declare the task finished: when success (robocasa_terminated) becomes true, or when genuinely stuck after honest exploration. Give a 1-3 sentence summary of what worked and what failed. Success is the env's state.success, not this call.",
-		parameters: Type.Object({
-			status: Type.Union([Type.Literal("success"), Type.Literal("failure"), Type.Literal("stuck")]),
-			summary: Type.String(),
-		}),
-		executionMode: "sequential",
-		async execute(_id, params) {
-			claimed = params;
-			ep.end();
-			const success = states[states.length - 1]?.success ?? false;
-			return {
-				content: [{ type: "text", text: `Episode finished (success=${success}).` }],
-				details: params,
-				terminate: true,
-			};
-		},
-	});
-
 	// ---- lifecycle ----
 
 	async function disconnect() {
-		server?.kill();
-		server = undefined;
 		await vla?.call("session.close", {}, 2_000).catch(() => undefined);
 		vla = undefined;
 	}
 
-	pi.on("session_start", (_event, ctx) => ep.start(ctx, startEpisode));
-
 	async function startEpisode() {
-		await disconnect();
 		states = [];
-		envSteps = turns = 0;
-		posJac = fwdOffset = modality = lastPrompt = claimed = started = undefined;
+		envSteps = 0;
+		posJac = fwdOffset = modality = lastPrompt = undefined;
 		hist = [];
 		vlaDesync = true;
 		attempt = 1;
-		outOfBudget = false;
-		const [task, split, seed] = [flag("task-name", ""), flag("split", "target"), flag("seed", "0")];
+		const { task, split, seed } = cell();
 		if (!SPLITS.includes(split)) throw new Error(`--split must be one of ${SPLITS.join(", ")}`);
-		vla = sessionRpc(flag("rldx", ""));
-		let endpoint = pi.getFlag("env") as string | undefined;
-		if (!endpoint) {
-			const rpent = flag("rpent", "");
-			if (!rpent) throw new Error("set --rpent (or RPENT_ROOT) to an RPent checkout");
-			const port = await freePort();
-			const cuda = pi.getFlag("cuda-device") as string | undefined;
-			const log = openSync(
-				join(flag("log-dir", tmpdir()), `robocasa-env-${task}-${split}-s${seed}-${port}.log`),
-				"a",
-			);
-			server = spawn(
-				flag("robocasa-python", "python"),
-				[
-					"robots/robocasa/env_server.py",
-					...["--task-name", task, "--split", split, "--seed", seed],
-					...["--transport", "http", "--host", "127.0.0.1", "--port", String(port), "--parent-watch"],
-					...(cuda ? ["--cuda-device", cuda] : []),
-				],
-				{
-					cwd: rpent,
-					// RLDX_RESET_SEED would replay a legacy paired scene instead of --seed.
-					env: {
-						...process.env,
-						PYTHONPATH: rpent,
-						MUJOCO_GL: "egl",
-						ROBOT_PLATFORM: "ROBOCASA",
-						RLDX_RESET_SEED: "",
-					},
-					stdio: ["pipe", log, log],
-				},
-			);
-			endpoint = `http://127.0.0.1:${port}`;
-		}
-		env = new RpcClient(endpoint);
-		const proc = server;
-		const exited = new Promise<never>((_, reject) =>
-			proc?.once("exit", (code) => reject(new Error(`env server exited (${code})`))),
-		);
-		exited.catch(() => {});
-		const rldxClient = vla;
-		await Promise.all([
-			Promise.race([env.ready(), exited]),
+		const rldxClient = sessionRpc(flag("rldx", ""));
+		vla = rldxClient;
+		const endpoint = pi.getFlag("env") as string | undefined;
+		const rpent = flag("rpent", "");
+		if (!endpoint && !rpent) throw new Error("set --rpent (or RPENT_ROOT) to an RPent checkout");
+		const cuda = pi.getFlag("cuda-device") as string | undefined;
+		[env] = await Promise.all([
+			endpoint
+				? attach(endpoint)
+				: robot.serve({
+						python: flag("robocasa-python", "python"),
+						args: [
+							"robots/robocasa/env_server.py",
+							...["--task-name", task, "--split", split, "--seed", seed],
+							...(cuda ? ["--cuda-device", cuda] : []),
+						],
+						cwd: rpent,
+						// RLDX_RESET_SEED would replay a legacy paired scene instead of --seed.
+						env: {
+							...process.env,
+							PYTHONPATH: rpent,
+							MUJOCO_GL: "egl",
+							ROBOT_PLATFORM: "ROBOCASA",
+							RLDX_RESET_SEED: "",
+						},
+						log: (port) => join(flag("log-dir", tmpdir()), `robocasa-env-${task}-${split}-s${seed}-${port}.log`),
+					}),
 			rldxClient.ready().then(() => rldxClient.call("session.register", {}, 30_000)),
 		]);
 		const meta = await env.call<Record<string, unknown>>("env.get_env_meta", {}, 30_000);
@@ -1040,49 +1020,6 @@ export default function robocasa(pi: ExtensionAPI) {
 			.call<string>("env.get_success_criteria_text", {}, 30_000)
 			.catch((e) => `(unavailable: ${e})`);
 		await capture(null, null, null);
-		pi.setActiveTools([
-			...PRIMITIVES,
-			...(pi.getFlag("allow-reset") === true ? ["reset"] : []),
-			"view_env_state",
-			"back_project_batch",
-			"query_world_map",
-			"finish",
-			"read",
-		]);
+		return [...PRIMITIVES, "view_env_state", "back_project_batch", "query_world_map", "finish"];
 	}
-
-	pi.on("before_agent_start", () => {
-		started ??= Date.now();
-		const vars: Record<string, string> = {
-			task_language: language,
-			task_name: flag("task-name", ""),
-			split: flag("split", ""),
-			seed: flag("seed", ""),
-			memory_dir: flag("memory-dir", "") || join(flag("rpent", ""), "memory", "robocasa"),
-			success_criteria: criteria,
-			reset_mode:
-				pi.getFlag("allow-reset") === true
-					? "`reset` restarts the episode with a freshly sampled scene; re-run perception after it."
-					: "You are running in no-reset mode: solve the scene in one shot. The reset tool is disabled.",
-		};
-		return { systemPrompt: SYSTEM.replace(/\{\{(\w+)\}\}/g, (m, k: string) => vars[k] ?? m) };
-	});
-
-	pi.on("turn_end", () => {
-		turns++;
-	});
-
-	pi.on("tool_call", (event) => {
-		const maxTurns = Number(flag("max-turns", "0"));
-		const limit = Number(flag("time-limit", "0"));
-		const late = limit > 0 && started !== undefined && Date.now() - started > limit * 1000;
-		if (event.toolName === "finish" || ((maxTurns <= 0 || turns < maxTurns) && !late)) return undefined;
-		outOfBudget = true;
-		ep.end();
-		return { block: true, reason: "Planner turn or time budget exhausted; the episode is over.", terminate: true };
-	});
-
-	pruneImages(pi, () => Number(flag("keep-images", "6")));
-
-	pi.on("session_shutdown", disconnect);
 }

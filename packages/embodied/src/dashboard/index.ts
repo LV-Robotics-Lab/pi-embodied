@@ -1,17 +1,21 @@
 /**
- * Live dashboard for pi-embodied (RPent's `--dashboard`).
+ * Live dashboard for pi-embodied (RPent's `--dashboard`), for any robot defined with ../robot.ts.
  *
  *   pi -e packages/embodied/src/libero -e packages/embodied/src/dashboard --dashboard \
  *     [--dashboard-host 0.0.0.0] [--dashboard-port 8765] [--dashboard-language zh-cn]
  *
  * One static page served by node:http follows pi's own events over Server-Sent Events:
  * streamed thinking and text, tool calls with their arguments and results, the camera
- * frames each tool returned, and the episode status. The page state is rebuilt from the
- * session branch at every session_start, so reload, resume and fork show the right history.
+ * frames each tool returned, and the episode status the robot publishes on `pi.events`
+ * (STATUS_EVENT). The page state is rebuilt from the session branch at every session_start,
+ * so reload, resume and fork show the right history.
  *
- * `/libero-task <suite> <task> <seed>` (from the page or the editor) starts a new pi session
- * carrying a `libero_task` entry, which the LIBERO extension reads at session_start in place
- * of its --suite/--task/--seed flags, and submits the opening prompt.
+ * The new-task form sends `/robot-task <values>` for the robot's task fields, which starts a
+ * new pi session carrying a `robot_task` entry; the robot reads it in place of its flags.
+ *
+ * pi rebuilds extension runtimes, and with them `pi.events`, on every session switch, so the
+ * HTTP server (whose port and open browser connections must survive the switch) is the one
+ * process-wide object: a promise in a `globalThis` slot, re-attached to each new runtime.
  */
 
 import { readFileSync } from "node:fs";
@@ -25,14 +29,13 @@ import type {
 	MessageUpdateEvent,
 } from "@earendil-works/pi-coding-agent";
 import { encodePng } from "../png.ts";
+import { RESULT_ENTRY, type RobotStatus, STATUS_EVENT, TASK_ENTRY } from "../robot.ts";
 
-const TASK_ENTRY = "libero_task";
 const HUB = Symbol.for("pi-embodied.dashboard");
 
 type Message = MessageEndEvent["message"];
 type StreamEvent = MessageUpdateEvent["assistantMessageEvent"];
 type Image = { type: "image"; data: string; mimeType: string };
-type Task = { suite: string; task: string; seed: string };
 type Item = {
 	id: number;
 	kind: "user" | "thinking" | "text" | "tool_call" | "tool_result" | "meta";
@@ -50,44 +53,35 @@ type Step = {
 	result: unknown;
 	isError: boolean;
 	envStep: number | null;
-	terminated: boolean;
-	truncated: boolean;
+	solved: boolean;
 	ms: number | null;
 	frames: string[];
 };
-type Episode = Task & {
+/** The robot's published status plus what the dashboard tracks itself. */
+type Episode = Omit<RobotStatus, "step" | "solved"> & {
 	gen: number;
-	language: string;
 	attached: boolean;
 	running: boolean;
-	envStep: number;
-	terminated: boolean;
-	truncated: boolean;
-	claimed: string | null;
-	summary: string | null;
+	envStep: number | null;
+	solved: boolean;
 	usage: { input: number; output: number; tools: number };
 };
 
 /** Process-wide dashboard; it outlives extension runtimes, which pi rebuilds on every session switch. */
 type Hub = ReturnType<typeof createHub>;
 
-function currentTask(ctx: ExtensionContext): Task {
-	const branch = ctx.sessionManager.getBranch();
-	for (let i = branch.length - 1; i >= 0; i--) {
-		const e = branch[i];
-		if (e.type === "custom" && e.customType === TASK_ENTRY) {
-			const d = (e.data ?? {}) as Partial<Record<keyof Task, unknown>>;
-			return { suite: String(d.suite), task: String(d.task), seed: String(d.seed) };
-		}
-	}
-	return { suite: "?", task: "?", seed: "?" };
-}
-
-function parseTask(text: string): Task | undefined {
-	const [suite, task, seed, ...rest] = text.trim().split(/\s+/);
-	if (rest.length || !/^[\w.-]+$/.test(suite ?? "") || !/^\d+$/.test(task ?? "") || !/^\d+$/.test(seed ?? ""))
-		return undefined;
-	return { suite, task, seed };
+/** Before the robot publishes its status: its name and task from the branch's latest `robot_task` entry. */
+function taskEntry(ctx: ExtensionContext): Pick<RobotStatus, "robot" | "fields" | "task"> {
+	const e = ctx.sessionManager
+		.getBranch()
+		.filter((x) => x.type === "custom" && x.customType === TASK_ENTRY)
+		.pop();
+	const { robot, ...task } = (e?.type === "custom" ? e.data : {}) as Record<string, unknown>;
+	return {
+		robot: String(robot ?? "robot"),
+		fields: Object.keys(task),
+		task: Object.fromEntries(Object.entries(task).map(([k, v]) => [k, String(v)])),
+	};
 }
 
 const textOf = (content: string | { type: string; text?: string }[]) =>
@@ -172,32 +166,19 @@ function createHub(server: Server, url: string, page: string) {
 		try {
 			parsed = JSON.parse(text);
 		} catch {}
-		const obs =
-			parsed && typeof parsed === "object" && "terminated" in parsed
-				? (parsed as Record<string, unknown>)
-				: undefined;
-		if (obs) {
-			episode.terminated ||= obs.terminated === true;
-			episode.truncated ||= obs.truncated === true;
-			if (typeof obs.step === "number") episode.envStep = obs.step;
-			if (typeof obs.task_language === "string") episode.language = obs.task_language;
-		}
-		if (m.toolName === "finish" && !m.isError) {
-			const d = (m.details ?? {}) as { status?: unknown; summary?: unknown };
-			episode.claimed = typeof d.status === "string" ? d.status : null;
-			episode.summary = typeof d.summary === "string" ? d.summary : null;
-		}
-		const labels = obs && Array.isArray(obs.images) ? obs.images.map((s) => String(s).split(" ")[0]) : [];
+		const obs = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : undefined;
+		const label = (v: unknown) =>
+			typeof v === "string" ? v.split(" ")[0] : String((v as { camera?: unknown })?.camera ?? "image");
+		const labels = Array.isArray(obs?.images) ? obs.images.map(label) : [];
 		const started = callStart.get(m.toolCallId);
 		const step: Step = {
 			n: steps.length,
 			name: m.toolName,
 			args: callArgs.get(m.toolCallId) ?? null,
-			result: obs ? obs.result : parsed,
+			result: obs && "result" in obs ? obs.result : parsed,
 			isError: m.isError,
-			envStep: obs && typeof obs.step === "number" ? obs.step : null,
-			terminated: obs?.terminated === true,
-			truncated: obs?.truncated === true,
+			envStep: episode.envStep,
+			solved: episode.solved,
 			ms: started === undefined ? null : Date.now() - started,
 			frames: frames.map((_, k) => labels[k] ?? (frames.length === 1 ? "image" : `image ${k + 1}`)),
 		};
@@ -216,10 +197,22 @@ function createHub(server: Server, url: string, page: string) {
 		touch();
 	}
 
+	/** The robot's latest status (STATUS_EVENT), kept across attaches within one runtime. */
+	function applyStatus(s: RobotStatus) {
+		if (!episode) return;
+		const { step, solved, ...rest } = s;
+		Object.assign(episode, rest, { envStep: step ?? episode.envStep, solved: solved ?? episode.solved });
+		touch();
+	}
+
+	/** One word per task field, as /robot-task takes them. */
+	const validTask = (values: string[]) =>
+		values.length === (episode?.fields.length ?? -1) && values.every((v) => /^[\w.:-]+$/.test(v));
+
 	const hub = {
 		url,
 		/** Bind to a fresh runtime and rebuild the page state from its session branch. */
-		attach(nextPi: ExtensionAPI, nextCtx: ExtensionContext) {
+		attach(nextPi: ExtensionAPI, nextCtx: ExtensionContext, status: RobotStatus | undefined) {
 			pi = nextPi;
 			ctx = nextCtx;
 			items = [];
@@ -230,25 +223,27 @@ function createHub(server: Server, url: string, page: string) {
 			callStart.clear();
 			frameCache.clear();
 			episode = {
-				...currentTask(nextCtx),
+				...taskEntry(nextCtx),
 				gen: (episode?.gen ?? 0) + 1,
-				language: "",
-				attached: true,
-				running: false,
-				envStep: 0,
-				terminated: false,
-				truncated: false,
+				ready: false,
+				ended: false,
 				claimed: null,
 				summary: null,
+				attached: true,
+				running: false,
+				envStep: null,
+				solved: false,
 				usage: { input: 0, output: 0, tools: 0 },
 			};
 			const e = episode;
-			items.push({ id: nextId++, kind: "meta", text: `${e.suite} · task ${e.task} · seed ${e.seed}` });
+			const task = Object.entries(e.task).map(([k, v]) => `${k} ${v}`);
+			items.push({ id: nextId++, kind: "meta", text: [e.robot, ...task].join(" · ") });
 			for (const entry of nextCtx.sessionManager.getBranch()) {
 				if (entry.type === "message") hub.messageEnd(entry.message);
-				else if (entry.type === "custom" && entry.customType === "libero_result")
-					items.push({ id: nextId++, kind: "meta", text: `libero_result ${JSON.stringify(entry.data)}` });
+				else if (entry.type === "custom" && entry.customType === RESULT_ENTRY)
+					items.push({ id: nextId++, kind: "meta", text: `${RESULT_ENTRY} ${JSON.stringify(entry.data)}` });
 			}
+			if (status) applyStatus(status);
 			send(snapshot());
 		},
 		detach() {
@@ -265,6 +260,7 @@ function createHub(server: Server, url: string, page: string) {
 			server.close();
 			delete (globalThis as Record<symbol, unknown>)[HUB];
 		},
+		status: applyStatus,
 		setRunning(running: boolean) {
 			if (!episode) return;
 			episode.running = running;
@@ -272,8 +268,8 @@ function createHub(server: Server, url: string, page: string) {
 		},
 		agentEnd() {
 			const last = ctx?.sessionManager.getBranch().at(-1);
-			if (last?.type === "custom" && last.customType === "libero_result")
-				add({ kind: "meta", text: `libero_result ${JSON.stringify(last.data)}` });
+			if (last?.type === "custom" && last.customType === RESULT_ENTRY)
+				add({ kind: "meta", text: `${RESULT_ENTRY} ${JSON.stringify(last.data)}` });
 			hub.setRunning(false);
 		},
 		toolStart(callId: string) {
@@ -369,18 +365,19 @@ function createHub(server: Server, url: string, page: string) {
 				return reply(400, { error: "invalid JSON" });
 			}
 			if (!pi || !ctx) return reply(409, { error: "session is switching; retry in a moment" });
+			const usage = `/robot-task ${(episode?.fields ?? []).map((k) => `<${k}>`).join(" ")}`;
 			if (url.pathname === "/task") {
-				const task = parseTask(`${body.suite} ${body.task} ${body.seed}`);
-				if (!task) return reply(422, { error: "usage: suite (word), task (integer), seed (integer)" });
-				pi.sendUserMessage(`/libero-task ${task.suite} ${task.task} ${task.seed}`, { expandPromptTemplates: true });
+				const values = Array.isArray(body.values) ? body.values.map((v) => String(v).trim()) : [];
+				if (!validTask(values)) return reply(422, { error: `usage: ${usage}` });
+				pi.sendUserMessage(`/robot-task ${values.join(" ")}`, { expandPromptTemplates: true });
 				return reply(202, { ok: true });
 			}
 			if (url.pathname === "/message") {
 				const text = typeof body.text === "string" ? body.text.trim() : "";
 				if (!text) return reply(422, { error: "empty message" });
 				if (text.startsWith("/")) {
-					if (!text.startsWith("/libero-task ") || !parseTask(text.slice(13)))
-						return reply(422, { error: "the only command here is /libero-task <suite> <task> <seed>" });
+					if (!text.startsWith("/robot-task ") || !validTask(text.slice(12).trim().split(/\s+/)))
+						return reply(422, { error: `the only command here is ${usage}` });
 					pi.sendUserMessage(text, { expandPromptTemplates: true });
 				} else pi.sendUserMessage(text, ctx.isIdle() ? undefined : { deliverAs: "steer" });
 				return reply(202, { ok: true, steered: !ctx.isIdle() });
@@ -427,7 +424,13 @@ export default function dashboard(pi: ExtensionAPI) {
 	pi.registerFlag("dashboard-port", { type: "string", default: "0", description: "Dashboard port (0 = any free)" });
 	pi.registerFlag("dashboard-language", { type: "string", default: "en", description: "Dashboard UI: en | zh-cn" });
 	let hub: Hub | undefined;
+	let status: RobotStatus | undefined;
 	const on = <T>(fn: (h: Hub) => T) => (hub ? fn(hub) : undefined);
+	// The robot in this runtime publishes its status here; it may do so before the hub is attached.
+	pi.events.on(STATUS_EVENT, (data) => {
+		status = data as RobotStatus;
+		on((h) => h.status(status as RobotStatus));
+	});
 
 	pi.on("session_start", async (_event, ctx) => {
 		if (pi.getFlag("dashboard") !== true) return;
@@ -439,7 +442,7 @@ export default function dashboard(pi: ExtensionAPI) {
 			String(pi.getFlag("dashboard-language")),
 		);
 		hub = await slot[HUB];
-		hub.attach(pi, ctx);
+		hub.attach(pi, ctx, status);
 		if (first) {
 			if (ctx.hasUI) ctx.ui.notify(`Dashboard: ${hub.url}`, "info");
 			else console.error(`[dashboard] ${hub.url}`);

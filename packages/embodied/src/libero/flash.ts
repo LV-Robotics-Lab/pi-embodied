@@ -5,8 +5,9 @@
  *     --molmo http://127.0.0.1:18400 "Solve the task."
  *
  * Flash is the planner, and in pi the planner is the model: the LIBERO extension registers a
- * scripted `flash/replay` model whose every turn is the plan's next tool call. The LIBERO tools
- * execute it, so the session, `finish`, and the `libero_result` row are exactly those of an LLM run.
+ * `flash/replay` provider whose every turn is the plan's next tool call (with zero usage; an abort
+ * ends the replay). The LIBERO tools execute it, so the session, `finish`, and the `robot_result`
+ * row are exactly those of an LLM run.
  *
  * Each anchor is re-read the way it was recorded: `segment` anchors by SAM3 (the segment tool), the
  * rest by Molmo pointing in the opening agentview image, profiled through back_project; the arm
@@ -20,13 +21,16 @@
 import { readFileSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import {
+	type Api,
 	type AssistantMessage,
-	fauxAssistantMessage,
-	fauxProvider,
-	fauxText,
-	fauxToolCall,
+	createAssistantMessageEventStream,
+	createProvider,
 	type Message,
+	type Model,
+	type SimpleStreamOptions,
 	type ToolCall,
+	type TranscriptContext,
+	type Usage,
 } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { RpcClient } from "../rpc.ts";
@@ -328,6 +332,22 @@ function repliesFor(messages: Message[], ids: string[]): Reply[] {
 	});
 }
 
+const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+/** Flash runs no model, so every turn reports zero usage. */
+const USAGE: Usage = { ...ZERO_COST, totalTokens: 0, cost: { ...ZERO_COST, total: 0 } };
+const MODEL: Model<"flash"> = {
+	id: "replay",
+	name: "Flash replay",
+	api: "flash",
+	provider: "flash",
+	baseUrl: "",
+	reasoning: false,
+	input: ["text", "image"],
+	cost: ZERO_COST,
+	contextWindow: 100_000_000,
+	maxTokens: 16_384,
+};
+
 /** Register the `flash/replay` model on the LIBERO extension; `cell` reads its --suite and --task. */
 export function registerFlash(pi: ExtensionAPI, cell: () => { suite: string; task: string }) {
 	pi.registerFlag("molmo", { type: "string", default: "http://127.0.0.1:18400", description: "Molmo server" });
@@ -338,30 +358,48 @@ export function registerFlash(pi: ExtensionAPI, cell: () => { suite: string; tas
 	});
 
 	type Turn = { text: string; calls: ToolCall[] };
-	let toModel: ((turn: Turn) => void) | undefined;
-	let toReplay: ((messages: Message[]) => void) | undefined;
+	let toModel: { resolve: (turn: Turn) => void; reject: (err: Error) => void } | undefined;
+	let toReplay: { resolve: (messages: Message[]) => void; reject: (err: Error) => void } | undefined;
 	let pending: string[] = [];
 	let notes: string[] = [];
 	let started = false;
 	let over = false;
+	let stopped: Error | undefined;
+	let calls = 0;
 	let cwd = process.cwd();
 
 	const say = (turn: Turn) => {
 		const f = toModel;
 		toModel = undefined;
-		f?.(turn);
+		f?.resolve(turn);
 	};
 	const flush = () => {
 		const text = notes.join("\n");
 		notes = [];
 		return text;
 	};
+	const toolCall = (c: Call): ToolCall => ({
+		type: "toolCall",
+		id: `flash_${++calls}`,
+		name: c.name,
+		arguments: c.arguments as ToolCall["arguments"],
+	});
+
+	/** An aborted turn ends the replay: the waiting turn fails, and the plan stops at its next call. */
+	function stop() {
+		stopped ??= new Error("Flash replay aborted");
+		over = true;
+		toModel?.reject(stopped);
+		toReplay?.reject(stopped);
+		toModel = toReplay = undefined;
+	}
 
 	async function act(calls: Call[]): Promise<Reply[]> {
-		const toolCalls = calls.map((c) => fauxToolCall(c.name, c.arguments as ToolCall["arguments"]));
+		if (stopped) throw stopped;
+		const toolCalls = calls.map(toolCall);
 		pending = toolCalls.map((c) => c.id);
-		const results = new Promise<Message[]>((r) => {
-			toReplay = r;
+		const results = new Promise<Message[]>((resolve, reject) => {
+			toReplay = { resolve, reject };
 		});
 		say({ text: flush(), calls: toolCalls });
 		return repliesFor(await results, pending);
@@ -388,43 +426,86 @@ export function registerFlash(pi: ExtensionAPI, cell: () => { suite: string; tas
 				`replayed the ${program} program: ${out.plan} actions, ${out.anchors} anchors re-localized, ` +
 				`${((Date.now() - t0) / 1000).toFixed(1)} s`;
 		} catch (err) {
+			if (stopped) return;
 			summary = `flash error: ${err instanceof Error ? err.message : String(err)}`;
 		}
 		over = true;
-		say({ text: flush(), calls: [fauxToolCall("finish", { status, summary })] });
+		say({ text: flush(), calls: [toolCall({ name: "finish", arguments: { status, summary } })] });
 	}
 
-	const model = fauxProvider({
-		api: "flash",
-		provider: "flash",
-		models: [{ id: "replay", name: "Flash replay", input: ["text", "image"], contextWindow: 100_000_000 }],
-	});
-	const respond = async (context: { messages: Message[] }): Promise<AssistantMessage> => {
-		model.appendResponses([respond]);
-		if (over) return fauxAssistantMessage("Flash replay already ran in this session.");
-		const turn = new Promise<Turn>((r) => {
-			toModel = r;
+	/** The next turn of the replay: the plan's next tool calls, or `finish` once it is done. */
+	function next(messages: Message[], signal?: AbortSignal): Promise<Turn> {
+		if (signal?.aborted) stop();
+		if (over) return Promise.resolve({ text: "Flash replay already ran in this session.", calls: [] });
+		const turn = new Promise<Turn>((resolve, reject) => {
+			toModel = { resolve, reject };
 		});
+		signal?.addEventListener("abort", stop, { once: true });
 		if (!started) {
 			started = true;
 			void run();
 		} else {
 			const f = toReplay;
 			toReplay = undefined;
-			f?.(context.messages);
+			f?.resolve(messages);
 		}
-		const { text, calls } = await turn;
-		return fauxAssistantMessage([...(text ? [fauxText(text)] : []), ...calls], {
-			stopReason: calls.length ? "toolUse" : "stop",
-		});
-	};
-	model.setResponses([respond]);
-	pi.registerProvider(model.provider);
+		return turn;
+	}
+
+	function streamSimple(model: Model<Api>, context: TranscriptContext, options?: SimpleStreamOptions) {
+		const stream = createAssistantMessageEventStream();
+		const message: AssistantMessage = {
+			role: "assistant",
+			content: [],
+			api: model.api,
+			provider: model.provider,
+			model: model.id,
+			usage: { ...USAGE, cost: { ...USAGE.cost } },
+			stopReason: "stop",
+			timestamp: Date.now(),
+		};
+		next(context.messages as Message[], options?.signal).then(
+			(turn) => {
+				stream.push({ type: "start", partial: message });
+				if (turn.text) {
+					message.content.push({ type: "text", text: turn.text });
+					stream.push({ type: "text_start", contentIndex: 0, partial: message });
+					stream.push({ type: "text_delta", contentIndex: 0, delta: turn.text, partial: message });
+					stream.push({ type: "text_end", contentIndex: 0, content: turn.text, partial: message });
+				}
+				for (const call of turn.calls) {
+					const contentIndex = message.content.push(call) - 1;
+					stream.push({ type: "toolcall_start", contentIndex, partial: message });
+					stream.push({ type: "toolcall_end", contentIndex, toolCall: call, partial: message });
+				}
+				message.stopReason = turn.calls.length ? "toolUse" : "stop";
+				stream.push({ type: "done", reason: message.stopReason, message });
+				stream.end();
+			},
+			(err: Error) => {
+				message.stopReason = options?.signal?.aborted ? "aborted" : "error";
+				message.errorMessage = err.message;
+				stream.push({ type: "error", reason: message.stopReason, error: message });
+				stream.end();
+			},
+		);
+		return stream;
+	}
+
+	pi.registerProvider(
+		createProvider({
+			id: "flash",
+			name: "Flash",
+			auth: { apiKey: { name: "Flash", resolve: async () => ({ auth: {} }) } },
+			models: [MODEL],
+			api: { stream: streamSimple, streamSimple },
+		}),
+	);
 
 	pi.on("session_start", (_event, ctx) => {
 		cwd = ctx.cwd;
 		started = over = false;
-		toModel = toReplay = undefined;
+		stopped = toModel = toReplay = undefined;
 		pending = [];
 		notes = [];
 	});

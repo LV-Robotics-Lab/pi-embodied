@@ -27,8 +27,8 @@ const ACCESS: Record<string, Access> = {
 
 type Access = "read" | "search" | "write";
 type Details = { terminated?: unknown; error?: unknown; result?: { error?: unknown }; camera?: unknown } | undefined;
-/** Canonical roots: the memory corpus, every robot's memory home, the run's output dir and the cell tag. */
-export type Guard = { root: string; home: string; output: string; tag: string; inbox?: string };
+/** Canonical roots: the memory corpus, every robot's memory home, the run's output dir and the cell tag, plus read-only dirs. */
+export type Guard = { root: string; home: string; output: string; tag: string; inbox?: string; readable?: string[] };
 export type MemoryOptions = {
 	/** Corpus name under the memory home, also the Hugging Face subdirectory (default "libero"). */
 	robot?: string;
@@ -40,6 +40,8 @@ export type MemoryOptions = {
 	primitives?: readonly string[];
 	/** Exploration run: local profile, the cell's inbox becomes writable. */
 	explore?: () => boolean;
+	/** Directories the agent may also read and search, e.g. the robot's saved state images. */
+	readable?: () => string[];
 };
 
 const defaultHome = () => join(process.env.RPENT_ROOT || join(homedir(), ".pi", "embodied"), "memory");
@@ -85,6 +87,7 @@ export function canonicalPath(input: string | undefined, cwd: string): string {
  */
 export function denied(path: string, access: Access, g: Guard): string | undefined {
 	const inside = (base: string) => path === base || path.startsWith(base + sep);
+	if (access !== "write" && g.readable?.some(inside)) return undefined;
 	if (!inside(g.root)) {
 		if (inside(g.home)) return `access to another robot's memory is denied: ${path}`;
 		if (path === g.output && access === "read") return undefined;
@@ -221,10 +224,11 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 		if (!g || ![g.root, g.home, g.output].every(isAbsolute) || !g.tag)
 			return { block: true, reason: "file access is disabled: the memory guard has no memory, output dir or cell" };
 		try {
+			const readable = (opts.readable?.() ?? []).filter(Boolean).map((d) => canonicalPath(d, ctx.cwd));
 			const reason = denied(
 				canonicalPath(str((event.input as unknown as { path?: unknown }).path), ctx.cwd),
 				access,
-				g,
+				{ ...g, readable },
 			);
 			return reason ? { block: true, reason } : undefined;
 		} catch (e) {

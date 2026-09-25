@@ -68,10 +68,14 @@ function decode(value: unknown): unknown {
 }
 
 /**
- * Calls to one endpoint run one at a time. A robot env server may accept concurrent
- * calls (RPent's facades allow parallel read-only calls) while its worker pipe does not.
+ * Calls to one endpoint run one at a time: a robot env server may accept concurrent calls
+ * (RPent's facades allow parallel read-only calls) while its worker pipe does not. A call is
+ * sent only once the server has answered the previous one. An abort or timeout releases the
+ * caller, never the endpoint: the server is still executing that call, so later calls keep
+ * waiting for its answer, each within its own timeout (rather than failing at once, since the
+ * answer usually comes moments later). An abort also asks the server to `stop` that call.
  */
-const queues = new Map<string, Promise<unknown>>();
+const busy = new Map<string, { method: string; answered: Promise<unknown> }>();
 
 /**
  * Robot services are local or on the tailnet: never go through HTTP_PROXY. fetch and, with
@@ -79,9 +83,9 @@ const queues = new Map<string, Promise<unknown>>();
  */
 const direct = { http: new HttpAgent({ keepAlive: true }), https: new HttpsAgent({ keepAlive: true }) };
 
-function post(url: string, body: string, timeoutMs: number, signal?: AbortSignal): Promise<string> {
+/** One request and its full answer. No timeout and no abort: the answer is what frees the endpoint. */
+function post(url: string, body: string): Promise<string> {
 	return new Promise((resolve, reject) => {
-		if (signal?.aborted) return reject(new Error("aborted"));
 		const target = new URL(url);
 		const https = target.protocol === "https:";
 		const send = https ? httpsRequest : httpRequest;
@@ -99,11 +103,7 @@ function post(url: string, body: string, timeoutMs: number, signal?: AbortSignal
 				res.on("error", reject);
 			},
 		);
-		const onAbort = () => req.destroy(new Error("aborted"));
-		signal?.addEventListener("abort", onAbort, { once: true });
-		req.setTimeout(timeoutMs, () => req.destroy(new Error(`timed out after ${timeoutMs} ms`)));
 		req.on("error", reject);
-		req.on("close", () => signal?.removeEventListener("abort", onAbort));
 		req.end(body);
 	});
 }
@@ -118,6 +118,11 @@ export class RpcClient {
 		this.url = `${base.replace(/\/$/, "")}/call`;
 	}
 
+	/**
+	 * Call `method`. `timeoutMs` (counted from this call, queueing included) and `signal` end the
+	 * wait; a call that has not been sent by then is never sent, and one already sent keeps the
+	 * endpoint until the server answers it.
+	 */
 	async call<T = unknown>(
 		method: string,
 		kwargs: Record<string, unknown> = {},
@@ -125,19 +130,64 @@ export class RpcClient {
 		args: unknown[] = [],
 		signal?: AbortSignal,
 	): Promise<T> {
+		if (signal?.aborted) throw new Error(`${method}: aborted`);
 		const body = JSON.stringify({ method, args: encode(args), kwargs: encode(kwargs), session_id: this.session });
-		const previous = queues.get(this.url) ?? Promise.resolve();
-		const current = previous.catch(() => {}).then(() => post(this.url, body, timeoutMs, signal));
-		queues.set(this.url, current);
-		let text: string;
+		const previous = busy.get(this.url);
+		let sent = false;
+		let gaveUp = false;
+		const answered = (async () => {
+			await previous?.answered.catch(() => {});
+			if (gaveUp) return undefined;
+			sent = true;
+			return post(this.url, body);
+		})();
+		const slot = { method, answered };
+		busy.set(this.url, slot);
+		answered
+			.catch(() => {})
+			.finally(() => {
+				if (busy.get(this.url) === slot) busy.delete(this.url);
+			});
+
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		let onAbort: (() => void) | undefined;
+		const released = new Promise<never>((_, reject) => {
+			const release = (why: string) => {
+				gaveUp = true;
+				reject(
+					new Error(
+						sent
+							? `${method}: ${why}; the server is still running it`
+							: `${method}: ${why} waiting for ${previous?.method ?? "the server"}, which the server is still running`,
+					),
+				);
+			};
+			timer = setTimeout(() => release(`timed out after ${timeoutMs} ms`), timeoutMs);
+			onAbort = () => {
+				if (sent) void this.interrupt();
+				release("aborted");
+			};
+			signal?.addEventListener("abort", onAbort, { once: true });
+		});
+		let text: string | undefined;
 		try {
-			text = await current;
+			text = await Promise.race([answered, released]);
 		} finally {
-			if (queues.get(this.url) === current) queues.delete(this.url);
+			clearTimeout(timer);
+			if (onAbort) signal?.removeEventListener("abort", onAbort);
 		}
-		const reply = JSON.parse(text) as { ok: boolean; result?: unknown; error?: string };
+		const reply = JSON.parse(text ?? "") as { ok: boolean; result?: unknown; error?: string };
 		if (!reply.ok) throw new Error(`${method}: ${reply.error}`);
 		return decode(reply.result) as T;
+	}
+
+	/**
+	 * Ask the server to interrupt the call it is running, bypassing the queue: the `stop` method of
+	 * servers that have one. Best effort: a server without it answers with an error, which is ignored.
+	 */
+	async interrupt(timeoutMs = 5_000): Promise<void> {
+		const body = JSON.stringify({ method: "stop", args: [], kwargs: {}, session_id: this.session });
+		await Promise.race([post(this.url, body), new Promise((r) => setTimeout(r, timeoutMs).unref())]).catch(() => {});
 	}
 
 	async ready(timeoutMs = 300_000): Promise<void> {

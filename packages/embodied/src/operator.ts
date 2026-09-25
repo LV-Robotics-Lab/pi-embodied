@@ -1,15 +1,16 @@
 /**
  * Human-in-the-loop operator (RPent's human_in_the_loop), enabled with --operator.
  *
- * The agent asks through tools; the operator answers by typing commands into pi:
- *   request_operator_verdict  /continue, or /operator <id> success|failure|continue|abort [notes]
- *   request_scene_reset       /done, or /operator <id> done|abort  (only if the robot passes `reset`)
- *   /success /failure /abort  end the episode at any time: in-flight motion stops at its next env
- *                             step (`check()`), later tool calls are refused, the verdict is
- *                             recorded, and pi exits.
- * `finish` is refused until the operator has judged the current state (or aborted). Every
- * exchange is an `operator_event` session entry; `result()` goes into the robot's result entry.
- * Without a UI (print/json mode) requests get no answer, which RPent treats as abort.
+ * The agent asks through tools, and pi asks the operator with a `ctx.ui.select` dialog, which the
+ * TUI shows and an RPC client (e.g. a dashboard) answers as an `extension_ui_request`:
+ *   request_operator_verdict  success | failure | continue | abort (+ optional notes)
+ *   request_scene_reset       done | abort  (only if the robot passes `reset`)
+ *   finish                    without a verdict on the current state, pi asks for one first
+ * A dismissed dialog can still be answered with /continue, /done or /operator <id> <answer>.
+ * Unsolicited, /success /failure /abort end the episode at any time: in-flight motion stops at
+ * its next env step (`check()`), later tool calls are refused, the verdict is recorded, and pi
+ * exits. Every exchange is an `operator_event` session entry; `result()` goes into the robot's
+ * result entry. Without a UI (print/json mode) requests get no answer, which RPent treats as abort.
  */
 
 import { randomBytes } from "node:crypto";
@@ -52,31 +53,59 @@ export function operator(pi: ExtensionAPI, robot: Robot) {
 		if (sealed) throw new Error("operator submitted a terminal verdict; stopping");
 	}
 
-	/** Show `prompt` and wait for /operator <id>, /done or /continue. */
+	/** Ask the operator with a select dialog; /operator <id>, /done or /continue answer it too. */
 	async function ask(ctx: ExtensionContext, prompt: string, kind: Kind, signal?: AbortSignal) {
 		check();
 		if (!ctx.hasUI) return null;
 		if (pending) throw new Error("another operator request is pending");
 		const id = randomBytes(6).toString("hex");
-		const shortcut = kind === "reset" ? "/done" : "/continue";
-		const lines = [
-			prompt,
-			`Reply: /operator ${id} <answer>`,
-			`Shortcut: ${shortcut}; /success, /failure or /abort ends.`,
-		];
-		ctx.ui.setWidget("operator", lines);
-		ctx.ui.notify(lines.join("\n"), "warning");
+		const options = kind === "reset" ? ["done", "abort"] : ["success", "failure", "continue", "abort"];
+		const dialog = new AbortController();
+		const cancel = () => dialog.abort();
+		signal?.addEventListener("abort", cancel, { once: true });
+		ctx.ui.setWidget("operator", [prompt, `Or reply: /operator ${id} <answer>; /success, /failure or /abort ends.`]);
 		try {
 			const answer = await new Promise<string | null>((resolve, reject) => {
 				pending = { id, kind, resolve };
 				signal?.addEventListener("abort", () => reject(new Error("operator request cancelled")), { once: true });
+				void (async () => {
+					const choice = await ctx.ui.select(prompt, options, { signal: dialog.signal });
+					if (choice === undefined) return; // dismissed: a command or the tool's abort answers
+					const judged = choice === "success" || choice === "failure";
+					const notes = judged ? await ctx.ui.input("Notes (optional)", "", { signal: dialog.signal }) : "";
+					resolve(notes?.trim() ? `${choice} ${notes.trim()}` : choice);
+				})().catch(reject);
 			});
 			check();
 			return answer;
 		} finally {
 			pending = undefined;
+			dialog.abort();
+			signal?.removeEventListener("abort", cancel);
 			ctx.ui.setWidget("operator", undefined);
 		}
+	}
+
+	/** Ask for a verdict on the current state; returns the tool result of request_operator_verdict. */
+	async function judge(ctx: ExtensionContext, question: string, signal?: AbortSignal) {
+		verdict = undefined;
+		if (aborted || !sceneReady) return { error: "verdict refused; no active confirmed attempt" };
+		const step = robot.step();
+		const response = await ask(
+			ctx,
+			`${question}\nAttempt ${attempt}, env step ${step}. Choose success, failure, continue or abort.`,
+			"verdict",
+			signal,
+		);
+		const [, word = "unavailable", notes = ""] = (response ?? "").trim().match(/^(\S*)\s*([\s\S]*)$/) ?? [];
+		const v = word.toLowerCase() || "unavailable";
+		event("verdict", { verdict: v, notes, question });
+		if (v === "abort" || response === null) {
+			aborted = true;
+			sceneReady = false;
+		} else if (v === "success" || v === "failure") verdict = { verdict: v, notes, step };
+		else if (v !== "continue") return { error: "invalid operator verdict", verdict: v, notes };
+		return { ok: true, status: v, operator_notes: notes, attempt, evidence_step: step, operator_aborted: aborted };
 	}
 
 	function reply(ctx: ExtensionCommandContext, kind: Kind, answer: string) {
@@ -155,32 +184,9 @@ export function operator(pi: ExtensionAPI, robot: Robot) {
 		}),
 		executionMode: "sequential",
 		async execute(_id, params, signal, _onUpdate, ctx) {
-			const question = params.question ?? "Does the current scene satisfy the task success criteria?";
-			verdict = undefined;
-			if (aborted || !sceneReady) return text({ error: "verdict refused; no active confirmed attempt" });
-			const step = robot.step();
-			const response = await ask(
-				ctx,
-				`${question}\nAttempt ${attempt}, env step ${step}. Reply success, failure, continue, or abort; optional notes may follow.`,
-				"verdict",
-				signal,
+			return text(
+				await judge(ctx, params.question ?? "Does the current scene satisfy the task success criteria?", signal),
 			);
-			const [, word = "unavailable", notes = ""] = (response ?? "").trim().match(/^(\S*)\s*([\s\S]*)$/) ?? [];
-			const v = word.toLowerCase() || "unavailable";
-			event("verdict", { verdict: v, notes, question });
-			if (v === "abort" || response === null) {
-				aborted = true;
-				sceneReady = false;
-			} else if (v === "success" || v === "failure") verdict = { verdict: v, notes, step };
-			else if (v !== "continue") return text({ error: "invalid operator verdict", verdict: v, notes });
-			return text({
-				ok: true,
-				status: v,
-				operator_notes: notes,
-				attempt,
-				evidence_step: step,
-				operator_aborted: aborted,
-			});
 		},
 	});
 
@@ -203,7 +209,7 @@ export function operator(pi: ExtensionAPI, robot: Robot) {
 				event("reset_requested", { reason, expected_scene_state });
 				const response = await ask(
 					ctx,
-					`Scene reset requested: ${reason}\nExpected scene: ${expected_scene_state}\nRestore the scene; the robot will then reset. Reply done to confirm, or abort to stop this run.`,
+					`Scene reset requested: ${reason}\nExpected scene: ${expected_scene_state}\nRestore the scene; the robot will then reset. Choose done once it is restored, or abort to stop this run.`,
 					"reset",
 					signal,
 				);
@@ -232,12 +238,21 @@ export function operator(pi: ExtensionAPI, robot: Robot) {
 			},
 		});
 
-	pi.on("tool_call", (event) => {
+	pi.on("tool_call", async (event, ctx) => {
 		if (!on()) return undefined;
 		if (sealed) return { block: true, reason: "operator submitted a terminal verdict; the run is closing" };
 		const name = event.toolName;
-		if (name === "finish" && !aborted && verdict?.step !== robot.step())
-			return { block: true, reason: "finish refused; request_operator_verdict on the current state first" };
+		if (name === "finish" && !aborted && verdict?.step !== robot.step()) {
+			const asked = await judge(
+				ctx,
+				"The agent wants to finish. Does the current scene satisfy the task success criteria?",
+			);
+			if (!aborted && verdict?.step !== robot.step())
+				return {
+					block: true,
+					reason: `finish refused; the operator did not judge the current state: ${JSON.stringify(asked)}`,
+				};
+		}
 		if (aborted && name !== "finish")
 			return { block: true, reason: "operator aborted this run; finish without further motion" };
 		if (!sceneReady && name !== "finish" && name !== "request_scene_reset")

@@ -6,30 +6,35 @@
  * Starts one LIBERO env server per session and attaches to running Pi0.5 VLA and
  * SAM3 servers (see serve.sh). Tools follow RPent's LIBERO primitives. Every motion
  * tool returns the new state with agentview and wrist images; success is LIBERO's
- * own `terminated` flag, recorded in the session as a `libero_result` entry.
+ * own `terminated` flag, recorded in the session's `robot_result` entry.
  */
 
-import { type ChildProcess, spawn } from "node:child_process";
-import { openSync, readFileSync } from "node:fs";
-import { createServer } from "node:net";
+import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { type TSchema, Type } from "typebox";
-import { explore } from "../explore.ts";
-import { flywheel } from "../flywheel.ts";
-import { memory } from "../memory/index.ts";
-import { operator } from "../operator.ts";
+import { type Static, type TSchema, Type } from "typebox";
 import { decodePngChannel, encodePng } from "../png.ts";
+import { defineRobot, median } from "../robot.ts";
 import { NdArray, RpcClient } from "../rpc.ts";
-import { episodeVideo } from "../video.ts";
 import { registerFlash } from "./flash.ts";
 
 const read = (name: string) => readFileSync(new URL(name, import.meta.url), "utf8");
 const SYSTEM = read("./SYSTEM.md");
 const MEMORY = { hf: read("./memory-hf.md"), local: read("./memory-local.md") };
-const TASK_ENTRY = "libero_task";
+const EXPLORE = read("./explore.md");
+const DISTIL = read("./distil.md");
+/** The prompt's single-episode lines, which exploration replaces rather than contradicts. */
+const REWRITE: [RegExp, string][] = [
+	[
+		/^This is a single episode\..*$/m,
+		"This is an exploration run: `reset` starts a fresh episode (see Exploration). The task is done when a tool result shows `terminated: true`; that flag is the only success signal.",
+	],
+	[
+		/^11\. .*$/m,
+		"11. Keep reasoning to one or two sentences before each tool call. When an episode is unrecoverable, close it out and `reset`; when `terminated` is true, run DISTIL, then `finish` (see Exploration).",
+	],
+];
 const PRIMITIVES = [
 	"move_to",
 	"pi0_pick",
@@ -46,7 +51,6 @@ type Camera = keyof typeof CAMERAS;
 type Obs = { main_images: NdArray; wrist_images?: NdArray | null; states: NdArray };
 type StepReturn = [Obs, unknown, boolean | NdArray, boolean | NdArray, unknown];
 type ChunkReturn = [Obs[], NdArray, NdArray, NdArray, unknown];
-type Cell = { suite: string; task: string; seed: string };
 type CameraMeta = { intrinsic_K: number[][]; extrinsic_cam2world: number[][]; depth_near?: number; depth_far?: number };
 type WorldMap = { envStep: number; size: number; rgb: Buffer; xyz: Float32Array };
 
@@ -54,10 +58,6 @@ const done = (v: boolean | NdArray) => (v instanceof NdArray ? v.toArray().some(
 const round = (v: number, d = 4) => Number(v.toFixed(d));
 const wrap = (a: number) => ((((a + Math.PI) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI)) - Math.PI;
 const clip = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
-const median = (v: number[]) => {
-	const s = [...v].sort((a, b) => a - b);
-	return s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2;
-};
 
 /** Rows of an HxWxC byte image in reverse order (LIBERO renders upside down). */
 function flipRows(data: Buffer, height: number, rowBytes: number): Buffer {
@@ -83,17 +83,6 @@ const pitchOf = (q: number[]) => {
 	return Math.atan2(r[1][2], -r[2][2]);
 };
 
-function freePort(): Promise<number> {
-	return new Promise((resolve, reject) => {
-		const srv = createServer();
-		srv.listen(0, "127.0.0.1", () => {
-			const { port } = srv.address() as { port: number };
-			srv.close(() => resolve(port));
-		});
-		srv.on("error", reject);
-	});
-}
-
 export default function libero(pi: ExtensionAPI) {
 	const flag = (name: string, fallback: string) => String(pi.getFlag(name) ?? fallback);
 	pi.registerFlag("suite", { type: "string", default: "libero_10", description: "LIBERO suite, e.g. libero_10" });
@@ -109,61 +98,83 @@ export default function libero(pi: ExtensionAPI) {
 		default: process.env.RPENT_PYTHON ?? "python",
 		description: "Python for the env server",
 	});
-	pi.registerFlag("keep-images", { type: "string", default: "4", description: "Camera frames kept in context" });
 
 	let env: RpcClient;
 	let vla: RpcClient;
 	let sam3: RpcClient;
-	let server: ChildProcess | undefined;
 	let obs: Obs;
 	let terminated = false;
 	let truncated = false;
 	let envStep = 0;
 	let language = "";
-	let claimed: { status: string; summary: string } | undefined;
-	let finishing = false;
-	let ready = false;
-	let cell: Cell = { suite: "libero_10", task: "0", seed: "0" };
 	const worldMaps = new Map<string, WorldMap>();
 
-	// Registered before memory() so the cell is resolved before memory's own session_start reads it.
-	pi.on("session_start", (_event, ctx) => {
-		// A task picked with /libero-task (or the dashboard) is a session entry and overrides the flags.
-		const picked = ctx.sessionManager
-			.getBranch()
-			.filter((e) => e.type === "custom" && e.customType === TASK_ENTRY)
-			.pop();
-		const data =
-			picked?.type === "custom" ? (picked.data as { suite: string; task: number; seed: number }) : undefined;
-		cell = data
-			? { suite: data.suite, task: String(data.task), seed: String(data.seed) }
-			: { suite: flag("suite", "libero_10"), task: flag("task", "0"), seed: flag("seed", "0") };
-		if (!picked) pi.appendEntry(TASK_ENTRY, { suite: cell.suite, task: Number(cell.task), seed: Number(cell.seed) });
-	});
-
-	const tag = () => `${cell.suite.replace(/^libero_/, "")}_t${cell.task}_s${cell.seed}`;
+	const tag = () => `${robot.task.suite.replace(/^libero_/, "")}_t${robot.task.task}_s${robot.task.seed}`;
 	const rpentMemory = () => (flag("rpent", "") ? join(flag("rpent", ""), "memory") : "");
-	const mem = memory(pi, {
-		robot: "libero",
-		...(rpentMemory() ? { home: rpentMemory } : {}),
-		cell: () => ({ tag: tag(), reference: tag().replace(/_s\d+$/, "_s0") }),
-		primitives: PRIMITIVES,
-		explore: () => pi.getFlag("explore") === true,
+	const robot = defineRobot(pi, {
+		name: "libero",
+		task: ["suite", "task", "seed"],
+		keepImages: 4,
+		memory: {
+			...(rpentMemory() ? { home: rpentMemory } : {}),
+			cell: () => ({ tag: tag(), reference: tag().replace(/_s\d+$/, "_s0") }),
+			primitives: PRIMITIVES,
+		},
+		video: true,
+		flywheel: true,
+		operator: { step: () => envStep },
+		explore: {
+			reset: async (result) => {
+				await resetEpisode();
+				fly.reset(obs, flyMeta());
+				return observe(result);
+			},
+			prompt: () => EXPLORE,
+			distil: DISTIL,
+			rewrite: REWRITE,
+		},
+		start: startEpisode,
+		prompt: () => {
+			const system = SYSTEM.replaceAll("{{task_language}}", language);
+			// Exploration appends its own memory instructions.
+			if (pi.getFlag("explore") === true) return system;
+			return `${system}\n\n${mem.render(MEMORY[mem.profile], { task: robot.task.task })}`;
+		},
+		result: () => ({
+			suite: robot.task.suite,
+			task: Number(robot.task.task),
+			seed: Number(robot.task.seed),
+			terminated,
+			truncated,
+			env_steps: envStep,
+		}),
+		status: () => ({ language, step: envStep, solved: terminated }),
+		finish: {
+			description:
+				"End the episode after checking the latest state. Success is LIBERO's terminated flag, not this call.",
+			parameters: Type.Object({
+				status: Type.Union([Type.Literal("success"), Type.Literal("failure")]),
+				summary: Type.String(),
+			}),
+			result: (params) => ({
+				content: [{ type: "text", text: `Episode finished (terminated=${terminated}).` }],
+				details: params,
+			}),
+		},
 	});
-	const video = episodeVideo(pi);
-	const fly = flywheel(pi);
-	const op = operator(pi, { step: () => envStep });
-	registerFlash(pi, () => ({ suite: cell.suite, task: cell.task }));
+	const { video, op } = robot;
+	const mem = robot.mem!;
+	const fly = robot.fly!;
+	registerFlash(pi, () => ({ suite: robot.task.suite, task: robot.task.task }));
 
-	/** The running tool's abort signal; every robot RPC carries it so an abort stops motion between calls. */
-	let toolSignal: AbortSignal | undefined;
+	/** Every robot RPC carries the running tool's abort signal, so an abort stops motion between calls. */
 	const call = <T = unknown>(
 		client: RpcClient,
 		method: string,
 		kwargs: Record<string, unknown> = {},
 		timeoutMs = 120_000,
 		args: unknown[] = [],
-	) => client.call<T>(method, kwargs, timeoutMs, args, toolSignal);
+	) => client.call<T>(method, kwargs, timeoutMs, args, robot.signal);
 
 	const states = () => obs.states.toArray();
 	const eef = () => states().slice(0, 3);
@@ -222,9 +233,9 @@ export default function libero(pi: ExtensionAPI) {
 	}
 
 	const flyMeta = () => ({
-		suite: cell.suite,
-		task_id: Number(cell.task),
-		seed: Number(cell.seed),
+		suite: robot.task.suite,
+		task_id: Number(robot.task.task),
+		seed: Number(robot.task.seed),
 		task_language: language,
 	});
 
@@ -323,26 +334,10 @@ export default function libero(pi: ExtensionAPI) {
 		name: string,
 		description: string,
 		parameters: P,
-		run: (p: any) => Promise<Record<string, unknown>>,
+		run: (p: Static<P>) => Promise<Record<string, unknown>>,
 		motion = true,
 	) {
-		pi.registerTool({
-			name,
-			label: name,
-			description,
-			parameters,
-			executionMode: "sequential",
-			async execute(_id, params, signal) {
-				toolSignal = signal;
-				try {
-					return await execute(params);
-				} finally {
-					toolSignal = undefined;
-				}
-			},
-		});
-
-		async function execute(params: unknown): Promise<AgentToolResult<unknown>> {
+		robot.tool(name, description, parameters, async (params) => {
 			if (motion && (terminated || truncated)) {
 				return {
 					content: [
@@ -352,20 +347,18 @@ export default function libero(pi: ExtensionAPI) {
 						},
 					],
 					details: { terminated, truncated },
-					terminate: finishing,
 				};
 			}
 			const result = await run(params);
-			if (motion) return { ...(await observe(result)), terminate: finishing };
+			if (motion) return observe(result);
 			const { _image, ...rest } = result as { _image?: Buffer };
 			const content = [{ type: "text" as const, text: JSON.stringify(rest) }];
-			if (!_image) return { content, details: rest, terminate: finishing };
+			if (!_image) return { content, details: rest };
 			return {
 				content: [...content, { type: "image" as const, data: _image.toString("base64"), mimeType: "image/png" }],
 				details: rest,
-				terminate: finishing,
 			};
-		}
+		});
 	}
 
 	const xyz = Type.Array(Type.Number(), { minItems: 3, maxItems: 3, description: "World-frame [x, y, z] in meters" });
@@ -822,206 +815,35 @@ export default function libero(pi: ExtensionAPI) {
 		false,
 	);
 
-	pi.registerTool({
-		name: "finish",
-		label: "finish",
-		description:
-			"End the episode after checking the latest state. Success is LIBERO's terminated flag, not this call.",
-		parameters: Type.Object({
-			status: Type.Union([Type.Literal("success"), Type.Literal("failure")]),
-			summary: Type.String(),
-		}),
-		executionMode: "sequential",
-		async execute(_id, params) {
-			claimed = params;
-			return {
-				content: [{ type: "text", text: `Episode finished (terminated=${terminated}).` }],
-				details: params,
-				terminate: true,
-			};
-		},
-	});
-
-	pi.registerCommand("libero-task", {
-		description: "Start a new LIBERO episode in a new session: /libero-task <suite> <task> <seed>",
-		handler: async (args, ctx) => {
-			const [suite, task, seed, ...rest] = args.trim().split(/\s+/);
-			if (rest.length || !suite || !/^\d+$/.test(task ?? "") || !/^\d+$/.test(seed ?? "")) {
-				ctx.ui.notify("Usage: /libero-task <suite> <task> <seed>", "error");
-				return;
-			}
-			await ctx.newSession({
-				setup: async (sm) => {
-					sm.appendCustomEntry(TASK_ENTRY, { suite, task: Number(task), seed: Number(seed) });
-				},
-				withSession: async (next) => {
-					next.sendUserMessage("Solve the task.").catch((err) => next.ui.notify(String(err), "error"));
-				},
-			});
-		},
-	});
-
-	pi.on("session_start", async (_event, ctx) => {
-		server?.kill();
-		claimed = undefined;
-		finishing = false;
-		ready = false;
-		recorded = "";
-		try {
-			await startEpisode();
-			ready = true;
-		} catch (err) {
-			// Without a robot there is nothing to act on: no tools, and a non-interactive run exits.
-			pi.setActiveTools([]);
-			const message = `LIBERO unavailable: ${err instanceof Error ? err.message : String(err)}`;
-			if (ctx.hasUI) ctx.ui.notify(message, "error");
-			else {
-				console.error(`[libero] ${message}`);
-				process.exitCode = 1;
-				ctx.shutdown();
-			}
-		}
-	});
-
+	/** Start (or attach to) the env server and restore the initial scene; returns the tools to activate. */
 	async function startEpisode() {
-		const { suite, task, seed } = cell;
+		const { suite, task, seed } = robot.task;
 		vla = new RpcClient(flag("vla", ""));
 		sam3 = new RpcClient(flag("sam3", ""));
-		let endpoint = pi.getFlag("env") as string | undefined;
-		if (!endpoint) {
+		const endpoint = pi.getFlag("env") as string | undefined;
+		if (endpoint) {
+			env = new RpcClient(endpoint);
+			await env.ready();
+		} else {
 			const rpent = flag("rpent", "");
 			if (!rpent) throw new Error("set --rpent (or RPENT_ROOT) to an RPent checkout");
-			const port = await freePort();
-			const log = openSync(join(tmpdir(), `pi-embodied-env-${suite}-t${task}-s${seed}-${port}.log`), "a");
-			server = spawn(
-				flag("python", "python"),
-				[
-					"robots/libero/env_server.py",
-					"--suite",
-					suite,
-					"--task",
-					task,
-					"--seed",
-					seed,
-					"--transport",
-					"http",
-					"--host",
-					"127.0.0.1",
-					"--port",
-					String(port),
-					"--parent-watch",
-				],
-				{
-					cwd: rpent,
-					env: {
-						...process.env,
-						PYTHONPATH: rpent,
-						LIBERO_TYPE: flag("libero-type", "pro"),
-						MUJOCO_GL: "egl",
-						ROBOT_PLATFORM: "LIBERO",
-					},
-					stdio: ["pipe", log, log],
+			env = await robot.serve({
+				python: flag("python", "python"),
+				args: ["robots/libero/env_server.py", "--suite", suite, "--task", task, "--seed", seed],
+				cwd: rpent,
+				env: {
+					...process.env,
+					PYTHONPATH: rpent,
+					LIBERO_TYPE: flag("libero-type", "pro"),
+					MUJOCO_GL: "egl",
+					ROBOT_PLATFORM: "LIBERO",
 				},
-			);
-			endpoint = `http://127.0.0.1:${port}`;
+				log: (port) => join(tmpdir(), `pi-embodied-env-${suite}-t${task}-s${seed}-${port}.log`),
+			});
 		}
-		env = new RpcClient(endpoint);
-		const proc = server;
-		const exited = new Promise<never>((_, reject) => {
-			proc?.once("exit", (code) => reject(new Error(`env server exited (${code})`)));
-			proc?.once("error", (err) => reject(new Error(`env server failed to start: ${err.message}`)));
-		});
-		exited.catch(() => {});
-		await Promise.race([env.ready(), exited]);
 		await resetEpisode();
 		language = await call<string>(env, "env.get_task_language");
 		fly.reset(obs, flyMeta());
-		pi.setActiveTools([...TOOLS, ...op.tools(), ...mem.tools]);
+		return TOOLS;
 	}
-
-	pi.on("session_shutdown", () => {
-		server?.kill();
-		server = undefined;
-	});
-
-	pi.on("before_agent_start", () => {
-		const system = SYSTEM.replaceAll("{{task_language}}", language);
-		// Exploration appends its own memory instructions.
-		if (pi.getFlag("explore") === true) return { systemPrompt: system };
-		return { systemPrompt: `${system}\n\n${mem.render(MEMORY[mem.profile], { task: cell.task })}` };
-	});
-
-	// pi stops early only when every result in a batch terminates: a batch that calls
-	// `finish` ends with it, and nothing runs after `finish`.
-	pi.on("message_end", (event) => {
-		const m = event.message;
-		if (m.role === "assistant") finishing = m.content.some((c) => c.type === "toolCall" && c.name === "finish");
-	});
-	pi.on("tool_call", (event) => {
-		if (!ready) return { block: true, reason: "The robot is not available.", terminate: true };
-		if (claimed && event.toolName !== "finish") {
-			return { block: true, reason: "The episode is finished.", terminate: true };
-		}
-		return undefined;
-	});
-
-	pi.on("context", (event) => {
-		let keep = Number(flag("keep-images", "4"));
-		let pruned = false;
-		const messages = [...event.messages].reverse().map((m) => {
-			if (m.role !== "toolResult") return m;
-			const content = m.content.map((part) => {
-				if (part.type !== "image") return part;
-				if (keep-- > 0) return part;
-				pruned = true;
-				return { type: "text" as const, text: "[older camera frame omitted]" };
-			});
-			return { ...m, content };
-		});
-		return pruned ? { messages: messages.reverse() } : undefined;
-	});
-
-	pi.on("input", (_event, ctx) => {
-		if (ready) return undefined;
-		if (ctx.hasUI) ctx.ui.notify("LIBERO is not available; nothing was sent to the model.", "error");
-		return { action: "handled" };
-	});
-
-	const outcome = () => ({
-		suite: cell.suite,
-		task: Number(cell.task),
-		seed: Number(cell.seed),
-		// A failed startup is an infrastructure error, never a task failure.
-		env_error: !ready,
-		terminated,
-		truncated,
-		env_steps: envStep,
-		claimed: claimed?.status ?? null,
-		summary: claimed?.summary ?? null,
-		...op.result(),
-	});
-	let recorded = "";
-
-	// One entry per distinct outcome: a second agent run that changes nothing adds nothing.
-	pi.on("agent_end", () => {
-		const result = JSON.stringify(outcome());
-		if (result === recorded) return;
-		recorded = result;
-		pi.appendEntry("libero_result", outcome());
-	});
-
-	// The stderr line is the episode's final outcome, printed once.
-	pi.on("session_shutdown", (_event, ctx) => {
-		if (!ctx.hasUI) console.error(`[libero] ${JSON.stringify(outcome())}`);
-	});
-
-	explore(pi, {
-		reset: async (result) => {
-			await resetEpisode();
-			fly.reset(obs, flyMeta());
-			return observe(result);
-		},
-		render: mem.render,
-		tools: mem.tools,
-	});
 }

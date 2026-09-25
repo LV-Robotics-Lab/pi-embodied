@@ -11,12 +11,7 @@ Cell: {{task_name}} / {{split}} / seed {{seed}}
 - Three cameras, 256x256 unless the state says agentview_high: agentview (calibration frame, global) decides WHAT; wrist (eye-in-hand) refines WHERE within 20 cm; navview (base-mounted, forward-down) shows WHERE TO DRIVE.
 - Every action tool returns the new numbered state with all three images. Do not call `view_env_state` right after one; use it to re-read an older step.
 
-# Memory
-Before the first action, use `read` on each of these that exists:
-- {{memory_dir}}/results/{{task_name}}_s0.json
-- {{memory_dir}}/results/recipe_{{task_name}}_s0.jsonl
-- {{memory_dir}}/results/{{task_name}}.md
-The JSON/JSONL pair is reviewed seed-0 evidence; the Markdown file is task-specific exploration memory. Treat them as strategy priors, not trajectories to replay: current RGB-D, task progress and primitive results always take precedence. Historical entries may name vla_act, use_prompt or atomic prompts; these describe VLA phases only, so use `rldx_skill` / `rldx_arm` with the complete live task language. Never replay stored xyz, xy, pixels, base poses or fixture coordinates. Never read another task's memory or any global memory. If all three files are absent, solve from live observations.
+{{memory}}
 
 # Localization
 - `back_project_batch` is the primary tool: pass 3-8 [row, col] pixels firmly on the object's top surface in the agentview image and use `summary.median_xyz`. Avoid thin rims, edges and gaps. Pixels picked in agentview_high need `resolution: "high"`.

@@ -12,23 +12,12 @@
  * arrive once the env reports `terminated`. The memory guard, recipe and merge are memory.ts's.
  */
 
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionCommandContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
-const EXPLORE = readFileSync(new URL("./explore.md", import.meta.url), "utf8");
-const DISTIL = readFileSync(new URL("./distil.md", import.meta.url), "utf8");
 const SESSION = "explore_session";
-/** The robot prompt's single-episode lines, which exploration replaces rather than contradicts. */
-const EPISODE = [
-	/^This is a single episode\..*$/m,
-	"This is an exploration run: `reset` starts a fresh episode (see Exploration). The task is done when a tool result shows `terminated: true`; that flag is the only success signal.",
-] as const;
-const RULE_11 = [
-	/^11\. .*$/m,
-	"11. Keep reasoning to one or two sentences before each tool call. When an episode is unrecoverable, close it out and `reset`; when `terminated` is true, run DISTIL, then `finish` (see Exploration).",
-] as const;
 
 type Robot = {
 	/** Restore the initial scene; return the new state as a tool result that embeds `result`. */
@@ -37,6 +26,12 @@ type Robot = {
 	render: (text: string, extra?: Record<string, string | number>) => string;
 	/** memory.ts `tools`: the built-in file tools the agent reads and writes memory with. */
 	tools: readonly string[];
+	/** The robot's exploration instructions, appended to its system prompt and rendered like memory text. */
+	prompt: () => string;
+	/** A DISTIL pass sent once the cell is solved; `finish` waits for it and its suite draft. */
+	distil?: string;
+	/** Lines of the robot's single-episode prompt that exploration replaces. */
+	rewrite?: [RegExp, string][];
 };
 type Progress = {
 	n: number;
@@ -150,6 +145,7 @@ export function explore(pi: ExtensionAPI, robot: Robot) {
 	function refuseFinish(p: Progress): string | undefined {
 		const b = budget();
 		if (p.solved) {
+			if (!robot.distil) return undefined;
 			if (!p.distilled) return "finish refused: run the DISTIL pass first; its instructions follow.";
 			if (nagged || existsSync(robot.render("{{memory_inbox}}/suite_{{recipe_tag}}_draft.md"))) return undefined;
 			nagged = true;
@@ -208,8 +204,8 @@ export function explore(pi: ExtensionAPI, robot: Robot) {
 		pi.setActiveTools([...new Set([...pi.getActiveTools(), ...robot.tools, "reset"])]);
 		const p = progress(ctx.sessionManager.getBranch());
 		const vars = { session_number: p.n, session_max: sessions(), attempt_budget: budget() || "unlimited" };
-		const base = event.systemPrompt.replace(EPISODE[0], EPISODE[1]).replace(RULE_11[0], RULE_11[1]);
-		return { systemPrompt: `${base}\n\n${robot.render(EXPLORE, vars)}` };
+		const base = (robot.rewrite ?? []).reduce((text, [from, to]) => text.replace(from, to), event.systemPrompt);
+		return { systemPrompt: `${base}\n\n${robot.render(robot.prompt(), vars)}` };
 	});
 
 	pi.on("tool_call", (event, ctx) => {
@@ -220,7 +216,7 @@ export function explore(pi: ExtensionAPI, robot: Robot) {
 
 	// The DISTIL pass starts in the turn that solved the cell, even when that turn also called finish.
 	pi.on("turn_end", (event, ctx) => {
-		if (!on()) return undefined;
+		if (!on() || !robot.distil) return undefined;
 		const p = progress(ctx.sessionManager.getBranch());
 		if (
 			!p.solved ||
@@ -228,7 +224,7 @@ export function explore(pi: ExtensionAPI, robot: Robot) {
 			event.entries.some((e) => e.type === "custom_message" && e.customType === "explore_distil")
 		)
 			return undefined;
-		return { entries: [...event.entries, note("explore_distil", robot.render(DISTIL))], continue: true };
+		return { entries: [...event.entries, note("explore_distil", robot.render(robot.distil))], continue: true };
 	});
 
 	// A model that stops talking has not handed off: send it back, at most twice per session.
@@ -238,7 +234,10 @@ export function explore(pi: ExtensionAPI, robot: Robot) {
 		const b = budget();
 		let text: string | undefined;
 		if (p.finished) text = undefined;
-		else if (p.solved) text = "The cell is solved. Complete the DISTIL pass, then call `finish`.";
+		else if (p.solved)
+			text = robot.distil
+				? "The cell is solved. Complete the DISTIL pass, then call `finish`."
+				: "The cell is solved. Write the memory proposals, then call `finish`.";
 		else if (!b || p.attempt < b)
 			text = `You stopped on an unsolved cell with ${b ? b - p.attempt : "unlimited"} attempt(s) left. Close out this attempt, \`reset\`, and try a class of approach you have not tried; \`finish\` is refused until the budget is spent.`;
 		else

@@ -9,21 +9,22 @@
  * the env's curobo planner (`env.plan_arm_path`) and executes qpos waypoints,
  * `lingbot_act` runs eef16 chunks. Every action returns a new numbered state with
  * the head and both wrist images; success is RoboTwin's own `eval_success`,
- * recorded in the session as a `robotwin_result` entry.
+ * recorded in the session's `robot_result` entry.
  */
 
-import { type ChildProcess, spawn } from "node:child_process";
-import { existsSync, openSync, readFileSync } from "node:fs";
-import { createServer } from "node:net";
+import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { type TSchema, Type } from "typebox";
+import { type Static, type TSchema, Type } from "typebox";
 import { encodePng } from "../png.ts";
-import { episode } from "../robot-util.ts";
-import { NdArray, RpcClient } from "../rpc.ts";
+import { attach, defineRobot, median, u8 } from "../robot.ts";
+import { NdArray, type RpcClient } from "../rpc.ts";
 
-const SYSTEM = readFileSync(new URL("./SYSTEM.md", import.meta.url), "utf8");
+const read = (name: string) => readFileSync(new URL(name, import.meta.url), "utf8");
+const SYSTEM = read("./SYSTEM.md");
+const MEMORY = read("./memory.md");
+const EXPLORE = read("./explore.md");
 const VIEWS = ["head", "left_wrist", "right_wrist"] as const;
 type View = (typeof VIEWS)[number];
 type Arm = "left" | "right";
@@ -36,6 +37,8 @@ type Info = {
 	instruction_source?: string;
 };
 type StepReturn = [unknown, unknown, unknown, unknown, Info];
+/** chunk_step's observation with return_all_frames: the head frame after every native action. */
+type Frames = { frames?: NdArray[] };
 type CameraMeta = { intrinsic_K: NdArray; cam2world_gl: NdArray; width: number; height: number };
 type WorldMap = { height: number; width: number; xyz: Float32Array };
 type Snapshot = { payload: Record<string, unknown>; images: Buffer[]; world: Record<View, WorldMap> };
@@ -52,10 +55,6 @@ const LINGBOT_CONTRACT = {
 };
 
 const round = (v: number, d = 4) => Number(v.toFixed(d));
-const median = (v: number[]) => {
-	const s = [...v].sort((a, b) => a - b);
-	return s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2;
-};
 /** numpy's `linspace(0, n - 1, k).astype(int)`. */
 const linspace = (n: number, k: number) =>
 	Array.from({ length: k }, (_, i) => (k === 1 ? 0 : Math.floor((i * (n - 1)) / (k - 1))));
@@ -335,17 +334,6 @@ class LingBot {
 	}
 }
 
-function freePort(): Promise<number> {
-	return new Promise((resolve, reject) => {
-		const srv = createServer();
-		srv.listen(0, "127.0.0.1", () => {
-			const { port } = srv.address() as { port: number };
-			srv.close(() => resolve(port));
-		});
-		srv.on("error", reject);
-	});
-}
-
 export default function robotwin(pi: ExtensionAPI) {
 	const flag = (name: string, fallback: string) => String(pi.getFlag(name) ?? fallback);
 	pi.registerFlag("task-name", { type: "string", default: "beat_block_hammer", description: "RoboTwin task" });
@@ -362,13 +350,6 @@ export default function robotwin(pi: ExtensionAPI) {
 		description: "RoboTwin asset snapshot",
 	});
 	pi.registerFlag("lingbot", { type: "string", default: "ws://127.0.0.1:18400", description: "LingBot-VLA server" });
-	pi.registerFlag("memory", {
-		type: "string",
-		default: process.env.ROBOTWIN_MEMORY ?? "",
-		description: "RPent-memory robotwin/ directory (optional, read-only)",
-	});
-	pi.registerFlag("max-turns", { type: "string", default: "100", description: "Planner turn budget" });
-	pi.registerFlag("time-limit", { type: "string", default: "4800", description: "Planner wall-time budget, s" });
 	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
 	pi.registerFlag("rpent", { type: "string", default: process.env.RPENT_ROOT ?? "", description: "RPent checkout" });
 	pi.registerFlag("python", {
@@ -376,37 +357,91 @@ export default function robotwin(pi: ExtensionAPI) {
 		default: process.env.RPENT_PYTHON ?? "python",
 		description: "Python for the env server",
 	});
-	pi.registerFlag("keep-images", { type: "string", default: "6", description: "Camera frames kept in context" });
 
 	let env: RpcClient;
 	let lingbot: LingBot | undefined;
-	let server: ChildProcess | undefined;
 	let info: Info;
 	let language = "";
 	let snapshots: Snapshot[] = [];
 	let policyActions = 0;
 	let nativeActions = 0;
-	let turns = 0;
-	let started: number | undefined;
-	let outOfBudget = false;
-	let claimed: { status: string; summary: string } | undefined;
-	let signal: AbortSignal | undefined; // the running tool's abort signal
-	const ep = episode(pi, "robotwin", () => ({
-		task_name: flag("task-name", ""),
-		task_config: flag("task-config", ""),
-		seed: Number(flag("seed", "0")),
-		task_language: language,
-		success: success(),
-		budget_exhausted: exhausted(),
-		planner_budget_exhausted: outOfBudget,
-		take_action_cnt: status().take_action_cnt,
-		policy_actions: policyActions,
-		native_actions: nativeActions,
-		states: snapshots.length,
-		turns,
-		claimed: claimed?.status ?? null,
-		summary: claimed?.summary ?? null,
-	}));
+	const cell = () => ({ task: robot.task["task-name"], config: robot.task["task-config"], seed: robot.task.seed });
+	const tag = (seed: string) => `robotwin_${cell().task}_${cell().config}_s${seed}`;
+	/** Local corpora (and exploration) key the seed-0 reference like the cell; the published HF corpus by task. */
+	const local = () => pi.getFlag("memory-profile") === "local" || pi.getFlag("explore") === true;
+	const robot = defineRobot(pi, {
+		name: "robotwin",
+		task: ["task-name", "task-config", "seed"],
+		keepImages: 6,
+		imageStub: "[older camera frame omitted; view_env_state(step) re-reads it]",
+		budget: { turns: 100, seconds: 4800 },
+		memory: {
+			home: () => (flag("rpent", "") ? join(flag("rpent", ""), "memory") : ""),
+			cell: () => ({ tag: tag(cell().seed), reference: local() ? tag("0") : `${cell().task}_s0` }),
+			primitives: ["lingbot_act", "move_to", "rotate_wrist", "set_gripper", "release"],
+		},
+		video: true,
+		explore: {
+			reset: async (result) => {
+				const [, reset] = await env.call<[unknown, Info]>("env.reset", {}, MUTATE_MS, [], robot.signal);
+				info = reset;
+				language = reset.instruction ?? (await env.call<string>("env.get_task_language"));
+				return present(await capture({ action: "reset" }, { ...result, success: true, instruction: language }));
+			},
+			prompt: () => EXPLORE,
+			rewrite: [
+				[
+					/Satisfy the complete task in one no-restart episode\. Prefer one accurate sequence over broad exploration, and protect every achieved subgoal\./,
+					"This is an exploration run: `reset` starts a fresh attempt (see Exploration). Within an attempt, prefer one accurate sequence and protect every achieved subgoal.",
+				],
+			],
+		},
+		start: startEpisode,
+		stop: () => {
+			lingbot?.ws.close();
+			lingbot = undefined;
+		},
+		prompt: () => {
+			const mem = robot.mem!;
+			const vars: Record<string, string> = {
+				task_language: language,
+				task_name: cell().task,
+				task_config: cell().config,
+				seed: cell().seed,
+				memory: pi.getFlag("explore") === true ? "" : mem.render(MEMORY).trim(),
+			};
+			return SYSTEM.replace(/\{\{(\w+)\}\}/g, (_, k: string) => vars[k] ?? "");
+		},
+		result: () => ({
+			task_name: cell().task,
+			task_config: cell().config,
+			seed: Number(cell().seed),
+			task_language: language,
+			success: success(),
+			budget_exhausted: exhausted(),
+			take_action_cnt: status().take_action_cnt,
+			policy_actions: policyActions,
+			native_actions: nativeActions,
+			states: snapshots.length,
+		}),
+		status: () => ({ language, step: snapshots.length - 1, solved: success() }),
+		finish: {
+			description:
+				"Stop the run after a fresh status check. RoboTwin's eval_success is authoritative; requesting success cannot override it.",
+			parameters: Type.Object({ status: Type.String({ description: "success | failure" }), summary: Type.String() }),
+			result: (params) => {
+				const requested = params.status.toLowerCase() === "success";
+				const result = {
+					status: success() ? "success" : requested ? "failure" : params.status,
+					summary: params.summary,
+					requested_success: requested,
+					success: success(),
+					episode_status: status(),
+				};
+				return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
+			},
+		},
+	});
 
 	const status = () => info.episode_status;
 	const success = () => status().eval_success === true;
@@ -448,8 +483,16 @@ export default function robotwin(pi: ExtensionAPI) {
 			const offset = u.arm === "left" ? 0 : 7;
 			if (u.arm_qpos) action.splice(offset, 6, ...u.arm_qpos);
 			if (u.gripper !== undefined) action[offset + 6] = u.gripper;
-			const ret = await env.call<StepReturn>("env.step", { action_type: "qpos" }, MUTATE_MS, [f64(action)], signal);
+			const ret = await env.call<StepReturn>(
+				"env.step",
+				{ action_type: "qpos" },
+				MUTATE_MS,
+				[f64(action)],
+				robot.signal,
+			);
 			info = ret[4];
+			const main = (ret[0] as { main_images?: unknown } | null)?.main_images;
+			if (main instanceof NdArray) robot.video.frame(u8(main));
 			executed += ret[4].executed_actions ?? 0;
 			if (success() || exhausted()) break;
 		}
@@ -471,7 +514,7 @@ export default function robotwin(pi: ExtensionAPI) {
 			{ arm, target_pose: target },
 			READ_MS,
 			[],
-			signal,
+			robot.signal,
 		);
 		if (planned.status !== "Success" || !planned.position)
 			return {
@@ -572,6 +615,8 @@ export default function robotwin(pi: ExtensionAPI) {
 			step: snap.payload.step,
 			result: snap.payload.result,
 			eval_success: snap.payload.eval_success,
+			// Memory recipes and exploration read the env's success as `terminated`.
+			terminated: snap.payload.eval_success,
 		},
 	});
 
@@ -592,41 +637,25 @@ export default function robotwin(pi: ExtensionAPI) {
 		name: string,
 		description: string,
 		parameters: P,
-		run: (p: any) => Promise<Record<string, unknown>>,
+		run: (p: Static<P>) => Promise<Record<string, unknown>>,
 		kind: "act" | "observe" | "read" = "act",
 	) {
-		pi.registerTool({
-			name,
-			label: name,
-			description,
-			parameters,
-			executionMode: "sequential",
-			async execute(_id, params, sig) {
-				if (kind === "act" && (success() || exhausted())) {
-					return ep.terminating({
-						content: [
-							{
-								type: "text" as const,
-								text: `Episode is terminal (eval_success=${success()}, budget_exhausted=${exhausted()}); call finish.`,
-							},
-						],
-						details: {},
-					});
-				}
-				signal = sig;
-				let result: Record<string, unknown>;
-				try {
-					result = await run(params);
-				} finally {
-					signal = undefined;
-				}
-				if (kind === "read")
-					return ep.terminating({
-						content: [{ type: "text" as const, text: JSON.stringify(result) }],
-						details: result,
-					});
-				return ep.terminating(present(await capture({ action: name, ...(params as object) }, result)));
-			},
+		robot.tool(name, description, parameters, async (params) => {
+			if (kind === "act" && (success() || exhausted())) {
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: `Episode is terminal (eval_success=${success()}, budget_exhausted=${exhausted()}); call finish.`,
+						},
+					],
+					details: {},
+				};
+			}
+			const result = await run(params);
+			if (kind === "read")
+				return { content: [{ type: "text" as const, text: JSON.stringify(result) }], details: result };
+			return present(await capture({ action: name, ...params }, result));
 		});
 	}
 
@@ -642,24 +671,17 @@ export default function robotwin(pi: ExtensionAPI) {
 		Type.Integer({ minimum: 0, description: "Planner waypoints executed, evenly subsampled (default 25; 0 = all)" }),
 	);
 
-	pi.registerTool({
-		name: "view_env_state",
-		label: "view_env_state",
-		description:
-			"Read one recorded state (step -1 = latest, 0 = initial): command, result, native episode status, robot state, and the head, left wrist and right wrist RGB images.",
-		parameters: Type.Object({ step }),
-		executionMode: "sequential",
-		async execute(_id, params) {
+	robot.tool(
+		"view_env_state",
+		"Read one recorded state (step -1 = latest, 0 = initial): command, result, native episode status, robot state, and the head, left wrist and right wrist RGB images.",
+		Type.Object({ step }),
+		async (params) => {
 			const i = params.step === undefined ? -1 : params.step;
 			const snap = snapshots[i < 0 ? snapshots.length + i : i];
-			if (!snap)
-				return ep.terminating({
-					content: [{ type: "text" as const, text: `state step ${i} not available` }],
-					details: {},
-				});
-			return ep.terminating(present(snap));
+			if (!snap) return { content: [{ type: "text" as const, text: `state step ${i} not available` }], details: {} };
+			return present(snap);
 		},
-	});
+	);
 
 	tool(
 		"render",
@@ -810,7 +832,7 @@ export default function robotwin(pi: ExtensionAPI) {
 			let executed = 0;
 			let nativePrompt: string | null = null;
 			for (let i = 0; i < chunks && !success() && !exhausted(); i++) {
-				if (signal?.aborted) throw new Error("interrupted");
+				if (robot.signal?.aborted) throw new Error("interrupted");
 				nativePrompt = await env.call<string>("env.get_task_language", {}, READ_MS);
 				const views: NdArray[] = [];
 				for (const v of VIEWS)
@@ -830,14 +852,16 @@ export default function robotwin(pi: ExtensionAPI) {
 				const rows = Math.min(USE_LENGTH, actions.shape[0]);
 				const bytes = actions.data.length / actions.shape[0];
 				const chunk = new NdArray(actions.dtype, [rows, 16], actions.data.subarray(0, rows * bytes));
+				// RPent records the head frame after every native action for the episode video.
 				const ret = await env.call<StepReturn>(
 					"env.chunk_step",
-					{ action_type: "ee", return_all_frames: false },
+					{ action_type: "ee", return_all_frames: true },
 					MUTATE_MS,
 					[chunk],
-					signal,
+					robot.signal,
 				);
 				info = ret[4];
+				for (const frame of (ret[0] as Frames | null)?.frames ?? []) robot.video.frame(u8(frame));
 				const count = ret[4].executed_actions ?? 0;
 				executed += count;
 				policyActions += count;
@@ -899,85 +923,30 @@ export default function robotwin(pi: ExtensionAPI) {
 		async (p) => setGripper(p.arm, p.val ?? 1, p.steps ?? 10),
 	);
 
-	pi.registerTool({
-		name: "finish",
-		label: "finish",
-		description:
-			"Stop the run after a fresh status check. RoboTwin's eval_success is authoritative; requesting success cannot override it.",
-		parameters: Type.Object({ status: Type.String({ description: "success | failure" }), summary: Type.String() }),
-		executionMode: "sequential",
-		async execute(_id, params) {
-			claimed = params;
-			ep.end();
-			const requested = params.status.toLowerCase() === "success";
-			const result = {
-				status: success() ? "success" : requested ? "failure" : params.status,
-				summary: params.summary,
-				requested_success: requested,
-				success: success(),
-				episode_status: status(),
-			};
-			return { content: [{ type: "text", text: JSON.stringify(result) }], details: result, terminate: true };
-		},
-	});
-
-	pi.on("session_start", (_event, ctx) => ep.start(ctx, startEpisode));
-
 	async function startEpisode() {
-		server?.kill();
-		lingbot?.ws.close();
-		lingbot = undefined;
 		snapshots = [];
-		policyActions = nativeActions = turns = 0;
-		started = undefined;
-		outOfBudget = false;
-		claimed = undefined;
-		const [task, config, seed] = [flag("task-name", ""), flag("task-config", "demo_randomized"), flag("seed", "0")];
-		let endpoint = pi.getFlag("env") as string | undefined;
-		if (!endpoint) {
+		policyActions = nativeActions = 0;
+		const { task, config, seed } = cell();
+		const endpoint = pi.getFlag("env") as string | undefined;
+		if (endpoint) env = await attach(endpoint, 900_000);
+		else {
 			const rpent = flag("rpent", "");
 			const assets = flag("assets", "");
 			if (!rpent) throw new Error("set --rpent (or RPENT_ROOT) to an RPent checkout");
 			if (!assets) throw new Error("set --assets (or ROBOTWIN_ASSETS_PATH) to the RoboTwin asset snapshot");
-			const port = await freePort();
-			const log = openSync(join(tmpdir(), `pi-embodied-robotwin-${task}-s${seed}-${port}.log`), "a");
-			server = spawn(
-				flag("python", "python"),
-				[
+			env = await robot.serve({
+				python: flag("python", "python"),
+				args: [
 					"robots/robotwin/env_server.py",
-					"--task-name",
-					task,
-					"--task-config",
-					config,
-					"--seed",
-					seed,
-					"--max-episode-steps",
-					flag("max-episode-steps", "10000"),
-					"--assets-path",
-					assets,
-					"--transport",
-					"http",
-					"--host",
-					"127.0.0.1",
-					"--port",
-					String(port),
-					"--parent-watch",
+					...["--task-name", task, "--task-config", config, "--seed", seed],
+					...["--max-episode-steps", flag("max-episode-steps", "10000"), "--assets-path", assets],
 				],
-				{
-					cwd: rpent,
-					env: { ...process.env, PYTHONPATH: rpent, ROBOTWIN_ASSETS_PATH: assets },
-					stdio: ["pipe", log, log],
-				},
-			);
-			endpoint = `http://127.0.0.1:${port}`;
+				cwd: rpent,
+				env: { ...process.env, PYTHONPATH: rpent, ROBOTWIN_ASSETS_PATH: assets },
+				log: (port) => join(tmpdir(), `pi-embodied-robotwin-${task}-s${seed}-${port}.log`),
+				readyMs: 900_000,
+			});
 		}
-		env = new RpcClient(endpoint);
-		const proc = server;
-		const exited = new Promise<never>((_, reject) =>
-			proc?.once("exit", (code) => reject(new Error(`env server exited (${code})`))),
-		);
-		exited.catch(() => {});
-		await Promise.race([env.ready(900_000), exited]);
 		const meta = await env.call<{ task_name: string; task_config: string; seed: number }>("env.get_env_meta");
 		if (meta.task_name !== task || meta.task_config !== config || meta.seed !== Number(seed))
 			throw new Error(
@@ -993,8 +962,7 @@ export default function robotwin(pi: ExtensionAPI) {
 			{ action: "reset" },
 			{ success: true, instruction: language, instruction_source: reset.instruction_source ?? null },
 		);
-		const memory = flag("memory", "");
-		pi.setActiveTools([
+		return [
 			"view_env_state",
 			"render",
 			"sample_world_xyz",
@@ -1005,63 +973,6 @@ export default function robotwin(pi: ExtensionAPI) {
 			"set_gripper",
 			"release",
 			"finish",
-			...(memory && existsSync(memory) ? ["read", "ls"] : []),
-		]);
+		];
 	}
-
-	pi.on("session_shutdown", () => {
-		server?.kill();
-		server = undefined;
-		lingbot?.ws.close();
-		lingbot = undefined;
-	});
-
-	pi.on("before_agent_start", () => {
-		started ??= Date.now();
-		const task = flag("task-name", "");
-		const dir = flag("memory", "");
-		const memory =
-			dir && existsSync(dir)
-				? [
-						"# Memory",
-						`Curated read-only references from earlier successful demo_clean runs live in ${dir}. Before the first robot action, read ${dir}/task_only/${task}_s0.json and ${dir}/task_only/${task}_s0_recipe.jsonl when present, then ${dir}/MEMORY.md and at most one to three relevant leaves. Use the JSON as the phase plan and the JSONL as evidence for tool choice and VLA chunk cadence, never as coordinates to replay; the current task_language and fresh observations override them. Read nothing else on disk.`,
-					].join("\n")
-				: "";
-		const vars: Record<string, string> = {
-			task_language: language,
-			task_name: task,
-			task_config: flag("task-config", ""),
-			seed: flag("seed", ""),
-			memory,
-		};
-		return { systemPrompt: SYSTEM.replace(/\{\{(\w+)\}\}/g, (_, k: string) => vars[k] ?? "") };
-	});
-
-	pi.on("turn_end", () => {
-		turns++;
-	});
-
-	pi.on("tool_call", (event) => {
-		const late = started !== undefined && Date.now() - started > Number(flag("time-limit", "4800")) * 1000;
-		if (event.toolName === "finish" || (turns < Number(flag("max-turns", "100")) && !late)) return undefined;
-		outOfBudget = true;
-		ep.end();
-		return { block: true, reason: "Planner turn or time budget exhausted; the episode is over.", terminate: true };
-	});
-
-	pi.on("context", (event) => {
-		let keep = Number(flag("keep-images", "6"));
-		let pruned = false;
-		const messages = [...event.messages].reverse().map((m) => {
-			if (m.role !== "toolResult") return m;
-			const content = m.content.map((part) => {
-				if (part.type !== "image") return part;
-				if (keep-- > 0) return part;
-				pruned = true;
-				return { type: "text" as const, text: "[older camera frame omitted; view_env_state(step) re-reads it]" };
-			});
-			return { ...m, content };
-		});
-		return pruned ? { messages: messages.reverse() } : undefined;
-	});
 }

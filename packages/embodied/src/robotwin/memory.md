@@ -1,0 +1,2 @@
+# Memory
+Curated read-only references from earlier successful demo_clean runs live in {{memory_dir}}. Before the first robot action, read {{memory_dir}}/task_only/{{reference_tag}}.json and {{memory_dir}}/task_only/{{reference_tag}}_recipe.jsonl when present, then {{memory_dir}}/MEMORY.md and at most one to three relevant leaves. Use the JSON as the phase plan and the JSONL as evidence for tool choice and VLA chunk cadence, never as coordinates to replay; the current task_language and fresh observations override them. Read nothing else on disk.

@@ -6,7 +6,6 @@
 	"type": "module",
 	"pi": {
 		"extensions": [
-			"src/libero/index.ts",
 			"src/dashboard/index.ts"
 		]
 	},

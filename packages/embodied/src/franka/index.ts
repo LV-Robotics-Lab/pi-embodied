@@ -11,22 +11,21 @@
  * the reset motion, and --operator adds the verdict gate (see ../operator.ts). RPent's
  * single-arm robot has no success signal; the result entry records the agent's claim and
  * the operator's verdict, if any. Mutating tools record a state step (robot state, external
- * and wrist RGB-D, camera metadata) under --out and return it with both images.
+ * and wrist RGB-D, camera metadata) under --out and return it with both images; file tools
+ * reach only the memory and that directory.
  */
 
-import type { ChildProcess } from "node:child_process";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { type TSchema, Type } from "typebox";
-import { operator } from "../operator.ts";
+import { type Static, type TSchema, Type } from "typebox";
 import { encodePng } from "../png.ts";
 import {
 	apply,
 	attach,
 	checkMove,
-	episode,
+	defineRobot,
 	f32,
 	gridOf,
 	inv3,
@@ -34,20 +33,20 @@ import {
 	type Mat,
 	mark,
 	message,
+	numbers,
 	plain,
 	pose7,
-	pruneImages,
 	type Rpent,
 	rgbOf,
 	round,
 	roundAll,
+	rpentEnv,
 	rpentJson,
-	startServer,
 	sub,
 	toolResult,
 	u8,
 	vec,
-} from "../robot-util.ts";
+} from "../robot.ts";
 import { NdArray, type RpcClient } from "../rpc.ts";
 
 const SYSTEM = readFileSync(new URL("./SYSTEM.md", import.meta.url), "utf8");
@@ -95,7 +94,6 @@ const TOOLS = [
 	"close_gripper",
 	"vla_grasp",
 	"finish",
-	"read",
 ];
 /** Observation camera key -> saved image and depth artifact names (RPent's _CAMERA_ARTIFACTS). */
 const ARTIFACTS = { main: ["wrist", "wrist_depth"], extra_0: ["camera", "camera_depth"] } as const;
@@ -195,31 +193,64 @@ export default function franka(pi: ExtensionAPI) {
 		type: "string",
 		description: "Step artifact directory (default: a new directory under the OS temp dir)",
 	});
-	pi.registerFlag("keep-images", { type: "string", default: "4", description: "Camera frames kept in context" });
 	pi.registerFlag("max-move", {
 		type: "string",
 		default: "0.1",
 		description: "Largest move_delta per call, m (a task's documented limit applies if tighter)",
 	});
+	pi.registerFlag("max-rotate", {
+		type: "string",
+		default: "0.5",
+		description: "Largest rotate_delta per call, rad (norm of delta_rpy)",
+	});
 
 	let env: RpcClient | undefined;
 	let vla: RpcClient | undefined;
-	let server: ChildProcess | undefined;
 	let setup: Setup | undefined;
 	let out = "";
 	let lastStates: unknown;
-	let claimed: { status: string; summary: string } | undefined;
 	const steps: Step[] = [];
-	const ep = episode(pi, "franka", () => ({
-		task: Number(flag("task", "0")),
-		task_name: setup?.task.name ?? null,
-		steps: steps.length,
-		claimed: claimed?.status ?? null,
-		summary: claimed?.summary ?? null,
-		out,
-		...op.result(),
-	}));
-	const op = operator(pi, { step: () => steps.length });
+	const task = () => robot.task.task;
+	const robot = defineRobot(pi, {
+		name: "franka",
+		task: ["task"],
+		keepImages: 4,
+		// RPent's franka memory is read-only and its prompt names none; the guard also opens the step artifacts.
+		memory: {
+			home: () => (flag("rpent") ? join(flag("rpent"), "memory") : ""),
+			cell: () => ({ tag: `franka_t${task()}`, reference: "" }),
+			primitives: [],
+			readable: () => [out],
+		},
+		operator: { step: () => steps.length },
+		start: startRobot,
+		stop: () => {
+			env = vla = undefined;
+		},
+		prompt: () => {
+			if (!setup) return undefined;
+			const t = setup.task;
+			const vars: Record<string, string> = {
+				task_name: t.name,
+				instruction: t.instruction,
+				success_criteria: t.success_criteria,
+				constraints: t.constraints.map((c, i) => `${i + 1}. ${c}`).join("\n"),
+			};
+			return SYSTEM.replace(/\{\{(\w+)\}\}/g, (m, k: string) => vars[k] ?? m);
+		},
+		result: () => ({ task: Number(task()), task_name: setup?.task.name ?? null, steps: steps.length, out }),
+		status: () => ({ step: steps.length - 1 }),
+		finish: {
+			description:
+				"Call when the task is complete or unrecoverable. Halts the agent loop. Save any artifacts (recipe, audit) BEFORE calling finish.",
+			parameters: Type.Object({
+				status: Type.String({ description: "Outcome, e.g. 'success', 'failure', or 'stuck'." }),
+				summary: Type.String({ description: "Short natural-language summary of the run." }),
+			}),
+			result: (params) => toolResult({ _finish: true, ...params }),
+		},
+	});
+	const { op } = robot;
 
 	const call = <T = Json>(method: string, kwargs: Json = {}, timeoutMs = 30_000, signal?: AbortSignal) =>
 		(env as RpcClient).call<T>(method, kwargs, timeoutMs, [], signal);
@@ -335,21 +366,12 @@ export default function franka(pi: ExtensionAPI) {
 		name: string,
 		description: string,
 		parameters: P,
-		run: (p: any, signal: AbortSignal | undefined, ctx: ExtensionContext) => Promise<Json>,
+		run: (p: Static<P>, signal: AbortSignal | undefined, ctx: ExtensionContext) => Promise<Json>,
 		mutating = true,
 	) {
-		pi.registerTool({
-			name,
-			label: name,
-			description,
-			parameters,
-			executionMode: "sequential",
-			async execute(_id, params, signal, _onUpdate, ctx) {
-				return ep.terminating(await outcome(params, signal, ctx));
-			},
-		});
+		robot.tool(name, description, parameters, outcome);
 
-		async function outcome(params: any, signal: AbortSignal | undefined, ctx: ExtensionContext) {
+		async function outcome(params: Static<P>, signal: AbortSignal | undefined, ctx: ExtensionContext) {
 			if (!env || !steps.length) return toolResult({ error: "robot not initialized; see the session start error" });
 			const started = performance.now();
 			let result: Json;
@@ -691,8 +713,8 @@ export default function franka(pi: ExtensionAPI) {
 					{
 						third_person_row: third_person_row ?? null,
 						third_person_col: third_person_col ?? null,
-						wrist_row,
-						wrist_col,
+						wrist_row: wrist_row as number,
+						wrist_col: wrist_col as number,
 					},
 				];
 			}
@@ -751,7 +773,14 @@ export default function franka(pi: ExtensionAPI) {
 		Type.Object({ delta_rpy: xyz }),
 		async ({ delta_rpy }, signal) => {
 			check(signal);
-			return motion("env.rotate_delta", { delta_rpy: vec3(delta_rpy, "delta_rpy") }, signal);
+			const delta = vec3(delta_rpy, "delta_rpy");
+			const limit = Number(flag("max-rotate", "0.5"));
+			const norm = Math.hypot(...numbers(delta));
+			if (!(norm <= limit))
+				throw new Error(
+					`delta_rpy rotates ${round(norm, 4)} rad; the limit is ${limit} rad per call. Split the rotation into smaller calls.`,
+				);
+			return motion("env.rotate_delta", { delta_rpy: delta }, signal);
 		},
 	);
 
@@ -806,6 +835,9 @@ export default function franka(pi: ExtensionAPI) {
 				};
 				const actions = await vla.call<NdArray>("vla.predict", {}, 120_000, [wire, { mode: "eval" }], signal);
 				const chunk = f32(new NdArray(actions.dtype, actions.shape.slice(1), actions.data));
+				if (chunk.shape.length !== 2 || chunk.shape[0] < 1)
+					throw new Error(`vla_grasp expected [chunk, action_dim] actions, got [${chunk.shape}]`);
+				if (!numbers(chunk).every(Number.isFinite)) throw new Error("vla_grasp received non-finite VLA actions");
 				check(signal);
 				const result = await call("env.chunk_step", { actions: chunk, return_all_frames: false }, 300_000, signal);
 				const next = result.observation;
@@ -823,55 +855,33 @@ export default function franka(pi: ExtensionAPI) {
 		},
 	);
 
-	pi.registerTool({
-		name: "finish",
-		label: "finish",
-		description:
-			"Call when the task is complete or unrecoverable. Halts the agent loop. Save any artifacts (recipe, audit) BEFORE calling finish.",
-		parameters: Type.Object({
-			status: Type.String({ description: "Outcome, e.g. 'success', 'failure', or 'stuck'." }),
-			summary: Type.String({ description: "Short natural-language summary of the run." }),
-		}),
-		executionMode: "sequential",
-		async execute(_id, params) {
-			claimed = params;
-			ep.end();
-			return { ...toolResult({ _finish: true, ...params }), terminate: true };
-		},
-	});
-
 	// ---- lifecycle
 
-	pi.on("session_start", (_event, ctx) => ep.start(ctx, () => startRobot(ctx)));
-
 	async function startRobot(ctx: ExtensionContext) {
-		claimed = undefined;
-		// The physical robot stays where it is across /new, /resume and /fork.
-		if (env) return pi.setActiveTools([...TOOLS, ...op.tools()]);
 		if (!ctx.hasUI)
 			throw new Error("franka drives a real robot: run pi interactively (or over RPC) so an operator is present");
 		const rpent = flag("rpent");
 		if (!rpent) throw new Error("set --rpent (or RPENT_ROOT) to an RPent checkout");
 		const r: Rpent = { root: rpent, python: flag("python", "python") };
-		const task = flag("task", "0");
 		const configFlag = pi.getFlag("robot-config");
 		const config = typeof configFlag === "string" && configFlag ? resolve(ctx.cwd, configFlag) : "";
-		setup = await rpentJson<Setup>(r, SETUP_PY, [task, config]);
+		setup = await rpentJson<Setup>(r, SETUP_PY, [task(), config]);
 		const stamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15);
-		out = resolve(ctx.cwd, flag("out") || join(tmpdir(), "pi-embodied", `franka_t${task}_${stamp}`));
+		out = resolve(ctx.cwd, flag("out") || join(tmpdir(), "pi-embodied", `franka_t${task()}_${stamp}`));
 		mkdirSync(out, { recursive: true });
 		const endpoint = flag("robot-env");
 		const [envRpc, vlaRpc] = await Promise.all([
 			endpoint
 				? attach(endpoint)
-				: startServer(
-						r,
-						"robots.franka.env_server",
-						["--task-description", setup.task.instruction, ...(config ? ["--robot-config", config] : [])],
-						join(out, "franka_env_server.log"),
-					).then(({ rpc, proc }) => {
-						server = proc;
-						return rpc;
+				: robot.serve({
+						python: r.python,
+						args: [
+							...["-m", "robots.franka.env_server"],
+							...["--task-description", setup.task.instruction, ...(config ? ["--robot-config", config] : [])],
+						],
+						cwd: r.root,
+						env: rpentEnv(r),
+						log: () => join(out, "franka_env_server.log"),
 					}),
 			flag("robot-vla") ? attach(flag("robot-vla")) : undefined,
 		]);
@@ -886,26 +896,7 @@ export default function franka(pi: ExtensionAPI) {
 		vla = vlaRpc;
 		remember(reset.states);
 		await dumpState(null, null, null);
-		pi.setActiveTools([...TOOLS, ...op.tools()]);
-		ctx.ui.notify(`Franka ready: task ${task} (${setup.task.name}); steps under ${out}`, "info");
+		ctx.ui.notify(`Franka ready: task ${task()} (${setup.task.name}); steps under ${out}`, "info");
+		return TOOLS;
 	}
-
-	pi.on("session_shutdown", () => {
-		server?.kill();
-		server = env = vla = undefined;
-	});
-
-	pi.on("before_agent_start", () => {
-		if (!setup) return undefined;
-		const t = setup.task;
-		const vars: Record<string, string> = {
-			task_name: t.name,
-			instruction: t.instruction,
-			success_criteria: t.success_criteria,
-			constraints: t.constraints.map((c, i) => `${i + 1}. ${c}`).join("\n"),
-		};
-		return { systemPrompt: SYSTEM.replace(/\{\{(\w+)\}\}/g, (m, k: string) => vars[k] ?? m) };
-	});
-
-	pruneImages(pi, () => Number(flag("keep-images", "4")));
 }

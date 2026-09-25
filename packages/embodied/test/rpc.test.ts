@@ -1,0 +1,81 @@
+import assert from "node:assert/strict";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import { test } from "node:test";
+import { RpcClient } from "../src/rpc.ts";
+
+/**
+ * A fake RPent server: `slow` answers after 300 ms; it records every call's start and end, and the
+ * most calls it ran at once (the `stop` interrupt is meant to bypass the queue and is not counted).
+ */
+async function fakeServer() {
+	const log: { method: string; start: number; end: number }[] = [];
+	let active = 0;
+	let maxActive = 0;
+	const server = createServer((req, res) => {
+		let body = "";
+		req.on("data", (c) => {
+			body += c;
+		});
+		req.on("end", async () => {
+			const { method } = JSON.parse(body) as { method: string };
+			const entry = { method, start: Date.now(), end: 0 };
+			const counted = method !== "stop";
+			if (counted) maxActive = Math.max(maxActive, ++active);
+			if (method === "slow") await new Promise((r) => setTimeout(r, 300));
+			if (counted) active--;
+			entry.end = Date.now();
+			log.push(entry);
+			res.end(JSON.stringify({ ok: true, result: method }));
+		});
+	});
+	await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+	const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+	const close = () => {
+		server.closeAllConnections();
+		server.close();
+	};
+	return { url, log, maxActive: () => maxActive, close };
+}
+
+for (const how of ["abort", "timeout"] as const) {
+	test(`an ${how} releases the caller but not the endpoint`, async (t) => {
+		const srv = await fakeServer();
+		t.after(srv.close);
+		const rpc = new RpcClient(srv.url);
+		const controller = new AbortController();
+		const slow = rpc.call("slow", {}, how === "timeout" ? 50 : 10_000, [], controller.signal);
+		if (how === "abort") setTimeout(() => controller.abort(), 50);
+		await assert.rejects(slow, how === "abort" ? /slow: aborted; the server is still running it/ : /slow: timed out/);
+		assert.equal(await rpc.call("fast"), "fast");
+		const calls = srv.log.filter((e) => e.method !== "stop");
+		assert.deepEqual(
+			calls.map((e) => e.method),
+			["slow", "fast"],
+		);
+		assert.ok(calls[1].start >= calls[0].end, "the second call started while the first was in flight");
+		assert.equal(srv.maxActive(), 1);
+		// Only an abort asks the server to stop the running call.
+		assert.equal(
+			srv.log.some((e) => e.method === "stop"),
+			how === "abort",
+		);
+	});
+}
+
+test("a call that gives up before its turn is never sent", async (t) => {
+	const srv = await fakeServer();
+	t.after(srv.close);
+	const rpc = new RpcClient(srv.url);
+	const slow = rpc.call("slow");
+	await assert.rejects(rpc.call("queued", {}, 50), /queued: timed out after 50 ms waiting for slow/);
+	const controller = new AbortController();
+	controller.abort();
+	await assert.rejects(rpc.call("aborted", {}, 10_000, [], controller.signal), /aborted/);
+	await slow;
+	assert.equal(await rpc.call("fast"), "fast");
+	assert.deepEqual(
+		srv.log.map((e) => e.method),
+		["slow", "fast"],
+	);
+});

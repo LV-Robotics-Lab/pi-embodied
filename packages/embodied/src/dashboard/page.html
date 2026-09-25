@@ -38,7 +38,7 @@ input { font: inherit; padding: 4px 6px; width: 90px; background: var(--bg); col
 button { font: inherit; padding: 4px 10px; border: 1px solid var(--line); border-radius: 4px; background: var(--bg); color: var(--fg); cursor: pointer; }
 button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
 .status { width: 100%; font-size: 12px; color: var(--muted); }
-.camera { display: flex; flex-direction: column; min-height: 0; flex: 0 0 50%; border-bottom: 1px solid var(--line); }
+.camera { display: flex; flex-direction: column; min-height: 0; flex: 0 0 60%; border-bottom: 1px solid var(--line); }
 .frames { flex: 1; min-height: 0; display: flex; gap: 6px; padding: 6px; justify-content: center; align-items: center; }
 .frames a { flex: 1; min-width: 0; height: 100%; display: flex; flex-direction: column; align-items: center; }
 .frames img { max-width: 100%; max-height: calc(100% - 18px); object-fit: contain; background: #000; }
@@ -49,7 +49,7 @@ td.m { font-family: ui-monospace, monospace; word-break: break-word; }
 tr.step { cursor: pointer; }
 tr.step.sel { background: var(--code); }
 .empty { color: var(--muted); padding: 12px; }
-.teleop { border-bottom: 1px solid var(--line); }
+.teleop { border-top: 1px solid var(--line); }
 .tp-body { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: flex-start; padding: 6px 12px; }
 .pad { display: grid; grid-template-columns: repeat(4, auto); gap: 3px; align-items: center; }
 .pad b { grid-column: 1 / -1; font-size: 11px; color: var(--muted); font-weight: 600; }
@@ -81,6 +81,25 @@ tr.step.sel { background: var(--code); }
       <label><input type="checkbox" id="follow" style="width:auto" checked /> <span data-t="autoscroll"></span></label>
     </div>
     <div id="transcript" class="scroll"><div class="empty" data-t="noEvents"></div></div>
+    <div class="teleop" id="teleop" hidden>
+      <div class="title"><span data-t="teleop"></span><span id="tpMode" class="badge"></span><span id="tpRec" class="badge"></span><span class="grow"></span>
+        <label><input type="checkbox" id="tpKeys" style="width:auto" checked /> <span data-t="keys"></span></label>
+        <button id="tpTake"></button>
+      </div>
+      <div class="tp-body">
+        <div id="tpPads" class="tp-row"></div>
+        <div class="tp-side">
+          <form id="tpSeq"><input type="text" id="tpCmd" /><button class="primary" data-t="run"></button></form>
+          <div class="tp-row">
+            <button id="tpStart" data-t="recStart"></button>
+            <label><input type="checkbox" id="tpSuccess" style="width:auto" /> <span data-t="success"></span></label>
+            <button id="tpSave" data-t="recSave"></button>
+            <button id="tpDiscard" data-t="recDiscard"></button>
+          </div>
+        </div>
+        <div class="status" id="tpStatus"></div>
+      </div>
+    </div>
     <div class="composer">
       <textarea id="msg" rows="2"></textarea>
       <button id="send" class="primary" data-t="send"></button>
@@ -100,25 +119,6 @@ tr.step.sel { background: var(--code); }
         <label><input type="checkbox" id="live" style="width:auto" checked /> <span data-t="followLatest"></span></label>
       </div>
       <div class="frames" id="frames"><div class="empty" data-t="noFrame"></div></div>
-    </div>
-    <div class="teleop" id="teleop" hidden>
-      <div class="title"><span data-t="teleop"></span><span id="tpMode" class="badge"></span><span id="tpRec" class="badge"></span><span class="grow"></span>
-        <label><input type="checkbox" id="tpKeys" style="width:auto" checked /> <span data-t="keys"></span></label>
-        <button id="tpTake"></button>
-      </div>
-      <div class="tp-body">
-        <div id="tpPads" class="tp-row"></div>
-        <div class="tp-side">
-          <form id="tpSeq"><input type="text" id="tpCmd" /><button class="primary" data-t="run"></button></form>
-          <div class="tp-row">
-            <button id="tpStart" data-t="recStart"></button>
-            <label><input type="checkbox" id="tpSuccess" style="width:auto" /> <span data-t="success"></span></label>
-            <button id="tpSave" data-t="recSave"></button>
-            <button id="tpDiscard" data-t="recDiscard"></button>
-          </div>
-        </div>
-        <div class="status" id="tpStatus"></div>
-      </div>
     </div>
     <div class="title"><span data-t="timeline"></span><span id="stepCount" class="meta"></span></div>
     <div class="scroll" style="padding:0"><table><tbody id="timeline"></tbody></table><div class="empty" id="noSteps" data-t="noActions"></div></div>

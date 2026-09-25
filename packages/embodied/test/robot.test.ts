@@ -206,6 +206,7 @@ test("finish ends the episode, terminates its batch, and yields exactly one resu
 			summary: "ok",
 			turns: 0,
 			planner_budget_exhausted: null,
+			cost_usd: 0,
 			planner_error: null,
 			env_error: false,
 		},
@@ -227,7 +228,7 @@ test("a spent turn budget ends the episode; an unended episode reports at shutdo
 	const blocked = await f.emit("tool_call", { toolName: "move" });
 	assert.deepEqual(blocked, {
 		block: true,
-		reason: "Planner turn or time budget exhausted; the episode is over.",
+		reason: "Planner turns budget exhausted; the episode is over.",
 		terminate: true,
 	});
 	await f.emit("message_end", {
@@ -270,4 +271,23 @@ test("a service that stops answering mid-episode ends it as an env_error", async
 	assert.equal(results[0].env_error, true);
 	assert.match(results[0].error, /env\.render: timed out/);
 	assert.equal(results[0].steps, 2);
+});
+
+test("a spent cost budget ends the episode and the result carries the cost", async (t) => {
+	const f = fakePi({ "max-cost": "0.05" });
+	t.after(f.restore);
+	toy(f.pi, async () => ["move", "finish"]);
+	await f.emit("session_start");
+	await f.emit("agent_start");
+	const reply = (usd: number) => ({
+		message: { role: "assistant", stopReason: "toolUse", content: [], usage: { cost: { total: usd } } },
+	});
+	await f.emit("message_end", reply(0.03));
+	assert.equal(await f.emit("tool_call", { toolName: "move" }), undefined);
+	await f.emit("message_end", reply(0.03));
+	assert.match((await f.emit("tool_call", { toolName: "move" }))?.reason, /Planner cost budget exhausted/);
+	await f.emit("agent_end");
+	const [result] = f.entries.filter((e) => e.type === RESULT_ENTRY).map((e) => e.data);
+	assert.equal(result.planner_budget_exhausted, "cost");
+	assert.equal(result.cost_usd, 0.06);
 });

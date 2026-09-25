@@ -113,7 +113,7 @@ export type RobotSpec = {
  *   to stderr as `[name] unavailable: ...` with exit code 1.
  * - Finish rules: pi stops early only when every result in a batch terminates, so tools registered
  *   with `tool` terminate when their batch also calls `finish`. `finish`, or a spent --max-turns /
- *   --time-limit budget, ends the episode, after which only `finish` runs.
+ *   --time-limit / --max-cost budget, ends the episode, after which only `finish` runs.
  * - One `robot_result` entry per episode (and, without a UI, one `[name] {...}` stderr line): at the
  *   first agent_end after the episode ended, otherwise at session_shutdown once an agent ran, or
  *   `env_error: true` when the start failed. The robot breaking mid-episode (its env server exits,
@@ -139,7 +139,9 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	let server: { proc: ChildProcess; rpc: RpcClient } | undefined;
 	let turns = 0;
 	let started: number | undefined;
-	let outOfBudget: "turns" | "time" | undefined;
+	let outOfBudget: "turns" | "time" | "cost" | undefined;
+	/** USD of this episode's model replies, as pi prices them from models.json. */
+	let cost = 0;
 	let plannerError: string | undefined;
 	/** Ends the episode when the --time-limit wall-clock budget runs out, even mid-call. */
 	let deadline: ReturnType<typeof setTimeout> | undefined;
@@ -158,6 +160,11 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		default: String(spec.budget?.seconds ?? 0),
 		description: "Planner wall-time budget from the first prompt, s (0 = none)",
 	});
+	pi.registerFlag("max-cost", {
+		type: "string",
+		default: "0",
+		description: "Planner cost budget in USD, as pi prices replies from the model's cost in models.json (0 = none)",
+	});
 
 	// Registered before the modules, so the task is resolved before memory's session_start reads it.
 	pi.on("session_start", (_event, ctx) => {
@@ -167,7 +174,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		deadline = undefined;
 		// A service that stopped answering ended the last episode; this one may find it restarted.
 		forgetUnresponsive();
-		turns = 0;
+		turns = cost = 0;
 		pi.setActiveTools([]);
 		const picked = ctx.sessionManager
 			.getBranch()
@@ -259,6 +266,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	pi.on("message_end", (event) => {
 		const m = event.message;
 		if (m.role !== "assistant") return;
+		cost += m.usage?.cost?.total ?? 0;
 		finishing = m.content.some((c) => c.type === "toolCall" && c.name === "finish");
 		// The model failing (after pi's own retries) makes the episode's outcome meaningless, whatever it is.
 		plannerError = m.stopReason === "error" ? (m.errorMessage ?? "model error") : undefined;
@@ -275,10 +283,12 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		const maxTurns = Number(pi.getFlag("max-turns"));
 		const limit = Number(pi.getFlag("time-limit"));
 		const late = limit > 0 && started !== undefined && Date.now() - started > limit * 1000;
-		if (!(maxTurns > 0 && turns >= maxTurns) && !late) return undefined;
-		outOfBudget = late ? "time" : "turns";
+		const maxCost = Number(pi.getFlag("max-cost"));
+		const spent = maxCost > 0 && cost >= maxCost;
+		if (!(maxTurns > 0 && turns >= maxTurns) && !late && !spent) return undefined;
+		outOfBudget = late ? "time" : spent ? "cost" : "turns";
 		ended = true;
-		return { block: true, reason: "Planner turn or time budget exhausted; the episode is over.", terminate: true };
+		return { block: true, reason: `Planner ${outOfBudget} budget exhausted; the episode is over.`, terminate: true };
 	});
 	pi.on("context", (event) => {
 		let keep = Number(pi.getFlag("keep-images"));
@@ -312,9 +322,11 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 						claimed: claimed?.status ?? null,
 						summary: claimed?.summary ?? null,
 						turns,
-						// Which budget ended the episode: "turns", "time" (a planner timeout), or null.
+						// Which budget ended the episode: "turns", "time" (a planner timeout), "cost", or null.
 						planner_budget_exhausted: outOfBudget ?? null,
-						planner_error: plannerError ?? null,
+						cost_usd: Number(cost.toFixed(6)),
+						// An operator verdict (/success /failure /abort) aborts the model mid-request; that ends the run, it is not a planner failure.
+						planner_error: (op.result() as Json).operator_finished === true ? null : (plannerError ?? null),
 						...op.result(),
 						// A robot that broke mid-episode makes its outcome meaningless, like a failed start.
 						env_error: broken !== undefined,

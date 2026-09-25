@@ -13,7 +13,7 @@
 # limitations under the License.
 #
 # Modified by pi-embodied: import paths rewritten; the repository root is now the
-# services/ project directory (RPENT_REPO_ROOT still overrides it).
+# services/ project directory (PI_EMBODIED_SERVICES still overrides it).
 
 """Path resolution and environment-variable configuration."""
 
@@ -30,10 +30,10 @@ from pathlib import Path
 def get_repo_root() -> Path:
     """Return the services project root directory.
 
-    Resolution: ``RPENT_REPO_ROOT`` env var, then the parent of
+    Resolution: ``PI_EMBODIED_SERVICES`` env var, then the parent of
     the ``pi_embodied_services/`` package directory.
     """
-    env = os.environ.get("RPENT_REPO_ROOT")
+    env = os.environ.get("PI_EMBODIED_SERVICES")
     if env:
         return Path(env).expanduser().resolve()
     # config.py lives at <services>/pi_embodied_services/utils/config.py
@@ -60,7 +60,7 @@ def get_libero_type() -> str:
 
 def get_rlinf_repo_path() -> Path:
     """Return the RLinf path that RPC servers import."""
-    env = os.environ.get("RPENT_RLINF_ROOT") or os.environ.get("RLINF_REPO_PATH")
+    env = os.environ.get("PI_EMBODIED_RLINF") or os.environ.get("RLINF_REPO_PATH")
     if env:
         return Path(env).expanduser().resolve()
     return (get_repo_root().parent / "rlinf").resolve()

@@ -25,13 +25,13 @@ const unchanged = (path: string, f: HfFile) => {
 
 /**
  * Plain-HTTPS `snapshot_download(repo, repo_type="dataset", allow_patterns=["<robot>/**"])` into the
- * memory home. Honors HF_ENDPOINT, HF_TOKEN, HF_HUB_OFFLINE=1 and RPENT_MEMORY_HF_REPO; files whose
+ * memory home. Honors HF_ENDPOINT, HF_TOKEN, HF_HUB_OFFLINE=1 and PI_EMBODIED_MEMORY_REPO; files whose
  * git blob hash already matches are skipped; failures fall back to whatever is on disk.
  */
 export async function syncMemory(dir: string, log: (m: string) => void, remote = HF_REPO): Promise<void> {
 	const root = resolve(dir);
 	const robot = basename(root);
-	const repo = process.env.RPENT_MEMORY_HF_REPO ?? remote;
+	const repo = process.env.PI_EMBODIED_MEMORY_REPO ?? remote;
 	if (process.env.HF_HUB_OFFLINE === "1") {
 		if (!hasFiles(root)) log(`HF_HUB_OFFLINE=1 but no local memory was found under ${root}`);
 		return;

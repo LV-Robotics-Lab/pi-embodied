@@ -38,8 +38,8 @@ from pi_embodied_services.utils.config import get_repo_root, get_rlinf_repo_path
 from pi_embodied_services.utils.serialization import to_numpy_tree
 
 # Resolve the RLinf checkout before the deferred ``import rlinf`` executes.
-RPENT_ROOT = get_repo_root()
-RLINF_REPO_PATH = get_rlinf_repo_path() or (RPENT_ROOT.parent / "rlinf").resolve()
+SERVICES_ROOT = get_repo_root()
+RLINF_REPO_PATH = get_rlinf_repo_path() or (SERVICES_ROOT.parent / "rlinf").resolve()
 if str(RLINF_REPO_PATH) not in sys.path:
     sys.path.insert(0, str(RLINF_REPO_PATH))
 

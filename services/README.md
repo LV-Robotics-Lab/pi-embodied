@@ -123,8 +123,8 @@ Environment variables read by the servers: `PI05_CHECKPOINT_PATH`,
 `PI05_NORM_STATS_PATH`, `SAM3_CHECKPOINT_PATH`, `MOLMO_CHECKPOINT_PATH`, `LIBERO_ROBOT_BASE`,
 `ROBOT_PLATFORM`, `MUJOCO_EGL_DEVICE_ID`, `RLDX_RESET_SEED`, `RLDX_ATTN_IMPL`, `HF_HOME` /
 `HF_HUB_CACHE` (RLDX backbone metadata), `ROBOTWIN_ASSETS_PATH`, `QWEN25_PATH` (LingBot),
-`RPENT_RLINF_ROOT` / `RLINF_REPO_PATH` (an RLinf checkout the dual-Franka server puts on
-`sys.path`; default `<services>/../rlinf`), `RPENT_REPO_ROOT` (overrides the project root,
+`PI_EMBODIED_RLINF` / `RLINF_REPO_PATH` (an RLinf checkout the dual-Franka server puts on
+`sys.path`; default `<services>/../rlinf`), `PI_EMBODIED_SERVICES` (overrides the project root,
 default `services/`).
 
 From pi, the robots in `packages/embodied` start the env servers themselves (`--services` /
@@ -154,7 +154,7 @@ Not vendored; installed by the extras or provided by the host:
 Known caveat: `dual_franka/env_server.py` uses RLinf attributes
 (`_left_ctrl`/`_right_ctrl`, `get_raw_camera_snapshot`, `get_raw_camera_metadata`) that the
 pinned RLinf `bde6c918` does not define; they come from the RLinf checkout given by
-`RPENT_RLINF_ROOT`.
+`PI_EMBODIED_RLINF`.
 
 ## Tests
 

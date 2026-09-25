@@ -26,6 +26,7 @@ from pi_embodied_services.robots.piper.controller import PiperController, PiperL
 from pi_embodied_services.robots.piper.env_server import (
     DEFAULT_CONFIG,
     PiperEnvFacade,
+    arm_config,
     limits_from_config,
     load_config,
     resize_with_pad,
@@ -44,7 +45,10 @@ class FakeArm:
     closing gripper stops (None = nothing between the fingers).
     """
 
-    def __init__(self, drop=False, pose_offset=0.0, object_width=None, width=0.07):
+    def __init__(
+        self, drop=False, pose_offset=0.0, object_width=None, width=0.07, ident="usb-A"
+    ):
+        self.ident = ident
         self.kin = PiperKinematics(0x01)
         self.q = HOME.copy()
         self.pose = self.kin.fk_pose7(self.q)
@@ -101,6 +105,9 @@ class FakeArm:
 
     def note_commanded_pose(self, pose7):
         self.noted = pose7
+
+    def identity(self):
+        return self.ident
 
     def close(self):
         self.closed = True
@@ -216,7 +223,8 @@ def test_dropped_commands_resync_the_setpoint():
 
 def test_stop_halts_the_joint_stream_between_waypoints():
     arm = FakeArm()
-    c = controller(arm, stop=lambda: arm.streamed >= 3, speed_mps=0.05)
+    # 15 of the 50 min-jerk waypoints of a 1 s move: ~16 % of the way.
+    c = controller(arm, stop=lambda: arm.streamed >= 15, speed_mps=0.05)
     start = arm.pose[:3].copy()
     out = c.step([0.04, 0.0, 0.0])
     assert out["cancelled"] and not out["ok"] and "stopped" in out["notes"]
@@ -316,12 +324,17 @@ def test_example_config_fails_closed_until_calibrated(tmp_path):
     text = DEFAULT_CONFIG.read_text().replace("z_floor_m: null", "z_floor_m: 0.19")
     path = tmp_path / "piper.yaml"
     path.write_text(text)
+    with pytest.raises(ValueError, match="calibration.arm_id is not set"):
+        load_config(path)
+    path.write_text(text.replace("arm_id: null", "arm_id: usb-A"))
     cfg = load_config(path)
     lim = limits_from_config(cfg)
     assert lim.z_floor_m == 0.19 and lim.max_step_m == 0.05
     assert lim.open_width_m == 0.07 and lim.gripper_settle_s == 1.5
     assert lim.ori_flex_rad == pytest.approx(np.radians(15))
     assert "banana_plate" in cfg["tasks"]
+    assert lim.smooth and lim.smooth_substeps * lim.smooth_dt_s == pytest.approx(1.0)
+    assert lim.max_total_yaw_rad == pytest.approx(np.radians(150), abs=1e-3)
 
 
 class FakeCamera:
@@ -336,7 +349,11 @@ def facade(arm, tmp_path, **cfg_limits):
     cfg = {
         "arm": "left",
         "cameras": {"front": "/f", "wrist": "/w", "image_size": 32},
-        "calibration": {"z_floor_m": 0.0, "begin_joints": HOME.tolist()},
+        "calibration": {
+            "z_floor_m": 0.0,
+            "begin_joints": HOME.tolist(),
+            "arm_id": "usb-A",
+        },
         "limits": {"speed_mps": 0.05, "reset_time_s": 0.1, **cfg_limits},
         "gripper": {"settle_s": 0.0},
         "motion": {"settle_steps": 1, "settle_dt_s": 0.0},
@@ -355,7 +372,7 @@ def test_facade_step_observation_and_lock_free_stop(tmp_path):
     with pytest.raises(ValueError, match="per call"):
         call("env.step", (), {"delta_xyz": [0.1, 0, 0]})
 
-    # A 4 cm move at 5 cm/s takes ~0.8 s; `stop` bypasses the call lock and halts it.
+    # A smooth 4 cm move takes 1.0 s; `stop` bypasses the call lock and halts it.
     result = {}
     worker = threading.Thread(
         target=lambda: result.update(call("env.step", (), {"delta_xyz": [0.04, 0, 0]}))
@@ -379,3 +396,383 @@ def test_resize_with_pad_letterboxes():
     out = resize_with_pad(img, 32)
     assert out.shape == (32, 32, 3)
     assert out[0].sum() == 0 and out[16].sum() == 32 * 3
+
+
+# -- dual arm (the Show-Harness Cobot Magic rig) ------------------------------------
+
+DUAL_CONFIG = DEFAULT_CONFIG.with_name("dual_example.yaml")
+
+
+def dual_facade(left, right, per_arm=None):
+    """Both arms behind one facade; ``per_arm[side]`` overrides that arm's block."""
+    per_arm = per_arm or {}
+    arms = {
+        side: {
+            "cameras": {"wrist": f"/camera_{side[0]}/color/image_raw"},
+            "calibration": {
+                "z_floor_m": 0.0,
+                "begin_joints": HOME.tolist(),
+                "arm_id": f"usb-{side}",
+            },
+            **per_arm.get(side, {}),
+        }
+        for side in ("left", "right")
+    }
+    cfg = {
+        "cameras": {"front": "/camera_f/color/image_raw", "image_size": 32},
+        "limits": {"speed_mps": 2.0, "reset_time_s": 0.1},
+        "gripper": {"settle_s": 0.0},
+        "motion": {"settle_steps": 1, "settle_dt_s": 0.0, "units_frame": "base"},
+        "smooth": {"dt_s": 0.001},
+        "arms": arms,
+    }
+    cams = {n: FakeCamera() for n in ("front", "wrist_left", "wrist_right")}
+    left.ident, right.ident = "usb-left", "usb-right"
+    return PiperEnvFacade(cfg, {"left": left, "right": right}, cams)
+
+
+def test_dual_example_config_fails_closed_per_arm(tmp_path):
+    with pytest.raises(ValueError, match="left arm: z_floor_m is not calibrated"):
+        load_config(DUAL_CONFIG)
+    text = DUAL_CONFIG.read_text()
+    once = text.replace("z_floor_m: null", "z_floor_m: 0.19", 1)
+    path = tmp_path / "dual.yaml"
+    path.write_text(once)
+    with pytest.raises(ValueError, match="left arm: calibration.arm_id is not set"):
+        load_config(path)
+    once = once.replace("arm_id: null", "arm_id: usb-left", 1)
+    path.write_text(once)
+    with pytest.raises(ValueError, match="right arm: z_floor_m is not calibrated"):
+        load_config(path)
+    both = once.replace("z_floor_m: null", "z_floor_m: 0.21", 1)
+    path.write_text(both)
+    with pytest.raises(ValueError, match="right arm: calibration.arm_id is not set"):
+        load_config(path)
+    path.write_text(both.replace("arm_id: null", "arm_id: usb-right", 1))
+    cfg = load_config(path)
+    left, right = arm_config(cfg, "left"), arm_config(cfg, "right")
+    assert left["arm"] == "left" and right["arm"] == "right"
+    assert limits_from_config(left).z_floor_m == 0.19
+    assert limits_from_config(right).z_floor_m == 0.21
+    # Shared keys stay, per-arm keys override section by section.
+    assert left["cameras"] == {
+        **cfg["cameras"],
+        "wrist": "/camera_l/color/image_raw",
+    }
+    assert right["cameras"]["wrist"] == "/camera_r/color/image_raw"
+    assert limits_from_config(right).max_step_m == 0.05
+    assert "banana_handover" in cfg["tasks"]
+    with pytest.raises(ValueError, match="unknown keys"):
+        arm_config({"arms": {"left": {"z_floor_m": 0.1}, "right": {}}}, "left")
+    with pytest.raises(ValueError, match="needs a `left` and a `right`"):
+        arm_config({"arms": {"left": {}}}, "left")
+
+
+def test_dual_facade_meta_observation_and_per_arm_state():
+    f = dual_facade(FakeArm(), FakeArm())
+    call = f._serve_dispatch
+    meta = call("env.get_env_meta", (), {})
+    assert meta["arms"] == ["left", "right"] and meta["arm"] == "dual"
+    assert meta["cameras"] == ["front", "wrist_left", "wrist_right"]
+    assert meta["has_begin_pose"] and meta["arm_limits"]["right"]["z_floor_m"] == 0.0
+    obs = call("env.get_observation", (), {})
+    assert set(obs["images"]) == {"front", "wrist_left", "wrist_right"}
+    assert set(obs["robot_state"]["arms"]) == {"left", "right"}
+    state = call("env.get_robot_state", (), {"arm": "right"})
+    assert state["arm"] == "right" and state["halted"] is None
+    topics = call("env.get_camera_meta", (), {})["cameras"]
+    assert topics["wrist_right"]["topic"] == "/camera_r/color/image_raw"
+    with pytest.raises(ValueError, match="pass arm="):
+        call("env.step", (), {"delta_xyz": [0.01, 0, 0]})
+
+
+def test_dual_step_moves_only_the_named_arm_within_its_own_limits():
+    left, right = FakeArm(), FakeArm()
+    floor = float(right.pose[2]) - 0.01
+    cal = {"z_floor_m": floor, "begin_joints": HOME.tolist(), "arm_id": "usb-right"}
+    f = dual_facade(left, right, {"right": {"calibration": cal}})
+    call = f._serve_dispatch
+    l0 = left.pose.copy()
+    out = call("env.step", (), {"delta_xyz": [0.0, 0.0, -0.03], "arm": "right"})
+    assert out["arm"] == "right"
+    assert any(n.startswith("z-floor: blocked 0.0200") for n in out["notes"])
+    assert right.pose[2] == pytest.approx(floor, abs=1e-3)
+    np.testing.assert_allclose(left.pose, l0)  # the left arm stays still
+    # The left arm's own floor (0.0) lets the same descent through.
+    out = call("env.step", (), {"delta_xyz": [0.0, 0.0, -0.03], "arm": "left"})
+    assert not out["notes"] and left.pose[2] == pytest.approx(l0[2] - 0.03, abs=1e-3)
+    assert right.pose[2] == pytest.approx(floor, abs=1e-3)
+    with pytest.raises(ValueError, match="per call"):
+        call("env.step", (), {"delta_xyz": [0.1, 0, 0], "arm": "left"})
+
+
+def test_dual_per_arm_workspace_box():
+    left, right = FakeArm(), FakeArm()
+    x = float(left.pose[0])
+    box = {"workspace_min": [x - 1, -1, -1], "workspace_max": [x + 0.005, 1, 1]}
+    cal = {"z_floor_m": 0.0, "begin_joints": HOME.tolist(), "arm_id": "usb-left"}
+    f = dual_facade(left, right, {"left": {"calibration": cal, "limits": box}})
+    out = f.step([0.03, 0, 0], arm="left")
+    assert "workspace: clamped x to the box" in out["notes"]
+    out = f.step([0.03, 0, 0], arm="right")
+    assert not out["notes"], "the right arm has no box"
+
+
+def test_dual_fault_halts_one_arm_until_its_reset():
+    left, right = FakeArm(drop=True), FakeArm()
+    f = dual_facade(left, right)
+    for c in f._controllers.values():
+        c.limits.divergence_resync_m = 0.01
+    out = f.step([0.0, 0.0, 0.02], arm="left")
+    assert out["halted"] and any(n.startswith("divergence") for n in out["notes"])
+    with pytest.raises(RuntimeError, match="the left arm is halted .*divergence"):
+        f.step([0.0, 0.0, 0.01], arm="left")
+    # The right arm keeps working.
+    assert f.step([0.0, 0.0, 0.01], arm="right")["ok"]
+    assert f.get_env_meta()["halted"].keys() == {"left"}
+    # A stale-feedback error halts the right arm too; reset clears one arm at a time.
+    right.fail_at_stream = right.streamed
+    with pytest.raises(RuntimeError, match="old"):
+        f.step([0.0, 0.0, 0.01], arm="right")
+    with pytest.raises(RuntimeError, match="the right arm is halted .*error"):
+        f.step([0.0, 0.0, 0.01], arm="right")
+    right.fail_at_stream = None
+    assert f.reset(arm="right")["ok"]
+    assert f.step([0.0, 0.0, 0.01], arm="right")["ok"]
+    assert "left" in f.get_env_meta()["halted"]
+
+
+def test_dual_halt_arm_and_reset_both():
+    left, right = FakeArm(), FakeArm()
+    f = dual_facade(left, right)
+    f.step([0.02, 0.0, 0.0], arm="left")
+    assert f.halt_arm(arm="left", reason="stage done")["halted"] == "halted: stage done"
+    with pytest.raises(RuntimeError, match="halted: stage done"):
+        f.step([0.01, 0.0, 0.0], arm="left")
+    out = f.reset()
+    assert out["ok"] and set(out["arms"]) == {"left", "right"}
+    np.testing.assert_allclose(left.q, HOME, atol=1e-9)
+    np.testing.assert_allclose(right.q, HOME, atol=1e-9)
+    assert not f.get_env_meta()["halted"]
+    f.close()
+    assert left.closed and right.closed
+
+
+def test_single_arm_facade_keeps_its_flat_protocol(tmp_path):
+    arm = FakeArm(drop=True)
+    f = facade(arm, tmp_path, divergence_resync_m=0.01)
+    f._controllers["left"].limits.smooth_dt_s = 0.001
+    meta = f.get_env_meta()
+    assert meta["arm"] == "left" and meta["arms"] == []
+    assert "arm" not in f.get_robot_state()
+    f.step([0.0, 0.0, 0.02])
+    f.step([0.0, 0.0, 0.02])
+    # One arm: a divergence is reported, not latched (the agent is told to finish).
+    f.step([0.0, 0.0, 0.01], arm="left")
+    with pytest.raises(ValueError, match="not driven here"):
+        f.step([0.0, 0.0, 0.01], arm="right")
+
+
+# -- smooth joint stream (Show-Harness plugins/smooth) ------------------------------
+
+
+def test_smooth_move_follows_the_min_jerk_profile_at_the_stream_rate():
+    arm = FakeArm()
+    c = controller(arm)
+    assert c.limits.smooth
+    fr, dt = c.plan(0.02, 0.0)
+    # 1.0 s per move (20 x 0.05 s), resampled at joint_stream_hz = 50.
+    assert len(fr) == 50 and dt == pytest.approx(0.02)
+    assert fr[-1] == 1.0 and all(b >= a for a, b in zip(fr, fr[1:]))
+    t = 0.5
+    assert fr[24] == pytest.approx(10 * t**3 - 15 * t**4 + 6 * t**5)
+    # A long move is stretched until its peak stays within smooth_max_speed_mps.
+    fr, dt = c.plan(0.2, 0.0)
+    peak = max(np.diff([0.0, *fr])) * 0.2 / dt
+    assert peak <= c.limits.smooth_max_speed_mps + 1e-3 and len(fr) * dt > 1.0
+    start = arm.pose[:3].copy()
+    out = c.step([0.0, 0.02, 0.0])
+    assert out["ok"] and not out["chained"] and not out["flowing"]
+    np.testing.assert_allclose(arm.pose[:3], start + [0, 0.02, 0], atol=1e-3)
+    # Min-jerk: the first streamed waypoints barely move, the middle ones the most.
+    gaps = np.linalg.norm(np.diff(np.array([start, *arm.stream_log]), axis=0), axis=1)
+    assert gaps[0] < 0.1 * gaps.max() and np.argmax(gaps) in range(15, 35)
+
+
+def test_smooth_off_is_the_constant_rate_stream():
+    c = controller(smooth=False, speed_mps=0.05)
+    fr, dt = c.plan(0.02, 0.0)
+    assert len(fr) * dt == pytest.approx(0.4) and np.allclose(np.diff(fr), fr[0])
+
+
+def test_continuous_translations_chain_at_cruise_speed():
+    now = [0.0]
+    arm = FakeArm()
+    c = PiperController(arm, limits(), sleep=lambda s: None, clock=lambda: now[0])
+    c.sync()
+    first = c.step([0.02, 0.0, 0.0], continuous=True)
+    assert first["flowing"] and not first["chained"]
+    settles = arm.streamed
+    second = c.step([0.02, 0.002, 0.0], continuous=True)  # cos > 0.9: same direction
+    assert second["chained"] and second["flowing"]
+    # Chained: no settle re-commands at the join, and the first waypoint is at cruise.
+    assert arm.streamed - settles == 50
+    third = c.step([0.02, 0.0, 0.0])
+    assert third["chained"] and not third["flowing"]
+    # A turn in direction ends the stream first (settles), then starts at rest.
+    c.step([0.02, 0.0, 0.0], continuous=True)
+    turn = c.step([0.0, 0.02, 0.0], continuous=True)
+    assert not turn["chained"] and turn["flowing"]
+    # The window passes: the next move starts at rest.
+    now[0] += 5.0
+    late = c.step([0.0, 0.02, 0.0])
+    assert not late["chained"]
+    # A yaw or the gripper never chains, and brings a flowing stream to rest.
+    c.step([0.02, 0.0, 0.0], continuous=True)
+    grip = c.step(gripper="close", continuous=True)
+    assert not grip["flowing"]
+    c.step([0.02, 0.0, 0.0], continuous=True)
+    yawed = c.step([0.01, 0.0, 0.0], yaw=0.05, continuous=True)
+    assert not yawed["chained"] and not yawed["flowing"]
+
+
+def test_stop_ends_a_chained_stream():
+    arm = FakeArm()
+    stop = [False]
+    c = controller(arm, stop=lambda: stop[0])
+    c.step([0.02, 0.0, 0.0], continuous=True)
+    stop[0] = True
+    out = c.step([0.02, 0.0, 0.0], continuous=True)
+    assert out["cancelled"] and not out["flowing"]
+    stop[0] = False
+    assert not c.step([0.02, 0.0, 0.0])["chained"]
+
+
+def test_facade_passes_continuous_and_reports_smooth():
+    f = dual_facade(FakeArm(), FakeArm())
+    assert f.get_env_meta()["smooth"]["enabled"] is True
+    assert f.step([0.02, 0, 0], arm="left", continuous=True)["flowing"]
+    assert f.step([0.02, 0, 0], arm="left")["chained"]
+    with pytest.raises(ValueError, match="unknown smooth keys"):
+        limits_from_config({"smooth": {"speed": 1}, "calibration": {"z_floor_m": 0}})
+    with pytest.raises(ValueError, match="smooth_cruise"):
+        limits(smooth_cruise=3.0).validate()
+
+
+# -- audit: yaw budget, reset path, calibration binding ----------------------------
+
+
+def test_accumulated_yaw_is_capped_from_the_reset_heading():
+    arm = FakeArm()
+    c = controller(arm, max_yaw_rad=0.5, max_total_yaw_rad=np.radians(60))
+    assert c.yaw_from_reset() == pytest.approx(0.0)
+    c.step(yaw=0.5)
+    c.step(yaw=0.5)
+    assert c.yaw_from_reset() == pytest.approx(1.0, abs=1e-6)
+    streamed = arm.streamed
+    with pytest.raises(
+        ValueError, match="would turn the gripper 86 deg .* limit is 60 deg"
+    ):
+        c.step(yaw=0.5)
+    assert arm.streamed == streamed, "nothing was commanded"
+    # Turning back is always allowed, and a reset restarts the budget.
+    c.step(yaw=-0.5)
+    assert c.state()["yaw_from_reset_rad"] == pytest.approx(0.5, abs=1e-6)
+    c.step(yaw=0.5)
+    c.move_to_joints(HOME)
+    assert c.yaw_from_reset() == pytest.approx(0.0, abs=1e-6)
+    c.step(yaw=0.5)
+    with pytest.raises(ValueError, match="max_total_yaw_rad"):
+        PiperLimits(z_floor_m=0.0, max_total_yaw_rad=4.0).validate()
+
+
+def test_reset_path_respects_the_z_floor_and_the_box():
+    arm = FakeArm()
+    kin = arm.kin
+    low = HOME + [0.0, 0.35, 0.0, 0.0, 0.0, 0.0]
+    z_low = float(kin.fk_pose7(low)[2])
+    z_home = float(arm.pose[2])
+    assert z_low < z_home - 0.02, (z_low, z_home)
+    # The goal itself is below the floor: refused before any motion.
+    c = controller(arm, z_floor_m=z_low + 0.01)
+    with pytest.raises(ValueError, match="at the goal .* outside the Z floor"):
+        c.move_to_joints(low)
+    assert arm.streamed == 0
+    np.testing.assert_allclose(arm.q, HOME)
+    # A box that excludes the goal in x/y refuses too; the begin pose inside is fine.
+    x, y, z = arm.pose[:3]
+    boxed = controller(
+        FakeArm(),
+        workspace_min=[x - 0.01, y - 0.01, 0.0],
+        workspace_max=[x + 0.01, y + 0.01, 1.0],
+    )
+    far = HOME + [0.3, 0.0, 0.0, 0.0, 0.0, 0.0]
+    with pytest.raises(ValueError, match="outside the Z floor / workspace box"):
+        boxed.move_to_joints(far)
+    assert boxed.move_to_joints(HOME)["ok"]
+    # A start below the floor may climb out (the violation never deepens).
+    start_low = FakeArm()
+    start_low.q = low.copy()
+    start_low.pose = kin.fk_pose7(low)
+    climb = controller(start_low, z_floor_m=z_low + 0.01)
+    assert climb.move_to_joints(HOME)["ok"]
+
+
+def test_calibration_is_bound_to_the_arm_it_was_captured_on(tmp_path):
+    arm = FakeArm(ident="usb-B")
+    with pytest.raises(
+        ValueError, match="reports identity 'usb-B', but calibration.arm_id is 'usb-A'"
+    ):
+        facade(arm, tmp_path)
+    assert arm.streamed == 0 and not arm.poses
+    # Two arms: swapped adapters (or configs) are refused.
+    left, right = FakeArm(), FakeArm()
+    cfg_right = {
+        "calibration": {
+            "z_floor_m": 0.0,
+            "begin_joints": HOME.tolist(),
+            "arm_id": "usb-left",
+        }
+    }
+    with pytest.raises(
+        ValueError, match="the right arm reports identity 'usb-right', but arms.right"
+    ):
+        dual_facade(left, right, {"right": cfg_right})
+    # ros.identity: none skips the binding (and reports no id).
+    cfg = {
+        "arm": "left",
+        "ros": {"identity": "none"},
+        "cameras": {"front": "/f"},
+        "calibration": {"z_floor_m": 0.0},
+    }
+    f = PiperEnvFacade(cfg, FakeArm(ident="whatever"), {"front": FakeCamera()})
+    assert f.get_env_meta()["arm_ids"] == {"left": None}
+    ok = facade(FakeArm(), tmp_path)
+    assert ok.get_env_meta()["arm_ids"] == {"left": "usb-A"}
+
+
+def test_identity_sources(tmp_path):
+    from pi_embodied_services.robots.piper import ros_io
+
+    usb = tmp_path / "devices" / "usb1" / "1-2"
+    (usb / "1-2:1.0").mkdir(parents=True)
+    (usb / "serial").write_text("0039004A5553501020313332\n")
+    net = tmp_path / "net" / "can_left"
+    net.mkdir(parents=True)
+    (net / "device").symlink_to(usb / "1-2:1.0")
+    assert (
+        ros_io.can_usb_serial("can_left", tmp_path / "net")
+        == "0039004A5553501020313332"
+    )
+    with pytest.raises(RuntimeError, match="no CAN interface can_right"):
+        ros_io.can_usb_serial("can_right", tmp_path / "net")
+    params = {"/piper_left/serial": 1234}
+    got = ros_io.arm_identity(
+        "left", "param:/piper_left/serial", lambda k, d: params.get(k, d)
+    )
+    assert got == "1234"
+    with pytest.raises(RuntimeError, match="is not set"):
+        ros_io.arm_identity("left", "param:/nope", lambda k, d: d)
+    assert ros_io.arm_identity("left", "none") is None
+    with pytest.raises(ValueError, match="ros.identity must be"):
+        ros_io.arm_identity("left", "serial")

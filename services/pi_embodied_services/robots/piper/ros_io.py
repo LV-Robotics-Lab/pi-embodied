@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -64,6 +65,55 @@ PIPER_DOF = 6
 #: Command-side clamp for the gripper width (m). The node's own upper clamp compares
 #: metres against 80000, so the 80000 um CAN limit is enforced here.
 PIPER_GRIPPER_MAX_CMD_M = 0.08
+
+
+#: Where ``can_serial`` looks up the CAN interfaces.
+SYSFS_NET = Path("/sys/class/net")
+
+
+def can_usb_serial(iface: str, sysfs: Path = SYSFS_NET) -> str:
+    """USB serial number of the adapter behind CAN interface ``iface`` (e.g. can_left).
+
+    Each Piper arm has its own USB-CAN adapter, so the serial names the arm as long as
+    the adapter stays with it. Read from sysfs on the host the adapters are plugged into.
+    """
+    dev = sysfs / iface / "device"
+    if not dev.exists():
+        raise RuntimeError(
+            f"no CAN interface {iface} on this host (bring the link up with the Piper "
+            "can_config.sh, or set ros.identity to param:<name> when ROS runs elsewhere)"
+        )
+    d = dev.resolve()
+    for cand in (d, *list(d.parents)[:3]):
+        f = cand / "serial"
+        if f.is_file():
+            return f.read_text().strip()
+    raise RuntimeError(f"{iface}: no USB serial under {d}")
+
+
+def arm_identity(arm: str, source: str, get_param: Any = None) -> str | None:
+    """The identity a calibration is bound to (config ``ros.identity``).
+
+    ``can_serial`` (default) / ``can_serial:<iface>``: the USB serial of the arm's CAN
+    adapter (interface ``can_<arm>`` by default, the Cobot Magic naming);
+    ``param:<name>``: a ROS parameter (e.g. set in the arm's launch file); ``none``: not
+    bound (returns None).
+    """
+    kind, _, arg = str(source).partition(":")
+    if kind == "none":
+        return None
+    if kind == "can_serial":
+        return can_usb_serial(arg or f"can_{arm}")
+    if kind == "param" and arg:
+        if get_param is None:
+            get_param = _require_ros()[0].get_param
+        value = get_param(arg, None)
+        if value is None:
+            raise RuntimeError(f"ROS parameter {arg} is not set (ros.identity)")
+        return str(value)
+    raise ValueError(
+        f"ros.identity must be can_serial[:<iface>], param:<name> or none, got {source!r}"
+    )
 
 
 def _require_ros() -> tuple[Any, ...]:
@@ -98,10 +148,12 @@ class PiperRosArm:
         arm: str = "left",
         feedback_timeout_s: float = 5.0,
         max_feedback_age_s: float = 0.5,
+        identity_source: str = "can_serial",
     ) -> None:
         if arm not in ("left", "right"):
             raise ValueError(f"arm must be 'left' or 'right', got {arm!r}")
         self.arm = arm
+        self.identity_source = identity_source
         self.feedback_timeout_s = float(feedback_timeout_s)
         self.max_feedback_age_s = float(max_feedback_age_s)
         rospy, JointState, _image, PosCmd, PiperStatusMsg = _require_ros()
@@ -161,6 +213,10 @@ class PiperRosArm:
             if err:
                 logger.warning("piper-%s arm_status err_code=%d", self.arm, err)
             self._last_err = err
+
+    def identity(self) -> str | None:
+        """This arm's identity per ``identity_source`` (see :func:`arm_identity`)."""
+        return arm_identity(self.arm, self.identity_source)
 
     def connect(self) -> PiperRosArm:
         """Wait for feedback and for the node to subscribe to the command topics."""

@@ -1,0 +1,96 @@
+# AgileX Piper dual-arm rig (Cobot Magic), both arms from one env server:
+# Show-Harness configs/robot_piper.yaml + configs/site/piper_arms.yaml.
+#
+#   pi -e packages/embodied/src/piper/dual.ts --operator --robot-config my_dual.yaml
+#
+# Everything outside `arms:` is shared; `arms.left` / `arms.right` override the
+# shared calibration / limits / gripper / motion / ros / cameras keys for that arm.
+# Each arm works in its OWN base frame: z_floor_m and the workspace box are per arm.
+# The server refuses to start until both z floors are set (or enable_z_floor is
+# false), and refuses reset until both begin_joints are set.
+
+ros:
+  feedback_timeout_s: 5.0
+  max_feedback_age_s: 0.5
+  # calibration.arm_id of each arm is checked against this at start (see example.yaml):
+  # USB serial of that arm's CAN adapter, can_left / can_right on the Cobot Magic.
+  identity: can_serial
+
+cameras:             # astra_camera multi_camera.launch
+  front: /camera_f/color/image_raw
+  max_age_s: 1.0
+  connect_timeout_s: 10.0
+  image_size: 256
+
+limits:
+  enable_z_floor: true
+  max_step_m: 0.05
+  max_yaw_rad: 0.2
+  max_total_yaw_rad: 2.618   # 150 deg from the heading at the last reset
+  speed_mps: 0.05            # joint-stream speed with smooth off
+  yaw_speed_radps: 0.5
+  reset_time_s: 4.0
+
+gripper:
+  open_width_m: 0.07
+  empty_width_m: 0.005
+  close_threshold_m: 0.06
+  grasp_open_width_m: 0.055
+  settle_s: 1.5
+  min_settle_s: 0.5
+
+motion:
+  backend: joint_stream
+  joint_stream_hz: 50
+  ori_flex_deg: 15
+  settle_steps: 6
+  settle_dt_s: 0.1
+  divergence_resync_m: 0.06
+  divergence_resync_rad: null
+  # heading = Show-Harness motion_frame: wrist (the default here, as in robot_piper.yaml).
+  # With --view-select, use base (Show-Harness refuses view_select + wrist): each move
+  # then runs in the heading frame when the wrist view guided it, else in the base frame.
+  units_frame: heading
+
+arms:
+  left:
+    cameras:
+      wrist: /camera_l/color/image_raw
+    calibration:     # !! CAPTURE ON HARDWARE (the left arm's own base frame) !!
+      arm_id: null           # --print-identity on the rig (left: USB serial of can_left)
+      z_floor_m: null        # closed gripper on the table: z of /puppet/end_pose_euler_left
+      begin_joints: null     # /puppet/joint_left position[0:6]
+      rest_joints: null
+    limits:
+      workspace_min: null    # optional [x, y, z] box in the left arm's base frame
+      workspace_max: null
+  right:
+    cameras:
+      wrist: /camera_r/color/image_raw
+    calibration:     # !! CAPTURE ON HARDWARE (the right arm's own base frame) !!
+      arm_id: null           # --print-identity on the rig (right: USB serial of can_right)
+      z_floor_m: null
+      begin_joints: null
+      rest_joints: null
+    limits:
+      workspace_min: null
+      workspace_max: null
+
+smooth:              # Show-Harness plugins/smooth (plugins.smooth: true in configs/robot_piper.yaml)
+  enabled: true      # min-jerk joint stream; false = constant limits.speed_mps
+  substeps: 20       # substeps * dt_s = 1.0 s per move, longer when its peak would
+  dt_s: 0.05         # pass max_speed_mps (or limits.yaw_speed_radps)
+  max_speed_mps: 0.1
+  # Chaining: a step with continuous: true (a pure translation) ends at cruise speed
+  # (no settle) and the next one in about the same direction (cos >= 0.9) starts at it.
+  blend: true        # Show-Harness: on for the Piper
+  cruise: 1.0        # chained boundary speed, in move lengths per move duration
+  chain_window_s: 1.0
+
+tasks:
+  banana_handover:
+    instruction: "Left arm grasps the green stem of the banana and lifts it, right arm grasps the tip of the banana and places the banana in the center of the blue plate"
+    success_criteria: "The banana rests in the center of the blue plate and both grippers are open."
+  two_objects_plate:
+    instruction: "Pick up the block and the banana and place them on the plate"
+    success_criteria: "The block and the banana rest on the plate and both grippers are open."

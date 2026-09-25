@@ -1,7 +1,9 @@
 /**
- * One physical AgileX Piper arm for pi, ported from Show-Harness (github.com/showlab/Show-Harness).
+ * One physical AgileX Piper arm, or both arms of the Cobot Magic rig, for pi, ported from
+ * Show-Harness (github.com/showlab/Show-Harness).
  *
  *   pi -e packages/embodied/src/piper --operator --task banana_plate --robot-config my_piper.yaml
+ *   pi -e packages/embodied/src/piper/dual.ts --operator --task banana_handover --robot-config my_dual.yaml
  *
  * Starts the env server (pi_embodied_services.robots.piper.env_server, ROS topics to the AgileX
  * arm node and the Orbbec cameras) or attaches to one with --robot-env. The server owns the
@@ -12,6 +14,18 @@
  * record a state step (robot state, front and wrist RGB) under --out and return it with both
  * images. The robot opts into the shared action-unit layer (../units) with the Show-Harness
  * primitives of configs/primitives_piper.yaml.
+ *
+ * Two arms (./dual.ts, a server config with an `arms:` block): every motion names its arm (the
+ * units' `arm`; STILL leaves the other arm alone), each arm has its own Z floor and workspace box on
+ * the server, a faulted arm is halted there until its reset while the other keeps working, and
+ * halt_arm stops one arm on request. The images are front, left wrist, right wrist.
+ *
+ * Views and motion frames (Show-Harness plugins/wrist_frame and plugins/view_select): with
+ * `motion.units_frame: heading` (Show-Harness `motion_frame: wrist`, the default config) the front
+ * view's directions are given relative to the gripper heading. --view-select (config
+ * `units_frame: base`) lets the model report which view guided each move (`act`'s `view`, a units
+ * hook): WRIST runs it in the heading frame, FRONT in the base frame, and the directions stay in
+ * the base convention.
  */
 
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -19,7 +33,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+import { type TSchema, Type } from "typebox";
 import { encodePng } from "../png.ts";
 import {
 	attach,
@@ -38,14 +52,22 @@ import {
 	vec,
 } from "../robot.ts";
 import { NdArray, type RpcClient, RpcUnavailable } from "../rpc.ts";
-import { compensate, type MoveUnit, type State, type UnitsSpec, type Vec3 } from "../units/index.ts";
+import { compensate, type Move, type MoveUnit, type State, type UnitsSpec, type Vec3 } from "../units/index.ts";
 
 const SYSTEM = readFileSync(new URL("./SYSTEM.md", import.meta.url), "utf8");
+const SYSTEM_DUAL = readFileSync(new URL("./SYSTEM_DUAL.md", import.meta.url), "utf8");
 
+/** The dual rig's arms, as the env server names them. */
+export const PIPER_ARMS = ["left", "right"] as const;
+
+type Frame = "base" | "heading";
 type Task = { instruction: string; success_criteria?: string };
 type Meta = {
 	arm: string;
-	units_frame: "base" | "heading";
+	/** Two arms: ["left", "right"]; one arm: []. */
+	arms?: string[];
+	cameras?: string[];
+	units_frame: Frame;
 	limits: { max_step_m: number; max_yaw_rad: number; z_floor_m: number | null; empty_width_m: number | null };
 	has_begin_pose: boolean;
 	tasks: Record<string, Task>;
@@ -77,17 +99,69 @@ export function headingToBase(delta: Vec3, state: State | undefined): Vec3 {
 	return typeof heading === "number" ? compensate(delta, heading) : delta;
 }
 
+/** The act `view` of Show-Harness plugins/view_select: which view guided the move. */
+export type GuideView = "WRIST" | "FRONT";
+
+/**
+ * The frame a unit move runs in (Show-Harness plugins/view_select `frame_for`): with view select on,
+ * a WRIST-guided move runs in the heading frame (the wrist view's directions are exact at any yaw)
+ * and a FRONT-guided one in the base frame (the front view's image-edge directions are exact); a
+ * move without a view keeps the configured frame.
+ */
+export function motionFrame(view: unknown, configured: Frame, viewSelect: boolean): Frame {
+	if (!viewSelect) return configured;
+	if (view === "WRIST") return "heading";
+	if (view === "FRONT") return "base";
+	return configured;
+}
+
 /**
  * How the Piper rig's views look, from Show-Harness plugins/ego (the rig's `is_ego` fix, learned on
  * hardware): the front camera and the wrist camera do not share one forward/back convention.
+ * `frame` is the frame the units run in: in the heading frame the front view's image-edge mapping
+ * is wrong once the gripper is yawed, so it is rewritten to follow the gripper heading
+ * (Show-Harness plugins/wrist_frame); the wrist view's directions are exact in that frame already.
+ * `viewSelect` keeps the base convention for both views and asks for each move's guiding view.
  */
-const VIEWS = `- Image 1, FRONT camera: faces the arm, which enters from the TOP of the image. MV_FWD moves the gripper toward the image bottom, MV_BACK toward the image top, MV_LEFT / MV_RIGHT toward image left / right.
-- Image 2, WRIST camera: looks along the gripper at the fingertips (bottom of the image). MV_FWD advances the gripper, so a target near the image TOP needs MV_FWD and one between the image top and the fingers MV_BACK; MV_LEFT / MV_RIGHT move toward image left / right; MV_DOWN brings the fingers down onto what is centered between them.
-- MV_UP / MV_DOWN change the gripper's height in both views.`;
+export function piperViews(frame: Frame, arms: readonly string[] = [], viewSelect = false): string {
+	const dual = arms.length > 0;
+	const enters = dual ? "arms, which enter" : "arm, which enters";
+	const front =
+		frame === "heading" && !viewSelect
+			? `FRONT camera: faces the ${enters} from the TOP of the image. Moves follow the GRIPPER HEADING, the direction ${dual ? "that arm's" : "the"} gripper points, visible in this view: MV_FWD moves further ahead along the heading, MV_BACK back against it, MV_LEFT / MV_RIGHT to the heading's left / right. Only while the gripper points straight toward the image bottom are these the image bottom / top / left / right.`
+			: `FRONT camera: faces the ${enters} from the TOP of the image. MV_FWD moves the gripper toward the image bottom, MV_BACK toward the image top, MV_LEFT / MV_RIGHT toward image left / right.`;
+	const wrist =
+		"looks along the gripper at the fingertips (bottom of the image). MV_FWD advances the gripper, so a target near the image TOP needs MV_FWD and one between the image top and the fingers MV_BACK; MV_LEFT / MV_RIGHT move toward image left / right; MV_DOWN brings the fingers down onto what is centered between them.";
+	const lines = dual
+		? [
+				`- Image 1, ${front}`,
+				`- Image 2, LEFT WRIST camera (the left arm's): ${wrist}`,
+				`- Image 3, RIGHT WRIST camera (the right arm's): ${wrist}`,
+				"- MV_UP / MV_DOWN change the gripper's height in every view. Each unit moves only the arm named by `arm`.",
+			]
+		: [
+				`- Image 1, ${front}`,
+				`- Image 2, WRIST camera: ${wrist}`,
+				"- MV_UP / MV_DOWN change the gripper's height in both views.",
+			];
+	if (viewSelect)
+		lines.push(
+			"- VIEW SELECT: with every MV_* set `view` to the view that guided it: WRIST when the target is in the wrist view and you judged it there, FRONT when you judged it in the front view. A WRIST move runs along the gripper's heading and a FRONT move in the front view's image directions, so the directions above are exact for the view you name.",
+		);
+	return lines.join("\n");
+}
 
+/** The robot's own tools; two arms add halt_arm. */
 const TOOLS = ["view_env_state", "move_delta", "rotate_yaw", "open_gripper", "close_gripper", "finish"];
 
+/** One Piper arm (the default entry). */
 export default function piper(pi: ExtensionAPI) {
+	piperRobot(pi, false);
+}
+
+/** The Piper robot on one arm, or on both arms of the dual rig (`dual`, ./dual.ts). */
+export function piperRobot(pi: ExtensionAPI, dual: boolean) {
+	const arms: readonly string[] = dual ? PIPER_ARMS : [];
 	const flag = (name: string, fallback = "") => String(pi.getFlag(name) ?? fallback);
 	pi.registerFlag("task", {
 		type: "string",
@@ -132,6 +206,12 @@ export default function piper(pi: ExtensionAPI) {
 		default: "0.2",
 		description: "Largest |yaw| per call, rad (the server's limits.max_yaw_rad applies if tighter)",
 	});
+	pi.registerFlag("view-select", {
+		type: "boolean",
+		default: false,
+		description:
+			"Units: the model reports each move's guiding view (act's `view`): WRIST runs it in the gripper-heading frame, FRONT in the base frame (Show-Harness plugins/view_select; needs motion.units_frame: base)",
+	});
 
 	let env: RpcClient | undefined;
 	let meta: Meta | undefined;
@@ -139,25 +219,43 @@ export default function piper(pi: ExtensionAPI) {
 	let out = "";
 	const steps: Step[] = [];
 	const taskName = () => robot.task.task;
+	const viewSelect = () => pi.getFlag("view-select") === true;
+	/**
+	 * Asks ../units for `act`'s `view` while --view-select is on, passed on as `Move.view` (the units
+	 * view_select hook, scratchpad units-view-select.patch; spread, so it is inert on a units module
+	 * without the hook).
+	 */
+	const viewSelectHook = { viewSelect };
+	/** The frame of the last unit move: the stall check converts that move's delta to the base frame. */
+	let lastFrame: Frame = "base";
 
 	const units: UnitsSpec = {
 		...PIPER_UNITS,
+		...viewSelectHook,
+		...(dual ? { arms } : {}),
 		// The units layer runs its own recovery, so an empty close stays closed for it to see.
-		apply: (move, signal) =>
-			act({ action: "unit", ...move }, () =>
-				guardedStep(move.delta, move.yaw, move.gripper, unitsFrame(), signal, false),
-			),
-		state: async () => proprio(await call<Json>("env.get_robot_state")),
+		apply: (move, signal) => {
+			const view = (move as Move & { view?: unknown }).view;
+			const frame = motionFrame(view, unitsFrame(), viewSelect());
+			const command = { action: "unit", ...move, ...(viewSelect() && view ? { frame } : {}) };
+			return act(command, () => {
+				lastFrame = frame;
+				return guardedStep(move.delta, move.yaw, move.gripper, frame, signal, false, move.arm, move.continuous);
+			});
+		},
+		state: async (arm) => proprio(await call<Json>("env.get_robot_state", dual ? { arm: armName(arm) } : {})),
 		// The stall check compares commanded and measured motion in the base frame.
-		baseDelta: (delta, state) => (unitsFrame() === "heading" ? headingToBase(delta, state) : delta),
+		baseDelta: (delta, state) => (lastFrame === "heading" ? headingToBase(delta, state) : delta),
 		instruction: () => task?.instruction ?? "",
-		views: VIEWS,
+		get views() {
+			return piperViews(viewSelect() ? "base" : unitsFrame(), arms, viewSelect());
+		},
 		get emptyWidthM() {
 			return meta?.limits.empty_width_m ?? 0.005;
 		},
 	};
 	const spec: RobotSpec = {
-		name: "piper",
+		name: dual ? "piper_dual" : "piper",
 		task: ["task"],
 		keepImages: 4,
 		operator: { step: () => steps.length, reset: resetArm },
@@ -174,9 +272,9 @@ export default function piper(pi: ExtensionAPI) {
 				max_move: String(maxMove()),
 				max_yaw: String(maxYaw()),
 			};
-			return SYSTEM.replace(/\{\{(\w+)\}\}/g, (m, k: string) => vars[k] ?? m);
+			return (dual ? SYSTEM_DUAL : SYSTEM).replace(/\{\{(\w+)\}\}/g, (m, k: string) => vars[k] ?? m);
 		},
-		result: () => ({ task: taskName(), arm: meta?.arm ?? null, steps: steps.length, out }),
+		result: () => ({ task: taskName(), arm: meta?.arm ?? null, ...(dual ? { arms } : {}), steps: steps.length, out }),
 		status: () => ({ language: task?.instruction, step: steps.length - 1 }),
 		finish: {
 			description:
@@ -194,7 +292,20 @@ export default function piper(pi: ExtensionAPI) {
 
 	const maxMove = () => Math.min(Number(flag("max-move", "0.05")), meta?.limits.max_step_m ?? Infinity);
 	const maxYaw = () => Math.min(Number(flag("max-yaw", "0.2")), meta?.limits.max_yaw_rad ?? Infinity);
-	const unitsFrame = () => meta?.units_frame ?? "base";
+	const unitsFrame = (): Frame => meta?.units_frame ?? "base";
+	/** The arm a motion drives: required (and checked) on two arms, none on one. */
+	function armName(arm: string | undefined): string | undefined {
+		if (!dual) {
+			if (arm !== undefined) throw new Error("this Piper robot drives one arm; omit `arm`");
+			return undefined;
+		}
+		if (arm === undefined) throw new Error(`two arms: name the arm (${arms.join(" or ")})`);
+		if (!arms.includes(arm)) throw new Error(`unknown arm '${arm}' (have ${arms.join(", ")})`);
+		return arm;
+	}
+	const cameras = () =>
+		meta?.cameras?.filter((c) => c === "front" || c.startsWith("wrist")) ??
+		(dual ? ["front", "wrist_left", "wrist_right"] : ["front", "wrist"]);
 
 	function call<T = Json>(method: string, kwargs: Json = {}, timeoutMs = 30_000, signal?: AbortSignal) {
 		if (!env) throw new Error("piper is not initialized; see the session start error");
@@ -206,10 +317,13 @@ export default function piper(pi: ExtensionAPI) {
 		delta: number[],
 		yaw: number,
 		gripper: "open" | "close" | null,
-		frame: "base" | "heading",
+		frame: Frame,
 		signal?: AbortSignal,
 		reopenEmpty = true,
+		arm?: string,
+		continuous = false,
 	): Promise<Json> {
+		const side = armName(arm);
 		op.check();
 		if (signal?.aborted) throw new Error("tool operation interrupted");
 		if (delta.length !== 3 || !delta.every(Number.isFinite)) throw new Error("delta must be 3 finite numbers");
@@ -217,7 +331,16 @@ export default function piper(pi: ExtensionAPI) {
 		checkMove(delta, maxMove());
 		if (Math.abs(yaw) > maxYaw())
 			throw new Error(`yaw ${round(yaw, 4)} rad exceeds the limit of ${maxYaw()} rad per call.`);
-		return call("env.step", { delta_xyz: delta, yaw, gripper, frame, reopen_empty: reopenEmpty }, 120_000, signal);
+		const kwargs: Json = {
+			delta_xyz: delta,
+			yaw,
+			gripper,
+			frame,
+			reopen_empty: reopenEmpty,
+			// The same MV_* follows in this act call: the server's smooth stream flows through the join.
+			...(continuous ? { continuous: true } : {}),
+		};
+		return call("env.step", side ? { ...kwargs, arm: side } : kwargs, 120_000, signal);
 	}
 
 	/** Proprioception for prompts and the units plugins (`eef_xyz`, `gripper_width`, `table_z`). */
@@ -230,6 +353,7 @@ export default function piper(pi: ExtensionAPI) {
 			eef_euler_xyz: vec(s.eef_euler_xyz).map((v) => round(v, 3)),
 			heading_yaw_rad: typeof s.heading_yaw_rad === "number" ? s.heading_yaw_rad : null,
 			gripper_closed: s.gripper_closed,
+			...(dual ? { arm: s.arm, halted: s.halted ?? null } : {}),
 		};
 	}
 
@@ -242,7 +366,7 @@ export default function piper(pi: ExtensionAPI) {
 		const dir = join(out, `step_${String(idx).padStart(4, "0")}`);
 		mkdirSync(dir, { recursive: true });
 		const images: Record<string, string> = {};
-		for (const name of ["front", "wrist"]) {
+		for (const name of cameras()) {
 			const v = obs.images?.[name];
 			if (!(v instanceof NdArray)) continue;
 			const img = rgbOf(v);
@@ -259,9 +383,11 @@ export default function piper(pi: ExtensionAPI) {
 		return step;
 	}
 
-	/** The step blob plus the front then wrist image. */
+	/** The step blob plus the front then the wrist image(s) (two arms: left, then right). */
 	function view(s: Step): AgentToolResult<unknown> {
-		const pngs = ["front", "wrist"].filter((k) => s.images[k]).map((k) => readFileSync(s.images[k]));
+		const pngs = cameras()
+			.filter((k) => s.images[k])
+			.map((k) => readFileSync(s.images[k]));
 		return toolResult(s.blob, pngs);
 	}
 
@@ -287,7 +413,9 @@ export default function piper(pi: ExtensionAPI) {
 
 	robot.tool(
 		"view_env_state",
-		"Read a Piper state step (eef pose, gripper, limits) and its front and wrist images.",
+		dual
+			? "Read a Piper state step (both arms' eef pose, gripper, limits) and its front, left wrist and right wrist images."
+			: "Read a Piper state step (eef pose, gripper, limits) and its front and wrist images.",
 		Type.Object({ step: Type.Optional(Type.Integer({ description: "State step (default -1 = latest)" })) }),
 		async ({ step = -1 }) => {
 			const s = steps[step < 0 ? steps.length + step : step];
@@ -297,32 +425,66 @@ export default function piper(pi: ExtensionAPI) {
 	);
 
 	const xyz = Type.Array(Type.Number(), { minItems: 3, maxItems: 3 });
+	/** Two arms: every motion tool takes the required `arm`; the other arm holds still. */
+	const armParam: Record<string, TSchema> = dual
+		? {
+				arm: Type.Union(
+					arms.map((a) => Type.Literal(a)),
+					{ description: "Which arm moves; the other holds still" },
+				),
+			}
+		: {};
+	type ArmP = { arm?: string };
+	const armOf = (p: ArmP) => (dual ? { arm: p.arm } : {});
+	const the = dual ? "one Piper arm's" : "the Piper";
 	robot.tool(
 		"move_delta",
-		"Move the Piper gripper by a bounded base-frame xyz delta in meters (x forward, y left, z up).",
-		Type.Object({ delta_xyz: xyz }),
-		async ({ delta_xyz }, signal) =>
-			act({ action: "move_delta", delta_xyz }, () => guardedStep(delta_xyz, 0, null, "base", signal)),
+		`Move ${the} gripper by a bounded base-frame xyz delta in meters (x forward, y left, z up${dual ? ", in that arm's own base frame" : ""}).`,
+		Type.Object({ delta_xyz: xyz, ...armParam }),
+		async (p, signal) =>
+			act({ action: "move_delta", delta_xyz: p.delta_xyz, ...armOf(p as ArmP) }, () =>
+				guardedStep(p.delta_xyz, 0, null, "base", signal, true, (p as ArmP).arm),
+			),
 	);
 	robot.tool(
 		"rotate_yaw",
-		"Rotate the Piper gripper about the base z axis by a bounded angle in radians.",
-		Type.Object({ yaw: Type.Number() }),
-		async ({ yaw }, signal) =>
-			act({ action: "rotate_yaw", yaw }, () => guardedStep([0, 0, 0], yaw, null, "base", signal)),
+		`Rotate ${the} gripper about the base z axis by a bounded angle in radians.`,
+		Type.Object({ yaw: Type.Number(), ...armParam }),
+		async (p, signal) =>
+			act({ action: "rotate_yaw", yaw: p.yaw, ...armOf(p as ArmP) }, () =>
+				guardedStep([0, 0, 0], p.yaw, null, "base", signal, true, (p as ArmP).arm),
+			),
 	);
 	robot.tool(
 		"open_gripper",
-		"Open the Piper gripper and wait for it to settle.",
-		Type.Object({}),
-		async (_p, signal) => act({ action: "open_gripper" }, () => guardedStep([0, 0, 0], 0, "open", "base", signal)),
+		`Open ${the} gripper and wait for it to settle.`,
+		Type.Object({ ...armParam }),
+		async (p, signal) =>
+			act({ action: "open_gripper", ...armOf(p as ArmP) }, () =>
+				guardedStep([0, 0, 0], 0, "open", "base", signal, true, (p as ArmP).arm),
+			),
 	);
 	robot.tool(
 		"close_gripper",
-		"Close the Piper gripper and wait for it to settle; an empty close reopens and says so in notes.",
-		Type.Object({}),
-		async (_p, signal) => act({ action: "close_gripper" }, () => guardedStep([0, 0, 0], 0, "close", "base", signal)),
+		`Close ${the} gripper and wait for it to settle; an empty close reopens and says so in notes.`,
+		Type.Object({ ...armParam }),
+		async (p, signal) =>
+			act({ action: "close_gripper", ...armOf(p as ArmP) }, () =>
+				guardedStep([0, 0, 0], 0, "close", "base", signal, true, (p as ArmP).arm),
+			),
 	);
+	if (dual)
+		robot.tool(
+			"halt_arm",
+			"Stop one arm for the rest of the episode (its part of the task is done, or it is in trouble): the server holds it where it is and refuses its motion until the operator resets it. The other arm keeps working.",
+			Type.Object({ ...armParam, reason: Type.String({ description: "Why the arm stops" }) }),
+			async (p) =>
+				act({ action: "halt_arm", ...armOf(p as ArmP), reason: p.reason }, async () => {
+					const side = armName((p as ArmP).arm);
+					op.check();
+					return call("env.halt_arm", { arm: side ?? null, reason: p.reason });
+				}),
+		);
 
 	// ---- lifecycle
 
@@ -371,11 +533,29 @@ export default function piper(pi: ExtensionAPI) {
 			throw new Error(
 				`task '${taskName()}' is not in the robot config's tasks (have: ${Object.keys(m.tasks ?? {}).join(", ") || "none"})`,
 			);
+		const served = m.arms ?? [];
+		if (dual !== served.length > 0)
+			throw new Error(
+				dual
+					? "piper/dual.ts drives both arms, but the env server's config has no `arms:` block (use a dual config, e.g. config/dual_example.yaml, or the single-arm entry packages/embodied/src/piper)"
+					: "the env server drives both arms (`arms:` in its config): use packages/embodied/src/piper/dual.ts",
+			);
+		if (dual && served.join() !== arms.join())
+			throw new Error(`the env server drives arms ${served.join(", ")}; expected ${arms.join(", ")}`);
 		if (!m.has_begin_pose)
-			throw new Error("calibration.begin_joints is not set in the robot config; reset would fail");
+			throw new Error(
+				`${dual ? "arms.<side>.calibration" : "calibration"}.begin_joints is not set in the robot config; reset would fail`,
+			);
+		// Show-Harness refuses view_select with motion_frame: wrist: the heading-frame prompt rewrite would contradict FRONT-guided base-frame moves.
+		if (pi.getFlag("view-select") === true && m.units_frame === "heading")
+			throw new Error(
+				"--view-select picks each move's frame from its guiding view, so the config needs motion.units_frame: base (it is heading)",
+			);
 		const go = await ctx.ui.confirm(
-			"Move the Piper arm?",
-			`The ${m.arm} arm will open its gripper and move to its begin pose, then the agent drives it for: ${t.instruction}. Clear the workspace and keep the emergency stop in reach.`,
+			dual ? "Move both Piper arms?" : "Move the Piper arm?",
+			dual
+				? `The left arm, then the right arm, will open its gripper and move to its begin pose, then the agent drives them for: ${t.instruction}. Clear the workspace and keep both emergency stops in reach.`
+				: `The ${m.arm} arm will open its gripper and move to its begin pose, then the agent drives it for: ${t.instruction}. Clear the workspace and keep the emergency stop in reach.`,
 		);
 		if (!go) throw new Error("operator declined the reset; the Piper tools stay disabled");
 		env = rpc;
@@ -387,7 +567,7 @@ export default function piper(pi: ExtensionAPI) {
 			throw err;
 		}
 		task = t;
-		ctx.ui.notify(`Piper ready: ${taskName()} (${m.arm} arm); steps under ${out}`, "info");
-		return TOOLS;
+		ctx.ui.notify(`Piper ready: ${taskName()} (${dual ? "both arms" : `${m.arm} arm`}); steps under ${out}`, "info");
+		return dual ? [...TOOLS, "halt_arm"] : TOOLS;
 	}
 }

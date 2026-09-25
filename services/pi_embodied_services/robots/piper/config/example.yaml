@@ -10,6 +10,10 @@ arm: left            # ROS topic namespace: /puppet/joint_left, /puppet/pos_cmd_
 ros:
   feedback_timeout_s: 5.0    # wait for the first arm feedback on start
   max_feedback_age_s: 0.5    # older feedback = dead node / CAN: refuse to act
+  # What calibration.arm_id is checked against at start (a mismatch refuses to start):
+  # can_serial[:<iface>] = USB serial of the arm's CAN adapter (iface default can_<arm>,
+  # read from sysfs on this host), param:<rosparam>, or none (unbound; not recommended).
+  identity: can_serial
 
 cameras:             # sensor_msgs/Image topics from astra_camera multi_camera.launch
   front: /camera_f/color/image_raw
@@ -19,6 +23,9 @@ cameras:             # sensor_msgs/Image topics from astra_camera multi_camera.l
   image_size: 256    # square letterbox for the model (Show-Harness camera_resolution); 0 = native
 
 calibration:         # !! CAPTURE ON HARDWARE !!
+  # The arm this calibration was captured on: run the env server with --print-identity
+  # on the rig and copy the value. Another arm (swapped adapter / config) is refused.
+  arm_id: null
   # Rest the closed gripper on the tabletop and copy z from /puppet/end_pose_euler_<arm>.
   z_floor_m: null
   # 6 joint angles (rad) from /puppet/joint_<arm> position[0:6]. Show-Harness's left
@@ -32,7 +39,8 @@ limits:
   workspace_max: null
   max_step_m: 0.05           # largest translation one call may command (Show-Harness clamp)
   max_yaw_rad: 0.2           # largest |yaw| one call may command
-  speed_mps: 0.05            # joint-stream Cartesian speed (Show-Harness constant-rate ~5 cm/s)
+  max_total_yaw_rad: 2.618   # largest turn away from the heading at the last reset (150 deg)
+  speed_mps: 0.05            # joint-stream speed with smooth off (Show-Harness constant-rate ~5 cm/s)
   yaw_speed_radps: 0.5
   reset_time_s: 4.0          # joint-space move to begin/rest
 
@@ -55,6 +63,17 @@ motion:
   # Frame of the action-unit moves: heading = Show-Harness motion_frame: wrist (+X along
   # the gripper's horizontal heading); base = the primitives vectors as base-frame axes.
   units_frame: heading
+
+smooth:              # Show-Harness plugins/smooth (plugins.smooth: true in configs/robot_piper.yaml)
+  enabled: true      # min-jerk joint stream; false = constant limits.speed_mps
+  substeps: 20       # substeps * dt_s = 1.0 s per move, longer when its peak would
+  dt_s: 0.05         # pass max_speed_mps (or limits.yaw_speed_radps)
+  max_speed_mps: 0.1
+  # Chaining: a step with continuous: true (a pure translation) ends at cruise speed
+  # (no settle) and the next one in about the same direction (cos >= 0.9) starts at it.
+  blend: true        # Show-Harness: on for the Piper
+  cruise: 1.0        # chained boundary speed, in move lengths per move duration
+  chain_window_s: 1.0
 
 tasks:               # --task <name>
   banana_plate:

@@ -15,8 +15,11 @@
 # Modified by pi-embodied: the Piper path of interpreters/real_atomic_controller.py and
 # interpreters/piper_atomic_controller.py reduced to one guarded step
 # (translation + yaw + gripper) per call: no token vocabulary (the units module maps
-# units to deltas), no plugins (smooth / variable-step / rotation), and every wait
-# polls a stop callback so the RPC ``stop`` halts motion between waypoints. Added a
+# units to deltas), no variable-step / rotation plugins, and every wait polls a stop
+# callback so the RPC ``stop`` halts motion between waypoints. The smooth plugin
+# (plugins/smooth/plugin.py SmoothPlugin.plan, on in configs/robot_piper.yaml) shapes the
+# joint stream: its min-jerk / cruise profile evaluated at the stream rate, stretched
+# when its peak would pass the speed caps, and chaining on ``continuous``. Added a
 # per-call step/yaw refusal and an optional base-frame workspace box next to the
 # Z floor.
 
@@ -32,7 +35,15 @@ it by one bounded delta per call:
    reported in ``notes``, not raised: the arm moves as far as it may).
 4. Drive there. ``joint_stream`` (default): the straight line is solved to joint
    waypoints (bounded-orientation IK, ``kinematics.ik_bounded``) and streamed as MOVE J
-   targets at ``joint_stream_hz``, at ``speed_mps``; the first unreachable waypoint
+   targets at ``joint_stream_hz``; with ``smooth`` (default) along Show-Harness's
+   min-jerk profile over ``smooth_substeps * smooth_dt_s`` (1.0 s), longer when its peak
+   would pass ``smooth_max_speed_mps`` / ``yaw_speed_radps``, else at the constant
+   ``speed_mps``. Chaining (``smooth_blend``): a pure translation sent with
+   ``continuous=True`` (another move in about the same direction follows at once) ends at
+   cruise speed without the settle re-commands, and the next pure translation, within
+   ``smooth_chain_window_s`` and ``cos >= 0.9`` of it, starts at that speed; anything else
+   (another direction, a yaw, the gripper, a reset, a stop, a late move) first settles
+   the stream at rest. The first unreachable waypoint
    stops the move there ("reach clamp"). ``endpose``: firmware MOVE P re-commanded
    ``settle_steps`` times. The joint backend is used only after the vendored FK
    reproduces the arm's own pose feedback within 1 cm.
@@ -58,6 +69,7 @@ from typing import Any
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 
+from pi_embodied_services.robots.franka_polymetis.control import smooth_fractions
 from pi_embodied_services.robots.piper.kinematics import (
     JOINT_LIMITS_RAD,
     select_dh_variant,
@@ -73,6 +85,14 @@ TOOL_AXIS = np.array([0.0, 0.0, 1.0])
 GRIPPER_MOTION_EPS_M = 0.005
 GRIPPER_STABLE_EPS_M = 0.002
 GRIPPER_SUSTAIN_S = 0.3
+#: Show-Harness chains a move only onto a stream flowing in (nearly) the same direction.
+CHAIN_MIN_COS = 0.9
+
+
+def profile_peak(v0: float = 0.0, v1: float = 0.0) -> float:
+    """Peak speed of the smooth profile, in move lengths per move duration (1.875 at rest)."""
+    fr = smooth_fractions(400, v0, v1)
+    return float(np.max(np.diff([0.0, *fr]))) * 400
 
 
 @dataclass
@@ -88,6 +108,9 @@ class PiperLimits:
     #: Largest translation (m) and |yaw| (rad) one call may command; larger is refused.
     max_step_m: float = 0.05
     max_yaw_rad: float = 0.2
+    #: Largest |yaw| (rad) the gripper may be turned away from its heading at the last
+    #: reset (Show-Harness rotation plugin: 150 deg); a turn beyond it is refused.
+    max_total_yaw_rad: float = math.radians(150.0)
     #: Cartesian speed of the joint stream (m/s, rad/s).
     speed_mps: float = 0.05
     yaw_speed_radps: float = 0.5
@@ -110,6 +133,17 @@ class PiperLimits:
     #: Joint-space reset: duration (s) and convergence tolerance (rad).
     reset_time_s: float = 4.0
     reset_tolerance_rad: float = 0.05
+    #: Show-Harness smooth plugin (the ``smooth:`` section): min-jerk moves of
+    #: substeps x dt_s, at most ``smooth_max_speed_mps`` at their peak; off = constant
+    #: ``speed_mps``. Chaining: blend, cruise (boundary speed in move lengths per move
+    #: duration) and the window in which the next move must start.
+    smooth: bool = True
+    smooth_substeps: int = 20
+    smooth_dt_s: float = 0.05
+    smooth_max_speed_mps: float = 0.1
+    smooth_blend: bool = True
+    smooth_cruise: float = 1.0
+    smooth_chain_window_s: float = 1.0
 
     def validate(self) -> None:
         if self.enable_z_floor and self.z_floor_m is None:
@@ -130,12 +164,32 @@ class PiperLimits:
         for name in ("max_step_m", "max_yaw_rad", "speed_mps", "yaw_speed_radps"):
             if not getattr(self, name) > 0:
                 raise ValueError(f"{name} must be > 0")
+        if not 0 < self.max_total_yaw_rad < math.pi:
+            raise ValueError("max_total_yaw_rad must be in (0, pi)")
+        for name in ("smooth", "smooth_blend"):
+            if not isinstance(getattr(self, name), bool):
+                raise ValueError(f"{name} must be true or false")
+        bounds = {
+            "smooth_substeps": (1, 1000),
+            "smooth_dt_s": (1e-4, 1.0),
+            "smooth_max_speed_mps": (1e-3, 0.3),
+            "smooth_cruise": (0.0, 1.5),
+            "smooth_chain_window_s": (0.0, 10.0),
+        }
+        for name, (lo, hi) in bounds.items():
+            v = getattr(self, name)
+            if not (isinstance(v, (int, float)) and lo <= v <= hi):
+                raise ValueError(f"{name} must be in [{lo}, {hi}], got {v!r}")
+        if int(self.smooth_substeps) != self.smooth_substeps:
+            raise ValueError("smooth_substeps must be an integer")
 
 
 @dataclass
 class StepReport:
     ok: bool = True
     cancelled: bool = False
+    #: The move started at cruise speed, chained onto the previous one.
+    chained: bool = False
     notes: list[str] = field(default_factory=list)
 
 
@@ -160,16 +214,27 @@ class PiperController:
         limits: PiperLimits,
         stop_requested: Callable[[], bool] = lambda: False,
         sleep: Callable[[float], None] = time.sleep,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         limits.validate()
         self.robot = robot
         self.limits = limits
         self.stop_requested = stop_requested
         self.sleep = sleep
+        self.clock = clock
+        # Chained motion (smooth + blend): base-frame direction and deadline of a
+        # translation that ended at cruise speed without settling (None = at rest).
+        self._stream_dir: np.ndarray | None = None
+        self._stream_until = 0.0
         self._target_pos: np.ndarray | None = None
         self._target_euler: np.ndarray | None = None
         self.gripper_closed: bool | None = None
         self._kin: Any = None
+        #: Best-matching FK (even when too far off for the joint stream), for the
+        #: reset-path floor/box check.
+        self._fk: Any = None
+        #: Base-z heading (extrinsic euler z) at the last reset; the yaw budget's origin.
+        self._yaw_ref: float | None = None
         self._q_cmd: np.ndarray | None = None
         self.backend = "endpose"
         rad = limits.divergence_resync_rad
@@ -186,13 +251,15 @@ class PiperController:
         next call re-syncs (and raises again while feedback is stale) instead of moving.
         """
         self._target_pos = self._target_euler = self._q_cmd = None
+        self._stream_dir = None
         notes: list[str] = []
         pose = np.asarray(self.robot.get_ee_pose(), dtype=float)
         width = float(self.robot.get_gripper_width())
         backend, kin, q_cmd = "endpose", None, None
+        q = np.asarray(self.robot.get_joint_positions(), dtype=float)[:6]
+        fk, err = select_dh_variant(q, pose)
         if self.limits.motion_backend == "joint_stream":
-            q = np.asarray(self.robot.get_joint_positions(), dtype=float)[:6]
-            kin, err = select_dh_variant(q, pose)
+            kin = fk
             if err > 0.01:
                 kin = None
                 notes.append(
@@ -211,9 +278,11 @@ class PiperController:
                 if tight:
                     notes.append(f"start pose near a joint limit ({', '.join(tight)})")
         self.gripper_closed = width < self.limits.close_threshold_m
-        self.backend, self._kin, self._q_cmd = backend, kin, q_cmd
+        self.backend, self._kin, self._q_cmd, self._fk = backend, kin, q_cmd, fk
         self._target_euler = quat_to_euler(pose[3:])
         self._target_pos = pose[:3].copy()
+        if self._yaw_ref is None:
+            self._yaw_ref = float(self._target_euler[2])
         return notes
 
     def _invalidate(self) -> None:
@@ -223,6 +292,7 @@ class PiperController:
         (or from joints) captured before the failure.
         """
         self._target_pos = self._target_euler = self._q_cmd = None
+        self._stream_dir = None
         try:
             self.robot.note_commanded_pose(None)
         except Exception as exc:
@@ -236,6 +306,12 @@ class PiperController:
     def target_pose(self) -> np.ndarray:
         self._ensure_synced()
         return np.concatenate([self._target_pos, euler_to_quat(self._target_euler)])
+
+    def yaw_from_reset(self, extra: float = 0.0) -> float:
+        """How far (rad) the setpoint (turned ``extra`` more) is yawed from the reset heading."""
+        self._ensure_synced()
+        d = float(self._target_euler[2]) + extra - float(self._yaw_ref or 0.0)
+        return math.remainder(d, 2 * math.pi)
 
     def heading_yaw(self) -> float | None:
         """Yaw of the gripper's horizontal heading (from the setpoint), or None."""
@@ -259,6 +335,7 @@ class PiperController:
             "gripper_closed": width < lim.close_threshold_m,
             "target_pose": self.target_pose.tolist(),
             "heading_yaw_rad": heading,
+            "yaw_from_reset_rad": self.yaw_from_reset(),
             "height_above_floor_m": (
                 float(pose[2] - lim.z_floor_m) if lim.z_floor_m is not None else None
             ),
@@ -278,11 +355,15 @@ class PiperController:
         gripper: str | None = None,
         frame: str = "base",
         reopen_empty: bool = True,
+        continuous: bool = False,
     ) -> dict[str, Any]:
         """Translate by ``delta_xyz`` (m), yaw by ``yaw`` (rad), then open/close.
 
         ``reopen_empty=False`` leaves a close that caught nothing closed (for a caller
         that runs its own recovery, e.g. the units layer's recovery plugin).
+        ``continuous``: another translation in about the same direction follows at once
+        (the rest of a repeated unit); with ``smooth`` and ``smooth_blend`` a pure
+        translation then ends at cruise speed and the next one chains onto it.
         """
         delta = np.asarray(delta_xyz, dtype=float).reshape(-1)
         yaw = float(yaw)
@@ -305,6 +386,15 @@ class PiperController:
                 f"yaw {yaw:.4f} rad exceeds the limit of {lim.max_yaw_rad} rad per call"
             )
         self._ensure_synced()
+        if yaw != 0:
+            turned = self.yaw_from_reset(yaw)
+            if abs(turned) > lim.max_total_yaw_rad + 1e-9:
+                raise ValueError(
+                    f"yaw {yaw:.4f} rad would turn the gripper "
+                    f"{math.degrees(turned):.0f} deg from its heading at the last reset; the "
+                    f"limit is {math.degrees(lim.max_total_yaw_rad):.0f} deg "
+                    "(limits.max_total_yaw_rad). Turn back first; nothing was commanded"
+                )
         report = StepReport()
         pre = np.asarray(self.robot.get_ee_pose(), dtype=float)
         base_delta = delta
@@ -319,8 +409,12 @@ class PiperController:
                 )
         try:
             if norm > 0 or yaw != 0:
-                self._move(base_delta, yaw, report)
+                pure = yaw == 0 and gripper is None
+                self._move(base_delta, yaw, report, bool(continuous) and pure)
+            else:
+                self.end_stream()
             if gripper is not None:
+                self.end_stream()
                 self._gripper(gripper == "close", report, reopen_empty)
         except Stopped:
             report.cancelled = True
@@ -346,9 +440,55 @@ class PiperController:
             "gripper_closed": self.gripper_closed,
             "notes": report.notes,
         }
+        if self.limits.smooth and self.backend == "joint_stream":
+            out["chained"] = report.chained
+            out["flowing"] = self._stream_dir is not None
         if report.cancelled:
             out["cancelled"] = True
         return out
+
+    # -- chained motion ---------------------------------------------------
+
+    def _stream_live(self) -> bool:
+        """Whether a chained translation may still be flowing (within the window)."""
+        return self._stream_dir is not None and self.clock() <= self._stream_until
+
+    def end_stream(self) -> None:
+        """Show-Harness ``end_stream``: bring a chained motion to rest (settle at the last
+        joint target). A no-op at rest or once the chain window has passed."""
+        live = self._stream_live()
+        self._stream_dir = None
+        if live and self._q_cmd is not None:
+            self._joint_settle()
+
+    def plan(
+        self, dist_m: float, angle_rad: float, v0: float = 0.0, v1: float = 0.0
+    ) -> tuple[list[float], float]:
+        """(fractions, delay) of one joint-stream move, at ``joint_stream_hz``.
+
+        ``smooth``: Show-Harness's min-jerk / cruise profile (``SmoothPlugin.plan``) over
+        ``smooth_substeps * smooth_dt_s``, evaluated at the stream rate (their joint
+        stream resamples it there too), and stretched until its peak, sized on the
+        rest-to-rest profile so equal moves of a chain get equal durations, stays within
+        ``smooth_max_speed_mps`` and ``yaw_speed_radps``. Otherwise a constant-rate line
+        at ``speed_mps`` (Show-Harness's smooth-off fallback).
+        """
+        lim = self.limits
+        if lim.smooth:
+            peak = max(profile_peak(), profile_peak(v0, v1))
+            duration = max(
+                lim.smooth_substeps * lim.smooth_dt_s,
+                peak * dist_m / lim.smooth_max_speed_mps,
+                peak * angle_rad / lim.yaw_speed_radps,
+            )
+        else:
+            duration = max(
+                dist_m / lim.speed_mps, angle_rad / lim.yaw_speed_radps, 0.15
+            )
+        n = max(2, int(round(lim.joint_stream_hz * duration)))
+        if lim.smooth:
+            return smooth_fractions(n, v0, v1), duration / n
+        return [i / n for i in range(1, n + 1)], duration / n
 
     def _check_stop(self) -> None:
         if self.stop_requested():
@@ -358,6 +498,50 @@ class PiperController:
         self._check_stop()
         if seconds > 0:
             self.sleep(seconds)
+
+    def violation(self, pos: np.ndarray) -> np.ndarray:
+        """Per-axis distance (m) of ``pos`` outside the workspace box / above-floor space."""
+        lim = self.limits
+        p = np.asarray(pos, dtype=float)
+        out = np.zeros(3)
+        if lim.workspace_min is not None:
+            lo = np.asarray(lim.workspace_min, float)
+            hi = np.asarray(lim.workspace_max, float)
+            out = np.maximum(lo - p, 0.0) + np.maximum(p - hi, 0.0)
+        if lim.enable_z_floor and lim.z_floor_m is not None:
+            out[2] = max(out[2], lim.z_floor_m - p[2])
+        return out
+
+    def check_joint_path(self, start: np.ndarray, goal: np.ndarray, steps: int) -> None:
+        """Refuse a joint-space move whose EEF path leaves the floor/box.
+
+        The reset streams a straight joint-space line, which can dip below the Z floor
+        or swing out of the box between two poses that are inside it. Every waypoint's
+        FK position (shifted by the FK-vs-feedback offset measured at the start) must
+        not be further outside than the start is (a reset may climb out of a violation,
+        never deepen one), and the goal must be inside.
+        """
+        fk = self._fk
+        if fk is None:
+            raise ValueError(
+                "no forward kinematics to check the joint path; sync first"
+            )
+        measured = np.asarray(self.robot.get_ee_pose(), dtype=float)[:3]
+        offset = measured - np.asarray(fk.fk(start)[0], dtype=float)
+        allowed = self.violation(measured) + 1e-3
+        for i in range(1, steps + 1):
+            q = start + (goal - start) * (i / steps)
+            p = np.asarray(fk.fk(q)[0], dtype=float) + offset
+            v = self.violation(p)
+            bad = (v > allowed) | ((v > 1e-3) if i == steps else False)
+            if np.any(bad):
+                axes = "".join("xyz"[k] for k in range(3) if bad[k])
+                where = "the goal" if i == steps else f"{i * 100 // steps}% of the way"
+                raise ValueError(
+                    f"joint move refused: at {where} the gripper would be at "
+                    f"{np.round(p, 3).tolist()} m, {float(v.max()):.3f} m outside the Z floor / "
+                    f"workspace box ({axes}); nothing was commanded"
+                )
 
     def clamp_target(self, pos: np.ndarray) -> tuple[np.ndarray, list[str]]:
         """Clamp a setpoint into the workspace box and above the Z floor."""
@@ -380,7 +564,13 @@ class PiperController:
             out[2] = lim.z_floor_m
         return out, notes
 
-    def _move(self, delta: np.ndarray, yaw: float, report: StepReport) -> None:
+    def _move(
+        self,
+        delta: np.ndarray,
+        yaw: float,
+        report: StepReport,
+        continuous: bool = False,
+    ) -> None:
         start_pos = self._target_pos.copy()
         start_euler = self._target_euler.copy()
         target, notes = self.clamp_target(start_pos + delta)
@@ -389,7 +579,7 @@ class PiperController:
         self._target_euler = start_euler.copy()
         self._target_euler[2] += yaw
         if self.backend == "joint_stream":
-            self._drive_joint_stream(start_pos, start_euler, report)
+            self._drive_joint_stream(start_pos, start_euler, report, continuous)
         else:
             self._drive_endpose()
         self._guard_divergence(report)
@@ -410,27 +600,46 @@ class PiperController:
             self._wait(self.limits.settle_dt_s)
 
     def _drive_joint_stream(
-        self, start_pos: np.ndarray, start_euler: np.ndarray, report: StepReport
+        self,
+        start_pos: np.ndarray,
+        start_euler: np.ndarray,
+        report: StepReport,
+        continuous: bool = False,
     ) -> None:
         lim = self.limits
         dpos = self._target_pos - start_pos
         deuler = self._target_euler - start_euler
         dist = float(np.linalg.norm(dpos))
-        duration = max(
-            dist / lim.speed_mps,
-            float(np.abs(deuler).max()) / lim.yaw_speed_radps,
-            0.15,
-        )
-        n = max(2, int(round(lim.joint_stream_hz * duration)))
-        dt = duration / n
+        angle = float(np.abs(deuler).max())
+        # Chaining (Show-Harness piper_atomic_controller._drive_to_target): only a pure
+        # translation continues a live stream in about its direction.
+        blend = lim.smooth and lim.smooth_blend
+        pure = dist > 1e-9 and angle <= 1e-9
+        unit = dpos / dist if dist > 1e-9 else None
+        v0 = 0.0
+        if (
+            blend
+            and pure
+            and self._stream_live()
+            and float(np.dot(unit, self._stream_dir)) >= CHAIN_MIN_COS
+        ):
+            v0 = lim.smooth_cruise
+        else:
+            self.end_stream()
+        self._stream_dir = None
+        report.chained = v0 > 0.0
+        v1 = lim.smooth_cruise if blend and pure and continuous else 0.0
+        fractions, dt = self.plan(dist, angle, v0, v1)
+        n = len(fractions)
         q = self._q_cmd
         for i in range(1, n + 1):
+            prev = fractions[i - 2] if i > 1 else 0.0
             try:
                 self._check_stop()
             except Stopped:
-                self._clamp_at(q, (i - 1) / n, "stopped", report)
+                self._clamp_at(q, prev, "stopped", report)
                 raise
-            frac = i / n
+            frac = fractions[i - 1]
             rot = R.from_euler("xyz", start_euler + deuler * frac).as_matrix()
             sol, _dev = self._kin.ik_bounded(
                 start_pos + dpos * frac, rot, q_seed=q, max_ori_dev_rad=lim.ori_flex_rad
@@ -448,7 +657,7 @@ class PiperController:
                         :6
                     ]
                 else:
-                    self._clamp_at(q, (i - 1) / n, "reach clamp", report)
+                    self._clamp_at(q, prev, "reach clamp", report)
                 return
             q = sol
             self.robot.stream_joints(q)
@@ -456,7 +665,12 @@ class PiperController:
                 self.sleep(dt)
         self._q_cmd = q
         self.robot.note_commanded_pose(self.target_pose)
-        self._joint_settle()
+        if v1 > 0.0:
+            # Flow into the next move: no settle; remember what the stream rides.
+            self._stream_dir = unit
+            self._stream_until = self.clock() + lim.smooth_chain_window_s
+        else:
+            self._joint_settle()
 
     def _clamp_at(
         self, q_last: np.ndarray, frac: float, why: str, report: StepReport
@@ -589,11 +803,14 @@ class PiperController:
                 f"target joints {goal.tolist()} are outside the joint limits"
             )
         start = np.asarray(self.robot.get_joint_positions(), dtype=float)[:6]
+        steps = max(2, int(round(lim.joint_stream_hz * max(0.1, lim.reset_time_s))))
+        period = max(0.1, lim.reset_time_s) / steps
+        # The Z floor and the box hold on the reset path too (refused before any motion).
+        self._ensure_synced()
+        self.check_joint_path(start, goal, steps)
         # The Cartesian setpoint is meaningless once the reset streams; a failure below
         # leaves it invalid so the next step re-syncs from the measured pose.
         self._invalidate()
-        steps = max(2, int(round(lim.joint_stream_hz * max(0.1, lim.reset_time_s))))
-        period = max(0.1, lim.reset_time_s) / steps
         cancelled = False
         q = start
         try:
@@ -616,6 +833,9 @@ class PiperController:
         err = float(
             np.abs(np.asarray(self.robot.get_joint_positions())[:6] - goal).max()
         )
+        if not cancelled and err < lim.reset_tolerance_rad:
+            # At the begin/rest pose: the yaw budget restarts from this heading.
+            self._yaw_ref = float(self._target_euler[2])
         out = {
             "ok": not cancelled and err < lim.reset_tolerance_rad,
             "target_joints": goal.tolist(),

@@ -64,11 +64,18 @@ with `--env` / `--vla` / `--sam3`. Real-arm robots (Franka, dual Franka) stay on
 
 | Robot | Extension | Success signal | Shared modules |
 | --- | --- | --- | --- |
-| LIBERO / LIBERO-PRO | `src/libero` | LIBERO `terminated` | memory, explore, video, flywheel, operator, Flash, units |
-| RoboCasa | `src/robocasa` | `env._check_success()` | memory, explore, video |
-| RoboTwin | `src/robotwin` | `eval_success` | memory, explore, video |
-| Franka (real) | `src/franka` | operator verdict (`--operator`) | memory guard, operator, units |
-| Dual Franka (real) | `src/dual_franka` | operator verdict (required) | memory guard, operator, units |
+| LIBERO / LIBERO-PRO | `src/libero` | LIBERO `terminated` | all below, plus flywheel, operator, Flash |
+| RoboCasa | `src/robocasa` | `env._check_success()` | all below |
+| RoboTwin | `src/robotwin` | `eval_success` | all below |
+| ManiSkill | `src/maniskill` | ManiSkill `success` | all below |
+| RoboLab | `src/robolab` | RoboLab's task predicate | all below |
+| Franka (real) | `src/franka` | operator verdict (`--operator`) | all below but `--privileged`; explore resets through the operator |
+| Dual Franka (real) | `src/dual_franka` | operator verdict (required) | all below but `--privileged`; explore resets through the operator |
+| Piper / dual Piper (real) | `src/piper` | operator verdict (required) | all below but `--privileged`; explore resets through the operator |
+
+Every robot mounts memory, explore, video, units (so GUMI and the fine-tuned provider), VDM
+(`--vdm`), the primitive registry (`code.api`) and, in simulation, `--privileged`. ManiSkill,
+RoboLab and the Piper publish no memory corpus: they default to the local one exploration writes.
 
 Shared modules:
 

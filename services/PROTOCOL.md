@@ -18,15 +18,15 @@ Every service except the LingBot-VLA launcher speaks the same JSON-over-HTTP RPC
   rules below) makes the server drop the connection instead of answering.
 - The server binds `--host` (default `127.0.0.1`) and `--port` (default `0` = any free
   port) and prints `RPC server listening on http://HOST:PORT` to stdout once bound.
-- **Token (opt-in per server; today libero-env, the one server with `code.run`).** The
+- **Token (opt-in per server; every env server with `code.run`, `utils/code_exec.py` `CodeRunMixin`).** The
   server draws a random 32-hex-digit token at start and prints it on that line only:
   `RPC server listening on http://HOST:PORT (token HEX)` (stdout, i.e. the pipe of the process
   that spawned it; never the log). Every business call and `shutdown` must carry it as
   `"token"`, or it fails with `requires its RPC token`; `healthz`, `stop` and `cancel` need
   none. pi (`robot.serve`) reads it from the line, sends it on every call and writes the line
-  to its log file with the token redacted. The other servers do not require it: pi attaches to
-  some of them by URL, and the env servers call the model servers, neither of which has a way
-  to learn a token.
+  to its log file with the token redacted; to attach to such a server by URL (`--env`), pass
+  `URL#token=HEX`. The other servers do not require it: the env servers call the model servers,
+  which have no way to learn a token.
 - Only HTTP exists. The pickle-framed `socket` transport was removed (unpickling a
   request is remote code execution for anyone who can reach the port); `--transport`
   accepts only `http`.
@@ -133,9 +133,11 @@ below); an unknown name is an error that lists them.
 
 `code.api` (read-only; every env server: each robot's `primitives.py`): the server's
 primitive registry (`components/code_api.py`), what a code-as-policy caller may use. kw
-`tier=null` (`"high"`, `"low"`, `"privileged"` = high plus ground truth; null = every non-privileged
-primitive) -> `{"tier": str | null, "primitives": [{"name", "method", "doc", "params": {name:
-{"type", "description", "required"}}, "mutating", "tiers"}], "digest": sha256 hex}`. Each
+`tier=null` (`"high"`, `"low"`, `"privileged"` = high plus ground truth, `"low-noexamples"` = the
+low tier without the usage examples, CaP-X's S4; null = every non-privileged primitive) ->
+`{"tier": str | null, "primitives": [{"name", "method", "doc", "params": {name: {"type",
+"description", "required"}}, "mutating", "tiers", "example"?}], "digest": sha256 hex}` (`example`,
+a short Python usage, only on primitives that declare one and never in `low-noexamples`). Each
 primitive names the `env.*` method that runs it, so a primitive call is the tool's call, with the
 same limits; the digest names the API version an episode ran with (pi records it as
 `code_api_digest`). A server without a registry answers `unknown RPC method: 'code.api'`.
@@ -208,6 +210,15 @@ reset restores the same state and the same actions give bitwise-identical transi
 
 #### Code mode (`code.run`, `code.helpers`; pi's `--code`, CaP-X's run_code)
 
+Every env server that mixes in `utils/code_exec.py` `CodeRunMixin` serves `code.run` over its
+registry the same way (libero-env first; robosuite-env: its motion primitives' replies to a program
+drop the observation images and video frames, which go to the run's `frames`, and a raw `step`
+answers `{reward, success, truncated, state}`; its run fields are `steps` (control steps in the
+run), `success`, `success_step` (the episode's), `obs` (the tools' observation) and `frames` (at
+most 128, halved when full)). `tier` also accepts `low-noexamples` (the low tier's primitives,
+docs without their examples). pi's `--code-oracle <file>` sends a ported CaP-X human oracle
+(`packages/embodied/src/<robot>/oracle/`) as one `code.run` instead of asking the model.
+
 libero-env serves `code.run` over its registry (`code.api`, above): the runner is
 `utils/code_exec.py` (`CodeRunner` + `registry_primitives`), and every call a program makes goes
 through `CodeApi.resolve` (the declared name, parameters and tier) to the registered `env.*`
@@ -225,7 +236,7 @@ privileged tier is the high tier plus `ground_truth_poses`. `gripper=None` keeps
 
 | method | args | result |
 |---|---|---|
-| `code.run` | kw `code` str, `timeout_s=60`, `tier="high"` (`high`, `low`, `privileged`), `max_calls=50`, `max_move_m=null`, `helpers=false` | `{"status": "ran" | "error" | "timeout", "stdout", "stderr" (8 KB each), "traceback", "error", "result" (the program's `RESULT`, JSON-able), "calls": [{name, args, kwargs, ms, error?, refused?, move_m?, cancelled?}], "n_calls", "move_m", "limit"?, "cancelled"?, "stop_issued"?, "timeout_s", "ms"}` plus the server's run fields (libero-env: `steps`, `success_step` (within the run, or null), `terminated`, `truncated`, `obs` (pi's `Obs`), `frames` (one agentview image per mutating primitive, at most 32)) |
+| `code.run` | kw `code` str, `timeout_s=60`, `tier="high"` (`high`, `low`, `low-noexamples`, `privileged`), `max_calls=50`, `max_move_m=null`, `helpers=false` | `{"status": "ran" | "error" | "timeout", "stdout", "stderr" (8 KB each), "traceback", "error", "result" (the program's `RESULT`, JSON-able), "calls": [{name, args, kwargs, ms, error?, refused?, move_m?, cancelled?}], "n_calls", "move_m", "limit"?, "cancelled"?, "stop_issued"?, "timeout_s", "ms"}` plus the server's run fields (libero-env: `steps`, `success_step` (within the run, or null), `terminated`, `truncated`, `obs` (pi's `Obs`), `frames` (one agentview image per mutating primitive, at most 32)) |
 | `code.helpers` | - | `[{"name", "signature", "doc", "kind": "helper"}]`: CaP-X's nine numpy helpers a run with `helpers=true` injects (pure computation) |
 
 `code.run` starts a fresh Python process (`python -c`, not a re-import of the server) that
@@ -403,6 +414,7 @@ handover task renders no instance segmentation.
 | `env.ground_truth_poses` | kw `names=null` | poses of robosuite's task objects (`cube`; `cubeA`, `cubeB`; `SquareNut`, `RoundNut`, `peg1`, `peg2`; `pot` + `pot_handle0` / `pot_handle1`; `hammer` + `hammer_handle`; Wipe's dirt markers) |
 | `env.preview_reach` | `pos`, `quat_xyzw=null`, kw `arm` | the `--ik` reach preview (robot model `panda_libero`), or the `unknown` answer without it |
 | `code.api` | kw `tier=null` | the primitive registry (`robots/robosuite/primitives.py`): high = `get_state`, `get_observation`, `segment`, `back_project`, `preview_reach`, `move_to`, `set_gripper`; low = `get_state`, `get_observation`, `move_delta`, `set_gripper`, `raw_obs`, `render_camera`, `get_camera_meta`, `step`; privileged adds `ground_truth_poses`; a grasp server (`--contact-graspnet` ...) adds its planner's |
+| `code.run`, `code.helpers` | as libero-env (Code mode, above) | robosuite-env's run fields: `steps`, `success`, `success_step`, `obs`, `frames`; the server requires its RPC token |
 
 `stop` interrupts `env.move_to` / `env.move_delta` / `env.set_gripper` between control steps
 (`info.cancelled`) and `env.chunk_step` between actions.

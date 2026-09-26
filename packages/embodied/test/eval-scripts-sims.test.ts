@@ -162,3 +162,33 @@ test("behavior/eval.sh records --grasping-mode (sticky without it) and never mix
 	assert.equal(same.status, 0, same.stdout + same.stderr);
 	assert.match(same.stdout, /\/grasp=sticky: success 1\/1/);
 });
+
+for (const [robot, positional, cell] of [
+	["robosuite", ["Lift", "0"], "Lift_s0"],
+	["libero", ["libero_spatial", "0", "0"], "libero_spatial_t0_s0"],
+] as const) {
+	test(`${robot}/eval.sh records a --code-oracle run from the robot's stderr line and never mixes it with model runs`, () => {
+		const dir = mkdtempSync(join(tmpdir(), "eval-"));
+		const pi = join(dir, "pi");
+		// An oracle run: no session file (no assistant message), only the robot's result line on stderr.
+		const line = JSON.stringify({ robot, success: true, terminated: true, env_error: false, planner_error: null });
+		writeFileSync(pi, `#!/usr/bin/env bash\necho '[code-oracle] ran' >&2\necho '[${robot}] ${line}' >&2\n`);
+		chmodSync(pi, 0o755);
+		const script = new URL(`../src/${robot}/eval.sh`, import.meta.url).pathname;
+		const once = (args: string[]) =>
+			spawnSync("bash", [script, join(dir, "out"), ...positional, ...args], {
+				env: { ...process.env, PI: pi, TIME_LIMIT: "0" },
+				encoding: "utf8",
+			});
+		const first = once(["--code=true", "--privileged", "--code-oracle", "lift_privileged"]);
+		assert.equal(first.status, 0, first.stderr + first.stdout);
+		const r = JSON.parse(readFileSync(join(dir, "out", cell, "result.json"), "utf8"));
+		assert.equal(r.status, "success");
+		assert.equal(r.code, "true");
+		assert.equal(r.code_oracle, "lift_privileged");
+		assert.match(first.stdout, /oracle=lift_privileged/);
+		const model = once(["--code=true", "--privileged"]);
+		assert.equal(model.status, 1);
+		assert.match(model.stderr, /code mode/);
+	});
+}

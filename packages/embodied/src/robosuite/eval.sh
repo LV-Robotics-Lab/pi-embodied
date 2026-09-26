@@ -140,6 +140,13 @@ for (const f of readdirSync(dir).filter((f) => f.endsWith(".jsonl"))) {
 		if (e.type === "custom" && e.customType === "robot_result") results.push(e.data);
 	}
 }
+// An oracle run (--code-oracle) asks no model, and pi writes no session file without an assistant
+// message: the result line the robot prints on stderr is the result.
+if (!results.length && codeOracle && codeMode !== "false")
+	try {
+		for (const line of readFileSync(`${dir}/stderr.log`, "utf8").split("\n"))
+			if (line.startsWith("[robosuite] {")) results.push(JSON.parse(line.slice("[robosuite] ".length)));
+	} catch {}
 const last = results.length === 1 ? results[0] : undefined;
 const status = Number(code) === 124 ? "timeout" : results.length > 1 ? "duplicate_result"
 	: !last ? (Number(code) ? "env_error" : "missing")

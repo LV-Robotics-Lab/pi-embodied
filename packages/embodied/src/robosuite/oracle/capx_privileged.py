@@ -8,7 +8,10 @@
 # - goto_pose servos the TCP (robosuite's grip site) with move_to instead of solving IK for
 #   panda_hand, so no TCP offset is applied: CaP-X's positions are already the fingertip point.
 # - A move longer than the server's per-call cap is split into straight legs of <= MAX_LEG_M.
-# - Quaternions are CaP-X's wxyz; move_to takes xyzw (converted here).
+# - Quaternions are CaP-X's wxyz for panda_hand; move_to takes xyzw for robosuite's grip site,
+#   which is the hand turned half a turn about its own z (measured on the box: CaP-X's "gripper
+#   down" wxyz (0, 0, 1, 0) is the grip site's (1, 0, 0, 0) xyzw at reset, 180 deg about x rather
+#   than about y). _xyzw applies that turn, so CaP-X's orientations mean what they meant there.
 import math
 
 import numpy as np
@@ -17,9 +20,28 @@ MAX_LEG_M = 0.25
 ARM = None
 
 
+#: panda_hand -> robosuite's grip site: half a turn about the hand's z (wxyz).
+HAND_TO_SITE_WXYZ = np.array([0.0, 0.0, 0.0, 1.0])
+
+
+def _mul(a, b):
+    """Hamilton product of wxyz quaternions."""
+    w1, x1, y1, z1 = a
+    w2, x2, y2, z2 = b
+    return np.array(
+        [
+            w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+            w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+            w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+            w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+        ]
+    )
+
+
 def _xyzw(q_wxyz):
     q = np.asarray(q_wxyz, dtype=np.float64).reshape(4)
-    return [float(q[1]), float(q[2]), float(q[3]), float(q[0])]
+    w, x, y, z = _mul(q / np.linalg.norm(q), HAND_TO_SITE_WXYZ)
+    return [float(x), float(y), float(z), float(w)]
 
 
 def _matrix(q_wxyz):

@@ -135,13 +135,21 @@ def load_policy(
 
     os.environ.setdefault("ROBOT_PLATFORM", "LIBERO")
     sys.path.insert(0, repo or os.path.dirname(os.path.dirname(prismatic.__file__)))
-    from experiments.robot.openvla_utils import (
-        get_action_head,
-        get_processor,
-        get_proprio_projector,
-        get_vla,
-        get_vla_action,
-    )
+    # openvla_utils runs json_numpy.patch() at import, replacing json.dumps/loads process-wide: the
+    # RPC server's replies then carried {"__numpy__": ...} instead of the wire's __ndarray__ and
+    # pi could not read the actions. Keep the json module as it was.
+    saved = {name: getattr(json, name) for name in ("dumps", "loads", "dump", "load")}
+    try:
+        from experiments.robot.openvla_utils import (
+            get_action_head,
+            get_processor,
+            get_proprio_projector,
+            get_vla,
+            get_vla_action,
+        )
+    finally:
+        for name, fn in saved.items():
+            setattr(json, name, fn)
     from transformers import AutoConfig
 
     keys = norm_stat_keys(path) or list(

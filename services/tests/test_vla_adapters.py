@@ -276,3 +276,45 @@ def test_oft_unnorm_keys_come_from_the_fine_tunes_dataset_statistics(tmp_path):
         '{"libero_spatial_no_noops": {"action": {}, "proprio": {}}}'
     )
     assert norm_stat_keys(str(tmp_path)) == ["libero_spatial_no_noops"]
+
+
+def test_oft_loading_keeps_the_json_module_that_openvla_utils_patches(
+    tmp_path, monkeypatch
+):
+    """openvla-oft's openvla_utils calls json_numpy.patch() at import; the RPC replies must keep
+    the wire's own encoding, so load_policy puts json back."""
+    import json
+    import sys
+    import types
+
+    from pi_embodied_services.components import openvla_oft_server
+
+    robot = tmp_path / "repo" / "experiments" / "robot"
+    robot.mkdir(parents=True)
+    (robot.parent / "__init__.py").write_text("")
+    (robot / "__init__.py").write_text("")
+    (robot / "openvla_utils.py").write_text(
+        "import json\n"
+        "json.dumps = json.loads = json.dump = json.load = None  # json_numpy.patch()\n"
+        "class _Vla:\n    llm_dim = 8\n"
+        "def get_vla(cfg): return _Vla()\n"
+        "def get_processor(cfg): return None\n"
+        "def get_action_head(cfg, llm_dim): return None\n"
+        "def get_proprio_projector(cfg, llm_dim, proprio_dim): return None\n"
+        "def get_vla_action(*a, **k): return []\n"
+    )
+    ckpt = tmp_path / "ckpt"
+    ckpt.mkdir()
+    (ckpt / "dataset_statistics.json").write_text('{"libero_spatial_no_noops": {}}')
+    for name in ("prismatic", "torch", "transformers"):
+        monkeypatch.setitem(sys.modules, name, types.SimpleNamespace(AutoConfig=None))
+    monkeypatch.delitem(sys.modules, "experiments", raising=False)
+    monkeypatch.delitem(sys.modules, "experiments.robot", raising=False)
+    monkeypatch.delitem(sys.modules, "experiments.robot.openvla_utils", raising=False)
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    before = (json.dumps, json.loads, json.dump, json.load)
+    _policy, key = openvla_oft_server.load_policy(
+        str(ckpt), None, True, str(tmp_path / "repo")
+    )
+    assert key == "libero_spatial_no_noops"
+    assert (json.dumps, json.loads, json.dump, json.load) == before

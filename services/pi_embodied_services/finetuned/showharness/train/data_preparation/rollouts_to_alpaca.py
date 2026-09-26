@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Copyright 2026 The Show-Harness Authors. Licensed under the Apache License, Version 2.0.
-# Modified by pi-embodied: vendored from github.com/showlab/Show-Harness @137d571 (train/data_preparation/rollouts_to_alpaca.py), the lite/--franka/--piper/--dual converter; --use-subgoal and --use-affordance need generate_subgoals.py / generate_affordance.py, which are not vendored (they import Show-Harness's planner plugins).
+# Modified by pi-embodied: vendored from github.com/showlab/Show-Harness @137d571 (train/data_preparation/rollouts_to_alpaca.py), the lite/--franka/--piper/--dual converter; --use-subgoal and --use-affordance run the standalone generate_subgoals.py / generate_affordance.py next to it (./vlm_planning.py), and prompts/v3/mvtoken_generator{,_affordance}.txt are our reconstruction (not in Show-Harness @137d571).
 """Convert rollout directories to the Alpaca multimodal format (what LLaMA Factory consumes).
 
 Each action step becomes one training sample. The two camera images are placed at the TOP

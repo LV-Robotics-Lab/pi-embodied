@@ -38,6 +38,14 @@
  * (`other`; both arms at once where the robot has `applyPair`). Both arms open first; STILL holds an
  * arm; a lone DONE holds that arm; DONE on both arms finishes; an unparsable reply holds both arms.
  *
+ * Conditioned adapters (`--ft-prompt v3-subgoal|v3-affordance`): the prompt carries the task's planner
+ * subgoal (--ft-task-config, task_config.json of generate_subgoals.py) or one grasp hint
+ * (--ft-affordance-config, affordance_config.json of generate_affordance.py), as rollouts_to_alpaca.py
+ * --use-subgoal / --use-affordance render training samples; the subgoal follows the converter's phase
+ * anchors (the policy's own GRASP, then RELEASE) and advances evenly within a phase over
+ * --ft-phase-steps (the converter splits recorded phases evenly; at inference the length is unknown, and
+ * the step that should release still sees the transport subgoal, since RELEASE is what ends the phase).
+ *
  * Every step appends a `finetuned_step` entry: the token, the raw reply, the exact prompt text and
  * the pixel fingerprint (sha1 of the uint8 HWC bytes) of each image sent, in wire order.
  *
@@ -161,7 +169,57 @@ export const PROMPTS: Record<string, string> = {
 	v3: readFileSync(new URL("./templates/v3_mvtoken_generator_lite.txt", import.meta.url), "utf8").trim(),
 	"v4-franka": readFileSync(new URL("./templates/v3_mvtoken_generator_lite.txt", import.meta.url), "utf8").trim(),
 	"v4-piper": readFileSync(new URL("./templates/v4_piper_mvtoken_lite.txt", import.meta.url), "utf8").trim(),
+	// Conditioned on the planner's subgoals (task_config.json) or one grasp hint (affordance_config.json):
+	// our reconstruction of prompts/v3/mvtoken_generator{,_affordance}.txt (not in Show-Harness @137d571).
+	"v3-subgoal": readFileSync(new URL("./templates/v3_mvtoken_generator_subgoal.txt", import.meta.url), "utf8").trim(),
+	"v3-affordance": readFileSync(
+		new URL("./templates/v3_mvtoken_generator_affordance.txt", import.meta.url),
+		"utf8",
+	).trim(),
 };
+
+type Subgoal = { motion?: string; target?: string; affordance?: string; description?: string; completion?: string };
+/** rollouts_to_alpaca.py's motion keywords that find the grasp and release subgoals (the phase anchors). */
+const GRASP_MOTION_KW = ["grasp", "pick", "grip", "grab", "clamp", "secure", "close"];
+const RELEASE_MOTION_KW = ["release", "open", "drop", "ungrip", "let_go", "letgo"];
+const findMotion = (sgs: readonly Subgoal[], kws: readonly string[], start = 0) => {
+	for (let j = start; j < sgs.length; j++)
+		if (
+			kws.some((k) =>
+				String(sgs[j].motion ?? "")
+					.toLowerCase()
+					.includes(k),
+			)
+		)
+			return j;
+	return undefined;
+};
+/**
+ * The subgoal a step runs under, as rollouts_to_alpaca.py _assign_subgoals_to_steps aligns training
+ * steps: the policy's own GRASP and RELEASE anchor three phases (approach + grasp: subgoals up to the
+ * grasp one; transport: those between; release + retract: the rest), and within a phase the subgoals
+ * advance evenly over `phaseSteps` steps (the converter splits a phase's recorded steps evenly; at
+ * inference its length is not known, so --ft-phase-steps stands in for it).
+ */
+export function activeSubgoal(
+	sgs: readonly Subgoal[],
+	phase: 0 | 1 | 2,
+	stepInPhase: number,
+	phaseSteps: number,
+): { index: number; subgoal: Subgoal } | undefined {
+	if (!sgs.length) return undefined;
+	const g = findMotion(sgs, GRASP_MOTION_KW) ?? 0;
+	const r = findMotion(sgs, RELEASE_MOTION_KW, g + 1) ?? sgs.length - 1;
+	const ranges: [number, number][] = [
+		[0, g + 1],
+		r > g + 1 ? [g + 1, r] : [Math.min(r, sgs.length - 1), Math.min(r, sgs.length - 1) + 1],
+		[r, sgs.length],
+	];
+	const [a, b] = ranges[phase];
+	const n = Math.max(1, b - a);
+	const k = Math.min(n - 1, Math.floor((Math.max(0, stepInPhase) * n) / Math.max(1, phaseSteps)));
+	return { index: a + k, subgoal: sgs[a + k] };
+}
 /**
  * The v5 prompt (prompt_v5.txt of the gated HF dataset aaroncaozj/libero_show-harness_tokenized),
  * vendored here once fetched; until then `--ft-prompt v5` needs `--ft-prompt-file`.
@@ -181,6 +239,8 @@ export const PRESETS: Record<string, Preset> = {
 	v3: RUNNER,
 	"v4-franka": RUNNER,
 	"v4-piper": RUNNER,
+	"v3-subgoal": RUNNER,
+	"v3-affordance": RUNNER,
 	v5: { maxSteps: 200, stuckGuardMm: 5, ignoreDone: true, oov: "reask" },
 	// configs/robot_piper_ft.yaml max_steps (the dual runner's budget); no guard, DONE ends (both arms).
 	...Object.fromEntries(
@@ -538,6 +598,28 @@ export default function finetuned(pi: ExtensionAPI) {
 		default: "",
 		description: "Execution-boundary token swap, e.g. MV_FWD,MV_BACK (the released ft adapters on the AgileX rig)",
 	});
+	pi.registerFlag("ft-task-config", {
+		type: "string",
+		default: "",
+		description:
+			"--ft-prompt v3-subgoal: the task's task_config.json (generate_subgoals.py) whose subgoals condition each step",
+	});
+	pi.registerFlag("ft-affordance-config", {
+		type: "string",
+		default: "",
+		description: "--ft-prompt v3-affordance: the task's affordance_config.json (generate_affordance.py)",
+	});
+	pi.registerFlag("ft-phase-steps", {
+		type: "string",
+		default: "20",
+		description: "--ft-prompt v3-subgoal: steps over which a phase's subgoals advance (the converter's even split)",
+	});
+	pi.registerFlag("ft-gripper-color", {
+		type: "string",
+		default: "black",
+		description:
+			"--ft-prompt v3-subgoal: the {gripper_color} the adapter was trained with (rollouts_to_alpaca.py --gripper-color)",
+	});
 	pi.registerFlag("ft-max-steps", {
 		type: "string",
 		default: "auto",
@@ -549,6 +631,9 @@ export default function finetuned(pi: ExtensionAPI) {
 	let over = false;
 	let steps = 0;
 	let recent: string[] = [];
+	/** Subgoal prompts: the phase (0 approach+grasp, 1 transport, 2 release+retract) and its steps so far. */
+	let phase: 0 | 1 | 2 = 0;
+	let phaseStep = 0;
 	/** Dual prompts: each arm's history (moves and STILL), newest first. */
 	let recentDual: Record<string, string[]> = { left: [], right: [] };
 	let pending: string | undefined;
@@ -619,6 +704,8 @@ export default function finetuned(pi: ExtensionAPI) {
 		over = false;
 		steps = ids = dones = 0;
 		recent = [];
+		phase = 0;
+		phaseStep = 0;
 		recentDual = { left: [], right: [] };
 		pending = undefined;
 		robot = envId = "";
@@ -728,6 +815,46 @@ export default function finetuned(pi: ExtensionAPI) {
 		return { text, calls: [] };
 	};
 
+	/** A JSON config a conditioned prompt reads (--ft-task-config, --ft-affordance-config). */
+	const configOf = (name: string, what: string) => {
+		const path = flag(name);
+		if (!path) throw new Error(`--ft-prompt ${version()} needs --${name} <${what}>`);
+		return JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+	};
+	/**
+	 * The per-step fields of the conditioned prompts (rollouts_to_alpaca.py _render): the active
+	 * subgoal's motion, target, affordance, description and completion (v3-subgoal), or the task's
+	 * one grasp hint (v3-affordance); none for the other prompts.
+	 */
+	function conditioning(): { fields: Record<string, string>; record?: Json } {
+		if (version() === "v3-affordance") {
+			const c = configOf("ft-affordance-config", "affordance_config.json");
+			const target = String(c.target ?? "").trim();
+			const affordance = String(c.affordance ?? "").trim();
+			if (!target || !affordance) throw new Error(`${flag("ft-affordance-config")} has no target/affordance`);
+			return { fields: { target, affordance } };
+		}
+		if (version() !== "v3-subgoal") return { fields: {} };
+		const c = configOf("ft-task-config", "task_config.json");
+		const sgs = (
+			Array.isArray(c.subgoals) ? c.subgoals : Array.isArray(c.subgoals_raw) ? c.subgoals_raw : []
+		) as Subgoal[];
+		const active = activeSubgoal(sgs, phase, phaseStep, Number(flag("ft-phase-steps")) || 20);
+		if (!active) throw new Error(`${flag("ft-task-config")} has no subgoals`);
+		const sg = active.subgoal;
+		return {
+			fields: {
+				stage: String(sg.motion ?? ""),
+				target: String(sg.target ?? ""),
+				affordance: String(sg.affordance ?? ""),
+				description: String(sg.description ?? ""),
+				completion: String(sg.completion ?? ""),
+				gripper_color: flag("ft-gripper-color") || "black",
+			},
+			record: { phase, phase_step: phaseStep, subgoal: active.index },
+		};
+	}
+
 	/** The task: --ft-task, else the TASK line of the latest units result, else the robot's task flags. */
 	function taskOf(texts: string[]) {
 		if (flag("ft-task")) return flag("ft-task");
@@ -794,7 +921,13 @@ export default function finetuned(pi: ExtensionAPI) {
 
 		const tpl = template();
 		const allowed = allowedTokens(tpl);
-		const prompt = formatPrompt(tpl, { task: taskOf(texts), recent_moves: recentText(recent), gripper_state: "" });
+		const conditioned = conditioning();
+		const prompt = formatPrompt(tpl, {
+			task: taskOf(texts),
+			recent_moves: recentText(recent),
+			gripper_state: "",
+			...conditioned.fields,
+		});
 		// A camera set learnt only after the first observation (dual Franka's inline views) is checked here too.
 		const wrong = imageRefusal();
 		if (wrong) {
@@ -866,6 +999,7 @@ export default function finetuned(pi: ExtensionAPI) {
 			...(withheld.size ? { withheld: [...withheld] } : {}),
 			...(movedMm !== undefined ? { moved_mm: Number(movedMm.toFixed(2)) } : {}),
 			...(doneSeen ? { done_ignored: dones } : {}),
+			...(conditioned.record ? { conditioning: conditioned.record } : {}),
 		});
 		const extra = [
 			withheld.size ? `withheld ${[...withheld].join(", ")} (no progress)` : "",
@@ -882,6 +1016,12 @@ export default function finetuned(pi: ExtensionAPI) {
 				note,
 			);
 		if (MOTION.has(token)) recent = [token, ...recent].slice(0, RECENT_MOVES_MAX);
+		// The phase anchors of the subgoal prompts: the policy's own GRASP, then its RELEASE.
+		phaseStep++;
+		if ((token === "GRASP" && phase === 0) || (token === "RELEASE" && phase === 1)) {
+			phase = phase === 0 ? 1 : 2;
+			phaseStep = 0;
+		}
 		lastToken = token;
 		const c = call("act", { unit: executed });
 		pending = c.id;

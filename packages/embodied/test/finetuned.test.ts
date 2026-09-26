@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import finetuned, {
+	activeSubgoal,
 	allowedTokens,
 	buildRequest,
 	DUAL_PROMPTS,
@@ -773,4 +774,92 @@ test("dual fine-tuned twice and chain: the request shapes of the scheme", async 
 	const two = fakePi({ "ft-prompt": "v4-piper" }, "piper_dual", ["act", "finish"], DUAL_UNITS);
 	await two.emit("session_start");
 	assert.match(two.warnings.join("\n"), /this robot has two arms/);
+});
+
+const PLAN = [
+	{
+		motion: "GRASP",
+		target: "banana",
+		affordance: "left end",
+		description: "approach then close",
+		completion: "banana between the fingers",
+	},
+	{
+		motion: "LIFT",
+		target: "banana",
+		affordance: "left end",
+		description: "lift",
+		completion: "banana above the table",
+	},
+	{ motion: "MOVE", target: "plate", affordance: "center", description: "carry", completion: "banana over the plate" },
+	{ motion: "RELEASE", target: "plate", affordance: "center", description: "open", completion: "banana on the plate" },
+	{
+		motion: "RETREAT",
+		target: "gripper",
+		affordance: "gripper",
+		description: "lift away",
+		completion: "gripper clear",
+	},
+];
+
+test("subgoal conditioning follows rollouts_to_alpaca.py's phase anchors and even split", () => {
+	assert.equal(activeSubgoal(PLAN, 0, 5, 20)?.index, 0, "approach + grasp: the GRASP subgoal");
+	assert.equal(activeSubgoal(PLAN, 1, 0, 20)?.index, 1, "transport starts at LIFT");
+	assert.equal(activeSubgoal(PLAN, 1, 12, 20)?.index, 2, "and moves on to MOVE over the phase");
+	assert.equal(activeSubgoal(PLAN, 1, 99, 20)?.index, 2, "never past the phase");
+	assert.equal(activeSubgoal(PLAN, 2, 0, 20)?.index, 3);
+	assert.equal(activeSubgoal(PLAN, 2, 15, 20)?.index, 4);
+	assert.equal(activeSubgoal([], 0, 0, 20), undefined);
+});
+
+test("v3-subgoal and v3-affordance prompts carry the task's config; the policy's GRASP moves the phase", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "ft-cond-"));
+	writeFileSync(join(dir, "task_config.json"), JSON.stringify({ task: TASK, subgoals: PLAN }));
+	writeFileSync(
+		join(dir, "affordance_config.json"),
+		JSON.stringify({ task: TASK, target: "banana", affordance: "left end" }),
+	);
+	const ep = await endpoint(["GRASP", "MV_UP", "MV_LEFT"]);
+	try {
+		const p = fakePi({
+			"ft-endpoint": ep.url,
+			"ft-prompt": "v3-subgoal",
+			"ft-task-config": join(dir, "task_config.json"),
+		});
+		await p.emit("session_start");
+		const t0 = await p.turn([]);
+		const h: unknown[] = [t0, ...observation(t0)];
+		for (let i = 0; i < 2; i++) {
+			const m = await p.turn(h);
+			h.push(m, ...observation(m));
+		}
+		const texts = ep.bodies.map((b) => b.body.messages[0].content.at(-1).text as string);
+		assert.match(
+			texts[0],
+			/Stage: GRASP\nTarget: banana\nAffordance: left end\nStage goal: approach then close\nDone when: banana between the fingers\n/,
+		);
+		assert.match(texts[0], /between the black gripper fingers/);
+		assert.match(texts[1], /Stage: LIFT\n/, "after the policy's GRASP: transport");
+		const steps = p.entries.filter((e) => e.type === STEP_ENTRY).map((e) => e.data.conditioning);
+		assert.deepEqual(steps[1], { phase: 1, phase_step: 0, subgoal: 1 });
+
+		const q = fakePi({
+			"ft-endpoint": ep.url,
+			"ft-prompt": "v3-affordance",
+			"ft-affordance-config": join(dir, "affordance_config.json"),
+		});
+		await q.emit("session_start");
+		const q0 = await q.turn([]);
+		await q.turn([q0, ...observation(q0)]);
+		assert.match(ep.bodies.at(-1)?.body.messages[0].content.at(-1).text, /Grasp first: banana, at left end\n/);
+		// Without its config the conditioned prompt fails rather than rendering blanks.
+		const r = fakePi({ "ft-endpoint": ep.url, "ft-prompt": "v3-subgoal" });
+		await r.emit("session_start");
+		const r0 = await r.turn([]);
+		const failed = await r.turn([r0, ...observation(r0)]);
+		assert.equal(failed.stopReason, "error");
+		assert.match(failed.errorMessage, /needs --ft-task-config/);
+	} finally {
+		await ep.close();
+	}
 });

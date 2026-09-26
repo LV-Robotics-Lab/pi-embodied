@@ -19,14 +19,16 @@ export type UnitsHandle = {
 	tool: string;
 	/** Arm names on a dual-arm robot (`act`'s `arm`), [] on one arm. */
 	arms: readonly string[];
-	/** Units `act` accepts. */
+	/** Units `act` accepts (a robot's own vocabulary: its unit names). */
 	vocabulary: readonly string[];
+	/** A robot's own vocabulary: GUMI key bindings, KeyboardEvent.code -> the unit as recorded ("TURN(45)"). */
+	keys?: Record<string, string>;
 	stepM: number;
 	yawStepRad?: number;
 	/** What one `act` call does (grounding, `apply`, recovery / auto_release, the units header), without the model. */
 	/** `operator: true` for a human's unit (GUMI): exactly what was pressed, no recovery/auto_release/variable step/rotation assists. */
 	run: (
-		params: { unit: string; n?: number; arm?: string; other?: string; operator?: boolean },
+		params: { unit: string; n?: number; arm?: string; other?: string; param?: string | number; operator?: boolean },
 		signal?: AbortSignal,
 	) => Promise<AgentToolResult<unknown>>;
 	/** The robot's proprioception (`eef_xyz`, `gripper_width`, ...), per arm on two arms. */
@@ -51,15 +53,61 @@ export type UnitsHandle = {
 
 export type Result = AgentToolResult<unknown>;
 
-export type UnitsSpec = {
+/**
+ * One unit of a robot's own action vocabulary (UnitsSpec.vocabulary): its name, what it does (the
+ * prompt), an optional parameter, and whether running it ends the episode.
+ */
+export type CustomUnit = {
+	/** The unit's name, e.g. "WALK". */
+	name: string;
+	/** What it does, for the prompt. */
+	description: string;
+	/**
+	 * Its parameter: an enum of values, or a number clamped to [min, max] (a value out of range is
+	 * clamped and the result says so). Without a default the parameter is required.
+	 */
+	param?: {
+		name: string;
+		kind: "enum" | "number";
+		values?: readonly string[];
+		min?: number;
+		max?: number;
+		unit?: string;
+		default?: string | number;
+	};
+	/** Running it ends the episode (e.g. STOP): never repeated, and no unit runs after it. */
+	terminal?: boolean;
+};
+
+/** A robot's own action vocabulary: its units, how one runs, and optional GUMI key bindings. */
+export type CustomVocabulary = {
+	units: readonly CustomUnit[];
+	/** Run one unit with its checked parameter through the robot's own safety checks; the new observation. */
+	run: (unit: string, param: string | number | undefined, signal: AbortSignal | undefined) => Promise<Result>;
+	/** GUMI key bindings (KeyboardEvent.code -> the unit and its parameter). */
+	keys?: Record<string, { unit: string; param?: string | number }>;
+};
+
+/** What only an arm driven by the MV_* vocabulary declares (optional with a custom `vocabulary`). */
+export type ArmMotion = {
 	/** Base-frame unit vector of each MV_* unit (calibrated so each matches its look in VIEWS). */
 	vectors: Record<MoveUnit, Vec3>;
 	/** Metres per MV_* unit (Show-Harness: 0.02). */
 	stepM: number;
-	/** Radians per ROTATE_CW (ROTATE_CCW is the negative); omit on robots without yaw. */
-	yawStepRad?: number;
 	/** Execute one move through the robot's own safety checks; return the new observation (images + state). */
 	apply: (move: Move, signal: AbortSignal | undefined) => Promise<Result>;
+};
+
+/**
+ * A robot's units: the arm's MV_* vocabulary (`vectors`, `stepM` and `apply`, all required then), or
+ * its own `vocabulary` (a humanoid's WALK / TURN / SIT ...), in which case the arm plugins are off and
+ * the three arm fields are unused (./index.ts refuses a spec with neither).
+ */
+export type UnitsSpec = UnitsSpecCommon & Partial<ArmMotion> & { vocabulary?: CustomVocabulary };
+
+export type UnitsSpecCommon = {
+	/** Radians per ROTATE_CW (ROTATE_CCW is the negative); omit on robots without yaw. */
+	yawStepRad?: number;
 	/**
 	 * Dual-arm robots: execute one move per arm at the same time (Show-Harness's dual runners step both
 	 * arms together), through the same safety checks; return the new observation. Without it a paired

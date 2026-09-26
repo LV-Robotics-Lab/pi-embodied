@@ -10,6 +10,7 @@ import dualFranka from "../src/dual_franka/index.ts";
 import franka from "../src/franka/index.ts";
 import { defineRobot, RESULT_ENTRY } from "../src/robot.ts";
 import {
+	type CustomUnit,
 	compensate,
 	finishMove,
 	ground,
@@ -1631,4 +1632,149 @@ test("point: each mark is drawn alone, checked by a side VLM call and corrected,
 	assert.equal(located.length, 1);
 	assert.equal(h.asked.length, 0);
 	assert.equal(off.details.points[0].verified, undefined);
+});
+
+/** A fake humanoid with three units: WALK (enum speed), TURN (degrees, clamped), STOP (terminal). */
+const HUMANOID: CustomUnit[] = [
+	{
+		name: "WALK",
+		description: "walk forward 0.5 s",
+		param: { name: "speed", kind: "enum", values: ["slow", "normal", "fast"], default: "normal" },
+	},
+	{
+		name: "TURN",
+		description: "turn in place, left positive",
+		param: { name: "degree", kind: "number", min: -120, max: 120, unit: "deg" },
+	},
+	{ name: "STOP", description: "stand still and end the episode", terminal: true },
+];
+async function humanoid(flags: Record<string, unknown> = {}, o: { vlm?: (string | Error)[] } = {}) {
+	const f = fakePi({ units: true, "units-plugins": "auto", ...flags }, o.vlm);
+	const ran: [string, string | number | undefined][] = [];
+	defineRobot(f.pi, {
+		name: "humanoid",
+		task: [],
+		keepImages: 2,
+		start: async () => ["navigate", "finish"],
+		result: () => ({}),
+		finish: {
+			description: "finish",
+			parameters: Type.Object({ status: Type.String(), summary: Type.String() }),
+			result: (p) => ({ content: [{ type: "text", text: p.status }], details: p }),
+		},
+		units: {
+			views: "One first-person head camera image.",
+			instruction: () => "find the chair and sit on it",
+			state: async () => ({ position: [1, 2] }),
+			vocabulary: {
+				units: HUMANOID,
+				run: async (unit, param) => {
+					ran.push([unit, param]);
+					return {
+						content: [
+							{ type: "text", text: "obs" },
+							{ type: "image", data: `h${ran.length}`, mimeType: "image/png" },
+						],
+						details: unit === "STOP" ? { terminated: true } : {},
+					};
+				},
+				keys: { KeyW: { unit: "WALK", param: "normal" }, KeyA: { unit: "TURN", param: 30 } },
+			},
+		},
+	});
+	await f.emit("session_start");
+	return { ...f, ran };
+}
+
+test("custom vocabulary: act's schema, parameter checks (enum, clamp, default, required), n and the terminal unit", async () => {
+	const f = await humanoid();
+	const params = f.tools.get("act").parameters.properties;
+	const names = (params.unit.enum ?? params.unit.anyOf?.map((o: any) => o.const)) as string[];
+	assert.deepEqual(names, ["WALK", "TURN", "STOP"]);
+	assert.match(
+		params.param.description,
+		/WALK speed: slow \| normal \| fast, default normal; TURN degree: -120\.\.120 deg/,
+	);
+	assert.equal(params.target_in_wrist, undefined);
+	assert.match(head(await f.run("act", { unit: "WALK", param: "fast", n: 2 })), /^units: WALK\(fast\) x2\n/);
+	const clamped = head(await f.run("act", { unit: "TURN", param: 200 }));
+	assert.match(clamped, /^units: TURN\(120\) x1\nTURN: degree 200 clamped to 120 deg \(-120\.\.120\)/);
+	assert.match(head(await f.run("act", { unit: "WALK" })), /speed defaulted to normal/);
+	assert.match(head(await f.run("act", { unit: "TURN(-45)" })), /^units: TURN\(-45\) x1/, "GUMI's NAME(param) form");
+	assert.match(head(await f.run("act", { unit: "WALK" })), /State: \{"position":\[1,2\]\}/);
+	await assert.rejects(f.run("act", { unit: "TURN" }), /TURN needs its degree/);
+	await assert.rejects(f.run("act", { unit: "WALK", param: "run" }), /must be one of slow, normal, fast/);
+	await assert.rejects(f.run("act", { unit: "STOP", n: 2 }), /cannot repeat/);
+	await assert.rejects(f.run("act", { unit: "MV_FWD" }), /not a unit of this robot/);
+	assert.deepEqual(f.ran, [
+		["WALK", "fast"],
+		["WALK", "fast"],
+		["TURN", 120],
+		["WALK", "normal"],
+		["TURN", -45],
+		["WALK", "normal"],
+	]);
+	const stop = head(await f.run("act", { unit: "STOP" }));
+	assert.match(stop, /STOP ended the episode: call finish/);
+	assert.match(head(await f.run("act", { unit: "WALK" })), /the episode already ended/);
+	assert.equal(f.ran.length, 7);
+	// mem_text keeps the units with their parameter.
+	const states = f.entries.filter((e) => e.customType === STATE_ENTRY);
+	assert.deepEqual(states.at(-1)?.data.recent.slice(-3), ["TURN(-45)", "WALK(normal)", "STOP"]);
+});
+
+test("custom vocabulary: arm plugins are off (named ones refuse to start); plan, verify, stateless and mem_text stay", async () => {
+	const f = await humanoid();
+	assert.deepEqual(f.active(), ["act", "plan", "finish"]);
+	const prompt = (await f.emit("before_agent_start")).systemPrompt as string;
+	assert.match(prompt, /^You are the controller of a robot\. /);
+	assert.match(prompt, /- WALK \(`param` speed: slow \| normal \| fast, default normal\): walk forward 0\.5 s\n/);
+	assert.match(prompt, /- STOP: stand still and end the episode It ends the episode\./);
+	assert.doesNotMatch(prompt, /MV_|GRASP:|the gripper about|DIRECTION:|GRIPPER:|Start with `act` STOP/);
+	assert.match(prompt, /ATTENTION:\n- DONE only when/);
+	assert.match(prompt, /VIEWS:\nOne first-person head camera image\./);
+	assert.match(prompt, /PLAN \(`plan`\)/);
+	for (const plugins of ["recovery", "point,plan", "variable_step", "action_chunk", "rotation", "coords"]) {
+		const g = await humanoid({ "units-plugins": plugins });
+		assert.deepEqual(g.active(), [], plugins);
+		assert.match(g.notes.join("\n"), /declares its own action vocabulary/, plugins);
+	}
+	assert.deepEqual((await humanoid({ "units-rt": "true" })).active(), []);
+	assert.deepEqual((await humanoid({ "units-plugins": "plan,mem_text", "units-ablation": "bare" })).active(), []);
+	// The verifier checks without a gripper retreat.
+	const v = await humanoid({ "units-verify": "true" }, { vlm: ['{"complete":true,"reason":"seated"}'] });
+	await v.run("act", { unit: "WALK" });
+	const r = await v.emit("tool_call", { toolName: "finish", input: { status: "success", summary: "sat" } });
+	assert.equal(r, undefined, "a complete verdict lets finish through");
+	assert.deepEqual(v.ran, [["WALK", "normal"]], "no MV_UP retreat");
+	const entry = v.entries.find((e) => e.customType === VERIFY_ENTRY)?.data;
+	assert.deepEqual(entry.retreat, [{ skipped: "the robot's own vocabulary: no gripper to lift" }]);
+});
+
+test("custom vocabulary: the units handle publishes the names and GUMI keys; teleop records the unit with its parameter", async () => {
+	const f = await humanoid();
+	const h = f.emitted.get(UNITS_EVENT) as UnitsHandle;
+	assert.deepEqual(h.vocabulary, ["WALK", "TURN", "STOP"]);
+	assert.deepEqual(h.keys, { KeyW: "WALK(normal)", KeyA: "TURN(30)" });
+	const r = await h.run({ unit: "TURN(30)", operator: true });
+	assert.match((r.content[0] as any).text, /^units: TURN\(30\) x1/);
+	assert.deepEqual(f.ran.at(-1), ["TURN", 30]);
+	// A robot without a vocabulary must declare the arm's fields.
+	assert.throws(
+		() =>
+			defineRobot(fakePi({ units: true }).pi, {
+				name: "broken",
+				task: [],
+				keepImages: 2,
+				start: async () => [],
+				result: () => ({}),
+				finish: {
+					description: "finish",
+					parameters: Type.Object({}),
+					result: () => ({ content: [], details: {} }),
+				},
+				units: { stepM: 0.02 },
+			}),
+		/either its own `vocabulary` or the arm's/,
+	);
 });

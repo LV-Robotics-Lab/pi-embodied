@@ -1280,3 +1280,36 @@ test("VLM operator: decides from the teleop observation, drives the teleop path 
 	g2.attachOperator(off);
 	assert.throws(() => g2.operator("run"), /--gumi-operator/);
 });
+
+test("gumi with a robot's own vocabulary: NAME(param) steps, its key bindings, recorded whole", async () => {
+	const vocab = ["WALK", "TURN", "STOP"];
+	assert.deepEqual(
+		parseSteps({ command: "TURN(30)*2 walk(fast) WALK" }, [ARM], vocab).map((s) => s[ARM]),
+		["TURN(30)", "TURN(30)", "WALK(fast)", "WALK"],
+	);
+	assert.throws(() => parseSteps({ command: "JUMP(2)" }, [ARM], vocab), /not a unit here: JUMP\(2\)/);
+	const root = mkdtempSync(join(tmpdir(), "gumi-custom-"));
+	const f = fakePi({ "gumi-record": root });
+	const g = gumi(f.pi);
+	const robot = fakeRobot();
+	robot.handle.vocabulary = vocab;
+	robot.handle.keys = { KeyW: "WALK(normal)", KeyA: "TURN(30)" };
+	await f.emit("session_start");
+	f.pi.events.emit(UNITS_EVENT, robot.handle);
+	assert.deepEqual(g.state().keys, { KeyW: [ARM, "WALK(normal)"], KeyA: [ARM, "TURN(30)"] });
+	g.record("start");
+	await g.step({ command: "TURN(30) WALK(fast)" });
+	assert.deepEqual(
+		robot.calls.map((c) => c.unit),
+		["STOP", "TURN(30)", "WALK(fast)"],
+	);
+	const dir = g.record("save", true).dir;
+	const tokens = readFileSync(join(dir, "actions.jsonl"), "utf8")
+		.trim()
+		.split("\n")
+		.map((l) => JSON.parse(l).token);
+	assert.deepEqual(tokens, ["TURN(30)", "WALK(fast)"]);
+	// An agent's act with `param` is recorded whole too.
+	assert.deepEqual(actSteps({ unit: "turn", param: 45 }, [ARM]), { step: { [ARM]: "TURN(45)" }, n: 1 });
+	assert.deepEqual(actSteps({ unit: "WALK(fast)" }, [ARM]), { step: { [ARM]: "WALK(fast)" }, n: 1 });
+});

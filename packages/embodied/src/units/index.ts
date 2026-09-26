@@ -54,6 +54,16 @@
  * A robot without a gripper (the spec's `gripper`, e.g. ManiSkill's --robot panda_stick) has no GRASP /
  * RELEASE units and runs without recovery and auto_release; the prompt drops its gripper text.
  *
+ * A robot's own vocabulary (UnitsSpec.vocabulary, ./custom.ts; a humanoid's WALK / TURN / SIT / STOP):
+ * its units replace the arm's MV_* ones (no `vectors`, `stepM`, `apply`). `act` takes the unit and its
+ * `param` (an enum value, or a number clamped to its range, the result says so; a missing one takes its
+ * default) or `NAME(param)` as GUMI writes it, and `n`, never for a terminal unit, after which no unit
+ * runs. The arm plugins (recovery, auto_release, rotation, variable_step, action_chunk, point, coords,
+ * action_ablation) are off, and refused when --units-plugins names them, as is --units-rt; plan (with
+ * its stage cap), mem_text, the verifier (without a gripper retreat), --stateless, mcq and video_ref stay;
+ * proprioception shows the robot's state. The prompt's ACTION UNITS come from the vocabulary and its
+ * arm sections (DIRECTION, GRIPPER, the MV_* rules) drop out. GUMI takes the vocabulary's `keys`.
+ *
  * Dual-arm robots: `act`'s `other` is the other arm's unit in the same step (a paired step, Show-Harness's
  * dual runners' (left, right) token pair; STILL = that arm holds). A robot with `applyPair` runs the pair
  * as one command (both arms at once); without it the arms run one after the other, and the result says so.
@@ -85,9 +95,11 @@
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type TSchema, Type } from "typebox";
+import { checkParam, customSchema, splitUnit, unitLabel } from "./custom.ts";
 import { ABLATION_MODES, Ablation, type AblationMode, mcqOptions, symbol, unsymbol } from "./experimental.ts";
 import { DEFAULT_VIEWS, DEFAULT_VIEWS_NO_WRIST, renderPrompt } from "./prompt.ts";
 import {
+	type ArmMotion,
 	type Result,
 	STATE_ENTRY,
 	type Stage,
@@ -141,6 +153,8 @@ import {
 
 export { DEFAULT_VIEWS, DEFAULT_VIEWS_NO_WRIST } from "./prompt.ts";
 export {
+	type CustomUnit,
+	type CustomVocabulary,
 	STATE_ENTRY,
 	type ToolRegistrar,
 	UNITS_EVENT,
@@ -210,6 +224,20 @@ const WRIST_PLUGINS: readonly Plugin[] = ["variable_step", "action_chunk"];
 const GRIPPER_PLUGINS: readonly Plugin[] = ["recovery", "auto_release"];
 /** The gripper units: not units of a robot without a gripper. */
 const GRIPPER_UNITS = ["GRASP", "RELEASE"];
+/**
+ * Plugins with arm semantics (the gripper, MV_* steps, turns, pixels to grasp): off with a robot's
+ * own vocabulary, and refused when --units-plugins names them.
+ */
+const ARM_PLUGINS: readonly Plugin[] = [
+	"recovery",
+	"auto_release",
+	"rotation",
+	"variable_step",
+	"action_chunk",
+	"point",
+	"coords",
+	"action_ablation",
+];
 
 const r3 = (v: number) => Number(v.toFixed(3));
 const text = (s: string) => ({ type: "text" as const, text: s });
@@ -217,11 +245,19 @@ const text = (s: string) => ({ type: "text" as const, text: s });
 /** Register the units flags and tools; `mode()`, `tools()` and `prompt()` are read by ../robot.ts. */
 export function units(
 	pi: ExtensionAPI,
-	spec: UnitsSpec,
+	given: UnitsSpec,
 	tool: ToolRegistrar,
 	task: () => Record<string, string> = () => ({}),
 	base: Pick<UnitsHandle, "tools" | "refuse" | "views"> = { tools: () => ["act"], refuse: () => undefined },
 ) {
+	/** The robot's own vocabulary (a humanoid's WALK / TURN ...), else undefined: the arm's MV_* units. */
+	const custom = given.vocabulary;
+	if (!custom && !(given.vectors && given.stepM && given.apply))
+		throw new Error(
+			"units: a robot declares either its own `vocabulary` or the arm's `vectors`, `stepM` and `apply`",
+		);
+	// The arm fields below are read only on the arm path (never with a custom vocabulary).
+	const spec = given as UnitsSpec & ArmMotion;
 	const instruction = () =>
 		spec.instruction?.() ??
 		Object.entries(task())
@@ -319,7 +355,10 @@ export function units(
 	const readGripper = () => (typeof spec.gripper === "function" ? spec.gripper() : spec.gripper) !== false;
 	let gripperOn = readGripper();
 	const plugin = (name: Plugin) =>
-		requested(name) && (wristView || !WRIST_PLUGINS.includes(name)) && (gripperOn || !GRIPPER_PLUGINS.includes(name));
+		requested(name) &&
+		(wristView || !WRIST_PLUGINS.includes(name)) &&
+		(gripperOn || !GRIPPER_PLUGINS.includes(name)) &&
+		!(custom && ARM_PLUGINS.includes(name));
 	/** The plugins that run this session (`units_state`, the robot result). */
 	const effective = () => PLUGINS.filter(plugin);
 	const armNames = spec.arms ?? [];
@@ -345,7 +384,8 @@ export function units(
 		rtOn() && isRotate(u)
 			? `${u}: --units-rt replaces ROTATE_* with the RT_* turns (RT_YAW_* about the vertical)`
 			: undefined;
-	const vocab = () =>
+	const vocab = (): readonly string[] => (custom ? custom.units.map((u) => u.name) : armVocab());
+	const armVocab = () =>
 		UNITS.filter(
 			(u) =>
 				(spec.yawStepRad || !isRotate(u)) &&
@@ -368,6 +408,8 @@ export function units(
 	/** stage_control: units run in the current stage, and whether the last stage used its cap. */
 	let stageSteps = 0;
 	let capped = false;
+	/** A custom vocabulary's terminal unit (STOP) ran: the episode is over for the units. */
+	let ended = false;
 	let targets: Target[] = [];
 	/** action_ablation: this session's setting (--units-ablation with the plugin on), else undefined. */
 	const ablationMode = (): AblationMode | undefined => {
@@ -394,6 +436,7 @@ export function units(
 		stage = 0;
 		stageSteps = 0;
 		capped = false;
+		ended = false;
 		targets = [];
 		lastFrame = undefined;
 		ablation = ablationMode() ? new Ablation(ablationMode() as AblationMode) : undefined;
@@ -536,7 +579,9 @@ export function units(
 				out.push("Decision point: judge the rule from the images now and send the concrete stages with `plan`.");
 		}
 		const st = await read(arm);
-		if (plugin("proprioception") && st) {
+		// A robot's own vocabulary: its state as it reports it (no gripper, no MV_* step).
+		if (custom && plugin("proprioception") && st) out.push(`State: ${JSON.stringify(st).slice(0, 600)}`);
+		else if (plugin("proprioception") && st) {
 			const p = eef(st);
 			const g = gap(st);
 			const w = width(st);
@@ -590,6 +635,18 @@ export function units(
 	/** The model's answer back to its unit (mcq letter, symbol), or undefined for an unknown letter. */
 	const unitOf = (a: string) => (plugin("mcq") ? mcqOptions(vocab()).unit(a) : ablation?.symbolic ? unsymbol(a) : a);
 	function actSchema() {
+		if (custom)
+			return Type.Object(
+				customSchema(
+					custom.units,
+					vocab(),
+					StringEnum(vocab().map(answerOf), {
+						description: plugin("mcq")
+							? `The option letter of the action unit: ${mcqOptions(vocab()).block}`
+							: "The action unit",
+					}),
+				),
+			);
 		const props: Record<string, TSchema> = {
 			unit: StringEnum(vocab().map(answerOf), {
 				description: plugin("mcq")
@@ -648,6 +705,8 @@ export function units(
 	}
 	/** `act`'s description (through the action_ablation funnel). */
 	function actDescription() {
+		if (custom)
+			return `Execute one action unit of this robot (${vocab().join(", ")}) with its \`param\`, repeated n times. Returns the new images and state.`;
 		const d = `Execute one action unit (${vocab().join(", ")}), repeated n times. MV_* move the gripper ~${Math.round(spec.stepM * 100)} cm${spec.yawStepRad && !rtOn() ? `, ROTATE_* turn it ~${Math.round((spec.yawStepRad * 180) / Math.PI)} deg` : ""}${rtOn() && spec.rt ? `, RT_* turn it ~${Math.round((spec.rt.stepRad * 180) / Math.PI)} deg about a world axis through the fingertips (ROLL about the MV_FWD axis, PITCH about the MV_LEFT-MV_RIGHT axis, YAW about the vertical)` : ""}${gripperOn ? "; GRASP closes, RELEASE opens" : " (this robot has no gripper)"}, STOP holds one step, DONE means the task is complete (call finish). Returns the new images and state.`;
 		return ablation ? ablation.filter(d) : d;
 	}
@@ -665,6 +724,7 @@ export function units(
 		view?: string;
 		retreat?: boolean;
 		note?: string;
+		param?: string | number;
 	};
 	/**
 	 * The model's `act`: its answers (mcq letters, action_ablation symbols) back to units, the unit run,
@@ -718,6 +778,7 @@ export function units(
 	}
 	/** `act`'s body; ../gumi (dashboard teleop, DAgger takeover) runs it too, through the handle below. */
 	async function act(params: ActParams, signal: AbortSignal | undefined): Promise<Result> {
+		if (custom) return customAct(params, signal);
 		const p = params as {
 			unit: Unit;
 			n?: number;
@@ -995,19 +1056,69 @@ export function units(
 		if (!last) return { content: [await header(lines, arm)], details: { unit } };
 		return { ...last, content: [await header(lines, arm), ...last.content] };
 	}
+	/**
+	 * `act` over the robot's own vocabulary: the parameter checked (clamped, defaulted), the unit run
+	 * n times through `vocabulary.run`, the plan's stage steps and the move history kept as for the arm.
+	 */
+	async function customAct(params: ActParams, signal: AbortSignal | undefined): Promise<Result> {
+		const vocabulary = custom as NonNullable<typeof custom>;
+		const [name, inline] = splitUnit(String(params.unit ?? ""));
+		if (params.param !== undefined && inline !== undefined)
+			throw new Error(`act: give ${name}'s parameter once (\`param\` or ${name}(...))`);
+		const { unit, param, note: said } = checkParam(vocabulary.units, name, params.param ?? inline);
+		const n = Math.max(1, Math.min(MAX_REPEAT, Math.floor(params.n ?? 1)));
+		if (unit.terminal && n > 1) throw new Error(`act: ${name} ends the episode; it cannot repeat (n = 1)`);
+		if (ended && !params.operator)
+			return {
+				content: [text("units: not run: the episode already ended (a terminal unit ran); call finish.")],
+				details: { unit: name },
+			};
+		if (capped && !params.operator && plugin("plan"))
+			return {
+				content: [
+					await header(
+						["units: not run: every planned stage used its step cap; send a new plan or finish."],
+						undefined,
+					),
+				],
+				details: { unit: name, stage_cap_exceeded: true },
+			};
+		const lines: string[] = said ? [said] : [];
+		const label = unitLabel(name, param);
+		let last: Result | undefined;
+		let ran = 0;
+		for (let i = 0; i < n; i++) {
+			if (!advanceCapped(lines)) break;
+			last = await vocabulary.run(name, param, signal);
+			ran++;
+			stageSteps++;
+			remember(label);
+			const d = last.details as { error?: unknown; terminated?: unknown } | undefined;
+			if (unit.terminal) ended = true;
+			if (d?.error || d?.terminated) break;
+		}
+		lines.unshift(`units: ${label} x${ran}${ran < n ? ` of ${n} (stopped early)` : ""}`);
+		if (unit.terminal) lines.push(`${name} ended the episode: call finish.`);
+		if (!last) return { content: [await header(lines, undefined)], details: { unit: name } };
+		return { ...last, content: [await header(lines, undefined), ...last.content] };
+	}
+
 	// The robot's unit layer for ../gumi, published every session (the dashboard operator drives through it).
 	const handle: UnitsHandle = {
 		tool: "act",
 		arms: armNames,
 		vocabulary: vocab(),
-		stepM: spec.stepM,
+		stepM: spec.stepM ?? 0,
 		yawStepRad: spec.yawStepRad,
+		...(custom?.keys
+			? { keys: Object.fromEntries(Object.entries(custom.keys).map(([k, v]) => [k, unitLabel(v.unit, v.param)])) }
+			: {}),
 		run: actAndSave,
 		state: spec.state,
 		viewSelect: false,
 		wrist: () => wristView,
 		plugins: effective,
-		guide: () => (spec.views ?? (wristView ? DEFAULT_VIEWS : DEFAULT_VIEWS_NO_WRIST)).trim(),
+		guide: () => (spec.views ?? (custom ? "" : wristView ? DEFAULT_VIEWS : DEFAULT_VIEWS_NO_WRIST)).trim(),
 		...base,
 	};
 	pi.on("session_start", () =>
@@ -1205,6 +1316,8 @@ export function units(
 			note = "";
 		},
 		planning: () => plugin("plan"),
+		// No gripper to lift before the check on a robot with its own vocabulary.
+		retreats: () => !custom,
 		save,
 	});
 
@@ -1274,7 +1387,7 @@ export function units(
 		gripperOn = readGripper();
 		saved = snapshot();
 		registerAct();
-		if (wristView || !mode()) return;
+		if (custom || wristView || !mode()) return;
 		// A wrist-view plugin named explicitly cannot run here: fail closed (as --units-rt does), never drop it silently.
 		const named = WRIST_PLUGINS.filter((p) => listed()?.includes(p));
 		if (named.length)
@@ -1295,6 +1408,18 @@ export function units(
 		 * no RT_* axis would drop ROTATE_* and offer no turn at all.
 		 */
 		configError: () => {
+			if (custom) {
+				// Arm plugins cannot run on a robot's own vocabulary: named explicitly, fail closed.
+				const named = ARM_PLUGINS.filter((p) => listed()?.includes(p));
+				if (named.length)
+					return `--units-plugins ${named.join(", ")}: this robot declares its own action vocabulary (${vocab().join(", ")}), and ${named.length > 1 ? "these plugins need" : "this plugin needs"} the arm's MV_* units and gripper; drop ${named.length > 1 ? "them" : "it"} or use --units-plugins auto`;
+				if (rtOn())
+					return "--units-rt=true: this robot declares its own action vocabulary; RT_* turns are the arm's";
+				const ab = String(pi.getFlag("units-ablation") ?? "").trim();
+				if (ab)
+					return `--units-ablation ${ab}: the action ablation blinds the arm's MV_* units; this robot declares its own`;
+				return undefined;
+			}
 			if (rtOn() && !Object.values(spec.rt?.axes ?? {}).some(Boolean))
 				return "--units-rt=true: this robot declares no RT_* axis (units `rt`); it would have no turn units at all. Drop --units-rt to keep ROTATE_CW/CCW.";
 			// The experimental plugins fail closed on an incomplete or conflicting setting.
@@ -1340,6 +1465,7 @@ export function units(
 				highM: high,
 				stageSteps: stageCap(),
 				vocabulary: vocab(),
+				...(custom ? { custom: custom.units } : {}),
 				ablation: ablation?.mode,
 			});
 			return ablation ? ablation.filter(p) : p;

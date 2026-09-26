@@ -8,8 +8,9 @@
  */
 
 import { template } from "../context-version.ts";
+import { customUnitsText } from "./custom.ts";
 import { type AblationMode, ablationDirection, mcqOptions, NEUTRAL_MOVES, NEUTRAL_VIEWS } from "./experimental.ts";
-import type { UnitsSpec } from "./types.ts";
+import type { CustomUnit, UnitsSpec } from "./types.ts";
 import { type DemoBrief, renderBrief } from "./vlm.ts";
 import { CHUNK_STEPS, MOVE_UNITS, type MoveUnit, PLUGINS, type Plugin, type Vec3 } from "./vocabulary.ts";
 
@@ -59,6 +60,8 @@ export type PromptContext = {
 	vocabulary?: readonly string[];
 	/** action_ablation: the setting (--units-ablation), when the plugin runs. */
 	ablation?: AblationMode;
+	/** The robot's own vocabulary (UnitsSpec.vocabulary): its units replace the arm's MV_* sections. */
+	custom?: readonly CustomUnit[];
 };
 
 /** A unit vector's base-frame axis label, e.g. "+x" (its largest component). */
@@ -132,8 +135,10 @@ export function renderPrompt(c: PromptContext) {
 			c.plugin(name) && (!["recovery", "auto_release"].includes(name) || spec.emptyWidthM !== undefined),
 		);
 	p = section(p, "stateless", c.stateless);
-	const coords = c.plugin("coords");
-	if (coords) p = replaceBlock(p, "DIRECTION:", "GRIPPER:", coordsDirection(spec.vectors));
+	p = section(p, "arm_units", !c.custom);
+	p = section(p, "custom_units", Boolean(c.custom));
+	const coords = c.plugin("coords") && spec.vectors !== undefined;
+	if (coords && spec.vectors) p = replaceBlock(p, "DIRECTION:", "GRIPPER:", coordsDirection(spec.vectors));
 	// action_ablation bare / letters_blind: no sentence says which way a direction unit moves (VIEWS, the
 	// units list and DIRECTION are replaced); letters keeps them, symbolized by the funnel (./experimental.ts).
 	const blind = c.ablation && c.ablation !== "letters" ? ablationDirection(c.ablation) : undefined;
@@ -143,10 +148,15 @@ export function renderPrompt(c: PromptContext) {
 	}
 	p = section(p, "video_ref", brief !== undefined);
 	const vars: Record<string, string> = {
-		arm: arms.length ? `with ${arms.length} arms` : "arm",
+		arm: c.custom ? "" : arms.length ? ` with ${arms.length} arms` : " arm",
+		driven: c.custom ? "robot" : "gripper",
+		custom_units: c.custom ? customUnitsText(c.custom) : "",
+		first_look: c.custom ? "" : " Start with `act` STOP to see the scene.",
 		task: c.task,
-		views: blind ? NEUTRAL_VIEWS : (spec.views ?? (c.wristView ? DEFAULT_VIEWS : DEFAULT_VIEWS_NO_WRIST)).trim(),
-		step_cm: (spec.stepM * 100).toFixed(0),
+		views: blind
+			? NEUTRAL_VIEWS
+			: (spec.views ?? (c.custom ? "" : c.wristView ? DEFAULT_VIEWS : DEFAULT_VIEWS_NO_WRIST)).trim(),
+		step_cm: ((spec.stepM ?? 0) * 100).toFixed(0),
 		coarse_cm: (c.coarseM * 100).toFixed(0),
 		high_cm: (c.highM * 100).toFixed(0),
 		chunk: String(CHUNK_STEPS),
@@ -156,11 +166,15 @@ export function renderPrompt(c: PromptContext) {
 		yaw_deg: String(Math.round(((spec.yawStepRad ?? 0) * 180) / Math.PI)),
 		rt_deg: String(Math.round(((spec.rt?.stepRad ?? 0) * 180) / Math.PI)),
 		arms: arms.join(", "),
-		proprio_note: c.plugin("proprioception") ? ", the gripper's height and width, blocked moves" : "",
+		proprio_note: c.plugin("proprioception")
+			? c.custom
+				? ", the robot's state"
+				: ", the gripper's height and width, blocked moves"
+			: "",
 		mem_note: c.plugin("mem_text") ? ", the recent moves (newest first)" : "",
 		video_ref: brief ? renderBrief(brief, arms) : "",
 		mcq_options: mcqOptions(c.vocabulary ?? []).block,
-		coords_remark: coords && !blind ? `${coordsRemark(spec.vectors)}\n` : "",
+		coords_remark: coords && !blind && spec.vectors ? `${coordsRemark(spec.vectors)}\n` : "",
 		stage_cap: c.stageSteps
 			? `- Each stage runs at most ${c.stageSteps} units; past that the plan moves on to the next stage, and past the last one no unit runs until you send a new plan.\n`
 			: "",

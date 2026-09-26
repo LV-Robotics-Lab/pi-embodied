@@ -166,7 +166,9 @@ Shared modules:
   variable_step and action_chunk and refuses to start when they are named; `--units-coarse-step` is variable_step's coarse step. A robot
   opts in with `units` in its spec (base-frame unit vectors, step, optional yaw step, `apply`,
   `state`); the moves go through its own safety checks (Franka and dual Franka: `--max-move`,
-  `--workspace-xy`, `--z-floor`). Experimental plugins (Show-Harness `coords`, `mcq`,
+  `--workspace-xy`, `--z-floor`). A robot that is not an arm declares its own `vocabulary` instead
+  (units with an optional enum or clamped number parameter, a terminal unit; src/units/custom.ts): the
+  arm plugins are off, plan / mem_text / the verifier / --stateless / GUMI stay. Experimental plugins (Show-Harness `coords`, `mcq`,
   `action_ablation`; never in `auto`): `coords` states the directions in base-frame axes, `mcq` makes
   `act` answer with an option letter, `action_ablation` with `--units-ablation bare|letters|letters_blind`
   runs the paper's action-representation ablation (src/units/experimental.ts).

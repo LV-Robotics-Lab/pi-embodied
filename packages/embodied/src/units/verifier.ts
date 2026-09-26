@@ -81,6 +81,8 @@ export type VerifierDeps = {
 	replan: () => void;
 	/** The plan plugin is on (the refusal asks for new stages). */
 	planning: () => boolean;
+	/** Whether the robot lifts its grippers before the check (false: a robot with its own vocabulary). */
+	retreats?: () => boolean;
 	/** Append the `units_state` entry when it changed. */
 	save: () => void;
 };
@@ -105,6 +107,7 @@ export function registerVerifier(d: VerifierDeps) {
 	 */
 	async function retreat(signal: AbortSignal | undefined) {
 		const log: Record<string, unknown>[] = [];
+		if (d.retreats?.() === false) return [{ skipped: "the robot's own vocabulary: no gripper to lift" }];
 		for (const arm of armNames.length ? armNames : [undefined]) {
 			const rec: Record<string, unknown> = arm ? { arm } : {};
 			log.push(rec);

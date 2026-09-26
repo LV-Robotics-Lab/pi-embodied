@@ -182,18 +182,25 @@ export const kindOf = (unit: string) =>
 				? "rotate"
 				: "move";
 
-/** Words (`MV_FWD`, `MV_FWD*3`, `w`, `w*3`) to units; aliases and repeats expanded, case-insensitive. */
+/**
+ * Words (`MV_FWD`, `MV_FWD*3`, `w`, `w*3`; a robot's own units with their parameter, `TURN(45)*2`) to
+ * units; aliases and repeats expanded, names case-insensitive (a parameter keeps its case).
+ */
 function expand(words: string[], aliases: Record<string, string>): string[] {
 	const out: string[] = [];
 	for (const raw of words) {
-		const m = /^([A-Z0-9_.]+)(?:\*(\d+))?$/.exec(raw.toUpperCase());
-		if (!m) throw new Error(`cannot parse '${raw}'; expected NAME or NAME*N (e.g. MV_FWD*3, w*3)`);
-		const n = m[2] === undefined ? 1 : Number(m[2]);
+		const m = /^([A-Za-z0-9_.]+)(\([^()*\s]*\))?(?:\*(\d+))?$/.exec(raw);
+		if (!m)
+			throw new Error(`cannot parse '${raw}'; expected NAME, NAME*N or NAME(param) (e.g. MV_FWD*3, w*3, TURN(45))`);
+		const name = m[1].toUpperCase();
+		const n = m[3] === undefined ? 1 : Number(m[3]);
 		if (!(n >= 1 && n <= MAX_REPEAT)) throw new Error(`repeat count in '${raw}' must be 1..${MAX_REPEAT}`);
-		out.push(...Array<string>(n).fill(aliases[m[1]] ?? m[1]));
+		out.push(...Array<string>(n).fill(m[2] ? `${name}${m[2]}` : (aliases[name] ?? name)));
 	}
 	return out;
 }
+/** A unit's name without its parameter: TURN(45) -> TURN. */
+const baseName = (unit: string) => unit.replace(/\(.*\)$/, "");
 
 const words = (v: unknown): string[] => {
 	if (v === undefined || v === null) return [];
@@ -259,7 +266,7 @@ export function parseSteps(
 	const units = Object.fromEntries(
 		Object.entries(sides).map(([side, w]) => [side, expand(w, side === "right" ? right : left)]),
 	);
-	const bad = [...new Set(Object.values(units).flat())].filter((u) => !allowed.has(u));
+	const bad = [...new Set(Object.values(units).flat())].filter((u) => !allowed.has(baseName(u)));
 	if (bad.length)
 		throw new Error(
 			`not a unit here: ${bad.join(", ")}; allowed: ${[...allowed].join(", ")} (keys: ${Object.entries(left)
@@ -648,8 +655,11 @@ export function actSteps(
 	arms: readonly string[],
 ): { step: Step; n: number } | undefined {
 	const n = Math.max(1, Math.floor(Number(input.n ?? 1)) || 1);
-	const unit = typeof input.unit === "string" ? input.unit.trim().toUpperCase() : "";
-	if (!unit || unit === "STOP" || unit === "DONE") return undefined;
+	const raw = typeof input.unit === "string" ? input.unit.trim() : "";
+	const name = raw.replace(/^[^(]*/, (b) => b.toUpperCase());
+	if (!name || name === "STOP" || name === "DONE") return undefined;
+	// A robot's own unit with its parameter is recorded whole: TURN(45).
+	const unit = input.param !== undefined && !name.includes("(") ? `${name}(${String(input.param)})` : name;
 	if (arms.length === 1) return { step: { [arms[0]]: unit }, n };
 	const arm = String(input.arm ?? "").toLowerCase();
 	if (!arms.includes(arm)) return undefined;
@@ -746,7 +756,12 @@ export function gumi(
 		message,
 		root: root() ?? null,
 		rt: handle?.rt === true,
-		keys: keyMap(arms, handle?.rt ? handle.vocabulary : undefined, handle?.vocabulary),
+		// A robot's own vocabulary brings its own key bindings.
+		keys: handle?.keys
+			? Object.fromEntries(
+					Object.entries(handle.keys).map(([code, unit]) => [code, [arms[0], unit] as [string, string]]),
+				)
+			: keyMap(arms, handle?.rt ? handle.vocabulary : undefined, handle?.vocabulary),
 		...(operator ? { operator: operator.state() } : {}),
 	});
 	const publish = (msg?: string) => {

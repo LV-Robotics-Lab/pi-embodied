@@ -8,7 +8,7 @@
  * Modified by pi-embodied: see ./index.ts.
  */
 
-import type { UnitsSpec } from "./types.ts";
+import type { ArmMotion, UnitsSpec } from "./types.ts";
 
 // ---------------------------------------------------------------------------
 // the vocabulary (core/action_units.py)
@@ -131,7 +131,7 @@ export const isMove = (u: string): u is MoveUnit => (MOVE_UNITS as readonly stri
 
 /** Ground a unit into a move (the interpreters' job), or undefined for units that do not move. */
 export function ground(
-	spec: Pick<UnitsSpec, "vectors" | "stepM" | "yawStepRad" | "rt">,
+	spec: Pick<ArmMotion, "vectors" | "stepM"> & Pick<UnitsSpec, "yawStepRad" | "rt">,
 	unit: Unit,
 	stepM = spec.stepM,
 ): Move | undefined {

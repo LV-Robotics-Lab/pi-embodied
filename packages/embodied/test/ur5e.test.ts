@@ -21,6 +21,7 @@ function fakePi(flagValues: Record<string, unknown> = {}, hasUI = true) {
 	const notes: string[] = [];
 	const confirms: boolean[] = [];
 	const dialogs: string[] = [];
+	const dialogBodies: string[] = [];
 	let active: string[] = ["stale"];
 	const pi = {
 		on: (name: string, fn: Handler) => handlers.set(name, [...(handlers.get(name) ?? []), fn]),
@@ -47,8 +48,9 @@ function fakePi(flagValues: Record<string, unknown> = {}, hasUI = true) {
 			setWidget: () => {},
 			input: async () => "",
 			select: async () => undefined,
-			confirm: async (title: string) => {
+			confirm: async (title: string, body?: string) => {
 				dialogs.push(title);
+				dialogBodies.push(body ?? "");
 				return confirms.shift() ?? false;
 			},
 		},
@@ -73,7 +75,19 @@ function fakePi(flagValues: Record<string, unknown> = {}, hasUI = true) {
 	}
 	const run = (name: string, params: Record<string, unknown> = {}) =>
 		tools.get(name).execute("id", params, undefined, undefined, ctx);
-	return { pi, emit, run, tools, notes, confirms, dialogs, dir, active: () => active, shut: () => shutdown };
+	return {
+		pi,
+		emit,
+		run,
+		tools,
+		notes,
+		confirms,
+		dialogs,
+		dialogBodies,
+		dir,
+		active: () => active,
+		shut: () => shutdown,
+	};
 }
 
 async function start(f: ReturnType<typeof fakePi>) {
@@ -145,7 +159,13 @@ async function mockServer(o: { armId?: string | null; robot?: string; beginPose?
 					main_camera: "wrist",
 					gripper: "robotiq",
 					has_begin_pose: o.beginPose ?? true,
-					limits: { max_move_m: 0.08, max_rotate_rad: 0.2, z_floor_m: 0.14, empty_width_m: 0.005 },
+					limits: {
+						max_move_m: 0.08,
+						max_rotate_rad: 0.2,
+						z_floor_m: 0.14,
+						empty_width_m: 0.011,
+						reset_lift_m: 0.05,
+					},
 					tasks: { block_bowl: { instruction: "put the block in the bowl" } },
 				};
 			case "env.reset":
@@ -281,6 +301,11 @@ test("--arm-id must be the arm the env server is bound to; nothing moves otherwi
 	const declined = await started({}, {}, [false]);
 	try {
 		assert.deepEqual(declined.f.dialogs, [`Move the UR5e arm ${ARM}?`]);
+		// The operator is told everything the reset does: release, lift, joint move.
+		const body = declined.f.dialogBodies[0];
+		assert.match(body, /released where it is/);
+		assert.match(body, /lift 50 mm straight up/);
+		assert.match(body, /moveJ to its begin pose/);
 		assert.match(declined.f.notes.join("\n"), /operator declined the reset/);
 		assert.ok(!declined.m.methods().includes("env.reset"));
 	} finally {

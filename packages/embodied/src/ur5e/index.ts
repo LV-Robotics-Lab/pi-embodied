@@ -66,7 +66,13 @@ type Meta = {
 	main_camera: string;
 	gripper: string;
 	has_begin_pose: boolean;
-	limits: { max_move_m: number; max_rotate_rad: number; z_floor_m: number | null; empty_width_m: number | null };
+	limits: {
+		max_move_m: number;
+		max_rotate_rad: number;
+		z_floor_m: number | null;
+		empty_width_m: number | null;
+		reset_lift_m?: number;
+	};
 	tasks: Record<string, Task>;
 };
 type CameraMeta = {
@@ -237,7 +243,7 @@ export default function ur5e(pi: ExtensionAPI) {
 			state: unitState,
 			instruction: () => task?.instruction ?? "",
 			get emptyWidthM() {
-				return meta?.limits.empty_width_m ?? 0.005;
+				return meta?.limits.empty_width_m ?? 0.011;
 			},
 			// A wrist view unless every camera reports a fixed mount (a camera without `mount` may be one).
 			wrist: () => {
@@ -692,7 +698,7 @@ export default function ur5e(pi: ExtensionAPI) {
 
 	// ---- lifecycle
 
-	/** Operator-confirmed reset (the start dialog, request_scene_reset): open the gripper, moveJ to the begin pose. */
+	/** Operator-confirmed reset (the start dialog, request_scene_reset): open the gripper (releasing a held object), lift, moveJ to the begin pose. */
 	async function resetArm(): Promise<Json> {
 		const r = await call<Json>("env.reset", {}, 120_000);
 		if (!r.ok) throw new Error(`reset did not reach the begin pose: ${JSON.stringify(plain(r.move ?? r))}`);
@@ -756,9 +762,10 @@ export default function ur5e(pi: ExtensionAPI) {
 			);
 		if (!m.has_begin_pose)
 			throw new Error("calibration.begin_joints is not set in the robot config; reset would fail");
+		const lift = m.limits?.reset_lift_m;
 		const go = await ctx.ui.confirm(
 			`Move the UR5e arm ${m.arm_id}?`,
-			`The arm will open its gripper and moveJ to its begin pose, then the agent drives it for: ${t.instruction}. Clear the workspace and keep the emergency stop in reach.`,
+			`The arm will open its gripper (anything it holds is released where it is), lift ${typeof lift === "number" ? `${Math.round(lift * 1000)} mm` : "a few cm"} straight up, then moveJ to its begin pose; then the agent drives it for: ${t.instruction}. Clear the workspace and the path to the begin pose, and keep the emergency stop in reach.`,
 		);
 		if (!go) throw new Error("operator declined the reset; the UR5e tools stay disabled");
 		env = rpc;

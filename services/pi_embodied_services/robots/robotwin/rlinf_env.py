@@ -154,12 +154,15 @@ class RoboTwinAgentEnv(RoboTwinEnv):
         action_type: RoboTwinActionType = "qpos",
         env_id: int = 0,
         return_all_frames: bool = False,
+        return_policy_frames: bool = False,
         should_stop: Callable[[], bool] | None = None,
     ) -> tuple[list[Any], np.ndarray, np.ndarray, np.ndarray, list[dict[str, Any]]]:
         """Execute a chunk of native actions, returning a gym-style 5-tuple batched as ``[1, executed]``.
 
         ``should_stop`` is polled before each native action; when it returns
         true the chunk ends early and ``info["cancelled"]`` is set.
+        ``return_policy_frames`` adds, per executed action, what the VLA reads (the Flywheel
+        recorder's observation): the three camera images and the eef16 state.
         """
         array = _validate_actions(actions, action_type=action_type)
         sub_env = self._sub_env(env_id)
@@ -168,6 +171,7 @@ class RoboTwinAgentEnv(RoboTwinEnv):
         truncations: list[bool] = []
         per_step: list[dict[str, Any]] = []
         frames: list[np.ndarray] = []
+        policy_frames: list[dict[str, Any]] = []
         executed = 0
         cancelled = False
         with sub_env.lock:
@@ -193,6 +197,8 @@ class RoboTwinAgentEnv(RoboTwinEnv):
                 terminations.append(bool(step_status["eval_success"]))
                 truncations.append(bool(budget))
                 per_step.append({"episode_status": step_status})
+                if return_policy_frames:
+                    policy_frames.append(self._policy_frame(sub_env))
                 if return_all_frames:
                     head_rgb = sub_env.task.get_obs()["observation"]["head_camera"][
                         "rgb"
@@ -210,6 +216,11 @@ class RoboTwinAgentEnv(RoboTwinEnv):
         observation = self._extract_obs_image(self.venv.get_obs())
         if return_all_frames:
             observation = {"frames": frames, "final": observation}
+        if return_policy_frames:
+            observation = {
+                **(observation if return_all_frames else {"final": observation}),
+                "policy_frames": policy_frames,
+            }
         info = {
             "action_type": action_type,
             "requested_actions": int(len(array)),
@@ -344,6 +355,32 @@ class RoboTwinAgentEnv(RoboTwinEnv):
             sub_env.instruction = instruction
             sub_env.args["instruction"] = instruction
             sub_env.task.set_instruction(instruction)
+
+    def _policy_frame(self, sub_env: Any) -> dict[str, Any]:
+        """What the VLA reads now: the head and wrist RGB and the eef16 state
+        ``[left pose7, left gripper, right pose7, right gripper]``; the caller holds ``sub_env.lock``."""
+        native = sub_env.task.get_obs()["observation"]
+        robot = sub_env.task.robot
+        return {
+            "head": native["head_camera"]["rgb"],
+            "left_wrist": native["left_camera"]["rgb"],
+            "right_wrist": native["right_camera"]["rgb"],
+            "state": np.asarray(
+                [
+                    *robot.get_left_ee_pose(),
+                    robot.get_left_gripper_val(),
+                    *robot.get_right_ee_pose(),
+                    robot.get_right_gripper_val(),
+                ],
+                dtype=np.float64,
+            ),
+        }
+
+    def policy_frame(self, env_id: int = 0) -> dict[str, Any]:
+        """The Flywheel observation now (``_policy_frame``), outside a chunk."""
+        sub_env = self._sub_env(env_id)
+        with sub_env.lock:
+            return self._policy_frame(sub_env)
 
     def _robot_state(self, sub_env: Any) -> dict[str, Any]:
         """Read the native robot state; the caller must hold ``sub_env.lock``."""

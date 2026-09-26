@@ -52,10 +52,10 @@ molmo = [
     "pillow>=10",
 ]
 flywheel = [
-    # LeRobot export of Flywheel episodes (/flywheel-export). Its numpy 2 and
-    # huggingface-hub 1.x pins break the LIBERO extra, so install it into its own
-    # environment and point pi's --flywheel-python at it.
-    "lerobot>=0.3.3,<0.4",
+    # LeRobot v3.0 export of Flywheel episodes (/flywheel-export; lerobot 0.4 writes
+    # v3.0, Python >= 3.10). Its numpy 2 and huggingface-hub pins break the LIBERO
+    # extra, so install it into its own environment and point pi's --flywheel-python at it.
+    "lerobot>=0.4.4,<0.5",
 ]
 libero = [
     "pi-embodied-services[rlinf,sam3]",

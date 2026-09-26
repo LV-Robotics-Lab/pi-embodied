@@ -18,6 +18,7 @@ import { join } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
+import type { FlywheelObs, FlywheelSpec } from "../flywheel.ts";
 import { encodePng } from "../png.ts";
 import { attach, defineRobot, median, SERVICES, u8 } from "../robot.ts";
 import { NdArray, type RpcClient } from "../rpc.ts";
@@ -31,6 +32,19 @@ const EXPLORE = read("./explore.md");
 const VIEWS = ["head", "left_wrist", "right_wrist"] as const;
 type View = (typeof VIEWS)[number];
 type Arm = "left" | "right";
+/** What LingBot reads and emits, eef16 (services robots/robotwin/flywheel.py); the camera sizes are the config's. */
+const FLYWHEEL: FlywheelSpec = {
+	robot: "robotwin",
+	images: { head_images: null, left_wrist_images: null, right_wrist_images: null },
+	state: 16,
+	action: 16,
+};
+/** The server's policy frame (env.policy_frame, chunk_step's policy_frames). */
+type PolicyFrame = { head: NdArray; left_wrist: NdArray; right_wrist: NdArray; state: NdArray };
+const flyObs = (f: PolicyFrame): FlywheelObs => ({
+	images: { head_images: u8(f.head), left_wrist_images: u8(f.left_wrist), right_wrist_images: u8(f.right_wrist) },
+	state: f.state.toArray(),
+});
 /**
  * How the action units look (--units): RoboTwin's world frame, in which the robot faces +y with its
  * right arm on +x. Derived from the head camera's mounting, not yet calibrated in the simulator.
@@ -48,7 +62,7 @@ type Info = {
 };
 type StepReturn = [unknown, unknown, unknown, unknown, Info];
 /** chunk_step's observation with return_all_frames: the head frame after every native action. */
-type Frames = { frames?: NdArray[] };
+type Frames = { frames?: NdArray[]; policy_frames?: PolicyFrame[] };
 type CameraMeta = { intrinsic_K: NdArray; cam2world_gl: NdArray; width: number; height: number };
 type WorldMap = { height: number; width: number; xyz: Float32Array };
 type Snapshot = { payload: Record<string, unknown>; images: Buffer[]; world: Record<View, WorldMap> };
@@ -423,6 +437,7 @@ export default function robotwin(pi: ExtensionAPI) {
 		budget: { turns: 100, seconds: 4800 },
 		// Observations carry the head, left wrist and right wrist images.
 		vdm: { views: VIEWS.length, wrist: [1, 2] },
+		flywheel: { spec: FLYWHEEL, select: () => `${cell().config}/${cell().task}` },
 		units: {
 			// RoboTwin's world frame (the robot faces +y, right arm on +x): the head view's directions.
 			vectors: {
@@ -463,6 +478,7 @@ export default function robotwin(pi: ExtensionAPI) {
 				policyActions = nativeActions = 0;
 				seeds.reset();
 				language = reset.instruction ?? (await env.call<string>("env.get_task_language"));
+				await startFlywheel();
 				return present(await capture({ action: "reset" }, { ...result, success: true, instruction: language }));
 			},
 			prompt: () =>
@@ -522,6 +538,17 @@ export default function robotwin(pi: ExtensionAPI) {
 			},
 		},
 	});
+	const fly = robot.fly!;
+	/** A Flywheel episode from the reset scene (--collect-flywheel-data): raw/robotwin/<config>/<task>/seed_NNN. */
+	async function startFlywheel() {
+		if (pi.getFlag("collect-flywheel-data") !== true) return;
+		const f = await env.call<PolicyFrame>("env.policy_frame", {}, READ_MS);
+		const { task, config, seed } = cell();
+		fly.reset(flyObs(f), {
+			path: [config, task, `seed_${seed.padStart(3, "0")}`],
+			metadata: { task_config: config, task_name: task, seed: Number(seed), task_language: language },
+		});
+	}
 
 	const status = () => info.episode_status;
 	const success = () => status().eval_success === true;
@@ -574,6 +601,11 @@ export default function robotwin(pi: ExtensionAPI) {
 			const main = (ret[0] as { main_images?: unknown } | null)?.main_images;
 			if (main instanceof NdArray) robot.video.frame(u8(main));
 			executed += ret[4].executed_actions ?? 0;
+			// Flywheel: a scripted qpos step, recorded in the policy's eef16 space as the pose it reached.
+			if (fly.recording) {
+				const f = await env.call<PolicyFrame>("env.policy_frame", {}, READ_MS);
+				fly.transition(f.state.toArray(), flyObs(f), success() ? 1 : 0, success(), exhausted());
+			}
 			if (success() || exhausted()) break;
 		}
 		nativeActions += executed;
@@ -936,16 +968,35 @@ export default function robotwin(pi: ExtensionAPI) {
 				const rows = Math.min(USE_LENGTH, actions.shape[0]);
 				const bytes = actions.data.length / actions.shape[0];
 				const chunk = new NdArray(actions.dtype, [rows, 16], actions.data.subarray(0, rows * bytes));
-				// Record the head frame after every native action for the episode video.
+				const recording = fly.recording;
+				const vlaId = fly.proposal(nativePrompt, chunk);
+				// Record the head frame after every native action for the episode video (and, for the
+				// Flywheel, what the policy reads after it).
 				const ret = await env.call<StepReturn>(
 					"env.chunk_step",
-					{ action_type: "ee", return_all_frames: true },
+					{ action_type: "ee", return_all_frames: true, return_policy_frames: recording },
 					MUTATE_MS,
 					[chunk],
 					robot.signal,
 				);
 				info = ret[4];
-				for (const frame of (ret[0] as Frames | null)?.frames ?? []) robot.video.frame(u8(frame));
+				const returned = ret[0] as Frames | null;
+				for (const frame of returned?.frames ?? []) robot.video.frame(u8(frame));
+				if (recording) {
+					const a = chunk.toArray();
+					const [r, te, tr] = [ret[1], ret[2], ret[3]].map((v) => (v as NdArray).toArray());
+					(returned?.policy_frames ?? []).forEach((f, i) => {
+						fly.transition(
+							a.slice(i * 16, (i + 1) * 16),
+							flyObs(f),
+							r[i],
+							Boolean(te[i]),
+							Boolean(tr[i]),
+							vlaId,
+							i,
+						);
+					});
+				}
 				const count = ret[4].executed_actions ?? 0;
 				executed += count;
 				policyActions += count;
@@ -1047,6 +1098,7 @@ export default function robotwin(pi: ExtensionAPI) {
 			{ action: "reset" },
 			{ success: true, instruction: language, instruction_source: reset.instruction_source ?? null },
 		);
+		await startFlywheel();
 		return [
 			"view_env_state",
 			"render",

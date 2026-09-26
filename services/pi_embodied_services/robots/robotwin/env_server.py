@@ -221,6 +221,7 @@ class RoboTwinEnvFacade(BaseEnvFacade):
         super()._register_rpc()
         self._rpc["env.plan_arm_path"] = self.plan_arm_path
         self._rpc["env.ground_truth_poses"] = self.ground_truth_poses
+        self._rpc["env.policy_frame"] = self.policy_frame
         register_code_api(self, ROBOTWIN_PRIMITIVES)
 
     def get_env_meta(self) -> dict[str, Any]:
@@ -282,6 +283,7 @@ class RoboTwinEnvFacade(BaseEnvFacade):
         *,
         action_type: RoboTwinActionType = "qpos",
         return_all_frames: bool = False,
+        return_policy_frames: bool = False,
     ) -> tuple[Any, Any, Any, Any, dict[str, Any]]:
         expected_dim = 14 if action_type == "qpos" else 16
         array = np.asarray(actions, dtype=np.float64)
@@ -296,6 +298,7 @@ class RoboTwinEnvFacade(BaseEnvFacade):
                 array,
                 action_type=action_type,
                 return_all_frames=return_all_frames,
+                return_policy_frames=return_policy_frames,
                 should_stop=self.stop_requested,
             )
         )
@@ -305,9 +308,13 @@ class RoboTwinEnvFacade(BaseEnvFacade):
                 f"{len(observation_list)} obs / {len(info_list)} info"
             )
         observation = observation_list[0]
-        if return_all_frames:
+        if return_all_frames or return_policy_frames:
             observation = {
-                "frames": observation["frames"],
+                **{
+                    k: observation[k]
+                    for k in ("frames", "policy_frames")
+                    if k in observation
+                },
                 "final": self._strip_single_env_observation(observation["final"]),
             }
         else:
@@ -331,6 +338,10 @@ class RoboTwinEnvFacade(BaseEnvFacade):
 
     def plan_arm_path(self, arm: str, target_pose) -> dict[str, Any]:
         return self._env.plan_arm_path(0, arm, target_pose)
+
+    def policy_frame(self) -> dict[str, Any]:
+        """What the VLA reads now: head and wrist RGB and the eef16 state (the Flywheel's observation)."""
+        return self._env.policy_frame(0)
 
     def ground_truth_poses(self, names=None) -> dict:
         """World poses of ``names`` (default all) of the scene's actors (``--privileged``)."""

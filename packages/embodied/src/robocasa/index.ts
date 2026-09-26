@@ -18,6 +18,7 @@ import { join } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
+import type { FlywheelObs, FlywheelSpec } from "../flywheel.ts";
 import { encodePng } from "../png.ts";
 import { attach, defineRobot, median, round, SERVICES } from "../robot.ts";
 import { NdArray, RpcClient } from "../rpc.ts";
@@ -61,6 +62,26 @@ type State = {
 	maps: Map<string, WorldMap>;
 };
 type Frame = { state: Record<string, number[]>; video: Record<string, Buffer> };
+/** What RLDX-1 reads and what the env runs (services robots/robocasa/flywheel.py). */
+const FLYWHEEL: FlywheelSpec = {
+	robot: "robocasa",
+	images: {
+		agentview_left_images: [256, 256, 3],
+		agentview_right_images: [256, 256, 3],
+		eye_in_hand_images: [256, 256, 3],
+	},
+	state: 16,
+	action: 12,
+};
+/** An RLDX frame as the recorder takes it: its three cameras, and its state keys concatenated in order. */
+const flyObs = (f: Frame): FlywheelObs => ({
+	images: {
+		agentview_left_images: new NdArray("uint8", [256, 256, 3], f.video["video.robot0_agentview_left"]),
+		agentview_right_images: new NdArray("uint8", [256, 256, 3], f.video["video.robot0_agentview_right"]),
+		eye_in_hand_images: new NdArray("uint8", [256, 256, 3], f.video["video.robot0_eye_in_hand"]),
+	},
+	state: Object.values(f.state).flat(),
+});
 
 /** Integer from the environment (the RLDX_* protocol knobs), else `fallback`. */
 const envInt = (name: string, fallback: number) => {
@@ -148,6 +169,18 @@ export default function robocasa(pi: ExtensionAPI) {
 	// True whenever a non-VLA primitive stepped the env since the last RLDX call; the next
 	// RLDX call then reseeds its frame history instead of stitching stale frames on.
 	let vlaDesync = true;
+	/** Flywheel: the frame the last env step recorded (RLDX's history takes it), and the chunk running. */
+	let recordedFrame: Frame | undefined;
+	let flyVla = -1;
+	let flyIndex = -1;
+	/** raw/robocasa/<split>/<task>/seed_NNN (services robots/robocasa/flywheel.py). */
+	const flyMeta = () => {
+		const { task, split, seed } = cell();
+		return {
+			path: [split, task, `seed_${seed.padStart(3, "0")}`],
+			metadata: { split, task_name: task, seed: Number(seed), task_language: language },
+		};
+	};
 	let modality: { video_delta_indices: number[]; hist_maxlen: number } | undefined;
 	let hist: Frame[] = [];
 	let lastPrompt: string | undefined;
@@ -204,6 +237,7 @@ export default function robocasa(pi: ExtensionAPI) {
 		budget: { turns: 0, seconds: 0 },
 		// Observations carry the agentview, navview and wrist images.
 		vdm: { views: 3, wrist: 2 },
+		flywheel: { spec: FLYWHEEL, select: () => `${cell().split}/${cell().task}` },
 		units: {
 			// The base frame: MV_* keep their look in the base-mounted agentview wherever the base stands.
 			vectors: {
@@ -239,6 +273,7 @@ export default function robocasa(pi: ExtensionAPI) {
 			reset: async (result, _ctx, signal) => {
 				const t0 = Date.now();
 				const out = { ...result, ...(await resetEpisode(signal)) };
+				fly.reset(flyObs(await frame()), flyMeta());
 				const elapsed = round((Date.now() - t0) / 1000, 1);
 				return view(await capture({ action: "reset" }, out, elapsed), { agent_elapsed_s: elapsed });
 			},
@@ -301,6 +336,7 @@ export default function robocasa(pi: ExtensionAPI) {
 			}),
 		},
 	});
+	const fly = robot.fly!;
 
 	const vec = (key: string) => obs[key].toArray();
 	const eef = () => vec("robot0_eef_pos");
@@ -315,6 +351,12 @@ export default function robocasa(pi: ExtensionAPI) {
 		if (robot.signal?.aborted) throw new Error("interrupted");
 		obs = (await env.call<[Raw, unknown, unknown, unknown]>("env.step", {}, 60_000, [a], robot.signal))[0];
 		envSteps++;
+		// Flywheel: every env step, with what RLDX would read next (its history reuses the frame).
+		if (fly.recording) {
+			recordedFrame = await frame();
+			const solved = await env.call<boolean>("env.check_success", {}, 10_000);
+			fly.transition(a, flyObs(recordedFrame), solved ? 1 : 0, solved, false, flyVla, flyIndex);
+		}
 		// Record the 256x256 agentview after every env step for the episode video.
 		robot.video.frame(new NdArray("uint8", [SIZE, SIZE, 3], await rgb(CAMERAS.agentview)));
 	}
@@ -578,13 +620,15 @@ export default function robocasa(pi: ExtensionAPI) {
 			return { error: "RoboCasa task language is unavailable; VLA was not executed", effective_prompt: "" };
 		if (!vla) throw new Error("RLDX server not connected");
 		const prompt = language; // RLDX always gets the live, full task language
+		recordedFrame = undefined;
 		const forceReset = Boolean(p.force_reset) || vlaDesync;
 		vlaDesync = false;
 		await vla.call("session.register", {}, 30_000); // refreshes, or re-creates an idle-expired session
 		modality ??= await vla.call<{ video_delta_indices: number[]; hist_maxlen: number }>("vla.get_modality_config");
 		const { video_delta_indices: vdi, hist_maxlen: maxlen } = modality;
 		const push = async () => {
-			hist.push(await frame());
+			hist.push(recordedFrame ?? (await frame()));
+			recordedFrame = undefined;
 			if (hist.length > maxlen) hist.shift();
 		};
 		// Memory and history reset only on a new instruction or a forced reset; same-prompt calls keep continuity.
@@ -632,7 +676,19 @@ export default function robocasa(pi: ExtensionAPI) {
 				"action.control_mode",
 			].map(col);
 			const horizon = actions["action.gripper_close"].shape[1];
+			// The chunk as proposed (base unclipped) in the env's 12-D layout, for the Flywheel.
+			flyVla = fly.proposal(
+				prompt,
+				Array.from({ length: horizon }, (_, i) => [
+					...pos(i),
+					...rot(i),
+					close(i)[0] >= 0.5 ? 1 : -1,
+					...base(i).slice(0, 4),
+					mode(i)[0] < 0.5 ? -1 : 1,
+				]),
+			);
 			for (let i = 0; i < Math.min(nSteps, horizon); i++) {
+				flyIndex = i;
 				let motion = base(i);
 				const bc = p.base_clip;
 				if (bc !== null) motion = motion.map((v) => clip(v, -bc, bc));
@@ -672,6 +728,7 @@ export default function robocasa(pi: ExtensionAPI) {
 			eefPrev = eefNow;
 			gripPrev = gripNow;
 		}
+		flyVla = flyIndex = -1;
 		const g = finger();
 		const base1 = basePos();
 		const [contact, contactObj] = await env.call<[boolean, string | null]>("env.grasp_contact", {}, 10_000);
@@ -1120,6 +1177,7 @@ export default function robocasa(pi: ExtensionAPI) {
 			.call<string>("env.get_success_criteria_text", {}, 30_000)
 			.catch((e) => `(unavailable: ${e})`);
 		await capture(null, null, null);
+		fly.reset(flyObs(await frame()), flyMeta());
 		return [...PRIMITIVES, "view_env_state", "back_project_batch", "query_world_map", "finish"];
 	}
 }

@@ -994,6 +994,8 @@ export function gumi(
 							...task,
 							teleop: "pi-embodied dashboard",
 							arms: handle?.arms,
+							// The export's action space (services flywheel/gumi.py): one slot per unit.
+							vocabulary: handle?.vocabulary,
 							step_m: handle?.stepM,
 							yaw_step_rad: handle?.yawStepRad,
 						},

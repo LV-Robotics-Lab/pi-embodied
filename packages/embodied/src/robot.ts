@@ -17,7 +17,7 @@ import { type Static, type TSchema, Type } from "typebox";
 import { robotCheck } from "./check.ts";
 import { explore } from "./explore.ts";
 import { type FlashHook, flash } from "./flash/index.ts";
-import { flywheel } from "./flywheel.ts";
+import { type FlywheelSpec, flywheel } from "./flywheel.ts";
 import { type MemoryOptions, memory } from "./memory/index.ts";
 import { operator } from "./operator.ts";
 import { CODE_API_ENTRY, CODE_API_EVENT, type CodeApi, fetchCodeApi } from "./primitives/registry.ts";
@@ -132,9 +132,13 @@ export type RobotSpec = {
 	};
 	/** Mount the human-in-the-loop operator (../operator.ts). */
 	operator?: { step: () => number; reset?: () => Promise<Json> };
-	/** Mount the episode video (../video.ts) and the LIBERO Flywheel recorder (../flywheel.ts). */
+	/** Mount the episode video (../video.ts). */
 	video?: boolean;
-	flywheel?: boolean;
+	/**
+	 * Mount the Flywheel recorder (../flywheel.ts, --collect-flywheel-data): what the robot's VLA
+	 * observations and actions hold, and the default /flywheel-export selection (the current task).
+	 */
+	flywheel?: { spec: FlywheelSpec; select: () => string };
 	/** Mount Show-Harness action units (../units): --units=true leaves only `act`, `finish` and its plugins' tools; --units=both adds them. */
 	units?: UnitsSpec;
 	/** Mount Flash (../flash, `--model flash/replay`): the robot's plans and how it re-localizes them. */
@@ -264,7 +268,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 			})
 		: undefined;
 	const video = spec.video ? episodeVideo(pi) : { frame: (_image: NdArray) => {} };
-	const fly = spec.flywheel ? flywheel(pi) : undefined;
+	const fly = spec.flywheel ? flywheel(pi, spec.flywheel.spec, spec.flywheel.select) : undefined;
 	if (spec.flash) flash(pi, spec.flash);
 	/** A successful scene reset also restarts the units state (accumulated yaw, gripper, plan). */
 	const resetsUnits =

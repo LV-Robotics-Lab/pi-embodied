@@ -32,12 +32,6 @@ LIBERO_ARRAYS = {
     "states": {"shape": (8,), "dtype": "float32"},
     "actions": {"shape": (7,), "dtype": "float32"},
 }
-LIBERO_EXPORT_FIELDS = {
-    "image": "main_images",
-    "wrist_image": "wrist_images",
-    "state": "states",
-    "actions": "actions",
-}
 
 
 def success_mask(transitions: Any) -> Any:
@@ -45,14 +39,30 @@ def success_mask(transitions: Any) -> Any:
     return transitions["terminated"]
 
 
-LIBERO_SPEC = {
-    "arrays": LIBERO_ARRAYS,
-    "export_fields": LIBERO_EXPORT_FIELDS,
-    "image_fields": ("main_images", "wrist_images"),
-    "fps": 20,
+#: The Pi0.5 policy's input and output (the TS recorder's FLYWHEEL in packages/embodied/src/libero).
+SPEC = {
+    "robot": "libero",
     "robot_type": "panda",
+    "fps": 20,
+    "arrays": LIBERO_ARRAYS,
+    "image_fields": ("main_images", "wrist_images"),
+    "cameras": {"main_images": "agentview", "wrist_images": "wrist"},
+    "state_names": [
+        "eef_x",
+        "eef_y",
+        "eef_z",
+        "eef_ax",
+        "eef_ay",
+        "eef_az",
+        "gripper_l",
+        "gripper_r",
+    ],
+    "action_names": ["dx", "dy", "dz", "drx", "dry", "drz", "gripper"],
     "success_mask": success_mask,
+    #: What one dataset shares: every episode of one LIBERO task.
+    "group": ("suite", "task_id"),
 }
+LIBERO_SPEC = SPEC
 
 
 def _task_root(root: Path | str, suite: str, task_id: int) -> Path:
@@ -89,25 +99,3 @@ def create_episode_writer(config: dict[str, Any], obs: dict[str, Any]) -> Episod
         initial_observation=obs,
         spec=LIBERO_SPEC,
     )
-
-
-def export_options(
-    data_root: Path | str,
-    *,
-    suite: str,
-    task_id: int,
-    output_root: Path | str | None = None,
-) -> dict[str, Any]:
-    """Select a LIBERO task without changing its raw or exported directory layout."""
-    root = Path(data_root).expanduser().resolve()
-    task_root = _task_root(root, suite, task_id)
-    return {
-        "episode_paths": sorted(task_root.glob("seed_*/episode_*")),
-        "expected_metadata": {"suite": suite, "task_id": task_id},
-        "repo_id_prefix": f"pi-embodied/{suite}-task-{task_id:02d}",
-        "output_root": (
-            output_root
-            if output_root is not None
-            else root / "datasets" / "lerobot" / suite / f"task_{task_id:02d}"
-        ),
-    }

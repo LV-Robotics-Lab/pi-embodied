@@ -1,16 +1,17 @@
 /**
- * Flywheel data collection (--collect-flywheel-data). Records every env transition
- * of the episode, the VLA chunks that proposed actions, and the primitive (tool call) that
- * ran them, in the raw episode format, which pi_embodied_services.flywheel validates and
- * exports:
+ * Flywheel data collection (--collect-flywheel-data). Records every env transition of the episode,
+ * the VLA chunks that proposed actions, and the primitive (tool call) that ran them, in the raw
+ * episode format, which pi_embodied_services.flywheel validates and exports:
  *
- *   <root>/raw/libero/<suite>/task_NN/seed_NNN/episode_<utc>_<hex>/
+ *   <root>/raw/<robot>/<the robot's cell path>/episode_<utc>_<hex>/
  *     transitions.npz  proposals.npz  episode.json
  *
- * The episode is written when the session ends. /flywheel-export runs
- * `python -m pi_embodied_services.flywheel.cli export-lerobot` in the services dir (--services,
- * with --flywheel-python, else --python), which keeps each successful episode up to its first `terminated` step and
- * writes a LeRobot dataset (needs lerobot>=0.3.3,<0.4 in that Python).
+ * What an observation holds is the robot's (`FlywheelSpec`): its camera images, its state vector and
+ * its action vector, the ones its VLA reads and emits. The episode is written when the session ends.
+ * /flywheel-export runs `python -m pi_embodied_services.flywheel.cli export-lerobot` in the services
+ * dir (--services, with --flywheel-python, else --python), which keeps each successful episode up
+ * to its first `terminated` step and writes a LeRobot v3.0 dataset (lerobot 0.4 in that Python)
+ * with the shared feature names `observation.images.<camera>`, `observation.state` and `action`.
  */
 
 import { randomBytes } from "node:crypto";
@@ -22,16 +23,26 @@ import { type Npy, writeNpz } from "./npz.ts";
 import { SERVICES } from "./robot.ts";
 import type { NdArray } from "./rpc.ts";
 
-const IMAGE = [256, 256, 3];
-const STATE = 8;
-const ACTION = 7;
-
-type Obs = { main_images: NdArray; wrist_images?: NdArray | null; states: NdArray };
-type Meta = { suite: string; task_id: number; seed: number; task_language: string };
+/** What a robot records: services pi_embodied_services/robots/<robot>/flywheel.py holds the same shapes. */
+export type FlywheelSpec = {
+	/** The raw data directory under `raw/` and the services spec the export uses. */
+	robot: string;
+	/** Camera images of every observation, by transitions.npz key: [H, W, 3] uint8 (null: the first frame's size). */
+	images: Record<string, readonly [number, number, number] | null>;
+	/** Length of the state vector (`states`) and of the action vector (`actions`). */
+	state: number;
+	action: number;
+};
+export type FlywheelObs = { images: Record<string, NdArray | null | undefined>; state: number[] };
+/**
+ * Where the episode goes and what it says about itself: `path` below `raw/<robot>/` (the export
+ * selects a prefix of it), and episode.json fields (`task_language` required).
+ */
+export type FlywheelMeta = { path: string[]; metadata: Record<string, unknown> & { task_language: string } };
 type Proposal = { created_step: number; primitive_id: number; instruction: string; actions: number[][] };
 
 /**
- * The suite key of a LIBERO episode (its raw directory, `suite` in episode.json, the export's --suite).
+ * The suite key of a LIBERO episode (its raw directory, `suite` in episode.json).
  * LIBERO-plus task indices name other tasks than standard/pro ones (plus libero_spatial task 0 is a
  * table-texture variant; standard task 0 is the plain scene), so plus episodes get `<suite>_plus`.
  * Standard and pro share the suite name: their task sets are identical.
@@ -40,11 +51,12 @@ export const flywheelSuite = (suite: string, liberoType: string) => (liberoType 
 
 const f32 = (v: number[]) => Buffer.from(Float32Array.from(v).buffer);
 const i32 = (v: number[]) => Buffer.from(Int32Array.from(v).buffer);
-const same = (a: number[], b: number[]) => a.length === b.length && a.every((x, i) => x === b[i]);
+const same = (a: readonly number[], b: readonly number[]) => a.length === b.length && a.every((x, i) => x === b[i]);
+const PART = /^[A-Za-z0-9][A-Za-z0-9_.=-]*$/;
 
-function image(name: string, a: NdArray | null | undefined): Buffer {
-	if (!a || a.dtype !== "uint8" || !same(a.shape, IMAGE))
-		throw new Error(`flywheel: ${name} must be uint8 ${IMAGE}, got ${a ? `${a.dtype} ${a.shape}` : "none"}`);
+function image(name: string, a: NdArray | null | undefined, shape: readonly number[]): Buffer {
+	if (!a || a.dtype !== "uint8" || !same(a.shape, shape))
+		throw new Error(`flywheel: ${name} must be uint8 ${shape}, got ${a ? `${a.dtype} ${a.shape}` : "none"}`);
 	return a.data;
 }
 
@@ -63,22 +75,28 @@ function strings(values: string[]): Npy {
 	return { descr: `<U${width}`, shape: [values.length], data };
 }
 
-function episode(root: string, meta: Meta, first: Obs) {
-	if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(meta.suite)) throw new Error(`flywheel: invalid suite ${meta.suite}`);
-	if (!(Number.isInteger(meta.task_id) && meta.task_id >= 0 && Number.isInteger(meta.seed) && meta.seed >= 0))
-		throw new Error("flywheel: task and seed must be non-negative integers");
+function episode(root: string, spec: FlywheelSpec, meta: FlywheelMeta, first: FlywheelObs) {
+	for (const part of [spec.robot, ...meta.path])
+		if (!PART.test(part)) throw new Error(`flywheel: invalid path part ${JSON.stringify(part)}`);
+	if (!meta.metadata.task_language) throw new Error("flywheel: the episode has no task language");
+	// A size the robot leaves open is its first frame's, and holds for the episode.
+	const shapes = Object.fromEntries(
+		Object.entries(spec.images).map(([k, shape]) => [k, shape ?? (first.images[k]?.shape as readonly number[])]),
+	) as Record<string, readonly number[]>;
 	const stamp = new Date()
 		.toISOString()
 		.replace(/[-:]/g, "")
 		.replace(/\.(\d{3})Z$/, ".$1000Z");
-	const task = `task_${String(meta.task_id).padStart(2, "0")}`;
 	return {
+		spec,
 		meta,
 		id: `episode_${stamp}_${randomBytes(4).toString("hex")}`,
-		dir: join(root, "raw", "libero", meta.suite, task, `seed_${String(meta.seed).padStart(3, "0")}`),
-		main: [image("main_images", first.main_images)],
-		wrist: [image("wrist_images", first.wrist_images)],
-		states: [f32(vector("states", first.states.toArray(), STATE))],
+		dir: join(root, "raw", spec.robot, ...meta.path),
+		shapes,
+		images: Object.fromEntries(
+			Object.entries(shapes).map(([k, shape]) => [k, [image(k, first.images[k], shape)]]),
+		) as Record<string, Buffer[]>,
+		states: [f32(vector("states", first.state, spec.state))],
 		actions: [] as Buffer[],
 		rewards: [] as number[],
 		terminated: [] as boolean[],
@@ -95,16 +113,21 @@ type Episode = ReturnType<typeof episode>;
 
 /** Write `ep` in the schema-1 layout (via a `.partial` directory). */
 function write(ep: Episode): { path: string; step_count: number; is_success: boolean } {
+	const { spec } = ep;
 	const n = ep.actions.length;
 	const training = ep.terminated.indexOf(true) + 1;
 	const path = join(ep.dir, ep.id);
 	const partial = `${path}.partial`;
 	mkdirSync(partial, { recursive: true });
 	writeNpz(join(partial, "transitions.npz"), {
-		main_images: { descr: "|u1", shape: [n + 1, ...IMAGE], data: Buffer.concat(ep.main) },
-		wrist_images: { descr: "|u1", shape: [n + 1, ...IMAGE], data: Buffer.concat(ep.wrist) },
-		states: { descr: "<f4", shape: [n + 1, STATE], data: Buffer.concat(ep.states) },
-		actions: { descr: "<f4", shape: [n, ACTION], data: Buffer.concat(ep.actions) },
+		...Object.fromEntries(
+			Object.entries(ep.shapes).map(([k, shape]) => [
+				k,
+				{ descr: "|u1", shape: [n + 1, ...shape], data: Buffer.concat(ep.images[k]) },
+			]),
+		),
+		states: { descr: "<f4", shape: [n + 1, spec.state], data: Buffer.concat(ep.states) },
+		actions: { descr: "<f4", shape: [n, spec.action], data: Buffer.concat(ep.actions) },
 		rewards: { descr: "<f4", shape: [n], data: f32(ep.rewards) },
 		terminated: { descr: "|b1", shape: [n], data: Buffer.from(ep.terminated.map(Number)) },
 		truncated: { descr: "|b1", shape: [n], data: Buffer.from(ep.truncated.map(Number)) },
@@ -117,7 +140,11 @@ function write(ep: Episode): { path: string; step_count: number; is_success: boo
 	const horizon = p[0]?.actions.length ?? 0;
 	if (p.some((x) => x.actions.length !== horizon)) throw new Error("flywheel: VLA chunks differ in horizon");
 	writeNpz(join(partial, "proposals.npz"), {
-		actions: { descr: "<f4", shape: [p.length, horizon, ACTION], data: f32(p.flatMap((x) => x.actions.flat())) },
+		actions: {
+			descr: "<f4",
+			shape: [p.length, horizon, spec.action],
+			data: f32(p.flatMap((x) => x.actions.flat())),
+		},
 		created_step: { descr: "<i4", shape: [p.length], data: i32(p.map((x) => x.created_step)) },
 		primitive_id: { descr: "<i4", shape: [p.length], data: i32(p.map((x) => x.primitive_id)) },
 		instruction: strings(p.map((x) => x.instruction)),
@@ -128,17 +155,15 @@ function write(ep: Episode): { path: string; step_count: number; is_success: boo
 			? "env_truncated"
 			: "agent_stopped";
 	const metadata = {
+		...ep.meta.metadata,
+		robot: spec.robot,
 		episode_id: ep.id,
 		is_success: training > 0,
 		primitive_names: ep.names,
 		proposal_count: p.length,
 		schema_version: 1,
-		seed: ep.meta.seed,
 		step_count: n,
 		stop_reason: stop,
-		suite: ep.meta.suite,
-		task_id: ep.meta.task_id,
-		task_language: ep.meta.task_language,
 		training_step_count: training,
 	};
 	writeFileSync(join(partial, "episode.json"), `${JSON.stringify(metadata, null, 2)}\n`);
@@ -146,7 +171,11 @@ function write(ep: Episode): { path: string; step_count: number; is_success: boo
 	return { path, step_count: n, is_success: training > 0 };
 }
 
-export function flywheel(pi: ExtensionAPI) {
+/**
+ * Mount the recorder. `select` is the export's default selection: the path below `raw/<robot>/`
+ * whose episodes make one dataset (e.g. LIBERO's `<suite>/task_NN`, every seed of one task).
+ */
+export function flywheel(pi: ExtensionAPI, spec: FlywheelSpec, select: () => string) {
 	pi.registerFlag("collect-flywheel-data", {
 		type: "boolean",
 		default: false,
@@ -199,24 +228,12 @@ export function flywheel(pi: ExtensionAPI) {
 	pi.on("session_shutdown", (_event, ctx) => finish(ctx));
 
 	pi.registerCommand("flywheel-export", {
-		description: "Export successful Flywheel episodes to LeRobot: [suite] [task] [dataset-id]",
+		description: "Export successful Flywheel episodes to a LeRobot v3.0 dataset: [selection] [dataset-id]",
 		handler: async (args, ctx) => {
-			const current = flywheelSuite(String(pi.getFlag("suite") ?? ""), String(pi.getFlag("libero-type") ?? ""));
-			const [suite = current, task = String(pi.getFlag("task") ?? ""), id] = args
-				.trim()
-				.split(/\s+/)
-				.filter(Boolean);
-			const cli = [
-				"-m",
-				"pi_embodied_services.flywheel.cli",
-				"export-lerobot",
-				"--data-root",
-				root(),
-				"--suite",
-				suite,
-			];
-			cli.push("--task", task, ...(id ? ["--dataset-id", id] : []));
-			// LeRobot's pins (numpy 2, huggingface-hub 1.x) conflict with the env servers', hence its own Python.
+			const [selection = select(), id] = args.trim().split(/\s+/).filter(Boolean);
+			const cli = ["-m", "pi_embodied_services.flywheel.cli", "export-lerobot", "--data-root", root()];
+			cli.push("--robot", spec.robot, "--select", selection, ...(id ? ["--dataset-id", id] : []));
+			// LeRobot's pins (numpy 2, huggingface-hub) conflict with the env servers', hence its own Python.
 			const python = String(
 				pi.getFlag("flywheel-python") || pi.getFlag("python") || process.env.PI_EMBODIED_PYTHON || "python",
 			);
@@ -233,19 +250,27 @@ export function flywheel(pi: ExtensionAPI) {
 
 	return {
 		/** Start an episode at env.reset (finishing any open one). No-op without --collect-flywheel-data. */
-		reset(obs: Obs, meta: Meta) {
+		reset(obs: FlywheelObs, meta: FlywheelMeta) {
 			finish();
-			if (pi.getFlag("collect-flywheel-data")) ep = episode(root(), meta, obs);
+			if (pi.getFlag("collect-flywheel-data")) ep = episode(root(), spec, meta, obs);
 		},
-		/** A VLA action chunk [horizon, 7] about to be executed; returns its id for `transition`. */
-		proposal(instruction: string, actions: NdArray): number {
+		/** Whether this episode is being recorded (robots skip building observations otherwise). */
+		get recording() {
+			return ep !== undefined;
+		},
+		/** A VLA action chunk [horizon, action] about to be executed; returns its id for `transition`. */
+		proposal(instruction: string, actions: NdArray | number[][]): number {
 			if (!ep) return -1;
-			const flat = actions.toArray();
-			if (actions.shape.length !== 2 || actions.shape[1] !== ACTION)
-				throw new Error("flywheel: chunk must be [H, 7]");
-			const rows = Array.from({ length: actions.shape[0] }, (_, i) =>
-				vector("proposal", flat.slice(i * ACTION, (i + 1) * ACTION), ACTION),
-			);
+			const width = spec.action;
+			let rows: number[][];
+			if (Array.isArray(actions)) rows = actions;
+			else {
+				if (actions.shape.length !== 2 || actions.shape[1] !== width)
+					throw new Error(`flywheel: chunk must be [H, ${width}]`);
+				const flat = actions.toArray();
+				rows = Array.from({ length: actions.shape[0] }, (_, i) => flat.slice(i * width, (i + 1) * width));
+			}
+			rows = rows.map((r) => vector("proposal", r, width));
 			const created_step = ep.actions.length;
 			ep.proposals.push({ created_step, primitive_id: primitive(ep), instruction, actions: rows });
 			return ep.proposals.length - 1;
@@ -253,7 +278,7 @@ export function flywheel(pi: ExtensionAPI) {
 		/** One env step: the action sent, the observation it produced, and the env's flags. */
 		transition(
 			action: number[],
-			obs: Obs,
+			obs: FlywheelObs,
 			reward: number,
 			terminated: boolean,
 			truncated: boolean,
@@ -261,13 +286,11 @@ export function flywheel(pi: ExtensionAPI) {
 			index = -1,
 		) {
 			if (!ep) return;
-			const a = f32(vector("action", action, ACTION));
-			const main = image("main_images", obs.main_images);
-			const wrist = image("wrist_images", obs.wrist_images);
-			const state = f32(vector("states", obs.states.toArray(), STATE));
+			const a = f32(vector("action", action, spec.action));
+			const shots = Object.entries(ep.shapes).map(([k, shape]) => [k, image(k, obs.images[k], shape)] as const);
+			const state = f32(vector("states", obs.state, spec.state));
 			ep.actions.push(a);
-			ep.main.push(main);
-			ep.wrist.push(wrist);
+			for (const [k, data] of shots) ep.images[k].push(data);
 			ep.states.push(state);
 			ep.rewards.push(Number(reward));
 			ep.terminated.push(terminated);

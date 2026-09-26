@@ -231,3 +231,28 @@ def test_robolab_lists_objects_and_articulations_in_the_eef_frame(monkeypatch, x
     assert out["poses"]["banana"]["quat_xyzw"] == XYZW
     with pytest.raises(ValueError, match="robot"):
         facade.ground_truth_poses(["robot"])
+
+
+def test_robotwin_policy_frame_is_what_lingbot_reads(robotwin_env):
+    """The Flywheel observation: the three cameras LingBot reads and the eef16 state."""
+    rgb = {k: np.full((2, 3, 3), i, np.uint8) for i, k in enumerate(("head", "l", "r"))}
+    robot = SimpleNamespace(
+        get_left_ee_pose=lambda: [0.1, 0.2, 0.3, 1.0, 0.0, 0.0, 0.0],
+        get_right_ee_pose=lambda: [0.4, 0.5, 0.6, 1.0, 0.0, 0.0, 0.0],
+        get_left_gripper_val=lambda: 1.0,
+        get_right_gripper_val=lambda: 0.0,
+    )
+    native = {
+        "head_camera": {"rgb": rgb["head"]},
+        "left_camera": {"rgb": rgb["l"]},
+        "right_camera": {"rgb": rgb["r"]},
+    }
+    task = SimpleNamespace(robot=robot, get_obs=lambda: {"observation": native})
+    env = object.__new__(robotwin_env.RoboTwinAgentEnv)
+    env.venv = SimpleNamespace(envs=[SimpleNamespace(lock=threading.Lock(), task=task)])
+    frame = env.policy_frame(0)
+    assert frame["left_wrist"] is rgb["l"] and frame["right_wrist"] is rgb["r"]
+    assert frame["state"].tolist() == [
+        *(0.1, 0.2, 0.3, 1.0, 0.0, 0.0, 0.0, 1.0),
+        *(0.4, 0.5, 0.6, 1.0, 0.0, 0.0, 0.0, 0.0),
+    ]

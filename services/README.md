@@ -76,9 +76,24 @@ uv pip install -e "services[franka,sam3]"
 # Molmo: its own venv (transformers>=4.57 conflicts with openpi's 4.53.2)
 uv pip install -e "services[molmo]"
 
-# Flywheel LeRobot export: its own venv (lerobot pins numpy 2 / huggingface-hub 1.x);
-# pass its python to pi as --flywheel-python
+# Flywheel LeRobot export: its own venv, Python >= 3.10 (lerobot 0.4 pins numpy 2 /
+# huggingface-hub); pass its python to pi as --flywheel-python
 uv pip install -e "services[flywheel]"
+```
+
+Every dataset pi-embodied exports is LeRobot v3.0 with the same feature names:
+`observation.images.<camera>`, `observation.state`, `action` (their dimensions named in
+`meta/info.json`), plus `action_source` (VLA or scripted) for Flywheel data and `actor`,
+`dagger`, `action_repeat` for GUMI runs. One dataset holds one robot's action space.
+
+```bash
+# Flywheel (LIBERO, RoboCasa, RoboTwin; pi's /flywheel-export runs the same)
+python -m pi_embodied_services.flywheel.cli export-lerobot --data-root ~/.pi/embodied/datacollection \
+  --robot robocasa --select target/PnPCounterToCab
+# GUMI teleop / DAgger runs of one task
+python -m pi_embodied_services.flywheel.cli export-gumi <gumi-record>/<MMDD>/task_<id> --output-root runs/lerobot
+# A LeRobot v2.1 dataset exported before (lerobot 0.3) converts in place
+python -m lerobot.datasets.v30.convert_dataset_v21_to_v30 --repo-id <id> --root <dir> --push-to-hub=false
 ```
 
 `uv` reads the `[tool.uv]` conflict table, so `uv sync --extra <robot>` inside `services/`

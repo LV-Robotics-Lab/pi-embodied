@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
-import { flywheelSuite } from "../flywheel.ts";
+import { type FlywheelObs, type FlywheelSpec, flywheelSuite } from "../flywheel.ts";
 import { decodePngChannel, encodePng } from "../png.ts";
 import { defineRobot, mark, median, SERVICES } from "../robot.ts";
 import { NdArray, RpcClient } from "../rpc.ts";
@@ -57,6 +57,17 @@ const VIEWS = `Each result shows the agentview, then the wrist view (verified in
 - Wrist view (second image) looks straight down from the gripper; the two fingers are at the image bottom corners and the grasp point is between them, at the horizontal center just above the fingers. It is turned half around relative to the agentview: MV_FWD moves toward the wrist image TOP, MV_BACK toward its bottom, MV_LEFT toward its RIGHT and MV_RIGHT toward its LEFT. So a target above the grasp point in the wrist image needs MV_FWD, one to its right needs MV_LEFT.`;
 type Camera = keyof typeof CAMERAS;
 type Obs = { main_images: NdArray; wrist_images?: NdArray | null; states: NdArray };
+/** The Pi0.5 policy input and output LIBERO records (services robots/libero/flywheel.py). */
+const FLYWHEEL: FlywheelSpec = {
+	robot: "libero",
+	images: { main_images: [256, 256, 3], wrist_images: [256, 256, 3] },
+	state: 8,
+	action: 7,
+};
+const flyObs = (o: Obs): FlywheelObs => ({
+	images: { main_images: o.main_images, wrist_images: o.wrist_images },
+	state: o.states.toArray(),
+});
 type StepReturn = [Obs, unknown, boolean | NdArray, boolean | NdArray, unknown];
 type ChunkReturn = [Obs[], NdArray, NdArray, NdArray, unknown];
 type CameraMeta = { intrinsic_K: number[][]; extrinsic_cam2world: number[][]; depth_near?: number; depth_far?: number };
@@ -209,7 +220,11 @@ export default function libero(pi: ExtensionAPI) {
 			primitives: PRIMITIVES,
 		},
 		video: true,
-		flywheel: true,
+		flywheel: {
+			spec: FLYWHEEL,
+			select: () =>
+				`${flywheelSuite(robot.task.suite, flag("libero-type", "pro"))}/task_${robot.task.task.padStart(2, "0")}`,
+		},
 		groundTruth: (names) => call(env, "env.ground_truth_poses", { names: names ?? null }),
 		// Observations carry the agentview, then the wrist view.
 		vdm: { views: 2, wrist: 1 },
@@ -223,7 +238,7 @@ export default function libero(pi: ExtensionAPI) {
 			// In simulation the operator's scene restore is the env's own reset to the episode's initial state.
 			reset: async () => {
 				await resetEpisode();
-				fly.reset(obs, flyMeta());
+				fly.reset(flyObs(obs), flyMeta());
 				return { step: envStep, terminated, truncated };
 			},
 		},
@@ -231,7 +246,7 @@ export default function libero(pi: ExtensionAPI) {
 			// The exploration `reset` tool is not a robot.tool, so robot.signal is unset here; use its own signal.
 			reset: async (result, _ctx, signal) => {
 				await resetEpisode(signal);
-				fly.reset(obs, flyMeta());
+				fly.reset(flyObs(obs), flyMeta());
 				return observe(result);
 			},
 			prompt: () => EXPLORE,
@@ -322,7 +337,7 @@ export default function libero(pi: ExtensionAPI) {
 	/** Every env transition goes to the episode video and the flywheel recorder. */
 	function record(action: number[], o: Obs, reward: number, term: boolean, trunc: boolean, vlaId = -1, index = -1) {
 		video.frame(o.main_images);
-		fly.transition(action, o, reward, term, trunc, vlaId, index);
+		fly.transition(action, flyObs(o), reward, term, trunc, vlaId, index);
 	}
 
 	async function step(action: number[]) {
@@ -364,12 +379,15 @@ export default function libero(pi: ExtensionAPI) {
 		return seed;
 	}
 
-	const flyMeta = () => ({
-		suite: flywheelSuite(robot.task.suite, flag("libero-type", "pro")),
-		task_id: Number(robot.task.task),
-		seed: Number(robot.task.seed),
-		task_language: language,
-	});
+	/** raw/libero/<suite>/task_NN/seed_NNN, as the services' LIBERO spec reads it. */
+	const flyMeta = () => {
+		const suite = flywheelSuite(robot.task.suite, flag("libero-type", "pro"));
+		const [task, seed] = [Number(robot.task.task), Number(robot.task.seed)];
+		return {
+			path: [suite, `task_${String(task).padStart(2, "0")}`, `seed_${String(seed).padStart(3, "0")}`],
+			metadata: { suite, task_id: task, seed, task_language: language },
+		};
+	};
 
 	/** Restore the episode's initial scene (session start, exploration `reset`); `signal` aborts the env reset. */
 	async function resetEpisode(signal = robot.signal) {
@@ -1080,7 +1098,7 @@ export default function libero(pi: ExtensionAPI) {
 		}
 		await resetEpisode();
 		language = await call<string>(env, "env.get_task_language");
-		fly.reset(obs, flyMeta());
+		fly.reset(flyObs(obs), flyMeta());
 		return TOOLS;
 	}
 }

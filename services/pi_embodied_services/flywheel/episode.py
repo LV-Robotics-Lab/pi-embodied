@@ -33,7 +33,9 @@ SCHEMA_VERSION = 1
 def _array(value: Any, field: dict[str, Any]) -> np.ndarray:
     """Copy one policy input before the caller can reuse its buffer."""
     array = np.array(value, dtype=field["dtype"], copy=True, order="C")
-    if array.shape != field["shape"]:
+    # An image size the spec leaves open (None) is any [H, W, 3]; finalize() stacks one size.
+    open_image = field["shape"] is None and array.ndim == 3 and array.shape[2] == 3
+    if array.shape != field["shape"] and not open_image:
         raise ValueError(f"expected array shape {field['shape']}; got {array.shape}")
     return array
 
@@ -228,7 +230,11 @@ def validate_episode(path: Path | str, *, spec: dict[str, Any]) -> dict[str, Any
         for key, field in spec["arrays"].items():
             array = data[key]
             length = count if key == "actions" else count + 1
-            if array.shape != (length, *field["shape"]):
+            # An image size the spec leaves open (None) is the episode's own: [H, W, 3].
+            shape = field["shape"] if field["shape"] is not None else array.shape[1:]
+            if array.shape != (length, *shape) or (
+                field["shape"] is None and (len(shape) != 3 or shape[2] != 3)
+            ):
                 raise ValueError(f"invalid {key} shape in {root}")
             if array.dtype != np.dtype(field["dtype"]):
                 raise ValueError(f"invalid {key} dtype in {root}")

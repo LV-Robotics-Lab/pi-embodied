@@ -12,9 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# Modified by pi-embodied: import paths rewritten.
+#
+# Modified by pi-embodied: import paths rewritten; LeRobot v3.0 (lerobot 0.4) with the shared
+# feature names, any robot's spec, a selection of raw episodes by path.
 
-"""Export successful episodes to LeRobot using caller-supplied data rules."""
+"""Export successful episodes to a LeRobot v3.0 dataset using a robot's data rules.
+
+Every robot's dataset has the same shape of features, whatever its embodiment:
+
+- ``observation.images.<camera>``: one per camera the spec names (``spec["cameras"]``);
+- ``observation.state`` and ``action``: float32 vectors, their dimensions named by the spec;
+- ``action_source``: 1 where a VLA chunk produced the action, 0 for a scripted primitive;
+- ``task``: the episode's task language (LeRobot's own column).
+
+Their lengths and meanings are the robot's: one dataset holds one embodiment and action space.
+"""
 
 from __future__ import annotations
 
@@ -33,35 +45,61 @@ from pi_embodied_services.flywheel.episode import validate_episode
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 
 
-def _features(spec: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    return {
-        name: {
-            "dtype": "image"
-            if key in spec["image_fields"]
-            else spec["arrays"][key]["dtype"],
-            "shape": spec["arrays"][key]["shape"],
-            "names": ["height", "width", "channel"]
-            if key in spec["image_fields"]
-            else [name],
+def features(spec: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """The LeRobot features of a robot's dataset."""
+    arrays = spec["arrays"]
+    out: dict[str, dict[str, Any]] = {
+        f"observation.images.{camera}": {
+            "dtype": "image",
+            "shape": tuple(arrays[key]["shape"]),
+            "names": ["height", "width", "channel"],
         }
-        for name, key in spec["export_fields"].items()
+        for key, camera in spec["cameras"].items()
+    }
+    for name, key, names in (
+        ("observation.state", "states", spec["state_names"]),
+        ("action", "actions", spec["action_names"]),
+    ):
+        shape = tuple(arrays[key]["shape"])
+        if len(names) != shape[0]:
+            raise ValueError(f"{name}: {len(names)} dimension names for shape {shape}")
+        out[name] = {"dtype": "float32", "shape": shape, "names": list(names)}
+    out["action_source"] = {"dtype": "int64", "shape": (1,), "names": None}
+    return out
+
+
+def frame(data: Any, index: int, spec: dict[str, Any], task: str) -> dict[str, Any]:
+    """Frame ``index`` of an episode's transitions: the observation before action ``index``."""
+    return {
+        **{
+            f"observation.images.{camera}": data[key][index]
+            for key, camera in spec["cameras"].items()
+        },
+        "observation.state": data["states"][index].astype(np.float32),
+        "action": data["actions"][index].astype(np.float32),
+        "action_source": np.array([data["action_source"][index]], dtype=np.int64),
+        "task": task,
     }
 
 
 def _successful_episodes(
-    paths: Iterable[Path], *, spec: dict[str, Any], expected_metadata: dict[str, Any]
+    paths: Iterable[Path], *, spec: dict[str, Any], group: tuple[str, ...]
 ) -> list[tuple[Path, dict[str, Any]]]:
     episodes = []
     for path in paths:
         if not path.is_dir() or path.name.endswith(".partial"):
             continue
         metadata = validate_episode(path, spec=spec)
-        if any(metadata[key] != value for key, value in expected_metadata.items()):
-            raise ValueError(f"episode metadata does not match its directory: {path}")
         if metadata["is_success"]:
             episodes.append((path, metadata))
     if not episodes:
-        raise ValueError(f"no successful episodes found for {expected_metadata}")
+        raise ValueError("no successful episodes found")
+    first = episodes[0][1]
+    for path, metadata in episodes:
+        if any(metadata.get(key) != first.get(key) for key in group):
+            raise ValueError(
+                f"episode {path} is of another {'/'.join(group)} than {first}"
+            )
     return episodes
 
 
@@ -69,23 +107,26 @@ def export_lerobot(
     episode_paths: Iterable[Path],
     *,
     spec: dict[str, Any],
-    expected_metadata: dict[str, Any],
     repo_id_prefix: str,
     output_root: Path | str,
     dataset_id: str | None = None,
+    videos: bool = False,
 ) -> dict[str, Any]:
     """Validate selected episodes and export their successful training prefixes."""
     dataset_id = dataset_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     if not _NAME.fullmatch(dataset_id):
         raise ValueError(f"invalid dataset ID: {dataset_id!r}")
-
-    episodes = _successful_episodes(
-        episode_paths, spec=spec, expected_metadata=expected_metadata
-    )
-    languages = {metadata["task_language"] for _, metadata in episodes}
-    if len(languages) != 1:
-        raise ValueError("successful episodes have different task descriptions")
-    language = languages.pop()
+    group = tuple(spec["group"])
+    episodes = _successful_episodes(episode_paths, spec=spec, group=group)
+    # Image sizes the spec leaves open are the first episode's; LeRobot refuses any other.
+    with np.load(episodes[0][0] / "transitions.npz", allow_pickle=False) as data:
+        spec = {
+            **spec,
+            "arrays": {
+                key: {**field, "shape": field["shape"] or data[key].shape[1:]}
+                for key, field in spec["arrays"].items()
+            },
+        }
 
     parent = Path(output_root).expanduser().resolve()
     destination = parent / dataset_id
@@ -94,48 +135,58 @@ def export_lerobot(
         raise FileExistsError(f"dataset already exists: {destination}")
 
     try:
-        from lerobot.datasets.lerobot_dataset import LeRobotDataset
+        from lerobot.datasets.lerobot_dataset import CODEBASE_VERSION, LeRobotDataset
     except ImportError as exc:
         raise RuntimeError(
             "install pi-embodied-services with the 'flywheel' extra"
         ) from exc
+    if CODEBASE_VERSION != "v3.0":
+        raise RuntimeError(
+            f"lerobot writes {CODEBASE_VERSION}; the flywheel extra pins the v3.0 one"
+        )
     parent.mkdir(parents=True, exist_ok=True)
 
+    feats = features(spec)
+    if videos:
+        for f in feats.values():
+            if f["dtype"] == "image":
+                f["dtype"] = "video"
     repo_id = f"{repo_id_prefix}-{dataset_id}"
     dataset = LeRobotDataset.create(
         repo_id=repo_id,
         root=partial,
         robot_type=spec["robot_type"],
         fps=spec["fps"],
-        features=_features(spec),
-        use_videos=False,
+        features=feats,
+        use_videos=videos,
         image_writer_threads=2,
     )
     frame_count = 0
     source_ids = []
+    tasks = set()
     for path, metadata in episodes:
         count = metadata["training_step_count"]
+        task = metadata["task_language"]
+        tasks.add(task)
         with np.load(path / "transitions.npz", allow_pickle=False) as data:
             for index in range(count):
-                dataset.add_frame(
-                    {
-                        name: data[key][index]
-                        for name, key in spec["export_fields"].items()
-                    },
-                    task=language,
-                )
+                dataset.add_frame(frame(data, index, spec, task))
         dataset.save_episode()
         frame_count += count
         source_ids.append(metadata["episode_id"])
+    dataset.finalize()
 
     reopened = LeRobotDataset(repo_id, root=partial)
     if len(reopened) != frame_count:
         raise RuntimeError("LeRobot frame count changed after reopening")
+    first = episodes[0][1]
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
+        "codebase_version": CODEBASE_VERSION,
         "repo_id": repo_id,
-        **expected_metadata,
-        "task_language": language,
+        "robot": spec["robot"],
+        **{key: first.get(key) for key in group},
+        "tasks": sorted(tasks),
         "source_episode_ids": source_ids,
         "episode_count": len(source_ids),
         "frame_count": frame_count,

@@ -89,10 +89,11 @@ Shared modules:
   (LIBERO also its DISTIL pass).
 - `src/operator.ts`: human-in-the-loop (`--operator`): verdict and scene-reset requests as
   `ctx.ui.select` dialogs (TUI or RPC client), plus `/success /failure /abort /done /continue /operator`.
-- `src/video.ts`: episode video (ffmpeg). `src/flywheel.ts`: Flywheel data in the
-  LIBERO-only schema (default root `~/.pi/embodied/datacollection`), with LeRobot export
-  (LIBERO only; `/flywheel-export` runs `pi_embodied_services.flywheel` with `--flywheel-python`,
-  default `--python`; LeRobot needs its own venv, see services/README.md).
+- `src/video.ts`: episode video (ffmpeg). `src/flywheel.ts`: Flywheel data (`--collect-flywheel-data`,
+  default root `~/.pi/embodied/datacollection`): every env step with what the robot's VLA reads and
+  emits, on LIBERO, RoboCasa and RoboTwin (the robots whose VLA runs agent-side). `/flywheel-export
+  [selection]` writes a LeRobot v3.0 dataset with the shared feature names (`--flywheel-python`,
+  default `--python`; LeRobot needs its own venv, see services/README.md, which also covers GUMI runs).
 - `src/units/`: Show-Harness action units. `--units=true` hides the robot's tools: the model drives
   the arm with `act` (one unit: MV_FWD/BACK/LEFT/RIGHT/UP/DOWN, ROTATE_CW/CCW where the robot has
   yaw, GRASP, RELEASE, STOP, DONE; optional repeat `n`), `finish`, and the plugins' `point` / `plan`,

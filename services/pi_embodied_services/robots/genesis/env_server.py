@@ -26,6 +26,12 @@ reset orientation, in ~2 cm decisions) and ``env.set_gripper``; ``env.step`` /
 close) for VLA-style clients. Every observation carries the front (``agentview``) and
 wrist RGB, the TCP pose, the gripper opening and the task flags. Limits (a workspace box, a
 Z floor, a per-call cap) are checked here, before anything moves.
+
+Code mode (``code.run``, utils/code_exec.py ``CodeRunMixin``): a program calls the registry's
+primitives (primitives.py) in a sandboxed subprocess; they reach the same facade methods on the
+same (main) thread as the tools' RPCs. What a primitive hands the program drops the camera images
+(they go to the run's video) and the cube's height (``lift_m``: object state no camera measures);
+the run reports its control steps, the latched success and the new observation (``_finish_run``).
 """
 
 from __future__ import annotations
@@ -39,6 +45,7 @@ from pi_embodied_services.components.code_api import register_code_api
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
 from pi_embodied_services.robots.genesis.primitives import GENESIS_PRIMITIVES
 from pi_embodied_services.utils import ground_truth, reach
+from pi_embodied_services.utils.code_exec import CodeRunMixin
 from pi_embodied_services.utils.grasp import add_grasp_arguments, install_grasp_planner
 from pi_embodied_services.utils.logging import get_logger
 from pi_embodied_services.utils.perception import (
@@ -99,6 +106,11 @@ VIEW_SIZE = 256
 WRIST_OFFSET = [0.0, 0.05, 0.0]
 WRIST_FOV_DEG = 90.0
 _WRIST_R = np.array([[1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]])
+#: Code mode: video frames one run hands back (halved, every other one kept, when full), the most
+#: actions one chunk_step call may take, and the state a program never receives (the cube's height).
+CODE_MAX_FRAMES = 128
+CODE_MAX_CHUNK = 200
+CODE_HIDDEN = ("lift_m",)
 
 
 def _np(value: Any) -> np.ndarray:
@@ -221,7 +233,7 @@ def back_project(
     return out
 
 
-class GenesisEnvFacade(MainThreadServeMixin, BaseEnvFacade):
+class GenesisEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
     """One Genesis scene (no batch dimension); every call runs on the main thread."""
 
     SERVICE_NAME = "genesis-env"
@@ -311,6 +323,9 @@ class GenesisEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         self._hold = 0
         self._steps = 0
         self._closed = False
+        # Code mode: the control steps before the run, and the run's video frames.
+        self._run_start = 0
+        self._run_frames: list[np.ndarray] = []
         self._meta = {
             "task": task,
             "seed": self._seed,
@@ -338,7 +353,97 @@ class GenesisEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         self._rpc["env.state"] = self.state
         self._rpc["env.back_project"] = self.back_project
         self._rpc["env.ground_truth_poses"] = self.ground_truth_poses
-        register_code_api(self, GENESIS_PRIMITIVES)
+        api = register_code_api(self, GENESIS_PRIMITIVES)
+        self._install_code_run(
+            api,
+            move_m=self._code_move_m,
+            check=self._code_check,
+            reply=self._code_reply,
+            begin=self._begin_run,
+            finish=self._finish_run,
+        )
+
+    # ---- code mode (run_code) ----
+
+    def _begin_run(self) -> None:
+        self._run_start = self._steps
+        self._run_frames = []
+
+    def _finish_run(self) -> dict:
+        """The run's effect for pi: control steps taken, the latched success, the new
+        observation (the tools' ``obs``) and the run's video frames."""
+        return {
+            "steps": self._steps - self._run_start,
+            "success": bool(self._success),
+            "obs": self._obs(),
+            "frames": list(self._run_frames),
+        }
+
+    def _keep_frame(self, obs: dict) -> None:
+        """The run video's frame of an observation: the two views side by side (as ``_frame``)."""
+        if len(self._run_frames) >= CODE_MAX_FRAMES:
+            self._run_frames = self._run_frames[::2]
+        self._run_frames.append(
+            np.concatenate([obs["agentview"], obs["wrist"]], axis=1)
+        )
+
+    def _program_state(self, obs: dict) -> dict:
+        """An observation as a program receives it: no images (they go to the run's video)
+        and no object state."""
+        self._keep_frame(obs)
+        return {
+            k: v
+            for k, v in obs.items()
+            if k not in CAMERAS and k not in CODE_HIDDEN and k != "frames"
+        }
+
+    def _code_reply(self, method: str, out: Any) -> Any:
+        """What a program receives of a primitive's result: the same facade method as the tools
+        call, without the images and the cube's height."""
+        if method in ("env.move_delta", "env.set_gripper"):
+            return self._program_state(out)
+        if method == "env.state":
+            return {k: v for k, v in out.items() if k not in CODE_HIDDEN}
+        if method == "env.step":
+            obs, rew, success, truncated, _info = out
+            return {
+                "reward": rew,
+                "success": success,
+                "truncated": truncated,
+                "state": self._program_state(obs),
+            }
+        if method == "env.chunk_step":
+            obs, _rew, _success, _trunc, info = out
+            states = (
+                [self._program_state(o) for o in obs]
+                if isinstance(obs, list)
+                else self._program_state(obs)
+            )
+            key = "states" if isinstance(obs, list) else "state"
+            return {"success": bool(info.get("success")), **info, key: states}
+        return out
+
+    def _code_move_m(self, method: str, kwargs: dict) -> float:
+        """How far a program's call may move the TCP (the run's translation cap)."""
+        if method == "env.move_delta":
+            d = np.asarray(kwargs["delta_xyz"], dtype=np.float64).reshape(3)
+            return float(np.linalg.norm(d))
+        if method == "env.step":
+            a = np.asarray(kwargs["action"], dtype=np.float64).reshape(4)
+            return float(np.linalg.norm(a[:3]))
+        if method == "env.chunk_step":
+            a = np.asarray(kwargs["actions"], dtype=np.float64).reshape(-1, 4)
+            return float(np.linalg.norm(a[:, :3], axis=1).sum())
+        return 0.0
+
+    def _code_check(self, method: str, kwargs: dict) -> None:
+        """Refuse a program's call that the run's wall clock could not bound."""
+        if method == "env.chunk_step":
+            n = np.asarray(kwargs["actions"], dtype=np.float64).reshape(-1, 4).shape[0]
+            if n > CODE_MAX_CHUNK:
+                raise ValueError(
+                    f"chunk_step takes at most {CODE_MAX_CHUNK} actions per call in code mode"
+                )
 
     # ---- kinematics ----
 

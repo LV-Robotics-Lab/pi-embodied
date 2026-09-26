@@ -44,6 +44,7 @@ BEHAVIOR_PRIMITIVES = (
         "get_robot_position",
         "env.get_robot_position",
         "World pose of the base (pos, quat_xyzw, yaw) and of both end effectors.",
+        example='p = get_robot_position()\nprint(p["pos"], p["yaw"], p["eef"]["right"]["pos"])',
     ),
     Primitive(
         "navigate_to_pose",
@@ -95,6 +96,7 @@ BEHAVIOR_PRIMITIVES = (
         "Open an arm's gripper fully (releases what it holds).",
         {"arm": _ARM},
         mutating=True,
+        example='r = open_gripper("right")\nprint(r["ok"], r["gripper_width"])',
     ),
     Primitive(
         "close_gripper",
@@ -102,12 +104,14 @@ BEHAVIOR_PRIMITIVES = (
         "Close an arm's gripper fully.",
         {"arm": _ARM},
         mutating=True,
+        example='r = close_gripper("right")\nprint(r["gripper_width"])  # near 0: nothing held',
     ),
     Primitive(
         "state",
         "env.state",
         "Base and end-effector poses, gripper widths, success, q_score and goal counts (no images).",
         tiers=("low",),
+        example='st = state()\nprint(st["base_pos"], st["eef"]["left"]["gripper_width"], st["success"])',
     ),
     Primitive(
         "render_camera",
@@ -115,6 +119,7 @@ BEHAVIOR_PRIMITIVES = (
         "The latest frame of a camera; with depth=true, [rgb, depth_m].",
         {**_CAMERA, "depth": Param("boolean", "also the metric depth", False)},
         tiers=("low",),
+        example='rgb, depth = render_camera("head", depth=True)',
     ),
     Primitive(
         "get_camera_meta",
@@ -122,12 +127,14 @@ BEHAVIOR_PRIMITIVES = (
         "Camera intrinsics and the OpenGL camera-to-world transform at the current pose.",
         _CAMERA,
         tiers=("low",),
+        example='meta = get_camera_meta("right_wrist")\nK, T = meta["intrinsic_K"], meta["extrinsic_cam2world"]  # OpenGL: looks along -z',
     ),
     Primitive(
         "raw_obs",
         "env.raw_obs",
         "The robot's proprioception and joint positions.",
         tiers=("low",),
+        example='o = raw_obs()\nq = dict(zip(o["joint_names"], o["joint_positions"]))',
     ),
     Primitive(
         "step",
@@ -136,6 +143,7 @@ BEHAVIOR_PRIMITIVES = (
         {"action": Param("array", "the R1Pro action vector")},
         mutating=True,
         tiers=("low",),
+        example='r = step(a)  # a: one full R1Pro action (joint position targets)\nprint(r["state"]["env_steps"], r["terminated"])',
     ),
     Primitive(
         "chunk_step",
@@ -147,6 +155,7 @@ BEHAVIOR_PRIMITIVES = (
         },
         mutating=True,
         tiers=("low",),
+        example='r = chunk_step([a] * 30)  # hold a for one second (30 Hz)\nprint(r["state"]["base_pos"], r["truncated"])',
     ),
     GROUND_TRUTH,
 )

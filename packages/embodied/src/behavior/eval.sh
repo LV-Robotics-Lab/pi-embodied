@@ -18,6 +18,9 @@
 # The fallback planner (--fallback-model, --fallback-after, --fallback-retry-primary; src/fallback.ts) is part of the
 # configuration too, and the summary totals the turns each planner model planned (planner_models).
 # --grasping-mode (OmniGibson's sticky or assisted grasping; default sticky) is recorded too.
+# So is code mode (--code, --code-api: high, low or low-noexamples = CaP-X's S2-S4, and --code-oracle, a reference
+# program run instead of the model), e.g.
+#   eval.sh runs/b1k-code turning_on_radio 0-2 --code=true --code-timeout 900 --model <provider/model>
 set -uo pipefail
 out=$1 tasks=$2 seeds=$3
 shift 3
@@ -27,6 +30,7 @@ expand() { for part in ${1//,/ }; do seq "${part%-*}" "${part#*-}"; done; }
 model="" thinking="" turns=0 limit=${TIME_LIMIT:-1800} limited="" units=false stateless=false
 anchor=false
 approval=standard max_tool_calls=0 max_tokens=0
+code=false code_api=high code_oracle=""
 vdm=false vdm_model="" vdm_wrist=false
 privileged=false
 fallback_model="" fallback_after=2 fallback_retry=0
@@ -94,6 +98,13 @@ for ((i = 0; i < ${#args[@]}; i++)); do
 	--max-tool-calls=*) max_tool_calls=${args[i]#*=} ;;
 	--max-tokens) max_tokens=${args[i + 1]:-0} ;;
 	--max-tokens=*) max_tokens=${args[i]#*=} ;;
+	# --code / --code-api / --code-oracle (run_code, packages/embodied/src/code) are string flags like --units.
+	--code) [[ ${args[i + 1]:---} == --* ]] && code=true || code=${args[i + 1]} ;;
+	--code=*) code=${args[i]#*=} ;;
+	--code-api) code_api=${args[i + 1]:-high} ;;
+	--code-api=*) code_api=${args[i]#*=} ;;
+	--code-oracle) code_oracle=${args[i + 1]:-} ;;
+	--code-oracle=*) code_oracle=${args[i]#*=} ;;
 	# --anchor-image (keep the first camera frame in context) is a boolean like --stateless.
 	--anchor-image) case ${args[i + 1]:-} in "" | -* | @* | true) anchor=true ;; *)
 		echo "--anchor-image takes no value: pi would turn it on and swallow '${args[i + 1]}'" >&2 && exit 2 ;;
@@ -106,6 +117,7 @@ for ((i = 0; i < ${#args[@]}; i++)); do
 	esac
 done
 [ "$units" = pure ] && units=true
+[ "$code" = pure ] && code=true
 # --units-plugins is part of the units mode: a result with other plugins is another configuration.
 [ "$units" != false ] && [ -n "${units_plugins+x}" ] && units="$units+plugins=$units_plugins"
 [ "$units" != false ] && units="$units${units_opts-}"
@@ -115,12 +127,12 @@ done
 backstop=()
 [ "$limit" -gt 0 ] && command -v timeout >/dev/null && backstop=(timeout -k 30 $((limit + 1800)))
 mkdir -p "$out"
-config=("$model" "$thinking" "$turns" "$limit" "$units" "$stateless" "$anchor" "$vdm" "$vdm_model" "$vdm_wrist" "$privileged" "$fallback_model" "$fallback_after" "$fallback_retry" "$grasping_mode" "$approval" "$max_tool_calls" "$max_tokens")
+config=("$model" "$thinking" "$turns" "$limit" "$units" "$stateless" "$anchor" "$vdm" "$vdm_model" "$vdm_wrist" "$privileged" "$fallback_model" "$fallback_after" "$fallback_retry" "$grasping_mode" "$approval" "$max_tool_calls" "$max_tokens" "$code" "$code_api" "$code_oracle")
 
 record() { # <dir> <exit code>: write result.json from the episode's session
 	node --input-type=module -e '
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
-const [dir, code, model, thinking, turns, limit, units, stateless, anchor, vdm, vdmModel, vdmWrist, privileged, fallbackModel, fallbackAfter, fallbackRetry, graspingMode, approval, maxToolCalls, maxTokens] = process.argv.slice(1);
+const [dir, code, model, thinking, turns, limit, units, stateless, anchor, vdm, vdmModel, vdmWrist, privileged, fallbackModel, fallbackAfter, fallbackRetry, graspingMode, approval, maxToolCalls, maxTokens, codeMode, codeApi, codeOracle] = process.argv.slice(1);
 const results = [];
 for (const f of readdirSync(dir).filter((f) => f.endsWith(".jsonl"))) {
 	for (const line of readFileSync(`${dir}/${f}`, "utf8").split("\n")) {
@@ -129,6 +141,13 @@ for (const f of readdirSync(dir).filter((f) => f.endsWith(".jsonl"))) {
 		if (e.type === "custom" && e.customType === "robot_result") results.push(e.data);
 	}
 }
+// An oracle run (--code-oracle) asks no model, and pi writes no session file without an assistant
+// message: the result line the robot prints on stderr is the result.
+if (!results.length && codeOracle && codeMode !== "false")
+	try {
+		for (const line of readFileSync(`${dir}/stderr.log`, "utf8").split("\n"))
+			if (line.startsWith("[behavior] {")) results.push(JSON.parse(line.slice("[behavior] ".length)));
+	} catch {}
 const last = results.length === 1 ? results[0] : undefined;
 const status = Number(code) === 124 ? "timeout" : results.length > 1 ? "duplicate_result"
 	: !last ? (Number(code) ? "env_error" : "missing")
@@ -138,7 +157,8 @@ const result = { ...(last ?? {}), status, exit_code: Number(code), model: model 
 	vdm: vdm === "true", vdm_model: vdmModel || null, vdm_wrist: vdmWrist === "true", privileged: privileged === "true",
 	stateless: stateless === "true",
 	fallback_model: fallbackModel || null, fallback_after: fallbackModel ? Number(fallbackAfter) : null, fallback_retry_primary: fallbackModel ? Number(fallbackRetry) : null,
-	grasping_mode: String(graspingMode) };
+	grasping_mode: String(graspingMode),
+	code: codeMode, code_api: codeMode === "false" ? null : codeApi, code_oracle: codeMode === "false" ? null : codeOracle || null };
 writeFileSync(`${dir}/result.json`, `${JSON.stringify(result, null, 2)}\n`);
 console.log(JSON.stringify({ status, success: result.success, q_score: result.q_score, claimed: result.claimed, env_steps: result.env_steps }));
 ' "$1" "$2" "${config[@]}"
@@ -146,7 +166,7 @@ console.log(JSON.stringify({ status, success: result.success, q_score: result.q_
 
 valid() { # <dir>: 0 = a valid result of this configuration, 2 = a valid result of another one, 1 = none
 	node -e '
-const [path, model, thinking, turns, limit, units, stateless, anchor, vdm, vdmModel, vdmWrist, privileged, fallbackModel, fallbackAfter, fallbackRetry, graspingMode, approval, maxToolCalls, maxTokens] = process.argv.slice(1);
+const [path, model, thinking, turns, limit, units, stateless, anchor, vdm, vdmModel, vdmWrist, privileged, fallbackModel, fallbackAfter, fallbackRetry, graspingMode, approval, maxToolCalls, maxTokens, codeMode, codeApi, codeOracle] = process.argv.slice(1);
 const r = JSON.parse(require("fs").readFileSync(path, "utf8"));
 if (r.status !== "success" && r.status !== "failure") process.exit(1);
 const same = r.model === (model || null) && r.thinking === (thinking || null) && r.max_turns === Number(turns)
@@ -164,7 +184,10 @@ const same = r.model === (model || null) && r.thinking === (thinking || null) &&
 	&& (r.fallback_model ?? null) === (fallbackModel || null) && (r.fallback_after ?? null) === (fallbackModel ? Number(fallbackAfter) : null)
 	&& (r.fallback_retry_primary ?? null) === (fallbackModel ? Number(fallbackRetry) : null)
 	// Results written before --grasping-mode was recorded ran with the default.
-	&& (r.grasping_mode ?? "sticky") === String(graspingMode);
+	&& (r.grasping_mode ?? "sticky") === String(graspingMode)
+	// Results written before code mode existed here ran without it.
+	&& (r.code ?? "false") === codeMode && (r.code_api ?? null) === (codeMode === "false" ? null : codeApi)
+	&& (r.code_oracle ?? null) === (codeMode === "false" ? null : codeOracle || null);
 process.exit(same ? 0 : 2);
 ' "$1/result.json" "${config[@]}" 2>/dev/null
 }
@@ -177,7 +200,7 @@ for task in ${tasks//,/ }; do
 		valid "$dir"
 		case $? in
 		0) continue ;;
-		2) echo "$dir holds a result of another model, thinking level, --max-turns, --time-limit, units mode, vdm, fallback, --grasping-mode, --privileged, --anchor-image, --approval, --max-tool-calls or --max-tokens (or an older result without them); use another out dir" >&2 && exit 1 ;;
+		2) echo "$dir holds a result of another model, thinking level, --max-turns, --time-limit, units mode, code mode, vdm, fallback, --grasping-mode, --privileged, --anchor-image, --approval, --max-tool-calls or --max-tokens (or an older result without them); use another out dir" >&2 && exit 1 ;;
 		esac
 		rm -rf "$dir" && mkdir -p "$dir"
 		echo "== $task seed $seed"
@@ -200,7 +223,7 @@ const rows = cells.map((c) => {
 });
 const scoredRows = rows.filter((r) => r.status === "success" || r.status === "failure");
 const configs = new Set(scoredRows
-	.map((r) => `${r.model}/${r.thinking}/turns=${r.max_turns}/limit=${r.time_limit}/units=${r.units}${r.units_wrist_view === false ? `/no-wrist:${(r.units_plugins ?? []).join("+")}` : ""}${r.stateless ? "/stateless" : ""}${r.anchor_image ? "/anchor" : ""}${(r.approval ?? "standard") !== "standard" ? `/approval=${r.approval}` : ""}${r.max_tool_calls ? `/tool_calls=${r.max_tool_calls}` : ""}${r.max_tokens ? `/tokens=${r.max_tokens}` : ""}${r.vdm ? `/vdm=${r.vdm_model ?? "default"}${r.vdm_wrist ? "+wrist" : ""}` : ""}${r.privileged ? "/privileged" : ""}${r.fallback_model ? `/fallback=${r.fallback_model}:${r.fallback_after}:${r.fallback_retry_primary}` : ""}/grasp=${r.grasping_mode ?? "sticky"}`));
+	.map((r) => `${r.model}/${r.thinking}/turns=${r.max_turns}/limit=${r.time_limit}/units=${r.units}${r.units_wrist_view === false ? `/no-wrist:${(r.units_plugins ?? []).join("+")}` : ""}${r.stateless ? "/stateless" : ""}${r.anchor_image ? "/anchor" : ""}${(r.approval ?? "standard") !== "standard" ? `/approval=${r.approval}` : ""}${r.max_tool_calls ? `/tool_calls=${r.max_tool_calls}` : ""}${r.max_tokens ? `/tokens=${r.max_tokens}` : ""}${r.vdm ? `/vdm=${r.vdm_model ?? "default"}${r.vdm_wrist ? "+wrist" : ""}` : ""}${r.privileged ? "/privileged" : ""}${r.fallback_model ? `/fallback=${r.fallback_model}:${r.fallback_after}:${r.fallback_retry_primary}` : ""}/grasp=${r.grasping_mode ?? "sticky"}${r.code && r.code !== "false" ? `/code=${r.code}:${r.code_api}${r.code_oracle ? `:oracle=${r.code_oracle}` : ""}` : ""}`));
 if (configs.size > 1) {
 	console.log(`refusing to summarize: ${out} mixes configurations ${[...configs].join(", ")}`);
 	process.exit(1);

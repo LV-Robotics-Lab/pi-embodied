@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import genesis, { CAMERAS, maskPixels, medianPoint, STEP_M, TASKS, VECTORS } from "../src/genesis/index.ts";
@@ -9,6 +12,7 @@ import {
 	checkSimExplore,
 	f32,
 	fakeEnv,
+	nd,
 	perceptionAnswers,
 	rgb,
 	stubPi as simPi,
@@ -17,11 +21,12 @@ import {
 
 type Handler = (event: any, ctx: any) => unknown;
 
-/** A stub pi that records flags, tools and the active set. */
+/** A stub pi that records flags, tools, entries and the active set, and runs handlers and tools. */
 function stubPi(values: Record<string, unknown> = {}) {
 	const handlers = new Map<string, Handler[]>();
 	const flags: Record<string, unknown> = {};
 	const tools = new Map<string, any>();
+	const entries: { type: string; data: any }[] = [];
 	let active: string[] = [];
 	const api: Record<string, unknown> = {
 		on: (name: string, fn: Handler) => handlers.set(name, [...(handlers.get(name) ?? []), fn]),
@@ -35,11 +40,32 @@ function stubPi(values: Record<string, unknown> = {}) {
 			active = names;
 		},
 		getActiveTools: () => active,
-		appendEntry: () => {},
+		appendEntry: (type: string, data: any) => entries.push({ type, data }),
 		events: { emit: () => {}, on: () => () => {} },
 	};
 	const pi = new Proxy(api, { get: (t, k: string) => t[k] ?? (() => {}) }) as unknown as ExtensionAPI;
-	return { pi, flags, tools, active: () => active };
+	const ctx = {
+		hasUI: false,
+		cwd: tmpdir(),
+		ui: { notify: () => {} },
+		shutdown: () => {},
+		abort: () => {},
+		sessionManager: {
+			getBranch: () => [],
+			getEntries: () => [],
+			getSessionDir: () => tmpdir(),
+			getSessionFile: () => undefined,
+			getSessionId: () => "sess",
+		},
+	};
+	async function emit(name: string, event: Record<string, unknown> = {}) {
+		let result: any;
+		for (const fn of handlers.get(name) ?? []) result = (await fn({ type: name, ...event }, ctx)) ?? result;
+		return result;
+	}
+	const run = async (name: string, params: unknown) =>
+		(await tools.get(name).execute("id", params, undefined, undefined, ctx)) as any;
+	return { pi, flags, tools, entries, emit, run, active: () => active };
 }
 
 test("the task flag defaults to cube_pick, the only task, and the simulator registers --privileged", () => {
@@ -286,4 +312,97 @@ test("--ik: preview_reach asks env.preview_reach and nothing moves; without --ik
 	await off.emit("session_start");
 	process.exitCode = undefined;
 	assert.ok(!off.active().includes("preview_reach"));
+});
+
+/** A fake Genesis env server (`--env`): cube_pick seed 0, and a `code.run` whose run lifts the cube. */
+async function fakeCodeEnv() {
+	const calls: { method: string; kwargs: Record<string, unknown> }[] = [];
+	const obs = (success: boolean, steps: number) => ({
+		agentview: nd("uint8", [2, 2, 3], Buffer.alloc(12)),
+		wrist: nd("uint8", [2, 2, 3], Buffer.alloc(12)),
+		tcp_pos: f32([0.5, 0, 0.2]),
+		tcp_quat_wxyz: f32([0, 1, 0, 0]),
+		gripper_width: success ? 0.038 : 0.08,
+		gripper_command: success ? "close" : "open",
+		qpos: f32([0, 0, 0, 0, 0, 0, 0, 0.04, 0.04]),
+		success,
+		is_grasped: success,
+		lift_m: success ? 0.09 : 0,
+		env_steps: steps,
+	});
+	const server = createServer((req, res) => {
+		let body = "";
+		req.on("data", (c) => {
+			body += c;
+		});
+		req.on("end", () => {
+			const { method, kwargs = {} } = JSON.parse(body);
+			calls.push({ method, kwargs });
+			let result: unknown = { ok: true };
+			if (method === "code.api") result = { tier: kwargs.tier ?? null, primitives: [], digest: "d" };
+			else if (method === "env.get_env_meta")
+				result = { task: "cube_pick", seed: 0, instruction: "Pick up the red cube from the table and lift it." };
+			else if (method === "env.reset") result = [obs(false, 0), {}];
+			else if (method === "code.run")
+				result = {
+					status: "ran",
+					stdout: "",
+					stderr: "",
+					traceback: null,
+					error: null,
+					result: null,
+					calls: [],
+					n_calls: 3,
+					move_m: 0.33,
+					ms: 5,
+					steps: 120,
+					success: true,
+					obs: obs(true, 120),
+					frames: [nd("uint8", [2, 4, 3], Buffer.alloc(24))],
+				};
+			res.end(JSON.stringify({ ok: true, result }));
+		});
+	});
+	await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+	const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+	const close = () => {
+		server.closeAllConnections();
+		server.close();
+	};
+	return { url, calls, close };
+}
+
+test("--code=true: run_code runs on the env server; its obs is absorbed into the state and robot_result", async (t) => {
+	const env = await fakeCodeEnv();
+	t.after(env.close);
+	const s = stubPi({ env: env.url, code: "true", "code-api": "low" });
+	genesis(s.pi);
+	await s.emit("session_start");
+	process.exitCode = undefined;
+	assert.deepEqual(s.active(), ["run_code", "finish"]);
+	await s.emit("agent_start");
+	const r = await s.run("run_code", { code: "move_delta([0, 0, -0.18], gripper='open')" });
+	const run = env.calls.find((c) => c.method === "code.run")!;
+	assert.equal(run.kwargs.tier, "low");
+	assert.equal(run.kwargs.code, "move_delta([0, 0, -0.18], gripper='open')");
+	assert.equal(r.details.status, "ran");
+	assert.equal(r.details.success, true);
+	assert.equal(r.details.step, 120, "the server's step count, absorbed from the run's obs");
+	assert.equal(r.details.state.is_grasped, true);
+	assert.deepEqual(
+		r.content.map((c: { type: string }) => c.type),
+		["text", "text", "image", "image"],
+	);
+	// The task is solved: like move_delta, run_code refuses and nothing reaches the server.
+	const again = await s.run("run_code", { code: "move_delta([0, 0, 0.05])" });
+	assert.match(again.content[0].text, /already solved/);
+	assert.equal(env.calls.filter((c) => c.method === "code.run").length, 1);
+	await s.run("finish", { status: "success", summary: "lifted" });
+	await s.emit("agent_end", { messages: [] });
+	const result = s.entries.find((e) => e.type === "robot_result")?.data;
+	assert.equal(result.success, true);
+	assert.equal(result.ever_grasped, true);
+	assert.equal(result.env_steps, 120);
+	assert.equal(result.code, "true");
+	assert.equal(result.code_api, "low");
 });

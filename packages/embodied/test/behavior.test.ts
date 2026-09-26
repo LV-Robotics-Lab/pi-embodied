@@ -5,7 +5,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import behavior, { project, STEP_M, TASKS, VECTORS } from "../src/behavior/index.ts";
+import behavior, { CODE_MAX_MOVE_M, project, STEP_M, TASKS, VECTORS } from "../src/behavior/index.ts";
 import { RESULT_ENTRY, toolSections } from "../src/robot.ts";
 import { checkSimExplore } from "./sim-stub.ts";
 
@@ -116,8 +116,32 @@ async function fakeEnv() {
 				}
 				return { ...obs(), primitive, ok: true, phase: "done", steps: 3, ...extra };
 			};
-			if (method === "code.api") result = { tier: null, primitives: [], digest: "d" };
-			else if (method === "env.get_env_meta")
+			if (method === "code.api") result = { tier: kwargs.tier ?? null, primitives: [], digest: "d" };
+			else if (method === "code.run") {
+				// The program's primitives stepped the env: BDDL success mid-run, the radio in hand.
+				state.steps += 40;
+				state.success = true;
+				state.q = 1;
+				state.held = "radio_89";
+				result = {
+					status: "ran",
+					stdout: "",
+					stderr: "",
+					traceback: null,
+					error: null,
+					result: null,
+					calls: [],
+					n_calls: 2,
+					move_m: 1.8,
+					ms: 5,
+					steps: 40,
+					success: true,
+					terminated: true,
+					truncated: false,
+					obs: obs(),
+					frames: [rgb(), rgb()],
+				};
+			} else if (method === "env.get_env_meta")
 				result = {
 					task: "turning_on_radio",
 					seed: 0,
@@ -439,4 +463,38 @@ test("units: act runs one env.move_hand_delta with the arm, the base-frame step,
 			Math.abs(Number(env.calls.at(-1)?.kwargs.yaw) - 0.15) < 1e-9,
 	);
 	assert.deepEqual(VECTORS.MV_LEFT, [0, 1, 0]);
+});
+
+test("--code=true: run_code runs on the env server; BDDL success, q_score and the head frames come back", async (t) => {
+	const env = await fakeEnv();
+	t.after(env.close);
+	const s = stubPi({ env: env.url, code: "true" });
+	behavior(s.pi);
+	await s.emit("session_start");
+	process.exitCode = undefined;
+	assert.deepEqual(s.active(), ["run_code", "finish"]);
+	assert.equal(s.flags["code-max-move"], String(CODE_MAX_MOVE_M), "a house-scale translation cap");
+	await s.emit("agent_start");
+	const r = await s.run("run_code", { code: "navigate_to_pose(1.0, 0.5, 0.0)" });
+	const run = env.calls.find((c) => c.method === "code.run")!;
+	assert.equal(run.kwargs.tier, "high");
+	assert.equal(run.kwargs.max_move_m, CODE_MAX_MOVE_M);
+	const d = r.details;
+	assert.equal(d.status, "ran");
+	assert.equal(d.success, true);
+	assert.equal(d.q_score, 1);
+	assert.equal(d.step, 40, "the server's step count, absorbed from the run's obs");
+	assert.equal("in_hand" in d.state, false, "the object in hand stays simulator knowledge");
+	assert.equal(r.content.filter((c: any) => c.type === "image").length, 3);
+	// The task is solved: like the motion tools, run_code refuses and nothing reaches the server.
+	const again = await s.run("run_code", { code: "open_gripper('left')" });
+	assert.match(again.content[0].text, /already solved/);
+	assert.equal(env.calls.filter((c) => c.method === "code.run").length, 1);
+	await s.emit("session_shutdown");
+	const result = s.entries.find((e) => e.type === RESULT_ENTRY)?.data;
+	assert.equal(result.success, true);
+	assert.equal(result.q_score, 1);
+	assert.deepEqual(result.reference, { picked: false, in_hand: { left: "radio_89", right: null } });
+	assert.equal(result.code, "true");
+	assert.equal(result.code_api, "high");
 });

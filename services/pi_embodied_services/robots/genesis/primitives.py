@@ -30,7 +30,8 @@ GENESIS_PRIMITIVES = (
     Primitive(
         "state",
         "env.state",
-        "TCP pose (m, base frame), gripper opening and command, success, is_grasped, lift_m.",
+        "TCP pose (m, base frame), gripper opening and command, success, is_grasped.",
+        example='st = state()\nprint(st["tcp_pos"], st["gripper_width"], st["is_grasped"])',
     ),
     Primitive(
         "move_delta",
@@ -43,6 +44,7 @@ GENESIS_PRIMITIVES = (
             "gripper": Param("string", "'open' or 'close' first, holding still", False),
         },
         mutating=True,
+        example='move_delta([0, 0, -0.1], gripper="open")  # open, then down 10 cm\nr = move_delta([0.05, 0, 0])\nprint(r["moved_m"], r["tcp_pos"])',
     ),
     Primitive(
         "set_gripper",
@@ -50,12 +52,14 @@ GENESIS_PRIMITIVES = (
         "Open or close the gripper and hold; a close ending nearly shut reports grasp_empty.",
         {"open": Param("boolean", "true opens, false closes")},
         mutating=True,
+        example='r = set_gripper(False)\nprint(r["gripper_width"], r.get("grasp_empty", False))',
     ),
     Primitive(
         "back_project",
         "env.back_project",
         "World xyz (m) of image pixels from the camera's depth; null where the depth is missing.",
         {**_CAMERA, "pixels": Param("array", "[[row, col], ...]")},
+        example='xyz = back_project("agentview", [[128, 128], [140, 120]])\nprint(xyz[0])  # None where there is no depth',
     ),
     Primitive(
         "render_camera",
@@ -63,6 +67,7 @@ GENESIS_PRIMITIVES = (
         "The current frame of a camera (as the model sees it).",
         _CAMERA,
         tiers=("low",),
+        example='rgb = render_camera("wrist")  # uint8 [256, 256, 3]',
     ),
     Primitive(
         "get_camera_meta",
@@ -70,6 +75,7 @@ GENESIS_PRIMITIVES = (
         "Camera intrinsics (OpenCV K) and camera-to-world extrinsic.",
         _CAMERA,
         tiers=("low",),
+        example='meta = get_camera_meta("agentview")\nK, T = meta["intrinsic_K"], meta["extrinsic_cam2world"]',
     ),
     Primitive(
         "step",
@@ -78,6 +84,7 @@ GENESIS_PRIMITIVES = (
         {"action": Param("array", "4 floats")},
         mutating=True,
         tiers=("low",),
+        example='r = step([0, 0, 0.01, -1])  # up 1 cm, gripper closed\nprint(r["success"], r["state"]["tcp_pos"])',
     ),
     Primitive(
         "chunk_step",
@@ -89,6 +96,7 @@ GENESIS_PRIMITIVES = (
         },
         mutating=True,
         tiers=("low",),
+        example='r = chunk_step([[0, 0, 0.01, -1]] * 10)  # 10 cm up in 1 cm steps\nprint(r["success"], r["state"]["tcp_pos"])',
     ),
     GROUND_TRUTH,
 )

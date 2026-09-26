@@ -4,6 +4,7 @@
  *   pi -e packages/embodied/src/genesis --seed 0                      (cube_pick, the only task so far)
  *   pi -e packages/embodied/src/genesis --units --task cube_pick --seed 3
  *   pi -e packages/embodied/src/genesis --privileged --seed 0          (adds ground_truth_poses)
+ *   pi -e packages/embodied/src/genesis --code=true --code-api=low --seed 0   (run_code, CaP-X's S3)
  *
  * Starts one Genesis env server per session (services/.../robots/genesis/env_server.py, the `genesis`
  * venv; rendering needs a GPU). The server owns the motion: `move_delta` and the units hook `apply`
@@ -231,6 +232,18 @@ export default function genesis(pi: ExtensionAPI) {
 					"This is an exploration run: `reset` starts a fresh attempt (see Exploration). Within an attempt, recover in place (re-position, re-grasp).",
 				],
 			],
+		},
+		// Code mode (../code): the env server runs the program against that registry; the result
+		// carries the control steps, the latched success, the new observation and the video frames.
+		code: {
+			rpc: () => env,
+			instruction: () => meta.instruction,
+			refuse: () => (obs?.success ? "the task is already solved; call finish" : undefined),
+			observe: async (r) => {
+				for (const f of (r.frames as NdArray[] | undefined) ?? []) video.frame(f);
+				if (r.obs) absorb(r.obs as Obs);
+				return observe({ name: "run_code", status: r.status, env_steps: Number(r.steps) || 0 });
+			},
 		},
 		start: startEpisode,
 		prompt: () =>

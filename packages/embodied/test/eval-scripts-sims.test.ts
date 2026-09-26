@@ -192,3 +192,41 @@ for (const [robot, positional, cell] of [
 		assert.match(model.stderr, /code mode/);
 	});
 }
+
+for (const [robot, positional, cell] of CELLS.filter(([r]) => r === "genesis" || r === "behavior")) {
+	test(`${robot}/eval.sh records --code, --code-api and --code-oracle and never mixes code mode with tool runs`, () => {
+		const run1 = (args: string[]) => run(robot, positional, cell, args);
+		const plain = run1([]).result;
+		assert.deepEqual([plain?.code, plain?.code_api, plain?.code_oracle], ["false", null, null]);
+		for (const [args, code, api] of [
+			[["--code"], "true", "high"],
+			[["--code=pure", "--code-api", "low"], "true", "low"],
+			[["--code", "both", "--code-api=low-noexamples"], "both", "low-noexamples"],
+			[["--code=false", "--code-api", "low"], "false", null],
+		] as const) {
+			const r = run1([...args]);
+			assert.deepEqual([r.result?.code, r.result?.code_api], [code, api], args.join(" "));
+		}
+		const [a, b] = rerun(robot, positional, ["--code", "--code-api", "low"], ["--code"]);
+		assert.equal(a.status, 0, a.stdout + a.stderr);
+		assert.equal(b.status, 1);
+		assert.match(b.stderr, /code mode/);
+		const [, same] = rerun(robot, positional, ["--code=true"], ["--code", "true"]);
+		assert.equal(same.status, 0, same.stdout + same.stderr);
+		assert.match(same.stdout, /\/code=true:high/);
+		// An oracle run asks no model and writes no session file: the robot's stderr line is the result.
+		const dir = mkdtempSync(join(tmpdir(), "eval-"));
+		const pi = join(dir, "pi");
+		const line = JSON.stringify({ robot, terminated: true, success: true, env_error: false, planner_error: null });
+		writeFileSync(pi, `#!/usr/bin/env bash\necho '[${robot}] ${line}' >&2\n`);
+		chmodSync(pi, 0o755);
+		const script = new URL(`../src/${robot}/eval.sh`, import.meta.url).pathname;
+		spawnSync("bash", [script, join(dir, "out"), ...positional, "--code=true", "--code-oracle", "x"], {
+			env: { ...process.env, PI: pi, TIME_LIMIT: "0" },
+			encoding: "utf8",
+		});
+		const result = JSON.parse(readFileSync(join(dir, "out", cell, "result.json"), "utf8"));
+		assert.equal(result.status, "success");
+		assert.equal(result.code_oracle, "x");
+	});
+}

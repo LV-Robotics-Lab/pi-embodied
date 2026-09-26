@@ -337,6 +337,37 @@ def gripper_width(robot: Any, arm: str) -> float:
     return float(np.sum(q[idx]))
 
 
+#: An upper bound of the end-effector travel per radian of arm or trunk joint motion, m (the
+#: R1Pro's arm is under a metre long).
+REACH_PER_RAD_M = 1.0
+
+
+def action_move_m(robot: Any, actions) -> float:
+    """An upper bound of the translation raw control steps command, m: the holonomic base's
+    x, y (a displacement in the base frame, OmniGibson's HolonomicBaseJointController) plus, per
+    arm and the trunk, the largest joint change (absolute position targets, from the current
+    joints, then action to action) times :data:`REACH_PER_RAD_M`."""
+    idx = {
+        k: to_np(v).astype(int).reshape(-1)
+        for k, v in robot.controller_action_idx.items()
+    }
+    q = to_np(robot.get_joint_positions()).astype(np.float64)
+    dofs = {f"arm_{arm}": robot.arm_control_idx[arm] for arm in ARMS}
+    if "trunk" in idx:
+        dofs["trunk"] = robot.trunk_control_idx
+    prev = {k: q[to_np(v).astype(int).reshape(-1)] for k, v in dofs.items()}
+    total = 0.0
+    for a in np.asarray(actions, dtype=np.float64).reshape(-1, robot.action_dim):
+        total += float(np.linalg.norm(a[idx["base"][:2]]))
+        for k in prev:
+            target = a[idx[k]]
+            total += (
+                float(np.max(np.abs(target - prev[k]), initial=0.0)) * REACH_PER_RAD_M
+            )
+            prev[k] = target
+    return total
+
+
 def in_hand(robot: Any, arm: str) -> str | None:
     """Name of the object OmniGibson's grasping holds in ``arm``, or None (simulator state)."""
     obj = robot._ag_obj_in_hand[arm]

@@ -32,6 +32,14 @@ Isaac Sim starts in ``main`` (minutes: the scene is a whole house), before the s
 healthz answers only once the task is loaded. Every call runs on the main thread (Kit is not
 thread-safe). ``OMNIGIBSON_GPU_ID`` (``--gpu-id``) picks the simulator's GPU; the perception
 servers should sit on another one.
+
+Code mode (``code.run``, utils/code_exec.py ``CodeRunMixin``): a program calls the registry's
+primitives (primitives.py) from a sandboxed subprocess; ``code.run`` is itself a business call, so
+it runs on the main thread like every tool's RPC, and the primitive calls it answers go to the same
+facade methods on that same thread (never from another one: Kit is not thread-safe). What a
+primitive hands the program drops the camera images (the head frame goes to the run's video) and
+the simulator-only ``privileged`` block (the object in hand, the reference "picked"); the run
+reports its control steps, the latched success and the new observation (``_finish_run``).
 """
 
 from __future__ import annotations
@@ -52,6 +60,7 @@ from pi_embodied_services.robots.behavior import sim
 from pi_embodied_services.robots.behavior.primitives import BEHAVIOR_PRIMITIVES
 from pi_embodied_services.robots.behavior.tasks import LANGUAGE, TASK_INDEX, TASK_NAMES
 from pi_embodied_services.utils import ground_truth
+from pi_embodied_services.utils.code_exec import CodeRunMixin
 from pi_embodied_services.utils.perception import (
     add_perception_arguments,
     install_perception,
@@ -72,6 +81,19 @@ MAX_HAND_REACH_M = 1.5
 #: move_hand_delta: the largest relative step (m) and turn (rad) one call commands.
 MAX_HAND_STEP_M = 0.1
 MAX_HAND_YAW_RAD = 0.3
+#: Code mode: video frames one run hands back (halved, every other one kept, when full), the most
+#: raw actions one chunk_step call may take, and the motion primitives (their results are an
+#: observation plus a report).
+CODE_MAX_FRAMES = 128
+CODE_MAX_CHUNK = 300
+MOTIONS = (
+    "env.navigate_to_pose",
+    "env.move_hand",
+    "env.move_hand_delta",
+    "env.grasp_object",
+    "env.open_gripper",
+    "env.close_gripper",
+)
 
 
 def check_arm(arm: str) -> str:
@@ -96,7 +118,7 @@ def as_pose(position, quat_xyzw, current: np.ndarray) -> tuple[np.ndarray, np.nd
     return pos, quat / norm
 
 
-class BehaviorEnvFacade(MainThreadServeMixin, BaseEnvFacade):
+class BehaviorEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
     """One BEHAVIOR task env plus OmniGibson's semantic primitives."""
 
     SERVICE_NAME = "behavior-env"
@@ -126,6 +148,9 @@ class BehaviorEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         self._solved = False
         self._initial_goals: list[list[bool]] = []
         self._initial_heights: dict[str, float] = {}
+        # Code mode: the control steps before the run, and the run's video frames.
+        self._run_start = 0
+        self._run_frames: list[np.ndarray] = []
 
     def _register_rpc(self) -> None:
         super()._register_rpc()
@@ -139,7 +164,104 @@ class BehaviorEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         self._rpc["env.raw_obs"] = self.raw_obs
         self._rpc["env.state"] = self.state
         self._rpc["env.ground_truth_poses"] = self.ground_truth_poses
-        register_code_api(self, BEHAVIOR_PRIMITIVES)
+        api = register_code_api(self, BEHAVIOR_PRIMITIVES)
+        self._install_code_run(
+            api,
+            move_m=self._code_move_m,
+            check=self._code_check,
+            reply=self._code_reply,
+            begin=self._begin_run,
+            finish=self._finish_run,
+        )
+
+    # ---- code mode (run_code) ----
+
+    def _begin_run(self) -> None:
+        self._run_start = self._steps
+        self._run_frames = []
+
+    def _finish_run(self) -> dict:
+        """The run's effect for pi: control steps taken, the latched success, the episode's end
+        flags, the new observation (the tools' ``obs``) and the run's video frames."""
+        return {
+            "steps": self._steps - self._run_start,
+            "success": bool(self._solved),
+            "terminated": bool(self._terminated),
+            "truncated": bool(self._truncated),
+            "obs": self._pack(),
+            "frames": list(self._run_frames),
+        }
+
+    def _program_obs(self, obs: dict) -> dict:
+        """An observation as a program receives it: the head frame goes to the run's video; no
+        images, no depth and no simulator-only ``privileged`` block."""
+        if "head" in obs:
+            if len(self._run_frames) >= CODE_MAX_FRAMES:
+                self._run_frames = self._run_frames[::2]
+            self._run_frames.append(obs["head"])
+        hidden = {*sim.CAMERAS, *(f"{c}_depth" for c in sim.CAMERAS), "privileged"}
+        return {k: v for k, v in obs.items() if k not in hidden}
+
+    def _code_reply(self, method: str, out: Any) -> Any:
+        """What a program receives of a primitive's result: the same facade method as the tools
+        call, without the images and the simulator-only state."""
+        if method in MOTIONS or method == "env.state":
+            return self._program_obs(out)
+        if method == "env.step":
+            obs, rew, terminated, truncated, info = out
+            return {
+                "reward": rew,
+                "terminated": terminated,
+                "truncated": truncated,
+                "success": bool(info.get("success")),
+                "state": self._program_obs(obs),
+            }
+        if method == "env.chunk_step":
+            obs, terminated, truncated, info = out
+            many = isinstance(obs, list)
+            return {
+                "terminated": terminated,
+                "truncated": truncated,
+                **info,
+                "states" if many else "state": (
+                    [self._program_obs(o) for o in obs]
+                    if many
+                    else self._program_obs(obs)
+                ),
+            }
+        return out
+
+    def _code_move_m(self, method: str, kwargs: dict) -> float:
+        """How far a program's call may move the robot (the run's translation cap): the base's
+        drive, a hand's travel, or a bound of what raw actions command."""
+        if method == "env.navigate_to_pose":
+            pos, _q, _yaw = sim.base_pose(self._robot)
+            goal = np.asarray([kwargs["x"], kwargs["y"]], dtype=np.float64)
+            return float(np.linalg.norm(goal - pos[:2]))
+        if method in ("env.move_hand", "env.grasp_object"):
+            p, _q = sim.eef_pose(self._robot, check_arm(kwargs["arm"]))
+            target = np.asarray(kwargs["position"], dtype=np.float64).reshape(3)
+            if method == "env.move_hand":
+                return float(np.linalg.norm(target - p))
+            # To the pre-grasp above the target, down to it and back up.
+            offset = float(kwargs.get("pregrasp_offset_m") or PREGRASP_OFFSET_M)
+            above = target + np.array([0.0, 0.0, offset])
+            return float(np.linalg.norm(above - p)) + 2 * offset
+        if method == "env.move_hand_delta":
+            d = np.asarray(kwargs.get("delta_xyz", (0.0, 0.0, 0.0)), dtype=np.float64)
+            return float(np.linalg.norm(d))
+        if method == "env.step":
+            return sim.action_move_m(self._robot, [kwargs["action"]])
+        if method == "env.chunk_step":
+            return sim.action_move_m(self._robot, kwargs["actions"])
+        return 0.0
+
+    def _code_check(self, method: str, kwargs: dict) -> None:
+        """Refuse a program's call that the run's wall clock could not bound."""
+        if method == "env.chunk_step" and len(kwargs["actions"]) > CODE_MAX_CHUNK:
+            raise ValueError(
+                f"chunk_step takes at most {CODE_MAX_CHUNK} actions per call in code mode"
+            )
 
     # ---- stepping ----
 

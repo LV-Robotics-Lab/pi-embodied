@@ -905,6 +905,15 @@ def _child_main(
     conn.close()
 
 
+#: Set to 1 in the child's environment (:func:`child_env`).
+SINGLE_THREAD_ENV = (
+    "OPENBLAS_NUM_THREADS",
+    "OMP_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+)
+
+
 def child_env(env: Mapping[str, str], cwd: str) -> dict[str, str]:
     """The child's whole environment, built explicitly (the server's own ``os.environ`` is
     never modified): ``env`` scrubbed, the services root on PYTHONPATH, HOME the temp dir."""
@@ -915,6 +924,10 @@ def child_env(env: Mapping[str, str], cwd: str) -> dict[str, str]:
     )
     out["HOME"] = cwd
     out["PYTHONDONTWRITEBYTECODE"] = "1"
+    # One BLAS/OpenMP thread: the child's numpy import would otherwise start a pool per core
+    # (64 on the 208-core box) that spins while the program computes and charges RLIMIT_CPU
+    # ~25x faster than the wall clock, so a busy program died of SIGXCPU long before its timeout.
+    out.update(dict.fromkeys(SINGLE_THREAD_ENV, "1"))
     return out
 
 

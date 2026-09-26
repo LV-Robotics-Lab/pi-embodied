@@ -727,3 +727,19 @@ def test_a_non_root_server_refuses_code_mode_but_the_optout_runs_isolated_only_b
     assert res["default"] == "refused", res
     assert res["optout_status"] == "ran", res
     assert res["optout_parent_environ"] == "PermissionError", res
+
+
+def test_the_child_runs_single_threaded_blas_and_the_server_env_is_untouched(
+    monkeypatch,
+):
+    monkeypatch.setenv("OMP_NUM_THREADS", "8")
+    monkeypatch.delenv("OPENBLAS_NUM_THREADS", raising=False)
+    out = runner(Toy()).run(
+        "import os\nRESULT = [os.environ.get(k) for k in "
+        "('OPENBLAS_NUM_THREADS', 'OMP_NUM_THREADS', 'MKL_NUM_THREADS')]\n",
+        timeout_s=20,
+    )
+    assert out["status"] == "ran", out
+    assert out["result"] == ["1", "1", "1"]
+    assert os.environ["OMP_NUM_THREADS"] == "8"
+    assert "OPENBLAS_NUM_THREADS" not in os.environ

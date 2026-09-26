@@ -16,7 +16,10 @@ import { VLM_COST_EVENT } from "../src/units/vlm.ts";
 type Handler = (event: any, ctx: any) => unknown;
 
 /** A stub pi running handlers in registration order (a tool_call block stops the chain), with a stub model registry. */
-function fakePi(flagValues: Record<string, unknown> = {}, o: { hasUI?: boolean; confirm?: boolean; review?: string } = {}) {
+function fakePi(
+	flagValues: Record<string, unknown> = {},
+	o: { hasUI?: boolean; confirm?: boolean; review?: string } = {},
+) {
 	const handlers = new Map<string, Handler[]>();
 	const flags: Record<string, unknown> = {};
 	const entries: { type: string; data: any }[] = [];
@@ -39,6 +42,7 @@ function fakePi(flagValues: Record<string, unknown> = {}, o: { hasUI?: boolean; 
 		},
 		getActiveTools: () => active,
 		getThinkingLevel: () => "off",
+		getAllTools: () => [{ name: "move", description: "Move the gripper. gripper -1 = open", parameters: {} }],
 		appendEntry: (type: string, data: any) => entries.push({ type, data }),
 		// A real bus: the robot adds the reviewer's cost (VLM_COST_EVENT) to its budget.
 		events: {
@@ -199,9 +203,8 @@ test("without an active observation tool the re-observe gate stays open", async 
 });
 
 test("motion classification over every robot's tools", () => {
-	const fixture = JSON.parse(
-		readFileSync(new URL("./fixtures/tool-schemas.json", import.meta.url), "utf8"),
-	).robots as Record<string, { name: string }[]>;
+	const fixture = JSON.parse(readFileSync(new URL("./fixtures/tool-schemas.json", import.meta.url), "utf8"))
+		.robots as Record<string, { name: string }[]>;
 	const names = new Set(Object.values(fixture).flatMap((tools) => tools.map((t) => t.name)));
 	const notRobotTools = new Set(["finish", "request_operator_verdict"]);
 	const motion = [...names].filter((n) => !notRobotTools.has(n) && !NON_MOTION.has(n)).sort();
@@ -275,7 +278,10 @@ test("--approval reviewed: a rejection blocks the motion with the reviewer's rea
 	assert.equal(f.asked.length, 1, "one review, for the motion only");
 	const [q] = f.asked;
 	assert.match(q.system ?? "", /independent action reviewer/);
-	assert.match(q.content[0].text, /TASK: put the cube in the bowl[\s\S]*PROPOSED CALL: move[\s\S]*0\.2/);
+	assert.match(
+		q.content[0].text,
+		/TASK: put the cube in the bowl[\s\S]*TOOL CONTRACT \(move\): Move the gripper\. gripper -1 = open[\s\S]*PROPOSED CALL: move[\s\S]*0\.2/,
+	);
 	assert.equal(q.content[1].data, "main", "the latest camera image goes with it");
 	assert.deepEqual(
 		f.events.filter((e) => e.channel === VLM_COST_EVENT).map((e) => e.data),
@@ -304,7 +310,10 @@ test("--approval reviewed: an approval lets the motion run; an unparseable reply
 	const blocked = await call(g, "move");
 	assert.match(blocked?.reason ?? "", /not a decision/);
 	assert.equal((await end(g)).approval_errors, 1);
-	assert.deepEqual(parseReview('{"decision":"Abstain"}'), { decision: "abstain", reason: "reviewer decision: abstain" });
+	assert.deepEqual(parseReview('{"decision":"Abstain"}'), {
+		decision: "abstain",
+		reason: "reviewer decision: abstain",
+	});
 	assert.match(reviewPrompt("t", "run_code", { code: "x" }, 0), /No camera image/);
 });
 
@@ -347,7 +356,11 @@ test("--max-tool-calls ends the episode once the planner made that many calls (f
 	assert.equal(await call(f, "view_env_state"), undefined);
 	assert.equal(await call(f, "move"), undefined);
 	const spent = await call(f, "move");
-	assert.deepEqual(spent, { block: true, reason: "Planner tool_calls budget exhausted; the episode is over.", terminate: true });
+	assert.deepEqual(spent, {
+		block: true,
+		reason: "Planner tool_calls budget exhausted; the episode is over.",
+		terminate: true,
+	});
 	const r = await end(f);
 	assert.equal(r.planner_budget_exhausted, "tool_calls");
 	assert.equal(r.tool_calls, 2);
@@ -393,7 +406,13 @@ test("usedTemplates keeps the templates this mode uses", () => {
 	const plain = usedTemplates({ explore: false, memoryProfile: "hf", code: false, units: false });
 	assert.ok(plain["libero/SYSTEM.md"]);
 	assert.ok(plain["libero/memory-hf.md"]);
-	for (const unused of ["libero/memory-local.md", "libero/explore.md", "libero/distil.md", "code/SYSTEM.md", "units/SYSTEM.md"])
+	for (const unused of [
+		"libero/memory-local.md",
+		"libero/explore.md",
+		"libero/distil.md",
+		"code/SYSTEM.md",
+		"units/SYSTEM.md",
+	])
 		assert.equal(plain[unused], undefined, unused);
 	const exploring = usedTemplates({ explore: true, memoryProfile: "local", code: true, units: false });
 	for (const used of ["libero/memory-local.md", "libero/explore.md", "libero/distil.md", "code/SYSTEM.md"])

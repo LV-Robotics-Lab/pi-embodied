@@ -324,15 +324,31 @@ Review exactly one proposed motion: a tool call that moves the robot. The runtim
 Return exactly one JSON object:
 {"decision":"approve|reject|abstain","reason":"one concise sentence"}`;
 
-/** The reviewer's user prompt: the task, the proposed call and what the images are. */
-export function reviewPrompt(task: string, tool: string, input: unknown, images: number): string {
-	let call = JSON.stringify(input ?? {}, null, 1);
-	if (call.length > 6000) call = `${call.slice(0, 6000)} ...[truncated]`;
+/**
+ * The reviewer's user prompt: the task, the tool's contract (its description and parameters, as
+ * OpenETA's reviewer gets the tool contract: conventions such as a gripper's sign live there), the
+ * proposed call and what the images are.
+ */
+export function reviewPrompt(
+	task: string,
+	tool: string,
+	input: unknown,
+	images: number,
+	contract?: { description: string; parameters?: unknown },
+): string {
+	const cap = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)} ...[truncated]` : s);
 	return [
 		`TASK: ${task}`,
 		"",
+		...(contract
+			? [
+					`TOOL CONTRACT (${tool}): ${contract.description}`,
+					`Parameters: ${cap(JSON.stringify(contract.parameters ?? {}), 4000)}`,
+					"",
+				]
+			: []),
 		`PROPOSED CALL: ${tool}`,
-		call,
+		cap(JSON.stringify(input ?? {}, null, 1), 6000),
 		"",
 		images
 			? `The ${images} image(s) are the robot's latest camera views, as the agent last saw them (the main view first).`
@@ -476,7 +492,16 @@ export function approval(pi: ExtensionAPI, robot: ApprovalRobot) {
 					{
 						system: REVIEW_SYSTEM,
 						content: [
-							{ type: "text", text: reviewPrompt(robot.task(), event.toolName, event.input, images.length) },
+							{
+								type: "text",
+								text: reviewPrompt(
+									robot.task(),
+									event.toolName,
+									event.input,
+									images.length,
+									pi.getAllTools?.().find((t) => t.name === event.toolName),
+								),
+							},
 						],
 					},
 					images,

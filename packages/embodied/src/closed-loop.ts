@@ -93,7 +93,7 @@ export function closedLoop(pi: ExtensionAPI, moves: (tool: string) => boolean) {
 	let unknown = 0;
 	let refused = 0;
 	let hooked = false;
-	const observers = () => pi.getActiveTools().filter((t) => (OBSERVE as readonly string[]).includes(t));
+	const observers = () => (pi.getActiveTools() ?? []).filter((t) => (OBSERVE as readonly string[]).includes(t));
 	// Mounted after the robot's start, so the active tools are known here.
 	pi.on("session_start", () => {
 		pending = undefined;

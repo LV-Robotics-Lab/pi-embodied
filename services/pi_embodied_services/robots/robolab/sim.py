@@ -13,8 +13,9 @@
 # limitations under the License.
 #
 # Modified by pi-embodied: adapted from Show-Harness core/sim/robolab_task.py (@137d571);
-# the Panda-hand relative-IK registration, the accessors, the orientation hold and the
-# stepping helpers are kept, layout randomisation and the axis probe are dropped; the Kit app
+# the Panda-hand relative-IK registration, the accessors, the orientation hold, the stepping
+# helpers, task_targets and the (data-generation) layout randomisation are kept, the axis
+# probe is dropped; the Kit app
 # is pinned to one GPU (renderer included) and the short-finger Panda USD is resolved offline.
 
 """RoboLab (NVIDIA Isaac Lab) task glue: launch Kit, build one task in relative-IK mode.
@@ -34,7 +35,7 @@ from __future__ import annotations
 import functools
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -70,6 +71,8 @@ class TaskHandle:
     env_name: str
     task: str
     ik_scale: float
+    #: What the task's own subtasks say to pick and where to put it (:func:`task_targets`).
+    targets: dict = field(default_factory=dict)
 
 
 # -- installation / app lifecycle -------------------------------------------
@@ -176,12 +179,17 @@ def make_task(
     output_dir: str | Path | None = None,
     enable_subtask: bool = False,
     episode_length_s: float | None = None,
+    randomize_xy_m: float | None = None,
+    randomize_margin_m: float = 0.02,
 ) -> TaskHandle:
     """Register ``task`` against the relative-IK action space and construct its env.
 
     ``output_dir`` redirects RoboLab's own artefacts (``env_cfg.json``, the HDF5 recorder, which
     takes an exclusive lock: two servers must never share it). ``episode_length_s`` overrides the
     task's time limit; leave it None for evaluation (the benchmark's limit is part of the task).
+    ``randomize_xy_m`` (data generation only) re-samples the task's own object(s) and container /
+    surface uniformly within +-this many metres of X and Y on every reset
+    (:func:`_layout_randomisation_events`); without it every reset restores the authored layout.
     """
     robolab_root()
     import robolab.constants
@@ -214,12 +222,18 @@ def make_task(
             f"No RoboLab environment registered for task {task!r}; task names are the class names "
             "in <ROBOLAB_ROOT>/robolab/tasks/benchmark/*.py, e.g. 'BananaInBowlTask'."
         )
+    events = None
+    if randomize_xy_m:
+        events = _layout_randomisation_events(
+            task, float(randomize_xy_m), float(randomize_margin_m)
+        )
     env, env_cfg = create_env(
         env_names[0],
         device=device,
         seed=seed,
         num_envs=1,
         use_fabric=True,
+        events=events,
         instruction_type=instruction_type,
         policy="pi-embodied",
         renderer=renderer,
@@ -237,7 +251,87 @@ def make_task(
         env_name=env_names[0],
         task=task,
         ik_scale=ik_scale,
+        targets=task_targets(env_cfg),
     )
+
+
+def _layout_randomisation_events(task: str, xy_m: float, margin_m: float) -> dict:
+    """``{"reset": EventTerm}`` re-sampling the task's own objects on every reset.
+
+    Named ``reset`` so it REPLACES RoboLab's ``reset_scene_to_default`` (added under another
+    name, the default ran second and put every object back: identical layouts across seeds);
+    ``reset_to_default_otherwise`` makes it a full reset of everything else. Collision-checked,
+    so the object never spawns inside its container; Z is not randomised.
+    """
+    from isaaclab.managers import EventTermCfg as EventTerm
+    from robolab.constants import DEFAULT_TASK_SUBFOLDERS, TASK_DIR
+    from robolab.core.events.reset_pose import reset_pose_uniform
+    from robolab.core.task.task_utils import load_task_from_file, resolve_task_path
+
+    task_class = None
+    for subdir in [*DEFAULT_TASK_SUBFOLDERS, ""]:
+        try:
+            root = Path(TASK_DIR) / subdir if subdir else Path(TASK_DIR)
+            path, _ = resolve_task_path(task, str(root))
+            task_class = load_task_from_file(path)
+            break
+        except Exception:  # noqa: BLE001 -- try the next subfolder
+            continue
+    if task_class is None:
+        raise SystemExit(f"randomize_xy_m: task {task!r} could not be loaded")
+    targets = task_targets(task_class)
+    assets = list(targets.get("objects") or [])
+    assets += [str(targets[k]) for k in ("container", "surface") if targets.get(k)]
+    if not assets:
+        raise SystemExit(f"randomize_xy_m: task {task!r} declares no objects")
+    return {
+        "reset": EventTerm(
+            func=reset_pose_uniform,
+            mode="reset",
+            params={
+                "pose_range": {"x": (-xy_m, xy_m), "y": (-xy_m, xy_m), "z": (0.0, 0.0)},
+                "velocity_range": {},
+                "asset_cfg": assets,
+                "use_collision_check": True,
+                "collision_margin": float(margin_m),
+                "max_retries": 100,
+                "reset_to_default_otherwise": True,
+            },
+        )
+    }
+
+
+def task_targets(env_cfg: Any) -> dict:
+    """``{"objects": [...], "container": str, "surface": str}`` off the task's ``subtasks``.
+
+    RoboLab composites like ``pick_and_place(object=["banana"], container="bowl")`` store their
+    arguments as ``functools.partial`` keywords of each condition; ``{}`` for other shapes.
+    """
+    objects: list[str] = []
+    container = surface = None
+    for subtask in getattr(env_cfg, "subtasks", None) or []:
+        conditions = getattr(subtask, "conditions", None)
+        if not isinstance(conditions, dict):
+            continue
+        for obj_name, entries in conditions.items():
+            many = isinstance(entries, (list, tuple, set))
+            for entry in entries if many else [entries]:
+                func = entry[0] if isinstance(entry, tuple) else entry
+                keywords = getattr(func, "keywords", None) or {}
+                if "container" in keywords:
+                    container = container or str(keywords["container"])
+                if "reference_object" in keywords:
+                    surface = surface or str(keywords["reference_object"])
+            if isinstance(obj_name, str) and obj_name not in objects:
+                objects.append(obj_name)
+    out: dict = {}
+    if objects:
+        out["objects"] = objects
+    if container:
+        out["container"] = container
+    if surface:
+        out["surface"] = surface
+    return out
 
 
 def _register_franka_rel_ik(task: str, camera_preset: str) -> float:
@@ -417,6 +511,27 @@ def rl_object_poses(env: Any) -> dict[str, dict]:
             q[[3, 0, 1, 2]] if isaaclab_xyzw() else q,
         )
     return poses
+
+
+def rl_centroid(env: Any, name: str) -> np.ndarray:
+    """Centre of a scene object's oriented bounding box, env-local (RoboLab's WorldState): on
+    the object, unlike an authored asset's root frame."""
+    from robolab.core.world.world_state import get_world
+
+    c = get_world(env).get_centroid(name, env_id=0)
+    return np.asarray(to_np(c), dtype=np.float64).reshape(-1)[:3]
+
+
+def rl_extent(env: Any, name: str) -> tuple[float, float]:
+    """LIVE (bottom_z, top_z) of an object: the live centroid plus the pose-independent size
+    (``WorldState.get_aabb`` is cached at load, so a held object would report its table height)."""
+    from robolab.core.world.world_state import get_world
+
+    c = rl_centroid(env, name)
+    half = (
+        float(np.asarray(to_np(get_world(env).get_dimensions(name))).reshape(-1)[2]) / 2
+    )
+    return float(c[2] - half), float(c[2] + half)
 
 
 def ee_tilt_deg(quat_wxyz: np.ndarray) -> float:

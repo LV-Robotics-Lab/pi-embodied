@@ -71,6 +71,7 @@ import {
 import { NdArray, type RpcClient, RpcUnavailable } from "../rpc.ts";
 import {
 	compensate,
+	type Move,
 	type MoveUnit,
 	type State,
 	UNITS_EVENT,
@@ -317,6 +318,22 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 				return guardedStep(move.delta, move.yaw, move.gripper, frame, signal, false, move.arm, move.continuous);
 			});
 		},
+		// Two arms: a paired step runs both arms' steps at once on the server (env.step_pair), as
+		// Show-Harness's dual runners step both arms together.
+		...(dual
+			? {
+					applyPair: (moves: Move[], signal: AbortSignal | undefined) => {
+						const frames = moves.map((m) => motionFrame(m.view, unitsFrame(), viewSelect()));
+						return act({ action: "unit_pair", moves }, () => {
+							const steps = moves.map((m, i) =>
+								stepArgs(m.delta, m.yaw, m.gripper, frames[i], signal, false, m.arm, false),
+							);
+							lastFrame = frames[0];
+							return call("env.step_pair", { steps }, 120_000, signal);
+						});
+					},
+				}
+			: {}),
 		state: async (arm) => proprio(await call<Json>("env.get_robot_state", dual ? { arm: armName(arm) } : {})),
 		// The stall check compares commanded and measured motion in the base frame.
 		baseDelta: (delta, state) => (lastFrame === "heading" ? headingToBase(delta, state) : delta),
@@ -442,6 +459,21 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 		arm?: string,
 		continuous = false,
 	): Promise<Json> {
+		const kwargs = stepArgs(delta, yaw, gripper, frame, signal, reopenEmpty, arm, continuous);
+		return call("env.step", kwargs, 120_000, signal);
+	}
+
+	/** The checked `env.step` arguments of one arm's step (the limits, the operator's verdict). */
+	function stepArgs(
+		delta: number[],
+		yaw: number,
+		gripper: "open" | "close" | null,
+		frame: Frame,
+		signal: AbortSignal | undefined,
+		reopenEmpty: boolean,
+		arm: string | undefined,
+		continuous: boolean,
+	): Json {
 		const side = armName(arm);
 		op.check();
 		if (signal?.aborted) throw new Error("tool operation interrupted");
@@ -463,7 +495,7 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 			// The same MV_* follows in this act call: the server's smooth stream flows through the join.
 			...(continuous ? { continuous: true } : {}),
 		};
-		return call("env.step", side ? { ...kwargs, arm: side } : kwargs, 120_000, signal);
+		return side ? { ...kwargs, arm: side } : kwargs;
 	}
 
 	/** Proprioception for prompts and the units plugins (`eef_xyz`, `gripper_width`, `table_z`). */

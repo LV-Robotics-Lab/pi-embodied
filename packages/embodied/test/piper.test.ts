@@ -310,6 +310,8 @@ async function mockServer(o: ServerOpts = {}) {
 				return kwargs.arm ? armState(kwargs.arm) : state();
 			case "env.step":
 				return { ok: true, arm: kwargs.arm, frame: kwargs.frame, notes: [] };
+			case "env.step_pair":
+				return { ok: true, arms: Object.fromEntries(kwargs.steps.map((st: any) => [st.arm, { ok: true }])) };
 			case "env.halt_arm":
 				return { ok: true, arm: kwargs.arm, halted: `halted: ${kwargs.reason}` };
 			default:
@@ -397,6 +399,16 @@ test("dual Piper: act takes the arm, STILL leaves the other arm alone, no rotati
 		assert.equal(grasp.details.command.arm, "left");
 		assert.equal(m.steps().at(-1)?.gripper, "close");
 		assert.equal(m.steps().at(-1)?.arm, "left");
+
+		// A paired step is one env.step_pair call: both arms at once, each through the per-arm checks.
+		const n = m.steps().length;
+		const pair = await f.run("act", { unit: "MV_UP", arm: "left", other: "RELEASE" });
+		assert.match(pair.content[0].text, /units: L:MV_UP\+R:RELEASE x1/);
+		assert.equal(m.steps().length, n, "no single-arm env.step for a pair");
+		assert.deepEqual(m.calls.filter((c) => c.method === "env.step_pair").at(-1)?.kwargs.steps, [
+			{ delta_xyz: [0, 0, 0.02], yaw: 0, gripper: null, frame: "base", reopen_empty: false, arm: "left" },
+			{ delta_xyz: [0, 0, 0], yaw: 0, gripper: "open", frame: "base", reopen_empty: false, arm: "right" },
+		]);
 	} finally {
 		m.close();
 	}

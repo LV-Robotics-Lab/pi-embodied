@@ -519,6 +519,40 @@ def test_dual_step_moves_only_the_named_arm_within_its_own_limits():
         call("env.step", (), {"delta_xyz": [0.1, 0, 0], "arm": "left"})
 
 
+def test_dual_step_pair_moves_both_arms_at_once_and_joins_a_fault():
+    left, right = FakeArm(), FakeArm()
+    f = dual_facade(left, right)
+    call = f._serve_dispatch
+    l0, r0 = left.pose.copy(), right.pose.copy()
+    out = call(
+        "env.step_pair",
+        (),
+        {
+            "steps": [
+                {"delta_xyz": [0.0, 0.0, 0.02], "arm": "left"},
+                {"delta_xyz": [0.01, 0.0, 0.0], "arm": "right", "gripper": "close"},
+            ]
+        },
+    )
+    assert out["ok"] and set(out["arms"]) == {"left", "right"}
+    assert left.pose[2] == pytest.approx(l0[2] + 0.02, abs=1e-3)
+    assert right.pose[0] == pytest.approx(r0[0] + 0.01, abs=1e-3)
+    with pytest.raises(ValueError, match="one step per arm"):
+        call("env.step_pair", (), {"steps": [{"arm": "left"}, {"arm": "left"}]})
+    # A fault on one arm is re-raised after both threads join; the other arm finished its step.
+    right.fail_at_stream = right.streamed
+    r1 = left.pose.copy()
+    with pytest.raises(RuntimeError, match="the right arm failed its paired step"):
+        f.step_pair(
+            [
+                {"delta_xyz": [0.0, 0.0, 0.01], "arm": "left"},
+                {"delta_xyz": [0.0, 0.0, 0.01], "arm": "right"},
+            ]
+        )
+    assert left.pose[2] == pytest.approx(r1[2] + 0.01, abs=1e-3)
+    assert "right" in f.get_env_meta()["halted"]
+
+
 def test_dual_per_arm_workspace_box():
     left, right = FakeArm(), FakeArm()
     x = float(left.pose[0])

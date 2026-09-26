@@ -52,6 +52,8 @@ export type PromptContext = {
 	task: string;
 	coarseM: number;
 	highM: number;
+	/** stage_control: units per stage before the plan moves on (0 = no cap). */
+	stageSteps?: number;
 };
 
 /** Pure mode: the whole prompt. Both mode: the section appended to the robot's prompt. */
@@ -92,6 +94,9 @@ export function renderPrompt(c: PromptContext) {
 		proprio_note: c.plugin("proprioception") ? ", the gripper's height and width, blocked moves" : "",
 		mem_note: c.plugin("mem_text") ? ", the recent moves (newest first)" : "",
 		video_ref: brief ? renderBrief(brief, arms) : "",
+		stage_cap: c.stageSteps
+			? `- Each stage runs at most ${c.stageSteps} units; past that the plan moves on to the next stage, and past the last one no unit runs until you send a new plan.\n`
+			: "",
 	};
 	return p.replace(/\{\{(\w+)\}\}/g, (m, k: string) => vars[k] ?? m).trim();
 }

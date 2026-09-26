@@ -652,7 +652,9 @@ export function actSteps(
 	if (arms.length === 1) return { step: { [arms[0]]: unit }, n };
 	const arm = String(input.arm ?? "").toLowerCase();
 	if (!arms.includes(arm)) return undefined;
-	return { step: Object.fromEntries(arms.map((a) => [a, a === arm ? unit : STILL])), n };
+	// A paired step (`other`): the other arm's unit in the same step.
+	const other = typeof input.other === "string" ? input.other.trim().toUpperCase() : STILL;
+	return { step: Object.fromEntries(arms.map((a) => [a, a === arm ? unit : other])), n };
 }
 
 // ---------------------------------------------------------------------------
@@ -789,9 +791,15 @@ export function gumi(
 		}
 		return out;
 	}
-	/** One step through `act`'s own path: each acting arm's unit (two arms: one after the other). */
+	/** One step through `act`'s own path: each acting arm's unit (two acting arms: one paired `act` step). */
 	async function execute(step: Step, signal: AbortSignal | undefined) {
 		let result: AgentToolResult<unknown> | undefined;
+		const acting = arms.filter((a) => step[a] !== STILL);
+		if (acting.length === 2 && acting.every((a) => step[a] !== "STOP"))
+			return (handle as UnitsHandle).run(
+				{ unit: step[acting[0]], arm: acting[0], other: step[acting[1]], operator: true },
+				signal,
+			);
 		for (const a of arms) {
 			if (step[a] === STILL) continue;
 			result = await (handle as UnitsHandle).run(

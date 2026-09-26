@@ -40,6 +40,7 @@ ACTION UNITS (`act` with `unit` and an optional repeat count `n`, default 1):
 - DONE: the task is complete; then call `finish`.
 [arms]
 - `arm` picks which arm the unit drives ({{arms}}); the other arm holds still (STILL).
+- `other` gives the OTHER arm's unit for the same step: both arms move together (a paired step). Pair only moves whose paths are clearly independent; near each other or for a handover, move one arm and leave `other` out.
 [/arms]
 [wrist]
 - WRIST CHECK: with every `act`, set `target_in_wrist` to true if the TARGET is visible in the wrist view, else false.
@@ -109,8 +110,9 @@ POINT (`point`): mark the exact contact point(s) for the gripper in one camera i
 [tool:plan]
 
 PLAN (`plan`): before acting, split the task into ordered visual stages (GRASP, LIFT, MOVE, PLACE, RELEASE, RETREAT) and send them with `plan`; each result shows the current STAGE. Call `plan` with `done: true` when its DONE WHEN condition is visible, and with new stages when the plan no longer fits.
-- Merge approach, align, lower and close into ONE GRASP stage; keep LIFT separate; after every RELEASE add a RETREAT that lifts the gripper.
+{{stage_cap}}- Merge approach, align, lower and close into ONE GRASP stage; keep LIFT separate; after every RELEASE add a RETREAT that lifts the gripper.
 - Affordance: ONE specific part, visible in the third-person view. Containers: the rim. Solid objects: the main body.
+- A GRASP stage is done only when the gripper measurably holds the object; an empty or lost grasp returns the plan to its GRASP stage.
 - Every DONE WHEN must be judgeable from the images: a stable visual relation, not a gripper event; distinguish similar objects.
 - Conditional tasks ("one of", "whichever", "find ... under", "if ... then"): plan the REVEAL stages, then ONE stage with motion REASON whose description is the complete rule ("IF <visible condition> THEN <what the rest of the plan becomes>", including the case where nothing is left), then one placeholder goal stage. On reaching REASON, judge the rule from the live images and send the concrete stages with `plan`.
 [/tool:plan]

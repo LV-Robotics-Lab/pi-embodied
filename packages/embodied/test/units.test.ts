@@ -339,6 +339,7 @@ test("plan tracks the current stage in every act result", async () => {
 		head(await f.run("act", { unit: "STOP" })),
 		/STAGE 1\/2 \[GRASP\]: target cube; DONE WHEN cube between/,
 	);
+	await f.run("act", { unit: "GRASP" });
 	await f.run("plan", { done: true });
 	const r = head(await f.run("act", { unit: "STOP" }));
 	assert.match(r, /STAGE 2\/2 \[REASON\]/);
@@ -1329,4 +1330,120 @@ test("mem_text's re-judge rule names the views the robot has", async () => {
 	assert.equal(rule.exec(wrist)?.[1], "both views");
 	const none = (await (await toyRobot({}, { wrist: false })).emit("before_agent_start")).systemPrompt as string;
 	assert.equal(rule.exec(none)?.[1], "the third-person view");
+});
+
+test("stage_control: a stage that used its step cap moves on; past the last stage no unit runs until a new plan", async () => {
+	const f = await toyRobot({ "units-stage-steps": "3" });
+	await f.run("plan", {
+		stages: [
+			{ motion: "MOVE", target: "cube", completion: "above the cube" },
+			{ motion: "LIFT", target: "cube", completion: "cube lifted" },
+		],
+	});
+	const r = head(await f.run("act", { unit: "MV_LEFT", n: 3 }));
+	assert.match(r, /STAGE 1\/2 \[MOVE\].*; step 3 of 3/);
+	const next = head(await f.run("act", { unit: "MV_LEFT", n: 5 }));
+	assert.match(next, /STAGE 1 \[MOVE\] used its 3-step cap: the plan moves on/);
+	assert.match(next, /used its 3-step cap: the plan moves on\.\nThat was the last planned stage/);
+	assert.match(next, /x3 of 5 \(stopped early\)/);
+	assert.equal(f.moves.length, 6);
+	const refused = await f.run("act", { unit: "MV_UP" });
+	assert.equal(refused.details.stage_cap_exceeded, true);
+	assert.equal(f.moves.length, 6, "no unit runs past the last stage's cap");
+	// A human's unit still runs, and a new plan resumes the agent.
+	await f.run("act", { unit: "MV_UP", operator: true });
+	assert.equal(f.moves.length, 7);
+	await f.run("plan", { stages: [{ motion: "PLACE", target: "bowl", completion: "cube in the bowl" }] });
+	assert.match(head(await f.run("act", { unit: "MV_DOWN" })), /STAGE 3\/3 \[PLACE\].*step 1 of 3/);
+	// 0 turns the cap off.
+	const g = await toyRobot({ "units-stage-steps": "0" });
+	await g.run("plan", { stages: [{ motion: "MOVE", target: "cube", completion: "above" }] });
+	assert.doesNotMatch(head(await g.run("act", { unit: "MV_LEFT", n: 10 })), /cap|step \d+ of/);
+});
+
+test("stage_control: an empty or lost grasp rolls the plan back to its GRASP stage; an unverified GRASP done restarts it", async () => {
+	let closeWidth = 0.001;
+	const f = await toyRobot({}, { onClose: () => closeWidth });
+	await f.run("plan", {
+		stages: [
+			{ motion: "GRASP", target: "cube", completion: "cube between the fingers" },
+			{ motion: "LIFT", target: "cube", completion: "cube lifted" },
+		],
+	});
+	// GRASP done without a hold: refused, the stage restarts.
+	const refused = await f.run("plan", { done: true });
+	assert.equal(refused.details.unverified_grasp, true);
+	assert.match(refused.content[0].text, /done refused: stage 1 \[GRASP\] is not verified/);
+	// An empty close: recovery reopens, and the plan stays at (or rolls back to) the GRASP stage.
+	const empty = head(await f.run("act", { unit: "GRASP" }));
+	assert.match(empty, /Plan rolled back to stage 1 \[GRASP\]/);
+	closeWidth = 0.03;
+	await f.run("act", { unit: "GRASP" });
+	assert.match((await f.run("plan", { done: true })).content[0].text, /> 2\. \[LIFT\]/);
+	// The object slips out during LIFT: auto_release reopens and the plan rolls back to GRASP.
+	f.setWidth(0.0005);
+	const lost = head(await f.run("act", { unit: "MV_UP" }));
+	assert.match(lost, /Recovery: Grasp lost/);
+	assert.match(lost, /Plan rolled back to stage 1 \[GRASP\]/);
+	assert.match(lost, /STAGE 1\/2 \[GRASP\]/);
+});
+
+test("a paired act step drives both arms at once through applyPair, else one after the other", async () => {
+	const pairs: Move[][] = [];
+	const f = await toyRobot({ "units-plugins": "proprioception" }, { arms: ["left", "right"] });
+	const schema = JSON.stringify(f.tools.get("act").parameters);
+	assert.match(schema, /"other"/);
+	const seq = head(await f.run("act", { unit: "MV_LEFT", arm: "left", other: "MV_UP", n: 2 }));
+	assert.match(seq, /^units: L:MV_LEFT\+R:MV_UP x2\n/);
+	assert.match(seq, /one after the other/);
+	assert.deepEqual(
+		f.moves.map((m) => [m.arm, m.delta]),
+		[
+			["left", [0, -0.02, 0]],
+			["right", [0, 0, 0.02]],
+			["left", [0, -0.02, 0]],
+			["right", [0, 0, 0.02]],
+		],
+	);
+	// STILL on the other arm is a one-arm step; both STILL is a hold.
+	await f.run("act", { unit: "GRASP", arm: "right", other: "STILL" });
+	assert.deepEqual(f.moves.at(-1), { delta: [0, 0, 0], yaw: 0, gripper: "close", arm: "right" });
+	assert.match(head(await f.run("act", { unit: "STILL", arm: "left", other: "STILL" })), /STILL/);
+	await assert.rejects(f.run("act", { unit: "DONE", arm: "left", other: "MV_UP" }), /cannot run in a paired step/);
+	// With applyPair the pair is one command.
+	const g = fakePi({ units: true, "units-plugins": "" });
+	defineRobot(g.pi, {
+		name: "pair",
+		task: [],
+		keepImages: 2,
+		start: async () => ["finish"],
+		result: () => ({}),
+		finish: {
+			description: "finish",
+			parameters: Type.Object({ status: Type.String(), summary: Type.String() }),
+			result: (p) => ({ content: [{ type: "text", text: p.status }], details: p }),
+		},
+		units: {
+			vectors: VECTORS,
+			stepM: 0.02,
+			arms: ["left", "right"],
+			apply: async () => {
+				throw new Error("apply must not run for a pair");
+			},
+			applyPair: async (moves) => {
+				pairs.push(moves);
+				return { content: [{ type: "text", text: "obs" }], details: {} };
+			},
+		},
+	});
+	await g.emit("session_start");
+	const r = (await g.run("act", { unit: "MV_FWD", arm: "right", other: "RELEASE" })) as any;
+	assert.match(r.content[0].text, /^units: R:MV_FWD\+L:RELEASE x1/);
+	assert.deepEqual(
+		pairs[0].map((m) => [m.arm, m.delta, m.gripper]),
+		[
+			["right", [0.02, 0, 0], null],
+			["left", [0, 0, 0], "open"],
+		],
+	);
 });

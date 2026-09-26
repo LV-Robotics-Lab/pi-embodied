@@ -26,7 +26,7 @@ export type UnitsHandle = {
 	/** What one `act` call does (grounding, `apply`, recovery / auto_release, the units header), without the model. */
 	/** `operator: true` for a human's unit (GUMI): exactly what was pressed, no recovery/auto_release/variable step/rotation assists. */
 	run: (
-		params: { unit: string; n?: number; arm?: string; operator?: boolean },
+		params: { unit: string; n?: number; arm?: string; other?: string; operator?: boolean },
 		signal?: AbortSignal,
 	) => Promise<AgentToolResult<unknown>>;
 	/** The robot's proprioception (`eef_xyz`, `gripper_width`, ...), per arm on two arms. */
@@ -58,6 +58,12 @@ export type UnitsSpec = {
 	yawStepRad?: number;
 	/** Execute one move through the robot's own safety checks; return the new observation (images + state). */
 	apply: (move: Move, signal: AbortSignal | undefined) => Promise<Result>;
+	/**
+	 * Dual-arm robots: execute one move per arm at the same time (Show-Harness's dual runners step both
+	 * arms together), through the same safety checks; return the new observation. Without it a paired
+	 * `act` step (`other`) runs the arms one after the other through `apply`.
+	 */
+	applyPair?: (moves: Move[], signal: AbortSignal | undefined) => Promise<Result>;
 	/**
 	 * Proprioception. The plugins read `eef_xyz` (base frame, m), `gripper_width` (m) and
 	 * `table_z` (m, optional); everything else is shown as-is.

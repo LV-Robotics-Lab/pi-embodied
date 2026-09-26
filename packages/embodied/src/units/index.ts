@@ -32,7 +32,13 @@
  *   An RT_* unit turns the gripper a fixed step about a base-frame axis through the TCP (robots with
  *   `rt`; a robot without an axis refuses its units), in commands within `rt.maxRad`, capped at
  *   150 deg accumulated yaw (the accumulator ROTATE_* use) and 90 deg accumulated roll or pitch.
- * - plan: subgoal stages, with deepplan's REASON checkpoint.
+ * - plan: subgoal stages, with deepplan's REASON checkpoint, and Show-Harness's stage control
+ *   (core/runners/real.py, dual.py): a stage runs at most `--units-stage-steps` units (default 40,
+ *   max_subgoal_steps; 0 = no cap), then the plan moves on with a fresh move history, and past the last
+ *   stage no agent unit runs until a new plan (Show-Harness ends the episode there); an empty GRASP or
+ *   a lost grasp rolls the plan back to the nearest GRASP stage (of that arm); `plan done` on a GRASP
+ *   stage is refused and the stage restarts unless a closed gripper measurably holds (recovery, robots
+ *   with `emptyWidthM`), reopening a closed empty one (plugins/recovery after_step).
  * - point: affordance pixels -> world xyz (robots with `point`).
  * - mem_text: "Recent moves, newest first" in every result, with the history rules (no oscillation,
  *   no GRASP in place after an empty one); off, the results carry no move history at all.
@@ -43,6 +49,10 @@
  * turned off, and the effective plugins are in every `units_state` entry and the robot result.
  * A robot without a gripper (the spec's `gripper`, e.g. ManiSkill's --robot panda_stick) has no GRASP /
  * RELEASE units and runs without recovery and auto_release; the prompt drops its gripper text.
+ *
+ * Dual-arm robots: `act`'s `other` is the other arm's unit in the same step (a paired step, Show-Harness's
+ * dual runners' (left, right) token pair; STILL = that arm holds). A robot with `applyPair` runs the pair
+ * as one command (both arms at once); without it the arms run one after the other, and the result says so.
  *
  * Side VLM calls (./vlm.ts, `--units-vlm-model`, default the session's model):
  * - `--units-verify=true|false|auto` (auto: on for dual-arm robots, as Show-Harness's dual runner): a `finish`
@@ -113,6 +123,7 @@ import {
 	type Plugin,
 	ROTATE_UNITS,
 	RT_TURNS,
+	type RtAxis,
 	type RtUnit,
 	type State,
 	UNITS,
@@ -175,6 +186,13 @@ const NOTES = {
 	lost_grasp: "Grasp lost; return to GRASP, recenter the object body, then confirm depth.",
 };
 
+/** Units a paired two-arm step (`act`'s `other`) may run on either arm (RT_* too). */
+const PAIRABLE = new Set<string>([...MOVE_UNITS, ...ROTATE_UNITS, "GRASP", "RELEASE", "STILL"]);
+/** stage_control: the per-stage step cap (core/launch.py max_subgoal_steps). */
+const STAGE_STEPS = 40;
+/** recovery: the note after a GRASP stage's DONE that the gripper does not confirm (plugins/recovery note_unverified_grasp). */
+const UNVERIFIED_GRASP = "Grasp not verified; continue GRASP until width and images show a real hold.";
+
 /** Plugins that key on the wrist view (`target_in_wrist`): off on a robot configuration without one. */
 const WRIST_PLUGINS: readonly Plugin[] = ["variable_step", "action_chunk"];
 /** Plugins that reopen a gripper: off on a robot without one. */
@@ -212,6 +230,12 @@ export function units(
 		type: "string",
 		default: "auto",
 		description: `Units plugins, comma-separated (${PLUGINS.join(", ")}; "" = none; auto = ${(spec.plugins ?? DEFAULT_PLUGINS).join(",")}, without variable_step and action_chunk on a configuration without a wrist view)`,
+	});
+	pi.registerFlag("units-stage-steps", {
+		type: "string",
+		default: String(STAGE_STEPS),
+		description:
+			"plan: the most units one stage runs before the plan advances to the next stage (Show-Harness max_subgoal_steps; 0 = no cap)",
 	});
 	pi.registerFlag("units-coarse-step", {
 		type: "string",
@@ -319,6 +343,9 @@ export function units(
 	let note = "";
 	let stages: Stage[] = [];
 	let stage = 0;
+	/** stage_control: units run in the current stage, and whether the last stage used its cap. */
+	let stageSteps = 0;
+	let capped = false;
 	let targets: Target[] = [];
 	/** The verifier's refusals, verdict, errors and view (./verifier.ts updates it in place). */
 	const check = verifierState();
@@ -335,6 +362,8 @@ export function units(
 		note = "";
 		stages = [];
 		stage = 0;
+		stageSteps = 0;
+		capped = false;
 		targets = [];
 		Object.assign(check, verifierState());
 	};
@@ -355,6 +384,7 @@ export function units(
 			note,
 			stages,
 			stage,
+			...(capped ? { stageCapExceeded: true } : {}),
 			targets,
 			replans: check.replans,
 			verdict: check.verdict,
@@ -422,6 +452,43 @@ export function units(
 		return unit === "MV_UP" || (g !== undefined && g > high) || inWrist === false ? coarse() : spec.stepM;
 	};
 
+	const stageCap = () => Math.max(0, Math.floor(Number(pi.getFlag("units-stage-steps"))) || 0);
+	/**
+	 * stage_control (core/runners/real.py): a stage that ran its step cap is abandoned for the next one
+	 * with a fresh move history; past the last stage no unit runs until a new plan. False: stop.
+	 */
+	function advanceCapped(lines: string[]) {
+		const cap = stageCap();
+		if (!plugin("plan") || !cap || stage >= stages.length || stageSteps < cap) return true;
+		lines.push(`STAGE ${stage + 1} [${stages[stage].motion}] used its ${cap}-step cap: the plan moves on.`);
+		stage++;
+		stageSteps = 0;
+		recent = [];
+		if (stage < stages.length) return true;
+		capped = true;
+		lines.push("That was the last planned stage: send a new plan, or finish.");
+		return false;
+	}
+	/**
+	 * stage_control: after an empty or lost grasp the plan rolls back to the nearest GRASP stage at or
+	 * before the current one (of that arm on two arms; the first stage without one), as plugins/recovery's
+	 * rollback_index. False when no plan runs.
+	 */
+	function rollback(lines: string[], arm: string | undefined) {
+		if (!plugin("plan") || !stages.length) return false;
+		let to = 0;
+		for (let i = Math.min(stage, stages.length - 1); i >= 0; i--)
+			if (stages[i].motion.toUpperCase() === "GRASP" && (!arm || !stages[i].arm || stages[i].arm === arm)) {
+				to = i;
+				break;
+			}
+		stage = to;
+		stageSteps = 0;
+		capped = false;
+		lines.push(`Plan rolled back to stage ${to + 1} [${stages[to].motion}].`);
+		return true;
+	}
+
 	/** The units block that heads every `act` result. */
 	async function header(lines: string[], arm: string | undefined) {
 		const out = [...lines];
@@ -429,7 +496,7 @@ export function units(
 			const s = stages[stage];
 			out.push(
 				s
-					? `STAGE ${stage + 1}/${stages.length} [${s.motion}]${s.arm ? ` (${s.arm} arm)` : ""}: target ${s.target}${s.affordance ? `; affordance ${s.affordance}` : ""}${s.description ? `; ${s.description}` : ""}; DONE WHEN ${s.completion}`
+					? `STAGE ${stage + 1}/${stages.length} [${s.motion}]${s.arm ? ` (${s.arm} arm)` : ""}: target ${s.target}${s.affordance ? `; affordance ${s.affordance}` : ""}${s.description ? `; ${s.description}` : ""}; DONE WHEN ${s.completion}${stageCap() ? `; step ${stageSteps} of ${stageCap()}` : ""}`
 					: "STAGE: all planned stages are done; check the task and DONE, or send a new plan.",
 			);
 			if (s?.motion.toUpperCase() === "REASON")
@@ -499,6 +566,16 @@ export function units(
 				}),
 			);
 		if (armNames.length) props.arm = StringEnum(armNames, { description: "Which arm the unit drives" });
+		if (armNames.length === 2)
+			props.other = Type.Optional(
+				StringEnum(
+					vocab().filter((u) => PAIRABLE.has(u) || isRt(u)),
+					{
+						description:
+							"Paired step: the OTHER arm's unit, run at the same time as `unit` (STILL = it holds); n repeats the pair",
+					},
+				),
+			);
 		if (spec.viewSelect?.())
 			props.view = Type.Optional(
 				StringEnum(GUIDE_VIEWS, {
@@ -528,6 +605,7 @@ export function units(
 		unit: string;
 		n?: number;
 		arm?: string;
+		other?: string;
 		target_in_wrist?: boolean;
 		plan?: string[];
 		operator?: boolean;
@@ -548,6 +626,7 @@ export function units(
 			unit: Unit;
 			n?: number;
 			arm?: string;
+			other?: Unit;
 			target_in_wrist?: boolean;
 			plan?: MoveUnit[];
 			operator?: boolean;
@@ -560,7 +639,6 @@ export function units(
 		// A human's unit (GUMI teleop) runs as pressed: the agent-side assists would override the operator
 		// (recovery reopens a GRASP that closed on air), as in Show-Harness's collectors.
 		const assist = (name: Plugin) => !p.operator && plugin(name);
-		const key = arm ?? "";
 		// The schema offers these only with their plugins; a stale or hand-written call is refused, not silently dropped.
 		if (p.plan !== undefined && !plugin("action_chunk"))
 			throw new Error(
@@ -574,24 +652,60 @@ export function units(
 			throw new Error(
 				"act: `target_in_wrist` needs the variable_step, action_chunk or rotation plugin (--units-plugins)",
 			);
+		/** The paired arm of a synchronous two-arm step (`other`), else undefined. */
+		let pairArm: string | undefined;
+		if (p.other !== undefined) {
+			pairArm = armNames.find((a) => a !== arm);
+			if (armNames.length !== 2 || !arm || !pairArm)
+				throw new Error("act: `other` pairs the two arms of a dual-arm robot; name `arm` for `unit`");
+			if (p.plan !== undefined) throw new Error("act: `other` (a paired step) and `plan` (a chunk) do not combine");
+			for (const u of [unit, p.other])
+				if (!PAIRABLE.has(u) && !isRt(u))
+					throw new Error(`act: ${u} cannot run in a paired step (moves, turns, GRASP, RELEASE and STILL can)`);
+		}
 		if (demoError) return { content: [text(`video_ref failed: ${demoError}`)], details: { unit, error: demoError } };
 		if (unit === "DONE")
 			return {
 				content: [text("DONE: if the images show the task complete, call `finish` now; otherwise keep acting.")],
 				details: { unit },
 			};
-		if (unit === "STILL") return { content: [text(`STILL: the ${arm ?? ""} arm holds.`)], details: { unit } };
-		const rtWhy = isRt(unit) ? rtRefusal(unit) : rotateRefusal(unit);
-		if (rtWhy) throw new Error(`act: ${rtWhy}`);
+		if (unit === "STILL" && (p.other === undefined || p.other === "STILL"))
+			return { content: [text(`STILL: the ${arm ?? ""} arm holds.`)], details: { unit } };
+		for (const u of [unit, ...(p.other !== undefined ? [p.other] : [])]) {
+			const rtWhy = isRt(u) ? rtRefusal(u) : rotateRefusal(u);
+			if (rtWhy) throw new Error(`act: ${rtWhy}`);
+		}
 		const lines: string[] = [];
+		// stage_control: the plan's last stage ran out of steps; only a new plan (or finish) goes on.
+		if (capped && !p.operator && plugin("plan"))
+			return {
+				content: [
+					await header(["units: not run: every planned stage used its step cap; send a new plan or finish."], arm),
+				],
+				details: { unit, stage_cap_exceeded: true },
+			};
 		if (!wristView && p.target_in_wrist !== undefined && !p.operator)
 			lines.push("target_in_wrist ignored: this robot has no wrist view.");
-		let queue: Unit[] = Array(Math.max(1, Math.min(MAX_REPEAT, Math.floor(p.n ?? 1)))).fill(unit);
+		const n = Math.max(1, Math.min(MAX_REPEAT, Math.floor(p.n ?? 1)));
+		type Slot = { arm: string | undefined; u: Unit };
+		/** One step per tick: one arm's unit, or (paired) both arms' units at once; STILL drops out. */
+		let ticks: Slot[][] = Array.from({ length: n }, () =>
+			[{ arm, u: unit }, ...(pairArm && p.other !== undefined ? [{ arm: pairArm, u: p.other }] : [])].filter(
+				(s) => s.u !== "STILL",
+			),
+		);
 		if (p.plan?.length && plugin("action_chunk")) {
-			if (inWrist === false) queue = p.plan.filter(isMove).slice(0, CHUNK_STEPS);
-			else lines.push("plan ignored: plans run only while target_in_wrist is false; one unit ran.");
-			if (inWrist !== false) queue = [unit];
+			if (inWrist === false)
+				ticks = p.plan
+					.filter(isMove)
+					.slice(0, CHUNK_STEPS)
+					.map((u) => [{ arm, u }]);
+			else {
+				lines.push("plan ignored: plans run only while target_in_wrist is false; one unit ran.");
+				ticks = [[{ arm, u: unit }]];
+			}
 		}
+		const tag = (s: Slot) => (pairArm ? `${s.arm?.[0].toUpperCase()}:${s.u}` : s.u);
 		let last: Result | undefined;
 		const ran: string[] = [];
 		const halted = (r: Result, m?: Move) => {
@@ -600,122 +714,187 @@ export function units(
 			const moved = m !== undefined && finishMove(m) && r.content.some((c) => c.type === "image");
 			return Boolean(d?.error || (d?.terminated && !moved));
 		};
-		/** Path length so far: one call travels at most the robot's per-call translation limit. */
-		let travelled = 0;
+		/** Path length so far per arm: one call travels at most the robot's per-call translation limit. */
+		const travelled = new Map<string, number>();
 		// A recovery note lasts until the next GRASP.
-		if (queue.includes("GRASP")) note = "";
-		for (const [index, u] of queue.entries()) {
-			const before = await read(arm);
-			const acc = yaw.get(key) ?? 0;
-			let label: string = u;
-			let move = ground(spec, u, isMove(u) && !p.operator ? stepFor(u, before, inWrist) : spec.stepM) as Move;
-			// Holding and turned: MV_UP first turns back to the start heading.
-			if (assist("rotation") && u === "MV_UP" && closed.get(key) && Math.abs(acc) > NEUTRAL_YAW) {
-				move = { delta: [0, 0, 0], yaw: -acc, gripper: null };
-				label = "MV_UP(realign)";
-				// Wrist-judged moves follow the turned wrist camera; without one every move is judged in the base frame.
-			} else if (assist("rotation") && wristView && isMove(u) && inWrist !== false)
-				move.delta = compensate(move.delta, (spec.yawCompensationSign ?? 1) * acc);
-			else if (move.yaw && Math.abs(acc + move.yaw) > MAX_YAW) {
-				// The accumulated-yaw guard holds with or without the rotation plugin.
-				lines.push(`${u} refused: the gripper is already turned ${Math.round((acc * 180) / Math.PI)} deg.`);
-				break;
-			}
-			// RT_*: the accumulated guards (yaw shared with ROTATE_*, measured about base +z; roll, pitch by unit).
-			const turn = isRt(u) && move.rot ? RT_TURNS[u] : undefined;
-			const tilts = turn?.axis === "roll" ? roll : pitch;
-			const turnBy =
-				turn && move.rot ? (turn.axis === "yaw" ? move.rot[2] : turn.sign * Math.hypot(...move.rot)) : 0;
-			if (turn) {
-				const now = turn.axis === "yaw" ? acc : (tilts.get(key) ?? 0);
-				if (Math.abs(now + turnBy) > (turn.axis === "yaw" ? MAX_YAW : MAX_TILT) + 1e-9) {
+		if (ticks.some((t) => t.some((s) => s.u === "GRASP"))) note = "";
+		let stop = false;
+		for (const [index, tick] of ticks.entries()) {
+			// stage_control: a stage that used its step cap is abandoned for the next one (core/runners/real.py).
+			if (!advanceCapped(lines)) break;
+			type Planned = {
+				slot: Slot;
+				key: string;
+				label: string;
+				move: Move;
+				parts: number;
+				turn: { axis: RtAxis; sign: number } | undefined;
+				turnBy: number;
+				dist: number;
+				before: State | undefined;
+			};
+			const planned: Planned[] = [];
+			for (const slot of tick) {
+				const { u } = slot;
+				const key = slot.arm ?? "";
+				const before = await read(slot.arm);
+				const acc = yaw.get(key) ?? 0;
+				let label: string = tag(slot);
+				let move = ground(spec, u, isMove(u) && !p.operator ? stepFor(u, before, inWrist) : spec.stepM) as Move;
+				// Holding and turned: MV_UP first turns back to the start heading.
+				if (assist("rotation") && u === "MV_UP" && closed.get(key) && Math.abs(acc) > NEUTRAL_YAW) {
+					move = { delta: [0, 0, 0], yaw: -acc, gripper: null };
+					label = `${tag(slot)}(realign)`;
+					// Wrist-judged moves follow the turned wrist camera; without one every move is judged in the base frame.
+				} else if (assist("rotation") && wristView && isMove(u) && inWrist !== false)
+					move.delta = compensate(move.delta, (spec.yawCompensationSign ?? 1) * acc);
+				else if (move.yaw && Math.abs(acc + move.yaw) > MAX_YAW) {
+					// The accumulated-yaw guard holds with or without the rotation plugin.
 					lines.push(
-						`${u} refused: the gripper is already turned ${Math.round((now * 180) / Math.PI)} deg about its ${turn.axis} axis.`,
+						`${tag(slot)} refused: the gripper is already turned ${Math.round((acc * 180) / Math.PI)} deg.`,
 					);
+					stop = true;
 					break;
 				}
+				// RT_*: the accumulated guards (yaw shared with ROTATE_*, measured about base +z; roll, pitch by unit).
+				const turn = isRt(u) && move.rot ? RT_TURNS[u] : undefined;
+				const tilts = turn?.axis === "roll" ? roll : pitch;
+				const turnBy =
+					turn && move.rot ? (turn.axis === "yaw" ? move.rot[2] : turn.sign * Math.hypot(...move.rot)) : 0;
+				if (turn) {
+					const now = turn.axis === "yaw" ? acc : (tilts.get(key) ?? 0);
+					if (Math.abs(now + turnBy) > (turn.axis === "yaw" ? MAX_YAW : MAX_TILT) + 1e-9) {
+						lines.push(
+							`${tag(slot)} refused: the gripper is already turned ${Math.round((now * 180) / Math.PI)} deg about its ${turn.axis} axis.`,
+						);
+						stop = true;
+						break;
+					}
+				}
+				const dist = Math.hypot(...move.delta);
+				const maxMove = spec.maxMoveM?.();
+				const so = travelled.get(key) ?? 0;
+				if (maxMove !== undefined && so > 0 && !(so + dist <= maxMove + 1e-9)) {
+					lines.push(`${tag(slot)} not run: one act call moves at most ${maxMove} m in total.`);
+					stop = true;
+					break;
+				}
+				// A turn beyond the robot's per-command limit runs as equal commands within it.
+				const maxYaw = spec.maxYawRad?.();
+				const maxRot = spec.rt?.maxRad?.();
+				const angle = move.rot ? Math.hypot(...move.rot) : 0;
+				const parts =
+					move.yaw && maxYaw !== undefined
+						? Math.ceil(Math.abs(move.yaw) / maxYaw - 1e-9)
+						: angle && maxRot !== undefined
+							? Math.ceil(angle / maxRot - 1e-9)
+							: 1;
+				if (!(parts >= 1 && parts <= MAX_YAW_PIECES)) {
+					lines.push(
+						`${label} refused: the robot's per-call rotation limit is ${move.rot ? maxRot : maxYaw} rad.`,
+					);
+					stop = true;
+					break;
+				}
+				if (slot.arm) move.arm = slot.arm;
+				if (p.view) move.view = p.view;
+				if (p.retreat) move.retreat = true;
+				if (!pairArm && isMove(u) && label === u && ticks[index + 1]?.[0]?.u === u) move.continuous = true;
+				planned.push({ slot, key, label, move, parts, turn, turnBy, dist, before });
 			}
-			const dist = Math.hypot(...move.delta);
-			const maxMove = spec.maxMoveM?.();
-			if (maxMove !== undefined && travelled > 0 && !(travelled + dist <= maxMove + 1e-9)) {
-				lines.push(`${u} not run: one act call moves at most ${maxMove} m in total.`);
-				break;
-			}
-			// A turn beyond the robot's per-command limit runs as equal commands within it.
-			const maxYaw = spec.maxYawRad?.();
-			const maxRot = spec.rt?.maxRad?.();
-			const angle = move.rot ? Math.hypot(...move.rot) : 0;
-			const parts =
-				move.yaw && maxYaw !== undefined
-					? Math.ceil(Math.abs(move.yaw) / maxYaw - 1e-9)
-					: angle && maxRot !== undefined
-						? Math.ceil(angle / maxRot - 1e-9)
-						: 1;
-			if (!(parts >= 1 && parts <= MAX_YAW_PIECES)) {
-				lines.push(`${label} refused: the robot's per-call rotation limit is ${move.rot ? maxRot : maxYaw} rad.`);
-				break;
-			}
-			if (arm) move.arm = arm;
-			if (p.view) move.view = p.view;
-			if (p.retreat) move.retreat = true;
-			if (isMove(u) && label === u && queue[index + 1] === u) move.continuous = true;
-			for (let i = 0; i < parts; i++) {
-				const piece: Move = i ? { ...move, delta: [0, 0, 0], gripper: null } : move;
-				const rot = move.rot?.map((x) => x / parts) as Vec3 | undefined;
-				last = await spec.apply(
-					parts > 1 ? { ...piece, yaw: move.yaw / parts, ...(rot ? { rot } : {}) } : piece,
+			if (stop) break;
+			/** Book a turn's share into the accumulators. */
+			const turned = (q: Planned, share: number) => {
+				if (q.move.yaw) yaw.set(q.key, (yaw.get(q.key) ?? 0) + q.move.yaw * share);
+				if (q.turn?.axis === "yaw") yaw.set(q.key, (yaw.get(q.key) ?? 0) + q.turnBy * share);
+				else if (q.turn) {
+					const tilts = q.turn.axis === "roll" ? roll : pitch;
+					tilts.set(q.key, (tilts.get(q.key) ?? 0) + q.turnBy * share);
+				}
+			};
+			// A paired step goes to the robot as one command when it can run both arms at once.
+			if (planned.length === 2 && spec.applyPair && planned.every((q) => q.parts === 1)) {
+				last = await spec.applyPair(
+					planned.map((q) => q.move),
 					signal,
 				);
-				if (halted(last, move)) break;
-				if (move.yaw) yaw.set(key, (yaw.get(key) ?? 0) + move.yaw / parts);
-				if (turn?.axis === "yaw") yaw.set(key, (yaw.get(key) ?? 0) + turnBy / parts);
-				else if (turn) tilts.set(key, (tilts.get(key) ?? 0) + turnBy / parts);
-			}
-			travelled += dist;
-			ran.push(label);
-			// mem_text records moves, turns and grasps (not STOP / RELEASE), as core/runners/real.py.
-			if (isMove(u) || isRt(u) || u === "GRASP" || u === "ROTATE_CW" || u === "ROTATE_CCW") remember(u);
-			if (move.gripper) closed.set(key, move.gripper === "close");
-			const after = await read(arm);
-			if (last && halted(last, move)) break;
-			// proprioception: a MV_* that barely moved is blocked (contact, floor, workspace limit).
-			const [p0, p1] = [eef(before), eef(after)];
-			const base = spec.baseDelta?.(move.delta, before) ?? move.delta;
-			const commanded = Math.hypot(...base);
-			// A chained move returned before the arm settled: its lagging position is not a stall.
-			const settling = move.continuous === true && spec.chains?.() === true;
-			if (plugin("proprioception") && !settling && p0 && p1 && commanded > 0) {
-				const moved = [0, 1, 2].reduce((s, k) => s + (p1[k] - p0[k]) * base[k], 0) / commanded;
-				if (moved < commanded * STALL_RATIO) {
-					lines.push(
-						u === "MV_DOWN"
-							? `Last MV_DOWN lowered ${(moved * 100).toFixed(1)} of ${(commanded * 100).toFixed(1)} cm -> already in contact, do NOT MV_DOWN again`
-							: `Last ${u} moved ${(moved * 100).toFixed(1)} of ${(commanded * 100).toFixed(1)} cm -> blocked`,
-					);
-					break;
+				const r = last;
+				if (!planned.some((q) => r && halted(r, q.move))) for (const q of planned) turned(q, 1);
+			} else {
+				if (planned.length === 2 && index === 0)
+					lines.push("paired step: this robot runs the two arms one after the other (no simultaneous command).");
+				for (const q of planned) {
+					for (let i = 0; i < q.parts; i++) {
+						const piece: Move = i ? { ...q.move, delta: [0, 0, 0], gripper: null } : q.move;
+						const rot = q.move.rot?.map((x) => x / q.parts) as Vec3 | undefined;
+						last = await spec.apply(
+							q.parts > 1 ? { ...piece, yaw: q.move.yaw / q.parts, ...(rot ? { rot } : {}) } : piece,
+							signal,
+						);
+						if (halted(last, q.move)) break;
+						turned(q, 1 / q.parts);
+					}
+					if (last && halted(last, q.move)) break;
 				}
 			}
-			// recovery: a GRASP that closed on nothing is reopened at once.
-			if (u === "GRASP" && assist("recovery") && empty(after)) {
-				last = await reopen(arm, signal);
-				// The fresh approach starts from a clean history holding only the failed GRASP.
-				recent = [EMPTY_GRASP];
-				note = NOTES.empty_grasp;
-				break;
+			stageSteps++;
+			ran.push(planned.map((q) => q.label).join("+"));
+			for (const q of planned) {
+				const { u } = q.slot;
+				travelled.set(q.key, (travelled.get(q.key) ?? 0) + q.dist);
+				// mem_text records moves, turns and grasps (not STOP / RELEASE), as core/runners/real.py.
+				if (isMove(u) || isRt(u) || u === "GRASP" || u === "ROTATE_CW" || u === "ROTATE_CCW") remember(tag(q.slot));
+				if (q.move.gripper) closed.set(q.key, q.move.gripper === "close");
 			}
-			// auto_release: a closed gripper that collapsed (the object slipped out) is reopened.
-			if (u !== "GRASP" && assist("auto_release") && closed.get(key) && empty(after)) {
-				last = await reopen(arm, signal);
-				note = NOTES.lost_grasp;
-				break;
+			if (last && planned.some((q) => halted(last as Result, q.move))) break;
+			for (const q of planned) {
+				const { u } = q.slot;
+				const after = await read(q.slot.arm);
+				// proprioception: a MV_* that barely moved is blocked (contact, floor, workspace limit).
+				const [p0, p1] = [eef(q.before), eef(after)];
+				const base = spec.baseDelta?.(q.move.delta, q.before) ?? q.move.delta;
+				const commanded = Math.hypot(...base);
+				// A chained move returned before the arm settled: its lagging position is not a stall.
+				const settling = q.move.continuous === true && spec.chains?.() === true;
+				if (plugin("proprioception") && !settling && p0 && p1 && commanded > 0) {
+					const moved = [0, 1, 2].reduce((s, k) => s + (p1[k] - p0[k]) * base[k], 0) / commanded;
+					if (moved < commanded * STALL_RATIO) {
+						lines.push(
+							u === "MV_DOWN"
+								? `Last ${tag(q.slot)} lowered ${(moved * 100).toFixed(1)} of ${(commanded * 100).toFixed(1)} cm -> already in contact, do NOT MV_DOWN again`
+								: `Last ${tag(q.slot)} moved ${(moved * 100).toFixed(1)} of ${(commanded * 100).toFixed(1)} cm -> blocked`,
+						);
+						stop = true;
+						continue;
+					}
+				}
+				// recovery: a GRASP that closed on nothing is reopened at once, and the plan rolls back to its grasp stage.
+				if (u === "GRASP" && assist("recovery") && empty(after)) {
+					last = await reopen(q.slot.arm, signal);
+					// The fresh approach starts from a clean history holding only the failed GRASP.
+					recent = [pairArm ? `${tag(q.slot)}(empty)` : EMPTY_GRASP];
+					note = NOTES.empty_grasp;
+					rollback(lines, q.slot.arm);
+					stop = true;
+					continue;
+				}
+				// auto_release: a closed gripper that collapsed (the object slipped out) is reopened.
+				if (u !== "GRASP" && assist("auto_release") && closed.get(q.key) && empty(after)) {
+					last = await reopen(q.slot.arm, signal);
+					note = NOTES.lost_grasp;
+					if (rollback(lines, q.slot.arm)) recent = [];
+					stop = true;
+				}
 			}
+			if (stop) break;
 		}
+		const queue = ticks.map((t) => t.map(tag).join("+"));
 		const what =
 			queue.every((u) => u === queue[0]) && ran.every((u) => u === ran[0])
 				? `${ran[0] ?? queue[0]} x${ran.length}`
 				: ran.join(", ");
 		lines.unshift(
-			`units: ${what}${arm ? ` (${arm} arm)` : ""}${ran.length < queue.length ? ` of ${queue.length} (stopped early)` : ""}`,
+			`units: ${what}${arm && !pairArm ? ` (${arm} arm)` : ""}${ran.length < ticks.length ? ` of ${ticks.length} (stopped early)` : ""}`,
 		);
 		if (!last) return { content: [await header(lines, arm)], details: { unit } };
 		return { ...last, content: [await header(lines, arm), ...last.content] };
@@ -796,9 +975,44 @@ export function units(
 			),
 			done: Type.Optional(Type.Boolean({ description: "The current stage's DONE WHEN is visible" })),
 		}),
-		async ({ stages: next, done }) => {
+		async ({ stages: next, done }, signal) => {
+			// stage_control: a GRASP stage is done only on a measured hold (plugins/recovery after_step's
+			// unverified_grasp): otherwise the stage restarts and a closed empty gripper reopens.
+			const current = stages[stage];
+			if (
+				done &&
+				current?.motion.toUpperCase() === "GRASP" &&
+				plugin("recovery") &&
+				spec.emptyWidthM !== undefined
+			) {
+				const sides = current.arm ? [current.arm] : armNames.length ? [...armNames] : [undefined];
+				const held: (string | undefined)[] = [];
+				for (const a of sides) {
+					const st = await read(a);
+					if (closed.get(a ?? "") === true && !empty(st)) held.push(a);
+					else if (closed.get(a ?? "") === true && st) await reopen(a, signal);
+				}
+				if (!held.length) {
+					stageSteps = 0;
+					recent = [];
+					note = UNVERIFIED_GRASP;
+					save();
+					return {
+						content: [
+							text(
+								`done refused: stage ${stage + 1} [GRASP] is not verified (${sides.length > 1 ? "no gripper" : "the gripper"} measurably holds an object); the stage restarts. Recovery: ${UNVERIFIED_GRASP}`,
+							),
+						],
+						details: { stage, stages, unverified_grasp: true },
+					};
+				}
+			}
 			if (done && stage < stages.length) stage++;
 			if (next?.length) stages = [...stages.slice(0, stage), ...next];
+			if (done || next?.length) {
+				stageSteps = 0;
+				capped = false;
+			}
 			// A new stage starts with a clean move history (core/runners/real.py); a new plan answers the verifier.
 			if (done || next?.length) recent = [];
 			if (next?.length) check.verdict = "";
@@ -954,6 +1168,7 @@ export function units(
 				task: instruction(),
 				coarseM: coarse(),
 				highM: high,
+				stageSteps: stageCap(),
 			}),
 	};
 }

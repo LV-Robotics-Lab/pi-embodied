@@ -30,7 +30,8 @@ workspace box (in its own base frame) and begin pose. The cameras are then ``fro
 
 Everything goes over ROS topics (``ros_io``); start the CAN link(s), the camera
 driver and the arm node(s) (mode 1) first. One call runs at a time, so on two arms
-one arm moves per call; ``stop`` is lock-free and the running motion checks it
+one arm moves per call, except ``step_pair``, which runs one step per arm at once (one
+thread per arm, Show-Harness's dual runners' token pair); ``stop`` is lock-free and the running motion checks it
 between joint waypoints / settle ticks / gripper polls and returns
 ``cancelled: true`` after holding the arm where it is.
 
@@ -51,6 +52,7 @@ from __future__ import annotations
 import argparse
 import copy
 import math
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -299,6 +301,7 @@ class PiperEnvFacade(BaseEnvFacade):
             "get_observation",
             "get_camera_meta",
             "step",
+            "step_pair",
             "move_joints",
             "halt_arm",
         ):
@@ -466,6 +469,49 @@ class PiperEnvFacade(BaseEnvFacade):
                 continuous=bool(continuous),
             ),
         )
+
+    def step_pair(self, steps: Any) -> dict[str, Any]:
+        """Two arms: one guarded step per arm, both at once (one thread per arm, as
+        Show-Harness's dual runners execute a (left, right) token pair).
+
+        ``steps`` is a list of two :meth:`step` keyword dicts naming different arms. A
+        fault on one arm is joined, then re-raised, so it never strands the other
+        mid-motion; each arm's own halt still applies (:meth:`_guarded`)."""
+        if not self._dual:
+            raise ValueError(
+                "step_pair needs both arms (a dual config with an arms: block)"
+            )
+        steps = list(steps or [])
+        sides = [self._side((s or {}).get("arm")) for s in steps]
+        if len(steps) != 2 or len(set(sides)) != 2:
+            raise ValueError(
+                "step_pair takes exactly one step per arm (two steps naming both arms)"
+            )
+        results: dict[str, Any] = {}
+        errors: dict[str, BaseException] = {}
+
+        def run(kwargs: dict[str, Any]) -> None:
+            side = self._side(kwargs.get("arm"))
+            try:
+                results[side] = self.step(**kwargs)
+            except BaseException as exc:  # noqa: BLE001 - re-raised after the join
+                errors[side] = exc
+
+        threads = [
+            threading.Thread(target=run, args=(dict(s),), name=f"arm-{side}")
+            for s, side in zip(steps, sides)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        if errors:
+            side, exc = next(iter(errors.items()))
+            raise RuntimeError(f"the {side} arm failed its paired step: {exc}") from exc
+        return {
+            "ok": all(r.get("ok", True) for r in results.values()),
+            "arms": {side: results[side] for side in sides},
+        }
 
     def move_joints(
         self, pose: str = "begin", arm: str | None = None

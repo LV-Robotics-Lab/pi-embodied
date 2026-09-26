@@ -26,6 +26,8 @@ import { type NdArray, RpcClient } from "../rpc.ts";
 import type { MoveUnit, Vec3 } from "../units/index.ts";
 
 const SYSTEM = template(new URL("./SYSTEM.md", import.meta.url));
+const EXPLORE = template(new URL("./explore.md", import.meta.url));
+const MEMORY = template(new URL("./memory.md", import.meta.url));
 
 /** Metaworld's MT50 task names (`metaworld.env_dict.ALL_V3_ENVIRONMENTS`), the server's table. */
 export const TASKS = [
@@ -202,6 +204,8 @@ export default function metaworld(pi: ExtensionAPI) {
 	let workspace: Meta["workspace"];
 	const worldMaps = new Map<string, WorldMap>();
 
+	/** The memory cell of this task at `seed`. */
+	const tag = (seed: string) => `metaworld_${robot.task.task}_s${seed}`;
 	const robot = defineRobot(pi, {
 		name: "metaworld",
 		task: ["task", "seed"],
@@ -209,8 +213,37 @@ export default function metaworld(pi: ExtensionAPI) {
 		video: true,
 		vdm: { views: 2, wrist: 1 },
 		groundTruth: (names) => call("env.ground_truth_poses", { names: names ?? null }),
+		// No corpus is published for Metaworld: memory is what exploration writes locally, one cell per task and seed.
+		memory: {
+			cell: () => ({ tag: tag(robot.task.seed), reference: tag("0") }),
+			primitives: ["move_delta", "gripper", "act"],
+			published: false,
+		},
+		explore: {
+			// The exploration `reset` tool is not a robot.tool, so robot.signal is unset here; use its own signal.
+			reset: async (result, _ctx, signal) => {
+				success = false;
+				envStep = 0;
+				gripper = "open";
+				worldMaps.clear();
+				const [o, i] = await env.call<[Obs, Info]>("env.reset", {}, 300_000, [], signal);
+				absorb(o, i);
+				workspace = (await env.call<Meta>("env.get_env_meta", {}, 30_000, [], signal)).workspace;
+				return observe({ ...result, reset: true });
+			},
+			prompt: () => EXPLORE.replaceAll("{{task}}", robot.task.task).replaceAll("{{seed}}", robot.task.seed),
+			rewrite: [
+				[
+					/This is a single episode\. You may recover within it \(re-position, re-grasp\), but you cannot restart it\./,
+					"This is an exploration run: `reset` starts a fresh attempt (see Exploration). Within an attempt, recover in place (re-position, re-grasp).",
+				],
+			],
+		},
 		start: startEpisode,
-		prompt: () => SYSTEM.replaceAll("{{task_language}}", language).replaceAll("{{table_z}}", String(TABLE_Z)),
+		prompt: () =>
+			SYSTEM.replaceAll("{{task_language}}", language)
+				.replaceAll("{{table_z}}", String(TABLE_Z))
+				.replaceAll("{{memory}}", pi.getFlag("explore") === true ? "" : robot.mem!.render(MEMORY).trim()),
 		result: () => ({
 			task: robot.task.task,
 			seed: Number(robot.task.seed),

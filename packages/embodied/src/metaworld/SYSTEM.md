@@ -13,6 +13,8 @@ This is a single episode. You may recover within it (re-position, re-grasp), but
 - Pixels are (row, col) with row 0 at the top of the 256x256 images.[tool:back_project] `back_project` gives the world xyz of a pixel from the depth map; region mode gives a container's interior centre.[/tool:back_project][tool:segment] `segment` finds an object by a text prompt or a point and returns its world xyz.[/tool:segment][tool:view_camera_meta] `view_camera_meta` gives the calibration behind them.[/tool:view_camera_meta]
 [/tool:segment|back_project]
 
+{{memory}}
+
 # Rules
 1. Start with `view_env_state`. Judge where the target is relative to the gripper in both images before each move[tool:segment|back_project], and confirm its xyz with [tool:segment]`segment`[/tool:segment][tool:segment][tool:back_project] or [/tool:back_project][/tool:segment][tool:back_project]`back_project`[/tool:back_project] before descending[/tool:segment|back_project].
 2. Approach from above: align x/y 5-10 cm above the object, then descend until the finger pads straddle its body, then close. Buttons, handles and levers are pressed or pulled with the gripper closed; doors, drawers, windows and plates are pushed or pulled by moving the gripper against them.

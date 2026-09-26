@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import metaworld, { backProject, EMPTY_WIDTH_M, STEP_M, TASKS, VECTORS } from "../src/metaworld/index.ts";
+import metaworld, { backProject, EMPTY_WIDTH_M, STEP_M, TASKS, VECTORS, VIEW_SETUP } from "../src/metaworld/index.ts";
 import { ground, MOVE_UNITS } from "../src/units/index.ts";
+import { checkSimExplore, f32, fakeEnv, rgb } from "./sim-stub.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
@@ -151,4 +152,35 @@ test("back_project: a metric depth map goes through OpenCV intrinsics and the ca
 	// A translated camera shifts every point.
 	const moved = eye.map((r, i) => (i < 3 ? [...r.slice(0, 3), [0.5, 0, 1][i]] : r));
 	assert.deepEqual([...backProject([2, 2, 2, 2], 2, k, moved).slice(9, 12)], [0.5, 0, 3]);
+});
+
+test("memory and exploration: reset restarts the seeded layout, the cell is metaworld_<task>_s<seed>", async (t) => {
+	const obs = () => ({
+		agentview: rgb(),
+		wrist: rgb(),
+		tcp_pos: f32([0, 0.6, 0.2]),
+		gripper_width: 0.09,
+		obs: f32([0]),
+	});
+	const env = await fakeEnv((c) => {
+		if (c.method === "env.get_env_meta")
+			return {
+				task: "reach-v3",
+				seed: 0,
+				metaworld: "3.1.1",
+				workspace: { min: [0, 0, 0], max: [1, 1, 1] },
+				...VIEW_SETUP,
+			};
+		if (c.method === "env.reset") return [obs(), {}];
+		if (c.method === "env.get_task_language") return "reach the goal";
+		return undefined;
+	});
+	t.after(env.close);
+	await checkSimExplore({
+		load: metaworld,
+		values: { env: env.url, task: "reach-v3", seed: "0" },
+		tag: "metaworld_reach-v3_s0",
+		resets: () => env.calls.filter((c) => c.method === "env.reset").length,
+		observe: "view_env_state",
+	});
 });

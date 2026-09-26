@@ -1235,6 +1235,9 @@ test("VLM operator: decides from the teleop observation, drives the teleop path 
 	f.pi.events.emit(UNITS_EVENT, robot.handle);
 	f.pi.events.emit(STATUS_EVENT, { robot: "libero", task: { task: "3" }, language: "open the drawer", solved: false });
 	assert.equal((g.state().operator as any).mode, "paused");
+	// status only reads: nothing runs, nothing is dropped.
+	assert.equal((g.operator("status").operator as any).busy, false);
+	assert.equal(robot.calls.length, 0);
 	g.operator("step");
 	await op.idle();
 	// Recording started by itself; a STOP looked first; the decision ran through the teleop path.

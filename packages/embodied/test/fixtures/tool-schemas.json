@@ -43,6 +43,23 @@
 								"right"
 							],
 							"description": "Which arm the unit drives"
+						},
+						"other": {
+							"type": "string",
+							"enum": [
+								"MV_FWD",
+								"MV_BACK",
+								"MV_LEFT",
+								"MV_RIGHT",
+								"MV_UP",
+								"MV_DOWN",
+								"ROTATE_CW",
+								"ROTATE_CCW",
+								"GRASP",
+								"RELEASE",
+								"STILL"
+							],
+							"description": "Paired step: the OTHER arm's unit, run at the same time as `unit` (STILL = it holds); n repeats the pair"
 						}
 					}
 				}

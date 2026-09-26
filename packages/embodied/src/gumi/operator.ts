@@ -429,10 +429,11 @@ export function vlmOperator(pi: ExtensionAPI, g: Gumi, publish: () => void) {
 
 	return {
 		state,
-		/** run | pause | step (the dashboard's /gumi/operator). */
+		/** run | pause | step | status (the dashboard's /gumi/operator; status only reads). */
 		control(action: string) {
 			if (!enabled())
 				throw Object.assign(new Error("the VLM operator is off (--gumi-operator <model>)"), { status: 409 });
+			if (action === "status") return { ok: true, operator: state() };
 			if (action === "run") {
 				abortAction = false;
 				mode = "continuous";
@@ -447,7 +448,7 @@ export function vlmOperator(pi: ExtensionAPI, g: Gumi, publish: () => void) {
 				abortAction = true;
 				pause("Paused by the dashboard");
 				return { ok: true, operator: state() };
-			} else throw Object.assign(new Error("action must be run, pause or step"), { status: 422 });
+			} else throw Object.assign(new Error("action must be run, pause, step or status"), { status: 422 });
 			publish();
 			void loop();
 			return { ok: true, operator: state() };

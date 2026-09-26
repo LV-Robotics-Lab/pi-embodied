@@ -246,9 +246,32 @@ GitHub fetch of the pinned commit through a proxy:
 GIT_PROXY=http://127.0.0.1:1056 bash services/pi_embodied_services/finetuned/setup_llamafactory.sh
 ```
 
-Then `train.sh` turns GUMI recordings into a LoRA adapter, `serve.sh` serves base + adapter on an
-OpenAI-compatible vLLM endpoint, and `episode.sh` runs pi episodes against it (usage in each
-script's header).
+Then `train.sh` turns GUMI recordings (or `--from-lerobot` datasets, or `--from-rollouts`
+generated ones) into a LoRA adapter, `serve.sh` serves base + adapter on an OpenAI-compatible vLLM
+endpoint, and `episode.sh` runs pi episodes against it (usage in each script's header). The
+Show-Harness files training reads (github.com/showlab/Show-Harness @137d571, Apache-2.0: the
+`rollouts_to_alpaca.py` converter and its `prompts/v3`, `v4`, `register_dataset.py`, the four
+`train/configs`, the LLaMA-Factory extension and their `train/scripts/train.sh`) are vendored under
+`finetuned/showharness/` and are the default; `SH=<checkout>` still points at another copy.
+`download_dataset.py` fetches their training data (Show-Harness-Data at a pinned revision, via
+hf-mirror, every file checked against a pinned listing digest) and can register it.
+
+Training data from simulation (Show-Harness's real2sim, action units executed closed-loop and
+recorded frame-before-unit; the core is `finetuned/atomic.py`):
+`robots/maniskill/real2sim.py` (Scheme A, a privileged oracle) and `real2sim_follow.py` (Scheme D:
+`record` continuous demos, `follow` them in 2 cm units) on the BlockPAP/BlockStack rigs;
+`robots/robolab/real2sim.py` (`oracle` / `record` / `follow`, any single-object pick-and-place
+task, in the RoboLab venv). Shards merge with `finetuned/merge_shards.py`; `finetuned/check_dataset.py`
+gates a dataset (ending, stalled units, empty grasps, success) and `finetuned/make_dataset.py`
+converts it and reports the step-size statistics.
+
+Not ported from Show-Harness, on purpose: the GPT web operator and the web/controller prompts
+(pi is the operator), `generate_subgoals.py` / `generate_affordance.py` and the converter's
+`--use-subgoal` / `--use-affordance` modes (they need Show-Harness's planner plugins), the gemma4
+venv of their `setup_llamafactory.sh`, the real-robot collectors (`scripts/trajectory/collect_*`,
+replay, rebuild_video; GUMI records here), the preview-video renderer of the generators, RoboLab's
+fingertip calibration sweep and short-finger asset builder (the USD ships in `robots/robolab/assets`),
+and the Scheme D stock-ManiSkill demos (PickCube/StackCube).
 
 ## External dependencies that remain
 

@@ -88,6 +88,8 @@ const flyObs = (f: PolicyFrame): FlywheelObs => ({
 type ArmState = {
 	eef_pos: NdArray;
 	eef_quat_wxyz: NdArray;
+	/** The grasp point between the fingertips (RoboDojo's gripper_bias, 0.145 m along the fingers). */
+	tcp_pos: NdArray;
 	joints: NdArray;
 	/** The last commanded joints (what a one-arm motion holds this arm at). */
 	joints_command: NdArray;
@@ -353,6 +355,7 @@ export default function robodojo(pi: ExtensionAPI) {
 		const arm = (a: Arm) => ({
 			eef_xyz: obs.arms[a].eef_pos.toArray().map((v) => round(v)),
 			eef_quat_wxyz: obs.arms[a].eef_quat_wxyz.toArray().map((v) => round(v)),
+			tcp_xyz: obs.arms[a].tcp_pos.toArray().map((v) => round(v)),
 			gripper: obs.arms[a].gripper,
 			gripper_command: obs.arms[a].gripper_command,
 		});

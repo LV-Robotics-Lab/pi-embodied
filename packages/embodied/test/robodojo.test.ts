@@ -70,6 +70,7 @@ async function fakeEnv(o: { layouts?: number; task?: string; solveAfter?: number
 	const arm = (a: string) => ({
 		eef_pos: f32(pos[a]),
 		eef_quat_wxyz: f32([0, 0.6, 0.8, 0]),
+		tcp_pos: f32([pos[a][0], pos[a][1] + 0.145, pos[a][2]]),
 		joints: f32([0, 0, 0, 0, 0, 0]),
 		joints_command: f32([0, 0, 0, 0, 0, 0]),
 		gripper: 1,

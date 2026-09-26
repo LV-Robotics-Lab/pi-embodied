@@ -262,6 +262,7 @@ class FakeRobot:
         self.type = "target"
         self.gripper_scale = [0.0, 0.044]
         self.gripper_move = {"sign": 1, "mimic": [0, 1, 0]}
+        self.gripper_bias = 0.145
 
 
 class FakeRobotManager:
@@ -565,3 +566,43 @@ def test_an_unstable_layout_is_reported_and_refuses_motion(monkeypatch):
     assert "unstable" in info["error"]
     assert "unstable" in f.move_delta("left", [0, 0, 0.01])["error"]
     assert env.run_reward_calls == 0
+
+
+def test_the_tcp_is_gripper_bias_along_the_fingers(facade):
+    arm = facade.state()["arms"]["left"]
+    # At reset the fake hand has no yaw: the fingers point along +x.
+    assert np.allclose(arm["tcp_pos"], arm["eef_pos"] + [0.145, 0, 0], atol=1e-6)
+    facade.rotate_delta("left", 1.0)  # clipped to 0.8 rad
+    arm = facade.state()["arms"]["left"]
+    yaw = env_server.MAX_ROTATE_RAD
+    assert np.allclose(
+        arm["tcp_pos"] - arm["eef_pos"],
+        [0.145 * np.cos(yaw), 0.145 * np.sin(yaw), 0],
+        atol=1e-5,
+    )
+
+
+def test_a_motion_stopped_by_contact_is_reported_blocked_and_holds_where_it_is(
+    facade, monkeypatch
+):
+    env = facade._env
+    real = env.take_action
+
+    def table(action):  # the hand cannot go below joint z = 0.15 (fingers on the table)
+        a = dict(action)
+        if "left_arm_joint_state" in a:
+            q = np.asarray(a["left_arm_joint_state"], dtype=float).copy()
+            q[2] = max(q[2], 0.15)
+            a["left_arm_joint_state"] = q.tolist()
+        real(a)
+
+    monkeypatch.setattr(env, "take_action", table)
+    r = facade.move_delta("left", [0.0, 0.0, -0.1])
+    assert r["stopped"] == "blocked" and "table" in r["hint"]
+    assert r["executed"] == r["waypoints"] == 10 and r[
+        "final_error_m"
+    ] == pytest.approx(0.05, abs=1e-6)
+    # The held target is where the arm is, not the unreached goal.
+    assert facade._q["left"][2] == pytest.approx(0.15)
+    free = facade.move_delta("left", [0.0, 0.0, 0.02])
+    assert "stopped" not in free

@@ -67,6 +67,9 @@ MAX_MOVE_M = 0.5
 MAX_ROTATE_RAD = 0.8
 #: An IK solution that moves any joint more than this in one control step is refused (a branch flip).
 MAX_JOINT_STEP_RAD = 0.5
+#: A motion whose every waypoint ran but whose end effector is still this far off was stopped by
+#: contact (the table, an object, the other arm) or a joint limit (free moves end within 2 mm).
+BLOCKED_M = 0.01
 #: Control steps a gripper command is held so the fingers finish moving.
 GRIPPER_STEPS = 8
 #: go_home: largest joint change per control step, rad.
@@ -205,6 +208,8 @@ class RobodojoEnvFacade(MainThreadServeMixin, BaseEnvFacade):
             arms[arm] = {
                 "eef_pos": pose[:3].astype(np.float32),
                 "eef_quat_wxyz": pose[3:].astype(np.float32),
+                # The grasp point between the fingertips: RoboDojo's gripper_bias along the approach axis.
+                "tcp_pos": self._tcp(arm, pose).astype(np.float32),
                 "joints": self._joints(arm).astype(np.float32),
                 "gripper": round(float(self._gripper_measured(arm)), 4),
                 "gripper_command": round(float(self._grip.get(arm, 1.0)), 4),
@@ -223,6 +228,14 @@ class RobodojoEnvFacade(MainThreadServeMixin, BaseEnvFacade):
             "step_lim": int(self._env.step_lim),
             "seed": self._seed,
         }
+
+    def _tcp(self, arm: str, pose: np.ndarray) -> np.ndarray:
+        """The grasp point: ``gripper_bias`` metres along the end-effector link's x axis (the fingers)."""
+        w, x, y, z = pose[3:]
+        axis = np.array(
+            [1 - 2 * (y * y + z * z), 2 * (x * y + z * w), 2 * (x * z - y * w)]
+        )
+        return pose[:3] + float(self._robot(arm).gripper_bias) * axis
 
     def _gripper_measured(self, arm: str) -> float:
         """The gripper opening normalized like the command (obs ``*_ee_joint_state``: 1 open, 0 closed)."""
@@ -487,10 +500,16 @@ class RobodojoEnvFacade(MainThreadServeMixin, BaseEnvFacade):
             executed=done,
             control_steps=steps,
         )
+        if stop is None and done == len(path) and report["final_error_m"] > BLOCKED_M:
+            stop = "blocked"
+            # Hold where the arm is instead of pushing on toward the unreached target.
+            self._q[arm] = self._joints(arm)
         if stop:
             report["stopped"] = stop
             report["hint"] = (
-                "the target may be out of reach or need another orientation; try a closer or higher waypoint"
+                "the arm stopped short: the fingers or the arm touch the table or an object (or a joint limit); check tcp_pos and the images"
+                if stop == "blocked"
+                else "the target may be out of reach or need another orientation; try a closer or higher waypoint"
             )
         if frames is not None:
             report["frames"] = frames

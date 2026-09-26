@@ -496,10 +496,17 @@ def follow_track(args, backend, track: dict, writer: RolloutWriter) -> dict:
             if b > a and _moves(tcp[a : b + 1], args.step_m):
                 seg = tcp[a : b + 1]
                 corners = rdp(seg)
+                released = si > 0 and events[si - 1][1] == RELEASE
                 for k, ci in enumerate(corners[1:], 1):
                     last = si == len(bounds) - 2 and k == len(corners) - 1
                     tight = (last or si < len(events)) and k == len(corners) - 1
-                    ep.chase(seg[ci], tol=0.008 if tight else 0.012)
+                    goal = seg[ci]
+                    if released:
+                        # after RELEASE only the demo's height is followed: its x/y were
+                        # above the DEMO's placement, not the follower's re-aimed one
+                        t = backend.tcp_pos()
+                        goal = np.array([t[0], t[1], max(goal[2], t[2])])
+                    ep.chase(goal, tol=0.008 if tight else 0.012)
                     if dropped():
                         return {"success": False, "reason": "dropped_in_transit"}
             if si < len(events):

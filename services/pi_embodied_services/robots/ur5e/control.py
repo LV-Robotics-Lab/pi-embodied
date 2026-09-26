@@ -93,6 +93,13 @@ ROBOT_MODE_NAMES = {
 EMPTY_WIDTH_FRACTION = 0.13
 
 
+def add_note(result: dict[str, Any], text: str) -> None:
+    """Add ``text`` to ``result["note"]``, after any note already there (a later
+    outcome must not hide an earlier one, e.g. a released object before a failed lift)."""
+    note = result.get("note")
+    result["note"] = f"{note}; {text}" if note else text
+
+
 #: The async operation id is 7 bits (``async_op_id`` in ur_rtde's rtde_control.script).
 ASYNC_OP_IDS = 128
 
@@ -547,9 +554,10 @@ class UR5eController:
         if run.get("not_started"):
             result["ok"] = False
             result["not_started"] = True
-            result["note"] = (
+            add_note(
+                result,
                 f"{what} was accepted but the controller never reported it running "
-                f"within {self.limits.start_timeout_s} s; it was stopped"
+                f"within {self.limits.start_timeout_s} s; it was stopped",
             )
         if run.get("timed_out"):
             result["timed_out"] = True
@@ -560,11 +568,12 @@ class UR5eController:
             result["ok"] = False
             result["interrupted"] = run["interrupted"]
             if run["interrupted"] == "control_script_stopped":
-                result["note"] = (
+                add_note(
+                    result,
                     f"{what} ended because the RTDE control script stopped: the "
                     "controller could not execute the target (unreachable / no inverse "
                     "kinematics solution) or the program was stopped on the pendant. "
-                    "The next command re-uploads the script; the setpoint was cleared"
+                    "The next command re-uploads the script; the setpoint was cleared",
                 )
         if self._control_note:
             result["control_script_reuploaded"] = True
@@ -580,10 +589,11 @@ class UR5eController:
             result["protective_stopped"] = "protective" in reason
             result["safety_stopped"] = True
             result.pop("timed_out", None)
-            result["note"] = (
+            add_note(
+                result,
                 f"{what} ended with the robot {reason}: it hit something or left the "
                 "safety limits. Clear the stop on the teach pendant before the next "
-                "command; the setpoint was cleared"
+                "command; the setpoint was cleared",
             )
 
     def _run_l(self, start: np.ndarray, target: np.ndarray, timeout_s: float):
@@ -635,8 +645,8 @@ class UR5eController:
         }
         self._report(result, run, "the move")
         if run.get("timed_out"):
-            result["note"] = (
-                f"moveL did not finish within {timeout_s} s and was stopped"
+            add_note(
+                result, f"moveL did not finish within {timeout_s} s and was stopped"
             )
         self._after_motion(result, "the move")
         return result
@@ -799,9 +809,10 @@ class UR5eController:
             and grip["closed"] == bool(open)
         ):
             result["gripper_jammed"] = True
-            result["note"] = (
+            add_note(
+                result,
                 f"gripper jammed: the fingers stayed at {width:.4f} m after the "
-                f"{'open' if open else 'close'} command and nothing is grasped"
+                f"{'open' if open else 'close'} command and nothing is grasped",
             )
         if (
             not open
@@ -817,9 +828,10 @@ class UR5eController:
             _, cancelled = self._await_gripper(0)
             width = self.width()
             result["grasp_empty"] = True
-            result["note"] = (
+            add_note(
+                result,
                 f"empty grasp: the gripper closed to {width:.4f} m <= {lim.empty_width_m} m "
-                "(nothing between the fingers) and was reopened"
+                "(nothing between the fingers) and was reopened",
             )
         result.update(
             ok=settled
@@ -830,8 +842,8 @@ class UR5eController:
             gripper_width_m=width,
         )
         if not settled and not cancelled:
-            result["note"] = (
-                f"the gripper did not settle within {lim.gripper_timeout_s} s"
+            add_note(
+                result, f"the gripper did not settle within {lim.gripper_timeout_s} s"
             )
         if cancelled:
             result["cancelled"] = True
@@ -972,8 +984,9 @@ class UR5eController:
         }
         self._report(result, run, "the joint move")
         if run.get("timed_out"):
-            result["note"] = (
-                f"moveJ did not finish within {lim.reset_timeout_s} s and was stopped"
+            add_note(
+                result,
+                f"moveJ did not finish within {lim.reset_timeout_s} s and was stopped",
             )
         self._after_motion(result, "the joint move")
         return result
@@ -1016,9 +1029,10 @@ class UR5eController:
             held = self.gripper_state()
             if held["grasped"]:
                 info["released_object"] = True
-                info["note"] = (
+                add_note(
+                    info,
                     f"the gripper held an object (width {held['width_m']:.4f} m); "
-                    "it was released where the arm was"
+                    "it was released where the arm was",
                 )
             grip = self.set_gripper(open=True)
             out["gripper"] = grip
@@ -1037,8 +1051,9 @@ class UR5eController:
             if not lifted["ok"]:
                 if lifted.get("cancelled"):
                     out["cancelled"] = True
-                info["note"] = lifted.get(
-                    "note", "the lift before the joint move did not arrive"
+                add_note(
+                    info,
+                    lifted.get("note", "the lift before the joint move did not arrive"),
                 )
                 return out
         move = self.move_joints(begin)
@@ -1047,7 +1062,7 @@ class UR5eController:
             out["cancelled"] = True
         if move.get("path_outside_workspace"):
             info["begin_path_outside_workspace"] = True
-            info["note"] = move["note"]
+            add_note(info, move["note"])
         ok = bool(move["ok"]) and bool(grip.get("ok", True))
         if move["ok"]:
             final = self.measured()
@@ -1055,10 +1070,11 @@ class UR5eController:
                 # Forward kinematics said inside; the measured TCP disagrees (a TCP
                 # offset changed on the pendant?). Report it rather than trust it.
                 info["begin_pose_outside_workspace"] = True
-                info["note"] = (
+                add_note(
+                    info,
                     f"the begin pose puts the TCP at {np.round(final[:3], 4).tolist()}, "
                     f"outside the workspace ({self._box_text()}) although forward "
-                    "kinematics placed it inside; check the TCP offset on the pendant"
+                    "kinematics placed it inside; check the TCP offset on the pendant",
                 )
                 ok = False
         out["ok"] = ok

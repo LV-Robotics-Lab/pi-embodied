@@ -586,6 +586,16 @@ def test_reset_releases_a_held_object_and_says_so():
     r = call(f, "env.reset")
     assert r["ok"] and grip.pos == 0 and r["info"]["released_object"] is True
     assert "released" in r["info"]["note"]
+    # A later outcome adds to the note instead of replacing it: the release is still
+    # reported when the lift that follows stops in a protective stop.
+    grip = MockRobotiq(object_pos=150)
+    arm = MockUrArm((0.5, 0.0, 0.3, *DOWN), step_m=0.001)
+    f = facade(arm, grip)
+    assert call(f, "env.set_gripper", open=False)["object_detected"]
+    arm.protective_stop_after = arm.polls + 2
+    r = call(f, "env.reset")
+    assert not r["ok"] and r["info"]["released_object"] is True
+    assert "released" in r["info"]["note"] and "protective" in r["info"]["note"]
     # A closed but empty gripper is simply opened (nothing to report).
     f2 = facade(gripper=MockRobotiq(position=255, object_pos=None))
     r2 = call(f2, "env.reset")

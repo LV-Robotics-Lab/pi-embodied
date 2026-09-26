@@ -230,6 +230,12 @@ Shared modules:
   (one facade call, dry-run by default), `robots.franka.capture` (`z-floor`, `pose`),
   `robots.piper.capture_z_floor`, `robots/piper/ros_launch.sh` (`can`, `arms`, `cameras`), and
   `flywheel.gumi_tools` (`rebuild-video`, `step-timing` of GUMI runs).
+- `src/viser.ts`: live 3D view (`--viser`, CaP-X's Viser scene): point clouds of the RGB-D cameras,
+  camera frustums, the EEF and each `plan_grasp` / `plan_place` result's candidates, served by
+  `services/.../components/viser_view.py` (the `viser` extra; `--viser-python`) at
+  `http://<host>:8080/` (`--viser-port`), linked from the dashboard's header. LIBERO and Franka.
+- `src/vdm.ts`: `--vdm-video` describes each change from the step's episode frames
+  (`--vdm-video-frames` sampled) instead of the before/after pair (CaP-X's video differencing).
 - `src/libero/flash.ts`: Flash replay without an LLM (`--model flash/replay`).
 
 Every robot result carries `robot`, `claimed`, `summary`, `turns`, `planner_budget_exhausted`,

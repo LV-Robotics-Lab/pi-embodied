@@ -484,6 +484,8 @@ export default function libero(pi: ExtensionAPI) {
 		groundTruth: (names) => call(env, "env.ground_truth_poses", { names: names ?? null }),
 		// Observations carry the agentview, then the wrist view.
 		vdm: { views: 2, wrist: 1, observe: ["view_env_state"] },
+		// --viser: the env server's views (agentview and wrist, with depth and calibration) in 3D.
+		viser: { source: "libero", env: () => env },
 		flash: liberoFlash(pi, () => ({
 			suite: robot.task.suite,
 			task: robot.task.task,

@@ -34,6 +34,7 @@ import { type UnitsSpec, units } from "./units/index.ts";
 import { VLM_COST_EVENT } from "./units/vlm.ts";
 import { type VdmSpec, vdm } from "./vdm.ts";
 import { episodeVideo } from "./video.ts";
+import { type ViserSpec, viserView } from "./viser.ts";
 import { webTools } from "./web.ts";
 import { type XPolicySpec, xpolicy } from "./xpolicy.ts";
 
@@ -100,6 +101,8 @@ export type RobotStatus = {
 	language?: string;
 	step?: number;
 	solved?: boolean;
+	/** The --viser 3D view's page port (../viser.ts), while it runs. */
+	viser_port?: number;
 };
 type Result = AgentToolResult<unknown>;
 /** `pi.events` channel on which the robot publishes its tools each session, for an operator's manual calls (../dashboard). */
@@ -176,6 +179,8 @@ export type RobotSpec = {
 	 * carries, and the wrist one(s); a function when that depends on the robot's cameras (undefined: none yet).
 	 */
 	vdm?: VdmSpec | (() => VdmSpec | undefined);
+	/** Mount the live 3D view (../viser.ts, `--viser`): its source and the episode's env server. */
+	viser?: ViserSpec;
 	/**
 	 * Mount the XPolicyLab client (../xpolicy.ts, `--xpolicy <ws url>`): how the robot builds XPolicyLab's
 	 * observation and executes one action of a chunk; it adds `xpolicy_act`.
@@ -356,6 +361,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 				refuse: (_name: string): string | undefined => undefined,
 			};
 
+	const vz = spec.viser ? viserView(pi, spec.viser) : undefined;
 	const status = (): RobotStatus => ({
 		robot: name,
 		fields: spec.task,
@@ -365,6 +371,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		claimed: claimed?.status ?? null,
 		summary: claimed?.summary ?? null,
 		...(ready ? spec.status?.() : {}),
+		...(vz?.port ? { viser_port: vz.port } : {}),
 	});
 
 	/** Every tool registered with `tool` (the robot's own and the units'): ../gumi holds them all during a takeover. */
@@ -511,6 +518,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 			const tools = await spec.start(ctx);
 			// The robot's configuration (its cameras) is known now: the units read its wrist view again.
 			un?.started(ctx);
+			await vz?.start(ctx, String(pi.getFlag("services") || SERVICES));
 			const client = spec.codeApi?.();
 			if (client) {
 				api = await fetchCodeApi(client, privileged() ? "privileged" : undefined);

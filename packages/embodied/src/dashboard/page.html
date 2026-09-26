@@ -81,6 +81,7 @@ details.ops > summary { padding: 6px 12px; font-weight: 600; cursor: pointer; }
   <span id="model" class="badge"></span>
   <span id="task" class="meta"></span>
   <span id="lang"></span>
+  <a id="viser" class="badge" target="_blank" rel="noopener" hidden>3D</a>
   <span class="grow"></span>
   <button id="llmCheck" data-t="llmCheck"></button>
   <span id="llmResult" class="meta"></span>
@@ -367,6 +368,9 @@ function renderEpisode() {
   $("task").textContent = [e.robot, ...e.fields.map((k) => `${k} ${e.task[k]}`)].join(" · ") + (e.envStep === null ? "" : ` · ${T.envStep(e.envStep)}`);
   $("model").textContent = e.model ?? "";
   $("lang").textContent = e.language ? `“${e.language}”` : "";
+  // --viser: the live 3D view on this host (src/viser.ts).
+  $("viser").hidden = !e.viser_port;
+  if (e.viser_port) $("viser").href = `http://${location.hostname}:${e.viser_port}/`;
   $("usage").textContent = T.usage(e.usage);
   renderTaskFields(e);
 }

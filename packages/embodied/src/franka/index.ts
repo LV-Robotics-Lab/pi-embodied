@@ -323,6 +323,8 @@ export default function franka(pi: ExtensionAPI) {
 		vdm: { views: 2, wrist: 1 },
 		// XPolicyLab policies (--xpolicy, env_cfg franka): ee targets run as bounded relative motions.
 		xpolicy: xpolicySpec(),
+		// --viser: wrist and third-person RGB-D placed by the hand-eye calibration, and the TCP.
+		viser: { source: "franka", env: () => env },
 		// The evaluation prompt names no memory; exploration writes it. The guard also opens the step artifacts.
 		memory: {
 			cell: () => ({ tag: `franka_t${task()}`, reference: "" }),

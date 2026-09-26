@@ -78,6 +78,12 @@ graspnet1b = [
     "wheel",
     "ninja",
 ]
+viser = [
+    # components/viser_view.py (pi's --viser): the live 3D view of an env server, in its own
+    # environment; omegaconf for the Franka source's calibration config.
+    "viser>=0.2",
+    "omegaconf",
+]
 flywheel = [
     # LeRobot v3.0 export of Flywheel episodes (/flywheel-export; lerobot 0.4 writes
     # v3.0, Python >= 3.10). Its numpy 2 and huggingface-hub pins break the LIBERO

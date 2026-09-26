@@ -147,9 +147,11 @@ class WebcamRGB(Camera):
     and is the one decoded. A failed read reopens the device once before giving up.
 
     A V4L2 ``grab`` on a stalled device blocks in the driver (10 s per call in
-    OpenCV's backend, so a retry loop could hang for a minute). Every device call
-    runs on a worker thread and ``read`` gives up after ``read_timeout_s``; while
-    such a call is still blocked, reads fail at once instead of queueing behind it.
+    OpenCV's backend, so a retry loop could hang for a minute), and so can opening
+    it. Every device call a ``read`` makes (grabs, and opening or reopening the
+    device) runs on a worker thread and ``read`` gives up after ``read_timeout_s``;
+    while such a call is still blocked, reads fail at once instead of queueing
+    behind it.
     ``close`` may be called from any thread, any number of times: a capture a
     blocked worker still uses is released by that worker when the call returns.
     """
@@ -290,6 +292,34 @@ class WebcamRGB(Camera):
             time_source=source,
         )
 
+    def _bounded_open(self, deadline: float, open_: Any) -> None:
+        """``open_`` (``_open`` / ``_reopen``) on a worker thread, abandoned at
+        ``deadline``; its error is raised here."""
+        worker = self._worker
+        if worker is not None and worker.is_alive():
+            raise RuntimeError(
+                f"webcam {self.device!r}: a previous call is still blocked in the driver"
+            )
+        box: dict[str, Any] = {}
+
+        def run() -> None:
+            try:
+                open_()
+            except Exception as exc:
+                box["error"] = exc
+
+        worker = threading.Thread(target=run, daemon=True, name="webcam-open")
+        self._worker = worker
+        worker.start()
+        worker.join(max(0.0, deadline - time.monotonic()))
+        if worker.is_alive():
+            raise TimeoutError(
+                f"webcam {self.device!r} did not open within {self.read_timeout_s}s "
+                "(the device is stalled)"
+            )
+        if "error" in box:
+            raise box["error"]
+
     def _bounded_read(self, deadline: float) -> Frame | None:
         """``_read_once`` on a worker thread, abandoned at ``deadline``."""
         worker = self._worker
@@ -336,7 +366,7 @@ class WebcamRGB(Camera):
         deadline = time.monotonic() + self.read_timeout_s
         for attempt in range(2):
             if self.cap is None:
-                self._open()
+                self._bounded_open(deadline, self._open)
             for _ in range(self.read_retries):
                 frame = self._bounded_read(deadline)
                 if frame is not None:
@@ -349,7 +379,9 @@ class WebcamRGB(Camera):
                 time.sleep(0.02)
             if attempt == 0:
                 try:
-                    self._reopen()
+                    self._bounded_open(deadline, self._reopen)
+                except TimeoutError:
+                    raise
                 except Exception as exc:
                     raise RuntimeError(
                         f"webcam {self.device!r} returned no frame and did not reopen: {exc}"

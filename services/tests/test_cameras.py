@@ -457,6 +457,75 @@ def test_v4l2_stamps_are_aged_on_the_clock_the_driver_uses(monkeypatch):
     cam.close()
 
 
+def test_a_webcam_reopen_that_hangs_is_bounded_by_the_read_timeout(monkeypatch):
+    from pi_embodied_services.components.cameras.webcam import WebcamRGB
+
+    cap = _FakeCap()
+    fake = _fake_cv2(monkeypatch, cap)
+    cam = WebcamRGB(0, drain_frames=0, read_timeout_s=0.3)
+    # The device went away: the next read opens it again, and opening hangs in the
+    # driver (未上机验证: a stalled V4L2 open is modelled by a blocking VideoCapture).
+    cam._release()
+    gate = threading.Event()
+
+    def stalled_open(*args):
+        gate.wait()
+        return cap
+
+    fake.VideoCapture = stalled_open
+    t0 = time.monotonic()
+    with pytest.raises(TimeoutError, match="did not open within 0.3s"):
+        cam.read()
+    assert time.monotonic() - t0 < 1.0
+    with pytest.raises(RuntimeError, match="still blocked"):
+        cam.read()
+    gate.set()
+    cam.close()
+
+
+def test_a_realsense_restart_that_hangs_is_bounded_by_the_read_budget():
+    from types import SimpleNamespace
+
+    from pi_embodied_services.components.cameras.realsense import RealSenseRGBD
+
+    gate = threading.Event()
+
+    class Pipeline:
+        def start(self, config):
+            gate.wait()  # a wedged USB device: start never returns
+            raise RuntimeError("device lost")
+
+        def wait_for_frames(self, timeout_ms):
+            time.sleep(timeout_ms / 1000.0)
+            raise RuntimeError(f"Frame didn't arrive within {timeout_ms}")
+
+        def stop(self):
+            pass
+
+    rs = SimpleNamespace(
+        pipeline=Pipeline,
+        config=lambda: SimpleNamespace(
+            enable_device=lambda s: None, enable_stream=lambda *a: None
+        ),
+        stream=SimpleNamespace(color=0, depth=1),
+        format=SimpleNamespace(rgb8=0, z16=1),
+    )
+    cam = object.__new__(RealSenseRGBD)
+    cam._rs, cam.serial, cam.has_depth, cam.align = rs, "1", False, None
+    cam.width, cam.height, cam.fps, cam.warmup_frames = 640, 480, 30, 3
+    cam.read_timeout_ms, cam.read_retries = 100, 2
+    cam.pipeline, cam._restarting = Pipeline(), None
+    t0 = time.monotonic()
+    with pytest.raises(TimeoutError, match="did not restart within the 0.3 s"):
+        cam.read()
+    assert time.monotonic() - t0 < 0.8, "restart included in the read budget"
+    with pytest.raises(RuntimeError, match="restart is still blocked"):
+        cam.read()
+    gate.set()
+    cam._restarting.join(2.0)
+    assert cam.pipeline is None
+
+
 def test_rtsp_close_does_not_release_under_the_reader_and_is_idempotent(monkeypatch):
     from pi_embodied_services.components.cameras.webcam import RtspRGB
 

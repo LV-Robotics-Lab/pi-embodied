@@ -30,6 +30,7 @@ any 2.5x release.
 
 from __future__ import annotations
 
+import threading
 import time
 from typing import Any
 
@@ -80,6 +81,11 @@ class RealSenseRGBD(Camera):
     ``serial`` None opens the first device. ``depth_width/height/fps`` request the depth
     stream at its own format (0 = the colour format); the L515 needs this (its depth
     runs at 640x480 or 1024x768 while colour runs at 1280x720 or 1920x1080).
+
+    A ``read`` takes at most ``read_timeout_ms`` x (``read_retries`` + 1), the pipeline
+    restart after failed attempts included: the restart (``pipeline.start`` and its
+    warm-up frames, which can block on a wedged USB device) runs on a worker thread
+    that ``read`` abandons at the deadline; until it finishes, reads fail at once.
     """
 
     kind = "realsense"
@@ -116,6 +122,7 @@ class RealSenseRGBD(Camera):
         self.warmup_frames = int(warmup_frames)
         self.pipeline: Any = None
         self.profile: Any = None
+        self._restarting: threading.Thread | None = None
         self.depth_scale = 0.0
         self.model = ""
         self.align = rs.align(rs.stream.color) if self.has_depth else None
@@ -145,7 +152,7 @@ class RealSenseRGBD(Camera):
                     ) from exc
                 _hardware_reset(self.serial)
 
-    def _start(self) -> None:
+    def _start(self, deadline: float | None = None) -> None:
         rs = self._rs
         self.pipeline = rs.pipeline()
         config = rs.config()
@@ -165,7 +172,7 @@ class RealSenseRGBD(Camera):
         if self.has_depth:
             self.depth_scale = float(device.first_depth_sensor().get_depth_scale())
         for _ in range(self.warmup_frames):
-            self.pipeline.wait_for_frames(timeout_ms=self.read_timeout_ms)
+            self.pipeline.wait_for_frames(timeout_ms=self._wait_ms(deadline))
 
     def _stop(self) -> None:
         if self.pipeline is not None:
@@ -227,8 +234,15 @@ class RealSenseRGBD(Camera):
             return capture_times(stamp_s, "backend")
         return capture_times(None, "host")
 
-    def _read_once(self) -> Frame:
-        frames = self.pipeline.wait_for_frames(timeout_ms=self.read_timeout_ms)
+    def _wait_ms(self, deadline: float | None) -> int:
+        """``read_timeout_ms``, cut to what is left before ``deadline`` (at least 1)."""
+        if deadline is None:
+            return self.read_timeout_ms
+        left = int((deadline - time.monotonic()) * 1000)
+        return max(1, min(self.read_timeout_ms, left))
+
+    def _read_once(self, deadline: float | None = None) -> Frame:
+        frames = self.pipeline.wait_for_frames(timeout_ms=self._wait_ms(deadline))
         wall, captured, source = self._capture_times(frames.get_color_frame())
         if self.align is not None:
             frames = self.align.process(frames)
@@ -252,19 +266,58 @@ class RealSenseRGBD(Camera):
             time_source=source,
         )
 
+    def _timed_out(self, what: str) -> TimeoutError:
+        budget = self.read_timeout_ms * (self.read_retries + 1) / 1000.0
+        return TimeoutError(
+            f"RealSense {self.serial or 'default'}: {what} within the {budget:g} s read "
+            "budget"
+        )
+
     def read(self) -> Frame:
+        restarting = self._restarting
+        if restarting is not None and restarting.is_alive():
+            raise RuntimeError(
+                f"RealSense {self.serial or 'default'}: a pipeline restart is still "
+                "blocked in the driver"
+            )
+        budget = self.read_timeout_ms * (self.read_retries + 1) / 1000.0
+        deadline = time.monotonic() + budget
         error: Exception | None = None
         for _ in range(self.read_retries):
+            if self.pipeline is None:
+                break  # an abandoned restart failed: start again below
             try:
-                return self._read_once()
+                return self._read_once(deadline)
             except Exception as exc:
                 error = exc
+                if time.monotonic() >= deadline:
+                    raise self._timed_out("no frame") from exc
                 time.sleep(0.05)
         logger.warning("RealSense %s read failed (%s); restarting", self.serial, error)
-        self._stop()
-        time.sleep(0.2)
-        self._start()
-        return self._read_once()
+        box: dict[str, Any] = {}
+
+        def restart() -> None:
+            try:
+                self._stop()
+                time.sleep(0.2)
+                self._start(deadline)
+            except Exception as exc:
+                box["error"] = exc
+                self._stop()
+
+        worker = threading.Thread(target=restart, daemon=True, name="realsense-restart")
+        self._restarting = worker
+        worker.start()
+        worker.join(max(0.0, deadline - time.monotonic()))
+        if worker.is_alive():
+            raise self._timed_out("the pipeline did not restart")
+        if "error" in box:
+            raise RuntimeError(
+                f"RealSense {self.serial or 'default'} did not restart: {box['error']}"
+            ) from box["error"]
+        if time.monotonic() >= deadline:
+            raise self._timed_out("no frame after the restart")
+        return self._read_once(deadline)
 
     def close(self) -> None:
         self._stop()

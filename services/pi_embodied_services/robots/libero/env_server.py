@@ -912,6 +912,7 @@ class LiberoEnvFacade(BaseEnvFacade):
         Returns:
             dict with ``eef_pos``, ``final_dist_m``, ``steps_used``, ``gripper_width``,
             ``terminated``. A large ``final_dist_m`` means the reach stalled (contact, limits).
+            With ``--ik`` a target the arm cannot reach is refused before anything moves.
 
         Example:
             >>> move_to([0.05, 0.12, 0.25])          # above the target
@@ -921,6 +922,7 @@ class LiberoEnvFacade(BaseEnvFacade):
         tol = float(_finite("tol", tol))
         self._check_xy(target, "move_to")
         grip = self._grip_value(gripper)
+        self._require_reachable(target, "move_to")
         self._grip = grip
         steps, cancelled = self._servo(target, grip, tol, int(max_steps), 0.025)
         return self._motion_result(
@@ -954,6 +956,7 @@ class LiberoEnvFacade(BaseEnvFacade):
             )
         start = self._eef()
         grip = self._grip_value(gripper)
+        self._require_reachable(start + d, "move_delta")
         self._grip = grip
         steps, cancelled = self._servo(start + d, grip, 0.004, int(max_steps), 0.025)
         return self._motion_result(
@@ -1233,6 +1236,14 @@ class LiberoEnvFacade(BaseEnvFacade):
         return self._execute_claim(claim, max_steps, "execute_place")
 
     # ---- reach preview (--ik, utils/reach.py) ----
+
+    def _require_reachable(self, target: np.ndarray, action: str) -> None:
+        """With ``--ik``, refuse (ValueError, the robot unmoved) a target the ik service cannot
+        reach from the current joints, as the Robosuite and Franka servers' motions do."""
+        if self._reach is not None:
+            reach.require_reachable(
+                self.preview_reach([float(v) for v in target]), f"env.{action}"
+            )
 
     def preview_reach(self, pos, quat_xyzw=None) -> dict:
         """Whether the gripper can reach a world position without moving: IK from the current

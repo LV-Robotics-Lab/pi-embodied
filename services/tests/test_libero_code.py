@@ -725,3 +725,51 @@ def test_a_move_longer_than_0_30_m_in_xy_is_refused_unmoved():
     g.move_to([-0.25, 0.1, 0.3])  # now 0.32 m in xy from the pre-grasp
     with pytest.raises(ValueError, match="pre-grasp leg"):
         g.execute_grasp(gid)
+
+
+class JointArmSim(ArmSim):
+    """ArmSim whose raw obs also carries the joints ``env.preview_reach`` reads."""
+
+    @property
+    def current_raw_obs(self):
+        obs = super().current_raw_obs
+        obs[0]["robot0_joint_pos"] = np.zeros(7)
+        return obs
+
+
+class ShortArm:
+    """A ReachPreview stand-in (``--ik``): world targets above z = 0.4 m are out of reach."""
+
+    def __init__(self):
+        self.asked = []
+
+    def preview(self, q, pos, quat_xyzw, base_pose=None):
+        self.asked.append([float(v) for v in pos])
+        ok = float(pos[2]) <= 0.4
+        return {
+            "status": "reachable" if ok else "unreachable",
+            "reachable": ok,
+            "message": "ok" if ok else "misses by 1 m",
+            "target": {"frame": "world", "pos": list(pos)},
+        }
+
+
+def test_with_ik_move_to_and_move_delta_refuse_an_unreachable_target_unmoved():
+    arm = ShortArm()
+    f = LiberoEnvFacade(JointArmSim(), meta={}, ik_reach=arm)
+    f.reset()
+    assert f.move_to([0.1, 0.05, 0.2])["final_dist_m"] < 0.012
+    with pytest.raises(ValueError, match="env.move_to refused"):
+        f.move_to([0.1, 0.05, 0.6])
+    assert arm.asked[1] == pytest.approx([0.1, 0.05, 0.6])
+    assert f.get_state()["eef_pos"] == pytest.approx([0.1, 0.05, 0.2], abs=0.012)
+    f.move_to([0.1, 0.05, 0.35])
+    with pytest.raises(ValueError, match="env.move_delta refused"):
+        f.move_delta([0.0, 0.0, 0.1])
+    assert f.get_state()["eef_pos"] == pytest.approx([0.1, 0.05, 0.35], abs=0.012)
+
+
+def test_without_ik_move_to_is_unchecked():
+    f = facade()
+    assert f._reach is None
+    assert f.move_to([0.0, 0.0, 0.6])["final_dist_m"] < 0.012

@@ -112,6 +112,37 @@ def main(argv: list[str] | None = None) -> int:
     planner.add_argument(
         "--name", default="pi_embodied_planner", help="dataset_info.json entry name"
     )
+    planner.add_argument(
+        "--include-privileged",
+        action="store_true",
+        help="also export --privileged runs (simulator ground truth on offer)",
+    )
+    planner.add_argument(
+        "--include-operator",
+        action="store_true",
+        help="also export runs a human operator judged or ended",
+    )
+    planner.add_argument(
+        "--include-explore-attempts",
+        action="store_true",
+        help="SFT: keep the explore attempts before the last reset (default: only the last attempt)",
+    )
+    planner.add_argument(
+        "--anchor-image",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="SFT with --keep-images: keep the first observation's image (default: the run's --anchor-image)",
+    )
+    planner.add_argument(
+        "--image-stub",
+        default="[older camera frame omitted]",
+        help="SFT with --keep-images: the text for a pruned image (the robot's imageStub)",
+    )
+    planner.add_argument(
+        "--merge-steering",
+        action="store_true",
+        help="sharegpt: fold user messages after a tool result into the observation (default: skip the episode)",
+    )
 
     args = parser.parse_args(argv)
     if args.command == "export-planner":
@@ -124,6 +155,18 @@ def main(argv: list[str] | None = None) -> int:
             include_failures=args.include_failures,
             keep_images=args.keep_images,
             name=args.name,
+            include=[
+                k
+                for k, on in (
+                    ("privileged", args.include_privileged),
+                    ("operator", args.include_operator),
+                    ("explore_attempts", args.include_explore_attempts),
+                )
+                if on
+            ],
+            anchor_image=args.anchor_image,
+            image_stub=args.image_stub,
+            merge_steering=args.merge_steering,
         )
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0

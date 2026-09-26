@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, realpathSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -22,6 +22,8 @@ function fakePi(flagValues: Record<string, unknown> = {}, hasUI = true) {
 	const confirms: boolean[] = [];
 	const dialogs: string[] = [];
 	const dialogBodies: string[] = [];
+	/** The operator's answers to select dialogs (a scene reset's done / abort). */
+	const answers: string[] = [];
 	let active: string[] = ["stale"];
 	const pi = {
 		on: (name: string, fn: Handler) => handlers.set(name, [...(handlers.get(name) ?? []), fn]),
@@ -47,7 +49,7 @@ function fakePi(flagValues: Record<string, unknown> = {}, hasUI = true) {
 			notify: (m: string) => notes.push(m),
 			setWidget: () => {},
 			input: async () => "",
-			select: async () => undefined,
+			select: async () => answers.shift(),
 			confirm: async (title: string, body?: string) => {
 				dialogs.push(title);
 				dialogBodies.push(body ?? "");
@@ -84,6 +86,7 @@ function fakePi(flagValues: Record<string, unknown> = {}, hasUI = true) {
 		confirms,
 		dialogs,
 		dialogBodies,
+		answers,
 		dir,
 		active: () => active,
 		shut: () => shutdown,
@@ -368,6 +371,12 @@ test("a started ur5e resets once, records steps and back-projects through depth 
 			"rotate_delta",
 			"gripper",
 			"finish",
+			// memory's file tools, then the operator's.
+			"read",
+			"ls",
+			"grep",
+			"find",
+			"write",
 			"request_operator_verdict",
 			"request_scene_reset",
 		]);
@@ -447,5 +456,35 @@ test("a camera's mount: its config, else its calibration's frame; all fixed mean
 		assert.ok("target_in_wrist" in rig.f.tools.get("act").parameters.properties);
 	} finally {
 		rig.m.close();
+	}
+});
+
+test("exploration: reset is the operator's scene reset then the arm's reset, within the archive rules; the cell names the arm", async () => {
+	const { f, m } = await started({ explore: true, "output-dir": "run", "memory-dir": "memory" });
+	try {
+		assert.ok(f.active().includes("finish"), "the robot started");
+		const tag = `ur5e_${ARM}_block_bowl`;
+		await assert.rejects(f.run("reset", { reason: "slipped" }), /Close out attempt 1 first/);
+		const attempts = join(f.dir, "run", "attempts", tag);
+		mkdirSync(attempts, { recursive: true });
+		writeFileSync(join(attempts, "attempt_1_failed.json"), "{}");
+		const resets = () => m.methods().filter((x) => x === "env.reset").length;
+		const before = resets();
+		f.answers.push("done");
+		const r = await f.run("reset", { reason: "slipped" });
+		assert.equal(resets(), before + 1, "the arm reset after the operator restored the scene");
+		assert.equal(r.details.scene_reset_confirmed, true);
+		assert.equal(r.details.attempt, 2);
+		assert.equal(r.details.terminated, false);
+		assert.equal(r.details.command.action, "reset");
+
+		f.pi.setActiveTools(["move_delta", "request_operator_verdict", "request_scene_reset"]);
+		const prompt = (await f.emit("before_agent_start", { systemPrompt: "base" })).systemPrompt as string;
+		assert.ok(f.active().includes("reset") && !f.active().includes("request_scene_reset"));
+		assert.match(prompt, new RegExp(`REAL-ROBOT EXPLORATION\\. You are agent 1 of up to 1 on \`${tag}\``));
+		assert.match(prompt, /suite_ur5e_real_block_bowl/);
+		assert.doesNotMatch(prompt, /\{\{\w+\}\}|[Pp]iper/);
+	} finally {
+		m.close();
 	}
 });

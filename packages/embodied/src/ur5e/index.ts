@@ -19,6 +19,10 @@
  * depth, camera metadata) under --out and return it with the images. back_project reads a pixel's
  * depth through the camera's intrinsics and its hand-eye calibration (robots/ur5e/calibrate.py); an
  * RGB-only camera has no depth to project. segment is active only with --robot-sam3.
+ *
+ * --explore (../explore.ts, `/explore`) runs operator-judged attempts: `reset` is the operator's scene
+ * reset followed by the arm's, a success verdict is the solve, and the motion commands after the last
+ * reset are exported as the cell's recipe (../memory, cell `ur5e_<arm-id>_<task>`).
  */
 
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -57,6 +61,9 @@ import { NdArray, type RpcClient } from "../rpc.ts";
 import type { Move, MoveUnit, Vec3 } from "../units/index.ts";
 
 const SYSTEM = template(new URL("./SYSTEM.md", import.meta.url));
+const EXPLORE = template(new URL("./explore.md", import.meta.url));
+/** The state-advancing tools a memory recipe keeps. */
+const MOTION = ["move_delta", "move_pose", "rotate_delta", "gripper", "act"];
 
 type Task = { instruction: string; success_criteria?: string };
 type Meta = {
@@ -217,6 +224,36 @@ export default function ur5e(pi: ExtensionAPI) {
 		task: ["task"],
 		keepImages: 4,
 		operator: { step: () => steps.length, reset: resetArm },
+		// No corpus is published for the UR5e: memory is what exploration writes locally, one cell per arm and
+		// task; the guard also opens the step images the results point at.
+		memory: {
+			cell: () => ({ tag: `ur5e_${armId() || "unbound"}_${taskName()}`, reference: "" }),
+			primitives: MOTION,
+			readable: () => (out ? [out] : []),
+			published: false,
+		},
+		explore: {
+			// The operator restores the scene, then the arm resets (resetArm); a failed or unconfirmed reset throws and starts no attempt.
+			reset: async (result, ctx, signal) => {
+				const r: Json = await op.sceneReset(ctx, String(result.reason ?? ""), "", signal);
+				if (r.error) throw new Error(JSON.stringify(r));
+				const s = getStep(-1);
+				return toolResult(
+					{ ...s.blob, ...result, robot_reset: r.robot_reset, scene_reset_confirmed: true },
+					stepImages(s),
+				);
+			},
+			prompt: () => EXPLORE.replaceAll("{{task_id}}", taskName()),
+			rewrite: [
+				[
+					/^5\. When you believe the task is done, ask for the operator's verdict \(request_operator_verdict\), then finish\.$/m,
+					"5. This is an exploration run: follow the Exploration workflow below. Success is only the operator's verdict.",
+				],
+			],
+			// Every attempt costs the operator a manual scene reset (RPent's real-robot defaults).
+			budget: { sessions: 1, attempts: 3 },
+			operatorJudged: true,
+		},
 		video: true,
 		// One image per camera, main first; the wrist-mounted cameras are the VDM's wrist views.
 		vdm: () => {
@@ -289,6 +326,10 @@ export default function ur5e(pi: ExtensionAPI) {
 	const check = (signal?: AbortSignal) => {
 		op.check();
 		if (signal?.aborted) throw new Error("tool operation interrupted");
+		if (pi.getFlag("explore") === true && (op.result() as Json).operator_verdict === "success")
+			throw new Error(
+				"motion refused: the operator judged this attempt a success. Write the audit and memory drafts, then call finish.",
+			);
 	};
 
 	// ---- state steps
@@ -329,7 +370,15 @@ export default function ur5e(pi: ExtensionAPI) {
 			writeFileSync(join(dir, "camera_meta.json"), JSON.stringify(plain(camMeta)));
 			artifacts.push("camera_meta.json");
 		}
-		const blob: Json = { step_idx: idx, state: plain(state), timestamps: plain(obs.timestamps), artifacts, images };
+		// terminated: the operator's success verdict, not a step, solves an attempt (the memory recipe keeps these steps).
+		const blob: Json = {
+			step_idx: idx,
+			state: plain(state),
+			timestamps: plain(obs.timestamps),
+			terminated: false,
+			artifacts,
+			images,
+		};
 		if (command) blob.command = command;
 		if (result) blob.result = plain(result);
 		if (elapsed !== null) blob.elapsed_s = elapsed;

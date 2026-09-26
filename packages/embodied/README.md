@@ -77,7 +77,7 @@ with `--env` / `--vla` / `--sam3`. Real-arm robots (Franka, dual Franka) stay on
 | Franka (real) | `src/franka` | operator verdict (`--operator`) | all below but `--privileged`; explore resets through the operator |
 | Dual Franka (real) | `src/dual_franka` | operator verdict (required) | all below but `--privileged`; explore resets through the operator |
 | Piper / dual Piper (real) | `src/piper` | operator verdict (required) | all below but `--privileged`; explore resets through the operator |
-| UR5e (real) | `src/ur5e` | operator verdict (required) | all below but `--privileged` and memory/explore; bound to one arm (`--arm-id`) |
+| UR5e (real) | `src/ur5e` | operator verdict (required) | all below but `--privileged`; explore resets through the operator; bound to one arm (`--arm-id`) |
 
 ManiSkill's `--robot` picks the arm (ManiSkill 3.0.1 agents the stock table scene places, and the
 robots the other scenes of OpenETA's ManiSkill table are built for), all translation-only with the same

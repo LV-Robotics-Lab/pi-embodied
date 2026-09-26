@@ -31,6 +31,7 @@ MANISKILL_PRIMITIVES = (
         "state",
         "env.state",
         "TCP pose, gripper opening and the success flags.",
+        example='st = state()\nprint(st["tcp_pos"], st["gripper_width"], st["info"].get("success"))',
     ),
     Primitive(
         "servo",
@@ -46,6 +47,7 @@ MANISKILL_PRIMITIVES = (
             "arm": Param("string", "two-arm robots: left or right", False),
         },
         mutating=True,
+        example='x, y, z = state()["tcp_pos"]\nframes, info = servo([x, y, z - 0.02], 1)  # down 2 cm, gripper open\nprint(frames[-1]["tcp_pos"], info.get("is_grasped"))',
     ),
     Primitive(
         "render_camera",
@@ -53,6 +55,7 @@ MANISKILL_PRIMITIVES = (
         "The latest frame of a camera.",
         _CAMERA,
         tiers=("low",),
+        example='rgb = render_camera("wrist")  # uint8 [256, 256, 3]',
     ),
     Primitive(
         "get_camera_meta",
@@ -60,6 +63,7 @@ MANISKILL_PRIMITIVES = (
         "Camera intrinsics and camera-to-world extrinsic.",
         _CAMERA,
         tiers=("low",),
+        example='meta = get_camera_meta("agentview")\nK, T = meta["intrinsic_K"], meta["extrinsic_cam2world"]',
     ),
     Primitive(
         "step",
@@ -68,6 +72,7 @@ MANISKILL_PRIMITIVES = (
         {"action": Param("array", "4 floats (3 without a gripper)")},
         mutating=True,
         tiers=("low",),
+        example='r = step([0, 0, 0.1, 1])  # up about 1 cm; the Panda\'s gripper +1 opens\nprint(r["state"]["tcp_pos"], r["info"].get("success"))',
     ),
     Primitive(
         "chunk_step",
@@ -79,6 +84,7 @@ MANISKILL_PRIMITIVES = (
         },
         mutating=True,
         tiers=("low",),
+        example='r = chunk_step([[0.1, 0, 0, 1]] * 5)  # about 5 cm along +x\nprint(r["steps"], r["state"]["tcp_pos"])',
     ),
     GROUND_TRUTH,
 )

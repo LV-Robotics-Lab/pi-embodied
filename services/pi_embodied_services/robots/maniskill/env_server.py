@@ -27,6 +27,13 @@ with a wrist camera, the wrist (``hand_camera``) RGB, the TCP pose and the gripp
 opening; ``info`` is flattened to plain scalars (``success``, ``is_grasped``, ...). An env id of ./scenes.py (BlockPAP-v1,
 BlockStack-v1) runs that rig with Show-Harness's calibrated cameras, reset and views; the
 other ids (``ENV_IDS``) are stock ManiSkill tabletop tasks on the shared oblique camera.
+
+Code mode (``code.run``, utils/code_exec.py ``CodeRunMixin``): a program calls the registry's
+primitives (./primitives.py) in a sandboxed subprocess, so the server requires its RPC token and
+refuses other business calls while a program runs. What a program receives carries no object
+state: of a step's info only the flags (``success``, ``is_grasped``, ...; the distances and poses
+some tasks report are object state), no reward (ManiSkill's dense rewards are computed from the
+object poses) and no images of a motion (they go to the run's video; ``_code_reply``).
 """
 
 from __future__ import annotations
@@ -42,6 +49,7 @@ from pi_embodied_services.components.code_api import register_code_api
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
 from pi_embodied_services.robots.maniskill.primitives import MANISKILL_PRIMITIVES
 from pi_embodied_services.utils import ground_truth, reach
+from pi_embodied_services.utils.code_exec import CodeRunMixin
 from pi_embodied_services.utils.logging import get_logger
 from pi_embodied_services.utils.perception import (
     add_perception_arguments,
@@ -176,6 +184,16 @@ TABLE_Z = {
 MIN_VISIBLE_PX = 20
 #: Stock Panda arm_pd_ee_delta_pos position bound: action 1.0 = 0.1 m.
 DELTA_BOUND_M = 0.1
+#: Code mode: the video frames one run hands back (halved, every other one kept, when full), the
+#: most control steps one ``servo`` and the most actions one ``chunk_step`` may ask for.
+CODE_MAX_FRAMES = 128
+CODE_MAX_SERVO_STEPS = 100
+CODE_MAX_CHUNK = 200
+
+
+def program_info(info: dict) -> dict:
+    """The flags of a step's info (``success``, ``is_grasped``, ...): what a program may see."""
+    return {k: v for k, v in info.items() if isinstance(v, (bool, np.bool_))}
 
 
 def _np(value: Any) -> np.ndarray:
@@ -616,10 +634,19 @@ def prepare_robot(spec: RobotSpec, wrist_mount: str) -> None:
         add_wrist_camera(cls, spec.wrist["mount"], spec.wrist["pose"])
 
 
-class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
+class ManiskillEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
     """One ManiSkill env (``num_envs=1``); every call runs on the main thread."""
 
     SERVICE_NAME = "maniskill-env"
+    #: Control steps since the launch, the success latched since the last reset, the last step's
+    #: info and gripper command (> 0 open), and code mode's run: the count before it and its
+    #: video frames (class defaults so the registry can be built on a bare facade, as in the tests).
+    _steps = 0
+    _success_once = False
+    _last_info: dict = {}
+    _gripper_command = 1.0
+    _run_start = 0
+    _run_frames: list | tuple = ()
 
     def __init__(
         self,
@@ -761,7 +788,112 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         self._rpc["env.state"] = self.state
         self._rpc["env.servo"] = self.servo
         self._rpc["env.ground_truth_poses"] = self.ground_truth_poses
-        register_code_api(self, MANISKILL_PRIMITIVES)
+        api = register_code_api(self, MANISKILL_PRIMITIVES)
+        self._install_code_run(
+            api,
+            move_m=self._code_move_m,
+            check=self._code_check,
+            reply=self._code_reply,
+            begin=self._begin_run,
+            finish=self._finish_run,
+        )
+
+    # ---- code mode (run_code) ----
+
+    def _begin_run(self) -> None:
+        self._run_start = self._steps
+        self._run_frames = []
+
+    def _finish_run(self) -> dict:
+        """The run's effect for pi: control steps taken, the success latched since the reset,
+        the new observation (the tools' ``obs``), the last step's flags, the gripper command
+        (> 0 open) and the run's video frames (agentview and wrist side by side, as pi's video
+        records them; the agentview alone without a wrist camera)."""
+        return {
+            "steps": self._steps - self._run_start,
+            "success": self._success_once,
+            "obs": self._pack(self._obs),
+            "info": program_info(self._last_info),
+            "gripper": 1 if self._gripper_command > 0 else -1,
+            "frames": list(self._run_frames),
+        }
+
+    def _keep_frames(self, packs) -> None:
+        for p in packs:
+            if len(self._run_frames) >= CODE_MAX_FRAMES:
+                self._run_frames = self._run_frames[::2]
+            views = [p["agentview"]] + ([p["wrist"]] if "wrist" in p else [])
+            self._run_frames.append(np.concatenate(views, axis=1))
+
+    @staticmethod
+    def _robot_state(pack: dict) -> dict:
+        """An observation without its images."""
+        return {k: v for k, v in pack.items() if k not in ("agentview", "wrist")}
+
+    def _code_reply(self, method: str, out: Any) -> Any:
+        """What a program receives: of a step's info only the flags, no reward, and no images
+        of a motion (they go to the run's video)."""
+        if method == "env.servo":
+            packs, info = out
+            self._keep_frames(packs)
+            return [[self._robot_state(p) for p in packs], program_info(info)]
+        if method == "env.state":
+            return {**out, "info": program_info(out["info"])}
+        if method == "env.step":
+            pack, _rew, terminated, truncated, info = out
+            self._keep_frames([pack])
+            return {
+                "terminated": terminated,
+                "truncated": truncated,
+                "info": program_info(info),
+                "state": self._robot_state(pack),
+            }
+        if method == "env.chunk_step":
+            packs, _rews, terms, truncs, info = out
+            packs = packs if isinstance(packs, list) else [packs]
+            self._keep_frames(packs)
+            states = [self._robot_state(p) for p in packs]
+            return {
+                "steps": int(len(terms)),
+                "terminated": bool(np.any(terms)),
+                "truncated": bool(np.any(truncs)),
+                "info": program_info(info),
+                "state": states[-1],
+                **({"states": states} if len(states) > 1 else {}),
+            }
+        return out
+
+    def _code_move_m(self, method: str, kwargs: dict) -> float:
+        """How far a program's call may move the TCP (the run's translation cap)."""
+        if method == "env.servo":
+            target = np.asarray(kwargs["target_xyz"], dtype=np.float64).reshape(3)
+            return float(np.linalg.norm(target - self._state()["tcp_pos"]))
+        if method in ("env.step", "env.chunk_step"):
+            a = kwargs["action"] if method == "env.step" else kwargs["actions"]
+            # pi's convention, per arm: [dx, dy, dz, gripper], or [dx, dy, dz] without a gripper.
+            per = 3 + (self._robot.gripper is not None)
+            a = np.clip(np.asarray(a, dtype=np.float64).reshape(-1, per)[:, :3], -1, 1)
+            return float(np.linalg.norm(a, axis=1).sum() * DELTA_BOUND_M)
+        return 0.0
+
+    def _code_check(self, method: str, kwargs: dict) -> None:
+        """Refuse a program's call that the run's wall clock could not bound."""
+        if (
+            method == "env.servo"
+            and int(kwargs.get("max_steps", 8)) > CODE_MAX_SERVO_STEPS
+        ):
+            raise ValueError(
+                f"max_steps is at most {CODE_MAX_SERVO_STEPS} per call in code mode"
+            )
+        if method == "env.chunk_step":
+            dim = (3 + (self._robot.gripper is not None)) * len(
+                self._robot.arms or [None]
+            )
+            n = np.asarray(kwargs["actions"], dtype=np.float64).size // dim
+            if n > CODE_MAX_CHUNK:
+                raise ValueError(
+                    f"chunk_step takes at most {CODE_MAX_CHUNK} actions per call in code mode"
+                )
 
     # ---- helpers ----
 
@@ -938,6 +1070,7 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         else:
             a = np.asarray(action, dtype=np.float32).reshape(1, -1)
         obs, rew, term, trunc, info = self._env.step(a)
+        self._steps += 1
         info = self._info(info)
         if self._rig:
             # BlockStack reports no grasp flag at all (BlockPAP only its lift-based
@@ -945,6 +1078,17 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
             env = self._env.unwrapped
             held = env.agent.is_grasping(getattr(env, self._rig.carried))
             info["is_grasped"] = bool(_np(held).reshape(-1)[0])
+        self._success_once = self._success_once or bool(info.get("success"))
+        self._last_info = info
+        # The one arm's gripper command (code mode's run result); a two-arm robot's actions are
+        # per agent and a stick has no gripper element.
+        if not isinstance(a, dict) and self._robot.gripper is not None:
+            g = float(a.reshape(-1)[-1])
+            self._gripper_command = (
+                1.0
+                if abs(g - self._robot.open) <= abs(g - self._robot.gripper[1])
+                else -1.0
+            )
         return (
             obs,
             float(_np(rew).reshape(-1)[0]),
@@ -961,6 +1105,7 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         like its training episodes (``scenes.reset``)."""
         self._grip = [1.0] * len(self._grip)
         hold = self._hold()
+        self._success_once = False
         if self._rig:
             from pi_embodied_services.robots.maniskill import scenes
 

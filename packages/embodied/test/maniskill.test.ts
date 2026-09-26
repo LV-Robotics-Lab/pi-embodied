@@ -364,6 +364,26 @@ async function fakeEnv(
 				if (kwargs.arm) armTcp[kwargs.arm as string] = args[0] as number[];
 				else tcp = args[0] as number[];
 				result = [[obs()], { is_grasped: false }];
+			} else if (method === "code.run") {
+				tcp = [-0.4, 0, 0.3];
+				result = {
+					status: "ran",
+					stdout: "",
+					stderr: "",
+					traceback: null,
+					error: null,
+					result: null,
+					calls: [],
+					n_calls: 3,
+					move_m: 0.2,
+					ms: 5,
+					steps: 12,
+					success: true,
+					obs: obs(),
+					info: { success: true, is_grasped: true },
+					gripper: -1,
+					frames: [nd("uint8", [2, wrist ? 4 : 2, 3], Buffer.alloc(wrist ? 24 : 12))],
+				};
 			}
 			res.end(JSON.stringify({ ok: true, result }));
 		});
@@ -606,4 +626,37 @@ test("--units on --robot widowxai: no wrist view, so fine steps, no target_in_wr
 		"mem_text",
 	]);
 	assert.equal(p.result.units_wrist_view, true);
+});
+
+test("--code=true: run_code runs on the env server and its result becomes the observation, the grasp and the success", async (t) => {
+	const env = await fakeEnv(undefined, VIEW_SETUP, true);
+	t.after(env.close);
+	const s = stubPi({ env: env.url, "env-id": "PickCube-v1", code: "true", "code-api": "low-noexamples" });
+	maniskill(s.pi);
+	await s.emit("session_start");
+	process.exitCode = undefined;
+	assert.deepEqual(s.active().slice(0, 2), ["run_code", "finish"]);
+	assert.deepEqual(
+		env.calls.filter((c) => c.method === "code.api").map((c) => c.kwargs.tier),
+		[undefined, "low-noexamples"],
+	);
+	await s.emit("agent_start");
+	const r = await s.run("run_code", { code: "chunk_step([[0, 0, 1, -1]] * 2)" });
+	const run = env.calls.find((c) => c.method === "code.run")!;
+	assert.equal(run.kwargs.tier, "low-noexamples");
+	assert.equal(r.details.status, "ran");
+	assert.equal(r.details.success, true);
+	assert.equal(r.details.step, 12);
+	assert.deepEqual(r.details.state.tcp_pos, [-0.4, 0, 0.3]);
+	assert.equal(r.details.state.gripper_command, "close");
+	assert.equal(r.details.state.is_grasped, true);
+	assert.match((await s.run("run_code", { code: "state()" })).content[0].text, /already solved/);
+	await s.run("finish", { status: "success", summary: "picked" });
+	await s.emit("agent_end", { messages: [] });
+	const result = s.entries.find((e) => e.type === "robot_result")?.data;
+	assert.equal(result.success, true);
+	assert.equal(result.ever_grasped, true);
+	assert.equal(result.env_steps, 12);
+	assert.equal(result.code, "true");
+	assert.equal(result.code_api, "low-noexamples");
 });

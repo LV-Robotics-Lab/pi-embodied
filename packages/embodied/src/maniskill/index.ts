@@ -6,6 +6,7 @@
  *   pi -e packages/embodied/src/maniskill --env-id StackCube-v1 --seed 0   (a stock ManiSkill scene)
  *   pi -e packages/embodied/src/maniskill --env-id PlaceSphere-v1 --seed 0  (one of OpenETA's tasks, ENV_IDS)
  *   pi -e packages/embodied/src/maniskill --robot xarm6_robotiq --env-id PickCube-v1 --seed 0  (another arm, ROBOTS)
+ *   pi -e packages/embodied/src/maniskill --env-id PickCube-v1 --seed 0 --code=true   (run_code over the env server's registry)
  *
  * BlockPAP-v1 / BlockStack-v1 are RLinf's real2sim replicas of the real Franka rig (services/.../
  * robots/maniskill/scenes.py; fetch_real2sim.sh installs them): their calibrated front RealSense
@@ -683,6 +684,22 @@ export default function maniskill(pi: ExtensionAPI) {
 		task: ["env-id", "seed", "scene"],
 		// The env server's primitive registry (code.api), recorded per episode.
 		codeApi: () => env,
+		// Code mode (../code): the env server runs the program against that registry; the result
+		// carries the control steps, the success latched since the reset, the new observation and the video frames.
+		code: {
+			rpc: () => env,
+			instruction: () => language,
+			refuse: () => (success ? "the task is already solved; call finish" : undefined),
+			observe: async (r) => {
+				for (const f of (r.frames as NdArray[] | undefined) ?? []) video.frame(f);
+				const steps = Number(r.steps) || 0;
+				envStep += steps;
+				if (!arms() && (r.gripper === 1 || r.gripper === -1)) grippers[""] = r.gripper;
+				success ||= r.success === true;
+				if (r.obs) absorb(r.obs as Obs, (r.info as Info | undefined) ?? {});
+				return observe({ name: "run_code", status: r.status, env_steps: steps });
+			},
+		},
 		keepImages: 4,
 		video: true,
 		flywheel: { spec: FLYWHEEL, select: () => `${robotId}/${robot.task["env-id"]}/${sceneTag()}` },

@@ -4,6 +4,7 @@
  *   pi -e packages/embodied/src/metaworld --task reach-v3 --seed 0
  *   pi -e packages/embodied/src/metaworld --task pick-place-v3 --seed 3 --units=true
  *   pi -e packages/embodied/src/metaworld --task button-press-v3 --seed 0 --privileged
+ *   pi -e packages/embodied/src/metaworld --task reach-v3 --seed 0 --code=true --code-api=low   (run_code, CaP-X's S3)
  *
  * Starts one Metaworld env server per session (services/.../robots/metaworld/env_server.py, the
  * `metaworld` venv; MuJoCo renders through EGL, or on the CPU with MUJOCO_GL=osmesa). The action is a world-frame hand translation plus
@@ -287,6 +288,23 @@ export default function metaworld(pi: ExtensionAPI) {
 		status: () => ({ language, step: envStep, solved: success }),
 		// The env server's primitive registry (code.api), recorded per episode.
 		codeApi: () => env,
+		// Code mode (../code): the env server runs the program against that registry; the result
+		// carries the control steps, the latched success, the new observation and the video frames.
+		code: {
+			rpc: () => env,
+			instruction: () => language,
+			refuse: () => (success ? "the task is already solved; call finish" : undefined),
+			observe: async (r) => {
+				for (const f of (r.frames as NdArray[] | undefined) ?? []) video.frame(f);
+				const steps = Number(r.steps) || 0;
+				envStep += steps;
+				if (steps) worldMaps.clear();
+				if (r.gripper === "open" || r.gripper === "close") gripper = r.gripper;
+				success ||= r.success === true;
+				if (r.obs) absorb(r.obs as Obs, (r.info as Info | undefined) ?? {});
+				return observe({ name: "run_code", status: r.status, env_steps: steps });
+			},
+		},
 		finish: {
 			description:
 				"End the episode after checking the latest state. Success is Metaworld's own success flag, not this call.",

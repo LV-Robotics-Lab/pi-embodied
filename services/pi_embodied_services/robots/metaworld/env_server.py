@@ -28,6 +28,14 @@ opening; ``info`` is the task's own metrics as plain scalars (``success``, ``gra
 The env class is used directly (no ``metaworld.MT1`` task list): ``env.reset`` reseeds the
 env's RNG and the process's global numpy and Python RNGs with the episode seed, so a seed
 draws the same object layout in any process and every reset restores the same state.
+
+Code mode (``code.run``, utils/code_exec.py ``CodeRunMixin``): a program calls the registry's
+primitives (./primitives.py) in a sandboxed subprocess, so the server requires its RPC token and
+refuses other business calls while a program runs. What a program receives of a primitive's
+result carries no object state: Metaworld's 39-D observation holds the object and goal poses and
+its info metrics (``obj_to_target``, ``near_object``, the shaped reward, ...) are computed from
+them, so only the robot's own state and the success flags (``PROGRAM_INFO``) reach it; a motion's
+images go to the run's video instead (``_code_reply``).
 """
 
 from __future__ import annotations
@@ -45,6 +53,7 @@ from pi_embodied_services.components.code_api import register_code_api
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
 from pi_embodied_services.robots.metaworld.primitives import METAWORLD_PRIMITIVES
 from pi_embodied_services.utils import ground_truth
+from pi_embodied_services.utils.code_exec import CodeRunMixin
 from pi_embodied_services.utils.grasp import add_grasp_arguments, install_grasp_planner
 from pi_embodied_services.utils.logging import get_logger
 from pi_embodied_services.utils.perception import (
@@ -158,6 +167,13 @@ MAX_MOVE_M = 0.2
 STAND_BODIES = {"base", "controller_box", "pedestal", "pedestal_feet", "torso"}
 #: A target may leave the workspace box by this much (m) before it is refused.
 BOX_TOL_M = 0.005
+#: Code mode: the info keys a program may see (success flags; the other metrics are object state),
+#: the video frames one run hands back (halved, every other one kept, when full), the largest
+#: render and the most actions one ``chunk_step`` may ask for.
+PROGRAM_INFO = ("success", "success_once", "grasp_success")
+CODE_MAX_FRAMES = 128
+CODE_MAX_RENDER = 1024
+CODE_MAX_CHUNK = 200
 
 
 def instruction(task: str) -> str:
@@ -245,16 +261,20 @@ def object_bodies(model, robot_root: str = "right_arm_base_link") -> list[str]:
     return out
 
 
-def _delta_m(args, kwargs) -> float:
-    """Translation of a `move_delta` primitive call (the run's accumulated-move cap)."""
-    d = kwargs.get("delta_xyz", args[0] if args else None)
-    return float(np.linalg.norm(np.asarray(d, dtype=np.float64).reshape(3)))
+def program_info(info: dict) -> dict:
+    """The success flags of a step's info: what a program may see of it."""
+    return {k: info[k] for k in PROGRAM_INFO if k in info}
 
 
-class MetaworldEnvFacade(MainThreadServeMixin, BaseEnvFacade):
+class MetaworldEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
     """One Metaworld task env; every call runs on the main thread (MuJoCo EGL)."""
 
     SERVICE_NAME = "metaworld-env"
+    #: Control steps since the launch, and code mode's run: the count before it and its video
+    #: frames (class defaults so the registry can be built on a bare facade, as in the tests).
+    _steps = 0
+    _run_start = 0
+    _run_frames: list | tuple = ()
 
     def __init__(self, *, task: str, seed: int, view_size: int = VIEW_SIZE):
         super().__init__()
@@ -294,7 +314,15 @@ class MetaworldEnvFacade(MainThreadServeMixin, BaseEnvFacade):
                 "env.ground_truth_poses": self.ground_truth_poses,
             }
         )
-        register_code_api(self, METAWORLD_PRIMITIVES)
+        api = register_code_api(self, METAWORLD_PRIMITIVES)
+        self._install_code_run(
+            api,
+            move_m=self._code_move_m,
+            check=self._code_check,
+            reply=self._code_reply,
+            begin=self._begin_run,
+            finish=self._finish_run,
+        )
 
     # ---- helpers ----
 
@@ -355,6 +383,10 @@ class MetaworldEnvFacade(MainThreadServeMixin, BaseEnvFacade):
     def _step(self, action) -> tuple:
         a = np.clip(np.asarray(action, dtype=np.float32).reshape(4), -1, 1)
         obs, rew, term, trunc, info = self._env.step(a)
+        self._steps += 1
+        if a[3] != 0:
+            # The effort held between calls follows a raw step's too (a later move keeps it).
+            self._gripper_effort = CLOSE if a[3] > 0 else OPEN
         self._obs = np.asarray(obs, dtype=np.float64)
         self._info = self._flat(info)
         self._success_once |= bool(self._info.get("success"))
@@ -373,6 +405,99 @@ class MetaworldEnvFacade(MainThreadServeMixin, BaseEnvFacade):
             .round(4)
             .tolist(),
         }
+
+    # ---- code mode (run_code) ----
+
+    def _begin_run(self) -> None:
+        self._run_start = self._steps
+        self._run_frames = []
+
+    def _finish_run(self) -> dict:
+        """The run's effect for pi: control steps taken, the latched success, the new
+        observation (the tools' ``obs``), its success flags, the gripper command and the run's
+        video frames (agentview and wrist side by side, as pi's video records them)."""
+        return {
+            "steps": self._steps - self._run_start,
+            "success": self._success_once,
+            "obs": self._pack(),
+            "info": program_info(self._info),
+            "gripper": "close" if self._gripper_effort > 0 else "open",
+            "frames": list(self._run_frames),
+        }
+
+    def _keep_frames(self, packs) -> None:
+        for p in packs:
+            if len(self._run_frames) >= CODE_MAX_FRAMES:
+                self._run_frames = self._run_frames[::2]
+            self._run_frames.append(
+                np.concatenate([p["agentview"], p["wrist"]], axis=1)
+            )
+
+    @staticmethod
+    def _robot_state(pack: dict) -> dict:
+        """An observation without its images and without Metaworld's 39-D ``obs``."""
+        return {
+            "tcp_pos": np.asarray(pack["tcp_pos"]).round(5).tolist(),
+            "gripper_width": round(float(pack["gripper_width"]), 5),
+        }
+
+    def _code_reply(self, method: str, out: Any) -> Any:
+        """What a program receives: no object state (the 39-D obs, the info metrics, the
+        shaped reward) and no images of a motion (they go to the run's video)."""
+        if method in ("env.move_delta", "env.set_gripper"):
+            out = dict(out)
+            self._keep_frames(out.pop("frames", []))
+            out["info"] = program_info(out.get("info", {}))
+            return out
+        if method == "env.state":
+            return {**out, "info": program_info(out["info"])}
+        if method == "env.step":
+            pack, _rew, success, truncated, info = out
+            self._keep_frames([pack])
+            return {
+                "success": success,
+                "truncated": truncated,
+                "info": program_info(info),
+                "state": self._robot_state(pack),
+            }
+        if method == "env.chunk_step":
+            packs, _rews, terms, truncs, info = out
+            packs = packs if isinstance(packs, list) else [packs]
+            self._keep_frames(packs)
+            states = [self._robot_state(p) for p in packs]
+            return {
+                "steps": int(len(terms)),
+                "success": bool(np.any(terms)),
+                "truncated": bool(np.any(truncs)),
+                "info": program_info(info),
+                "state": states[-1],
+                **({"states": states} if len(states) > 1 else {}),
+            }
+        return out
+
+    def _code_move_m(self, method: str, kwargs: dict) -> float:
+        """How far a program's call may move the hand (the run's translation cap)."""
+        if method == "env.move_delta":
+            d = np.asarray(kwargs["delta_xyz"], dtype=np.float64).reshape(3)
+            return float(np.linalg.norm(d))
+        if method in ("env.step", "env.chunk_step"):
+            a = kwargs["action"] if method == "env.step" else kwargs["actions"]
+            a = np.clip(np.asarray(a, dtype=np.float64).reshape(-1, 4)[:, :3], -1, 1)
+            return float(np.linalg.norm(a, axis=1).sum() * ACTION_SCALE_M)
+        return 0.0
+
+    def _code_check(self, method: str, kwargs: dict) -> None:
+        """Refuse a program's call that the run's wall clock could not bound."""
+        if method in ("env.render_camera", "env.get_camera_meta"):
+            for k in ("height", "width"):
+                if int(kwargs.get(k, VIEW_SIZE)) > CODE_MAX_RENDER:
+                    raise ValueError(f"{method[4:]} {k} is at most {CODE_MAX_RENDER}")
+        if method == "env.chunk_step":
+            n = np.asarray(kwargs["actions"], dtype=np.float64).size // 4
+            if n > CODE_MAX_CHUNK:
+                raise ValueError(
+                    f"chunk_step takes at most {CODE_MAX_CHUNK} actions per call in code mode"
+                )
 
     # ---- gym-like surface ----
 

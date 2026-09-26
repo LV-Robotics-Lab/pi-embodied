@@ -35,6 +35,7 @@ METAWORLD_PRIMITIVES = (
         "state",
         "env.state",
         "TCP position (world: +y away from the robot, +x its right, +z up), gripper width and command, the task's success flags and metrics, the workspace box.",
+        example='st = state()\nprint(st["tcp_pos"], st["gripper_width"], st["success"])\nlo, hi = st["workspace"]["min"], st["workspace"]["max"]',
     ),
     Primitive(
         "move_delta",
@@ -47,6 +48,7 @@ METAWORLD_PRIMITIVES = (
             ),
         },
         mutating=True,
+        example='r = move_delta([0, 0.05, -0.03], gripper="open")\nprint(r["final_tcp_pos"], r["final_error_m"])',
     ),
     Primitive(
         "set_gripper",
@@ -54,6 +56,7 @@ METAWORLD_PRIMITIVES = (
         "Open or close the gripper in place and hold until the fingers settle.",
         {"open": Param("boolean", "True opens, False closes")},
         mutating=True,
+        example='r = set_gripper(False)\nprint(r["gripper_width"])  # about 0.023: closed on nothing',
     ),
     Primitive(
         "render_camera",
@@ -61,6 +64,7 @@ METAWORLD_PRIMITIVES = (
         "One camera's RGB frame, and its metric depth map with depth=true.",
         {**_CAMERA, "depth": Param("boolean", "also return the depth map", False)},
         tiers=("low",),
+        example='rgb, depth = render_camera("agentview", 256, 256, depth=True)',
     ),
     Primitive(
         "get_camera_meta",
@@ -68,6 +72,7 @@ METAWORLD_PRIMITIVES = (
         "OpenCV intrinsics and camera-to-world extrinsic of a camera at a resolution.",
         _CAMERA,
         tiers=("low",),
+        example='meta = get_camera_meta("agentview")\nK, T = meta["intrinsic_K"], meta["extrinsic_cam2world"]',
     ),
     Primitive(
         "step",
@@ -76,6 +81,7 @@ METAWORLD_PRIMITIVES = (
         {"action": Param("array", "4 floats")},
         mutating=True,
         tiers=("low",),
+        example='r = step([0, 0, 0.5, -1])  # up 5 mm, gripper open\nprint(r["state"]["tcp_pos"], r["success"])',
     ),
     Primitive(
         "chunk_step",
@@ -87,6 +93,7 @@ METAWORLD_PRIMITIVES = (
         },
         mutating=True,
         tiers=("low",),
+        example='r = chunk_step([[0, 1, 0, -1]] * 5)  # 5 cm away from the robot\nprint(r["steps"], r["state"]["tcp_pos"])',
     ),
     GROUND_TRUTH,
 )

@@ -1836,10 +1836,15 @@
 			},
 			{
 				"name": "view_env_state",
-				"description": "Current state with agentview (global layout) and wrist (close range) 1024x1024 images. Pixel (row, col) in these images feed back_project.",
+				"description": "A state with agentview (global layout) and wrist (close range) 1024x1024 images: the current one, or the earlier state record `step` (0 = initial). Pixel (row, col) in these images feed back_project with the same step.",
 				"parameters": {
 					"type": "object",
-					"properties": {}
+					"properties": {
+						"step": {
+							"type": "integer",
+							"description": "State record (a result's state_step): 0 = initial, -1 = latest (default)"
+						}
+					}
 				}
 			},
 			{
@@ -2243,7 +2248,7 @@
 			},
 			{
 				"name": "view_camera_meta",
-				"description": "Camera calibration (intrinsic K, cam-to-world extrinsic, depth range) for the current step.",
+				"description": "Camera calibration (intrinsic K, cam-to-world extrinsic, depth range) for the current step, or for the state record `step` (high resolution).",
 				"parameters": {
 					"type": "object",
 					"properties": {
@@ -2262,13 +2267,17 @@
 								"low"
 							],
 							"description": "high = 1024 (default), low = 256"
+						},
+						"step": {
+							"type": "integer",
+							"description": "State record (a result's state_step): 0 = initial, -1 = latest (default)"
 						}
 					}
 				}
 			},
 			{
 				"name": "segment",
-				"description": "SAM3 segmentation of the current 1024x1024 camera image. Give exactly one of a text prompt or a positive point [row, col]. The top mask is projected through the depth world map; world_xyz is the median over mask pixels. Returns an overlay image.",
+				"description": "SAM3 segmentation of the current 1024x1024 camera image, or of state record `step`'s. Give exactly one of a text prompt or a positive point [row, col]. The top mask is projected through that state's depth world map; world_xyz is the median over mask pixels. Returns an overlay image; the reading is saved as segment_artifact.",
 				"parameters": {
 					"type": "object",
 					"properties": {
@@ -2294,13 +2303,17 @@
 						"min_score": {
 							"type": "number",
 							"description": "Default 0.2"
+						},
+						"step": {
+							"type": "integer",
+							"description": "State record (a result's state_step): 0 = initial, -1 = latest (default)"
 						}
 					}
 				}
 			},
 			{
 				"name": "back_project",
-				"description": "World xyz of a pixel (row, col; row 0 = top) in the current camera image, from the depth world map. Region mode: row_range + col_range (+ optional z_min/z_max) returns the midpoint of world xy over that window, e.g. a container's interior center. Pixels from the 1024 images use resolution high (default).",
+				"description": "World xyz of a pixel (row, col; row 0 = top) in the current camera image, or in state record `step`'s (the state_step of the image the pixel came from), from that state's depth world map. Region mode: row_range + col_range (+ optional z_min/z_max) returns the midpoint of world xy over that window, e.g. a container's interior center. Pixels from the 1024 images use resolution high (default).",
 				"parameters": {
 					"type": "object",
 					"properties": {
@@ -2350,6 +2363,10 @@
 						"z_max": {
 							"type": "number",
 							"description": "Region mode: keep pixels with world z <= z_max"
+						},
+						"step": {
+							"type": "integer",
+							"description": "State record (a result's state_step): 0 = initial, -1 = latest (default)"
 						}
 					}
 				}

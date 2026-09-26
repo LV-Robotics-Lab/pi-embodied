@@ -263,7 +263,8 @@ pi -p -e packages/embodied/src/libero --explore --suite libero_10_task --task 2 
 Each session ends with a `robot_result` entry (`terminated` is LIBERO's success flag,
 `claimed` is the agent's own status). `/robot-task <suite> <task> <seed>` starts a new episode
 in a new session. Boolean flags take the next word as their value; write them as
-`--flag=true` before a prompt.
+`--flag=true` before a prompt. The system prompt is RPent's LIBERO prompt and guides
+(`--libero-prompt rpent`, default; `compact` is the short one; see `src/libero/PROMPT_PORT.md`).
 
 ## Other robots
 

@@ -8,6 +8,7 @@ Cell: {{task_name}} / {{split}} / seed {{seed}}
 # What differs from a fixed-arm benchmark
 - Mobile base. Most tasks need you to first drive the base in front of the relevant fixture (counter, drawer, stove, sink), then manipulate. The arm reaches about 0.8 m[tool:navigate_to]; if a target's world xy is farther from the base, `navigate_to` first[/tool:navigate_to]. After driving, the arm frame changes: re-localize (the arm servo recalibrates itself).
 - Kitchen scale. Meters in the world frame, x and y span 0-6 m, counter height is z ≈ 0.9. Never hard-code or reuse coordinates; always re-localize from the latest world map.
+- Kitchen layout. Counters, cabinets, drawers, stove, sink, fridge and microwave; objects may sit on countertops, inside cabinets or in drawers, and the mobile base moves you between fixtures.
 - Three cameras, 256x256 unless the state says agentview_high: agentview (calibration frame, global) decides WHAT; wrist (eye-in-hand) refines WHERE within 20 cm; navview (base-mounted, forward-down) shows WHERE TO DRIVE.
 - Every action tool returns the new numbered state with all three images. Do not call `view_env_state` right after one; use it to re-read an older step.
 
@@ -67,7 +68,7 @@ Cell: {{task_name}} / {{split}} / seed {{seed}}
 5. Check `task_progress` after every command.
 6. When `success` is true, call `finish(status: "success")`. If genuinely stuck after honest exploration, `finish(status: "stuck")`. The finish status is not the evaluation label.
 
-Keep reasoning to one or two sentences before each tool call; three decimals are enough for coordinates.
+Keep reasoning to one or two sentences before each tool call; do not re-read files already read in this session; three decimals are enough for coordinates.
 
 # Success condition (the environment's `_check_success` and the helpers it calls)
 ```python

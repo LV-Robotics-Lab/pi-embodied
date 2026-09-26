@@ -65,7 +65,8 @@ function fakePi(exclude: string[] = [], preset: Record<string, string> = {}) {
 }
 
 const read = (path: string) => readFileSync(new URL(`../src/${path}`, import.meta.url), "utf8");
-const markers = (text: string) => [...text.matchAll(/\[\/?tool:([\w|]+)\]/g)].flatMap((m) => m[1].split("|"));
+const markers = (text: string) =>
+	[...text.matchAll(/\[\/?tool:([\w|!]+)\]/g)].flatMap((m) => m[1].split("|").map((n) => n.replace(/^!/, "")));
 /** Whether the text still names the tool: bare words (`release`, `render`) only count in backticks. */
 const mentions = (text: string, tool: string) =>
 	(tool.includes("_") ? new RegExp(`\\b${tool}\\b`) : new RegExp(`\`${tool}\``)).test(text);
@@ -81,11 +82,19 @@ const ROBOTS: {
 }[] = [
 	{
 		robot: "libero",
-		files: ["libero/SYSTEM.md"],
+		files: [
+			"libero/SYSTEM.md",
+			"libero/explore.md",
+			"libero/distil.md",
+			"libero/compact/SYSTEM.md",
+			"libero/compact/explore.md",
+			"libero/compact/distil.md",
+		],
 		load: libero,
 		// The third-party VLA tools are mounted only with their server flags.
 		flags: Object.fromEntries(VLA_ADAPTERS.map((a) => [a.flag, "http://127.0.0.1:1"])),
-		core: ["view_env_state", "move_to", "release", "finish"],
+		// The exploration prompts (explore.md) are rendered only while exploring, when `reset` is always active.
+		core: ["view_env_state", "move_to", "release", "finish", "reset"],
 	},
 	{
 		robot: "robocasa",
@@ -170,7 +179,7 @@ for (const { robot, files, load, core, flags } of ROBOTS) {
 		const { pi, tools } = fakePi([], flags);
 		await load(pi);
 		const text = files.map(read).join("\n");
-		const plain = text.replace(/\[\/?tool:[\w|]+\]/g, "");
+		const plain = text.replace(/\[\/?tool:[\w|!]+\]/g, "");
 		const optional = tools.filter((n) => !core.includes(n));
 		for (const tool of optional) {
 			const rendered = toolSections(

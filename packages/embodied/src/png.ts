@@ -29,6 +29,15 @@ export function encodePng(rgb: Buffer, width: number, height: number): Buffer {
 
 /** Decode an 8-bit, non-interlaced PNG (gray, RGB or RGBA) to its first channel. */
 export function decodePngChannel(png: Buffer): { width: number; height: number; data: Uint8Array } {
+	const { width, height, channels, data } = decodePng(png);
+	if (channels === 1) return { width, height, data };
+	const out = new Uint8Array(width * height);
+	for (let i = 0; i < out.length; i++) out[i] = data[i * channels];
+	return { width, height, data: out };
+}
+
+/** Decode an 8-bit, non-interlaced PNG (gray, gray+alpha, RGB or RGBA) to its interleaved samples. */
+export function decodePng(png: Buffer): { width: number; height: number; channels: number; data: Uint8Array } {
 	let pos = 8;
 	let width = 0;
 	let height = 0;
@@ -51,7 +60,7 @@ export function decodePngChannel(png: Buffer): { width: number; height: number; 
 	const stride = width * channels;
 	const cur = new Uint8Array(stride);
 	let prev = new Uint8Array(stride);
-	const out = new Uint8Array(width * height);
+	const out = new Uint8Array(width * height * channels);
 	for (let y = 0; y < height; y++) {
 		const filter = raw[y * (stride + 1)];
 		const line = raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1));
@@ -72,8 +81,8 @@ export function decodePngChannel(png: Buffer): { width: number; height: number; 
 			}
 			cur[i] = (line[i] + pred) & 0xff;
 		}
-		for (let x = 0; x < width; x++) out[y * width + x] = cur[x * channels];
+		out.set(cur, y * stride);
 		prev = cur.slice();
 	}
-	return { width, height, data: out };
+	return { width, height, channels, data: out };
 }

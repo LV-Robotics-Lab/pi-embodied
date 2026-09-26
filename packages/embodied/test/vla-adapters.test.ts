@@ -68,18 +68,21 @@ test("every adapter's grasp tool is registered at load with pi0_pick's parameter
 	assert.match(bare.get("openvla_act")!.description, /OpenVLA .* grasp/);
 });
 
-test("the LIBERO prompt describes an adapter only when its tool is active", () => {
-	const prompt = new URL("../src/libero/SYSTEM.md", import.meta.url);
-	const text = readFileSync(prompt, "utf8");
-	const base = ["move_to", "pi0_pick", "release", "finish"];
-	assert.doesNotMatch(toolSections(text, base), /openvla|gr00t/i);
-	const withOft = toolSections(text, [...base, "openvla_oft_act"]);
-	assert.match(withOft, /`openvla_oft_act` \(OpenVLA-OFT\) are grasp policies with the same contract as `pi0_pick`/);
-	assert.doesNotMatch(withOft, /openvla_act|gr00t/);
-	const noPi0 = toolSections(text, ["move_to", "gr00t_act", "release", "finish"]);
-	assert.match(noPi0, /`gr00t_act` \(GR00T\) are grasp policies with the same contract:/);
-	assert.doesNotMatch(noPi0, /pi0/i);
-});
+for (const file of ["SYSTEM.md", "compact/SYSTEM.md"])
+	test(`the LIBERO prompt (${file}) describes an adapter only when its tool is active`, () => {
+		const text = readFileSync(new URL(`../src/libero/${file}`, import.meta.url), "utf8");
+		const base = ["move_to", "pi0_pick", "release", "finish"];
+		assert.doesNotMatch(toolSections(text, base), /openvla|gr00t/i);
+		const withOft = toolSections(text, [...base, "openvla_oft_act"]);
+		assert.match(
+			withOft,
+			/`openvla_oft_act` \(OpenVLA-OFT\) are grasp policies with the same contract as `pi0_pick`/,
+		);
+		assert.doesNotMatch(withOft, /openvla_act|gr00t/);
+		const noPi0 = toolSections(text, ["move_to", "gr00t_act", "release", "finish"]);
+		assert.match(noPi0, /`gr00t_act` \(GR00T\) are grasp policies with the same contract:/);
+		assert.doesNotMatch(noPi0, /pi0/i);
+	});
 
 test("the pick heuristics: descend, lift with a partly closed gripper", () => {
 	const t = pickTracker(0.3, 0.08, { prompt: "x" });

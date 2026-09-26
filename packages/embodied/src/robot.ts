@@ -57,18 +57,19 @@ export const message = (e: unknown) => (e instanceof Error ? e.message : String(
 /**
  * Keep every `[tool:name]...[/tool:name]` block of a robot's system prompt when that tool is
  * active, drop it otherwise, so an excluded tool is not described. `[tool:a|b]` is kept when any of
- * them is active; nested blocks need all of theirs. Markers on their own lines wrap whole lines,
- * markers within a line wrap that text. An unpaired marker, or a block nested in one of the same
- * name, throws: the template is broken.
+ * them is active, `[tool:!name]` when that tool is not (the fallback wording); nested blocks need
+ * all of theirs. Markers on their own lines wrap whole lines, markers within a line wrap that text.
+ * An unpaired marker, or a block nested in one of the same name, throws: the template is broken.
  */
 export function toolSections(prompt: string, active: readonly string[]): string {
-	const re = /\[tool:([\w|]+)\](\n?)([\s\S]*?)\[\/tool:\1\](\n?)/g;
+	const re = /\[tool:([\w|!]+)\](\n?)([\s\S]*?)\[\/tool:\1\](\n?)/g;
+	const on = (n: string) => (n.startsWith("!") ? !active.includes(n.slice(1)) : active.includes(n));
 	let out = prompt;
 	for (let prev = ""; prev !== out; ) {
 		prev = out;
 		out = out.replace(re, (_, names: string, open: string, body: string, close: string) => {
 			if (body.includes(`[tool:${names}]`)) throw new Error(`[tool:${names}] nested in itself in the system prompt`);
-			return (names.split("|").some((n) => active.includes(n)) ? body : "") + (open ? "" : close);
+			return (names.split("|").some(on) ? body : "") + (open ? "" : close);
 		});
 	}
 	const left = out.match(/\[\/?tool:[^\]]*\]/);
@@ -146,7 +147,7 @@ export type RobotSpec = {
 	explore?: {
 		reset: (result: Json, ctx: ExtensionContext, signal?: AbortSignal) => Promise<Result>;
 		prompt: () => string;
-		distil?: string;
+		distil?: string | (() => string);
 		rewrite?: [RegExp, string][];
 		budget?: { sessions: number; attempts: number };
 		/**

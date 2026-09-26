@@ -410,19 +410,20 @@ test("the result and a session entry record the context version", async (t) => {
 test("usedTemplates keeps the templates this mode uses", () => {
 	const plain = usedTemplates({ explore: false, memoryProfile: "hf", code: false, units: false });
 	assert.ok(plain["libero/SYSTEM.md"]);
-	assert.ok(plain["libero/memory-hf.md"]);
+	assert.ok(plain["libero/compact/memory-hf.md"]);
 	for (const unused of [
-		"libero/memory-local.md",
+		"libero/compact/memory-local.md",
 		"libero/explore.md",
 		"libero/distil.md",
+		"libero/compact/explore.md",
 		"code/SYSTEM.md",
 		"units/SYSTEM.md",
 	])
 		assert.equal(plain[unused], undefined, unused);
 	const exploring = usedTemplates({ explore: true, memoryProfile: "local", code: true, units: false });
-	for (const used of ["libero/memory-local.md", "libero/explore.md", "libero/distil.md", "code/SYSTEM.md"])
+	for (const used of ["libero/compact/memory-local.md", "libero/explore.md", "libero/distil.md", "code/SYSTEM.md"])
 		assert.ok(exploring[used], used);
-	assert.equal(exploring["libero/memory-hf.md"], undefined);
+	assert.equal(exploring["libero/compact/memory-hf.md"], undefined);
 });
 
 test("memory records the corpus files the agent read, with their digest", async (t) => {

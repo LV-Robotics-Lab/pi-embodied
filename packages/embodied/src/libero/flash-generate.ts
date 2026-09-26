@@ -5,7 +5,7 @@
  *     --recipe <mem>/task_only/goal_swap_t3_s7_recipe.jsonl --destination memory/libero/flash
  *
  * Inputs are the episode audit (JSON) and its primitive recipe (JSONL); `segment_*.json` readings
- * are optional. Writes `<family>_<suite>_t<task>_{plan,anchors}.json` and `_trace.md`. Waypoints
+ * are optional (default: the run's `<cell>_steps/segments/` the LIBERO robot writes, else `segments/`). Writes `<family>_<suite>_t<task>_{plan,anchors}.json` and `_trace.md`. Waypoints
  * are stored as XY offsets from the nearest anchor; anchors come from saved segment readings, else
  * from the task's goal relations and the recipe's pick/release (or articulation) transactions.
  */
@@ -221,6 +221,12 @@ function segmentAnchors(dir: string | undefined): Anchor[] {
 	return anchors;
 }
 
+/** A run's segment readings: the LIBERO robot's `<cell>_steps/segments` next to the audit, else `segments/`. */
+const defaultSegments = (audit: string, tag: string) => {
+	const own = join(dirname(audit), `${tag}_steps`, "segments");
+	return existsSync(own) ? own : join(dirname(audit), "segments");
+};
+
 function moveXY(entry: Json): XY | undefined {
 	const xyz = entry.xyz;
 	return Array.isArray(xyz) && xyz.length === 3 && xyz.every(isNum) ? [xyz[0], xyz[1]] : undefined;
@@ -373,7 +379,7 @@ export function generateFlashPlan(options: {
 	const g = extractRelations(family, language);
 	const raw = readRecipe(options.recipe);
 	const anchors = mergeAnchors(
-		segmentAnchors(options.segments ?? join(dirname(options.audit), "segments")),
+		segmentAnchors(options.segments ?? defaultSegments(options.audit, tag)),
 		fallbackAnchors(g, raw),
 	);
 	const plan = attachMoves(raw, anchors);

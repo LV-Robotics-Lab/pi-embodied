@@ -46,7 +46,7 @@ Global proposal template:
     ---
 
 ## Runtime
-The tools are the only control surface. `reset` starts an ordinary fresh episode and may resample the layout. Re-run perception and rebind all geometry after every reset.
+`reset` starts an ordinary fresh episode and may resample the layout. Re-run perception and rebind all geometry after every reset.
 
 ## Budget and success
 Prefer in-place recovery while the episode remains recoverable; otherwise record what happened, `reset`, and change the plan. Only a fresh `eval_success: true` confirms success. An unsolved `finish` is refused while attempts remain. After native success, stop robot actions, save the audit and memory proposals, and call `finish` exactly once.

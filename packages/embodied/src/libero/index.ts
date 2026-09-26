@@ -9,8 +9,11 @@
  * own `terminated` flag, recorded in the session's `robot_result` entry.
  */
 
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { gunzipSync, gzipSync } from "node:zlib";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
@@ -26,7 +29,7 @@ import {
 	registerIkFlag,
 } from "../ik.ts";
 import { MOLMO, pi05, SAM3 } from "../model-services.ts";
-import { decodePngChannel, encodePng } from "../png.ts";
+import { decodePng, decodePngChannel, encodePng } from "../png.ts";
 import { graspAdvisorTool } from "../primitives/advisor.ts";
 import {
 	detectionActive,
@@ -63,11 +66,46 @@ import { vlaSeeds } from "../vla-seed.ts";
 import { liberoFlash } from "./flash.ts";
 
 const read = (name: string) => template(new URL(name, import.meta.url));
-const SYSTEM = read("./SYSTEM.md");
-const MEMORY = { hf: read("./memory-hf.md"), local: read("./memory-local.md") };
-const EXPLORE = read("./explore.md");
-const DISTIL = read("./distil.md");
-/** The prompt's single-episode lines, which exploration replaces rather than contradicts. */
+/**
+ * `--libero-prompt rpent` (default): RPent's LIBERO evaluate and explore prompts (robots/libero/prompts,
+ * eecf206) with pi's tool names, and its three guides, which the agent reads with `read` (PROMPT_PORT.md).
+ */
+const RPENT = { system: read("./SYSTEM.md"), explore: read("./explore.md"), distil: read("./distil.md") };
+/** `--libero-prompt compact`: the short prompt pi-embodied used before, kept for comparison. */
+const COMPACT = {
+	system: read("./compact/SYSTEM.md"),
+	explore: read("./compact/explore.md"),
+	distil: read("./compact/distil.md"),
+	memory: { hf: read("./compact/memory-hf.md"), local: read("./compact/memory-local.md") },
+};
+export const LIBERO_PROMPTS = ["rpent", "compact"] as const;
+/** RPent's guides, read-only to the agent (the memory guard's `readable`). */
+export const GUIDES = fileURLToPath(new URL("./guides", import.meta.url));
+
+/**
+ * Render an RPent-port template for a memory profile: explore.md's `[include:x]` lines take SYSTEM.md's
+ * `[part:x]` sections (as RPent's explore.py imports evaluate.py's), `[memory:hf|local]` blocks follow the
+ * profile, and `#.` workflow steps are numbered in order. `[tool:x]` blocks are the robot base's.
+ */
+export function renderRpent(text: string, profile: string, parts = RPENT.system): string {
+	const shared = new Map(
+		[...parts.matchAll(/^\[part:([\w-]+)\]\n([\s\S]*?)\n\[\/part:\1\]$/gm)].map((m) => [m[1], m[2]]),
+	);
+	let n = 0;
+	return text
+		.replace(/^\[include:([\w-]+)\]$/gm, (_, name: string) => {
+			const part = shared.get(name);
+			if (part === undefined) throw new Error(`[include:${name}] names no [part:${name}] in SYSTEM.md`);
+			return part;
+		})
+		.replace(/^\[\/?part:[\w-]+\]\n/gm, "")
+		.replace(/^\[memory:(hf|local)\]\n([\s\S]*?)^\[\/memory:\1\]\n/gm, (_, p: string, body: string) =>
+			p === profile ? body : "",
+		)
+		.replace(/^#\. /gm, () => `${++n}. `)
+		.replace(/\n{3,}/g, "\n\n");
+}
+/** The compact prompt's single-episode lines, which its exploration replaces rather than contradicts. */
 const REWRITE: [RegExp, string][] = [
 	[
 		/^This is a single episode\..*$/m,
@@ -125,6 +163,61 @@ type StepReturn = [Obs, unknown, boolean | NdArray, boolean | NdArray, unknown];
 type ChunkReturn = [Obs[], NdArray, NdArray, NdArray, unknown];
 type CameraMeta = { intrinsic_K: number[][]; extrinsic_cam2world: number[][]; depth_near?: number; depth_far?: number };
 type WorldMap = { envStep: number; size: number; rgb: Buffer; xyz: Float32Array };
+/** One camera's view of a state: image rows top first, metric depth in the same order, calibration. */
+type Shot = { rgb: Buffer; depth: Float32Array; meta: CameraMeta };
+/**
+ * A state record (RPent's `step`): the state the model was shown, persisted in `dir` with both cameras'
+ * 1024 images, depth and calibration, so tools can look back at it (`step`: 0 = initial, -1 = latest).
+ */
+type StateRecord = { envStep: number; dir: string };
+/** Persisted depth is uint16 in units of 0.1 mm (0xffff: none); a pixel's world point moves < 0.1 mm. */
+const DEPTH_UNIT_M = 1e-4;
+const CAMERA_NAMES = ["agentview", "wrist"] as const;
+
+/** Metric depth (row 0 = image top) from LIBERO's normalized z-buffer (row 0 = image bottom). */
+export function metricDepth(raw: number[], meta: CameraMeta, size: number): Float32Array {
+	const { depth_near: near, depth_far: far } = meta;
+	const out = new Float32Array(size * size);
+	for (let r = 0; r < size; r++) {
+		const src = (size - 1 - r) * size;
+		for (let c = 0; c < size; c++) {
+			const z = raw[src + c];
+			out[r * size + c] = near !== undefined && far !== undefined ? near / (1 - z * (1 - near / far)) : z;
+		}
+	}
+	return out;
+}
+
+/** Per-pixel world xyz from metric depth and calibration (the world map). */
+export function worldXyz(depth: Float32Array, meta: CameraMeta, size: number): Float32Array {
+	const [[fx, , cx], [, fy, cy]] = meta.intrinsic_K;
+	const e = meta.extrinsic_cam2world;
+	const xyz = new Float32Array(size * size * 3);
+	for (let r = 0; r < size; r++)
+		for (let c = 0; c < size; c++) {
+			const z = depth[r * size + c];
+			const x = ((c - cx) * z) / fx;
+			const y = ((r - cy) * z) / fy;
+			const i = (r * size + c) * 3;
+			for (let k = 0; k < 3; k++) xyz[i + k] = e[k][0] * x + e[k][1] * y + e[k][2] * z + e[k][3];
+		}
+	return xyz;
+}
+
+export const packDepth = (depth: Float32Array) =>
+	gzipSync(
+		Buffer.from(
+			Uint16Array.from(depth, (z) =>
+				Number.isFinite(z) && z >= 0 ? Math.min(0xfffe, Math.round(z / DEPTH_UNIT_M)) : 0xffff,
+			).buffer,
+		),
+		{ level: 1 },
+	);
+export function unpackDepth(gz: Buffer): Float32Array {
+	const raw = gunzipSync(gz);
+	const u16 = new Uint16Array(raw.buffer, raw.byteOffset, raw.byteLength / 2);
+	return Float32Array.from(u16, (v) => (v === 0xffff ? Number.NaN : v * DEPTH_UNIT_M));
+}
 
 const done = (v: boolean | NdArray) => (v instanceof NdArray ? v.toArray().some(Boolean) : Boolean(v));
 /**
@@ -299,6 +392,11 @@ export default function libero(pi: ExtensionAPI) {
 	pi.registerFlag("task", { type: "string", default: "0", description: "Task index within the suite" });
 	pi.registerFlag("seed", { type: "string", default: "0", description: "Initial-state seed" });
 	pi.registerFlag("libero-type", { type: "string", default: "pro", description: "standard | pro | plus" });
+	pi.registerFlag("libero-prompt", {
+		type: "string",
+		default: "rpent",
+		description: "System prompt: rpent (RPent's full evaluate/explore prompts and guides, default) | compact",
+	});
 	pi.registerFlag("vla", { type: "string", default: "http://127.0.0.1:18200", description: "Pi0.5 VLA server" });
 	// The third-party VLAs (../vla-adapters.ts): `--openvla <url>` mounts `openvla_act`, and so on; unset mounts nothing.
 	for (const a of VLA_ADAPTERS)
@@ -348,8 +446,22 @@ export default function libero(pi: ExtensionAPI) {
 	/** The table (or floor) height in front of the robot, for units' proprioception and variable_step. */
 	let tableZ: number | undefined;
 	const worldMaps = new Map<string, WorldMap>();
+	/** The episode's state records, the history directory, and segment readings so far. */
+	const records: StateRecord[] = [];
+	let historyDir = "";
+	let segments = 0;
+	/** Both cameras at the current env step (taken by `snapshot`), and the one past world map in use. */
+	let shots: { envStep: number; cams: Record<Camera, Shot> } | undefined;
+	let pastMap: { key: string; map: WorldMap } | undefined;
 
 	const tag = () => memoryTag(robot.task.suite, robot.task.task, robot.task.seed, flag("libero-type", "pro"));
+	const variant = () => flag("libero-prompt", "rpent");
+	const exploring = () => pi.getFlag("explore") === true;
+	/** The cell's own template variables (memory's are filled by `mem.render`). */
+	const cellVars = (text: string) => {
+		const vars: Record<string, string> = { ...robot.task, guides_dir: GUIDES, task_language: language };
+		return text.replace(/\{\{(suite|task|seed|guides_dir|task_language)\}\}/g, (_, k: string) => vars[k]);
+	};
 	const robot = defineRobot(pi, {
 		name: "libero",
 		services: { models: [pi05("libero"), SAM3, MOLMO] },
@@ -360,6 +472,7 @@ export default function libero(pi: ExtensionAPI) {
 		memory: {
 			cell: () => ({ tag: tag(), reference: tag().replace(/_s\d+$/, "_s0") }),
 			primitives: RECIPE_PRIMITIVES,
+			readable: () => (variant() === "rpent" ? [GUIDES] : []),
 		},
 		video: true,
 		flywheel: {
@@ -391,16 +504,19 @@ export default function libero(pi: ExtensionAPI) {
 				fly.reset(flyObs(obs), flyMeta());
 				return observe(result);
 			},
-			prompt: () => EXPLORE,
-			distil: DISTIL,
+			// RPent's explore prompt is the whole system prompt (the robot's own is empty then); the compact one is appended.
+			prompt: () => (variant() === "compact" ? COMPACT.explore : cellVars(renderRpent(RPENT.explore, "local"))),
+			distil: () => (variant() === "compact" ? COMPACT.distil : RPENT.distil),
 			rewrite: REWRITE,
 		},
 		start: startEpisode,
 		prompt: () => {
-			const system = SYSTEM.replaceAll("{{task_language}}", language);
+			if (variant() === "rpent")
+				return exploring() ? "" : mem.render(cellVars(renderRpent(RPENT.system, mem.profile)));
+			const system = COMPACT.system.replaceAll("{{task_language}}", language);
 			// Exploration appends its own memory instructions.
-			if (pi.getFlag("explore") === true) return system;
-			return `${system}\n\n${mem.render(MEMORY[mem.profile], { task: robot.task.task })}`;
+			if (exploring()) return system;
+			return `${system}\n\n${mem.render(COMPACT.memory[mem.profile], { task: robot.task.task })}`;
 		},
 		result: () => ({
 			suite: robot.task.suite,
@@ -411,6 +527,7 @@ export default function libero(pi: ExtensionAPI) {
 			truncated,
 			env_steps: envStep,
 			vla: vlaUsed,
+			libero_prompt: variant(),
 		}),
 		status: () => ({ language, step: envStep, solved: terminated }),
 		// Code mode (../code): the env server runs the program against its registry's primitives
@@ -574,6 +691,7 @@ export default function libero(pi: ExtensionAPI) {
 	/** Restore the episode's initial scene (session start, exploration `reset`); `signal` aborts the env reset. */
 	async function resetEpisode(signal = robot.signal) {
 		worldMaps.clear();
+		startHistory();
 		terminated = truncated = false;
 		successStep = undefined;
 		grip = -1;
@@ -581,6 +699,27 @@ export default function libero(pi: ExtensionAPI) {
 		seeds.reset();
 		[obs] = await env.call<[Obs, unknown]>("env.reset", {}, 300_000, [], signal);
 		tableZ = await surfaceZ().catch(() => undefined);
+	}
+
+	/**
+	 * A fresh state history for a new episode in `<output dir>/<cell>_steps` (a temp dir without one).
+	 * An earlier episode's history (before an exploration `reset`) moves to `<cell>_steps.<n>`, so the
+	 * directory and its `segments/segment_NN.json` always describe the episode the recipe is exported
+	 * from (flash-generate.ts reads them as anchors).
+	 */
+	function startHistory() {
+		records.length = 0;
+		segments = 0;
+		shots = undefined;
+		pastMap = undefined;
+		const out = mem.render("{{output_dir}}") || join(tmpdir(), `pi-embodied-libero-${process.pid}`);
+		historyDir = join(out, `${tag()}_steps`);
+		if (existsSync(historyDir)) {
+			let n = 1;
+			while (existsSync(`${historyDir}.${n}`)) n++;
+			renameSync(historyDir, `${historyDir}.${n}`);
+		}
+		mkdirSync(join(historyDir, "segments"), { recursive: true });
 	}
 
 	async function render(camera: Camera, size: number, depth: boolean) {
@@ -595,43 +734,68 @@ export default function libero(pi: ExtensionAPI) {
 		return { rgb: flipRows(rgb.data, size, size * 3), depth: d };
 	}
 
-	/** Per-pixel world xyz for the current step, from metric depth + calibration (the world map). */
-	async function worldMap(camera: Camera, size: number): Promise<WorldMap> {
-		const key = `${camera}:${size}`;
-		const cached = worldMaps.get(key);
-		if (cached?.envStep === envStep) return cached;
+	/** Image, metric depth and calibration of one camera now. */
+	async function shoot(camera: Camera, size: number): Promise<Shot> {
 		const { rgb, depth } = await render(camera, size, true);
 		const meta = await call<CameraMeta>(env, "env.get_camera_meta", {
 			camera_name: CAMERAS[camera],
 			height: size,
 			width: size,
 		});
-		const raw = (depth as NdArray).toArray();
-		const [[fx, , cx], [, fy, cy]] = meta.intrinsic_K;
-		const e = meta.extrinsic_cam2world;
-		const near = meta.depth_near;
-		const far = meta.depth_far;
-		const xyz = new Float32Array(size * size * 3);
-		for (let r = 0; r < size; r++) {
-			const src = (size - 1 - r) * size; // flip rows to match the calibration frame
-			for (let c = 0; c < size; c++) {
-				let z = raw[src + c];
-				if (near !== undefined && far !== undefined) z = near / (1 - z * (1 - near / far));
-				const x = ((c - cx) * z) / fx;
-				const y = ((r - cy) * z) / fy;
-				const i = (r * size + c) * 3;
-				for (let k = 0; k < 3; k++) xyz[i + k] = e[k][0] * x + e[k][1] * y + e[k][2] * z + e[k][3];
+		return { rgb, depth: metricDepth((depth as NdArray).toArray(), meta, size), meta };
+	}
+
+	/**
+	 * The index of the state record `step` names (default latest; negative from the end), or undefined for
+	 * the current state when that is the latest record (tools then read the live env). Refuses an unrecorded step.
+	 */
+	function past(step: number | undefined): number | undefined {
+		if (step === undefined || step === null) return undefined;
+		const i = step < 0 ? records.length + step : step;
+		if (!records[i]) throw new Error(`step ${step} is not recorded (have 0..${records.length - 1})`);
+		return i === records.length - 1 && records[i].envStep === envStep ? undefined : i;
+	}
+
+	/** Per-pixel world xyz of the current step (or of state record `step`), from metric depth + calibration. */
+	async function worldMap(camera: Camera, size: number, step?: number): Promise<WorldMap> {
+		const i = past(step);
+		if (i !== undefined) {
+			if (size !== 1024) throw new Error(`step ${step} keeps only the 1024 (high) world map`);
+			const key = `${camera}@${i}`;
+			if (pastMap?.key !== key) {
+				const dir = records[i].dir;
+				const png = decodePng(readFileSync(join(dir, `${camera}_high.png`)));
+				const meta = JSON.parse(readFileSync(join(dir, `${camera}_meta.json`), "utf8")) as CameraMeta;
+				const depth = unpackDepth(readFileSync(join(dir, `${camera}_depth_high.u16.gz`)));
+				const map = {
+					envStep: records[i].envStep,
+					size,
+					rgb: Buffer.from(png.data),
+					xyz: worldXyz(depth, meta, size),
+				};
+				pastMap = { key, map };
 			}
+			return pastMap.map;
 		}
-		const map = { envStep, size, rgb, xyz };
-		worldMaps.set(key, map);
+		const cacheKey = `${camera}:${size}`;
+		const cached = worldMaps.get(cacheKey);
+		if (cached?.envStep === envStep) return cached;
+		const shot = size === 1024 && shots?.envStep === envStep ? shots.cams[camera] : await shoot(camera, size);
+		const map = { envStep, size, rgb: shot.rgb, xyz: worldXyz(shot.depth, shot.meta, size) };
+		worldMaps.set(cacheKey, map);
 		return map;
 	}
 
-	async function observe(result: Record<string, unknown>) {
+	/**
+	 * The current state as the model sees it, recorded as a new state record when the env moved since the
+	 * last one: raw proprioception, both cameras' 1024 images (with depth and calibration, persisted).
+	 */
+	async function snapshot(result: Record<string, unknown>) {
 		const raw = await call<Record<string, NdArray>>(env, "env.raw_obs");
 		// One call at a time: concurrent calls interleave on the env server's worker pipe.
-		const frames = [await render("agentview", 1024, false), await render("wrist", 1024, false)];
+		if (shots?.envStep !== envStep)
+			shots = { envStep, cams: { agentview: await shoot("agentview", 1024), wrist: await shoot("wrist", 1024) } };
+		const cams = shots.cams;
 		const state = {
 			robot0_eef_pos: raw.robot0_eef_pos.toArray().map((v) => round(v)),
 			robot0_eef_quat: raw.robot0_eef_quat.toArray().map((v) => round(v)),
@@ -641,28 +805,57 @@ export default function libero(pi: ExtensionAPI) {
 				.map((k) => k.slice(0, -4))
 				.sort(),
 		};
-		return {
-			content: [
-				{
-					type: "text" as const,
-					text: JSON.stringify({
-						result,
-						step: envStep,
-						terminated,
-						truncated,
-						task_language: language,
-						state,
-						images: ["agentview_high 1024x1024", "wrist_high 1024x1024"],
-					}),
-				},
-				...frames.map((f) => ({
-					type: "image" as const,
-					data: encodePng(f.rgb, 1024, 1024).toString("base64"),
-					mimeType: "image/png",
-				})),
-			],
-			details: { result, terminated, truncated },
+		const fresh = records.at(-1)?.envStep !== envStep;
+		const index = fresh ? records.length : records.length - 1;
+		const body = {
+			result,
+			state_step: index,
+			step: envStep,
+			terminated,
+			truncated,
+			task_language: language,
+			state,
+			images: ["agentview_high 1024x1024", "wrist_high 1024x1024"],
 		};
+		const pngs = CAMERA_NAMES.map((c) => encodePng(cams[c].rgb, 1024, 1024));
+		if (fresh) {
+			const dir = join(historyDir, `step_${String(index).padStart(3, "0")}`);
+			mkdirSync(dir, { recursive: true });
+			writeFileSync(join(dir, "state.json"), `${JSON.stringify(body)}\n`);
+			CAMERA_NAMES.forEach((c, k) => {
+				writeFileSync(join(dir, `${c}_high.png`), pngs[k]);
+				writeFileSync(join(dir, `${c}_depth_high.u16.gz`), packDepth(cams[c].depth));
+				writeFileSync(join(dir, `${c}_meta.json`), `${JSON.stringify(cams[c].meta)}\n`);
+			});
+			records.push({ envStep, dir });
+		}
+		return { body, pngs };
+	}
+
+	const shown = (body: Record<string, unknown>, pngs: Buffer[], details: Record<string, unknown>) => ({
+		content: [
+			{ type: "text" as const, text: JSON.stringify(body) },
+			...pngs.map((png) => ({ type: "image" as const, data: png.toString("base64"), mimeType: "image/png" })),
+		],
+		details,
+	});
+
+	async function observe(result: Record<string, unknown>) {
+		const { body, pngs } = await snapshot(result);
+		return shown(body, pngs, { result, terminated, truncated });
+	}
+
+	/** Write `segment_NN.json` (the anchors flash-generate.ts reads) and its overlay next to its state record. */
+	function saveSegment(index: number, reading: Record<string, unknown>, overlay: Buffer | undefined) {
+		const n = String(++segments).padStart(2, "0");
+		const name = `segment_${n}.json`;
+		writeFileSync(
+			join(historyDir, "segments", name),
+			`${JSON.stringify({ segment_index: segments, step: index, ...reading })}\n`,
+		);
+		if (!overlay) return { segment_artifact: name };
+		writeFileSync(join(records[index].dir, `segment_overlay_${n}.png`), overlay);
+		return { segment_artifact: name, overlay_artifact: `segment_overlay_${n}.png` };
 	}
 
 	/** Register a tool; motion tools return a fresh observation, read-only tools return their result. */
@@ -872,11 +1065,30 @@ export default function libero(pi: ExtensionAPI) {
 		}
 	}
 
-	tool(
+	const stepParam = Type.Optional(
+		Type.Integer({ description: "State record (a result's state_step): 0 = initial, -1 = latest (default)" }),
+	);
+	robot.tool(
 		"view_env_state",
-		"Current state with agentview (global layout) and wrist (close range) 1024x1024 images. Pixel (row, col) in these images feed back_project.",
-		Type.Object({}),
-		async () => ({}),
+		"A state with agentview (global layout) and wrist (close range) 1024x1024 images: the current one, or the earlier state record `step` (0 = initial). Pixel (row, col) in these images feed back_project with the same step.",
+		Type.Object({ step: stepParam }),
+		async ({ step: at }) => {
+			if (terminated || truncated)
+				return {
+					content: [
+						{ type: "text", text: `Episode already ended (terminated=${terminated}, truncated=${truncated}).` },
+					],
+					details: { terminated, truncated },
+				};
+			if (!records.length) await snapshot({});
+			const i = past(at);
+			if (i === undefined) return observe({});
+			const dir = records[i].dir;
+			const body = JSON.parse(readFileSync(join(dir, "state.json"), "utf8")) as Record<string, unknown>;
+			const pngs = CAMERA_NAMES.map((c) => readFileSync(join(dir, `${c}_high.png`)));
+			const latest = { latest_state_step: records.length - 1, latest_step: envStep };
+			return shown({ ...body, ...latest }, pngs, { viewed_state_step: i, ...latest, terminated, truncated });
+		},
 	);
 
 	tool(
@@ -1190,7 +1402,7 @@ export default function libero(pi: ExtensionAPI) {
 
 	tool(
 		"view_camera_meta",
-		"Camera calibration (intrinsic K, cam-to-world extrinsic, depth range) for the current step.",
+		"Camera calibration (intrinsic K, cam-to-world extrinsic, depth range) for the current step, or for the state record `step` (high resolution).",
 		Type.Object({
 			camera,
 			resolution: Type.Optional(
@@ -1198,9 +1410,16 @@ export default function libero(pi: ExtensionAPI) {
 					description: "high = 1024 (default), low = 256",
 				}),
 			),
+			step: stepParam,
 		}),
-		async ({ camera: c = "agentview", resolution = "high" }) => {
+		async ({ camera: c = "agentview", resolution = "high", step: at }) => {
 			const size = resolution === "high" ? 1024 : 256;
+			const i = past(at);
+			if (i !== undefined) {
+				if (size !== 1024) return { error: `step ${at} keeps only the high-resolution calibration` };
+				const meta = JSON.parse(readFileSync(join(records[i].dir, `${c}_meta.json`), "utf8"));
+				return { camera: c, resolution, step: i, meta };
+			}
 			return {
 				camera: c,
 				resolution,
@@ -1216,18 +1435,22 @@ export default function libero(pi: ExtensionAPI) {
 
 	tool(
 		"segment",
-		"SAM3 segmentation of the current 1024x1024 camera image. Give exactly one of a text prompt or a positive point [row, col]. The top mask is projected through the depth world map; world_xyz is the median over mask pixels. Returns an overlay image.",
+		"SAM3 segmentation of the current 1024x1024 camera image, or of state record `step`'s. Give exactly one of a text prompt or a positive point [row, col]. The top mask is projected through that state's depth world map; world_xyz is the median over mask pixels. Returns an overlay image; the reading is saved as segment_artifact.",
 		Type.Object({
 			prompt: Type.Optional(Type.String()),
 			point: Type.Optional(Type.Array(Type.Integer(), { minItems: 2, maxItems: 2 })),
 			camera,
 			min_score: num("Default 0.2"),
+			step: stepParam,
 		}),
-		async ({ prompt, point, camera: c = "agentview", min_score = 0.2 }) => {
+		async ({ prompt, point, camera: c = "agentview", min_score = 0.2, step: at }) => {
 			// Models often fill both optional fields; a non-empty prompt wins.
 			const text = prompt?.trim();
 			if (!text && !point) return { error: "give a text prompt or a point [row, col]" };
-			const map = await worldMap(c, 1024);
+			if (records.at(-1)?.envStep !== envStep) await snapshot({});
+			const index = past(at) ?? records.length - 1;
+			const map = await worldMap(c, 1024, at);
+			const query = text ? { mode: "text", prompt: text } : { mode: "point", point };
 			const png = encodePng(map.rgb, 1024, 1024);
 			const res = await call<{
 				found: boolean;
@@ -1240,12 +1463,17 @@ export default function libero(pi: ExtensionAPI) {
 				...(text ? { text_prompt: text } : { point }),
 				min_score,
 			});
-			if (!res.found || !res.mask_png_base64)
+			if (!res.found || !res.mask_png_base64) {
+				const error = res.reason ?? "no mask";
+				const saved = saveSegment(index, { ...query, camera: c, found: false, error }, undefined);
 				return {
 					found: false,
-					error: res.reason ?? "no mask",
+					step: index,
+					error,
 					fallback: "Pick pixels in the image and use back_project.",
+					...saved,
 				};
+			}
 			const mask = decodePngChannel(Buffer.from(res.mask_png_base64, "base64"));
 			if (mask.width !== 1024 || mask.height !== 1024)
 				return { found: true, error: `mask ${mask.width}x${mask.height} does not match the 1024 world map` };
@@ -1265,6 +1493,7 @@ export default function libero(pi: ExtensionAPI) {
 			}
 			const out: Record<string, unknown> = {
 				found: true,
+				step: index,
 				camera: c,
 				score: res.score === undefined ? null : round(res.score, 3),
 				box: res.box,
@@ -1274,7 +1503,10 @@ export default function libero(pi: ExtensionAPI) {
 			};
 			out.world_xyz = pts.length < 10 ? null : [0, 1, 2].map((k) => round(median(pts.map((p) => p[k]))));
 			if (pts.length < 10) out.world_error = `too few valid depth pixels (${pts.length})`;
-			out._image = encodePng(overlay, 1024, 1024);
+			const image = encodePng(overlay, 1024, 1024);
+			const { step: _, ...reading } = out;
+			Object.assign(out, saveSegment(index, { ...query, ...reading }, image));
+			out._image = image;
 			return out;
 		},
 		false,
@@ -1282,7 +1514,7 @@ export default function libero(pi: ExtensionAPI) {
 
 	tool(
 		"back_project",
-		"World xyz of a pixel (row, col; row 0 = top) in the current camera image, from the depth world map. Region mode: row_range + col_range (+ optional z_min/z_max) returns the midpoint of world xy over that window, e.g. a container's interior center. Pixels from the 1024 images use resolution high (default).",
+		"World xyz of a pixel (row, col; row 0 = top) in the current camera image, or in state record `step`'s (the state_step of the image the pixel came from), from that state's depth world map. Region mode: row_range + col_range (+ optional z_min/z_max) returns the midpoint of world xy over that window, e.g. a container's interior center. Pixels from the 1024 images use resolution high (default).",
 		Type.Object({
 			row: int("Pixel row"),
 			col: int("Pixel column"),
@@ -1292,10 +1524,23 @@ export default function libero(pi: ExtensionAPI) {
 			col_range: Type.Optional(Type.Array(Type.Integer(), { minItems: 2, maxItems: 2 })),
 			z_min: num("Region mode: keep pixels with world z >= z_min"),
 			z_max: num("Region mode: keep pixels with world z <= z_max"),
+			step: stepParam,
 		}),
-		async ({ row, col, camera: c = "agentview", resolution = "high", row_range, col_range, z_min, z_max }) => {
+		async ({
+			row,
+			col,
+			camera: c = "agentview",
+			resolution = "high",
+			row_range,
+			col_range,
+			z_min,
+			z_max,
+			step: s,
+		}) => {
 			const size = resolution === "high" ? 1024 : 256;
-			const map = await worldMap(c, size);
+			const map = await worldMap(c, size, s);
+			const shownStep = past(s) ?? (records.at(-1)?.envStep === envStep ? records.length - 1 : undefined);
+			const stepOf = shownStep === undefined ? {} : { step: shownStep };
 			const at = (r: number, cc: number) => {
 				const i = (r * size + cc) * 3;
 				return [map.xyz[i], map.xyz[i + 1], map.xyz[i + 2]];
@@ -1320,6 +1565,7 @@ export default function libero(pi: ExtensionAPI) {
 				return {
 					camera: c,
 					resolution,
+					...stepOf,
 					mode: "region",
 					center_xyz: [
 						round((Math.min(...axis(0)) + Math.max(...axis(0))) / 2),
@@ -1335,7 +1581,7 @@ export default function libero(pi: ExtensionAPI) {
 				return { error: `pixel (${row},${col}) out of bounds for ${size}x${size}` };
 			const p = at(row, col);
 			if (!valid(p)) return { error: `invalid world xyz at (${row},${col}); pick another pixel` };
-			return { camera: c, resolution, pixel: [row, col], world_xyz: p.map((v) => round(v)) };
+			return { camera: c, resolution, ...stepOf, pixel: [row, col], world_xyz: p.map((v) => round(v)) };
 		},
 		false,
 	);
@@ -1552,6 +1798,8 @@ export default function libero(pi: ExtensionAPI) {
 	/** Start (or attach to) the env server and restore the initial scene; returns the tools to activate. */
 	async function startEpisode() {
 		const { suite, task, seed } = robot.task;
+		if (!(LIBERO_PROMPTS as readonly string[]).includes(variant()))
+			throw new Error(`--libero-prompt must be one of ${LIBERO_PROMPTS.join(", ")}, not ${variant()}`);
 		vla = new RpcClient(flag("vla", ""));
 		for (const a of VLA_ADAPTERS) if (flag(a.flag, "")) adapters.set(a.tool, new RpcClient(flag(a.flag, "")));
 		for (const k of Object.keys(vlaUsed)) delete vlaUsed[k];

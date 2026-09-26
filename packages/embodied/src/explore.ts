@@ -39,7 +39,7 @@ type Robot = {
 	/** The robot's exploration instructions, appended to its system prompt and rendered like memory text; its `[tool:name]` blocks follow the active tools. */
 	prompt: () => string;
 	/** A DISTIL pass sent once the cell is solved (`[tool:name]` blocks as in `prompt`); `finish` waits for it and its suite draft. */
-	distil?: string;
+	distil?: string | (() => string);
 	/** Lines of the robot's single-episode prompt that exploration replaces. */
 	rewrite?: [RegExp, string][];
 	/** Defaults of --explore-sessions and --explore-attempts-per-session (3 and 5). */
@@ -134,6 +134,7 @@ export function explore(pi: ExtensionAPI, robot: Robot) {
 	const budget = () => Number(pi.getFlag("explore-attempts-per-session")) || 0;
 	const sessions = () => Math.max(1, Number(pi.getFlag("explore-sessions")) || 1);
 	const dir = () => robot.render("{{output_dir}}/attempts/{{recipe_tag}}");
+	const distil = () => (typeof robot.distil === "function" ? robot.distil() : robot.distil);
 	let archived = 0;
 	let nudges = 0;
 	let nagged = false;
@@ -160,7 +161,7 @@ export function explore(pi: ExtensionAPI, robot: Robot) {
 		const b = budget();
 		if (robot.aborted?.()) return undefined;
 		if (p.solved) {
-			if (!robot.distil) return undefined;
+			if (!distil()) return undefined;
 			if (!p.distilled) return "finish refused: run the DISTIL pass first; its instructions follow.";
 			if (nagged || existsSync(robot.render("{{memory_inbox}}/suite_{{recipe_tag}}_draft.md"))) return undefined;
 			nagged = true;
@@ -237,7 +238,7 @@ export function explore(pi: ExtensionAPI, robot: Robot) {
 
 	// The DISTIL pass starts in the turn that solved the cell, even when that turn also called finish.
 	pi.on("turn_end", (event, ctx) => {
-		if (!on() || !robot.distil) return undefined;
+		if (!on() || !distil()) return undefined;
 		const p = progress(ctx.sessionManager.getBranch());
 		if (
 			!p.solved ||
@@ -248,7 +249,7 @@ export function explore(pi: ExtensionAPI, robot: Robot) {
 		return {
 			entries: [
 				...event.entries,
-				note("explore_distil", toolSections(robot.render(robot.distil), pi.getActiveTools())),
+				note("explore_distil", toolSections(robot.render(distil() ?? ""), pi.getActiveTools())),
 			],
 			continue: true,
 		};
@@ -262,7 +263,7 @@ export function explore(pi: ExtensionAPI, robot: Robot) {
 		let text: string | undefined;
 		if (p.finished || robot.aborted?.()) text = undefined;
 		else if (p.solved)
-			text = robot.distil
+			text = distil()
 				? "The cell is solved. Complete the DISTIL pass, then call `finish`."
 				: "The cell is solved. Write the memory proposals, then call `finish`.";
 		else if (!b || p.attempt < b)

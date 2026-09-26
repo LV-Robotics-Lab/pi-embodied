@@ -466,3 +466,49 @@ test("eval.sh keys the units mode on --units-plugins and the summary on a no-wri
 	assert.equal(r.status, 1);
 	assert.match(r.stdout, /refusing to summarize: .* mixes configurations .*units=true\/no-wrist:recovery/);
 });
+
+test("libero/eval.sh records --libero-prompt (rpent by default) and never mixes prompts in one out dir", () => {
+	const positional = ["libero_10_task", "0", "0"];
+	const run1 = (args: string[]) => run("libero", positional, "libero_10_task_t0_s0", args);
+	assert.equal(run1([]).result?.libero_prompt, "rpent");
+	const compact = run1(["--libero-prompt", "compact"]);
+	assert.equal(compact.result?.libero_prompt, "compact");
+	assert.ok(compact.argv?.includes("compact"), "pi runs the compact prompt");
+	assert.equal(run1(["--libero-prompt=compact"]).result?.libero_prompt, "compact");
+	const bad = run1(["--libero-prompt", "long"]);
+	assert.equal(bad.status, 2);
+	assert.equal(bad.argv, undefined, "pi never ran");
+	for (const [first, second] of [
+		[[], ["--libero-prompt", "compact"]],
+		[["--libero-prompt=compact"], []],
+	]) {
+		const [a, b] = rerun("libero", positional, {}, first, second);
+		assert.equal(a.status, 0, a.stdout + a.stderr);
+		assert.equal(b.status, 1);
+		assert.match(b.stderr, /--libero-prompt/);
+	}
+	const [, same] = rerun("libero", positional, {}, ["--libero-prompt", "compact"], ["--libero-prompt=compact"]);
+	assert.equal(same.status, 0, same.stdout + same.stderr);
+	assert.match(same.stdout, /\/prompt=compact/);
+	// A result from before the flag ran the compact prompt: an rpent run needs another out dir.
+	const dir = mkdtempSync(join(tmpdir(), "eval-"));
+	mkdirSync(join(dir, "out", "libero_10_task_t0_s0"), { recursive: true });
+	const old = {
+		status: "success",
+		model: null,
+		thinking: null,
+		max_turns: 0,
+		time_limit: 0,
+		units: "false",
+		stateless: false,
+	};
+	writeFileSync(join(dir, "out", "libero_10_task_t0_s0", "result.json"), JSON.stringify(old));
+	const script = new URL("../src/libero/eval.sh", import.meta.url).pathname;
+	const again = (args: string[]) =>
+		spawnSync("bash", [script, join(dir, "out"), ...positional, ...args], {
+			env: { ...process.env, PI: "false", TIME_LIMIT: "0" },
+			encoding: "utf8",
+		});
+	assert.equal(again([]).status, 1);
+	assert.match(again(["--libero-prompt", "compact"]).stdout, /\/prompt=compact: success 1\/1/);
+});

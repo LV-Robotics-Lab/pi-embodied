@@ -1,0 +1,190 @@
+{
+	"source": "RPent eecf206 robots/libero/prompts/{evaluate,explore}.py and robots/libero/guides; each phrase must appear in the rendered prompt with every tool active (test/libero-prompt.test.ts)",
+	"evaluate": {
+		"ROLE_AND_EVALUATION (evaluate.py:23)": [
+			"running\nin PERCEPTION-ISOLATED mode: you are NOT given object world coordinates",
+			"SINGLE-ATTEMPT MODE",
+			"you get **exactly ONE episode**",
+			"walk the Pi0 prompt ladder",
+			"**STOP instead and write the audit**"
+		],
+		"PROVEN_LEVERS (evaluate.py:40)": [
+			"These are battle-tested on seed 0 of THIS suite",
+			"A recipe read without\nits memory is half the picture; consult BOTH before planning.",
+			"**GRIPPER SIGN**",
+			"`set_gripper +1`\n  (steps 8-12) firms the grip after a pick; for a laterally-weak CAN use steps<=5.",
+			"**`move_pose` defaults gripper to OPEN (-1) if you omit it**",
+			"**`move_pose` threads the OSC IK singularity that `move_to` walls at**",
+			"**MUGS / BOWLS / CUPS grasp at the RIM, not the center**",
+			"`eef_y = object_y + 0.045` so Pi0 rim-hooks",
+			"a HIGH `lift_thresh` (e.g. 999) + `gripper_closed_thresh:0` turns it into a\n  generic closed-loop CONTACT skill",
+			"**SWAP-PERTURBED scenes (suite `*_swap`)**",
+			"IDENTIFY-then-GRASP",
+			"SAM3 scores ~0.02-0.06 on brand\n  nouns",
+			"**\"left\"/\"right\" in libero_10 is EGOCENTRIC (robot frame): +y = robot-LEFT =\n  image-RIGHT.**",
+			"SUSPECT WRONG-TARGET\n  before wrong-physics",
+			"Containers can be MOVABLE",
+			"PER-TASK RECIPES THAT WORKED AT SEED 0",
+			"t4 SINGLE-ATTEMPT LEVERS",
+			"GRASP-ONLY pi0_pick: short prompt (\"grasp the yellow mug\"",
+			"RE-ISSUE pi0_pick rather than raising max_chunks",
+			"Measure the held-mug offset PER PICK",
+			"Plates MOVE per seed (y=±0.21 at s0, ±0.30 at s8)",
+			"stove (t2): turn the knob with `pi0_pick \"turn on the stove\", lift_thresh:999,",
+			"moka→stove (t8): grasp body, carry LOW (~4cm lift) in tiny hops",
+			"bottle→bottom drawer + close (t3): the drawer In-region is SHALLOW",
+			"mug→microwave + close (t9): the only UNSOLVED seed-0 cell"
+		],
+		"RUNTIME (evaluate.py:154)": [
+			"Do NOT issue file-based protocol commands.",
+			"Do NOT emit plain-text pseudo tool calls or JSON action commands.",
+			"Storage paths are internal; do not",
+			"Step `0` is the initial state; step `-1` (the default) selects the\nlatest state."
+		],
+		"GOAL (evaluate.py:185)": ["YOUR GOAL: produce top-level `terminated == true` in ONE episode."],
+		"RULES (evaluate.py:189)": [
+			"Rule 0 — USE IMAGES.",
+			"Rule 1 — Pi0 is ONLY for the grasp.",
+			"NEVER let Pi0 finish the place.",
+			"The GT object-lift oracle leaks privileged coords",
+			"Rule 1b — JUDGE THE GRASP from perception, NOT from a name.",
+			"fingers closed but NOT fully shut (~0.01–0.05 gap)",
+			"`pi0_pick.success` (eef-lift + gripper-closure heuristic) is a HINT, not\n   proof",
+			"Rule 2 — Inspect THEN act. Call `view_env_state({\"step\": 0})`",
+			"Rule 2b — NEVER read the BDDL files / import the benchmark / query env object\n   poses.",
+			"Rule 2c — GROUND THE TARGET BY ITS SPATIAL RELATION, not by its name.",
+			"its higher world-z from `back_project`",
+			"Rule 2d — CLASSIFY THE DESTINATION SURFACE SEMANTICALLY (RGB) BEFORE PLACING.",
+			"a non-firing predicate is as often a\n   wrong-SURFACE error as a wrong-object one.",
+			"Rule 3 — Pi0 IS the delivery service; walk the prompt ladder before scripting:",
+			"Rule 4 — ⛔ SINGLE ATTEMPT, NO RESET",
+			"NO teleport primitives (set_object_pose / articulate_to / js_move_to /\n   carry_object"
+		],
+		"LOCALIZATION (evaluate.py:287)": [
+			"This is the core of perception-isolated mode.",
+			"back_project({\"row\": ROW, \"col\": COL, \"step\": NN})",
+			"NEVER mix hi-res pixels with low-res world maps or\n   vice versa.",
+			"The returned value is the object's SURFACE point under that pixel.",
+			"Sample a few pixels on the object and median the world xy",
+			"ALWAYS apply the manipulation offsets from memory to the PERCEIVED position"
+		],
+		"PERCEPTION_ALGORITHM (evaluate.py:316)": [
+			"`agentview_identity_wrist_geometry_except_basket`",
+			"Agentview chooses WHAT the target is; wrist refines WHERE",
+			"GLOBAL SEMANTIC PASS (agentview hi-res)",
+			"COARSE XYZ (agentview): pick 3-8 pixels",
+			"This median is the IDENTITY ANCHOR",
+			"accept a wrist xy ONLY if it is within ~3-5cm of the agentview anchor",
+			"BASKET SPECIAL CASE",
+			"MANDATORY PRE-TASK PERCEPTION PASS — DO NOT START MANIPULATION UNTIL THIS\n   TABLE EXISTS",
+			"FINAL READY CHECK before the first pick/place",
+			"Do NOT blindly average them"
+		],
+		"WORKFLOW_STEPS (evaluate.py:385)": [
+			"READ THE GUIDES (the PERCEPTION-compatible guides",
+			"/strict_hybrid_guide.md`",
+			"/pro_hybrid_guide.md`",
+			"/env_calibration.md`",
+			"INSPECT INITIAL STATE: call `view_env_state({\"step\": 0})`",
+			"RUN THE MANDATORY PRE-TASK PERCEPTION PASS (FIRST-STEP ALGORITHM above)",
+			"EXECUTE one primitive at a time by calling its structured tool:",
+			"ALLOWED PRIMITIVES (physics-only; full schemas in the tool list/guides):",
+			"INFRA NOTE: `pi0_doubled` IS implemented and callable in this runtime",
+			"SAM3 localization aid — `segment` (no robot motion)",
+			"PROMPT PHRASING (SAM3 is sensitive)",
+			"RECOVERY (in-place ONLY — no reset)",
+			"never one long push — it NaNs MuJoCo",
+			"WHEN top-level `terminated == true` in the latest tool result:"
+		],
+		"KEY_HYPERPARAMETERS (evaluate.py:507)": [
+			"Single-step xy within ±0.30 or OSC flips IK; split long traversals.",
+			"lift_thresh 0.05 (flat) / 0.08 (slippery tall bottles).",
+			"step_clip 0.025 (empty/box) / 0.015 (cans) / 0.012 (tall bottles).",
+			"Frame: state.robot0_eef_pos[2] ≈ 0.68 LIVING_ROOM / 1.17 KITCHEN / 0.26 object.",
+			"BOWL: eef_y = plate_y + 0.045. TALL BOTTLES: carry z=0.30, drop without descending.",
+			"Approach high-then-vertical; recover by re-pick, not hover."
+		],
+		"OUTPUT_DISCIPLINE (evaluate.py:514)": [
+			"Brief reasoning before each tool call (1-2 sentences): observation → decision.",
+			"Don't re-read files already in this session.",
+			"Save the audit BEFORE calling `finish`."
+		],
+		"user.py CELL/MODE/BEGIN": ["- audit:      ", "Localize the target, then plan and execute."]
+	},
+	"evaluate_hf": {
+		"WORKFLOW_STEPS[0] READ MEMORY FIRST (evaluate.py:386)": [
+			"READ MEMORY FIRST — a general skill library",
+			"SEARCH the library yourself rather than\n   reading the index alone",
+			"⭐ MANDATORY — do this even when a seed-0 recipe exists",
+			"RECORD the exact memory file name(s) you read"
+		],
+		"WORKFLOW_STEPS[2] SEED-0 REFERENCES (evaluate.py:419)": [
+			"READ SEED-0 STRATEGY REFERENCES IF PRESENT, then solve from scratch."
+		]
+	},
+	"evaluate_local": {
+		"LOCAL_MEMORY_PROFILE (evaluate.py:533)": [
+			"MEMORY PROFILE — LOCAL SUITE + TASK + GLOBAL",
+			"Use the LOCAL exploration corpus for this evaluation.",
+			"Never read\n`_internal/` during evaluation."
+		],
+		"STEP_READ_LOCAL_MEMORY (evaluate.py:548)": [
+			"READ EACH AVAILABLE LOCAL MEMORY LAYER FIRST:",
+			"If a layer is absent, state that\n   explicitly and continue with the available validated layers."
+		]
+	},
+	"explore": {
+		"ROLE (explore.py:54)": [
+			"MULTI-ATTEMPT EXPLORE MODE",
+			"**EVERY TASK IN THIS BENCHMARK IS PHYSICALLY SOLVABLE.**",
+			"Handing off\n> early with good notes is a better outcome than grinding to a wrong verdict."
+		],
+		"GOAL (explore.py:74)": [
+			"Memory is produced in TWO STAGES",
+			"WHY THE SECOND STAGE EXISTS",
+			"`**Why:** observed, cause unknown` is a legitimate and useful entry."
+		],
+		"RULE_4 (explore.py:116)": [
+			"Rule 4 — 🔁 MULTI-ATTEMPT.",
+			"An unrecoverable EPISODE is not an unsolvable CELL.",
+			"RESET ALSO KEEPS THE RECIPE CLEAN.",
+			"WHEN TO HAND OFF.",
+			"the trained contact skill (`pi0_doubled`), from a clean pose;",
+			"That sentence is the most valuable thing you leave the\n   next agent."
+		],
+		"STEP_READ_MEMORY (explore.py:181)": ["**THIS TASK**", "**GLOBAL**"],
+		"STEP_PRIMITIVES (explore.py:205)": ["AND `reset` (🔁 allowed here"],
+		"STEP_RECOVERY (explore.py:213)": ["RECOVERY (in-place FIRST, then reset)"],
+		"STEP_CLOSE_OUT (explore.py:221)": [
+			"CLOSE OUT EVERY FAILED ATTEMPT",
+			"ARCHIVE IT.",
+			"NOTE WHAT YOU LEARNED, NOW",
+			"These are NOTES, not conclusions."
+		],
+		"STEP_FINISH (explore.py:251)": ["Claim NO trajectory"],
+		"shared sections (explore.py:431)": [
+			"These are battle-tested on seed 0 of THIS suite",
+			"Rule 2d — CLASSIFY THE DESTINATION SURFACE",
+			"This is the core of perception-isolated mode.",
+			"`agentview_identity_wrist_geometry_except_basket`",
+			"READ THE GUIDES (the PERCEPTION-compatible guides",
+			"READ SEED-0 STRATEGY REFERENCES IF PRESENT",
+			"Approach high-then-vertical; recover by re-pick, not hover."
+		]
+	},
+	"distil": {
+		"STEP_DISTIL (explore.py:263)": [
+			"DISTIL — consolidate this cell into memory. Budget ~25 tool calls",
+			"NAMING for every md file: the `id` is the BARE slug",
+			"FRONTMATTER MUST PARSE AS YAML.",
+			"TASK LAYER.",
+			"SUITE LAYER -> ",
+			"Attempt numbers matter: \"A3 died here\" beats\n                                    \"be careful\". Append rows, never rewrite.",
+			"GLOBAL LAYER -> ",
+			"\"X appeared impossible until Y\"",
+			"DEDUPE — before writing any new global file",
+			"Corroboration is how a memory earns higher confidence",
+			"COVERED BUT CONTRADICTED"
+		]
+	}
+}

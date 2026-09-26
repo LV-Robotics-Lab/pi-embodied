@@ -22,6 +22,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
 import { template } from "../context-version.ts";
 import { ikArgs, type Reach, registerIkFlag } from "../ik.ts";
+import { SAM3 } from "../model-services.ts";
 import { decodePngChannel, encodePng } from "../png.ts";
 import { detectionActive, detectionArgs, detectionTools, registerDetectionFlags } from "../primitives/detections.ts";
 import { graspActive, graspArgs, graspTools, mountGraspTool, registerGraspFlags } from "../primitives/grasp.ts";
@@ -166,6 +167,7 @@ export default function robosuite(pi: ExtensionAPI) {
 	const twoArm = () => TWO_ARM.includes(robot.task.task as Task);
 	const robot = defineRobot(pi, {
 		name: "robosuite",
+		services: { models: [SAM3] },
 		task: ["task", "seed"],
 		keepImages: 4,
 		video: true,

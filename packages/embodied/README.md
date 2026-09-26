@@ -195,6 +195,17 @@ Shared modules:
   actions natively; Piper and Franka run ee targets as their bounded relative moves (Piper: yaw
   only) and have no joint command. RLDX (RoboCasa) and LingBot (RoboTwin) keep their own clients
   for now; new VLAs go through XPolicyLab.
+- `src/model-services.ts`: model-service auto-start (RPent's `robots/runtime.py`), opt-in with
+  `--serve-models vla,sam3,molmo` (or `all`; RoboCasa's VLA is `rldx`) on the simulators: each named
+  server starts on its endpoint flag's loopback port (`--vla`, `--sam3`, `--molmo`, `--rldx`), all
+  at once, and the robot starts only once every one answers `healthz`; one that exits or misses
+  `--serve-timeout` stops them all and the start fails closed. A port that already serves is refused
+  (attach to it without `--serve-models`). `--serve-python molmo=<venv>/bin/python` (Molmo's own
+  venv), `--serve-cuda-device`, and `--serve-lock <file>` (default `$PI_EMBODIED_GPU_LOCK`; on a
+  shared GPU box its gpu1.lock) holds flock(1) on the file while the models load and run, after
+  `--serve-min-free <MiB>` found that much free on the GPU without the lock (checked again under it;
+  not with eval-parallel.sh's `LOCK` on the same file, which that run already holds). Logs go to
+  `--serve-log-dir`. `serve.sh` stays the way to share one server across an eval batch.
 - `src/dashboard/`: live web dashboard (`--dashboard`) for any robot. Operator tools: withdraw a
   message still in pi's queue (`POST /message/withdraw`), call one robot tool by hand while the agent
   is idle or taken over (`GET /primitives`, `POST /primitive`; the robot's gates apply, one robot call

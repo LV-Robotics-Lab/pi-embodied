@@ -36,6 +36,7 @@ import { template } from "../context-version.ts";
 import { anchorPlane, type CameraMeta, pixelOnPlane, unletterbox } from "../flash/plane.ts";
 import { recipeFlash } from "../flash/recipe.ts";
 import { ikArgs, previewReachTool, type Reach, registerIkFlag } from "../ik.ts";
+import { MOLMO } from "../model-services.ts";
 import { encodePng } from "../png.ts";
 import { detectionActive, detectionArgs, detectionTools, registerDetectionFlags } from "../primitives/detections.ts";
 import { mountGraspTool } from "../primitives/grasp.ts";
@@ -615,6 +616,7 @@ export default function maniskill(pi: ExtensionAPI) {
 		`maniskill_${robotId === "panda" ? "" : `${robotId}_`}${tagPart(robot.task["env-id"])}${robot.task.scene ? `_${tagPart(robot.task.scene)}` : ""}_s${seed}`;
 	const robot = defineRobot(pi, {
 		name: "maniskill",
+		services: { models: [MOLMO] },
 		task: ["env-id", "seed", "scene"],
 		// The env server's primitive registry (code.api), recorded per episode.
 		codeApi: () => env,

@@ -22,6 +22,7 @@ import { type Static, type TSchema, Type } from "typebox";
 import { template } from "../context-version.ts";
 import { recipeFlash } from "../flash/recipe.ts";
 import type { FlywheelObs, FlywheelSpec } from "../flywheel.ts";
+import { MOLMO } from "../model-services.ts";
 import { encodePng } from "../png.ts";
 import {
 	detectionActive,
@@ -460,6 +461,7 @@ export default function robotwin(pi: ExtensionAPI) {
 
 	const robot = defineRobot(pi, {
 		name: "robotwin",
+		services: { models: [MOLMO] },
 		task: ["task-name", "task-config", "seed"],
 		// The env server's primitive registry (code.api), recorded per episode.
 		codeApi: () => env,

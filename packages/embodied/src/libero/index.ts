@@ -25,6 +25,7 @@ import {
 	reachRefusal,
 	registerIkFlag,
 } from "../ik.ts";
+import { MOLMO, pi05, SAM3 } from "../model-services.ts";
 import { decodePngChannel, encodePng } from "../png.ts";
 import { graspAdvisorTool } from "../primitives/advisor.ts";
 import {
@@ -351,6 +352,7 @@ export default function libero(pi: ExtensionAPI) {
 	const tag = () => memoryTag(robot.task.suite, robot.task.task, robot.task.seed, flag("libero-type", "pro"));
 	const robot = defineRobot(pi, {
 		name: "libero",
+		services: { models: [pi05("libero"), SAM3, MOLMO] },
 		task: ["suite", "task", "seed"],
 		// The env server's primitive registry (code.api), recorded per episode.
 		codeApi: () => env,

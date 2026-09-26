@@ -27,6 +27,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { template } from "../context-version.ts";
+import { MOLMO, SAM3 } from "../model-services.ts";
 import { decodePngChannel, encodePng } from "../png.ts";
 import { detectionActive, detectionArgs, detectionTools, registerDetectionFlags } from "../primitives/detections.ts";
 import { mountGraspTool } from "../primitives/grasp.ts";
@@ -234,6 +235,7 @@ export default function behavior(pi: ExtensionAPI) {
 	const tag = (seed: string) => `behavior_${robot.task.task}_s${seed}`;
 	const robot = defineRobot(pi, {
 		name: "behavior",
+		services: { models: [SAM3, MOLMO] },
 		task: ["task", "seed"],
 		// The env server's primitive registry (code.api, services robots/behavior/primitives.py), recorded per episode.
 		codeApi: () => env,

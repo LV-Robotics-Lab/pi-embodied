@@ -21,6 +21,7 @@ import { type Static, type TSchema, Type } from "typebox";
 import { template } from "../context-version.ts";
 import { recipeFlash } from "../flash/recipe.ts";
 import type { FlywheelObs, FlywheelSpec } from "../flywheel.ts";
+import { MOLMO, type ModelService } from "../model-services.ts";
 import { encodePng } from "../png.ts";
 import {
 	detectionActive,
@@ -136,6 +137,19 @@ function pinv3(J: number[][]): number[][] {
 }
 
 /** RpcClient bound to one RPC session (the RLDX server keys policy memory/RTC state by it). */
+/** The RLDX-1 VLA server (robocasa/serve.sh), for --serve-models rldx. */
+const RLDX: ModelService = {
+	name: "rldx",
+	flag: "rldx",
+	module: "pi_embodied_services.robots.robocasa.vla_server",
+	args: () => {
+		if (!process.env.RLDX_MODEL_PATH)
+			throw new Error("--serve-models rldx: set RLDX_MODEL_PATH (the RLDX-1-FT-RC365 checkpoint)");
+		return ["--model-path", process.env.RLDX_MODEL_PATH];
+	},
+	env: () => ({ NO_ALBUMENTATIONS_UPDATE: "1" }),
+};
+
 function sessionRpc(endpoint: string): RpcClient {
 	const rpc = new RpcClient(endpoint);
 	rpc.session = `rpc_${randomUUID().replaceAll("-", "")}`;
@@ -265,6 +279,8 @@ export default function robocasa(pi: ExtensionAPI) {
 
 	const robot = defineRobot(pi, {
 		name: "robocasa",
+		// RLDX-1 reads its checkpoint from RLDX_MODEL_PATH, as robocasa/serve.sh does.
+		services: { models: [RLDX, MOLMO], python: () => flag("robocasa-python", "python") },
 		task: ["task-name", "split", "seed", "scene"],
 		// The env server's primitive registry (code.api), recorded per episode.
 		codeApi: () => env,

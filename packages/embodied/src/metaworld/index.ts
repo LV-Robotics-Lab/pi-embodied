@@ -20,6 +20,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { template } from "../context-version.ts";
 import { sideBySide } from "../maniskill/index.ts";
+import { SAM3 } from "../model-services.ts";
 import { decodePngChannel, encodePng } from "../png.ts";
 import { detectionActive, detectionArgs, detectionTools, registerDetectionFlags } from "../primitives/detections.ts";
 import { graspActive, graspArgs, graspTools, mountGraspTool, registerGraspFlags } from "../primitives/grasp.ts";
@@ -222,6 +223,7 @@ export default function metaworld(pi: ExtensionAPI) {
 	const tag = (seed: string) => `metaworld_${robot.task.task}_s${seed}`;
 	const robot = defineRobot(pi, {
 		name: "metaworld",
+		services: { models: [SAM3] },
 		task: ["task", "seed"],
 		keepImages: 4,
 		video: true,

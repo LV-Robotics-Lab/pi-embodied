@@ -25,6 +25,7 @@ import { type FlashHook, flash } from "./flash/index.ts";
 import { type FlywheelSpec, flywheel } from "./flywheel.ts";
 import { human } from "./human.ts";
 import { type MemoryOptions, memory } from "./memory/index.ts";
+import { type ModelServicesSpec, modelServices } from "./model-services.ts";
 import { objectMemory } from "./objects.ts";
 import { approval, operator } from "./operator.ts";
 import { CODE_API_ENTRY, CODE_API_EVENT, type CodeApi, fetchCodeApi } from "./primitives/registry.ts";
@@ -190,6 +191,8 @@ export type RobotSpec = {
 	 * (`privileged` under --privileged), records it and puts its digest in the result.
 	 */
 	codeApi?: () => RpcClient | undefined;
+	/** The model servers `--serve-models` may start before `start` attaches to them (../model-services.ts). */
+	services?: ModelServicesSpec;
 };
 
 /**
@@ -332,6 +335,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		scene: () => task,
 		step: () => (ready ? spec.status?.().step : undefined),
 	});
+	const models = spec.services ? modelServices(pi, spec.services) : undefined;
 	/** A successful scene reset also restarts the units state (accumulated yaw, gripper, plan). */
 	const resetsUnits =
 		<A extends unknown[], R>(reset: (...args: A) => Promise<R>) =>
@@ -482,6 +486,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		if (s) await shutdown(s.proc, s.rpc);
 		await xp?.stop();
 		await spec.stop?.();
+		await models?.stop();
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
@@ -492,6 +497,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 			const misconfigured = un?.configError() ?? co?.configError() ?? ap.configError(ctx.hasUI);
 			if (misconfigured) throw new Error(misconfigured);
 			api = undefined;
+			await models?.start();
 			const tools = await spec.start(ctx);
 			// The robot's configuration (its cameras) is known now: the units read its wrist view again.
 			un?.started(ctx);

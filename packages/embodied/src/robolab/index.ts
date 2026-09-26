@@ -31,6 +31,7 @@ import { Type } from "typebox";
 import { template } from "../context-version.ts";
 import { anchorPlane, type CameraMeta, pixelOnPlane } from "../flash/plane.ts";
 import { recipeFlash } from "../flash/recipe.ts";
+import { MOLMO } from "../model-services.ts";
 import { encodePng } from "../png.ts";
 import { detectionActive, detectionArgs, detectionTools, registerDetectionFlags } from "../primitives/detections.ts";
 import { mountGraspTool } from "../primitives/grasp.ts";
@@ -159,6 +160,7 @@ export default function robolab(pi: ExtensionAPI) {
 	};
 	const robot = defineRobot(pi, {
 		name: "robolab",
+		services: { models: [MOLMO] },
 		task: ["task", "seed"],
 		// The env server's primitive registry (code.api), recorded per episode.
 		codeApi: () => env,

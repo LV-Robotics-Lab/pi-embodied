@@ -14,8 +14,8 @@
 #
 # Modified by pi-embodied: import paths rewritten.
 
-"""Command-line entry point for Flywheel data: validate one raw episode, or export a selection of
-a robot's raw episodes to a LeRobot v3.0 dataset."""
+"""Command-line entry point for Flywheel data: validate one raw episode, export a selection of
+a robot's raw episodes to a LeRobot v3.0 dataset, or export eval runs' planner sessions as SFT data."""
 
 from __future__ import annotations
 
@@ -87,7 +87,43 @@ def main(argv: list[str] | None = None) -> int:
         help="comma-separated units for runs recorded before the recorder wrote theirs",
     )
 
+    planner = commands.add_parser(
+        "export-planner",
+        help="export eval runs' planner sessions as SFT data (LLaMA-Factory ShareGPT or OpenAI/VeRL)",
+    )
+    planner.add_argument(
+        "runs", type=Path, nargs="+", help="eval output dirs (searched recursively)"
+    )
+    planner.add_argument("--output", type=Path, required=True)
+    planner.add_argument("--format", choices=("sharegpt", "openai"), default="sharegpt")
+    planner.add_argument(
+        "--include-failures",
+        action="store_true",
+        help="also export environment-judged failures (reward 0)",
+    )
+    planner.add_argument(
+        "--keep-images",
+        type=int,
+        help="keep only the newest N images (the robot's --keep-images); default all",
+    )
+    planner.add_argument(
+        "--name", default="pi_embodied_planner", help="dataset_info.json entry name"
+    )
+
     args = parser.parse_args(argv)
+    if args.command == "export-planner":
+        from pi_embodied_services.flywheel.planner_export import export_planner
+
+        result = export_planner(
+            args.runs,
+            args.output,
+            fmt=args.format,
+            include_failures=args.include_failures,
+            keep_images=args.keep_images,
+            name=args.name,
+        )
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
     if args.command == "export-gumi":
         from pi_embodied_services.flywheel.gumi import export_gumi
 

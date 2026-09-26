@@ -466,6 +466,22 @@ def rl_rgb(obs: dict, camera_name: str) -> np.ndarray:
     return np.ascontiguousarray(arr[..., :3].astype(np.uint8))
 
 
+def rl_depth(env: Any, camera_name: str) -> np.ndarray:
+    """One camera's metric depth (its ``distance_to_image_plane`` output, ``[num_envs, H, W, 1]``)
+    as HW float32 metres, 0 where the ray hits nothing."""
+    out = env.scene[camera_name].data.output
+    if "distance_to_image_plane" not in out:
+        raise KeyError(
+            f"camera {camera_name!r} renders no depth; outputs: {sorted(out)}"
+        )
+    arr = to_np(out["distance_to_image_plane"])
+    if arr.ndim == 4:
+        arr = arr[0]
+    depth = arr.reshape(arr.shape[:2]).astype(np.float32)
+    depth[~np.isfinite(depth)] = 0.0
+    return np.ascontiguousarray(depth)
+
+
 # The body the relative-IK action drives: the Panda hand first (franka.py), else the Robotiq
 # flange of RoboLab's stock DroidCfg.
 EE_BODY_CANDIDATES = ("panda_hand", "base_link")

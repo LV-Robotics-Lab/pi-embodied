@@ -445,7 +445,7 @@ heading is reached. Each observation is `{"agentview" uint8[H,W,3], "wrist" uint
 | `env.move_delta` | `delta_xyz` float[3] (m, base frame; refused beyond 0.3 m), kw `gripper` "open"/"close"/null, `return_frames=false` | obs + `{"commanded_m", "moved_m", "decisions", "control_steps"[, "frames" (agentview per decision), "cancelled", "error"]}` |
 | `env.rotate_delta` | `yaw` float (rad about base +z; clipped to 0.3), kw `return_frames=false` | obs + `{"requested_yaw", "commanded_yaw", "yaw" (executed, measured), "moved_m" (drift), "decisions", "control_steps"[, "clipped", "frames", "cancelled", "error"]}` |
 | `env.state` | - | the obs without images (no stepping) |
-| `env.render_camera` | `camera_name="agentview"` or `"wrist"` | the latest frame |
+| `env.render_camera` | `camera_name="agentview"` or `"wrist"`, `depth=false` | the latest frame, or `[rgb, depth_m float32]` (each camera's `distance_to_image_plane`, 0 = no hit, turned like the rgb) |
 | `env.get_camera_meta` | `camera_name="agentview"` | `{"intrinsic_K" 3x3, "extrinsic_cam2world" 4x4, "width", "height"}` |
 | `env.get_task_language` | - | str |
 | `env.ground_truth_poses` | kw `names=null` | the scene's object poses (behind pi's `--privileged`) |

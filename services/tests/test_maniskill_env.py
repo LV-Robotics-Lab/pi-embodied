@@ -509,3 +509,34 @@ def test_a_robot_without_a_wrist_camera_observes_the_agentview_alone():
     wristed = _facade("xarm6_robotiq")
     wristed._rgb, wristed._state = f._rgb, f._state
     assert wristed._pack({})["wrist"] == "wrist-image"
+
+
+def test_depth_takes_the_views_orientation_and_letterbox_pixel_for_pixel():
+    """render_camera(depth=True): the metric depth lands on the same pixels as the rgb
+    (orientation, letterbox bars at 0 = no depth), for the agentview and the rotated wrist."""
+    f = _facade("panda")
+    f._rig = False
+    f._view_size = 64
+    f._wrist_rotation, f._wrist_flip = 270, "none"
+    h, w = 24, 32  # a 4:3 sensor: bars above and below in the square
+    rgb = np.zeros((1, h, w, 3), dtype=np.uint8)
+    rgb[0, :, : w // 2] = 255  # the left half bright
+    depth = np.full((1, h, w, 1), 500, dtype=np.int16)  # 0.5 m
+    depth[0, :, : w // 2] = 1200  # the left half 1.2 m
+    f._obs = {
+        "sensor_data": {
+            f._cameras[n]: {"rgb": rgb, "depth": depth} for n in ("agentview", "wrist")
+        }
+    }
+    for name in ("agentview", "wrist"):
+        img, d = f.render_camera(name, depth=True)
+        assert d.dtype == np.float32 and d.shape == img.shape[:2] == (64, 64)
+        bright = img[..., 0] > 200
+        dark = (img[..., 0] < 50) & (d > 0)
+        assert np.all(d[bright] == np.float32(1.2)), name
+        assert np.all(d[dark] == np.float32(0.5)), name
+        # The letterbox bars have no depth.
+        assert np.all(d[(img.sum(-1) == 0) & (d == 0)] == 0)
+        assert (d == 0).sum() > 0 and name
+    # Without depth the rgb alone, as before.
+    assert f.render_camera("agentview").shape == (64, 64, 3)

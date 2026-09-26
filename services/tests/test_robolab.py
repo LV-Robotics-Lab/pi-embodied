@@ -301,3 +301,35 @@ def test_renderer_overrides_are_refused_before_isaac_starts_on_isaac_lab_3(monke
     monkeypatch.setattr(sys, "argv", ["env_server", "--rendering-type", "quality"])
     with pytest.raises(SystemExit, match="only the realtime renderer"):
         env_server.main()
+
+
+def test_render_camera_depth_is_the_cameras_distance_on_the_rgbs_pixels(monkeypatch):
+    """render_camera(depth=True): each camera's distance_to_image_plane, 0 where it hits
+    nothing, turned like its rgb (the wrist 270 deg)."""
+    isaac = FakeIsaac(monkeypatch)
+    isaac.facade.reset()
+    front = np.full((1, 4, 6, 1), 0.8, np.float32)
+    front[0, 0, 0, 0] = np.inf
+    wrist = np.zeros((1, 4, 4, 1), np.float32)
+    wrist[0, 0, :, 0] = 0.3  # the top row of the raw wrist frame
+    cameras = {
+        name: SimpleNamespace(
+            data=SimpleNamespace(output={"distance_to_image_plane": d})
+        )
+        for name, d in (("front_cam", front), ("wrist_cam", wrist))
+    }
+    robot = isaac.env.scene.robot
+
+    class CameraScene(Scene):
+        def __getitem__(self, name):
+            return robot if name == "robot" else cameras[name]
+
+    isaac.env.scene = CameraScene(robot)
+    rgb, d = isaac.facade.render_camera("agentview", depth=True)
+    assert d.shape == rgb.shape[:2] == (4, 6) and d.dtype == np.float32
+    assert d[0, 0] == 0 and d[1, 1] == np.float32(0.8)
+    rgb, d = isaac.facade.render_camera("wrist", depth=True)
+    assert d.shape == rgb.shape[:2] == (4, 4)
+    # rot90 k=3 (clockwise): the raw top row becomes the right column.
+    assert np.all(d[:, -1] == np.float32(0.3)) and np.all(d[:, 0] == 0)
+    assert isaac.facade.render_camera("agentview").shape == (4, 6, 3)

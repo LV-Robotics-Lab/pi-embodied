@@ -349,9 +349,19 @@ class RobolabEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         frame of ``eef_pos``."""
         return ground_truth.respond(sim.rl_object_poses(self._env), names)
 
-    def render_camera(self, camera_name: str = "agentview", **_: Any):
-        """Latest frame of ``agentview`` (front camera) or ``wrist`` (rotated, fingertips at the top)."""
-        return self._images()[camera_name]
+    def render_camera(
+        self, camera_name: str = "agentview", depth: bool = False, **_: Any
+    ):
+        """Latest frame of ``agentview`` (front camera) or ``wrist`` (rotated, fingertips at the
+        top); with ``depth``, ``[rgb, depth_m]`` (float32 metres, 0 = none) on the same pixels."""
+        rgb = self._images()[camera_name]
+        if not depth:
+            return rgb
+        key = "agentview_camera" if camera_name == "agentview" else "wrist_camera"
+        d = sim.rl_depth(self._env, self._meta[key])
+        if camera_name == "wrist":
+            d = np.ascontiguousarray(np.rot90(d, k=WRIST_ROT90))
+        return [rgb, d]
 
     def get_camera_meta(self, camera_name: str = "agentview", **_: Any) -> dict:
         """OpenCV intrinsics and camera-to-base extrinsic of the front camera, as rendered.

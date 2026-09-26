@@ -220,6 +220,18 @@ def _letterbox(image: np.ndarray, size: int) -> np.ndarray:
     return out
 
 
+def _place_depth(depth: np.ndarray, nh: int, nw: int, size: int) -> np.ndarray:
+    """``depth`` resized to ``nh`` x ``nw`` (nearest: no depth is blended across an edge) and
+    centred in a ``size`` square of zeros (no depth), as the letterboxes place the image."""
+    h, w = depth.shape
+    rows = np.minimum((np.arange(nh) + 0.5) * h / nh, h - 1).astype(int)
+    cols = np.minimum((np.arange(nw) + 0.5) * w / nw, w - 1).astype(int)
+    out = np.zeros((size, size), dtype=np.float32)
+    y0, x0 = (size - nh) // 2, (size - nw) // 2
+    out[y0 : y0 + nh, x0 : x0 + nw] = depth[rows][:, cols]
+    return out
+
+
 def _orient(image: np.ndarray, degrees: int, flip: str) -> np.ndarray:
     """Show-Harness core/record/images.rotate_and_flip: rotate CCW, then flip."""
     k = (int(degrees) % 360) // 90
@@ -651,7 +663,7 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
             self._env = scenes.make_env(
                 env_id,
                 self._scene,
-                obs_mode="rgb+segmentation",
+                obs_mode="rgb+depth+segmentation",
                 control_mode=control_mode,
                 sim_backend=sim_backend,
                 max_episode_steps=int(max_episode_steps),
@@ -678,7 +690,7 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
             self._env = gym.make(
                 env_id,
                 num_envs=1,
-                obs_mode="rgb+segmentation",
+                obs_mode="rgb+depth+segmentation",
                 control_mode=control_mode,
                 **({} if fixed else {"robot_uids": robot_uids}),
                 **(
@@ -813,6 +825,39 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         if name == "wrist":
             rgb = _orient(rgb, self._wrist_rotation, self._wrist_flip)
         return _letterbox(rgb, self._view_size) if self._view_size else rgb
+
+    def _depth(self, obs: dict, name: str) -> np.ndarray:
+        """Metric depth (float32 m, 0 = none) of one view, through the same orientation,
+        crop and letterbox as :meth:`_rgb`, so pixel (row, col) of both is one ray."""
+        raw = _np(obs["sensor_data"][self._cameras[name]]["depth"])[0]
+        depth = raw.reshape(raw.shape[:2]).astype(np.float32) / 1000.0  # int16 mm
+        if self._rig:
+            from pi_embodied_services.robots.maniskill import scenes
+
+            v = scenes.VIEWS[name]
+            depth = _orient(depth, v["rotation"], v["flip"])
+            h, w = depth.shape
+            crop = v["crop"]
+            if crop and abs(w / h - crop) >= 1e-6:
+                if w / h > crop:
+                    nw = int(round(h * crop))
+                    depth = depth[:, (w - nw) // 2 : (w - nw) // 2 + nw]
+                else:
+                    nh = int(round(w / crop))
+                    depth = depth[(h - nh) // 2 : (h - nh) // 2 + nh]
+            if not self._view_size:
+                return np.ascontiguousarray(depth)
+            h, w = depth.shape
+            scale = min(self._view_size / w, self._view_size / h)
+            return _place_depth(depth, int(h * scale), int(w * scale), self._view_size)
+        if name == "wrist":
+            depth = _orient(depth, self._wrist_rotation, self._wrist_flip)
+        if not self._view_size:
+            return np.ascontiguousarray(depth)
+        h, w = depth.shape
+        scale = self._view_size / max(h, w)
+        nh, nw = max(1, round(h * scale)), max(1, round(w * scale))
+        return _place_depth(depth, nh, nw, self._view_size)
 
     def _gripper_width(self, qpos: np.ndarray, agent=None) -> float:
         """The finger opening, m (``RobotSpec.width``); about 0 closed on nothing."""
@@ -1105,10 +1150,14 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
             raise ValueError(f"--robot {self._meta['robot']} has no wrist camera")
         return self._cameras[camera_name]
 
-    def render_camera(self, camera_name: str = "agentview", **_: Any):
-        """Latest frame of ``agentview`` or ``wrist``, as the model sees it."""
+    def render_camera(
+        self, camera_name: str = "agentview", depth: bool = False, **_: Any
+    ):
+        """Latest frame of ``agentview`` or ``wrist``, as the model sees it; with ``depth``,
+        ``[rgb, depth_m]`` (float32 metres, 0 = none: the letterbox bars) on the same pixels."""
         self._camera(camera_name)
-        return self._rgb(self._obs, camera_name)
+        rgb = self._rgb(self._obs, camera_name)
+        return [rgb, self._depth(self._obs, camera_name)] if depth else rgb
 
     def get_camera_meta(self, camera_name: str = "agentview", **_: Any) -> dict:
         """OpenCV intrinsics and camera-to-world extrinsic of a sensor camera (raw sensor

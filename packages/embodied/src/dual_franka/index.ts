@@ -33,6 +33,7 @@ import {
 	attach,
 	checkMove,
 	defineRobot,
+	frameOf,
 	type Grid,
 	gridOf,
 	type Json,
@@ -153,6 +154,7 @@ export default function dualFranka(pi: ExtensionAPI) {
 		name: "dual_franka",
 		task: ["task"],
 		keepImages: 4,
+		video: true,
 		// Observations carry the policy's inline cameras (the D455 by default), wrist views among them.
 		vdm: () =>
 			shown.length
@@ -378,6 +380,9 @@ export default function dualFranka(pi: ExtensionAPI) {
 			artifacts.push(`${name}_depth.f32`);
 		}
 		const plainMeta = meta ? (plain(meta) as Json) : null;
+		// The episode video follows the policy's first inline camera (the D455 by default).
+		const lead = policy(plainMeta).inline_cameras.find((c) => images.has(c)) ?? [...images.keys()][0];
+		if (lead) robot.video.frame(frameOf(images.get(lead) as NdArray));
 		if (plainMeta) {
 			writeFileSync(join(dir, "camera_meta.json"), JSON.stringify(plainMeta));
 			artifacts.push("camera_meta.json");

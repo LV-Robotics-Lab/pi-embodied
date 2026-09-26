@@ -834,6 +834,12 @@ export function rgbOf(a: NdArray): Rgb {
 	return { width, height, rgb };
 }
 
+/** An `[H, W, C>=3]` image as the `[H, W, 3]` uint8 frame the episode video (../video.ts) takes. */
+export function frameOf(a: NdArray): NdArray {
+	const { width, height, rgb } = rgbOf(a);
+	return new NdArray("uint8", [height, width, 3], rgb);
+}
+
 /** A depth map with singleton axes squeezed, as float32 meters. */
 export function gridOf(a: NdArray): Grid {
 	const shape = a.shape.filter((d) => d !== 1);

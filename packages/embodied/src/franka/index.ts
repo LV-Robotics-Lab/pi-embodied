@@ -34,6 +34,7 @@ import {
 	checkMove,
 	defineRobot,
 	f32,
+	frameOf,
 	gridOf,
 	inv3,
 	type Json,
@@ -259,6 +260,7 @@ export default function franka(pi: ExtensionAPI) {
 		name: "franka",
 		task: ["task"],
 		keepImages: 4,
+		video: true,
 		// Observations carry the external camera then the wrist image.
 		vdm: { views: 2, wrist: 1 },
 		// Franka memory is read-only and the prompt names none; the guard also opens the step artifacts.
@@ -389,8 +391,12 @@ export default function franka(pi: ExtensionAPI) {
 			writeFileSync(join(dir, `${name}.json`), JSON.stringify({ height: g.height, width: g.width }));
 			artifacts.push(`${name}.f32`);
 		};
+		const camera = first(obs.extra_view_images, 4);
 		saveImage("wrist", obs.main_images);
-		saveImage("camera", first(obs.extra_view_images, 4));
+		saveImage("camera", camera);
+		// The episode video follows the external camera (the wrist one when there is none).
+		const shown = camera instanceof NdArray ? camera : obs.main_images;
+		if (shown instanceof NdArray) robot.video.frame(frameOf(shown));
 		saveDepth("wrist_depth", obs.main_depths);
 		saveDepth("camera_depth", first(obs.extra_view_depths, 3));
 		if (meta) {

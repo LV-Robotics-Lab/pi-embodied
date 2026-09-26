@@ -53,7 +53,12 @@ function fakePi(flagValues: Record<string, unknown> = {}) {
 			},
 		},
 		shutdown: () => {},
-		sessionManager: { getBranch: () => branch, getSessionDir: () => dir },
+		sessionManager: {
+			getBranch: () => branch,
+			getSessionDir: () => dir,
+			getSessionFile: () => join(dir, "session.jsonl"),
+			getSessionId: () => "session",
+		},
 	};
 	async function emit(name: string, event: Record<string, unknown> = {}) {
 		let result: any;

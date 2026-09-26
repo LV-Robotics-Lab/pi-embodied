@@ -10,7 +10,9 @@ import { Type } from "typebox";
 import piperDual from "../src/piper/dual.ts";
 import piper, { chains, headingToBase, motionFrame, PIPER_UNITS, piperViews } from "../src/piper/index.ts";
 import { defineRobot } from "../src/robot.ts";
+import type { NdArray } from "../src/rpc.ts";
 import { type Move, UNITS_EVENT, type Vec3 } from "../src/units/index.ts";
+import { FRAME_EVENT } from "../src/video.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
@@ -609,6 +611,25 @@ test("piper refuses a non-numeric --max-move or --max-yaw before touching the ro
 	try {
 		assert.match(f.notes.join("\n"), /--max-yaw must be a positive number \(got 'abc'\)/);
 		assert.equal(m.calls.length, 0);
+	} finally {
+		m.close();
+	}
+});
+
+test("the Piper records its front camera for the episode video and the live view", async () => {
+	const m = await mockServer({});
+	const f = fakePi({ operator: true, task: "banana_handover", "robot-env": m.url, units: "both" }, true, {});
+	piperDual(f.pi);
+	const frames: NdArray[] = [];
+	f.pi.events.on(FRAME_EVENT, (data) => frames.push(data as NdArray));
+	f.confirms.push(true);
+	try {
+		await start(f);
+		const before = frames.length;
+		await f.run("act", { unit: "MV_FWD", arm: "right" });
+		assert.equal(frames.length, before + 1, "one frame per recorded step");
+		assert.equal(frames.at(-1)?.shape.length, 3);
+		assert.equal(frames.at(-1)?.shape[2], 3);
 	} finally {
 		m.close();
 	}

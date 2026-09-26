@@ -44,6 +44,7 @@ import {
 	attach,
 	checkMove,
 	defineRobot,
+	frameOf,
 	type Json,
 	message,
 	plain,
@@ -295,6 +296,7 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 		name: dual ? "piper_dual" : "piper",
 		task: ["task"],
 		keepImages: 4,
+		video: true,
 		// Observations carry cameras() in order; the front view has to lead to be the main one.
 		vdm: () => {
 			const c = cameras();
@@ -409,9 +411,13 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 		const dir = join(out, `step_${String(idx).padStart(4, "0")}`);
 		mkdirSync(dir, { recursive: true });
 		const images: Record<string, string> = {};
+		let framed = false;
 		for (const name of cameras()) {
 			const v = obs.images?.[name];
 			if (!(v instanceof NdArray)) continue;
+			// The episode video follows the first camera (the front one).
+			if (!framed) robot.video.frame(frameOf(v));
+			framed = true;
 			const img = rgbOf(v);
 			images[name] = join(dir, `${name}.png`);
 			writeFileSync(images[name], encodePng(img.rgb, img.width, img.height));

@@ -328,7 +328,8 @@ def add_ee_control(agent_cls, joints: tuple[str, ...]) -> None:
     from mani_skill.agents.controllers import PDEEPosControllerConfig
 
     base = agent_cls._controller_configs
-    if getattr(base, "_pi_ee", False):
+    # The mark sits on the wrapping property's getter (a property takes no attributes).
+    if getattr(base.fget, "_pi_ee", False):
         return
 
     def configs(self):

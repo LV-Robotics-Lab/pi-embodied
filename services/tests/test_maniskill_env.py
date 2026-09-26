@@ -210,7 +210,9 @@ def test_prepare_robot_adds_the_ee_mode_and_the_wrist_camera(monkeypatch):
     agents["panda_wristcam"] = type("A", (), {"agent_cls": type("P", (_Agent,), {})})
 
     ms.prepare_robot(ms.ROBOTS["widowxai"], "centered")
-    ms.prepare_robot(ms.ROBOTS["widowxai"], "centered")  # idempotent
+    wrapped = wx._controller_configs
+    ms.prepare_robot(ms.ROBOTS["widowxai"], "centered")  # idempotent: not wrapped twice
+    assert wx._controller_configs is wrapped
     cfg = wx()._controller_configs
     ee = cfg["pd_ee_delta_pos"]
     assert set(ee) == {"arm", "gripper"} and ee["gripper"] == "joint-gripper"

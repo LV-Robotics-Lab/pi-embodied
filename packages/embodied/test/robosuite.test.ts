@@ -17,6 +17,7 @@ import robosuite, {
 	YAW_STEP_RAD,
 } from "../src/robosuite/index.ts";
 import { ground, MOVE_UNITS } from "../src/units/index.ts";
+import { type Call, f32, fakeEnv, rgb, stubPi as simPi } from "./sim-stub.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 type Tool = { name: string; description: string; parameters: any; execute: (...a: any[]) => Promise<any> };
@@ -166,4 +167,100 @@ test("the frame text matches robosuite's cameras and the opposed two-arm layout"
 	assert.match(text, /robot0 stands at -y facing \+y and robot1 at \+y facing -y/);
 	assert.match(text, /\+x runs toward the image bottom/);
 	assert.doesNotMatch(text, /\+x points away from robot0 across the table, \+y to robot0's left/);
+});
+
+test("grasp tools: plan_grasp, plan_place and check_attached are registered over the env server's planner", () => {
+	const f = stubPi();
+	robosuite(f.pi);
+	for (const name of ["graspnet", "graspgenx", "anyplace", "anygrasp", "attach-vlm-model"])
+		assert.ok(name in f.flags, name);
+	for (const name of ["plan_grasp", "plan_place", "check_attached"]) assert.ok(f.tools.has(name), name);
+	const props = (name: string) => f.tools.get(name)!.parameters.properties;
+	assert.deepEqual(props("plan_grasp").camera.enum, ["agentview", "wrist"]);
+	assert.deepEqual(props("plan_grasp").arm.enum, [...ARMS]);
+	assert.deepEqual(props("check_attached").arm.enum, [...ARMS]);
+	const text = readFileSync(new URL("../src/robosuite/SYSTEM.md", import.meta.url), "utf8");
+	assert.ok(text.includes("[tool:plan_grasp]") && text.includes("[tool:check_attached]"));
+});
+
+/** A fake robosuite env server running `task`. */
+export async function fakeRobosuite(task = "Lift", answer: (c: Call) => unknown = () => undefined) {
+	const two = TWO_ARM.includes(task as never);
+	const obs = () => ({
+		agentview: rgb(),
+		wrist: rgb(),
+		robot0_eef_pos: f32([0, 0, 1]),
+		robot0_eef_quat: f32([1, 0, 0, 0]),
+		robot0_gripper_width: 0.08,
+		robot0_gripper_command: "open",
+		...(two
+			? {
+					robot1_eef_pos: f32([0, 0.5, 1]),
+					robot1_eef_quat: f32([1, 0, 0, 0]),
+					robot1_gripper_width: 0.08,
+					robot1_gripper_command: "open",
+				}
+			: {}),
+		success: false,
+		success_step: null,
+		env_steps: 0,
+	});
+	return fakeEnv((c) => {
+		const own = answer(c);
+		if (own !== undefined) return own;
+		if (c.method === "env.get_env_meta")
+			return {
+				task,
+				seed: 0,
+				arms: two ? ["robot0", "robot1"] : ["robot0"],
+				gripper: task !== "Wipe",
+				language: "lift the cube",
+				box: [],
+				z_floor: 0.8,
+				table_z: 0.8,
+				max_move_m: 0.3,
+			};
+		if (c.method === "env.reset") return [obs(), {}];
+		if (c.method === "env.get_task_language") return "lift the cube";
+		if (c.method.startsWith("env.move") || c.method === "env.set_gripper") return { obs: obs(), info: { ok: true } };
+		return undefined;
+	});
+}
+
+test("--graspnet activates plan_grasp / plan_place / check_attached; plan_grasp reaches env.plan_grasp with the arm", async (t) => {
+	const env = await fakeRobosuite("Lift", (c) =>
+		c.method === "env.plan_grasp" ? { active: "g1", candidates: [{ id: "g1" }], expired_ids: [] } : undefined,
+	);
+	t.after(env.close);
+	const s = simPi({ env: env.url, task: "Lift", graspnet: "http://127.0.0.1:1" });
+	robosuite(s.pi);
+	await s.emit("session_start");
+	process.exitCode = undefined;
+	for (const name of ["plan_grasp", "plan_place", "check_attached"]) assert.ok(s.active().includes(name), name);
+	const r = await s.run("plan_grasp", { object: "red cube", camera: "wrist" });
+	assert.equal(r.details.active, "g1");
+	const call = env.calls.find((c) => c.method === "env.plan_grasp")!;
+	assert.deepEqual(call.kwargs, { object: "red cube", camera: "wrist", arm: "robot0" });
+	const prompt = (await s.emit("before_agent_start")).systemPrompt as string;
+	assert.match(prompt, /# Planned grasps/);
+
+	// Without a grasp backend nothing is active and the prompt does not describe it.
+	const off = simPi({ env: env.url, task: "Lift" });
+	robosuite(off.pi);
+	await off.emit("session_start");
+	process.exitCode = undefined;
+	assert.ok(off.active().includes("move_to"));
+	assert.ok(!off.active().includes("plan_grasp"));
+	assert.doesNotMatch((await off.emit("before_agent_start")).systemPrompt as string, /plan_grasp/);
+});
+
+test("Wipe's sponge has no fingers: no grasp tools even with a backend", async (t) => {
+	const env = await fakeRobosuite("Wipe");
+	t.after(env.close);
+	const s = simPi({ env: env.url, task: "Wipe", graspnet: "http://127.0.0.1:1" });
+	robosuite(s.pi);
+	await s.emit("session_start");
+	process.exitCode = undefined;
+	assert.ok(s.active().includes("move_to"));
+	assert.ok(!s.active().includes("plan_grasp") && !s.active().includes("gripper"));
 });

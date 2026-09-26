@@ -21,3 +21,8 @@ This is a single episode. You may recover within it (re-position, re-grasp), but
 4. Place by lowering until the object nearly rests on its support, then open and retreat straight up. Never carry over an already placed object.
 5. On two-arm tasks coordinate the arms one call at a time and keep at least 8 cm between the grippers; the other arm holds still while one moves.
 6. Keep reasoning to one or two sentences before each tool call. When `success` is true, or your best sequence is exhausted, call `finish` with an honest status and a short summary.
+[tool:plan_grasp]
+
+# Planned grasps
+- `plan_grasp` predicts grasps for an object (text, or a mask id) from the current agentview or wrist RGB-D image, in the world frame, best first; each candidate has a short id (`g1`), its `eef_position`, `eef_yaw` and `approach`. Ids die with the next motion (a stale id is refused), so plan right before moving and re-plan after any other move. Reach the `active` candidate from above with `move_to` (5-10 cm over `eef_position`, turning by the yaw difference with `rotvec` [0, 0, dyaw]), descend to it, close the gripper and lift[tool:check_attached]; confirm with `check_attached` before carrying[/tool:check_attached]. Only when the active candidate is refused before the robot moves call `plan_grasp` with `next_after` for the next rank; after a failed motion plan again.[tool:plan_place] `plan_place` (the destination region and the executed grasp's id) gives the EEF pose to release at.[/tool:plan_place]
+[/tool:plan_grasp]

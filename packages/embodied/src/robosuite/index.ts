@@ -22,7 +22,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
 import { template } from "../context-version.ts";
 import { decodePngChannel, encodePng } from "../png.ts";
-import { attach, defineRobot, median, SERVICES, toolResult } from "../robot.ts";
+import { graspActive, graspArgs, graspTools, mountGraspTool, registerGraspFlags } from "../primitives/grasp.ts";
+import { attach, defineRobot, type Json, median, SERVICES, toolResult } from "../robot.ts";
 import { NdArray, RpcClient } from "../rpc.ts";
 import { finishMove, type Move, type MoveUnit, type Vec3 } from "../units/index.ts";
 
@@ -115,11 +116,8 @@ export default function robosuite(pi: ExtensionAPI) {
 		type: "string",
 		description: "IK service URL (components/ik_server.py): the env server checks reach before every move",
 	});
-	pi.registerFlag("graspnet", {
-		type: "string",
-		default: "",
-		description: "Contact-GraspNet server URL: adds the env server's plan_grasp primitives (code.api)",
-	});
+	// --graspnet / --graspgenx / --anyplace / --anygrasp: plan_grasp, plan_place and check_attached (../primitives/grasp.ts).
+	registerGraspFlags(pi);
 	pi.registerFlag("max-move", {
 		type: "string",
 		default: String(MAX_MOVE_M),
@@ -574,6 +572,15 @@ export default function robosuite(pi: ExtensionAPI) {
 		"read",
 	);
 
+	// plan_grasp / plan_place / check_attached over the env server's grasp planner (active with a backend flag).
+	for (const d of graspTools(pi, {
+		call: (method, kwargs, timeoutMs) => call<Json>(method, kwargs, [], robot.signal, timeoutMs ?? 120_000),
+		cameras: ["agentview", "wrist"],
+		task: () => language,
+		arm: { schema: arm, name: (v) => armOf(v as string | undefined) ?? "robot0" },
+	}))
+		mountGraspTool(robot.tool, d);
+
 	/**
 	 * One action unit (../units): drive the gripper, servo the TCP by `delta` (holding the gripper
 	 * command), turn by `yaw` about world +z or by an RT_* `rot`, or hold one step (STOP).
@@ -647,7 +654,7 @@ export default function robosuite(pi: ExtensionAPI) {
 					...["--sam3", flag("sam3", "")],
 					...(cuda ? ["--cuda-device", cuda] : []),
 					...(pi.getFlag("ik") ? ["--ik", flag("ik", "")] : []),
-					...(flag("graspnet", "") ? ["--graspnet", flag("graspnet", "")] : []),
+					...graspArgs(pi),
 				],
 				cwd: services,
 				env: { ...process.env, PYTHONPATH: services, MUJOCO_GL: "egl" },
@@ -670,6 +677,8 @@ export default function robosuite(pi: ExtensionAPI) {
 			"move_to",
 			"move_delta",
 			...(hasGripper(task) ? ["gripper"] : []),
+			// Grasping needs fingers: Wipe's sponge has none.
+			...(hasGripper(task) ? graspActive(pi) : []),
 			"finish",
 		];
 	}

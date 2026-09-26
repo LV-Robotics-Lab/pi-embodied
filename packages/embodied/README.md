@@ -239,7 +239,8 @@ in a new session. Boolean flags take the next word as their value; write them as
   (`back_project`, `segment` with a SAM3 server), units mode and `--privileged`; `src/metaworld/eval.sh`.
 - Robosuite: the services' `[robosuite]` extra (Python 3.11, robosuite 1.5 in its own venv: LIBERO and
   RoboCasa pin 1.4 forks); CaP-X's seven tasks (`--task Lift --seed 0`, two-arm tasks take `arm`),
-  closed-loop `move_to` / `move_delta` under `--max-move`, `gripper`, depth tools, units mode and
+  closed-loop `move_to` / `move_delta` under `--max-move`, `gripper`, depth tools, planned grasps
+  (`plan_grasp` / `plan_place` / `check_attached` with `--graspnet` & co), units mode and
   `--privileged`; `src/robosuite/eval.sh`.
 - Genesis: the services' `[genesis]` extra (Python 3.11, Genesis 1.4, a GPU for rendering, no assets);
   OpenETA's Franka `cube_pick` (`--task cube_pick --seed 0`), a base-frame `move_delta` plus `gripper`,

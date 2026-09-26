@@ -405,7 +405,8 @@ test("--units on --robot widowxai: no wrist view, so fine steps, no target_in_wr
 			"env-id": "PickCube-v1",
 			...(robot ? { robot } : {}),
 			units: "true",
-			"units-plugins": plugins,
+			// The robot's default (auto) on the WidowX AI: naming a wrist-view plugin there refuses to start.
+			"units-plugins": wrist ? plugins : "auto",
 		});
 		maniskill(s.pi);
 		const schema = s.tools.get("act").parameters.properties;

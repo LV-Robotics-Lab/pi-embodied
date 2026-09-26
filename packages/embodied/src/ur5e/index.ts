@@ -85,6 +85,21 @@ type CameraMeta = {
 type Step = { blob: Json; dir: string; meta: Json | null; images: Record<string, string> };
 
 /**
+ * A camera's mount from its recorded metadata: the config's `mount`, else its calibration's frame
+ * (tcp: eye-in-hand, a wrist camera; base: fixed), else null (unknown).
+ */
+export function cameraMount(cam: Json | null | undefined): "wrist" | "fixed" | null {
+	if (cam?.mount === "wrist" || cam?.mount === "fixed") return cam.mount;
+	const frame = cam?.extrinsic?.frame;
+	return frame === "tcp" ? "wrist" : frame === "base" ? "fixed" : null;
+}
+
+/** Whether the cameras include a wrist view: all of them known to be fixed means none; an unknown mount may be one. */
+export function hasWristCamera(mounts: readonly ("wrist" | "fixed" | null)[]): boolean {
+	return !mounts.length || mounts.some((m) => m !== "fixed");
+}
+
+/**
  * The action-unit grounding for a UR5e on its standard mounting: base +x away from the robot,
  * +y to its left (right-handed, so MV_LEFT is +y), +z up; 2 cm per unit, 0.15 rad per ROTATE_*.
  */
@@ -188,8 +203,11 @@ export default function ur5e(pi: ExtensionAPI) {
 		const main = meta?.main_camera;
 		return main && names.includes(main) ? [main, ...names.filter((n) => n !== main)] : names;
 	};
-	/** A camera's mount (`wrist` or `fixed`) from the latest recorded camera metadata. */
-	const mountOf = (name: string) => steps[steps.length - 1]?.meta?.cameras?.[name]?.mount ?? null;
+	/**
+	 * A camera's mount (`wrist` or `fixed`) from the latest recorded camera metadata; a camera whose config
+	 * sets no mount falls back to its calibration's frame (tcp: eye-in-hand, base: fixed), else null.
+	 */
+	const mountOf = (name: string) => cameraMount(steps[steps.length - 1]?.meta?.cameras?.[name]);
 	const taskName = () => robot.task.task;
 	const armId = () => flag("arm-id").trim();
 
@@ -245,11 +263,8 @@ export default function ur5e(pi: ExtensionAPI) {
 			get emptyWidthM() {
 				return meta?.limits.empty_width_m ?? 0.011;
 			},
-			// A wrist view unless every camera reports a fixed mount (a camera without `mount` may be one).
-			wrist: () => {
-				const c = cameras();
-				return !c.length || c.some((name) => mountOf(name) !== "fixed");
-			},
+			// A wrist view unless every camera is fixed (by its mount or its calibration's frame); an unknown one may be a wrist.
+			wrist: () => hasWristCamera(cameras().map(mountOf)),
 		},
 		finish: {
 			description:

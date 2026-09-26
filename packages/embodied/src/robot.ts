@@ -340,6 +340,8 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 				// Exploration's `reset` and the operator's `request_scene_reset` move the robot too.
 				tools: () => [...robotTools, "reset", "request_scene_reset"],
 				refuse: () => refusal("act") ?? op.refuse("act"),
+				// The observation's images and its wrist views (../finetuned checks --ft-cameras against them).
+				views: () => (typeof spec.vdm === "function" ? spec.vdm() : spec.vdm),
 			})
 		: undefined;
 	const co = spec.code

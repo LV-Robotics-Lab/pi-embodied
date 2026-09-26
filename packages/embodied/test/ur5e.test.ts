@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import ur5e, { UR5E_UNITS } from "../src/ur5e/index.ts";
+import ur5e, { cameraMount, hasWristCamera, UR5E_UNITS } from "../src/ur5e/index.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
@@ -110,7 +110,15 @@ const ARM = "2023300001";
  * A mocked UR5e env server transport (the JSON RPC of ../src/rpc.ts): canned state, a 4x4 wrist
  * RGB-D frame and a 4x4 RGB-only front frame, an identity wrist calibration; records every call.
  */
-async function mockServer(o: { armId?: string | null; robot?: string; beginPose?: boolean } = {}) {
+async function mockServer(
+	o: {
+		armId?: string | null;
+		robot?: string;
+		beginPose?: boolean;
+		/** The camera metadata per camera (default: an eye-in-hand wrist and an uncalibrated front camera). */
+		cameraMeta?: Record<string, Record<string, unknown>>;
+	} = {},
+) {
 	const calls: { method: string; kwargs: Record<string, any> }[] = [];
 	const img = { __ndarray__: Buffer.alloc(4 * 4 * 3, 90).toString("base64"), dtype: "uint8", shape: [4, 4, 3] };
 	const depth = {
@@ -175,6 +183,8 @@ async function mockServer(o: { armId?: string | null; robot?: string; beginPose?
 			case "env.get_robot_state":
 				return state();
 			case "env.get_camera_meta":
+				if (o.cameraMeta)
+					return { cameras: o.cameraMeta, observation_camera_map: { main: "wrist", extra_0: "front" } };
 				return {
 					cameras: {
 						wrist: {
@@ -400,5 +410,42 @@ test("a started ur5e resets once, records steps and back-projects through depth 
 		assert.deepEqual(m.calls.find((c) => c.method === "env.set_gripper")?.kwargs, { open: false });
 	} finally {
 		m.close();
+	}
+});
+
+test("a camera's mount: its config, else its calibration's frame; all fixed means no wrist view", async () => {
+	assert.equal(cameraMount({ mount: "wrist" }), "wrist");
+	assert.equal(cameraMount({ mount: "fixed", extrinsic: { frame: "tcp" } }), "fixed", "the config's mount wins");
+	assert.equal(cameraMount({ mount: null, extrinsic: { frame: "base" } }), "fixed");
+	assert.equal(cameraMount({ extrinsic: { frame: "tcp" } }), "wrist");
+	assert.equal(cameraMount({ extrinsic: null }), null);
+	assert.equal(cameraMount(undefined), null);
+	assert.equal(hasWristCamera(["fixed", "fixed"]), false);
+	assert.equal(hasWristCamera(["fixed", "wrist"]), true);
+	assert.equal(hasWristCamera(["fixed", null]), true, "an unknown mount may be a wrist camera");
+	assert.equal(hasWristCamera([]), true, "cameras not known yet");
+
+	// Two fixed cameras (no `mount` set, calibrated to the base): act without target_in_wrist.
+	const base = {
+		has_depth: false,
+		intrinsic_K: null,
+		extrinsic: { frame: "base", matrix: [], path: "c.yaml", arm_id: ARM },
+	};
+	const fixed = await started(
+		{ units: true, "units-plugins": "auto" },
+		{ cameraMeta: { wrist: { name: "wrist", ...base }, front: { name: "front", ...base } } },
+	);
+	try {
+		assert.ok(fixed.f.active().includes("act"));
+		assert.ok(!("target_in_wrist" in fixed.f.tools.get("act").parameters.properties));
+	} finally {
+		fixed.m.close();
+	}
+	// The default rig: an eye-in-hand camera keeps it.
+	const rig = await started({ units: true, "units-plugins": "auto" });
+	try {
+		assert.ok("target_in_wrist" in rig.f.tools.get("act").parameters.properties);
+	} finally {
+		rig.m.close();
 	}
 });

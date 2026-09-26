@@ -127,9 +127,12 @@ Shared modules:
   yaw, GRASP, RELEASE, STOP, DONE; optional repeat `n`), `finish`, and the plugins' `point` / `plan`,
   under the ported zero-shot prompt. `--units=both` adds `act` (and `point` / `plan`) to the robot's
   tools and appends the units section to its prompt. `--stateless` keeps only the task and the latest
-  observation turn (the paper's no-history setting). `--units-plugins` (default: Show-Harness's
-  zero-shot Franka set `recovery,auto_release,proprioception,variable_step,action_chunk,rotation,plan`;
-  `point` is opt-in) picks the plugins; `--units-coarse-step` is variable_step's coarse step. A robot
+  observation turn (the paper's no-history setting). `--units-plugins` (default `auto`: the robot's
+  set, else Show-Harness's zero-shot Franka set
+  `recovery,auto_release,proprioception,variable_step,action_chunk,rotation,plan,mem_text`; `point` is
+  opt-in) picks the plugins. A configuration without a wrist camera (ManiSkill `--robot widowxai`,
+  dual Franka without an inline wrist camera, a UR5e or Piper streaming none) runs `auto` without
+  variable_step and action_chunk and refuses to start when they are named; `--units-coarse-step` is variable_step's coarse step. A robot
   opts in with `units` in its spec (base-frame unit vectors, step, optional yaw step, `apply`,
   `state`); the moves go through its own safety checks (Franka and dual Franka: `--max-move`,
   `--workspace-xy`, `--z-floor`).

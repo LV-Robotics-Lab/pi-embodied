@@ -41,6 +41,8 @@ for ((i = 0; i < ${#args[@]}; i++)); do
 	--time-limit=*) limit=${args[i]#*=} limited=1 ;;
 	--units) [[ ${args[i + 1]:---} == --* ]] && units=true || units=${args[i + 1]} ;;
 	--units=*) units=${args[i]#*=} ;;
+	--units-plugins) units_plugins=${args[i + 1]-} ;;
+	--units-plugins=*) units_plugins=${args[i]#*=} ;;
 	# --code / --code-api (run_code, packages/embodied/src/code) are string flags like --units.
 	--code) [[ ${args[i + 1]:---} == --* ]] && code=true || code=${args[i + 1]} ;;
 	--code=*) code=${args[i]#*=} ;;
@@ -96,6 +98,8 @@ for ((i = 0; i < ${#args[@]}; i++)); do
 	esac
 done
 [ "$units" = pure ] && units=true
+# --units-plugins is part of the units mode: a result with other plugins is another configuration.
+[ "$units" != false ] && [ -n "${units_plugins+x}" ] && units="$units+plugins=$units_plugins"
 [ "$code" = pure ] && code=true
 # Without --vdm no VDM call runs, so its model is not part of the configuration.
 [ "$vdm" = true ] || vdm_model=""
@@ -187,7 +191,7 @@ const rows = cells.map((c) => {
 	}
 });
 const configs = new Set(rows.filter((r) => r.status === "success" || r.status === "failure")
-	.map((r) => `${r.model}/${r.thinking}/turns=${r.max_turns}/limit=${r.time_limit}/units=${r.units}${r.stateless ? "/stateless" : ""}${r.anchor_image ? "/anchor" : ""}/unit_tol=${r.unit_tol ?? 0.004}${r.vdm ? `/vdm=${r.vdm_model ?? "default"}${r.vdm_wrist ? "+wrist" : ""}` : ""}${r.privileged ? "/privileged" : ""}${r.fallback_model ? `/fallback=${r.fallback_model}:${r.fallback_after}:${r.fallback_retry_primary}` : ""}${r.code && r.code !== "false" ? `/code=${r.code}:${r.code_api}` : ""}`));
+	.map((r) => `${r.model}/${r.thinking}/turns=${r.max_turns}/limit=${r.time_limit}/units=${r.units}${r.units_wrist_view === false ? `/no-wrist:${(r.units_plugins ?? []).join("+")}` : ""}${r.stateless ? "/stateless" : ""}${r.anchor_image ? "/anchor" : ""}/unit_tol=${r.unit_tol ?? 0.004}${r.vdm ? `/vdm=${r.vdm_model ?? "default"}${r.vdm_wrist ? "+wrist" : ""}` : ""}${r.privileged ? "/privileged" : ""}${r.fallback_model ? `/fallback=${r.fallback_model}:${r.fallback_after}:${r.fallback_retry_primary}` : ""}${r.code && r.code !== "false" ? `/code=${r.code}:${r.code_api}` : ""}`));
 if (configs.size > 1) {
 	console.log(`refusing to summarize: ${out} mixes configurations ${[...configs].join(", ")}`);
 	process.exit(1);

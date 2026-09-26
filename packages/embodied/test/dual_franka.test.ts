@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { inlineWrist } from "../src/dual_franka/config.ts";
 import dualFranka from "../src/dual_franka/index.ts";
 import { defineRobot } from "../src/robot.ts";
 
@@ -237,4 +238,12 @@ test("finish needs an operator verdict and, with attempts left, a success; an op
 	assert.equal((await g.run("request_scene_reset", { reason: "stuck" })).details.operator_aborted, true);
 	assert.match((await g.emit("tool_call", { toolName: "move" })).reason, /operator aborted/);
 	assert.equal(await g.emit("tool_call", { toolName: "finish" }), undefined, "finish despite attempts left");
+});
+
+test("dual Franka has a wrist view only when an inline camera is a wrist camera (the D455 alone by default)", () => {
+	assert.equal(inlineWrist({}), false, "the default inline camera is the D455");
+	assert.equal(inlineWrist(null), false);
+	assert.equal(inlineWrist({ agent_observation: { inline_cameras: ["d455", "left_wrist"] } }), true);
+	assert.equal(inlineWrist({ agent_observation: { inline_cameras: ["d455", "base"] } }), false);
+	assert.equal(inlineWrist({ agent_observation: { inline_cameras: [] } }), false);
 });

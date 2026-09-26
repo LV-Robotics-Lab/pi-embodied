@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import behavior from "../src/behavior/index.ts";
-import dualFranka from "../src/dual_franka/index.ts";
+import dualFranka, { DUAL_FRANKA_UNITS } from "../src/dual_franka/index.ts";
 import franka from "../src/franka/index.ts";
 import libero from "../src/libero/index.ts";
 import maniskill from "../src/maniskill/index.ts";
@@ -13,6 +13,7 @@ import piper from "../src/piper/index.ts";
 import robocasa from "../src/robocasa/index.ts";
 import robolab from "../src/robolab/index.ts";
 import robotwin from "../src/robotwin/index.ts";
+import { units } from "../src/units/index.ts";
 
 /**
  * Snapshot of what every robot registers with pi at default flags: each tool's name, description
@@ -32,6 +33,20 @@ const ROBOTS: Record<string, (pi: ExtensionAPI) => unknown> = {
 	robocasa,
 	robolab,
 	robotwin,
+	// Dual Franka whose config streams an inline wrist camera (the default D455 alone has none, so the
+	// load-time `dual_franka` entry shows act without the wrist plugins): its units as mounted then.
+	dual_franka_wrist_camera: (pi) =>
+		units(
+			pi,
+			{ ...DUAL_FRANKA_UNITS, wrist: true, apply: async () => ({ content: [], details: {} }) },
+			(name, description, parameters) =>
+				pi.registerTool({
+					name,
+					description,
+					parameters,
+					execute: async () => ({ content: [], details: {} }),
+				} as never),
+		),
 };
 type Tool = { name: string; description: string; parameters: unknown };
 
@@ -87,3 +102,14 @@ if (process.env.UPDATE_TOOL_SCHEMAS) {
 				);
 		});
 }
+
+if (!process.env.UPDATE_TOOL_SCHEMAS)
+	test("dual_franka_wrist_camera is dual Franka's act with a wrist view: the same act plus target_in_wrist and plan", () => {
+		const act = (name: string) => registered(ROBOTS[name]).find((t) => t.name === "act") as any;
+		const plain = act("dual_franka");
+		const wrist = act("dual_franka_wrist_camera");
+		assert.equal(wrist.description, plain.description);
+		const { target_in_wrist, plan, ...rest } = wrist.parameters.properties;
+		assert.ok(target_in_wrist && plan);
+		assert.deepEqual(rest, plain.parameters.properties);
+	});

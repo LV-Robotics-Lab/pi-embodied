@@ -259,7 +259,14 @@ test("the stall check compares heading-frame units in the base frame (45 and 90 
  * A mocked Piper env server transport (the JSON RPC of ../src/rpc.ts): answers what the robot asks
  * with canned dual-arm (or single-arm) state and records every call. No robot, no ROS.
  */
-type ServerOpts = { dual?: boolean; frame?: "base" | "heading"; holding?: string; smooth?: boolean };
+type ServerOpts = {
+	dual?: boolean;
+	frame?: "base" | "heading";
+	holding?: string;
+	smooth?: boolean;
+	/** The streamed cameras (default: front and each arm's wrist camera). */
+	cameras?: string[];
+};
 async function mockServer(o: ServerOpts = {}) {
 	const dual = o.dual ?? true;
 	const calls: { method: string; kwargs: Record<string, any> }[] = [];
@@ -276,7 +283,7 @@ async function mockServer(o: ServerOpts = {}) {
 		holding_object: o.holding === arm,
 	});
 	const state = () => (dual ? { arms: { left: armState("left"), right: armState("right") } } : armState("left"));
-	const cameras = dual ? ["front", "wrist_left", "wrist_right"] : ["front", "wrist"];
+	const cameras = o.cameras ?? (dual ? ["front", "wrist_left", "wrist_right"] : ["front", "wrist"]);
 	const answer = (method: string, kwargs: Record<string, any>): unknown => {
 		switch (method) {
 			case "healthz":
@@ -634,5 +641,52 @@ test("the Piper records its front camera for the episode video and the live view
 		assert.equal(frames.at(-1)?.shape[2], 3);
 	} finally {
 		m.close();
+	}
+});
+
+test("a Piper without a wrist camera: the views, act and the prompt describe the front view alone; --view-select refuses", async () => {
+	const single = piperViews("base", [], false, ["front"]);
+	assert.match(single, /^- Image 1, FRONT camera/);
+	assert.doesNotMatch(single, /WRIST/);
+	assert.match(single, /height in the front view\.\n- There is no wrist camera: judge every move in the front view\./);
+	assert.doesNotMatch(piperViews("base", [], true, ["front"]), /VIEW SELECT/, "no view to select");
+	const left = piperViews("base", ["left", "right"], false, ["front", "wrist_left"]);
+	assert.match(left, /Image 2, LEFT WRIST camera \(the left arm's\)/);
+	assert.doesNotMatch(left, /RIGHT WRIST/);
+	assert.match(left, /height in both views\. Each unit moves only the arm named by `arm`\./);
+	// The defaults are the full rig, unchanged.
+	assert.equal(
+		piperViews("base", ["left", "right"]),
+		piperViews("base", ["left", "right"], false, ["front", "wrist_left", "wrist_right"]),
+	);
+
+	const { f, m } = await dualStarted({ units: true, "units-plugins": "auto" }, { cameras: ["front"] });
+	try {
+		assert.ok(f.active().includes("act"));
+		assert.ok(!("target_in_wrist" in f.tools.get("act").parameters.properties), "no wrist view: no target_in_wrist");
+		const prompt = (await f.emit("before_agent_start", { systemPrompt: "base" })).systemPrompt as string;
+		assert.doesNotMatch(prompt.replaceAll("no wrist view", "").replaceAll("no wrist camera", ""), /wrist|WRIST/);
+		const r = await f.run("act", { unit: "MV_FWD", arm: "right" });
+		assert.equal(r.content.filter((c: any) => c.type === "image").length, 1);
+	} finally {
+		m.close();
+	}
+	const vs = await dualStarted({ "view-select": true, units: "both", "units-plugins": "" }, { cameras: ["front"] });
+	try {
+		assert.match(
+			vs.f.notes.join("\n"),
+			/--view-select picks each move's guiding view .* streams no wrist camera \(cameras: front\)/,
+		);
+		assert.equal(vs.m.calls.filter((c) => c.method === "env.reset").length, 0, "nothing moved");
+		assert.deepEqual(vs.f.active(), []);
+	} finally {
+		vs.m.close();
+	}
+	// With its wrist cameras the rig keeps target_in_wrist.
+	const full = await dualStarted({ units: true, "units-plugins": "auto" });
+	try {
+		assert.ok("target_in_wrist" in full.f.tools.get("act").parameters.properties);
+	} finally {
+		full.m.close();
 	}
 });

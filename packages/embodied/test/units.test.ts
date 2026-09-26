@@ -627,9 +627,11 @@ test("mem_text: recent moves newest first, the history rules, and resets on empt
 	assert.match(String(s.pi.getFlag("units-plugins")), /mem_text/);
 	const defaults = fakePi({ units: "true" });
 	franka(defaults.pi);
+	assert.equal(defaults.pi.getFlag("units-plugins"), "auto", "the robot's default set");
+	const auto = await toyRobot({ "units-plugins": "auto" });
 	assert.match(
-		String(defaults.pi.getFlag("units-plugins")),
-		/(^|,)mem_text(,|$)/,
+		head(await auto.run("act", { unit: "STOP" })),
+		/Recent moves, newest first/,
 		"on by default, as in Show-Harness",
 	);
 });
@@ -1178,11 +1180,15 @@ test("--units-rt swaps the turn vocabulary: ROTATE_* (v3) or RT_* (v5), never bo
 const ALL_PLUGINS = "recovery,auto_release,proprioception,variable_step,action_chunk,rotation,plan,mem_text";
 
 test("no wrist view: variable_step and action_chunk off, rotation without compensation, no target_in_wrist, no wrist text", async () => {
-	const f = await toyRobot({ "units-plugins": ALL_PLUGINS }, { yaw: Math.PI / 4, wrist: false });
+	// --units-plugins auto: the robot's default set (Show-Harness's, all of ALL_PLUGINS) less what needs a wrist view.
+	const f = await toyRobot({ "units-plugins": "auto" }, { yaw: Math.PI / 4, wrist: false });
 	const props = f.tools.get("act").parameters.properties;
 	assert.ok(!("target_in_wrist" in props), "act offers no target_in_wrist");
 	assert.ok(!("plan" in props), "act offers no action_chunk plan");
-	assert.match(f.notes.join("\n"), /no wrist view: variable_step, action_chunk off .*rotation keeps only its realign/);
+	assert.match(
+		f.notes.join("\n"),
+		/no wrist view: variable_step, action_chunk off \(the robot's default plugins\), rotation keeps only its realign/,
+	);
 	const prompt = (await f.emit("before_agent_start")).systemPrompt as string;
 	assert.doesNotMatch(
 		prompt.replaceAll("no wrist view", ""),
@@ -1254,7 +1260,7 @@ test("a wrist robot is unchanged: target_in_wrist, the wrist rules and every req
 test("the wrist view is read again once the robot started (a configuration the server reports)", async () => {
 	let cameras = ["front", "wrist"];
 	const f = await toyRobot(
-		{ "units-plugins": ALL_PLUGINS },
+		{ "units-plugins": "auto" },
 		{
 			wrist: () => cameras.includes("wrist"),
 			onStart: () => {
@@ -1267,7 +1273,7 @@ test("the wrist view is read again once the robot started (a configuration the s
 	assert.doesNotMatch((await f.emit("before_agent_start")).systemPrompt, /WRIST CHECK/);
 	// The next session's server streams a wrist camera again.
 	const g = await toyRobot(
-		{ "units-plugins": ALL_PLUGINS },
+		{ "units-plugins": "auto" },
 		{
 			wrist: () => cameras.includes("wrist"),
 			onStart: () => {
@@ -1276,4 +1282,27 @@ test("the wrist view is read again once the robot started (a configuration the s
 		},
 	);
 	assert.ok("target_in_wrist" in g.tools.get("act").parameters.properties);
+});
+
+test("a wrist-view plugin named in --units-plugins on a robot without a wrist view refuses to start", async () => {
+	for (const plugins of ["variable_step", "proprioception,action_chunk", ALL_PLUGINS]) {
+		const f = await toyRobot({ "units-plugins": plugins }, { wrist: false });
+		assert.deepEqual(f.active(), [], plugins);
+		assert.match(
+			f.notes.join("\n"),
+			/unavailable: --units-plugins (variable_step|action_chunk)(, action_chunk)?: this robot configuration has no wrist view/,
+		);
+	}
+	// Named without a wrist-view plugin, or on a robot with a wrist view, it starts.
+	const turned = await toyRobot({ "units-plugins": "rotation,mem_text" }, { wrist: false, yaw: 0.15 });
+	assert.deepEqual(turned.active(), ["act", "finish"]);
+	assert.deepEqual((await toyRobot({ "units-plugins": "variable_step" })).active(), ["act", "finish"]);
+});
+
+test("mem_text's re-judge rule names the views the robot has", async () => {
+	const rule = /re-judge the target's position from (.*) before moving again/;
+	const wrist = (await (await toyRobot({})).emit("before_agent_start")).systemPrompt as string;
+	assert.equal(rule.exec(wrist)?.[1], "both views");
+	const none = (await (await toyRobot({}, { wrist: false })).emit("before_agent_start")).systemPrompt as string;
+	assert.equal(rule.exec(none)?.[1], "the third-person view");
 });

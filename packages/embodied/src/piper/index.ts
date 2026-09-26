@@ -143,8 +143,16 @@ export function motionFrame(view: unknown, configured: Frame, viewSelect: boolea
  * is wrong once the gripper is yawed, so it is rewritten to follow the gripper heading
  * (Show-Harness plugins/wrist_frame); the wrist view's directions are exact in that frame already.
  * `viewSelect` keeps the base convention for both views and asks for each move's guiding view.
+ * `cameras` are the streamed views in image order (default: the front camera and each arm's wrist
+ * camera); a wrist camera the server does not stream is not described, and without any wrist camera
+ * there is no view to select.
  */
-export function piperViews(frame: Frame, arms: readonly string[] = [], viewSelect = false): string {
+export function piperViews(
+	frame: Frame,
+	arms: readonly string[] = [],
+	viewSelect = false,
+	cameras: readonly string[] = arms.length ? ["front", "wrist_left", "wrist_right"] : ["front", "wrist"],
+): string {
 	const dual = arms.length > 0;
 	const enters = dual ? "arms, which enter" : "arm, which enters";
 	const front =
@@ -153,19 +161,25 @@ export function piperViews(frame: Frame, arms: readonly string[] = [], viewSelec
 			: `FRONT camera: faces the ${enters} from the TOP of the image. MV_FWD moves the gripper toward the image bottom, MV_BACK toward the image top, MV_LEFT / MV_RIGHT toward image left / right.`;
 	const wrist =
 		"looks along the gripper at the fingertips (bottom of the image). MV_FWD advances the gripper, so a target near the image TOP needs MV_FWD and one between the image top and the fingers MV_BACK; MV_LEFT / MV_RIGHT move toward image left / right; MV_DOWN brings the fingers down onto what is centered between them.";
-	const lines = dual
-		? [
-				`- Image 1, ${front}`,
-				`- Image 2, LEFT WRIST camera (the left arm's): ${wrist}`,
-				`- Image 3, RIGHT WRIST camera (the right arm's): ${wrist}`,
-				"- MV_UP / MV_DOWN change the gripper's height in every view. Each unit moves only the arm named by `arm`.",
-			]
-		: [
-				`- Image 1, ${front}`,
-				`- Image 2, WRIST camera: ${wrist}`,
-				"- MV_UP / MV_DOWN change the gripper's height in both views.",
-			];
-	if (viewSelect)
+	const side = (name: string) => arms.find((a) => name === `wrist_${a}`);
+	const label = (name: string) => {
+		const a = side(name);
+		if (a) return `${a.toUpperCase()} WRIST camera (the ${a} arm's)`;
+		return name === "wrist" && !dual ? "WRIST camera" : `WRIST camera (${name})`;
+	};
+	const lines = cameras.flatMap((name, i) =>
+		name === "front"
+			? [`- Image ${i + 1}, ${front}`]
+			: name.startsWith("wrist")
+				? [`- Image ${i + 1}, ${label(name)}: ${wrist}`]
+				: [],
+	);
+	const wrists = cameras.filter((c) => c.startsWith("wrist")).length;
+	lines.push(
+		`- MV_UP / MV_DOWN change the gripper's height in ${wrists ? (wrists > 1 ? "every view" : "both views") : "the front view"}.${dual ? " Each unit moves only the arm named by `arm`." : ""}`,
+	);
+	if (!wrists) lines.push("- There is no wrist camera: judge every move in the front view.");
+	if (viewSelect && wrists)
 		lines.push(
 			"- VIEW SELECT: with every MV_* set `view` to the view that guided it: WRIST when the target is in the wrist view and you judged it there, FRONT when you judged it in the front view. A WRIST move runs along the gripper's heading and a FRONT move in the front view's image directions, so the directions above are exact for the view you name.",
 		);
@@ -290,7 +304,7 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 		baseDelta: (delta, state) => (lastFrame === "heading" ? headingToBase(delta, state) : delta),
 		instruction: () => task?.instruction ?? "",
 		get views() {
-			return piperViews(viewSelect() ? "base" : unitsFrame(), arms, viewSelect());
+			return piperViews(viewSelect() ? "base" : unitsFrame(), arms, viewSelect(), cameras());
 		},
 		get emptyWidthM() {
 			return meta?.limits.empty_width_m ?? 0.005;
@@ -663,6 +677,11 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 		if (!m.has_begin_pose)
 			throw new Error(
 				`${dual ? "arms.<side>.calibration" : "calibration"}.begin_joints is not set in the robot config; reset would fail`,
+			);
+		// view_select chooses between the wrist and the front view: without a wrist camera there is no choice.
+		if (pi.getFlag("view-select") === true && !(m.cameras ?? ["wrist"]).some((c) => c.startsWith("wrist")))
+			throw new Error(
+				`--view-select picks each move's guiding view (WRIST or FRONT), but the env server streams no wrist camera (cameras: ${(m.cameras ?? []).join(", ") || "none"}); start without --view-select`,
 			);
 		// Show-Harness refuses view_select with motion_frame: wrist: the heading-frame prompt rewrite would contradict FRONT-guided base-frame moves.
 		if (pi.getFlag("view-select") === true && m.units_frame === "heading")

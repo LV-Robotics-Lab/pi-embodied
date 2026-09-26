@@ -80,6 +80,11 @@ export function alias(key: unknown): string | undefined {
 	return k || undefined;
 }
 
+/** Whether the agent sees a wrist view: an inline camera named `*wrist*` (the default D455 alone is none). */
+export function inlineWrist(meta: Json | null | undefined): boolean {
+	return policy(meta).inline_cameras.some((c) => c.includes("wrist"));
+}
+
 export function policy(meta: Json | null | undefined): { inline_cameras: string[]; auxiliary_cameras: string[] } {
 	const raw = meta?.agent_observation && typeof meta.agent_observation === "object" ? meta.agent_observation : {};
 	const strings = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);

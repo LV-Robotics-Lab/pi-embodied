@@ -10,7 +10,7 @@
 # `robot_result` entry. An episode is valid when the environment produced a result and the planner
 # did not fail (`env_error`, `planner_error` and a missing result are invalid), whatever the
 # outcome. Rerunning retries exactly the invalid episodes; valid ones are kept. Each result records
-# the model, thinking level, --max-turns, --time-limit, the units mode (--units, --stateless) and
+# the model, thinking level, --max-turns, --time-limit, the units mode (--units, --units-plugins, --stateless) and
 # visual differencing (--vdm, --vdm-model, --vdm-wrist) and the arm (--robot, default panda; recorded as
 # `maniskill_robot`, since `robot` names the pi robot), and the summary covers only the requested cells and
 # refuses to mix configurations.
@@ -43,6 +43,8 @@ for ((i = 0; i < ${#args[@]}; i++)); do
 	--time-limit=*) limit=${args[i]#*=} limited=1 ;;
 	--units) [[ ${args[i + 1]:---} == --* ]] && units=true || units=${args[i + 1]} ;;
 	--units=*) units=${args[i]#*=} ;;
+	--units-plugins) units_plugins=${args[i + 1]-} ;;
+	--units-plugins=*) units_plugins=${args[i]#*=} ;;
 	# pi sets a boolean flag to true whatever value it is given (`--stateless=false` runs stateless)
 	# and takes a following word as that value: only the forms that say what pi runs are accepted.
 	--stateless) case ${args[i + 1]:-} in "" | -* | @* | true) stateless=true ;; *)
@@ -93,6 +95,8 @@ for ((i = 0; i < ${#args[@]}; i++)); do
 	esac
 done
 [ "$units" = pure ] && units=true
+# --units-plugins is part of the units mode: a result with other plugins is another configuration.
+[ "$units" != false ] && [ -n "${units_plugins+x}" ] && units="$units+plugins=$units_plugins"
 # --time-limit (default $TIME_LIMIT, 1800 s; 0 = none) ends the planner gracefully, as a failure;
 # `timeout` is only the backstop for a hung process, and a killed episode is invalid.
 [ -n "$limited" ] || set -- "$@" --time-limit "$limit"
@@ -179,7 +183,7 @@ const rows = cells.map((c) => {
 	}
 });
 const configs = new Set(rows.filter((r) => r.status === "success" || r.status === "failure")
-	.map((r) => `${r.model}/${r.thinking}/turns=${r.max_turns}/limit=${r.time_limit}/units=${r.units}${r.stateless ? "/stateless" : ""}${r.anchor_image ? "/anchor" : ""}${r.vdm ? `/vdm=${r.vdm_model ?? "default"}${r.vdm_wrist ? "+wrist" : ""}` : ""}${r.privileged ? "/privileged" : ""}${(r.maniskill_robot ?? "panda") !== "panda" ? `/robot=${r.maniskill_robot}` : ""}${r.fallback_model ? `/fallback=${r.fallback_model}:${r.fallback_after}:${r.fallback_retry_primary}` : ""}`));
+	.map((r) => `${r.model}/${r.thinking}/turns=${r.max_turns}/limit=${r.time_limit}/units=${r.units}${r.units_wrist_view === false ? `/no-wrist:${(r.units_plugins ?? []).join("+")}` : ""}${r.stateless ? "/stateless" : ""}${r.anchor_image ? "/anchor" : ""}${r.vdm ? `/vdm=${r.vdm_model ?? "default"}${r.vdm_wrist ? "+wrist" : ""}` : ""}${r.privileged ? "/privileged" : ""}${(r.maniskill_robot ?? "panda") !== "panda" ? `/robot=${r.maniskill_robot}` : ""}${r.fallback_model ? `/fallback=${r.fallback_model}:${r.fallback_after}:${r.fallback_retry_primary}` : ""}`));
 if (configs.size > 1) {
 	console.log(`refusing to summarize: ${out} mixes configurations ${[...configs].join(", ")}`);
 	process.exit(1);

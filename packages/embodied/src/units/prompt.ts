@@ -81,6 +81,7 @@ export function renderPrompt(c: PromptContext) {
 		chunk: String(CHUNK_STEPS),
 		yaw_wrist: c.wristView ? ", so the scene turns clockwise in the wrist view" : "",
 		grasp_confirm: c.wristView ? "BOTH views confirm" : "the third-person view confirms",
+		judge_views: c.wristView ? "both views" : "the third-person view",
 		yaw_deg: String(Math.round(((spec.yawStepRad ?? 0) * 180) / Math.PI)),
 		rt_deg: String(Math.round(((spec.rt?.stepRad ?? 0) * 180) / Math.PI)),
 		arms: arms.join(", "),

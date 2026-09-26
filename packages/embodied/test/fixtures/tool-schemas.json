@@ -4071,6 +4071,123 @@
 					}
 				}
 			}
+		],
+		"dual_franka_wrist_camera": [
+			{
+				"name": "act",
+				"description": "Execute one action unit (MV_FWD, MV_BACK, MV_LEFT, MV_RIGHT, MV_UP, MV_DOWN, ROTATE_CW, ROTATE_CCW, STOP, GRASP, RELEASE, DONE, STILL), repeated n times. MV_* move the gripper ~2 cm, ROTATE_* turn it ~9 deg; GRASP closes, RELEASE opens, STOP holds one step, DONE means the task is complete (call finish). Returns the new images and state.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"unit",
+						"arm"
+					],
+					"properties": {
+						"unit": {
+							"type": "string",
+							"enum": [
+								"MV_FWD",
+								"MV_BACK",
+								"MV_LEFT",
+								"MV_RIGHT",
+								"MV_UP",
+								"MV_DOWN",
+								"ROTATE_CW",
+								"ROTATE_CCW",
+								"STOP",
+								"GRASP",
+								"RELEASE",
+								"DONE",
+								"STILL"
+							],
+							"description": "The action unit"
+						},
+						"n": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 10,
+							"description": "Repeat count (default 1)"
+						},
+						"target_in_wrist": {
+							"type": "boolean",
+							"description": "WRIST CHECK: is the TARGET visible in the wrist view?"
+						},
+						"plan": {
+							"type": "array",
+							"items": {
+								"type": "string",
+								"enum": [
+									"MV_FWD",
+									"MV_BACK",
+									"MV_LEFT",
+									"MV_RIGHT",
+									"MV_UP",
+									"MV_DOWN"
+								]
+							},
+							"maxItems": 3,
+							"description": "Only with target_in_wrist false: up to 3 MV_* moves run in order (replaces unit and n)"
+						},
+						"arm": {
+							"type": "string",
+							"enum": [
+								"left",
+								"right"
+							],
+							"description": "Which arm the unit drives"
+						}
+					}
+				}
+			},
+			{
+				"name": "plan",
+				"description": "Subgoal plan: `stages` replaces the plan from the current stage on (ordered GRASP/LIFT/MOVE/PLACE/RELEASE/RETREAT/REASON stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"stages": {
+							"type": "array",
+							"items": {
+								"type": "object",
+								"required": [
+									"motion",
+									"target",
+									"completion"
+								],
+								"properties": {
+									"motion": {
+										"type": "string",
+										"description": "GRASP, LIFT, MOVE, PLACE, RELEASE, RETREAT or REASON"
+									},
+									"target": {
+										"type": "string"
+									},
+									"affordance": {
+										"type": "string",
+										"description": "The one visible part to aim at"
+									},
+									"description": {
+										"type": "string",
+										"description": "Visual strategy; for REASON the complete IF ... THEN rule"
+									},
+									"completion": {
+										"type": "string",
+										"description": "DONE WHEN: a condition visible in the images"
+									},
+									"arm": {
+										"type": "string",
+										"description": "Dual-arm robots: the arm of this stage"
+									}
+								}
+							}
+						},
+						"done": {
+							"type": "boolean",
+							"description": "The current stage's DONE WHEN is visible"
+						}
+					}
+				}
+			}
 		]
 	}
 }

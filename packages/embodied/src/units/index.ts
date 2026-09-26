@@ -16,7 +16,7 @@
  * start resets the robot's scene (../robot.ts), so a resumed or forked session is a new episode and
  * starts from a fresh units state, as ../operator.ts does.
  *
- * Plugins (`--units-plugins`, default the robot's `plugins` or Show-Harness's zero-shot Franka set):
+ * Plugins (`--units-plugins`, default `auto`: the robot's `plugins` or Show-Harness's zero-shot Franka set):
  * - recovery: reopen after a GRASP that closed on nothing.
  * - auto_release: reopen a closed gripper whose object slipped out.
  * - proprioception: height, width and blocked moves in every result.
@@ -37,8 +37,8 @@
  * - mem_text: "Recent moves, newest first" in every result, with the history rules (no oscillation,
  *   no GRASP in place after an empty one); off, the results carry no move history at all.
  * A robot configuration without a wrist view (the spec's `wrist`, e.g. ManiSkill's --robot widowxai)
- * runs without variable_step and action_chunk whatever --units-plugins says, and rotation keeps only
- * its realign: those key on the wrist view. `act` then takes no `target_in_wrist` (one sent anyway is
+ * runs `auto` without variable_step and action_chunk and refuses to start when --units-plugins names
+ * them (as --units-rt without an axis), and rotation keeps only its realign: those key on the wrist view. `act` then takes no `target_in_wrist` (one sent anyway is
  * ignored, and the result says so), the prompt drops its wrist-view text, a notice names the plugins
  * turned off, and the effective plugins are in every `units_state` entry and the robot result.
  *
@@ -185,7 +185,7 @@ export function units(
 	spec: UnitsSpec,
 	tool: ToolRegistrar,
 	task: () => Record<string, string> = () => ({}),
-	base: Pick<UnitsHandle, "tools" | "refuse"> = { tools: () => ["act"], refuse: () => undefined },
+	base: Pick<UnitsHandle, "tools" | "refuse" | "views"> = { tools: () => ["act"], refuse: () => undefined },
 ) {
 	const instruction = () =>
 		spec.instruction?.() ??
@@ -204,8 +204,8 @@ export function units(
 	});
 	pi.registerFlag("units-plugins", {
 		type: "string",
-		default: (spec.plugins ?? DEFAULT_PLUGINS).join(","),
-		description: `Units plugins, comma-separated (${PLUGINS.join(", ")}; "" = none)`,
+		default: "auto",
+		description: `Units plugins, comma-separated (${PLUGINS.join(", ")}; "" = none; auto = ${(spec.plugins ?? DEFAULT_PLUGINS).join(",")}, without variable_step and action_chunk on a configuration without a wrist view)`,
 	});
 	pi.registerFlag("units-coarse-step", {
 		type: "string",
@@ -249,11 +249,18 @@ export function units(
 	const readWrist = () => (typeof spec.wrist === "function" ? spec.wrist() : spec.wrist) !== false;
 	let wristView = readWrist();
 	/** A plugin --units-plugins asks for and the robot can run, before the wrist view is considered. */
+	/** --units-plugins as given, or undefined for `auto` (the robot's default set). */
+	const listed = () => {
+		const v = String(pi.getFlag("units-plugins") ?? "auto").trim();
+		return v === "auto"
+			? undefined
+			: v
+					.split(",")
+					.map((s) => s.trim())
+					.filter(Boolean);
+	};
 	const requested = (name: Plugin) =>
-		String(pi.getFlag("units-plugins") ?? "")
-			.split(",")
-			.map((s) => s.trim())
-			.includes(name) &&
+		(listed() ?? spec.plugins ?? DEFAULT_PLUGINS).includes(name) &&
 		(name !== "point" || spec.point !== undefined) &&
 		(name !== "rotation" || Boolean(spec.yawStepRad));
 	const plugin = (name: Plugin) => requested(name) && (wristView || !WRIST_PLUGINS.includes(name));
@@ -712,6 +719,7 @@ export function units(
 		state: spec.state,
 		viewSelect: false,
 		wrist: () => wristView,
+		plugins: effective,
 		...base,
 	};
 	pi.on("session_start", () =>
@@ -880,8 +888,14 @@ export function units(
 		saved = snapshot();
 		registerAct();
 		if (wristView || !mode()) return;
+		// A wrist-view plugin named explicitly cannot run here: fail closed (as --units-rt does), never drop it silently.
+		const named = WRIST_PLUGINS.filter((p) => listed()?.includes(p));
+		if (named.length)
+			throw new Error(
+				`--units-plugins ${named.join(", ")}: this robot configuration has no wrist view, which ${named.length > 1 ? "they need" : "it needs"} (target_in_wrist); drop ${named.length > 1 ? "them" : "it"} or use --units-plugins auto`,
+			);
 		const off = WRIST_PLUGINS.filter(requested);
-		const notice = `units: this robot has no wrist view: ${off.length ? `${off.join(", ")} off (asked for by --units-plugins), ` : ""}${requested("rotation") ? "rotation keeps only its realign, " : ""}act takes no target_in_wrist; plugins running: ${effective().join(", ") || "none"}`;
+		const notice = `units: this robot has no wrist view: ${off.length ? `${off.join(", ")} off (the robot's default plugins), ` : ""}${requested("rotation") ? "rotation keeps only its realign, " : ""}act takes no target_in_wrist; plugins running: ${effective().join(", ") || "none"}`;
 		if (ctx.hasUI) ctx.ui.notify(notice, "info");
 		else console.error(`[units] ${notice}`);
 	}

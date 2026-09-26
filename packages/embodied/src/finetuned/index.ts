@@ -51,7 +51,7 @@ import {
 	type TranscriptContext,
 	type Usage,
 } from "@earendil-works/pi-ai";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { encodePng } from "../png.ts";
 import { TASK_ENTRY } from "../robot.ts";
 import { RT_UNITS, UNITS_EVENT, type UnitsHandle } from "../units/index.ts";
@@ -483,7 +483,47 @@ export default function finetuned(pi: ExtensionAPI) {
 	let stall = { token: "", count: 0 };
 	let dones = 0;
 
-	pi.on("session_start", () => {
+	/** Why the policy cannot run on this robot's images (set at session start), else undefined. */
+	let refused: string | undefined;
+	const cameraIndices = () =>
+		flag("ft-cameras")
+			.split(",")
+			.map((s) => Number(s.trim()));
+	/**
+	 * Why the adapters cannot read this robot's images, else undefined: they take an agentview and a
+	 * wrist image (--ft-cameras), so a configuration without a wrist camera, or --ft-cameras naming a
+	 * non-wrist image as the wrist (or the wrist as the agentview), is refused instead of fed wrong images.
+	 */
+	function imageRefusal(): string | undefined {
+		if (units?.wrist?.() === false)
+			return "the fine-tuned adapters read an agentview and a wrist image, and this robot configuration has no wrist camera; run it with a planner model instead";
+		const v = units?.views?.();
+		if (!v) return undefined;
+		const wrists = v.wrist === undefined ? [] : [v.wrist].flat();
+		const [agent, wrist] = cameraIndices();
+		const named = `--ft-cameras ${flag("ft-cameras")}`;
+		if (!(agent < v.views && wrist < v.views))
+			return `${named} names image ${Math.max(agent, wrist)}, but the robot's observation carries ${v.views} image(s)`;
+		if (!wrists.includes(wrist) || wrists.includes(agent))
+			return `${named}: image ${wrist} must be a wrist view and image ${agent} a third-person view (the robot's wrist views are image(s) ${wrists.join(", ") || "none"}); pass --ft-cameras <agentview>,<wrist>`;
+		return undefined;
+	}
+	/** Refuse the episode before the first step: the model never sees the wrong images. */
+	function refuse(ctx: ExtensionContext) {
+		if (ctx.model?.provider !== "finetuned" || refused) return;
+		refused = imageRefusal();
+		if (!refused) return;
+		over = true;
+		if (ctx.hasUI) ctx.ui.notify(`finetuned: ${refused}`, "error");
+		else {
+			console.error(`[finetuned] ${refused}`);
+			process.exitCode = 1;
+			ctx.shutdown();
+		}
+	}
+
+	pi.on("session_start", (_event, ctx) => {
+		refused = undefined;
 		over = false;
 		steps = ids = dones = 0;
 		recent = [];
@@ -492,9 +532,12 @@ export default function finetuned(pi: ExtensionAPI) {
 		lastEef = undefined;
 		lastToken = "";
 		stall = { token: "", count: 0 };
+		// The robot's session start (loaded first) has started it: its cameras are known.
+		refuse(ctx);
 	});
 	pi.on("before_agent_start", (_event, ctx) => {
 		if (ctx.model?.provider !== "finetuned") return;
+		refuse(ctx);
 		const task = ctx.sessionManager
 			.getBranch()
 			.filter((e) => e.type === "custom" && e.customType === TASK_ENTRY)
@@ -504,10 +547,6 @@ export default function finetuned(pi: ExtensionAPI) {
 		envId = String(data["env-id"] || "");
 		const warn = (s: string) => (ctx.hasUI ? ctx.ui.notify(s, "warning") : console.error(`[finetuned] ${s}`));
 		if (!pi.getActiveTools().includes("act")) warn("the `act` tool is not active: run the robot with --units");
-		if (units?.wrist?.() === false)
-			warn(
-				"this robot has no wrist view: the adapters read (agentview, wrist) images (--ft-cameras), so the second image is missing and variable_step / action_chunk are off",
-			);
 		if (!robotViews() && !flag("ft-agentview") && !flag("ft-wrist"))
 			warn(
 				`no calibrated camera transform for robot "${robot}"; using ${formatView(DEFAULT_VIEWS.wrist)} for the wrist`,
@@ -523,10 +562,12 @@ export default function finetuned(pi: ExtensionAPI) {
 			warn(
 				`the robot's act does not offer ${missing.join(", ")} (RT_* need --units-rt=true and a robot that can turn); the episode ends if the policy emits one`,
 			);
-		const grounding = String(pi.getFlag("units-plugins") ?? "")
-			.split(",")
-			.map((s) => s.trim())
-			.filter((s) => GROUNDING_PLUGINS.includes(s));
+		const grounding = (
+			units?.plugins?.() ??
+			String(pi.getFlag("units-plugins") ?? "")
+				.split(",")
+				.map((s) => s.trim())
+		).filter((s) => GROUNDING_PLUGINS.includes(s));
 		if (preset() === PRESETS.v5 && grounding.length)
 			warn(
 				`units plugins ${grounding.join(", ")} change what a token does; the v5 eval ran none (--units-plugins "")`,
@@ -607,6 +648,7 @@ export default function finetuned(pi: ExtensionAPI) {
 
 	/** One policy step over the transcript. */
 	async function next(messages: Message[], modelId: string, signal: AbortSignal | undefined): Promise<Turn> {
+		if (refused) return { text: `The fine-tuned policy refused this robot: ${refused}`, calls: [] };
 		if (over) return { text: "The fine-tuned policy already ended this episode.", calls: [] };
 		if (!pending) {
 			const c = call("act", { unit: OPENING });
@@ -652,9 +694,13 @@ export default function finetuned(pi: ExtensionAPI) {
 		const tpl = template();
 		const allowed = allowedTokens(tpl);
 		const prompt = formatPrompt(tpl, { task: taskOf(texts), recent_moves: recentText(recent), gripper_state: "" });
-		const cameras = flag("ft-cameras")
-			.split(",")
-			.map((s) => Number(s.trim()));
+		// A camera set learnt only after the first observation (dual Franka's inline views) is checked here too.
+		const wrong = imageRefusal();
+		if (wrong) {
+			refused = wrong;
+			return end(`The fine-tuned policy refused this robot: ${wrong}`);
+		}
+		const cameras = cameraIndices();
 		const images = result.content.filter((c) => c.type === "image") as { data: string }[];
 		const sent = prepareImages(images, cameras, views());
 		const adapter = flag("ft-model") || (modelId === "local" ? "" : modelId);

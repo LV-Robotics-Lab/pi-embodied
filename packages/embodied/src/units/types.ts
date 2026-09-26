@@ -41,6 +41,10 @@ export type UnitsHandle = {
 	rt?: boolean;
 	/** Whether this session's robot configuration has a wrist view (UnitsSpec.wrist), read once the robot started. */
 	wrist?: () => boolean;
+	/** The plugins that run this session (after --units-plugins and the wrist view). */
+	plugins?: () => readonly string[];
+	/** The camera images an observation carries and which are wrist views (the robot's `vdm` spec), if it says. */
+	views?: () => { views: number; wrist?: number | readonly number[] } | undefined;
 };
 
 export type Result = AgentToolResult<unknown>;

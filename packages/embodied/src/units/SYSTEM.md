@@ -87,7 +87,7 @@ ATTENTION:
 - Each `act` result starts with a units block: what ran{{mem_note}}{{proprio_note}}. Read it before the next unit; a blocked move did not happen.
 [mem_text]
 - If the recent moves show GRASP(empty) (a GRASP that closed on nothing), do not GRASP in place again: first reposition with MV_UP, MV_BACK, MV_DOWN or MV_FWD.
-- Do not undo the newest recent move (MV_LEFT / MV_RIGHT, MV_FWD / MV_BACK) unless the images show it overshot the target. When the recent moves alternate between opposite directions, re-judge the target's position from both views before moving again; do not descend while still off-center.
+- Do not undo the newest recent move (MV_LEFT / MV_RIGHT, MV_FWD / MV_BACK) unless the images show it overshot the target. When the recent moves alternate between opposite directions, re-judge the target's position from {{judge_views}} before moving again; do not descend while still off-center.
 [/mem_text]
 [proprioception]
 - A MV_DOWN that lowered much less than commanded means the gripper already rests on something: do NOT MV_DOWN again.

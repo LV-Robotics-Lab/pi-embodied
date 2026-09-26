@@ -54,8 +54,8 @@ import {
 	workspaceLimits,
 } from "../robot.ts";
 import { NdArray, type RpcClient } from "../rpc.ts";
-import type { Move } from "../units/index.ts";
-import { alias, policy, REWRITE, SETUP_PY, type Setup, type Step } from "./config.ts";
+import type { Move, MoveUnit, Vec3 } from "../units/index.ts";
+import { alias, inlineWrist, policy, REWRITE, SETUP_PY, type Setup, type Step } from "./config.ts";
 import { mountPerception } from "./perception.ts";
 import { mountSkills } from "./skills.ts";
 
@@ -80,6 +80,21 @@ const TOOLS = [
 	"segment",
 	...MOTION,
 ];
+
+/** Show-Harness configs/primitives_franka.yaml, in the shared right_base frame; one arm per unit. */
+export const DUAL_FRANKA_UNITS = {
+	vectors: {
+		MV_FWD: [1, 0, 0],
+		MV_BACK: [-1, 0, 0],
+		MV_LEFT: [0, -1, 0],
+		MV_RIGHT: [0, 1, 0],
+		MV_UP: [0, 0, 1],
+		MV_DOWN: [0, 0, -1],
+	} as Record<MoveUnit, Vec3>,
+	stepM: 0.02,
+	yawStepRad: 0.15,
+	arms: ["left", "right"] as readonly string[],
+};
 
 export default function dualFranka(pi: ExtensionAPI) {
 	const flag = (name: string, fallback = "") => String(pi.getFlag(name) ?? fallback);
@@ -218,20 +233,9 @@ export default function dualFranka(pi: ExtensionAPI) {
 		}),
 		status: () => ({ step: steps.length - 1, solved: (op.result() as Json).operator_verdict === "success" }),
 		units: {
-			// Show-Harness configs/primitives_franka.yaml, in the shared right_base frame; one arm per unit.
-			vectors: {
-				MV_FWD: [1, 0, 0],
-				MV_BACK: [-1, 0, 0],
-				MV_LEFT: [0, -1, 0],
-				MV_RIGHT: [0, 1, 0],
-				MV_UP: [0, 0, 1],
-				MV_DOWN: [0, 0, -1],
-			},
-			stepM: 0.02,
-			yawStepRad: 0.15,
+			...DUAL_FRANKA_UNITS,
 			maxYawRad: () => maxRotate(),
 			maxMoveM: () => moveLimit(Number(flag("max-move", "0.1")), setup?.task.constraints),
-			arms: ["left", "right"],
 			apply: (move, signal) => unitStep(move, signal),
 			state: async (arm) => {
 				const a = armState(arm ?? "right");
@@ -246,7 +250,7 @@ export default function dualFranka(pi: ExtensionAPI) {
 			instruction: () => setup?.task.instruction ?? "",
 			// Only the policy's inline cameras reach the model (the D455 alone by default): a wrist view only
 			// when cameras.agent_observation.inline_cameras names one (the latest step's camera meta).
-			wrist: () => policy(steps[steps.length - 1]?.meta ?? envMeta).inline_cameras.some((c) => c.includes("wrist")),
+			wrist: () => inlineWrist(steps[steps.length - 1]?.meta ?? envMeta),
 			views: "Each result shows the configured inline front view with both arms (Show-Harness's front-view convention: MV_LEFT / MV_RIGHT move the chosen arm toward the image left / right, MV_FWD toward the image bottom, MV_BACK toward the image top). Verify the first move of each arm against the image before relying on it.",
 			emptyWidthM: 0.001,
 		},

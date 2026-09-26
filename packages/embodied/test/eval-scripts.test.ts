@@ -371,3 +371,45 @@ test("maniskill/eval.sh records --robot as maniskill_robot and never mixes arms 
 	assert.equal(panda.status, 0, panda.stdout + panda.stderr);
 	assert.doesNotMatch(panda.stdout, /robot=/);
 });
+
+test("eval.sh keys the units mode on --units-plugins and the summary on a no-wrist run's effective plugins", () => {
+	for (const [robot, positional, cell, env] of CELLS) {
+		const run1 = (args: string[]) => run(robot, positional, cell, args, env).result?.units;
+		assert.equal(
+			run1(["--units", "--units-plugins", "proprioception,mem_text"]),
+			"true+plugins=proprioception,mem_text",
+			robot,
+		);
+		assert.equal(run1(["--units-plugins=", "--units=both"]), "both+plugins=", robot);
+		assert.equal(run1(["--units"]), "true", `${robot}: without the flag, as before`);
+		assert.equal(run1(["--units-plugins", "rotation"]), "false", `${robot}: units off`);
+	}
+	// Two valid ManiSkill results of the same flags, one on a robot without a wrist view: not one configuration.
+	const dir = mkdtempSync(join(tmpdir(), "eval-"));
+	const result = (extra: Record<string, unknown>) =>
+		JSON.stringify({
+			status: "success",
+			model: null,
+			thinking: null,
+			max_turns: 0,
+			time_limit: 0,
+			units: "true",
+			stateless: false,
+			maniskill_robot: "panda",
+			...extra,
+		});
+	for (const [seed, extra] of [
+		[0, { units_plugins: ["recovery", "variable_step"], units_wrist_view: true }],
+		[1, { units_plugins: ["recovery"], units_wrist_view: false }],
+	] as const) {
+		mkdirSync(join(dir, "out", `PickCube-v1_s${seed}`), { recursive: true });
+		writeFileSync(join(dir, "out", `PickCube-v1_s${seed}`, "result.json"), result(extra));
+	}
+	const script = new URL("../src/maniskill/eval.sh", import.meta.url).pathname;
+	const r = spawnSync("bash", [script, join(dir, "out"), "PickCube-v1", "0-1", "--units"], {
+		env: { ...process.env, PI: "false", TIME_LIMIT: "0" },
+		encoding: "utf8",
+	});
+	assert.equal(r.status, 1);
+	assert.match(r.stdout, /refusing to summarize: .* mixes configurations .*units=true\/no-wrist:recovery/);
+});

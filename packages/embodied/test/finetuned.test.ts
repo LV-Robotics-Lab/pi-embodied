@@ -590,3 +590,44 @@ test("v5: the budget, an endpoint that ignores the constraint, and a robot that 
 	assert.match(none.warnings.join("\n"), /prompt_v5\.txt .* is not vendored/);
 	assert.match(none.warnings.join("\n"), /units plugins variable_step change what a token does/);
 });
+
+test("fine-tuned mode refuses a robot whose images are not an agentview and a wrist view, before any step", async () => {
+	const base = { vocabulary: ["MV_FWD", "GRASP", "RELEASE", "DONE"], arms: [] as string[] };
+	// No wrist camera (ManiSkill widowxai, the default dual Franka, a UR5e with fixed cameras).
+	const none = fakePi({}, "maniskill", ["act", "finish"], { ...base, wrist: () => false });
+	await none.emit("session_start");
+	assert.match(
+		none.warnings.join("\n"),
+		/finetuned: the fine-tuned adapters read an agentview and a wrist image, and this robot configuration has no wrist camera/,
+	);
+	const t = await none.turn([]);
+	assert.deepEqual(calls(t), [], "no act: not even the opening RELEASE");
+	assert.match(t.content[0].text, /refused this robot/);
+	// --ft-cameras must name a third-person view and a wrist view of the robot's observation.
+	const nav = { ...base, wrist: () => true, views: () => ({ views: 3, wrist: 2 }) };
+	const wrong = fakePi({}, "robocasa", ["act", "finish"], nav);
+	await wrong.emit("session_start");
+	assert.match(
+		wrong.warnings.join("\n"),
+		/--ft-cameras 0,1: image 1 must be a wrist view and image 0 a third-person view \(the robot's wrist views are image\(s\) 2\)/,
+	);
+	assert.deepEqual(calls(await wrong.turn([])), []);
+	const short = fakePi({}, "maniskill", ["act", "finish"], { ...base, views: () => ({ views: 1 }) });
+	await short.emit("session_start");
+	assert.match(
+		short.warnings.join("\n"),
+		/--ft-cameras 0,1 names image 1, but the robot's observation carries 1 image/,
+	);
+	// The right pair runs.
+	const right = fakePi({ "ft-cameras": "0,2" }, "robocasa", ["act", "finish"], nav);
+	await right.emit("session_start");
+	assert.doesNotMatch(right.warnings.join("\n"), /refused|ft-cameras/);
+	assert.deepEqual(calls(await right.turn([]))[0].arguments, { unit: "RELEASE" });
+	const libero = fakePi({}, "libero", ["act", "finish"], {
+		...base,
+		wrist: () => true,
+		views: () => ({ views: 2, wrist: 1 }),
+	});
+	await libero.emit("session_start");
+	assert.deepEqual(calls(await libero.turn([]))[0].arguments, { unit: "RELEASE" });
+});

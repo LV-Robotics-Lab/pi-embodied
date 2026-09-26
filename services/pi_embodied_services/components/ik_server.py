@@ -117,11 +117,17 @@ class RobotModel:
     home_q: tuple[float, ...] = ()
     #: cuRobo's robot config file (``curobo/content/configs/robot``), if it ships one.
     curobo_config: str | None = None
+    #: Links that stay put in the world whatever the joints (the base and the first link,
+    #: which only turns about the base axis): left out of world collision, because a robot
+    #: mounted at a table edge sits in the table's box (LIBERO: 126 mm into it) and every
+    #: plan would start in collision. Self-collision keeps them where the backend can.
+    static_links: tuple[str, ...] = ()
     note: str = ""
 
 
 _PANDA_JOINTS = tuple(f"panda_joint{i}" for i in range(1, 8))
 _PANDA_HOME = (0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785)
+_PANDA_STATIC = ("panda_link0", "panda_link1")
 
 ROBOTS: dict[str, RobotModel] = {
     "panda": RobotModel(
@@ -133,6 +139,7 @@ ROBOTS: dict[str, RobotModel] = {
         fixed_joints={"panda_finger_joint1": 0.04},
         home_q=_PANDA_HOME,
         curobo_config="franka.yml",
+        static_links=_PANDA_STATIC,
         note="Franka Panda / FR3 with the Franka Hand; the TCP is libfranka's default "
         "O_T_EE (flange + 0.1034 m), the tcp_pose the franka env servers report.",
     ),
@@ -145,6 +152,7 @@ ROBOTS: dict[str, RobotModel] = {
         fixed_joints={"panda_finger_joint1": 0.04},
         home_q=_PANDA_HOME,
         curobo_config="franka.yml",
+        static_links=_PANDA_STATIC,
         note="robosuite's Panda (LIBERO, Robosuite): robot0_eef_pos is the gripper's "
         "grip_site, 0.097 m below panda_hand, and robot0_eef_quat is the hand's "
         "orientation. Poses are in the robot0_base frame.",
@@ -733,9 +741,14 @@ class PyrokiBackend:
         full = np.stack([self._full_q(entry, q) for q in path])
         robot_geom = coll.at_config(entry["robot"], jnp.asarray(full))
         per = np.full((len(geoms), len(path)), np.inf)
+        static = entry["model"].static_links
+        moving = np.array([name not in static for name in coll.link_names])
         for i, geom in enumerate(geoms):
             dist = np.asarray(pk.collision.collide(robot_geom, geom))
-            per[i] = dist.reshape(len(path), -1).min(axis=1)
+            dist = dist.reshape(len(path), -1)
+            if dist.shape[1] == len(moving):
+                dist = np.where(moving[None], dist, np.inf)
+            per[i] = dist.min(axis=1)
         if not len(geoms):
             return np.full(len(path), np.inf), np.full(len(path), -1)
         return per.min(axis=0), per.argmin(axis=0)
@@ -951,7 +964,22 @@ class CuroboBackend:
         data = load_yaml(join_path(get_robot_configs_path(), model.curobo_config))[
             "robot_cfg"
         ]
-        data["kinematics"]["ee_link"] = model.ee_link
+        kin = data["kinematics"]
+        kin["ee_link"] = model.ee_link
+        if model.static_links:
+            # No collision spheres on the static links: cuRobo checks the world and self
+            # collision on the same spheres, so they leave both (see RobotModel.static_links).
+            kin["collision_link_names"] = [
+                name
+                for name in kin.get("collision_link_names", [])
+                if name not in model.static_links
+            ]
+            ignore = kin.get("self_collision_ignore") or {}
+            for name in model.static_links:
+                ignore.pop(name, None)
+            buffer = kin.get("self_collision_buffer") or {}
+            for name in model.static_links:
+                buffer.pop(name, None)
         return RobotConfig.from_dict(data, tensor_args=tensor_args), tensor_args
 
     def _make_solver(self, model: RobotModel):
@@ -1354,7 +1382,7 @@ class IkFacade(RpcFacade):
         obstacles (``path``, and ``tcp_path``: the TCP pose at each waypoint)."""
         if not isinstance(robot, str) or not robot:
             raise ValueError("robot must be a robot model name (see ik.robots)")
-        return self.backend.plan(
+        result = self.backend.plan(
             robot,
             start_q,
             goal_pose=goal_pose,
@@ -1362,6 +1390,7 @@ class IkFacade(RpcFacade):
             obstacles=self._obstacles(obstacles) if obstacles is not None else None,
             waypoints=waypoints,
         )
+        return {**result, "backend": self.backend.name}
 
     def check(
         self,

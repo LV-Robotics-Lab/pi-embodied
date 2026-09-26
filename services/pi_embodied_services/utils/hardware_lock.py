@@ -143,10 +143,10 @@ def config_arm_ids(kind: str, tree: Any, keys: str = ADDRESS_KEYS) -> list[str]:
 
 def add_lock_arguments(parser: Any) -> None:
     parser.add_argument(
-        "--arm-id",
+        "--lock-id",
         action="append",
         default=[],
-        help="Physical arm id to lock (repeatable; default: derived from the robot config)",
+        help="Physical arm to lock, e.g. franka:172.16.0.2 (repeatable; default: the config's arm addresses)",
     )
     parser.add_argument(
         "--lock-dir",
@@ -156,9 +156,9 @@ def add_lock_arguments(parser: Any) -> None:
 
 
 def lock_from_args(args: Any, derived: Iterable[str], server: str) -> HardwareLock:
-    """Lock ``--arm-id`` (when given) or the ids derived from the config; exits with the
+    """Lock ``--lock-id`` (when given) or the ids derived from the config; exits with the
     refusal on stderr when an arm is busy."""
-    ids = list(getattr(args, "arm_id", None) or []) or list(derived)
+    ids = list(getattr(args, "lock_id", None) or []) or list(derived)
     try:
         return acquire(
             ids, directory=getattr(args, "lock_dir", "") or None, holder=server

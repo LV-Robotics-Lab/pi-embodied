@@ -59,7 +59,9 @@ export function checkRoute(start: number[], waypoints: number[][], rig: Waypoint
 		try {
 			checkMove(delta, rig.maxSegment(), rig.constraints?.() ?? []);
 		} catch (err) {
-			throw new Error(`segment ${i}: ${(err as Error).message.replace("Split the motion", "Add a waypoint")}`);
+			throw new Error(
+				`segment ${i}: ${(err as Error).message.replace("Split the motion into smaller calls.", "Add waypoints in between.")}`,
+			);
 		}
 		rig.workspace?.(w);
 		lengths.push(Math.hypot(...delta));
@@ -94,7 +96,12 @@ export function followWaypoints(rig: WaypointRig): ToolDef {
 			const waypoints = (p.waypoints as number[][]).map((w) => w.map(Number));
 			const gripper = Number(p.gripper ?? -1) >= 0 ? 1 : -1;
 			const start = [...(await rig.current())];
-			const lengths = checkRoute(start, waypoints, rig);
+			let lengths: number[];
+			try {
+				lengths = checkRoute(start, waypoints, rig);
+			} catch (err) {
+				return { name: "follow_waypoints", error: message(err), waypoints_completed: 0, moved: false };
+			}
 			const results: Json[] = [];
 			let completed = 0;
 			let from = start;

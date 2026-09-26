@@ -162,6 +162,9 @@ piper = [
 # RoboLab needs Isaac Sim + Isaac Lab from NVIDIA's index; its venv is built by a
 # script (see README), so this extra only marks the robot.
 robolab = []
+# RoboDojo needs Isaac Sim + Isaac Lab from NVIDIA's index and its cuRobo v2 fork; its venv is
+# built by robots/robodojo/install_isaac61.sh, so this extra only marks the robot.
+robodojo = []
 # BEHAVIOR-1K (OmniGibson + BDDL) needs Isaac Sim from NVIDIA's index and OmniGibson from
 # the BEHAVIOR-1K checkout; its venv is built by robots/behavior/install.sh, so this extra
 # only marks the robot.

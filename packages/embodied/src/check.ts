@@ -128,6 +128,23 @@ export const SPECS: Record<string, RobotCheckSpec> = {
 		pyEnv: { OMNI_KIT_ACCEPT_EULA: "YES" },
 		gpu: true,
 	},
+	robodojo: {
+		python: PY(),
+		imports: [ENV_SERVER("robodojo")],
+		find: ["isaaclab", "isaacsim", "curobo"],
+		paths: [
+			{
+				env: "ROBODOJO_ROOT",
+				kind: "dir",
+				required: true,
+				why: "RoboDojo checkout (patched by robodojo-isaac61.patch) with its Assets/",
+				fallback: join(homedir(), "RoboDojo"),
+				contains: "Assets",
+			},
+		],
+		pyEnv: { OMNI_KIT_ACCEPT_EULA: "YES" },
+		gpu: true,
+	},
 	robocasa: {
 		python: { flag: "robocasa-python", env: ["ROBOCASA_PYTHON", "PI_EMBODIED_PYTHON"] },
 		imports: [ENV_SERVER("robocasa"), "robocasa", "robosuite"],

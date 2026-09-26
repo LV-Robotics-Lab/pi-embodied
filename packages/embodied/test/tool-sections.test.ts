@@ -12,6 +12,7 @@ import metaworld from "../src/metaworld/index.ts";
 import piperDual from "../src/piper/dual.ts";
 import piper from "../src/piper/index.ts";
 import robocasa from "../src/robocasa/index.ts";
+import robodojo from "../src/robodojo/index.ts";
 import robolab from "../src/robolab/index.ts";
 import robosuite from "../src/robosuite/index.ts";
 import { defineRobot, toolSections } from "../src/robot.ts";
@@ -118,6 +119,7 @@ const ROBOTS: {
 		core: ["view_env_state", "move_delta", "finish"],
 	},
 	{ robot: "robolab", files: ["robolab/SYSTEM.md"], load: robolab, core: ["finish"] },
+	{ robot: "robodojo", files: ["robodojo/SYSTEM.md"], load: robodojo, core: ["finish"] },
 	{ robot: "dual_franka", files: ["dual_franka/SYSTEM.md"], load: dualFranka },
 	{ robot: "piper", files: ["piper/SYSTEM.md"], load: piper },
 	{ robot: "piper dual", files: ["piper/SYSTEM_DUAL.md"], load: piperDual },

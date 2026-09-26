@@ -9,6 +9,7 @@ import maniskill from "../src/maniskill/index.ts";
 import metaworld from "../src/metaworld/index.ts";
 import piper from "../src/piper/index.ts";
 import robocasa from "../src/robocasa/index.ts";
+import robodojo from "../src/robodojo/index.ts";
 import robolab from "../src/robolab/index.ts";
 import robosuite from "../src/robosuite/index.ts";
 import { defineRobot, RESULT_ENTRY } from "../src/robot.ts";
@@ -114,6 +115,7 @@ test("only the simulated robots register --privileged; the real ones have no suc
 		["robosuite", robosuite, true],
 		["robotwin", robotwin, true],
 		["robolab", robolab, true],
+		["robodojo", robodojo, true],
 		["franka", franka, false],
 		["dual_franka", dualFranka, false],
 		["piper", piper, false],
@@ -133,6 +135,7 @@ test("every robot registers --vdm (visual differencing is not tied to the simula
 		["robosuite", robosuite],
 		["robotwin", robotwin],
 		["robolab", robolab],
+		["robodojo", robodojo],
 		["franka", franka],
 		["dual_franka", dualFranka],
 		["piper", piper],
@@ -150,6 +153,7 @@ test("every robot mounts memory and exploration (the real ones reset through the
 		["maniskill", maniskill],
 		["robotwin", robotwin],
 		["robolab", robolab],
+		["robodojo", robodojo],
 		["franka", franka],
 		["dual_franka", dualFranka],
 		["piper", piper],
@@ -168,6 +172,7 @@ test("every robot mounts the action units (so GUMI and the fine-tuned model driv
 		["robosuite", robosuite],
 		["robotwin", robotwin],
 		["robolab", robolab],
+		["robodojo", robodojo],
 		["franka", franka],
 		["dual_franka", dualFranka],
 		["piper", piper],

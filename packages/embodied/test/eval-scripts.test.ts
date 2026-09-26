@@ -37,6 +37,7 @@ const CELLS: [string, string[], string, Record<string, string>?][] = [
 	["maniskill", ["PickCube-v1", "0"], "PickCube-v1_s0"],
 	["metaworld", ["reach-v3", "0"], "reach-v3_s0"],
 	["robolab", ["BananaInBowlTask", "0"], "BananaInBowlTask_s0"],
+	["robodojo", ["stack_bowls", "0"], "stack_bowls_s0"],
 	["libero", ["libero_10_task", "0", "0"], "libero_10_task_t0_s0"],
 	["robosuite", ["Lift", "0"], "Lift_s0"],
 ];
@@ -227,6 +228,21 @@ test("robolab/eval.sh records --instruction-type and --subtask and never mixes t
 	assert.match(same.stdout, /\/vague\/subtask: success 1\/1/);
 });
 
+test("robodojo/eval.sh records --eval-seed, never mixes layout sets in one out dir, and averages RoboDojo's score", () => {
+	const positional = ["stack_bowls", "0"];
+	const run1 = (args: string[]) => run("robodojo", positional, "stack_bowls_s0", args);
+	assert.equal(run1([]).result?.eval_seed, 0);
+	assert.equal(run1(["--eval-seed", "1"]).result?.eval_seed, 1);
+	assert.equal(run1(["--eval-seed=2"]).result?.eval_seed, 2);
+	const [a, b] = rerun("robodojo", positional, {}, [], ["--eval-seed", "1"]);
+	assert.equal(a.status, 0, a.stdout + a.stderr);
+	assert.equal(b.status, 1);
+	assert.match(b.stderr, /--eval-seed \(or an older result without them\)/);
+	const [, same] = rerun("robodojo", positional, {}, ["--eval-seed", "1"], ["--eval-seed=1"], { score: 1 });
+	assert.equal(same.status, 0, same.stdout + same.stderr);
+	assert.match(same.stdout, /\/eval_seed=1: success 1\/1 \(100.0%\), mean score 1.000/);
+});
+
 /** eval.sh twice into one out dir, with a stand-in pi that records one successful episode: `first` args, then `second`. */
 function rerun(
 	robot: string,
@@ -290,7 +306,7 @@ for (const [robot, positional, cell, env] of CELLS) {
 }
 
 // The five scripts that record the fallback planner (src/fallback.ts); newer robots' scripts are their own.
-const FALLBACK_ROBOTS = ["libero", "robocasa", "robotwin", "maniskill", "robolab"];
+const FALLBACK_ROBOTS = ["libero", "robocasa", "robotwin", "maniskill", "robolab", "robodojo"];
 for (const [robot, positional, cell, env] of CELLS.filter(([r]) => FALLBACK_ROBOTS.includes(r))) {
 	test(`${robot}/eval.sh records the fallback planner, never mixes it with runs without it, and totals planner_models`, () => {
 		const run1 = (args: string[]) => run(robot, positional, cell, args, env);

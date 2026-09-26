@@ -19,6 +19,8 @@
 #   genesis         [genesis] py3.11 (Genesis 1.4, OpenETA's Franka cube_pick, no assets; wants torch>=2.8,
 #                   on sm_120 install a cu128 torch into the venv first)
 #   robolab         Isaac Sim 6.1 venv + patched RoboLab (robots/robolab/install_isaac61.sh)
+#   robodojo        Isaac Sim 6.1 venv + patched RoboDojo + its cuRobo v2 fork (robots/robodojo/install_isaac61.sh);
+#                   Assets/ (~41 GB) under the weights dir unless --no-assets
 #   behavior        Isaac Sim + OmniGibson/BDDL venv from a BEHAVIOR-1K checkout (robots/behavior/install.sh)
 #   franka          [franka,sam3] py3.11 (real arm; RLinf controller stack and Ray on the box)
 #   franka-polymetis [franka-polymetis] py3.10 (real arm on a Polymetis NUC)
@@ -75,7 +77,7 @@ robosuite) extra=robosuite py=3.11 ;;
 franka | dual-franka) extra=franka,sam3 py=3.11 ;;
 franka-polymetis) extra=franka-polymetis py=3.10 ;;
 piper) extra=piper py=system ;;
-robolab | behavior | finetuned | llamafactory) extra="" py="" ;;
+robolab | robodojo | behavior | finetuned | llamafactory) extra="" py="" ;;
 *) die "unknown target '$target' (see --help)" ;;
 esac
 venv=${venv:-$SERVICES/.venv-$target}
@@ -200,6 +202,14 @@ robolab)
 	root=${ROBOLAB_ROOT:-$HOME/RoboLab}
 	run bash "$SERVICES/pi_embodied_services/robots/robolab/install_isaac61.sh" "$venv" "$root"
 	export_env ROBOLAB_ROOT "$root"
+	export_env OMNI_KIT_ACCEPT_EULA YES
+	;;
+robodojo)
+	root=${ROBODOJO_ROOT:-$HOME/RoboDojo}
+	adir=""
+	if $assets; then adir=$wdir/robodojo-assets; fi
+	run bash "$SERVICES/pi_embodied_services/robots/robodojo/install_isaac61.sh" "$venv" "$root" $adir
+	export_env ROBODOJO_ROOT "$root"
 	export_env OMNI_KIT_ACCEPT_EULA YES
 	;;
 behavior)

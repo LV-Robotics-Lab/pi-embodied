@@ -69,6 +69,7 @@ with `--env` / `--vla` / `--sam3`. Real-arm robots (Franka, dual Franka) stay on
 | RoboTwin | `src/robotwin` | `eval_success` | all below, plus flywheel, recipe Flash (Molmo re-anchoring) |
 | ManiSkill (`--robot`, below) | `src/maniskill` | ManiSkill `success` | all below, plus recipe Flash (Molmo + ray-plane re-anchoring of delta waypoints) |
 | RoboLab | `src/robolab` | RoboLab's task predicate | all below, plus recipe Flash (Molmo + ray-plane re-anchoring of delta waypoints) |
+| RoboDojo (two ARX X5) | `src/robodojo` | RoboDojo's `is_episode_end` (`score` = partial credit) | all below, plus flywheel (joint space), recipe Flash (Molmo + depth back-projection) |
 | Robosuite | `src/robosuite` | robosuite `_check_success` (Restack adds CaP-X's off-table rule), latched | video, units, VDM, code.api, `--privileged` |
 | Metaworld | `src/metaworld` | Metaworld `info["success"]`, latched | video, units, VDM, code.api, `--privileged` |
 | Genesis | `src/genesis` | the task predicate (cube_pick: an 8 cm lift) | video, units, code.api, `--privileged` |
@@ -99,7 +100,7 @@ Not offered: `so100` and `koch-v1.1` (joint control only and no TCP link), `fetc
 spawns inside the table; PickCube gives the latter the Panda's layout, out of its reach).
 
 "All below" is memory, explore, video, units (so GUMI and the fine-tuned provider), VDM (`--vdm`),
-the primitive registry (`code.api`) and, in simulation, `--privileged`. ManiSkill, RoboLab and the
+the primitive registry (`code.api`) and, in simulation, `--privileged`. ManiSkill, RoboLab, RoboDojo and the
 Piper publish no memory corpus: they default to the local one exploration writes. Robosuite,
 Metaworld, Genesis and BEHAVIOR mount only what their rows list: none of them has memory or
 explore, Genesis has no VDM, and BEHAVIOR has no units (its motions are cuRobo-planned primitives
@@ -194,6 +195,22 @@ in a new session. Boolean flags take the next word as their value; write them as
   checkpoint; `src/robocasa/serve.sh`, `src/robocasa/eval.sh` runs Target50.
 - RoboTwin: the services' `[robotwin]` extra (Python 3.11), RoboTwin assets, the LingBot-VLA
   RoboTwin checkpoint; `src/robotwin/serve.sh`, `src/robotwin/eval.sh`.
+- RoboDojo (robodojo-benchmark/RoboDojo @726e9aa, eval only): `services/setup.sh robodojo` (Isaac Sim
+  6.1 / Isaac Lab 3.0 with RoboDojo patched by `robodojo-isaac61.patch`, its cuRobo v2 fork, 41 GB of
+  assets); `--task <name> --seed <layout id>` on RoboDojo's two ARX X5 arms. 54 runnable tasks: 42 base
+  tasks in five capability dimensions (Generalization 12, Memory 6, Precision 8, Long-Horizon 8, Open 8)
+  plus 12 `_random` variants of the Generalization tasks; the 55th yml, `config/_task.yml`, is the shared
+  per-task settings file (data source, scene/robot config, render interval, self-collision, eval count).
+  The seed is an eval layout (pre-generated, 25 or 50 per task). Per-arm `move_to` / `move_delta` /
+  `rotate_delta` / `set_gripper`, `go_home` (most tasks need both arms back home), `locate` (depth
+  back-projection of head pixels), units per arm; `src/robodojo/eval.sh` records
+  `--eval-seed` and averages RoboDojo's score. One env per process: RoboDojo's heterogeneous parallel
+  simulation (several envs and tasks in one Kit process, up to 10 per GPU in its config) is not used,
+  so every episode pays its own Kit start (about 10 s warm, minutes cold) and cuRobo warmup (20-50 s),
+  and holds its own Kit, renderer and cuRobo memory (about 10-12 GB of GPU memory with the three
+  640x480 cameras and depth). Parallelism is episodes as processes (`eval-parallel.sh -j`, which takes
+  `LOCK` for RoboDojo like RoboLab): budget that memory per worker. The garment and fluid tasks
+  (`fold_clothes*`, `pour_*`) use Isaac Sim's cloth and particle APIs, the riskiest part of the port.
 - Metaworld: the services' `[metaworld]` extra (Python 3.11, metaworld 3.1.1, no assets); the 50 MT50
   Sawyer tasks (`--task reach-v3 --seed 0`), a world-frame `move_delta` plus `gripper`, depth tools
   (`back_project`, `segment` with a SAM3 server), units mode and `--privileged`; `src/metaworld/eval.sh`.

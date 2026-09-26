@@ -127,6 +127,14 @@ export const ROBOTS: Robot[] = [
 		adapter: "qwen3_5_2b_sim",
 	},
 	{
+		id: "robodojo",
+		label: "RoboDojo (Isaac Sim 6.1, two arms)",
+		extension: "src/robodojo/index.ts",
+		needs: "RTX GPU, Isaac Sim 6.1 / Isaac Lab 3.0, ~41 GB assets",
+		modes: ["tools", "units"],
+		task: "--task stack_bowls --seed 0",
+	},
+	{
 		id: "franka",
 		label: "Franka (real, RLinf)",
 		extension: "src/franka/index.ts",

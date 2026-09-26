@@ -65,7 +65,7 @@ Every service except the LingBot-VLA launcher speaks the same JSON-over-HTTP RPC
 | `shutdown` | - | `{"ok": true}`; the process exits after answering |
 
 Service names: `libero-env`, `robocasa-env`, `maniskill-env`, `metaworld-env`, `genesis-env`, `rldx-vla`,
-`robotwin-env`, `robolab-env`, `behavior-env`, `franka-env`, `dual-franka-env`, `franka-polymetis-env`, `ur5e-env`, `pi05-vla`, `sam3`, `molmo`,
+`robotwin-env`, `robolab-env`, `robodojo-env`, `behavior-env`, `franka-env`, `dual-franka-env`, `franka-polymetis-env`, `ur5e-env`, `pi05-vla`, `sam3`, `molmo`,
 `unidepth`, `openvla`, `openvla-oft`, `gr00t`, `ik`.
 
 ### `stop` semantics
@@ -90,6 +90,7 @@ client's queued calls.
 | metaworld-env | queued calls; `env.chunk_step` before each action and `env.move_delta` / `env.set_gripper` before each control step (`cancelled: true`) | the control step in progress (one MuJoCo `step`), `env.reset`, renders |
 | robotwin-env | queued calls; `env.chunk_step` before each native action (`info.cancelled = true`) | the native action being executed (one `take_action`, i.e. one planned qpos/ee motion), `env.step`, `env.reset`, `env.plan_arm_path`, renders |
 | robolab-env | queued calls; `env.move_delta` / `env.rotate_delta` before each control step; `env.chunk_step` before each action | the Isaac Lab `env.step` in progress (one control step of 8 physics substeps), `env.reset` |
+| robodojo-env | queued calls; `env.move_to` / `env.move_delta` / `env.rotate_delta` / `env.set_gripper` / `env.go_home` before each control step (`cancelled: true`); `env.chunk_step` before each action | the RoboDojo `take_action` in progress (one 25 Hz control step: 10 physics steps of 4 ms), `env.reset` (a layout load, 300+ settling steps and the stability check) |
 | behavior-env | queued calls; every primitive (`env.navigate_to_pose`, `env.move_hand`, `env.grasp_object`, `env.open_gripper`, `env.close_gripper`) between control steps (`cancelled: true`, `ok: false`); `env.chunk_step` before each action | the OmniGibson `env.step` in progress (one action, 4 physics substeps), a cuRobo plan being computed, `env.reset` |
 | franka-env | queued calls; `env.move_delta` / `env.rotate_delta` / `env.set_gripper` before each servo step; `env.chunk_step` after each action | the servo step in progress (one RLinf `env.step`: one Cartesian target plus the pacing sleep, and up to 0.6 s when it toggles the gripper); `env.reset` (RLinf go-to-rest / joint reset) |
 | franka-polymetis-env | queued calls; `env.move_delta` / `env.rotate_delta` before each servo tick (setpoint advance <= `servo_step_m` / `servo_step_rad`) and during settle; `env.set_gripper` between width polls; `env.reset` between lift ticks and joint-stream ticks (`reset.method: joint_stream`) | the ZeroRPC call in flight (one setpoint); a gripper command already sent; `env.reset` with `reset.method: move_to_joint_positions` (blocking on the NUC) |
@@ -375,6 +376,38 @@ L-BFGS step on torch ops instead of its fused CUDA kernel, so cuRobo returns the
 start and target (about 150 ms per plan instead of 50), and `env.reset` reseeds the worker's global
 Python, numpy and torch RNGs with the episode seed. The same actions then give bitwise-identical
 transitions and frames in any process and after any number of resets.
+
+### robodojo-env (`robots/robodojo/env_server.py`)
+
+One RoboDojo task (Isaac Sim 6.1 / Isaac Lab 3.0, `robodojo-isaac61.patch`) on its two ARX X5 arms, as
+RoboDojo's own `EvalEnv` with one env (RoboDojo's heterogeneous parallel simulation is not used). The seed
+is an eval layout id (`Assets/Eval_Layout/RoboDojo/arx_x5/<eval_seed>/<task>_<n>.json`). Every motion is
+RoboDojo's `take_action` (one 25 Hz control step, counted against the task's `step_lim`, judged by its
+`is_episode_end`). Poses are `[x, y, z, qw, qx, qy, qz]` in the env frame; grippers are normalized, 1 open
+.. 0 closed. An observation is `{"head", "left_wrist", "right_wrist" uint8[480,640,3], "arms": {"left"|
+"right": {"eef_pos", "eef_quat_wxyz", "joints", "joints_command", "gripper", "gripper_command"}},
+"success", "ended", "truncated", "score", "env_steps", "step_lim", "seed"[, "policy_frames"]}`;
+`score` is RoboDojo's (1 on success, else its partial-credit tiers / 100). `code.api` serves the registry
+of `robots/robodojo/primitives.py`.
+
+| method | args | result |
+|---|---|---|
+| `env.get_env_meta` | - | `{"task", "seed", "eval_seed", "dimension", "layouts", "eval_num", "robot", "env_cfg_type", "control_hz", "step_m", "depth", "instruction", "step_lim", ...}` |
+| `env.reset` | `seed` (layout id; default `--seed`) | `[obs, {"instruction", "seed"[, "error"]}]`; a second reset relaunches the simulation (RoboDojo's main.py); an unstable layout sets `error` and refuses motion |
+| `env.step` | `action`: RoboDojo action dict (`<arm>_arm_joint_state` 6, `<arm>_ee_joint_state` 1, or `<arm>_ee_pose` 7) | `[obs, score, success, truncated, {"success"}]` |
+| `env.chunk_step` | `actions` (list of action dicts), `return_all_frames` | `[obs (+ "frames"), success, truncated, {"executed", "success"[, "cancelled"]}]` |
+| `env.get_obs` | `depth` | RoboDojo's native observation dict (what XPolicyLab reads) |
+| `env.move_to` | `arm`, `xyz`, `quat_wxyz`, `gripper`, `return_frames` | obs + `{"moved_m", "final_error_m", "waypoints", "executed", "control_steps"[, "stopped", "frames"]}` |
+| `env.move_delta` | `arm`, `delta_xyz`, `gripper`, `return_frames` | as `env.move_to`, plus `commanded_m` |
+| `env.rotate_delta` | `arm`, `yaw` (rad, + counter-clockwise from above; clipped to 0.8) | as `env.move_to`, plus `commanded_yaw`, `yaw`[, `clipped`] |
+| `env.set_gripper` | `arm`, `value` | obs + `{"control_steps"}` |
+| `env.go_home` | `return_frames` | obs + `{"control_steps"}` (both arms to their reset joints) |
+| `env.back_project` | `pixels` [[col, row], ...], `camera_name` "head" | `{"frame": "env", "xyz": [[x, y, z] | null, ...]}` from the same step's depth |
+| `env.get_camera_meta` | `camera_name` "head" | `{"intrinsic_K", "extrinsic_cam2world" (OpenCV, camera to env), "width", "height", "frame"}` |
+| `env.render_camera` | `camera_name` head / left_wrist / right_wrist | uint8[H,W,3] |
+| `env.state` | - | the observation without images |
+| `env.set_recording` | `on` | the current Flywheel frame (`{head, left_wrist, right_wrist, state, action}`, 14-vectors) or null; while on, every result carries `policy_frames` |
+| `env.ground_truth_poses` | `names` | `{"frame": "env", "poses": {label: {pos, quat_xyzw}}}` of the layout's labelled objects |
 
 ### robolab-env (`robots/robolab/env_server.py`)
 

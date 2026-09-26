@@ -23,7 +23,7 @@ from typing import Any
 
 #: The simulators whose VLA runs agent-side, so every env step is seen and recorded. A real Franka's
 #: motions servo inside its env server, where no per-step observation reaches the recorder.
-ROBOTS = ("libero", "robocasa", "robotwin")
+ROBOTS = ("libero", "robocasa", "robotwin", "robodojo")
 
 
 def spec(robot: str, space: str | None = None) -> dict[str, Any]:

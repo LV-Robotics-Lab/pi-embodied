@@ -8,7 +8,7 @@
 #
 # <selection> is the robot's eval.sh positional arguments: libero <suite> <tasks> <seeds>, maniskill /
 # metaworld / robosuite / genesis / behavior <tasks> <seeds> ("-" = eval.sh's default task set, e.g.
-# robosuite's seven), robolab <tasks> <seeds>, robotwin <tasks|all>, robocasa <splits|all> (TASKS/SEEDS
+# robosuite's seven), robolab|robodojo <tasks> <seeds>, robotwin <tasks|all>, robocasa <splits|all> (TASKS/SEEDS
 # narrow it as for eval.sh). The matrix is cut into units, one (task, seed) cell each (a whole task,
 # all its seeds, for RoboTwin, whose eval.sh cannot pick a seed), and every unit runs as its own
 # `<robot>/eval.sh` call, so a cell's directory, result.json, validity and rerun rules are exactly
@@ -48,7 +48,7 @@
 # would serialize the workers (an exclusive flock admits one holder), and a worker waiting on it while
 # its siblings run would deadlock with anything that waits for this run to finish. The flip side: a
 # service this run needs must not be started under the same lock, or this script waits forever.
-# Heavy: robolab and behavior (Isaac Sim) and robotwin (cuRobo). Light: libero, maniskill, metaworld,
+# Heavy: robolab, robodojo and behavior (Isaac Sim) and robotwin (cuRobo). Light: libero, maniskill, metaworld,
 # robosuite, genesis and robocasa (an EGL, SAPIEN or Genesis renderer per episode, the planner off the
 # GPU); they share the GPU with whatever else runs and never take LOCK (it is noted and ignored), so a
 # lock queue of light jobs cannot form. Genesis and BEHAVIOR pick their GPU themselves (--backend /
@@ -96,9 +96,9 @@ robot=$1 out=$2
 shift 2
 case $robot in
 libero) npos=3 ;;
-maniskill | robolab | metaworld | robosuite | genesis | behavior) npos=2 ;;
+maniskill | robolab | robodojo | metaworld | robosuite | genesis | behavior) npos=2 ;;
 robotwin | robocasa) npos=1 ;;
-*) die "unknown robot $robot (libero, maniskill, metaworld, robosuite, genesis, behavior, robolab, robotwin, robocasa)" ;;
+*) die "unknown robot $robot (libero, maniskill, metaworld, robosuite, genesis, behavior, robolab, robodojo, robotwin, robocasa)" ;;
 esac
 [ $# -ge $npos ] || die "$robot takes $npos selection arguments"
 sel=("${@:1:npos}")
@@ -130,7 +130,7 @@ units() { # one line per unit: <task key> TAB <cell dirs> TAB <env assignments o
 	libero) for t in $(expand "$2"); do for s in $(expand "$3"); do
 		printf '%s\t%s\t-\t%s\n' "${1}_t$t" "${1}_t${t}_s$s" "$1 $t $s"
 	done; done ;;
-	maniskill | robolab | metaworld | robosuite | genesis | behavior)
+	maniskill | robolab | robodojo | metaworld | robosuite | genesis | behavior)
 		# "-" is each eval.sh's default task set; the cells must be listed here by name.
 		local tasks=$1
 		[ "$robot:$tasks" = maniskill:- ] && tasks=BlockPAP-v1
@@ -208,12 +208,12 @@ done
 
 if [ -n "${LOCK:-}" ]; then
 	case $robot in
-	robolab | robotwin | behavior)
+	robolab | robodojo | robotwin | behavior)
 		command -v flock >/dev/null || die "LOCK is set but flock is missing"
 		exec 9>"$LOCK"
 		flock -n 9 || { echo "$(date +%T) waiting for $LOCK" && flock 9; } || die "cannot lock $LOCK"
 		;;
-	*) echo "eval-parallel.sh: $robot is a light job (renderer only, planner off the GPU); LOCK is for robolab, behavior and robotwin and is not taken" >&2 ;;
+	*) echo "eval-parallel.sh: $robot is a light job (renderer only, planner off the GPU); LOCK is for robolab, robodojo, behavior and robotwin and is not taken" >&2 ;;
 	esac
 fi
 
@@ -228,7 +228,7 @@ worker() { # <k>
 		# index for a CUDA ordinal). Widening CUDA_VISIBLE_DEVICES to <gpu>,<egl> would satisfy it but expose a
 		# second GPU to the worker; instead the MuJoCo env servers get --cuda-device, clear CUDA_VISIBLE_DEVICES
 		# for themselves before importing robosuite and pin torch with set_device.
-		case $robot in libero | robocasa | robolab | robosuite) extra+=(--cuda-device "$gpu") ;; esac
+		case $robot in libero | robocasa | robolab | robodojo | robosuite) extra+=(--cuda-device "$gpu") ;; esac
 	fi
 	[ "$api" -gt 0 ] && extra+=(-e "$here/api-gate.ts" --api-slots "$state/api" --max-api-concurrency "$api")
 	[ ${#ports[@]} -gt 0 ] && extra+=(-e "$here/dashboard" --dashboard=true --dashboard-port "${ports[k]}")

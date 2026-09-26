@@ -323,7 +323,7 @@ test("workers get their GPU and the EGL device on its PCI bus; only a heavy robo
 	assert.deepEqual([...seen], ["CVD=1 EGL=0 ORDER=PCI_BUS_ID"]);
 	// ManiSkill is a light job: it shares the GPU and never takes LOCK.
 	assert.ok(!existsSync(flocks), "a light robot takes no lock");
-	assert.match(r.stderr, /maniskill is a light job .* LOCK is for robolab, behavior and robotwin/);
+	assert.match(r.stderr, /maniskill is a light job .* LOCK is for robolab, robodojo, behavior and robotwin/);
 	const heavy = s.run(["-j", "2", "--gpus", "1", "robolab", join(s.dir, "heavy"), "BananaInBowlTask", "0-1"], env);
 	assert.equal(heavy.status, 0, heavy.stdout + heavy.stderr);
 	assert.deepEqual(
@@ -331,6 +331,12 @@ test("workers get their GPU and the EGL device on its PCI bus; only a heavy robo
 		["-n 9"],
 		"the lock is taken once, not per worker",
 	);
+	// RoboDojo (Isaac Sim) is heavy too, and its env server pins the GPU from --cuda-device.
+	const dojo = s.run(["-j", "2", "--gpus", "1", "robodojo", join(s.dir, "dojo"), "stack_bowls", "0-1"], env);
+	assert.equal(dojo.status, 0, dojo.stdout + dojo.stderr);
+	assert.deepEqual(readFileSync(flocks, "utf8").trim().split("\n"), ["-n 9", "-n 9"]);
+	const dojoArgv = readFileSync(join(s.dir, "dojo/stack_bowls_s0/argv"), "utf8").split("\n");
+	assert.equal(dojoArgv[dojoArgv.indexOf("--cuda-device") + 1], "1");
 	const two = s.run(["-j", "2", "--gpus", "0,1", "maniskill", join(s.dir, "two"), "PickCube-v1", "0-3"], env);
 	assert.equal(two.status, 0, two.stdout + two.stderr);
 	const byGpu = new Set(

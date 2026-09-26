@@ -70,6 +70,17 @@ uv pip install -e "services[robocasa]" \
 # server takes --gpu-id (OMNIGIBSON_GPU_ID). See robots/behavior/README.md for what runs where.
 bash services/pi_embodied_services/robots/behavior/install.sh services/.venv-behavior ~/BEHAVIOR-1K --dataset
 
+# RoboDojo (robodojo-benchmark/RoboDojo @726e9aa, eval only; two ARX X5 arms): it pins Isaac Sim 5.1,
+# whose RTX scene DB segfaults at startup on driver 595.x (isaac-sim/IsaacSim#677; reproduced with
+# isaacsim 5.1.0.0 on 595.71.05), so robots/robodojo/install_isaac61.sh builds an Isaac Sim 6.1 /
+# Isaac Lab 3.0rc1 venv (Python 3.12, torch 2.11 cu128), patches RoboDojo with robodojo-isaac61.patch
+# (isaacsim.core.* from extsDeprecated, PhysxCfg / render settings / ProxyArray / (x,y,z,w) quaternions
+# of Isaac Lab 3), installs RoboDojo's cuRobo v2 fork, and with an assets dir downloads Assets/ (41 GB,
+# RoboDojo-Benchmark/RoboDojo on the HF hub; HF_ENDPOINT honoured) and writes the robots' curobo.yml.
+# It cannot share RoboLab's venv (its own cuRobo and RoboDojo's pins). One env per process; set
+# ROBODOJO_CACHE to keep Kit's, the GL shader and warp caches off a small system disk.
+bash services/pi_embodied_services/robots/robodojo/install_isaac61.sh services/.venv-robodojo ~/RoboDojo ~/.cache/pi-embodied/robodojo-assets
+
 # Metaworld (Sawyer MT50; metaworld==3.1.1 pins mujoco==3.3.0, no assets; MUJOCO_GL=egl)
 uv venv services/.venv-metaworld --python 3.11 && source services/.venv-metaworld/bin/activate
 uv pip install -e "services[metaworld]"

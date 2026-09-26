@@ -131,8 +131,10 @@ ln -s "$PWD/services/pi_embodied_services/components/xpolicy_env_cfg" ~/xpolicy/
 uv venv services/.venv-xpolicy --python 3.11 && source services/.venv-xpolicy/bin/activate
 uv pip install -e "services[xpolicy]"       # pi: --xpolicy-python services/.venv-xpolicy/bin/python --xpolicylab ~/xpolicy/XPolicyLab
 # The policy server, per its policy/<name>/README (install.sh, download_checkpoint.sh), e.g. Evo-1 on
-# RoboTwin with the RoboTwin550 weights (sm_120: install the cu128 torch 2.7.1 instead of its 2.5.1 pin;
-# without flash-attn Evo-1 falls back to standard attention):
+# RoboTwin with the RoboTwin550 weights (sm_120: install the cu128 torch 2.7.1 instead of its 2.5.1 pin).
+# flash-attn is required: without it InternVL3 falls back to eager attention and Evo-1's actions are
+# wrong (open-loop joint error ~0.1 rad vs ~0.02 on RoboTwin expert demos; 0/10 episodes). No sm_120
+# wheel exists: build flash-attn 2.8.3 from source (FLASH_ATTN_CUDA_ARCHS=120, CUDA 12.8, MAX_JOBS<=8).
 cd ~/xpolicy/XPolicyLab/policy/Evo_1 && bash setup_eval_policy_server.sh RoboTwin beat_block_hammer \
   Evo1_RoboTwin2_datascale aloha_agilex joint 0 <gpu> <env> 19101 127.0.0.1   # deploy.yml: dataset_key_suffix: _rand
 # then: pi -e packages/embodied/src/robotwin --xpolicy ws://127.0.0.1:19101 --task-config demo_randomized ...

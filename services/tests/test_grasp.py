@@ -812,3 +812,58 @@ def test_orientation_error_is_the_short_way_round_the_symmetric_fingers():
     assert np.allclose(G.orientation_error(down, ry @ down), [0, tilt, 0], atol=1e-9)
     half = np.diag([-1.0, 1.0, -1.0])  # a half turn about world y
     assert np.linalg.norm(G.rotvec_of(half)) == pytest.approx(np.pi)
+
+
+class FakeSam3All:
+    """SAM3 answering all=True with every mask (two same-named objects)."""
+
+    def __init__(self, masks):
+        self.masks = masks
+        self.calls = []
+
+    def call(self, method, args=(), kwargs=None, *, timeout_s=None):
+        import base64
+        import io
+
+        from PIL import Image
+
+        self.calls.append(kwargs)
+
+        def png(m):
+            buf = io.BytesIO()
+            Image.fromarray((m * 255).astype(np.uint8), mode="L").save(
+                buf, format="PNG"
+            )
+            return base64.b64encode(buf.getvalue()).decode()
+
+        dets = [
+            {"score": 0.9 - 0.1 * i, "mask_png_base64": png(m)}
+            for i, m in enumerate(self.masks)
+        ]
+        if kwargs.get("all"):
+            return {"found": True, "detections": dets}
+        return {"found": True, **dets[0]}
+
+
+def test_plan_place_after_the_grasp_segments_the_held_object_not_its_twin():
+    """Audit: the held object was re-segmented by text alone, and LIBERO scenes often have two
+    same-named objects: the mask nearest the gripper is the held one."""
+    far = np.zeros((H, W), bool)
+    far[0:3, 0:3] = True  # the twin, in a corner (SAM3's best score)
+    near = _block_mask()
+    T = np.eye(4)
+    eef = {"xyz": np.array([0.0, 0.0, 0.2]), "quat": np.array([1.0, 0, 0, 0])}
+    planner, _ = _planner(
+        sam3=FakeSam3All([near]),
+        anyplace=FakeAnyPlace([T]),
+        eef_pose=lambda arm: (eef["xyz"], eef["quat"]),
+    )
+    gid = planner.plan_grasp(object="bowl")["active"]
+    planner.claim_waypoints(gid)
+    planner.invalidate()  # the grasp's motions
+    planner._sam3 = FakeSam3All([far, near])
+    region = planner.segment_mask("plate")["id"]
+    place = planner.plan_place(region, gid)
+    held = planner._book.get(place["object_mask_id"])
+    assert held["mask"][6, 6] and not held["mask"][1, 1], "the mask at the gripper"
+    assert planner._sam3.calls[-1]["all"] is True

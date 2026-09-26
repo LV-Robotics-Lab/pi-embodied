@@ -916,6 +916,54 @@ class GraspPlanner:
         )
         return out
 
+    def _segment_held(self, prompt: str, snap: Snapshot, eef_xyz: np.ndarray) -> str:
+        """The held object's mask: of every SAM3 mask for ``prompt`` (LIBERO scenes often
+        have two same-named objects), the one whose points lie nearest the gripper."""
+        if self._sam3 is None:
+            raise GraspError(
+                "plan_place after a grasp needs a SAM3 server (or pass object_mask_id)"
+            )
+        res = self._sam3.call(
+            "sam3.segment",
+            (),
+            {
+                "image_base64": _png_base64(snap.view["rgb"]),
+                "text_prompt": str(prompt),
+                "min_score": 0.2,
+                "all": True,
+            },
+            timeout_s=120.0,
+        )
+        found = res.get("detections") if isinstance(res, dict) else None
+        if found is None and isinstance(res, dict) and res.get("found"):
+            found = [res]  # a server without all=True answers with its best mask
+        best: tuple[float, np.ndarray, dict] | None = None
+        T = np.asarray(snap.view["extrinsic_cam2world"], dtype=np.float64)
+        for det in found or []:
+            if not det.get("mask_png_base64"):
+                continue
+            mask = decode_mask_png(det["mask_png_base64"])
+            if mask.shape != snap.view["depth"].shape or not mask.any():
+                continue
+            pts, _scene = object_points(
+                snap.view["depth"],
+                snap.view["intrinsic_K"],
+                mask,
+                depth_max=self._depth_max,
+            )
+            if len(pts) < 10:
+                continue
+            w = pts.astype(np.float64) @ T[:3, :3].T + T[:3, 3]
+            dist = float(np.min(np.linalg.norm(w - eef_xyz, axis=1)))
+            if best is None or dist < best[0]:
+                best = (dist, mask, det)
+        if best is None:
+            raise GraspError(f"could not segment the held {prompt!r} near the gripper")
+        _dist, mask, det = best
+        return self._register_mask(
+            snap, mask, prompt=str(prompt), score=det.get("score"), box=det.get("box")
+        )
+
     def _register_mask(self, snap: Snapshot, mask: np.ndarray, **meta: Any) -> str:
         view = snap.view
         desc = describe_mask(mask, view["depth"], view["intrinsic_K"])
@@ -1446,12 +1494,9 @@ class GraspPlanner:
                     f"grasp {grasp_id} was planned on a mask without a text prompt; "
                     "segment the held object and pass object_mask_id"
                 )
-            seg = self._segment(held["prompt"], snap.camera)
-            if not seg["found"]:
-                raise GraspError(
-                    f"could not segment the held {held['prompt']!r}: {seg.get('reason')}"
-                )
-            object_mask_id = seg["id"]
+            object_mask_id = self._segment_held(
+                held["prompt"], snap, np.asarray(pose[0], dtype=np.float64)
+            )
         obj = self._mask_item(object_mask_id)
         observations = {
             "object_mask": obj["observation"],

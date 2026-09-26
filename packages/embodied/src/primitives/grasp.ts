@@ -196,7 +196,7 @@ export function graspTools(pi: ExtensionAPI, rig: GraspRig): GraspToolDef[] {
 	const planPlace: GraspToolDef = {
 		name: "plan_place",
 		description: rig.executes
-			? "Where to hold the grasped object so it comes to rest on a placement region (AnyPlace). Give the region as text (segmented now) or as a mask id, and the grasp id: after execute_grasp, that grasp's id (the held object is segmented again from its prompt, or object_mask_id, and the gripper's actual pose is used; refused when the fingers hold nothing); before it, a current g id with region and object from the same observation. Returns place poses with ids (p1); execute_place runs one."
+			? "Where to hold the grasped object so it comes to rest on a placement region (AnyPlace). Give the region as text (segmented now) or as a mask id, and the grasp id: after execute_grasp, that grasp's id (the held object is found again from its prompt as the mask nearest the gripper, or object_mask_id, and the gripper's actual pose is used; refused when the fingers hold nothing); before it, a current g id with region and object from the same observation. Returns place poses with ids (p1); execute_place runs one."
 			: "Where to hold the grasped object so it comes to rest on a placement region (AnyPlace). Ask it before the grasp, from the observation the grasp was planned on: the region as text (segmented now) or a mask id, and that current g id (the object is the grasp's mask, or object_mask_id). Returns place poses (eef_position, eef_quat_xyzw) with ids (p1); after grasping with that grasp, drive the arm to the place pose and open.",
 		parameters: Type.Object({
 			region: Type.Optional(

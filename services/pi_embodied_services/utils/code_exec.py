@@ -33,9 +33,14 @@ main module) started with an environment built for it (:func:`child_env`: the se
 minus the secret-looking variables, :func:`scrub_env`; the server's own ``os.environ`` is
 never touched). It runs in its own session, with stdin and stdout on /dev/null. The server
 is non-dumpable (``prctl(PR_SET_DUMPABLE, 0)``, set when a runner is built and before every
-run), so no process of its uid can read its /proc/<pid>/environ or memory or ptrace it. A
-root server also runs the program under an unprivileged uid of its own
-(:func:`sandbox_uid`, ``PI_EMBODIED_CODE_UID`` overrides): the child imports what it needs
+run), so no process of its uid can read its /proc/<pid>/environ or memory or ptrace it. That
+floor protects the server's own process, but not the pi process that launched it: on Linux a
+same-uid program can still read *its* ``/proc/<pid>/environ`` (the API keys), and that
+process's dumpable flag is not something this server can set. So the real isolation is a uid
+of the program's own, which only a root server can give; a non-root server therefore refuses
+code mode (:func:`code_isolation_error`) unless the operator opts out for a deployment
+isolated another way (a container or VM). A root server runs the program under an unprivileged
+uid of its own (:func:`sandbox_uid`, ``PI_EMBODIED_CODE_UID`` overrides): the child imports what it needs
 (:data:`PRELOAD`), sets its rlimits, then drops to that uid and gid for good before the
 program runs, in a temporary directory it owns. ``RLIMIT_NPROC`` (then binding: the uid
 already has this process) refuses new processes and threads, and ``RLIMIT_FSIZE``,
@@ -124,6 +129,11 @@ WIRE_DTYPES = frozenset(
 
 class CodeLimitError(RuntimeError):
     """A primitive call refused by the run's budget (raised inside the child)."""
+
+
+class CodeIsolationError(RuntimeError):
+    """``code.run`` refused because the program could not be isolated (see
+    :func:`code_isolation_error`)."""
 
 
 @dataclass(frozen=True)
@@ -580,8 +590,12 @@ def describe_helpers() -> list[dict]:
 SANDBOX_UID_BASE = 61000
 SANDBOX_UID_COUNT = 256
 #: ``PI_EMBODIED_CODE_UID``: a fixed uid for the programs, or ``none`` to keep the server's
-#: uid (then only PR_SET_DUMPABLE protects the server).
+#: uid (an explicit opt-out: run the program unisolated, see :func:`code_isolation_error`).
 SANDBOX_UID_ENV = "PI_EMBODIED_CODE_UID"
+#: Set truthy to allow code mode when the program cannot be given a uid of its own (e.g. a
+#: non-root server that is isolated another way -- a container or VM). See
+#: :func:`code_isolation_error`.
+ALLOW_UNISOLATED_ENV = "PI_EMBODIED_CODE_ALLOW_UNISOLATED"
 #: Modules imported before the child drops its uid: afterwards a root server's interpreter
 #: (e.g. under /root, mode 0700) may be unreadable, so later imports can fail.
 PRELOAD = tuple(
@@ -606,6 +620,43 @@ def _prctl_dumpable_off() -> bool:
         return libc.prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) == 0
     except (OSError, AttributeError):
         return False
+
+
+def _proc_isolation_relevant() -> bool:
+    """Whether a same-uid process here can read another's ``/proc/<pid>/environ`` or memory
+    (Linux with ``/proc``); false off Linux, where it cannot."""
+    return sys.platform.startswith("linux") and os.path.isdir("/proc")
+
+
+def code_isolation_error() -> str | None:
+    """Why ``code.run`` must refuse to run a program here, or ``None`` when it is safe.
+
+    On Linux a process can read another same-uid process's ``/proc/<pid>/environ`` (the
+    launching pi's API keys) whenever that process is dumpable, and the dumpable flag is a
+    property of *that* process, not something this server can set on its parent. The only
+    reliable isolation this server controls is running the program under a uid of its own
+    (:func:`sandbox_uid`, root only). So on Linux, unless the program gets its own uid, code
+    mode is refused -- except when the operator has explicitly opted out (``PI_EMBODIED_CODE_UID
+    =none`` or ``PI_EMBODIED_CODE_ALLOW_UNISOLATED=1``), for a server isolated another way (a
+    container or VM). Off Linux there is no ``/proc`` and a same-uid process cannot read another's
+    environment or memory, so nothing is refused."""
+    if not _proc_isolation_relevant():
+        return None
+    if os.environ.get(SANDBOX_UID_ENV, "").strip().lower() == "none":
+        return None
+    allow = os.environ.get(ALLOW_UNISOLATED_ENV, "").strip().lower()
+    if allow in ("1", "true", "yes", "on"):
+        return None
+    if sandbox_uid() is not None:
+        return None
+    return (
+        "run_code refused: on Linux this env server must run as root so it can run the "
+        "program under a separate unprivileged uid; running as uid "
+        f"{os.getuid()} it shares this server's uid, so the program could read the launching "
+        "process's environment (its API keys) and memory through /proc. Run the server as "
+        f"root, or -- only if it is isolated another way (a container or VM) -- set "
+        f"{ALLOW_UNISOLATED_ENV}=1 (or {SANDBOX_UID_ENV}=none) to allow it unisolated."
+    )
 
 
 def sandbox_uid() -> int | None:
@@ -1028,6 +1079,9 @@ class CodeRunner:
             raise ValueError("timeout_s must be positive")
         if max_move_m is not None and not (float(max_move_m) >= 0):
             raise ValueError("max_move_m must be a non-negative number")
+        refusal = code_isolation_error()
+        if refusal is not None:
+            raise CodeIsolationError(refusal)
         allowed = self.primitives(tier, privileged)
         names = [p.name for p in allowed]
         helper_names = list(HELPERS) if helpers else []
@@ -1328,6 +1382,7 @@ __all__ = [
     "OUTPUT_CAP",
     "SECRET_ENV_PATTERN",
     "TIERS",
+    "CodeIsolationError",
     "CodeLimitError",
     "CodeRunner",
     "Primitive",
@@ -1336,7 +1391,9 @@ __all__ = [
     "describe_helpers",
     "encode",
     "jsonable",
+    "ALLOW_UNISOLATED_ENV",
     "child_env",
+    "code_isolation_error",
     "kill_tree",
     "sandbox_uid",
     "scrub_env",

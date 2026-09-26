@@ -201,9 +201,16 @@ pipe and the parent resolves and executes it. Isolation: the child's environment
 it (the server's minus secret-looking names; the server's own environment is never modified),
 it runs in its own session with stdin/stdout on /dev/null, and the server is non-dumpable
 (`prctl(PR_SET_DUMPABLE, 0)`), so no process of the server's uid can read its
-`/proc/<pid>/environ` or memory. A root server runs the program as an unprivileged uid of its
-own (61000 + n, one per server, held by an flock in /run/lock; `PI_EMBODIED_CODE_UID=<uid>` or
-`none` overrides): the child preloads common stdlib modules, `numpy.linalg/random/fft` and
+`/proc/<pid>/environ` or memory. That protects the server process, but not the pi process that
+launched it: a same-uid program can read *its* `/proc/<pid>/environ` (the API keys), and its
+dumpable flag is not something the server can set. So the real isolation is a uid of the
+program's own, which only a root server can give; **on Linux a non-root server refuses code
+mode** (`code.run` returns `run_code refused: ...`) unless the operator opts out with
+`PI_EMBODIED_CODE_ALLOW_UNISOLATED=1` (or `PI_EMBODIED_CODE_UID=none`) for a deployment isolated
+another way (a container or VM). Off Linux there is no `/proc` and a same-uid process cannot read
+another's environment or memory, so nothing is refused. A root server runs the program as an
+unprivileged uid of its own (61000 + n, one per server, held by an flock in /run/lock;
+`PI_EMBODIED_CODE_UID=<uid>` or `none` overrides): the child preloads common stdlib modules, `numpy.linalg/random/fft` and
 `scipy.spatial.transform`, sets its limits and drops to that uid and gid for good before the
 program runs (other imports may then fail when the interpreter lives under a private home).
 Limits: `RLIMIT_NPROC` 1 (no processes or threads), `RLIMIT_AS` (4 GiB beyond what the interpreter

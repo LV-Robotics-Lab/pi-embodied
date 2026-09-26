@@ -436,6 +436,15 @@ def test_the_timeout_stops_the_robot_inside_a_running_primitive():
 LINUX = os.path.isdir("/proc/self") and hasattr(os, "getresuid")
 
 
+@pytest.fixture(autouse=True)
+def _allow_unisolated(monkeypatch):
+    """Most tests exercise a program actually running; a non-root Linux session would
+    otherwise refuse code mode (code_isolation_error). Opt out for the suite; the refusal
+    tests below clear this and force the gate themselves."""
+    monkeypatch.setenv(code_exec.ALLOW_UNISOLATED_ENV, "1")
+    monkeypatch.delenv(code_exec.SANDBOX_UID_ENV, raising=False)
+
+
 def _pipe_of(name: str) -> str:
     """Program text that digs the stub's pipe out of its closure (a tampering program)."""
     return (
@@ -575,7 +584,11 @@ def test_the_child_cannot_read_the_servers_environ_or_memory():
         'RESULT = res\\n")\n'
         "print(json.dumps([os.getuid(), out['status'], out['result']]))\n"
     )
-    env = {**os.environ, "FAKE_API_KEY": "sk-audit-1"}
+    env = {
+        **os.environ,
+        "FAKE_API_KEY": "sk-audit-1",
+        code_exec.ALLOW_UNISOLATED_ENV: "1",
+    }
     done = subprocess.run(
         [sys.executable, "-c", prog],
         env=env,
@@ -629,3 +642,88 @@ def test_a_setsid_double_forked_grandchild_dies_with_the_run():
     if state != "Z":
         os.kill(gpid, 9)
         raise AssertionError("the grandchild outlived the run")
+
+
+def test_code_isolation_error_only_when_it_cannot_isolate(monkeypatch):
+    monkeypatch.setattr(code_exec, "_proc_isolation_relevant", lambda: False)
+    assert code_exec.code_isolation_error() is None  # off Linux: nothing to leak
+    monkeypatch.setattr(code_exec, "_proc_isolation_relevant", lambda: True)
+    monkeypatch.setattr(code_exec, "sandbox_uid", lambda: None)
+    monkeypatch.delenv(code_exec.ALLOW_UNISOLATED_ENV, raising=False)
+    monkeypatch.delenv(code_exec.SANDBOX_UID_ENV, raising=False)
+    msg = code_exec.code_isolation_error()
+    assert msg and "run_code refused" in msg
+    # A uid of the program's own closes it.
+    monkeypatch.setattr(code_exec, "sandbox_uid", lambda: 61000)
+    assert code_exec.code_isolation_error() is None
+    # Explicit opt-outs close it too.
+    monkeypatch.setattr(code_exec, "sandbox_uid", lambda: None)
+    monkeypatch.setenv(code_exec.ALLOW_UNISOLATED_ENV, "1")
+    assert code_exec.code_isolation_error() is None
+    monkeypatch.delenv(code_exec.ALLOW_UNISOLATED_ENV)
+    monkeypatch.setenv(code_exec.SANDBOX_UID_ENV, "none")
+    assert code_exec.code_isolation_error() is None
+
+
+def test_run_refuses_when_it_cannot_isolate(monkeypatch):
+    toy = Toy()
+    r = runner(toy)
+    monkeypatch.setattr(code_exec, "_proc_isolation_relevant", lambda: True)
+    monkeypatch.setattr(code_exec, "sandbox_uid", lambda: None)
+    monkeypatch.delenv(code_exec.ALLOW_UNISOLATED_ENV, raising=False)
+    monkeypatch.delenv(code_exec.SANDBOX_UID_ENV, raising=False)
+    with pytest.raises(code_exec.CodeIsolationError, match="run_code refused"):
+        r.run("move([0.1, 0, 0])\nRESULT = 1\n")
+    assert toy.calls == [], "the program never ran"
+
+
+@pytest.mark.skipif(not LINUX, reason="/proc is Linux-only")
+@pytest.mark.skipif(
+    os.getuid() == 0, reason="the leak only exists for a non-root server"
+)
+def test_a_non_root_server_refuses_code_mode_but_the_optout_runs_isolated_only_by_the_floor():
+    # Run the server as the current (non-root) user in a subprocess. By default code mode is
+    # refused (the program never runs, so it can read nothing); with the explicit opt-out it
+    # runs, and even then the server's own environ (the parent's) stays unreadable (the
+    # PR_SET_DUMPABLE floor).
+    import json
+    import subprocess
+    import sys
+
+    prog = (
+        "import os, json\n"
+        "from pi_embodied_services.utils.code_exec import CodeRunner, CodeIsolationError, Primitive\n"
+        "r = CodeRunner([Primitive('noop', lambda: {'ok': 1}, ('high',))])\n"
+        "res = {'uid': os.getuid()}\n"
+        "try:\n"
+        "    r.run('RESULT = 1')\n"
+        "    res['default'] = 'ran'\n"
+        "except CodeIsolationError:\n"
+        "    res['default'] = 'refused'\n"
+        "os.environ['PI_EMBODIED_CODE_ALLOW_UNISOLATED'] = '1'\n"
+        'out = r.run("import os\\n'
+        "p = f'/proc/{os.getppid()}/environ'\\n"
+        "try:\\n"
+        "    RESULT = open(p, 'rb').read().count(b'sk-audit-1')\\n"
+        "except OSError as e:\\n"
+        '    RESULT = type(e).__name__\\n")\n'
+        "res['optout_status'] = out['status']\n"
+        "res['optout_parent_environ'] = out['result']\n"
+        "print(json.dumps(res))\n"
+    )
+    env = {**os.environ, "FAKE_API_KEY": "sk-audit-1"}
+    env.pop("PI_EMBODIED_CODE_ALLOW_UNISOLATED", None)
+    env.pop("PI_EMBODIED_CODE_UID", None)
+    done = subprocess.run(
+        [sys.executable, "-c", prog],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert done.returncode == 0, done.stderr
+    res = json.loads(done.stdout.strip().splitlines()[-1])
+    assert res["uid"] != 0, res
+    assert res["default"] == "refused", res
+    assert res["optout_status"] == "ran", res
+    assert res["optout_parent_environ"] == "PermissionError", res

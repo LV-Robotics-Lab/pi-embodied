@@ -22,11 +22,22 @@ facade method the robot's tools call, so the same limits and the same stop gener
 apply. CaP-X's executor instead ``exec``'d the code in-process with ``env`` in its globals
 (``capx/envs/tasks/base.py``), which let a program bypass every check.
 
-Per run: a wall-clock timeout (the child is killed and a stop is issued to the robot), a
-primitive-call budget, an accumulated translation cap (the units' ``maxMoveM`` idea),
-``RLIMIT_AS`` / ``RLIMIT_CPU`` on the child, a temporary working directory, stdout and
-stderr capped at 8 KB. A ``stop`` that arrives while a run executes kills the child
-(:meth:`CodeRunner.abort`, from the facade's ``_on_stop``).
+The pipe carries JSON, never pickle (arrays as ``{"__ndarray__": ...}`` of a numeric dtype,
+see :func:`encode` / :func:`decode`): a message from the child cannot make the server
+unpickle an object, and a message over :data:`MAX_MESSAGE` ends the run. The child starts
+with the secret-looking environment variables removed (:func:`scrub_env`: names containing
+KEY, TOKEN, SECRET, PASSWORD and the like, the cloud and git prefixes), in its own process
+group (killed as a group, so the program's own subprocesses die with it), and under
+``RLIMIT_NPROC`` (no new processes or threads), ``RLIMIT_FSIZE``, ``RLIMIT_AS`` and
+``RLIMIT_CPU``. It can still open sockets: a server that must keep the program off the
+network runs inside a container, as pi's own isolation does.
+
+Per run: a wall-clock timeout (a stop is issued to the robot the moment it passes, also
+inside a running primitive, and the child is killed), a primitive-call budget, an
+accumulated translation cap (the units' ``maxMoveM`` idea), a temporary working directory,
+and stdout, stderr, the traceback and ``RESULT`` each capped at 8 KB. A ``stop`` that
+arrives while a run executes kills the child (:meth:`CodeRunner.abort`, from the facade's
+``_on_stop``).
 
 An env server that declares its primitive registry (``components/code_api.py``, ``code.api``)
 builds the runner with :func:`registry_primitives`: every call then goes through
@@ -38,13 +49,17 @@ serve ``runner.api`` itself.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import inspect
 import io
+import json
 import math
 import multiprocessing
 import os
+import re
 import shutil
+import signal
 import tempfile
 import threading
 import time
@@ -63,8 +78,18 @@ from pi_embodied_services.components import code_api as registry
 TIERS = ("high", "low", "low-noexamples")
 DEFAULT_TIMEOUT_S = 60.0
 DEFAULT_MAX_CALLS = 50
-#: stdout and stderr of a run are cut here.
+#: stdout, stderr, the traceback and the encoded RESULT of a run are each cut here.
 OUTPUT_CAP = 8 * 1024
+#: A pipe message (either direction) above this ends the run.
+MAX_MESSAGE = 64 << 20
+#: Files the program writes are cut here (RLIMIT_FSIZE).
+RLIMIT_FSIZE_BYTES = 64 << 20
+#: Environment variable names the child never sees (case-insensitive substrings / prefixes).
+SECRET_ENV_PATTERN = re.compile(
+    r"(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|COOKIE|AUTH)"
+    r"|^(AWS_|AZURE_|GOOGLE_|GCP_|GITHUB_|GH_|SSH_|ANTHROPIC_|OPENAI_)",
+    re.IGNORECASE,
+)
 #: The child's address-space headroom beyond what the interpreter has mapped when the program
 #: starts (numpy and the stubs need well under 1 GiB). Relative, because a spawned child
 #: re-imports the server's main module, and torch/CUDA libraries map tens of GB of virtual
@@ -72,6 +97,12 @@ OUTPUT_CAP = 8 * 1024
 RLIMIT_AS_BYTES = 4 << 30
 #: Elements above which an array in RESULT or the call log is replaced by its shape.
 ARRAY_CAP = 4096
+#: Characters above which a string in the call log is cut.
+LOG_STR_CAP = 200
+#: Array dtypes the pipe carries (no object arrays: nothing on the pipe may hold code).
+WIRE_DTYPES = frozenset(
+    "bool int8 int16 int32 int64 uint8 uint16 uint32 uint64 float16 float32 float64".split()
+)
 
 
 class CodeLimitError(RuntimeError):
@@ -235,30 +266,110 @@ def strip_examples(doc: str) -> str:
     return "\n".join(out).rstrip()
 
 
-def jsonable(value: Any, cap: int = ARRAY_CAP) -> Any:
+def jsonable(value: Any, cap: int = ARRAY_CAP, str_cap: int | None = None) -> Any:
     """A JSON-able copy: arrays become lists (or a shape stub past ``cap`` elements),
-    numpy scalars plain numbers, anything else its ``repr``."""
-    if value is None or isinstance(value, (bool, int, float, str)):
+    numpy scalars plain numbers, strings cut at ``str_cap``, anything else its ``repr``."""
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        if str_cap is not None and len(value) > str_cap:
+            return f"{value[:str_cap]}...[{len(value) - str_cap} more chars]"
         return value
     if isinstance(value, np.ndarray):
         if value.size > cap:
             return {"ndarray": str(value.dtype), "shape": list(value.shape)}
-        return jsonable(value.tolist(), cap)
+        return jsonable(value.tolist(), cap, str_cap)
     if isinstance(value, np.generic):
         return value.item()
     if isinstance(value, dict):
-        return {str(k): jsonable(v, cap) for k, v in value.items()}
+        return {str(k): jsonable(v, cap, str_cap) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
-        return [jsonable(v, cap) for v in value]
-    return repr(value)[:200]
+        return [jsonable(v, cap, str_cap) for v in value]
+    return repr(value)[:LOG_STR_CAP]
 
 
-def _cap(text: str) -> str:
+def _cap(text: str, tail: bool = False) -> str:
     data = text.encode("utf-8", "replace")
     if len(data) <= OUTPUT_CAP:
         return text
+    if tail:  # a traceback: its last line is the error
+        kept = data[-OUTPUT_CAP:].decode("utf-8", "ignore")
+        return f"[truncated {len(data) - OUTPUT_CAP} bytes]\n{kept}"
     head = data[:OUTPUT_CAP].decode("utf-8", "ignore")
     return f"{head}\n[truncated {len(data) - OUTPUT_CAP} bytes]"
+
+
+# ---------------------------------------------------------------------------
+# The wire: JSON both ways. Arrays travel as {"__ndarray__": dtype, "shape": [...], "data":
+# base64}; a dtype outside WIRE_DTYPES is refused. Anything else non-JSON is its repr.
+
+
+def encode(value: Any, strict: bool = False) -> Any:
+    """``value`` as JSON-able data with arrays kept intact (see the module docstring).
+    Anything else is its ``repr``, or a TypeError when ``strict`` (the program's arguments:
+    a primitive must not silently get a string for an object)."""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, np.ndarray):
+        if str(value.dtype) not in WIRE_DTYPES:
+            raise TypeError(f"an array of dtype {value.dtype} cannot cross the pipe")
+        data = np.ascontiguousarray(value)
+        return {
+            "__ndarray__": str(data.dtype),
+            "shape": list(data.shape),
+            "data": base64.b64encode(data.tobytes()).decode("ascii"),
+        }
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, dict):
+        return {str(k): encode(v, strict) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [encode(v, strict) for v in value]
+    if strict:
+        raise TypeError(
+            f"an argument of type {type(value).__name__} cannot cross the pipe; pass "
+            "numbers, strings, lists, dicts or numeric arrays"
+        )
+    return repr(value)[:LOG_STR_CAP]
+
+
+def decode(value: Any) -> Any:
+    """The inverse of :func:`encode`; a malformed array stub is a ValueError."""
+    if isinstance(value, dict):
+        if "__ndarray__" in value:
+            dtype = value.get("__ndarray__")
+            shape = value.get("shape")
+            data = value.get("data")
+            if (
+                dtype not in WIRE_DTYPES
+                or not isinstance(shape, list)
+                or not all(isinstance(n, int) and n >= 0 for n in shape)
+                or not isinstance(data, str)
+            ):
+                raise ValueError("malformed array on the pipe")
+            raw = base64.b64decode(data, validate=True)
+            arr = np.frombuffer(raw, dtype=np.dtype(dtype))
+            if arr.size != math.prod(shape):
+                raise ValueError("array bytes do not match its shape")
+            return arr.reshape(shape).copy()
+        return {k: decode(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [decode(v) for v in value]
+    return value
+
+
+def _send(conn, message: Any, strict: bool = False) -> None:
+    conn.send_bytes(json.dumps(encode(message, strict)).encode("utf-8"))
+
+
+def _recv(conn) -> Any:
+    """The next message; ``OSError("bad message length")`` when it is over MAX_MESSAGE."""
+    return decode(json.loads(conn.recv_bytes(MAX_MESSAGE).decode("utf-8")))
+
+
+def scrub_env(env: Mapping[str, str]) -> dict[str, str]:
+    """``env`` without the variables :data:`SECRET_ENV_PATTERN` matches."""
+    return {k: v for k, v in env.items() if not SECRET_ENV_PATTERN.search(k)}
 
 
 # ---------------------------------------------------------------------------
@@ -460,8 +571,11 @@ def _set_limit(which: int, soft: int, hard: int) -> None:
 
 def _stub(conn, name: str) -> Callable[..., Any]:
     def call(*args, **kwargs):
-        conn.send(("call", name, args, kwargs))
-        kind, payload = conn.recv()
+        try:
+            _send(conn, ["call", name, list(args), dict(kwargs)], strict=True)
+        except TypeError as exc:
+            raise TypeError(f"{name}(): {exc}") from None
+        kind, payload = _recv(conn)
         if kind == "ok":
             return payload
         if kind == "limit":
@@ -479,12 +593,19 @@ def _child_main(
     program; nothing else of the server is in its globals."""
     import resource
 
+    # Its own process group: the parent kills the group, so the program's subprocesses go too.
+    with contextlib.suppress(OSError):
+        os.setpgrp()
     cap = _mapped_bytes() + limits["as_bytes"]
     _set_limit(resource.RLIMIT_AS, cap, cap)
     # Relative too: importing the server's main module (torch) already cost CPU seconds.
     used = resource.getrusage(resource.RUSAGE_SELF)
     cpu = int(math.ceil(used.ru_utime + used.ru_stime)) + limits["cpu_s"]
     _set_limit(resource.RLIMIT_CPU, cpu, cpu + 5)
+    _set_limit(resource.RLIMIT_FSIZE, limits["fsize_bytes"], limits["fsize_bytes"])
+    # No new processes or threads (every clone counts against NPROC; the user already has
+    # more than one process, so any further one is refused; root is exempt).
+    _set_limit(resource.RLIMIT_NPROC, 1, 1)
     os.chdir(cwd)
     g: dict[str, Any] = {"__name__": "__main__", "RESULT": None, "np": np, "math": math}
     for name in names:
@@ -498,18 +619,35 @@ def _child_main(
             exec(compile(code, "<run_code>", "exec"), g, g)
         except BaseException:  # the program's own failure, whatever it raised
             tb = traceback.format_exc()
-    conn.send(
-        (
+    result = jsonable(g.get("RESULT"))
+    if len(json.dumps(result).encode("utf-8")) > OUTPUT_CAP:
+        result = {"truncated": f"RESULT is over {OUTPUT_CAP} bytes; return less"}
+    _send(
+        conn,
+        [
             "done",
             {
-                "stdout": out.getvalue(),
-                "stderr": err.getvalue(),
-                "traceback": tb,
-                "result": jsonable(g.get("RESULT")),
+                "stdout": _cap(out.getvalue()),
+                "stderr": _cap(err.getvalue()),
+                "traceback": None if tb is None else _cap(tb, tail=True),
+                "result": result,
             },
-        )
+        ],
     )
     conn.close()
+
+
+def _kill(proc: multiprocessing.process.BaseProcess) -> None:
+    """SIGKILL the child's process group (its subprocesses with it, whether or not the child
+    itself still runs), then the child if it is somehow still alive. Called before the child
+    is joined: until then its pid is not reused, so the group is its own."""
+    pid = proc.pid
+    if pid is None:
+        return
+    with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+        os.killpg(pid, signal.SIGKILL)
+    if proc.is_alive():
+        proc.kill()
 
 
 # ---------------------------------------------------------------------------
@@ -569,8 +707,8 @@ class CodeRunner:
         self._abort.set()
         with self._lock:
             proc = self._proc
-        if proc is not None and proc.is_alive():
-            proc.kill()
+        if proc is not None:
+            _kill(proc)
 
     def run(
         self,
@@ -598,31 +736,36 @@ class CodeRunner:
         allowed = self.primitives(tier, privileged)
         names = [p.name for p in allowed]
         helper_names = list(HELPERS) if helpers else []
-        state = _Run(max_calls=int(max_calls), max_move_m=max_move_m)
+        started = time.monotonic()
+        state = _Run(
+            max_calls=int(max_calls),
+            max_move_m=max_move_m,
+            deadline=started + timeout_s,
+        )
         ctx = multiprocessing.get_context("spawn")
         parent_conn, child_conn = ctx.Pipe()
         cwd = tempfile.mkdtemp(prefix="run_code-")
-        limits = {"as_bytes": RLIMIT_AS_BYTES, "cpu_s": int(math.ceil(timeout_s)) + 2}
+        limits = {
+            "as_bytes": RLIMIT_AS_BYTES,
+            "cpu_s": int(math.ceil(timeout_s)) + 2,
+            "fsize_bytes": RLIMIT_FSIZE_BYTES,
+        }
         proc = ctx.Process(
             target=_child_main,
             args=(child_conn, code, names, helper_names, limits, cwd),
             daemon=True,
         )
-        started = time.monotonic()
         if self._begin:
             self._begin()
         with self._lock:
             self._abort.clear()
             self._proc = proc
         try:
-            proc.start()
+            self._start_scrubbed(proc)
             child_conn.close()
-            outcome = self._serve(
-                parent_conn, proc, started + timeout_s, allowed, state
-            )
+            outcome = self._serve(parent_conn, proc, allowed, state)
         finally:
-            if proc.is_alive():
-                proc.kill()
+            _kill(proc)
             proc.join(5)
             with self._lock:
                 self._proc = None
@@ -650,8 +793,12 @@ class CodeRunner:
                 f"the program ran past its {timeout_s:g} s timeout and was killed"
             )
             result["stop_issued"] = True
-            if self._on_timeout:
-                self._on_timeout()
+            self._issue_stop(state)
+        elif outcome == "oversized":
+            result["status"] = "error"
+            result["error"] = (
+                f"the program sent a message over {MAX_MESSAGE >> 20} MB and was killed"
+            )
         elif outcome == "cancelled":
             result["status"] = "error"
             result["cancelled"] = True
@@ -663,22 +810,45 @@ class CodeRunner:
             )
         elif done.get("traceback"):
             result["status"] = "error"
-            result["error"] = done["traceback"].rstrip().splitlines()[-1]
+            result["error"] = done["traceback"].rstrip().splitlines()[-1][:2000]
         if self._finish:
             result.update(self._finish())
         return result
 
-    def _serve(
-        self, conn, proc, deadline: float, allowed: list[Primitive], state: _Run
-    ) -> str:
+    @staticmethod
+    def _start_scrubbed(proc: multiprocessing.process.BaseProcess) -> None:
+        """Start the child with the secret-looking variables out of its environment: spawn
+        hands the child the parent's environment as it is at start, so they are removed for
+        the moment of the start and put back (/proc/<child>/environ never held them)."""
+        kept = scrub_env(os.environ)
+        removed = {k: v for k, v in os.environ.items() if k not in kept}
+        for k in removed:
+            del os.environ[k]
+        try:
+            proc.start()
+        finally:
+            os.environ.update(removed)
+
+    def _issue_stop(self, state: _Run) -> None:
+        """Stop the robot once per run (the timeout: from the timer inside a primitive, or
+        after the child was killed)."""
+        with self._lock:
+            if state.stop_issued:
+                return
+            state.stop_issued = True
+        if self._on_timeout:
+            self._on_timeout()
+
+    def _serve(self, conn, proc, allowed: list[Primitive], state: _Run) -> str:
         """Answer the child's primitive calls until it is done, times out, is aborted or dies."""
         by_name = {p.name: p for p in allowed}
+        deadline = state.deadline
         while True:
+            now = time.monotonic()
+            if state.stop_issued or now >= deadline:
+                return "timeout"
             if self._abort.is_set():
                 return "cancelled"
-            now = time.monotonic()
-            if now >= deadline:
-                return "timeout"
             try:
                 ready = conn.poll(min(0.05, deadline - now))
             except (EOFError, OSError):
@@ -688,18 +858,29 @@ class CodeRunner:
                     return "cancelled" if self._abort.is_set() else "died"
                 continue
             try:
-                msg = conn.recv()
-            except (EOFError, OSError):
+                msg = _recv(conn)
+            except (EOFError, OSError) as exc:
+                if "bad message length" in str(exc):
+                    return "oversized"
                 return "cancelled" if self._abort.is_set() else "died"
+            except (ValueError, UnicodeDecodeError):
+                return "died"  # not our protocol: the program tampered with the pipe
+            if not isinstance(msg, list) or len(msg) < 2:
+                return "died"
             if msg[0] == "done":
-                state.done = msg[1]
+                state.done = msg[1] if isinstance(msg[1], dict) else {}
                 return "done"
+            if len(msg) != 4 or not isinstance(msg[3], dict):
+                return "died"
             _, name, args, kwargs = msg
-            reply = self._call(by_name, name, args, kwargs, state)
+            reply = self._call(by_name, str(name), tuple(args), kwargs, state)
+            # The timeout's stop may have aborted this run too: it is still a timeout.
+            if state.stop_issued or time.monotonic() >= deadline:
+                return "timeout"
             if self._abort.is_set():
                 return "cancelled"
             try:
-                conn.send(reply)
+                _send(conn, reply)
             except (BrokenPipeError, OSError):
                 return "cancelled" if self._abort.is_set() else "died"
 
@@ -708,8 +889,8 @@ class CodeRunner:
     ):
         entry: dict[str, Any] = {
             "name": name,
-            "args": jsonable(list(args), 64),
-            "kwargs": jsonable(dict(kwargs), 64),
+            "args": jsonable(list(args), 64, LOG_STR_CAP),
+            "kwargs": jsonable(dict(kwargs), 64, LOG_STR_CAP),
         }
         state.log.append(entry)
         prim = by_name.get(name)
@@ -745,12 +926,21 @@ class CodeRunner:
                 return ("limit", entry["error"])
         state.calls += 1
         t0 = time.monotonic()
+        # The wall clock holds inside the primitive too: when the deadline passes while it
+        # runs, the robot gets its stop now (the primitive returns through it), not after.
+        timer = threading.Timer(
+            max(0.0, state.deadline - t0), self._issue_stop, args=(state,)
+        )
+        timer.daemon = True
+        timer.start()
         try:
             out = prim.fn(*args, **kwargs)
         except Exception as exc:
             entry["ms"] = int((time.monotonic() - t0) * 1000)
-            entry["error"] = f"{type(exc).__name__}: {exc}"
+            entry["error"] = f"{type(exc).__name__}: {exc}"[:2000]
             return ("error", entry["error"])
+        finally:
+            timer.cancel()
         entry["ms"] = int((time.monotonic() - t0) * 1000)
         if move:
             state.moved += move
@@ -763,14 +953,18 @@ class CodeRunner:
 class _Run:
     """One run's budget and log."""
 
-    def __init__(self, *, max_calls: int, max_move_m: float | None) -> None:
+    def __init__(
+        self, *, max_calls: int, max_move_m: float | None, deadline: float
+    ) -> None:
         self.max_calls = max_calls
         self.max_move_m = None if max_move_m is None else float(max_move_m)
+        self.deadline = deadline
         self.calls = 0
         self.moved = 0.0
         self.limit: str | None = None
         self.log: list[dict] = []
         self.done: dict | None = None
+        self.stop_issued = False
 
 
 __all__ = [
@@ -778,13 +972,18 @@ __all__ = [
     "DEFAULT_MAX_CALLS",
     "DEFAULT_TIMEOUT_S",
     "HELPERS",
+    "MAX_MESSAGE",
     "OUTPUT_CAP",
+    "SECRET_ENV_PATTERN",
     "TIERS",
     "CodeLimitError",
     "CodeRunner",
     "Primitive",
     "base_tier",
+    "decode",
     "describe_helpers",
+    "encode",
     "jsonable",
+    "scrub_env",
     "strip_examples",
 ]

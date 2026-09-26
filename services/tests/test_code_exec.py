@@ -24,11 +24,15 @@ import time
 import numpy as np
 import pytest
 
+from pi_embodied_services.utils import code_exec
 from pi_embodied_services.utils.code_exec import (
     OUTPUT_CAP,
     CodeRunner,
     Primitive,
+    decode,
+    encode,
     jsonable,
+    scrub_env,
     strip_examples,
 )
 
@@ -292,3 +296,130 @@ def test_run_refuses_bad_arguments():
 def test_jsonable_caps_large_arrays():
     assert jsonable(np.zeros((100, 100)))["shape"] == [100, 100]
     assert jsonable({"k": np.int64(3)}) == {"k": 3}
+
+
+# ---- the sandbox --------------------------------------------------------------------------
+
+
+def test_the_pipe_is_json_arrays_round_trip_and_object_arguments_are_refused():
+    toy = Toy()
+    # A primitive's array reaches the program as an ndarray; the program's array reaches the
+    # primitive as one (dtype kept); a tuple is a list on the other side.
+    out = runner(toy).run(
+        "img = look()['rgb']\n"
+        "assert type(img).__name__ == 'ndarray' and img.dtype == np.uint8, img\n"
+        "move(np.array([0.5, 0, 0], dtype=np.float32))\n"
+        "RESULT = [img.shape, look()['pos'].tolist()]\n"
+    )
+    assert out["status"] == "ran", out
+    assert out["result"] == [[4, 4, 3], [0.5, 0.0, 0.0]]
+    assert np.allclose(toy.pos, [0.5, 0, 0])
+    # An object is not JSON and never becomes a string behind the program's back.
+    out = runner(toy).run("class X: pass\nmove(X())\n")
+    assert out["status"] == "error" and "cannot cross the pipe" in out["traceback"]
+    assert toy.calls.count("move") == 1
+
+
+def test_encode_and_decode_refuse_object_arrays_and_malformed_stubs():
+    a = np.arange(6, dtype=np.int16).reshape(2, 3)
+    wire = encode({"a": a, "t": (1, 2), "s": np.float32(1.5)})
+    assert wire["t"] == [1, 2] and wire["s"] == 1.5
+    back = decode(wire)
+    assert np.array_equal(back["a"], a) and back["a"].dtype == np.int16
+    with pytest.raises(TypeError, match="dtype object"):
+        encode(np.array([object()]))
+    for bad in (
+        {"__ndarray__": "object", "shape": [1], "data": ""},
+        {"__ndarray__": "int8", "shape": [5], "data": "AAA="},
+        {"__ndarray__": "int8", "shape": "x", "data": "AAA="},
+    ):
+        with pytest.raises(ValueError):
+            decode(bad)
+    # No pickle anywhere: a message is bytes of JSON.
+    src = open(code_exec.__file__).read()
+    assert (
+        "conn.recv()" not in src
+        and "conn.send(" not in src
+        and "import pickle" not in src
+    )
+
+
+def test_the_child_sees_no_secret_environment_variables(monkeypatch):
+    monkeypatch.setenv("FAKE_API_KEY", "sk-1")
+    monkeypatch.setenv("SOME_TOKEN", "t")
+    monkeypatch.setenv("AWS_REGION", "eu")
+    monkeypatch.setenv("PLAIN_SETTING", "keep")
+    assert set(scrub_env({"A_KEY": "", "Path": "", "auth_x": ""})) == {"Path"}
+    out = runner(Toy()).run(
+        "import os\n"
+        "RESULT = [k for k in ('FAKE_API_KEY', 'SOME_TOKEN', 'AWS_REGION', 'PLAIN_SETTING', 'PATH')"
+        " if k in os.environ]\n"
+        "RESULT.append(open('/proc/self/environ', 'rb').read().count(b'sk-1'))\n"
+    )
+    assert out["status"] == "ran", out
+    assert out["result"] == ["PLAIN_SETTING", "PATH", 0]
+    # The parent keeps them.
+    assert os.environ["FAKE_API_KEY"] == "sk-1"
+
+
+def test_the_programs_subprocesses_die_with_the_run():
+    out = runner(Toy()).run(
+        "import subprocess\n"
+        "try:\n"
+        "    p = subprocess.Popen(['sleep', '30'])\n"
+        "    RESULT = p.pid\n"
+        "except OSError:\n"
+        "    RESULT = None  # RLIMIT_NPROC refused it (a non-root user)\n"
+    )
+    assert out["status"] == "ran", out
+    pid = out["result"]
+    if pid is not None:
+        for _ in range(50):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.05)
+        else:
+            os.kill(pid, 9)
+            raise AssertionError("the program's subprocess survived the run")
+
+
+def test_result_and_traceback_are_capped_and_oversized_messages_end_the_run(
+    monkeypatch,
+):
+    out = runner(Toy()).run("RESULT = 'x' * 20000\n")
+    assert out["status"] == "ran" and "over" in out["result"]["truncated"]
+    # 300 distinct frames (Python collapses repeated ones): a traceback well over the cap.
+    chain = "".join(f"def f{i}():\n    return f{i + 1}()\n" for i in range(300))
+    out = runner(Toy()).run(f"{chain}def f300():\n    return 1 / 0\nf0()\n")
+    assert out["status"] == "error"
+    assert len(out["traceback"].encode()) < OUTPUT_CAP + 200
+    assert out["traceback"].startswith("[truncated"), (
+        "the tail is kept: it has the error"
+    )
+    assert out["error"] == "ZeroDivisionError: division by zero"
+    monkeypatch.setattr(code_exec, "MAX_MESSAGE", 1 << 20)
+    out = runner(Toy()).run("move(np.zeros(400000))\n")
+    assert out["status"] == "error" and "over 1 MB" in out["error"]
+
+
+def test_the_timeout_stops_the_robot_inside_a_running_primitive():
+    toy = Toy()
+
+    def stop():
+        toy.stopped = True
+        toy.stop_flag = True  # what the facade's stop does: the primitive returns
+
+    r = CodeRunner(
+        [Primitive("slow", toy.slow, ("high",))],
+        stop_requested=lambda: toy.stop_flag,
+        on_timeout=stop,
+    )
+    t0 = time.monotonic()
+    out = r.run("slow(30)\nRESULT = 'never'", timeout_s=0.5)
+    assert time.monotonic() - t0 < 5, (
+        "the primitive returned through the stop, not after 30 s"
+    )
+    assert out["status"] == "timeout" and out["stop_issued"] is True
+    assert out["calls"][0]["name"] == "slow" and out["result"] is None

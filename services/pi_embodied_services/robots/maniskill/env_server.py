@@ -32,6 +32,7 @@ other ids (``ENV_IDS``) are stock ManiSkill tabletop tasks on the shared oblique
 from __future__ import annotations
 
 import argparse
+import copy
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -317,6 +318,11 @@ class RobotSpec:
     #: The env's reward mode when the task's default cannot be computed for this robot
     #: (None: the task's default).
     reward_mode: Optional[str] = None
+    #: ``(agent uids, the scene's mode)``: ``control_mode`` is added to those agents as a copy
+    #: of that mode acting on the current pose (``use_target`` off). A target-based mode sums
+    #: every commanded delta into its target, so a closed-loop servo pressing against the
+    #: table winds the target up and the arm lunges when released.
+    untargeted_from: Optional[tuple[tuple[str, ...], str]] = None
 
     @property
     def open(self) -> Optional[float]:
@@ -446,10 +452,12 @@ ROBOTS: dict[str, RobotSpec] = {
         arms=("left", "right"),
     ),
     # The bridge twins' WidowX 250 S (the scene picks its flat-table or sink variant): its
-    # arm_pd_ee_target_delta_pose_align2 controller takes an unnormalised [dx, dy, dz] in
-    # m and a rotation (held at zero), then the normalised mimic gripper (+1 open); the TCP
-    # is ee_gripper_link; the agentview is the scene's 3rd_view_camera (with the real
-    # background composited behind the objects).
+    # arm_pd_ee_target_delta_pose_align2 controller, copied without its target (a Muse
+    # episode pressed the gripper into the table, the summed target sent the arm 0.43 m on
+    # the next release and left it at an unreachable target), takes an unnormalised
+    # [dx, dy, dz] in m and a rotation (held at zero), then the normalised mimic gripper
+    # (+1 open); the TCP is ee_gripper_link; the agentview is the scene's 3rd_view_camera
+    # (with the real background composited behind the objects).
     "widowx250s": RobotSpec(
         uid="widowx250s",
         name="WidowX 250 S",
@@ -457,7 +465,14 @@ ROBOTS: dict[str, RobotSpec] = {
         width=("qpos",),
         envs=BRIDGE_ENVS,
         wrist=None,
-        control_mode="arm_pd_ee_target_delta_pose_align2_gripper_pd_joint_pos",
+        control_mode="pi_ee_delta_pose_gripper_pd_joint_pos",
+        untargeted_from=(
+            (
+                "widowx250s_bridgedataset_flat_table",
+                "widowx250s_bridgedataset_sink",
+            ),
+            "arm_pd_ee_target_delta_pose_align2_gripper_pd_joint_pos",
+        ),
         pos_scale=DELTA_BOUND_M,
         rot_dims=3,
         tcp_link="ee_gripper_link",
@@ -535,10 +550,35 @@ def robot_spec(robot: str, env_id: str, rig: bool) -> RobotSpec:
     return spec
 
 
+def add_untargeted_mode(agent_cls, base: str, name: str) -> None:
+    """Add mode ``name`` to ``agent_cls``: a copy of its mode ``base`` whose arm acts on the
+    current end-effector pose (``use_target`` off). Idempotent."""
+    prop = agent_cls._controller_configs
+    if getattr(prop.fget, "_pi_untargeted", False):
+        return
+
+    def configs(self):
+        cfg = prop.fget(self)
+        mode = dict(cfg[base])
+        arm = copy.deepcopy(mode["arm"])
+        arm.use_target = False
+        return {**cfg, name: {**mode, "arm": arm}}
+
+    configs._pi_untargeted = True  # type: ignore[attr-defined]
+    agent_cls._controller_configs = property(configs)
+
+
 def prepare_robot(spec: RobotSpec, wrist_mount: str) -> None:
     """Patch the agent class before ``gym.make``: the wrist camera and the EE mode."""
     from mani_skill.agents.registration import REGISTERED_AGENTS
 
+    if spec.untargeted_from:
+        uids, base = spec.untargeted_from
+        for uid in uids:
+            add_untargeted_mode(
+                REGISTERED_AGENTS[uid].agent_cls, base, spec.control_mode
+            )
+        return
     if spec.arms or (spec.wrist is None and not spec.ee_joints):
         return  # the agent as it is: no wrist camera, its own EE mode
     cls = REGISTERED_AGENTS[spec.uid].agent_cls

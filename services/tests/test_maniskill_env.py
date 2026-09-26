@@ -440,6 +440,33 @@ def test_code_mode_raw_actions_use_pis_gripper_sign_on_every_robot():
     assert np.allclose(_facade("panda_stick")._split([0.1, 0.2, 0.3]), [0.1, 0.2, 0.3])
 
 
+def test_the_bridge_widowx_runs_an_untargeted_copy_of_the_scenes_mode(monkeypatch):
+    """The scene's target-based pose mode sums every commanded delta; the WidowX runs a copy
+    acting on the current pose, added to both bridge agents (idempotently)."""
+    mods = _fake_mani_skill(monkeypatch)
+    agents = mods["mani_skill.agents.registration"].REGISTERED_AGENTS
+    Cfg = mods["mani_skill.sensors.camera"].CameraConfig
+    classes = {}
+    wx = ms.ROBOTS["widowx250s"]
+    base = wx.untargeted_from[1]
+    for uid in wx.untargeted_from[0]:
+
+        def configs(self, base=base):
+            return {base: {"arm": Cfg(use_target=True, pos_lower=-1.0), "gripper": "g"}}
+
+        classes[uid] = type(uid, (), {"_controller_configs": property(configs)})
+        agents[uid] = type("A", (), {"agent_cls": classes[uid]})
+    ms.prepare_robot(wx, "centered")
+    ms.prepare_robot(wx, "centered")
+    for cls in classes.values():
+        cfg = cls()._controller_configs
+        assert cfg[base]["arm"].use_target is True  # the scene's own mode is untouched
+        mode = cfg[wx.control_mode]
+        assert mode["arm"].use_target is False and mode["gripper"] == "g"
+        assert mode["arm"].pos_lower == -1.0
+    assert wx.control_mode == "pi_ee_delta_pose_gripper_pd_joint_pos"
+
+
 def test_the_bridge_widowx_takes_an_unnormalised_pose_action_and_objs_actors():
     """The bridge twins' WidowX 250 S: its pose controller takes [dx, dy, dz] in m, three
     zero rotations, then the gripper (+1 open); its actors live in ``objs`` by model id,
@@ -447,7 +474,7 @@ def test_the_bridge_widowx_takes_an_unnormalised_pose_action_and_objs_actors():
     wx = ms.ROBOTS["widowx250s"]
     a = wx.action(np.array([0.5, 0.0, -1.0]), -1.0)
     assert np.allclose(a, [0.05, 0.0, -0.1, 0, 0, 0, -1.0])
-    assert wx.control_mode.startswith("arm_pd_ee_target_delta_pose")
+    assert wx.untargeted_from[1].startswith("arm_pd_ee_target_delta_pose")
     assert (wx.tcp_link, wx.agentview) == ("ee_gripper_link", "3rd_view_camera")
     assert set(wx.envs) == set(ms.BRIDGE_ENVS) == set(ms.TABLE_Z)
     assert set(ms.BRIDGE_ENVS) <= set(ms.FIXED_ROBOT_ENVS)

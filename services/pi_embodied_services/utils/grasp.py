@@ -171,6 +171,37 @@ def quat_xyzw_matrix(q: Any) -> np.ndarray:
     )
 
 
+def rotvec_of(R: np.ndarray) -> np.ndarray:
+    """The rotation vector (axis * angle, rad) of a rotation matrix."""
+    R = np.asarray(R, dtype=np.float64)
+    cos = float(np.clip((np.trace(R) - 1.0) / 2.0, -1.0, 1.0))
+    angle = math.acos(cos)
+    if angle < 1e-9:
+        return np.zeros(3)
+    if angle > math.pi - 1e-6:
+        # Near a half turn the skew part vanishes: the axis is R + I's dominant column.
+        B = (R + np.eye(3)) / 2.0
+        axis = B[:, int(np.argmax(np.diag(B)))]
+        return axis / np.linalg.norm(axis) * angle
+    axis = np.array([R[2, 1] - R[1, 2], R[0, 2] - R[2, 0], R[1, 0] - R[0, 1]])
+    return axis / (2.0 * math.sin(angle)) * angle
+
+
+#: A parallel gripper's grasp turned half about its approach (the EEF's +z) is the same grasp.
+FLIP_ABOUT_APPROACH = np.diag([-1.0, -1.0, 1.0])
+
+
+def orientation_error(R_current: np.ndarray, R_target: np.ndarray) -> np.ndarray:
+    """World-frame rotation vector from the current EEF orientation to the target, or to the
+    target turned half about its approach when that is the shorter way (the fingers are
+    symmetric)."""
+    R_c = np.asarray(R_current, dtype=np.float64)
+    options = (np.asarray(R_target, dtype=np.float64),)
+    options += (options[0] @ FLIP_ABOUT_APPROACH,)
+    errs = [rotvec_of(R @ R_c.T) for R in options]
+    return min(errs, key=lambda e: float(np.linalg.norm(e)))
+
+
 def yaw_of(R: np.ndarray) -> float:
     """World yaw: the right-hand angle of the EEF's x axis about world +z (pi's ``yawOf``)."""
     return float(math.atan2(R[1, 0], R[0, 0]))
@@ -1615,7 +1646,9 @@ __all__ = [
     "object_points",
     "pitch_of",
     "quat_xyzw",
+    "orientation_error",
     "quat_xyzw_matrix",
+    "rotvec_of",
     "rank",
     "transform_candidate",
     "yaw_of",

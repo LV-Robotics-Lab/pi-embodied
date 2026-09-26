@@ -40,7 +40,7 @@ from pi_embodied_services.utils.code_exec import (
 from pi_embodied_services.utils.grasp import (
     GraspPlanner,
     add_grasp_arguments,
-    pitch_of,
+    orientation_error,
     quat_xyzw_matrix,
     urls_from_args,
 )
@@ -1065,21 +1065,19 @@ class LiberoEnvFacade(BaseEnvFacade):
 
     # ---- planned grasps (--graspnet/--graspgenx/--anygrasp/--anyplace) ----
 
-    def _pitch(self) -> float:
-        return pitch_of(quat_xyzw_matrix(self._quat_xyzw()))
-
     def _servo_pose(
         self,
         target: np.ndarray,
-        pitch: float,
-        yaw: float,
+        quat_xyzw,
         grip: float,
         max_steps: int,
         tol: float = 0.012,
         ori_tol: float = 0.05,
     ):
-        """pi's ``move_pose`` rule: position, pitch and yaw toward their targets each step."""
-        wrap = lambda a: (a + np.pi) % (2 * np.pi) - np.pi  # noqa: E731
+        """Position and the full orientation (roll, pitch and yaw, any tilt direction) toward
+        their targets each step: the OSC's rotation delta is the world-frame rotation vector
+        to the target (``utils/grasp.orientation_error``), 0.1 rad per unit as pi's tools."""
+        R_target = quat_xyzw_matrix(quat_xyzw)
         steps = 0
         cancelled = False
         while steps < max_steps and self._live():
@@ -1087,13 +1085,15 @@ class LiberoEnvFacade(BaseEnvFacade):
                 cancelled = True
                 break
             diff = target - self._eef()
-            p_err = float(wrap(pitch - self._pitch()))
-            y_err = float(wrap(yaw - self._yaw()))
-            if np.linalg.norm(diff) < tol and max(abs(p_err), abs(y_err)) < ori_tol:
+            err = orientation_error(quat_xyzw_matrix(self._quat_xyzw()), R_target)
+            if np.linalg.norm(diff) < tol and np.linalg.norm(err) < ori_tol:
                 break
-            a = [*self._servo_action(diff, 0.02, 0.05), 0.0, 0.0, 0.0, grip]
-            a[3] = float(np.clip(np.clip(p_err, -0.08, 0.08) / 0.1, -1, 1))
-            a[5] = float(np.clip(np.clip(y_err, -0.08, 0.08) / 0.1, -1, 1))
+            rot = err * min(1.0, 0.08 / max(float(np.linalg.norm(err)), 1e-9))
+            a = [
+                *self._servo_action(diff, 0.02, 0.05),
+                *[float(np.clip(v / 0.1, -1, 1)) for v in rot],
+                grip,
+            ]
             self._act(a)
             steps += 1
         return steps, cancelled
@@ -1104,7 +1104,7 @@ class LiberoEnvFacade(BaseEnvFacade):
         waypoints = {
             k: np.asarray(v, dtype=np.float64) for k, v in claim["waypoints"].items()
         }
-        pitch, yaw = float(claim["eef_pitch"]), float(claim["eef_yaw"])
+        quat = claim["eef_quat_xyzw"]
         legs: list[dict] = []
         total = 0
         for leg in claim["steps"]:
@@ -1123,9 +1123,7 @@ class LiberoEnvFacade(BaseEnvFacade):
                     )
             else:
                 target = waypoints[leg["to"]]
-                steps, cancelled = self._servo_pose(
-                    target, pitch, yaw, grip, int(max_steps)
-                )
+                steps, cancelled = self._servo_pose(target, quat, grip, int(max_steps))
                 dist = float(np.linalg.norm(target - self._eef()))
                 legs.append({"to": leg["to"], "final_dist_m": round(dist, 4)})
                 if dist > 0.03 and not cancelled:

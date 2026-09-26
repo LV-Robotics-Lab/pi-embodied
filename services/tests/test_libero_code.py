@@ -636,3 +636,52 @@ def test_a_place_that_stalls_before_opening_keeps_the_held_grasp():
     done = f._rpc["env.execute_place"](place_id=place["active"])
     assert "error" not in done, done
     assert f._grasp.held() is None
+
+
+class FullArm(DownArm):
+    """DownArm whose OSC turns the hand by the full world-frame rotation vector a[3:6] * 0.1."""
+
+    def __init__(self):
+        super().__init__()
+        self.R = np.diag([1.0, -1.0, -1.0])  # pointing down
+
+    def _quat(self):
+        from pi_embodied_services.utils.grasp import quat_xyzw
+
+        return np.array(quat_xyzw(self.R))
+
+    def step(self, action):
+        a = np.asarray(action, dtype=np.float64).reshape(7)
+        v = a[3:6] * 0.1
+        angle = float(np.linalg.norm(v))
+        if angle > 0:
+            k = v / angle
+            Kx = np.array([[0, -k[2], k[1]], [k[2], 0, -k[0]], [-k[1], k[0], 0]])
+            turn = np.eye(3) + np.sin(angle) * Kx + (1 - np.cos(angle)) * Kx @ Kx
+            self.R = turn @ self.R
+        a[3:6] = 0.0
+        return super().step(a)
+
+
+def test_the_executor_servos_the_full_orientation_of_a_tilted_rolled_grasp():
+    """Audit: execute_grasp servoed only pitch about world x and yaw, so a grasp tilted toward
+    +x kept the hand vertical and a roll was never servoed."""
+    from pi_embodied_services.utils import grasp as G
+
+    f = LiberoEnvFacade(FullArm(), meta={})
+    f.reset()
+    tilt, roll = np.deg2rad(30), np.deg2rad(40)
+    ry = np.array(
+        [[np.cos(tilt), 0, np.sin(tilt)], [0, 1, 0], [-np.sin(tilt), 0, np.cos(tilt)]]
+    )
+    rz = np.array(
+        [[np.cos(roll), -np.sin(roll), 0], [np.sin(roll), np.cos(roll), 0], [0, 0, 1]]
+    )
+    target = (
+        ry @ np.diag([1.0, -1.0, -1.0]) @ rz
+    )  # tilted toward +x, rolled about approach
+    steps, _ = f._servo_pose(np.array([0.05, 0.0, 0.2]), G.quat_xyzw(target), -1.0, 150)
+    now = G.quat_xyzw_matrix(f._quat_xyzw())
+    assert np.linalg.norm(G.orientation_error(now, target)) < 0.05
+    assert now[:, 2] == pytest.approx(target[:, 2], abs=0.05), "the approach tilted too"
+    assert steps < 150

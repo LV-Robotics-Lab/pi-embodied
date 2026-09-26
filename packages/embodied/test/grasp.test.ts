@@ -5,7 +5,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import dualFranka from "../src/dual_franka/index.ts";
 import franka from "../src/franka/index.ts";
-import libero, { type Claim, runClaim } from "../src/libero/index.ts";
+import libero, { type Claim, orientationError, runClaim } from "../src/libero/index.ts";
 import {
 	attachedPrompt,
 	CHECK_ATTACHED_ENTRY,
@@ -148,14 +148,13 @@ test("a claimed grasp runs leg by leg with the claim's orientation and stops at 
 			{ gripper: 1 },
 			{ to: "lift", gripper: 1 },
 		],
-		eef_yaw: 1.5,
-		eef_pitch: 0.2,
+		eef_quat_xyzw: [1, 0, 0, 0],
 	};
 	const log: string[] = [];
 	let width = 0.08;
 	const io = (stallAt?: string) => ({
-		servo: async (target: number[], pitch: number, yaw: number, g: number) => {
-			log.push(`servo ${target.join(",")} p${pitch} y${yaw} g${g}`);
+		servo: async (target: number[], q: number[], g: number) => {
+			log.push(`servo ${target.join(",")} q${q.join(",")} g${g}`);
 			const stalled = claim.waypoints[stallAt ?? ""] === target;
 			return { steps: 5, final_dist_m: stalled ? 0.08 : 0.004 };
 		},
@@ -169,10 +168,10 @@ test("a claimed grasp runs leg by leg with the claim's orientation and stops at 
 	});
 	const ok = await runClaim(claim, io());
 	assert.deepEqual(log, [
-		"servo 0,0,0.3 p0.2 y1.5 g-1",
-		"servo 0,0,0.2 p0.2 y1.5 g-1",
+		"servo 0,0,0.3 q1,0,0,0 g-1",
+		"servo 0,0,0.2 q1,0,0,0 g-1",
 		"grip 1",
-		"servo 0,0,0.3 p0.2 y1.5 g1",
+		"servo 0,0,0.3 q1,0,0,0 g1",
 	]);
 	assert.equal(ok.steps_used, 19);
 	assert.deepEqual(ok.legs[2], { gripper: 1, gripper_width: 0.02 });
@@ -321,4 +320,21 @@ test("the attachment verdict is parsed leniently and never throws", () => {
 	assert.equal(parseAttached("no idea").confidence, 0);
 	const p = attachedPrompt("task", "cup", ["wrist", "agentview (cropped around the gripper)"]);
 	assert.match(p.content[1].text, /2 image\(s\)/);
+});
+
+test("the executor's orientation error covers roll and any tilt, the short way round the fingers", () => {
+	const down = [1, 0, 0, 0]; // 180 deg about x
+	const close = (a: number[], b: number[]) => a.every((v, i) => Math.abs(v - b[i]) < 1e-9);
+	assert.ok(close(orientationError(down, down), [0, 0, 0]));
+	// The same grasp turned half about its approach: no error.
+	assert.ok(close(orientationError(down, [0, 1, 0, 0]), [0, 0, 0]));
+	// Tilted 20 deg about world y (the approach leans toward +x): a y rotation, not a pitch about x.
+	const t = (20 * Math.PI) / 180;
+	const tilted = [Math.cos(t / 2), 0, -Math.sin(t / 2), 0]; // qy(t) * qx(pi), xyzw
+	assert.ok(close(orientationError(down, tilted), [0, t, 0]), `${orientationError(down, tilted)}`);
+	// Rolled 30 deg about the approach (world -z when pointing down).
+	const r = (30 * Math.PI) / 180;
+	const rolled = [Math.cos(r / 2), -Math.sin(r / 2), 0, 0]; // qx(pi) * qz(r), xyzw
+	const e = orientationError(down, rolled);
+	assert.ok(Math.abs(Math.abs(e[2]) - r) < 1e-9 && Math.abs(e[0]) < 1e-9 && Math.abs(e[1]) < 1e-9, `${e}`);
 });

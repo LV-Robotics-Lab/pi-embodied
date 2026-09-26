@@ -798,3 +798,17 @@ def test_scene_signatures_ignore_noise_and_catch_a_moved_object():
     assert scene_changed(None, a) and scene_changed(
         a, frame_signature(rgb[:64], depth[:64])
     )
+
+
+def test_orientation_error_is_the_short_way_round_the_symmetric_fingers():
+    down = np.diag([1.0, -1.0, -1.0])
+    assert np.allclose(G.orientation_error(down, down), 0)
+    # A half turn about the approach is the same grasp: no error.
+    assert np.allclose(G.orientation_error(down, down @ G.FLIP_ABOUT_APPROACH), 0)
+    tilt = np.deg2rad(20)
+    ry = np.array(
+        [[np.cos(tilt), 0, np.sin(tilt)], [0, 1, 0], [-np.sin(tilt), 0, np.cos(tilt)]]
+    )
+    assert np.allclose(G.orientation_error(down, ry @ down), [0, tilt, 0], atol=1e-9)
+    half = np.diag([-1.0, 1.0, -1.0])  # a half turn about world y
+    assert np.linalg.norm(G.rotvec_of(half)) == pytest.approx(np.pi)

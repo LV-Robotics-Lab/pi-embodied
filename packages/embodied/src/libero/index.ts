@@ -142,30 +142,35 @@ function rotation([x, y, z, w]: number[]): number[][] {
 		[2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
 	];
 }
-/** World yaw of an xyzw quaternion: the right-hand angle about base +z (unitStep's `move.yaw` servo). */
+/**
+ * World-frame rotation vector from the current EEF orientation (xyzw) to the target, or to the target
+ * turned half about its approach (the EEF's +z) when that is shorter: the fingers are symmetric.
+ */
+export function orientationError(current: number[], target: number[]): number[] {
+	const Rc = transpose(rotation(current));
+	const Rt = rotation(target);
+	const flipped = Rt.map((r) => [-r[0], -r[1], r[2]]);
+	const [a, b] = [matrixToRotvec(matmul(Rt, Rc)), matrixToRotvec(matmul(flipped, Rc))];
+	return Math.hypot(...b) < Math.hypot(...a) ? b : a;
+}
+
 /** A claimed grasp or place path (`env.claim_waypoints`, services utils/grasp.py). */
 export type Claim = {
 	id: string;
 	waypoints: Record<string, number[]>;
 	steps: { to?: string; gripper: number }[];
-	eef_yaw: number;
-	eef_pitch: number;
+	eef_quat_xyzw: number[];
 };
 
 /**
- * Run a claimed path leg by leg: servo to each waypoint with the claim's pitch and yaw, or drive the
+ * Run a claimed path leg by leg: servo to each waypoint with the claim's full orientation, or drive the
  * gripper in place. Stops at the episode's end or at the first leg that ends more than 3 cm short
  * (`stalled`, with the `error` the model reads).
  */
 export async function runClaim(
 	c: Claim,
 	io: {
-		servo: (
-			target: number[],
-			pitch: number,
-			yaw: number,
-			g: number,
-		) => Promise<{ steps: number; final_dist_m: number }>;
+		servo: (target: number[], quat: number[], g: number) => Promise<{ steps: number; final_dist_m: number }>;
 		actuate: (g: number) => Promise<number>;
 		width: () => number;
 		ended: () => boolean;
@@ -183,7 +188,7 @@ export async function runClaim(
 			if (leg.gripper < 0) await io.released?.();
 			continue;
 		}
-		const r = await io.servo(c.waypoints[leg.to], c.eef_pitch, c.eef_yaw, leg.gripper);
+		const r = await io.servo(c.waypoints[leg.to], c.eef_quat_xyzw, leg.gripper);
 		steps += r.steps;
 		legs.push({ to: leg.to, final_dist_m: r.final_dist_m });
 		if (r.final_dist_m > 0.03)
@@ -197,6 +202,7 @@ export async function runClaim(
 	return { legs, steps_used: steps };
 }
 
+/** World yaw of an xyzw quaternion: the right-hand angle about base +z (unitStep's `move.yaw` servo). */
 export const yawOf = (q: number[]) => {
 	const r = rotation(q);
 	return Math.atan2(r[1][0], r[0][0]);
@@ -689,6 +695,27 @@ export default function libero(pi: ExtensionAPI) {
 		return { steps, final_dist_m: round(Math.hypot(...target.map((v: number, i: number) => v - eef()[i]))) };
 	}
 
+	/**
+	 * Servo xyz and the full orientation (roll, pitch, yaw; any tilt direction) toward a target each
+	 * step: the OSC's rotation delta is the world-frame rotation vector to it (orientationError).
+	 */
+	async function servoOrientation(target: number[], quatTarget: number[], g: number, max_steps = 150) {
+		let steps = 0;
+		for (; steps < max_steps && !terminated && !truncated; steps++) {
+			const diff = target.map((v: number, i: number) => v - eef()[i]);
+			const err = orientationError(await quat(), quatTarget);
+			const angle = Math.hypot(...err);
+			if (Math.hypot(...diff) < 0.012 && angle < 0.05) break;
+			const scale = Math.min(1, 0.08 / Math.max(angle, 1e-9));
+			await step([
+				...diff.map((d: number) => clip(clip(d, -0.02, 0.02) / 0.05, -1, 1)),
+				...err.map((e) => clip((e * scale) / 0.1, -1, 1)),
+				g,
+			]);
+		}
+		return { steps, final_dist_m: round(Math.hypot(...target.map((v: number, i: number) => v - eef()[i]))) };
+	}
+
 	/** Drive the gripper until the fingers stop (on an object, or fully open / closed), at most 15 steps. */
 	async function actuate(g: number) {
 		let steps = 0;
@@ -737,7 +764,7 @@ export default function libero(pi: ExtensionAPI) {
 				lift: kwargs.lift,
 			});
 			const run = await runClaim(c, {
-				servo: (target, pitch, yaw, g) => servoPose(target, pitch, yaw, g, { max_steps: kwargs.max_steps }),
+				servo: (target, q, g) => servoOrientation(target, q, g, kwargs.max_steps),
 				actuate,
 				width: gripper,
 				ended: () => terminated || truncated,

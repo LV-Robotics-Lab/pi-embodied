@@ -47,8 +47,10 @@ from typing import Any, Callable
 import numpy as np
 
 from pi_embodied_services.utils.detections import (
+    MOTION_METHODS,
     DetectionBook,
     DetectionStale,
+    Epoch,
     decode_mask_png,
     describe_mask,
 )
@@ -420,19 +422,6 @@ class GraspToEef:
 # the planner
 
 
-class EvidenceBook(DetectionBook):
-    """A DetectionBook whose ids carry their kind: ``d`` masks, ``g`` grasps, ``p`` placements."""
-
-    def add(self, detection: dict[str, Any], prefix: str = "d") -> str:  # type: ignore[override]
-        if self._observation is None:
-            raise RuntimeError("no observation is bound; call bind() first")
-        self._counter += 1
-        id = f"{prefix}{self._counter}"
-        self._items[id] = {**detection, "id": id, "observation": self._observation}
-        self._history[id] = self._observation
-        return id
-
-
 def _png_base64(rgb: np.ndarray) -> str:
     from PIL import Image
 
@@ -467,6 +456,9 @@ class GraspPlanner:
     arm (``{"left": ..., "right": ...}``); ``eef_pose(arm) -> (xyz, quat_xyzw)`` gives the
     current EEF for the attachment crop; ``masks`` is an external DetectionBook whose ids
     ``plan_grasp`` also accepts (the stage-7 ``env.segment`` book), else only this planner's.
+    With ``masks`` the planner shares that book's :class:`Epoch`: one id counter (an id names
+    one mask, whichever book holds it) and one observation clock (a motion or a new
+    observation expires both books).
     """
 
     def __init__(
@@ -499,9 +491,10 @@ class GraspPlanner:
         self._calibration = grasp_to_eef if grasp_to_eef is not None else GraspToEef()
         self._eef_pose = eef_pose
         self._external = masks
-        self._book = EvidenceBook()
-        self._observation = 0
-        self._book.bind(0)
+        self._epoch = masks.epoch if masks is not None else Epoch()
+        self._book = DetectionBook(self._epoch)
+        self._book.bind(self._epoch.observation)
+        self._epoch.on_tick(self._on_tick)
         self._snapshots: dict[str, Snapshot] = {}
         self._max = int(max_candidates)
         self._depth_max = float(depth_truncation)
@@ -558,33 +551,13 @@ class GraspPlanner:
         }
 
     #: RPC methods that change the robot's state: every id expires once they ran.
-    MUTATING = (
-        "env.step",
-        "env.chunk_step",
-        "env.reset",
-        "env.move_delta",
-        "env.rotate_delta",
-        "env.set_gripper",
-        "env.recover_joint_posture",
-        "code.run",
-    )
+    MUTATING = MOTION_METHODS
 
     def install(self, facade: Any, *, mutating: tuple[str, ...] = MUTATING) -> None:
         """Register the primitives on ``facade._rpc`` and wrap its mutating calls with
         :meth:`invalidate` (after they ran, whatever they returned)."""
         rpc: dict[str, Callable[..., Any]] = facade._rpc
-        for name in mutating:
-            fn = rpc.get(name)
-            if fn is None:
-                continue
-
-            def wrapped(*args: Any, _fn: Callable[..., Any] = fn, **kwargs: Any) -> Any:
-                try:
-                    return _fn(*args, **kwargs)
-                finally:
-                    self.invalidate()
-
-            rpc[name] = wrapped
+        self._epoch.install(facade, mutating)
         rpc["env.plan_grasp"] = self.plan_grasp
         rpc["env.next_grasp"] = self.next_grasp
         rpc["env.resolve_grasp"] = self.resolve_grasp
@@ -649,13 +622,17 @@ class GraspPlanner:
             Primitive(
                 "plan_place",
                 "env.plan_place",
-                "AnyPlace: place poses (p ids) for a held object on a region; object mask, region mask and grasp must share one observation.",
+                "AnyPlace: place poses (p ids) for a held object on a region; region mask and grasp must share one observation.",
                 {
-                    "object_mask_id": Param("string", "mask id of the object"),
                     "region_mask_id": Param(
                         "string", "mask id of the placement region"
                     ),
                     "grasp_id": Param("string", "the grasp the object is held with"),
+                    "object_mask_id": Param(
+                        "string",
+                        "mask id of the object (default: the mask the grasp was planned on)",
+                        False,
+                    ),
                     "max_candidates": Param("integer", "default 5", False),
                 },
             ),
@@ -677,14 +654,18 @@ class GraspPlanner:
 
     @property
     def observation(self) -> int:
-        return self._observation
+        return self._epoch.observation
 
     def invalidate(self) -> list[str]:
-        """The robot moved: a new observation; every id so far expires. Returns them."""
-        self._observation += 1
+        """The robot moved: a new observation; every id so far expires (in the external
+        book too). Returns this planner's."""
+        dropped = self._book.ids
+        self._epoch.tick()
+        return dropped
+
+    def _on_tick(self, observation: int) -> None:
         self._snapshots = {}
         self._rankings = {}
-        return self._book.bind(self._observation)
 
     def _snapshot(self, camera: str | None) -> Snapshot:
         camera = camera or self._cameras[0]
@@ -696,7 +677,7 @@ class GraspPlanner:
             for key in ("rgb", "depth", "intrinsic_K", "extrinsic_cam2world"):
                 if key not in view:
                     raise GraspError(f"the view of {camera!r} has no {key!r}")
-            snap = Snapshot(self._observation, camera, view)
+            snap = Snapshot(self._epoch.observation, camera, view)
             self._snapshots[camera] = snap
         return snap
 
@@ -707,18 +688,17 @@ class GraspPlanner:
 
     def _mask_item(self, mask_id: str) -> dict[str, Any]:
         """A current mask by id, from this planner's book or the external segment book."""
+        mask_id = str(mask_id)
+        book = self._book
+        if self._external is not None and not book.known(mask_id):
+            book = self._external
         try:
-            return self._book.get(str(mask_id))
-        except DetectionStale as own:
-            if self._external is None:
-                raise GraspError(str(own)) from None
-            try:
-                item = self._external.get(str(mask_id))
-            except DetectionStale as ext:
-                raise GraspError(str(ext)) from None
-            if "mask" not in item:
-                raise GraspError(f"detection {mask_id} carries no mask")
-            return item
+            item = book.get(mask_id)
+        except DetectionStale as err:
+            raise GraspError(str(err)) from None
+        if "mask" not in item:
+            raise GraspError(f"detection {mask_id} carries no mask")
+        return item
 
     def segment_mask(
         self, object: str, camera: str | None = None, min_score: float = 0.2
@@ -773,7 +753,7 @@ class GraspPlanner:
         out: dict[str, Any] = {
             "found": False,
             "camera": snap.camera,
-            "observation": self._observation,
+            "observation": self._epoch.observation,
         }
         if (
             not isinstance(res, dict)
@@ -998,7 +978,7 @@ class GraspPlanner:
         for id in ids:
             self._rankings[id] = ids
         return {
-            "observation": self._observation,
+            "observation": self._epoch.observation,
             "camera": snap.camera,
             "mask_id": mask_id,
             "backend": name,
@@ -1073,7 +1053,7 @@ class GraspPlanner:
         return {
             "id": str(grasp_id),
             "kind": item["kind"],
-            "observation": self._observation,
+            "observation": self._epoch.observation,
             "eef_position": [round(float(v), 5) for v in pos],
             "eef_quat_xyzw": item["eef_quat_xyzw"],
             "eef_yaw": item["eef_yaw"],
@@ -1088,22 +1068,24 @@ class GraspPlanner:
 
     def plan_place(
         self,
-        object_mask_id: str,
         region_mask_id: str,
         grasp_id: str,
+        object_mask_id: str | None = None,
         max_candidates: int | None = None,
     ) -> dict:
         """Where to hold the grasped object so it comes to rest on the placement region.
 
         AnyPlace predicts the object's placement transform from the object mask and the
         placement-region mask; the place grasp pose is that transform applied to the chosen
-        grasp (Placement Grasp Composition). The three ids must come from the same observation
+        grasp (Placement Grasp Composition). The ids must come from the same observation
         snapshot (same camera, no motion in between), or the call is refused.
 
         Args:
-            object_mask_id: mask id of the object being placed.
             region_mask_id: mask id of the local surface it goes onto / into.
             grasp_id: the grasp (``g`` id) the object is or will be held with.
+            object_mask_id: mask id of the object being placed; default the mask the grasp
+                was planned on (the usual case: segmenting the object again would give a
+                new id that is not the grasp's).
 
         Returns:
             dict with ``candidates`` (each: ``id`` such as ``p2``, ``eef_position``,
@@ -1111,7 +1093,7 @@ class GraspPlanner:
             object's grasp center lands), ``active`` and ``expired_ids``.
 
         Example:
-            >>> p = plan_place(obj["id"], region["id"], "g1"); resolve_grasp(p["active"], 0.05)
+            >>> p = plan_place(region["id"], "g1"); resolve_grasp(p["active"], 0.05)
         """
         if self._anyplace is None:
             raise GraspError(
@@ -1122,6 +1104,8 @@ class GraspPlanner:
             raise GraspError(
                 f"{grasp_id} is a placement id; plan_place needs the pick grasp"
             )
+        if object_mask_id is None:
+            object_mask_id = grasp["mask_id"]
         obj = self._mask_item(object_mask_id)
         region = self._mask_item(region_mask_id)
         observations = {
@@ -1207,7 +1191,7 @@ class GraspPlanner:
         for id in ids:
             self._rankings[id] = ids
         return {
-            "observation": self._observation,
+            "observation": self._epoch.observation,
             "camera": snap.camera,
             "grasp_id": str(grasp_id),
             "object_mask_id": str(object_mask_id),
@@ -1245,7 +1229,7 @@ class GraspPlanner:
                 {"camera": camera, "png_base64": _png_base64(rgb), "crop_rc": crop}
             )
         return {
-            "observation": self._observation,
+            "observation": self._epoch.observation,
             "frames": frames,
             "eef_position": None if eef is None else [float(v) for v in eef[0]],
         }
@@ -1275,7 +1259,6 @@ __all__ = [
     "DEFAULT_STANDOFF_M",
     "GRASP_FRAME",
     "ZX_NATIVE_TO_GRASPNET",
-    "EvidenceBook",
     "GraspError",
     "GraspPlanner",
     "GraspToEef",

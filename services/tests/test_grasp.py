@@ -332,7 +332,12 @@ def test_plan_place_composes_and_refuses_mixed_snapshots():
     obj = planner.segment_mask("block")["id"]
     region = planner.segment_mask("plate")["id"]
     gid = planner.plan_grasp(mask_id=obj)["active"]
-    place = planner.plan_place(obj, region, gid)
+    place = planner.plan_place(region, gid)
+    explicit = planner.plan_place(region, gid, object_mask_id=obj)
+    assert (
+        explicit["candidates"][0]["eef_position"]
+        == place["candidates"][0]["eef_position"]
+    )
     assert place["candidate_count"] == 1 and place["active"].startswith("p")
     p = place["candidates"][0]
     # Camera +y is world -x: the place pose is the grasp moved 5 cm along world -x.
@@ -340,18 +345,60 @@ def test_plan_place_composes_and_refuses_mixed_snapshots():
     assert planner.resolve_grasp(place["active"])["kind"] == "placement"
     # A grasp planned on another mask is refused.
     with pytest.raises(G.GraspError, match="planned on mask"):
-        planner.plan_place(region, obj, gid)
+        planner.plan_place(obj, gid, object_mask_id=region)
     # Ids from an earlier observation are refused (the robot moved between them).
     planner.invalidate()
     obj2 = planner.segment_mask("block")["id"]
     region2 = planner.segment_mask("plate")["id"]
     with pytest.raises(G.GraspError, match="stale"):
-        planner.plan_place(obj2, region2, gid)
+        planner.plan_place(region2, gid)
     gid2 = planner.plan_grasp(mask_id=obj2)["active"]
     planner.invalidate()
     obj3 = planner.segment_mask("block")["id"]
     with pytest.raises(G.GraspError, match="stale"):
-        planner.plan_place(obj3, region2, gid2)
+        planner.plan_place(region2, gid2)
+    assert obj3 != obj2
+
+
+def test_the_planner_shares_ids_and_the_observation_clock_with_the_segment_book():
+    """One id names one mask: the segment book and the planner draw from one counter, and a
+    motion (or a new observation) expires both books at once."""
+    book = DetectionBook()
+    book.bind(book.epoch.observation)
+    d1 = book.add({"mask": _block_mask(), "camera": "agentview"})
+    planner, _ = _planner(masks=book, sam3=FakeSam3(_block_mask()))
+    d2 = planner.segment_mask("block")["id"]
+    assert d1 == "d1" and d2 == "d2", "no collision between the two books"
+    gid = planner.plan_grasp(mask_id=d1)["active"]
+    assert gid == "g3"
+    # The robot moved (a wrapped motion method ran): the segment book's id is stale too.
+    planner.invalidate()
+    with pytest.raises(G.GraspError, match="stale"):
+        planner.plan_grasp(mask_id=d1)
+    with pytest.raises(G.GraspError, match="stale"):
+        planner.plan_grasp(mask_id=d2)
+    assert book.observation == planner.observation
+    # A new observation in the segment book expires the planner's ids as well.
+    book.epoch.tick()
+    with pytest.raises(G.GraspError, match="stale"):
+        planner.resolve_grasp(gid)
+    assert book.observation == planner.observation
+
+
+def test_motion_methods_tick_once_even_when_the_segment_book_installed_them():
+    from pi_embodied_services.utils.detections import Epoch
+
+    class Facade:
+        def __init__(self):
+            self._rpc = {"env.step": lambda: "stepped", "env.plan_grasp": None}
+            self._readonly_methods = set()
+
+    facade = Facade()
+    epoch = Epoch()
+    epoch.install(facade)
+    epoch.install(facade)  # a second install (the planner's) wraps nothing twice
+    epoch.install(facade, ("env.move_to",))  # absent methods are skipped
+    assert facade._rpc["env.step"]() == "stepped" and epoch.observation == 1
 
 
 def test_planner_refuses_unknown_backends_and_frames():

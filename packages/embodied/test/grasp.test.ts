@@ -171,7 +171,7 @@ test("plan_grasp relays the env call, records expired ids and a stale refusal", 
 	assert.ok(isStale(new Error("g3 is stale: ...")) && !isStale(new Error("no grasp backend")));
 });
 
-test("plan_place segments text into mask ids first, then composes; the arm parameter is validated", async () => {
+test("plan_place segments the region text into a mask id first; the object defaults to the grasp's mask", async () => {
 	const f = fakePi();
 	const env = fakeEnv({
 		"env.segment_mask": { found: true, id: "d7" },
@@ -179,17 +179,16 @@ test("plan_place segments text into mask ids first, then composes; the arm param
 	});
 	const arm = { schema: StringEnum(["left", "right"] as const), name: (v: unknown) => String(v) };
 	const [, planPlace] = graspTools(f.pi, { call: env.call, task: () => "task", arm });
-	const out = await planPlace.run(
-		{ object: "bowl", region_mask_id: "d2", grasp_id: "g1" } as any,
-		undefined,
-		f.ctx as any,
-	);
+	const out = await planPlace.run({ region: "plate", grasp_id: "g1" } as any, undefined, f.ctx as any);
 	assert.equal(out.active, "p1");
 	assert.deepEqual(
 		env.calls.map((c) => c.method),
 		["env.segment_mask", "env.plan_place"],
 	);
-	assert.deepEqual(env.calls[1].kwargs, { object_mask_id: "d7", region_mask_id: "d2", grasp_id: "g1" });
+	// The object is never re-segmented: that would give a new id, not the one the grasp was planned on.
+	assert.deepEqual(env.calls[1].kwargs, { region_mask_id: "d7", grasp_id: "g1" });
+	await planPlace.run({ region_mask_id: "d2", grasp_id: "g1", object_mask_id: "d1" } as any, undefined, f.ctx as any);
+	assert.deepEqual(env.calls[2].kwargs, { region_mask_id: "d2", grasp_id: "g1", object_mask_id: "d1" });
 	const missing = await planPlace.run({ grasp_id: "g1", object_mask_id: "d1" } as any, undefined, f.ctx as any);
 	assert.match(missing.error, /region/);
 	// Without cameras the camera parameter is free text (the dual arm's registered views).

@@ -185,34 +185,37 @@ export function graspTools(pi: ExtensionAPI, rig: GraspRig): GraspToolDef[] {
 	const planPlace: GraspToolDef = {
 		name: "plan_place",
 		description:
-			"Where to hold the grasped object so it comes to rest on a placement region (AnyPlace). Give the object and the region as text (segmented now) or as mask ids, and the grasp id the object is held with; all three must come from the same observation (plan before moving, or re-segment after). Returns place poses with ids (p1) that motion tools take like grasp ids.",
+			"Where to hold the grasped object so it comes to rest on a placement region (AnyPlace). Give the region as text (segmented now) or as a mask id, and the grasp id the object is held with; the object is the mask that grasp was planned on (or object_mask_id). Region and grasp must come from the same observation (plan before moving, or re-segment after). Returns place poses with ids (p1) that motion tools take like grasp ids.",
 		parameters: Type.Object({
-			object: Type.Optional(Type.String({ description: "The object being placed (SAM3 text), or object_mask_id" })),
-			object_mask_id: Type.Optional(Type.String()),
 			region: Type.Optional(
 				Type.String({ description: "The surface it goes onto / into (SAM3 text), or region_mask_id" }),
 			),
 			region_mask_id: Type.Optional(Type.String()),
 			grasp_id: Type.String({ description: "The grasp (g id) the object is held with" }),
+			object_mask_id: Type.Optional(
+				Type.String({ description: "The object's mask id; default the mask the grasp was planned on" }),
+			),
 			camera,
 		}),
 		run: async (p) => {
 			const params = p as Json;
 			try {
 				const cam = params.camera ? { camera: params.camera } : {};
-				const mask = async (text: unknown, id: unknown, what: string) => {
-					if (id) return String(id);
-					const t = String(text ?? "").trim();
-					if (!t) throw new Error(`give ${what} (text) or ${what}_mask_id`);
+				let region_mask_id = params.region_mask_id ? String(params.region_mask_id) : "";
+				if (!region_mask_id) {
+					const t = String(params.region ?? "").trim();
+					if (!t) throw new Error("give region (text) or region_mask_id");
 					const seg = await rig.call("env.segment_mask", { object: t, ...cam }, 120_000);
-					if (!seg.found) throw new Error(`could not segment ${what} '${t}': ${seg.reason ?? "no mask"}`);
-					return String(seg.id);
-				};
-				const object_mask_id = await mask(params.object, params.object_mask_id, "object");
-				const region_mask_id = await mask(params.region, params.region_mask_id, "region");
+					if (!seg.found) throw new Error(`could not segment region '${t}': ${seg.reason ?? "no mask"}`);
+					region_mask_id = String(seg.id);
+				}
 				const result = await rig.call(
 					"env.plan_place",
-					{ object_mask_id, region_mask_id, grasp_id: String(params.grasp_id) },
+					{
+						region_mask_id,
+						grasp_id: String(params.grasp_id),
+						...(params.object_mask_id ? { object_mask_id: String(params.object_mask_id) } : {}),
+					},
 					600_000,
 				);
 				expired(pi, "plan_place", result);

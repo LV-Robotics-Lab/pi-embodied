@@ -29,9 +29,11 @@ bound to the observation they came from (OpenETA port spec, section 0.2):
   depth in the current observation, so later ids project through it.
 
 :class:`Perception` is installed on a facade after its own ``_register_rpc``: it wraps
-``env.get_observation`` (every observation invalidates the ids) and ``env.get_env_meta``
-(``capabilities.perception`` says what is on), and registers only the primitives whose
-service URL was given. Without ``--sam3`` / ``--unidepth`` nothing changes.
+``env.get_observation`` (every observation invalidates the ids) and the motion methods
+(``MOTION_METHODS``: a move invalidates them too, observed or not), wraps
+``env.get_env_meta`` (``capabilities.perception`` says what is on), and registers only the
+primitives whose service URL was given. Without ``--sam3`` / ``--unidepth`` nothing changes.
+The ids come from the facade's :class:`Epoch`, shared with the grasp planner when there is one.
 """
 
 from __future__ import annotations
@@ -44,8 +46,10 @@ import numpy as np
 
 from pi_embodied_services.utils.depth import DepthEstimator, fuse_depth
 from pi_embodied_services.utils.detections import (
+    MOTION_METHODS,
     DetectionBook,
     DetectionStale,
+    Epoch,
     decode_mask_png,
     describe_mask,
     overlay_masks,
@@ -115,13 +119,14 @@ class Perception:
         unidepth: Any | None = None,
         cameras: Cameras,
         intrinsics: Callable[[str], np.ndarray | None] = lambda key: None,
+        epoch: Epoch | None = None,
     ) -> None:
         self._sam3 = sam3
         self._depth = DepthEstimator(unidepth) if unidepth is not None else None
         self._cameras = dict(cameras)
         self._intrinsics = intrinsics
-        self._book = DetectionBook()
-        self._observation = 0
+        self._epoch = epoch if epoch is not None else Epoch()
+        self._book = DetectionBook(self._epoch)
         self._frames: dict[str, tuple[np.ndarray, np.ndarray | None]] = {}
         self._enhanced: dict[str, dict[str, Any]] = {}
 
@@ -175,6 +180,7 @@ class Perception:
 
         rpc["env.get_observation"] = get_observation
         rpc["env.get_env_meta"] = get_env_meta
+        self._epoch.install(facade, MOTION_METHODS)
         if self._sam3 is not None:
             rpc["env.segment"] = self.segment
             rpc["env.select_detection"] = self.select_detection
@@ -187,8 +193,8 @@ class Perception:
 
     def observe(self, obs: Any) -> list[str]:
         """A new observation: cache its frames, invalidate every id. Returns the ids."""
-        self._observation += 1
-        invalidated = self._book.bind(self._observation)
+        dropped = self._book.ids
+        self._epoch.tick()
         self._frames = {}
         self._enhanced = {}
         if isinstance(obs, dict):
@@ -200,13 +206,17 @@ class Perception:
                 if depth is not None and depth.shape != rgb.shape[:2]:
                     depth = None
                 self._frames[alias] = (rgb, depth)
-        return invalidated
+        return dropped
 
     # -- primitives ------------------------------------------------------------
 
     @property
     def book(self) -> DetectionBook:
         return self._book
+
+    @property
+    def epoch(self) -> Epoch:
+        return self._epoch
 
     def frame(self, camera: str) -> tuple[np.ndarray, np.ndarray | None]:
         """The current observation's (rgb, depth) for a camera alias."""
@@ -299,7 +309,7 @@ class Perception:
             masks.append(mask)
         out: dict[str, Any] = {
             "found": bool(detections),
-            "observation": self._observation,
+            "observation": self._epoch.observation,
             "camera": camera,
             "count": len(detections),
             "detections": detections,
@@ -353,7 +363,7 @@ class Perception:
         self._enhanced[camera] = report
         return {
             "ok": True,
-            "observation": self._observation,
+            "observation": self._epoch.observation,
             "camera": camera,
             "depth": fused,
             "report": report,

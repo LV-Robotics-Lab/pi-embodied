@@ -23,12 +23,18 @@ accept only ids the book still holds).
 
 Ids are never reused within a server process: a stale id names exactly one past mask,
 and the error for it says which observation it belonged to.
+
+One server may keep several books (the ``env.segment`` book of ``utils/perception.py``
+and the grasp planner's of ``utils/grasp.py``). They share one :class:`Epoch`: a single
+observation counter and a single id counter, so an id names one mask across all books
+(no ``d1`` in two books for two objects) and a motion expires every book at once.
 """
 
 from __future__ import annotations
 
 import base64
 import io
+from collections.abc import Callable
 from typing import Any
 
 import numpy as np
@@ -108,17 +114,83 @@ def overlay_masks(rgb: np.ndarray, masks: list[np.ndarray]) -> np.ndarray:
     return out.astype(np.uint8)
 
 
+#: RPC methods that change the robot's state: every id expires once they ran.
+MOTION_METHODS = (
+    "env.step",
+    "env.chunk_step",
+    "env.reset",
+    "env.move_delta",
+    "env.rotate_delta",
+    "env.set_gripper",
+    "env.recover_joint_posture",
+    "code.run",
+)
+
+
+class Epoch:
+    """The observation clock and id counter shared by every book of one server.
+
+    ``tick()`` starts a new observation and tells every listener (the books, the planner's
+    snapshot cache); ``next_id`` hands out ids that are unique across all books.
+    ``install`` wraps a facade's motion methods so that each of them ticks after it ran,
+    whatever it returned; wrapping the same method twice is a no-op.
+    """
+
+    def __init__(self) -> None:
+        self._observation = 0
+        self._counter = 0
+        self._listeners: list[Callable[[int], None]] = []
+        self._wrapped: set[str] = set()
+
+    @property
+    def observation(self) -> int:
+        return self._observation
+
+    def on_tick(self, listener: Callable[[int], None]) -> None:
+        self._listeners.append(listener)
+
+    def tick(self) -> int:
+        self._observation += 1
+        for listener in self._listeners:
+            listener(self._observation)
+        return self._observation
+
+    def next_id(self, prefix: str = "d") -> str:
+        self._counter += 1
+        return f"{prefix}{self._counter}"
+
+    def install(self, facade: Any, methods: tuple[str, ...] = MOTION_METHODS) -> None:
+        """Wrap ``facade._rpc[name]`` for each of ``methods`` (those present) with a tick."""
+        rpc: dict[str, Callable[..., Any]] = facade._rpc
+        for name in methods:
+            fn = rpc.get(name)
+            if fn is None or name in self._wrapped:
+                continue
+            self._wrapped.add(name)
+
+            def wrapped(*args: Any, _fn: Callable[..., Any] = fn, **kwargs: Any) -> Any:
+                try:
+                    return _fn(*args, **kwargs)
+                finally:
+                    self.tick()
+
+            rpc[name] = wrapped
+
+
 class DetectionBook:
     """The masks of the current observation, by short id.
 
     ``bind(observation_id)`` makes an observation current and drops (invalidates) the
-    ids of the previous one; ``add`` registers masks and hands out ids; ``get`` /
-    ``select`` / ``reject`` accept only current ids. ``drain_invalidated`` returns the
-    ids dropped since the last drain so the server can tell the client.
+    ids of the previous one (the book follows its epoch: every tick binds it); ``add``
+    registers masks and hands out ids (``prefix`` marks
+    their kind: ``d`` masks, ``g`` grasps, ``p`` placements); ``get`` / ``select`` /
+    ``reject`` accept only current ids. ``drain_invalidated`` returns the ids dropped
+    since the last drain so the server can tell the client.
     """
 
-    def __init__(self) -> None:
-        self._counter = 0
+    def __init__(self, epoch: Epoch | None = None) -> None:
+        self._epoch = epoch if epoch is not None else Epoch()
+        self._epoch.on_tick(self.bind)
         self._observation: int | None = None
         self._items: dict[str, dict[str, Any]] = {}
         self._history: dict[str, int] = {}
@@ -158,15 +230,22 @@ class DetectionBook:
         dropped, self._invalidated = self._invalidated, []
         return dropped
 
-    def add(self, detection: dict[str, Any]) -> str:
+    @property
+    def epoch(self) -> Epoch:
+        return self._epoch
+
+    def add(self, detection: dict[str, Any], prefix: str = "d") -> str:
         """Register one detection (its ``mask`` and metadata) and return its id."""
         if self._observation is None:
             raise RuntimeError("no observation is bound; call bind() first")
-        self._counter += 1
-        id = f"d{self._counter}"
+        id = self._epoch.next_id(prefix)
         self._items[id] = {**detection, "id": id, "observation": self._observation}
         self._history[id] = self._observation
         return id
+
+    def known(self, id: str) -> bool:
+        """Whether this book ever handed out ``id`` (current or stale)."""
+        return id in self._history
 
     def get(self, id: str) -> dict[str, Any]:
         item = self._items.get(id)
@@ -212,9 +291,11 @@ def public(item: dict[str, Any]) -> dict[str, Any]:
 
 
 __all__ = [
+    "MOTION_METHODS",
     "PALETTE",
     "DetectionBook",
     "DetectionStale",
+    "Epoch",
     "decode_mask_png",
     "describe_mask",
     "overlay_masks",

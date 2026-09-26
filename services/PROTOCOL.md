@@ -165,6 +165,12 @@ actors (goal markers included) and its articulations other than the robot.
 | `env.get_task_language` | - | str |
 | `env.plan_arm_path` | `arm` left/right, `target_pose` float[7] | `{"status", "position", "velocity"}` |
 
+The env worker runs torch with deterministic algorithms (`CUBLAS_WORKSPACE_CONFIG=:4096:8`) and cuRobo's
+L-BFGS step on torch ops instead of its fused CUDA kernel, so cuRobo returns the same plan for the same
+start and target (about 150 ms per plan instead of 50), and `env.reset` reseeds the worker's global
+Python, numpy and torch RNGs with the episode seed. The same actions then give bitwise-identical
+transitions and frames in any process and after any number of resets.
+
 ### franka-env (`robots/franka/env_server.py`)
 
 | method | args | result |

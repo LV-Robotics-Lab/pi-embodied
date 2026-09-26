@@ -14,7 +14,8 @@
 #
 # Modified by pi-embodied: import paths rewritten (runtime contracts now come from
 # contract.py); healthz service name; HTTP is the only --transport; chunk_step
-# polls the stop flag between native actions.
+# polls the stop flag between native actions; deterministic torch and cuRobo
+# L-BFGS, global RNGs reseeded on reset.
 
 """RPC server owning one RLinf RoboTwin environment."""
 
@@ -23,12 +24,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import random
 import sys
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+import torch
 
 # Support direct execution from a services/ checkout before package imports.
 if __package__ in (None, ""):
@@ -67,6 +70,63 @@ def _evaluation_language(task_config: str, task_name: str, seed: int) -> str | N
     return language.strip()
 
 
+def _deterministic_cuda() -> None:
+    """Make the worker's torch CUDA math, and so cuRobo's plans, repeat bitwise.
+
+    Every ``ee`` action and ``env.plan_arm_path`` runs cuRobo, and cuRobo's
+    trajectory optimization under torch's default nondeterministic CUDA kernels
+    gives a different plan for the same start and target, both across processes
+    and on repeated calls in one process (measured: 1e-4 rad and a few steps of
+    trajectory length per plan, so the same ee actions end up in different
+    states). torch's deterministic algorithms remove it at no measured cost
+    (about 52 ms per plan either way). ``warn_only``: an op without a
+    deterministic implementation warns instead of failing the episode. Must run
+    before cuRobo builds and warms up its planners, i.e. before the first CUDA
+    call; cuBLAS reads its workspace setting when its handle is created.
+    """
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    torch.use_deterministic_algorithms(True, warn_only=True)
+    torch.backends.cudnn.benchmark = False
+
+
+def _torch_lbfgs_step() -> None:
+    """Make cuRobo compute its L-BFGS step with torch ops, not its fused kernel.
+
+    The kernel (``lbfgs_step_kernel.cu``) runs one thread per variable and its
+    block reduction sums shuffle lanes and shared-memory slots that no thread
+    wrote whenever the variable count is not a multiple of 32 (a 28-step 6-DoF
+    trajectory has 168), so each step adds whatever an earlier kernel left
+    there. The same plan then differs by 1e-7 to 1e-3 rad depending on what ran
+    on the GPU before, even with deterministic torch (measured: one of four
+    stack_blocks_two attempts, and a whole pi record vs its replays). The torch
+    path is deterministic and costs about 100 ms more per plan (52 to 153 ms).
+    Must run before the planners are built: cuRobo captures the step into CUDA
+    graphs during warmup.
+    """
+    if getattr(LBFGSOpt, "_pi_torch_step", False):
+        return
+    init = LBFGSOpt.__init__
+
+    def torch_step_init(self, *args, **kwargs):
+        init(self, *args, **kwargs)
+        self.use_cuda_kernel = False
+
+    LBFGSOpt.__init__ = torch_step_init
+    LBFGSOpt._pi_torch_step = True
+
+
+def _seed_globals(seed: int) -> None:
+    """Seed the worker's global Python, numpy and torch RNGs for one reset.
+
+    RoboTwin's scene setup seeds numpy and torch itself but not Python's
+    ``random``; seeding all three here makes each reset start from the same RNG
+    state whatever ran before it in this process.
+    """
+    random.seed(seed)
+    np.random.seed(seed % 2**32)
+    torch.manual_seed(seed)
+
+
 def _teardown_env(env: Any) -> None:
     """Release an environment across RLinf teardown API versions."""
     offload = getattr(env, "offload", None)
@@ -85,6 +145,7 @@ def _teardown_env(env: Any) -> None:
     )
 
 
+from curobo.opt.newton.lbfgs import LBFGSOpt  # noqa: E402
 from omegaconf import OmegaConf  # noqa: E402
 from robotwin.assets import validate_root  # noqa: E402
 from robotwin.config import load_task_config  # noqa: E402
@@ -166,6 +227,7 @@ class RoboTwinEnvFacade(BaseEnvFacade):
 
     def reset(self) -> tuple[dict[str, Any], dict[str, Any]]:
         seed = int(self._metadata["seed"])
+        _seed_globals(seed)
         observation, info = self._env.reset(env_idx=[0], env_seeds=[seed])
         episode_status = info["episode_status"]
         if episode_status["actual_seed"] != seed:
@@ -329,6 +391,8 @@ def make_env(
     # Temporary workaround for the pinned RoboTwin place_fan reward-construction
     # bug. Remove after the RoboTwin dependency includes the upstream fix.
     install_native_reward_compat(task_name)
+    _deterministic_cuda()
+    _torch_lbfgs_step()
     assets_identity = validate_root(assets_path)
     resolved_assets_path = Path(assets_identity["root"])
     os.environ["ROBOTWIN_ASSETS_PATH"] = str(resolved_assets_path)

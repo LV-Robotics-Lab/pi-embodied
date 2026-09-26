@@ -295,6 +295,12 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 		name: dual ? "piper_dual" : "piper",
 		task: ["task"],
 		keepImages: 4,
+		// Observations carry cameras() in order; the front view has to lead to be the main one.
+		vdm: () => {
+			const c = cameras();
+			if (c[0] !== "front") return undefined;
+			return { views: c.length, wrist: c.flatMap((name, i) => (name.startsWith("wrist") ? [i] : [])) };
+		},
 		operator: { step: () => steps.length, reset: resetArm },
 		start: startRobot,
 		stop: () => {

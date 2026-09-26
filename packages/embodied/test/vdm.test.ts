@@ -274,3 +274,39 @@ test("the units verifier's VLM call counts toward the episode's cost", async () 
 	assert.equal(result(f).finish_verified, true);
 	assert.equal(result(f).cost_usd, 0.04);
 });
+
+test("a two-armed robot's --vdm-wrist gives the model both wrist pairs, numbered", async () => {
+	const f = await toy({ vdm: true, "vdm-wrist": true }, [{ text: "scene" }, { text: "diff" }], {
+		vdm: { views: 3, wrist: [1, 2] },
+	});
+	await f.emit("tool_result", observed("move", "h0", "l0", "r0"));
+	await f.emit("tool_result", observed("move", "h1", "l1", "r1"));
+	assert.deepEqual(images(f.asked[0].content), ["h0", "l0", "r0"]);
+	assert.deepEqual(texts(f.asked[0].content).slice(2), [
+		"Main camera view:",
+		"Wrist camera 1 view:",
+		"Wrist camera 2 view:",
+	]);
+	assert.deepEqual(images(f.asked[1].content), ["h0", "h1", "l0", "l1", "r0", "r1"]);
+	assert.deepEqual(texts(f.asked[1].content).slice(4), [
+		"Previous state (wrist camera 1):",
+		"Current state (wrist camera 1):",
+		"Previous state (wrist camera 2):",
+		"Current state (wrist camera 2):",
+	]);
+	await f.tools.get("finish").execute("id", { status: "success", summary: "" });
+	await f.emit("agent_end");
+	assert.equal(result(f).vdm_wrist, true);
+});
+
+test("a robot whose cameras decide the views passes a function; undefined skips the result", async () => {
+	let views: { views: number; wrist?: number } | undefined;
+	const f = await toy({ vdm: true }, [{ text: "scene" }], { vdm: () => views });
+	assert.equal(await f.emit("tool_result", observed("move", "a0")), undefined, "no cameras known yet");
+	views = { views: 1 };
+	const first = await f.emit("tool_result", observed("move", "a0"));
+	assert.equal(texts(first.content).at(-1), `${HEADERS.initial}\nscene`);
+	await f.tools.get("finish").execute("id", { status: "success", summary: "" });
+	await f.emit("agent_end");
+	assert.equal(result(f).vdm_wrist, false, "--vdm-wrist is off");
+});

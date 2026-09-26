@@ -46,6 +46,7 @@ import numpy as np
 
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
 from pi_embodied_services.robots.robolab import sim
+from pi_embodied_services.utils import ground_truth
 from pi_embodied_services.utils.rpc.main_thread_serve import MainThreadServeMixin
 
 #: configs/robot_robolab.yaml: physical metres per decision (the MVTOKEN 2 cm convention).
@@ -90,6 +91,7 @@ class RobolabEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         super()._register_rpc()
         self._rpc["env.move_delta"] = self.move_delta
         self._rpc["env.state"] = self.state
+        self._rpc["env.ground_truth_poses"] = self.ground_truth_poses
 
     # ---- helpers ----
 
@@ -253,6 +255,11 @@ class RobolabEnvFacade(MainThreadServeMixin, BaseEnvFacade):
     def state(self) -> dict:
         """The current state (no stepping, no images)."""
         return self._state()
+
+    def ground_truth_poses(self, names=None) -> dict:
+        """Poses of ``names`` (default all) of the task's objects (``--privileged``), in the
+        frame of ``eef_pos``."""
+        return ground_truth.respond(sim.rl_object_poses(self._env), names)
 
     def render_camera(self, camera_name: str = "agentview", **_: Any):
         """Latest frame of ``agentview`` (front camera) or ``wrist`` (rotated, fingertips at the top)."""

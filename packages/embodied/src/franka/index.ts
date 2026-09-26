@@ -259,6 +259,8 @@ export default function franka(pi: ExtensionAPI) {
 		name: "franka",
 		task: ["task"],
 		keepImages: 4,
+		// Observations carry the external camera then the wrist image.
+		vdm: { views: 2, wrist: 1 },
 		// Franka memory is read-only and the prompt names none; the guard also opens the step artifacts.
 		memory: {
 			cell: () => ({ tag: `franka_t${task()}`, reference: "" }),

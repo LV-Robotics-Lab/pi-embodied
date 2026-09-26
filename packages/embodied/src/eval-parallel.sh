@@ -299,7 +299,9 @@ vdirs.forEach((vdir, v) => {
 	const rows = cells.map(({ key, d }) => ({ key, ...read(`${out}/${vdir}/${d}/result.json`) }));
 	const configs = new Set(rows.filter(valid).map((r) =>
 		[r.model, r.thinking, `turns=${r.max_turns}`, r.time_limit === undefined ? "" : `limit=${r.time_limit}`, `units=${r.units}`,
-			r.stateless ? "stateless" : "", r.anchor_image ? "anchor" : "", r.privileged ? "privileged" : "", r.protocol_id ?? ""].filter(Boolean).join("/")));
+			r.stateless ? "stateless" : "", r.anchor_image ? "anchor" : "",
+			r.vdm ? `vdm=${r.vdm_model ?? "default"}${r.vdm_wrist ? "+wrist" : ""}` : "", r.privileged ? "privileged" : "",
+			r.protocol_id ?? ""].filter(Boolean).join("/")));
 	const name = vdir === "." ? "-" : vdir;
 	if (configs.size > 1) {
 		console.log(`${name}: refusing to summarize: ${out}/${vdir} mixes configurations ${[...configs].join(", ")}`);

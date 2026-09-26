@@ -166,6 +166,8 @@ export default function robocasa(pi: ExtensionAPI) {
 		task: ["task-name", "split", "seed"],
 		keepImages: 6,
 		budget: { turns: 0, seconds: 0 },
+		// Observations carry the agentview, navview and wrist images.
+		vdm: { views: 3, wrist: 2 },
 		memory: {
 			cell: () => ({
 				tag: tag(),

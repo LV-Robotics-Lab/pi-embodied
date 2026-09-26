@@ -153,6 +153,11 @@ export default function dualFranka(pi: ExtensionAPI) {
 		name: "dual_franka",
 		task: ["task"],
 		keepImages: 4,
+		// Observations carry the policy's inline cameras (the D455 by default), wrist views among them.
+		vdm: () =>
+			shown.length
+				? { views: shown.length, wrist: shown.flatMap((v, i) => (v.includes("wrist") ? [i] : [])) }
+				: undefined,
 		// The evaluation prompt names no memory; the guard also opens the step artifacts.
 		memory: {
 			cell: () => ({ tag: `dual_franka_t${task()}`, reference: "" }),
@@ -405,6 +410,9 @@ export default function dualFranka(pi: ExtensionAPI) {
 		return { height, width, data: new Float32Array(new Uint8Array(readFileSync(path)).buffer) };
 	}
 
+	/** The inline camera views of the last observation, in image order (VDM reads which are wrists). */
+	let shown: string[] = [];
+
 	/** view_env_state: step blob, every view as an artifact path, inline views as images. */
 	function view(s: Step) {
 		const pol = policy(s.meta);
@@ -426,6 +434,7 @@ export default function dualFranka(pi: ExtensionAPI) {
 			output.images.push(v);
 		});
 		output.image_block_order = [...output.images];
+		shown = [...output.images];
 		return { output, pngs };
 	}
 

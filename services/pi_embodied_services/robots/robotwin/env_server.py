@@ -38,6 +38,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
+from pi_embodied_services.utils import ground_truth
 from pi_embodied_services.utils.logging import get_logger
 from pi_embodied_services.utils.serialization import to_numpy_tree
 
@@ -217,6 +218,7 @@ class RoboTwinEnvFacade(BaseEnvFacade):
     def _register_rpc(self) -> None:
         super()._register_rpc()
         self._rpc["env.plan_arm_path"] = self.plan_arm_path
+        self._rpc["env.ground_truth_poses"] = self.ground_truth_poses
 
     def get_env_meta(self) -> dict[str, Any]:
         """Return immutable identity for endpoint compatibility checks."""
@@ -326,6 +328,10 @@ class RoboTwinEnvFacade(BaseEnvFacade):
 
     def plan_arm_path(self, arm: str, target_pose) -> dict[str, Any]:
         return self._env.plan_arm_path(0, arm, target_pose)
+
+    def ground_truth_poses(self, names=None) -> dict:
+        """World poses of ``names`` (default all) of the scene's actors (``--privileged``)."""
+        return ground_truth.respond(self._env.object_poses(0), names)
 
     def _dispatch(self, method: str, args: tuple, kwargs: dict) -> Any:
         return to_numpy_tree(super()._dispatch(method, args, kwargs))

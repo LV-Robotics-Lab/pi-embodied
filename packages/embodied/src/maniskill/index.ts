@@ -260,6 +260,8 @@ export default function maniskill(pi: ExtensionAPI) {
 		task: ["env-id", "seed", "scene"],
 		keepImages: 4,
 		video: true,
+		// Observations carry the agentview then the wrist image.
+		vdm: { views: 2, wrist: 1 },
 		groundTruth: (names) => call("env.ground_truth_poses", { names: names ?? null }),
 		start: startEpisode,
 		prompt: () =>

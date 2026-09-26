@@ -12,12 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""``env.ground_truth_poses`` (pi's --privileged) on LIBERO, RoboCasa and ManiSkill, with
-mock simulators: names come from the sim's own object list, poses are world-frame xyzw."""
+"""``env.ground_truth_poses`` (pi's --privileged) on LIBERO, RoboCasa, ManiSkill, RoboTwin and
+RoboLab, with mock simulators: names come from the sim's own object list, poses are xyzw."""
 
 from __future__ import annotations
 
-from types import SimpleNamespace
+import importlib
+import sys
+import threading
+from types import ModuleType, SimpleNamespace
 
 import numpy as np
 import pytest
@@ -25,6 +28,8 @@ import pytest
 from pi_embodied_services.robots.libero import env_server as libero
 from pi_embodied_services.robots.maniskill import env_server as maniskill
 from pi_embodied_services.robots.robocasa.env_server import RoboCasaEnvFacade
+from pi_embodied_services.robots.robolab import env_server as robolab
+from pi_embodied_services.robots.robolab import sim as robolab_sim
 from pi_embodied_services.utils import ground_truth
 
 #: wxyz of a 90 deg turn about z, and the xyzw the result carries.
@@ -156,3 +161,73 @@ def test_maniskill_lists_actors_and_articulations_but_not_the_robot():
     assert out["poses"]["cube"] == {"pos": [0.1, 0.2, 0.02], "quat_xyzw": XYZW}
     with pytest.raises(ValueError, match="panda_wristcam"):
         facade.ground_truth_poses(["panda_wristcam"])
+
+
+@pytest.fixture
+def robotwin_env(monkeypatch):
+    """``rlinf_env`` imported over stand-ins for torch and RLinf's ``RoboTwinEnv`` (neither is
+    installed where the services' unit tests run)."""
+    rlinf = ModuleType("rlinf.envs.robotwin.robotwin_env")
+    rlinf.RoboTwinEnv = type("RoboTwinEnv", (), {})
+    monkeypatch.setitem(sys.modules, "rlinf.envs.robotwin.robotwin_env", rlinf)
+    if "torch" not in sys.modules:
+        monkeypatch.setitem(sys.modules, "torch", ModuleType("torch"))
+    monkeypatch.delitem(
+        sys.modules, "pi_embodied_services.robots.robotwin.rlinf_env", raising=False
+    )
+    return importlib.import_module("pi_embodied_services.robots.robotwin.rlinf_env")
+
+
+def test_robotwin_lists_named_actors_and_numbers_repeats(robotwin_env):
+    def actor(name, p):
+        pose = SimpleNamespace(p=np.array(p), q=np.array(WXYZ))
+        return SimpleNamespace(get_name=lambda: name, get_pose=lambda: pose)
+
+    scene = SimpleNamespace(
+        get_all_actors=lambda: [
+            actor("table", [0.0, 0.0, 0.74]),
+            actor("hammer", [0.1, -0.1, 0.76]),
+            actor("", [9.0, 9.0, 9.0]),  # unnamed: left out
+            actor("block", [0.2, 0.0, 0.76]),
+            actor("block", [0.3, 0.0, 0.76]),
+        ]
+    )
+    env = object.__new__(robotwin_env.RoboTwinAgentEnv)
+    env.venv = SimpleNamespace(
+        envs=[SimpleNamespace(lock=threading.Lock(), task=SimpleNamespace(scene=scene))]
+    )
+    poses = env.object_poses(0)
+    assert list(poses) == ["table", "hammer", "block", "block#1"]
+    assert poses["hammer"] == {"pos": [0.1, -0.1, 0.76], "quat_xyzw": XYZW}
+    assert ground_truth.respond(poses, ["block#1"])["poses"]["block#1"]["pos"] == [
+        0.3,
+        0.0,
+        0.76,
+    ]
+
+
+@pytest.mark.parametrize("xyzw", [True, False])
+def test_robolab_lists_objects_and_articulations_in_the_eef_frame(monkeypatch, xyzw):
+    monkeypatch.setattr(robolab_sim, "isaaclab_xyzw", lambda: xyzw)
+    lab = XYZW if xyzw else WXYZ
+
+    def body(p):
+        return SimpleNamespace(
+            data=SimpleNamespace(root_pos_w=np.array([p]), root_quat_w=np.array([lab]))
+        )
+
+    env = SimpleNamespace(
+        scene=SimpleNamespace(
+            env_origins=np.array([[1.0, 0.0, 0.0]]),
+            rigid_objects={"banana": body([1.4, 0.1, 0.05])},
+            articulations={"robot": body([1.0, 0.0, 0.0]), "drawer": body([1.6, 0, 0])},
+        )
+    )
+    facade = object.__new__(robolab.RobolabEnvFacade)
+    facade._env = env
+    out = facade.ground_truth_poses()
+    assert list(out["poses"]) == ["banana", "drawer"]
+    assert out["poses"]["banana"]["pos"] == pytest.approx([0.4, 0.1, 0.05])
+    assert out["poses"]["banana"]["quat_xyzw"] == XYZW
+    with pytest.raises(ValueError, match="robot"):
+        facade.ground_truth_poses(["robot"])

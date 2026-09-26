@@ -8,7 +8,9 @@ import libero from "../src/libero/index.ts";
 import maniskill from "../src/maniskill/index.ts";
 import piper from "../src/piper/index.ts";
 import robocasa from "../src/robocasa/index.ts";
+import robolab from "../src/robolab/index.ts";
 import { defineRobot, RESULT_ENTRY } from "../src/robot.ts";
+import robotwin from "../src/robotwin/index.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
@@ -106,6 +108,8 @@ test("only the simulated robots register --privileged; the real ones have no suc
 		["libero", libero, true],
 		["robocasa", robocasa, true],
 		["maniskill", maniskill, true],
+		["robotwin", robotwin, true],
+		["robolab", robolab, true],
 		["franka", franka, false],
 		["dual_franka", dualFranka, false],
 		["piper", piper, false],
@@ -114,5 +118,22 @@ test("only the simulated robots register --privileged; the real ones have no suc
 		robot(f.pi);
 		assert.equal("privileged" in f.flags, sim, name);
 		assert.equal(f.tools.has("ground_truth_poses"), false, `${name} registers nothing at load`);
+	}
+});
+
+test("every robot registers --vdm (visual differencing is not tied to the simulator)", () => {
+	for (const [name, robot] of [
+		["libero", libero],
+		["robocasa", robocasa],
+		["maniskill", maniskill],
+		["robotwin", robotwin],
+		["robolab", robolab],
+		["franka", franka],
+		["dual_franka", dualFranka],
+		["piper", piper],
+	] as const) {
+		const f = stubPi();
+		robot(f.pi);
+		assert.ok("vdm" in f.flags && "vdm-wrist" in f.flags, name);
 	}
 });

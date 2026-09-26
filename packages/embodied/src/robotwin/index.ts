@@ -382,11 +382,14 @@ export default function robotwin(pi: ExtensionAPI) {
 		keepImages: 6,
 		imageStub: "[older camera frame omitted; view_env_state(step) re-reads it]",
 		budget: { turns: 100, seconds: 4800 },
+		// Observations carry the head, left wrist and right wrist images.
+		vdm: { views: VIEWS.length, wrist: [1, 2] },
 		memory: {
 			cell: () => ({ tag: tag(cell().seed), reference: local() ? tag("0") : `${cell().task}_s0` }),
 			primitives: ["lingbot_act", "move_to", "rotate_wrist", "set_gripper", "release"],
 		},
 		video: true,
+		groundTruth: (names) => env.call("env.ground_truth_poses", { names: names ?? null }, READ_MS, [], robot.signal),
 		explore: {
 			// The exploration `reset` tool is not a robot.tool, so robot.signal is unset here; use its own signal.
 			reset: async (result, _ctx, signal) => {

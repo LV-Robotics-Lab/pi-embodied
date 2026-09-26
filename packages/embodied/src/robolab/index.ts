@@ -131,6 +131,9 @@ export default function robolab(pi: ExtensionAPI) {
 		task: ["task", "seed"],
 		keepImages: 4,
 		video: true,
+		// Observations carry the front then the wrist image.
+		vdm: { views: 2, wrist: 1 },
+		groundTruth: (names) => env.call("env.ground_truth_poses", { names: names ?? null }, 60_000, [], robot.signal),
 		start: startEpisode,
 		prompt: () => SYSTEM.replaceAll("{{task_language}}", meta.instruction),
 		result: () => ({

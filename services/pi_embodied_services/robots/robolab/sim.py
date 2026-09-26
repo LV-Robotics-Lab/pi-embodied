@@ -39,6 +39,8 @@ from typing import Any
 
 import numpy as np
 
+from pi_embodied_services.utils import ground_truth
+
 #: Show-Harness configs/robot_robolab.yaml camera presets (robolab/registrations/droid/camera_presets.py).
 CAMERA_PRESETS = (
     "WRIST",
@@ -389,6 +391,24 @@ def rl_ee_quat(env: Any) -> np.ndarray:
     robot = env.scene["robot"]
     q = to_np(robot.data.body_quat_w)[:, _ee_body_index(robot), :][0].astype(np.float64)
     return q[[3, 0, 1, 2]] if isaaclab_xyzw() else q
+
+
+def rl_object_poses(env: Any) -> dict[str, dict]:
+    """Poses of the scene's rigid objects and of its articulations other than the robot, in the
+    env-local frame of ``rl_tcp`` (``--privileged``, simulation ground truth)."""
+    origin = to_np(env.scene.env_origins)[0, 0:3]
+    objects = {
+        **dict(env.scene.rigid_objects),
+        **{k: a for k, a in env.scene.articulations.items() if k != "robot"},
+    }
+    poses = {}
+    for name, obj in objects.items():
+        q = to_np(obj.data.root_quat_w)[0].astype(np.float64)
+        poses[name] = ground_truth.pose(
+            to_np(obj.data.root_pos_w)[0] - origin,
+            q[[3, 0, 1, 2]] if isaaclab_xyzw() else q,
+        )
+    return poses
 
 
 def ee_tilt_deg(quat_wxyz: np.ndarray) -> float:

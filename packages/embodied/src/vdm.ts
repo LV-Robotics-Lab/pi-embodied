@@ -4,11 +4,12 @@
  *   pi -e packages/embodied/src/libero --vdm [--vdm-model provider/id] [--vdm-wrist] ...
  *
  * A robot opts in with `vdm` in its defineRobot spec (how many camera images its observation results
- * carry, and which one is the wrist view); ../robot.ts mounts this module. With `--vdm`, the first
+ * carry, and which are wrist views; a function when that depends on the robot's cameras); ../robot.ts
+ * mounts this module. With `--vdm`, the first
  * robot tool result that carries the robot's camera views gets a description of the initial scene,
  * and every later one a description of what changed between the previous and the current image of
  * the same view(s) and whether the task looks complete, appended to the result as text. `--vdm-wrist`
- * adds the wrist view to both. Results with another number of images (a segmentation overlay) are
+ * adds the wrist view(s) to both (a two-armed robot has one per arm). Results with another number of images (a segmentation overlay) are
  * not observations and are left alone. Each call is a `vdm` session entry; its cost counts toward
  * the robot's --max-cost budget (VLM_COST_EVENT). A failed call is noted in the result and the
  * episode goes on. Off (the default), no result is touched and nothing is written.
@@ -30,11 +31,14 @@ export const VDM_ENTRY = "vdm";
 export type VdmSpec = {
 	/** The number of camera images in an observation result, in order; the first is the main view. */
 	views: number;
-	/** Index of the wrist view among them (`--vdm-wrist`). */
-	wrist?: number;
+	/** Index (or indices, one per arm) of the wrist view(s) among them (`--vdm-wrist`). */
+	wrist?: number | readonly number[];
 };
 
-type Frame = { main: ImageContent; wrist?: ImageContent };
+type Frame = { main: ImageContent; wrists: ImageContent[] };
+
+/** "wrist camera", numbered when a robot has several. */
+const wristLabel = (i: number, n: number) => `wrist camera${n > 1 ? ` ${i + 1}` : ""}`;
 const text = (t: string): TextContent => ({ type: "text", text: t });
 
 const RULE = "You should try to provide objective information and no assumptions. Do *NOT* write any code.";
@@ -48,12 +52,12 @@ export function initialPrompt(task: string, frame: Frame): VlmPrompt {
 			text(`Describe the initial state of the environment with the goal of the task in mind. ${RULE}`),
 			text("Main camera view:"),
 			frame.main,
-			...(frame.wrist ? [text("Wrist camera view:"), frame.wrist] : []),
+			...frame.wrists.flatMap((w, i, all) => [text(`Wrist camera${all.length > 1 ? ` ${i + 1}` : ""} view:`), w]),
 		],
 	};
 }
 
-/** trial.py _get_visual_differencing_feedback (the wrist pair only when both frames have one). */
+/** trial.py _get_visual_differencing_feedback (the wrist pairs only when both frames have them). */
 export function diffPrompt(task: string, before: Frame, after: Frame): VlmPrompt {
 	const goal =
 		"the difference between the current state of the environment and the previous state of the environment with the goal of the task in mind and whether the task has been completed.";
@@ -66,8 +70,13 @@ export function diffPrompt(task: string, before: Frame, after: Frame): VlmPrompt
 			before.main,
 			text("Current state (main camera):"),
 			after.main,
-			...(before.wrist && after.wrist
-				? [text("Previous state (wrist camera):"), before.wrist, text("Current state (wrist camera):"), after.wrist]
+			...(before.wrists.length === after.wrists.length
+				? after.wrists.flatMap((w, i, all) => [
+						text(`Previous state (${wristLabel(i, all.length)}):`),
+						before.wrists[i],
+						text(`Current state (${wristLabel(i, all.length)}):`),
+						w,
+					])
 				: []),
 		],
 	};
@@ -83,7 +92,14 @@ export const HEADERS = {
  * Register the VDM flags and the tool_result hook. `tools()` names the robot's tools (only their
  * results are observations); `task()` is the task text given to the VDM model.
  */
-export function vdm(pi: ExtensionAPI, spec: VdmSpec, tools: () => string[], task: () => string) {
+export function vdm(
+	pi: ExtensionAPI,
+	spec: VdmSpec | (() => VdmSpec | undefined),
+	tools: () => string[],
+	task: () => string,
+) {
+	const current = () => (typeof spec === "function" ? spec() : spec);
+	const wristsOf = (s: VdmSpec | undefined) => (s?.wrist === undefined ? [] : [s.wrist].flat());
 	pi.registerFlag("vdm", {
 		type: "boolean",
 		default: false,
@@ -97,7 +113,7 @@ export function vdm(pi: ExtensionAPI, spec: VdmSpec, tools: () => string[], task
 	pi.registerFlag("vdm-wrist", {
 		type: "boolean",
 		default: false,
-		description: "VDM: also give the model the wrist view",
+		description: "VDM: also give the model the wrist view(s)",
 	});
 	const on = () => pi.getFlag("vdm") === true;
 	let prev: Frame | undefined;
@@ -112,15 +128,16 @@ export function vdm(pi: ExtensionAPI, spec: VdmSpec, tools: () => string[], task
 
 	pi.on("tool_result", async (event, ctx) => {
 		if (!on() || event.isError || !tools().includes(event.toolName)) return undefined;
+		const s = current();
 		const shown = event.content.filter((c): c is ImageContent => c.type === "image");
-		if (shown.length !== spec.views) return undefined;
-		const wrist = pi.getFlag("vdm-wrist") === true && spec.wrist !== undefined ? shown[spec.wrist] : undefined;
-		const frame: Frame = { main: shown[0], ...(wrist ? { wrist } : {}) };
+		if (!s || shown.length !== s.views) return undefined;
+		const wrists = pi.getFlag("vdm-wrist") === true ? wristsOf(s).map((i) => shown[i]) : [];
+		const frame: Frame = { main: shown[0], wrists };
 		const before = prev;
 		prev = frame;
 		const kind = before ? "diff" : "initial";
 		const modelRef = String(pi.getFlag("vdm-model") || pi.getFlag("units-vlm-model") || "");
-		const entry: Record<string, unknown> = { kind, tool: event.toolName, wrist: Boolean(wrist) };
+		const entry: Record<string, unknown> = { kind, tool: event.toolName, wrist: wrists.length > 0 };
 		const started = Date.now();
 		let note: string;
 		calls++;
@@ -154,7 +171,7 @@ export function vdm(pi: ExtensionAPI, spec: VdmSpec, tools: () => string[], task
 			vdm: on(),
 			...(on()
 				? {
-						vdm_wrist: pi.getFlag("vdm-wrist") === true && spec.wrist !== undefined,
+						vdm_wrist: pi.getFlag("vdm-wrist") === true && wristsOf(current()).length > 0,
 						vdm_calls: calls,
 						vdm_errors: errors,
 						vdm_cost_usd: Number(cost.toFixed(6)),

@@ -26,6 +26,7 @@ import torch
 from rlinf.envs.robotwin.robotwin_env import RoboTwinEnv
 
 from pi_embodied_services.robots.robotwin.contract import RoboTwinActionType
+from pi_embodied_services.utils import ground_truth
 
 __all__ = ["RoboTwinAgentEnv"]
 
@@ -311,6 +312,25 @@ class RoboTwinAgentEnv(RoboTwinEnv):
         sub_env = self._sub_env(env_id)
         with sub_env.lock:
             return str(sub_env.task.get_instruction())
+
+    def object_poses(self, env_id: int = 0) -> dict[str, dict]:
+        """World poses of the scene's named rigid actors (``--privileged``): the task's objects
+        and fixtures; the arms are articulations and not among them. A repeated name gets
+        ``#1``, ``#2``, ... in scene order."""
+        sub_env = self._sub_env(env_id)
+        with sub_env.lock:
+            poses: dict[str, dict] = {}
+            for entity in sub_env.task.scene.get_all_actors():
+                name = entity.get_name()
+                if not name:
+                    continue
+                key, n = name, 0
+                while key in poses:
+                    n += 1
+                    key = f"{name}#{n}"
+                pose = entity.get_pose()
+                poses[key] = ground_truth.pose(pose.p, pose.q)
+            return poses
 
     def set_task_language(self, instruction: str, env_id: int = 0) -> None:
         """Bind an externally verified instruction to the current native scene."""

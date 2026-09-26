@@ -11,7 +11,8 @@
 # result schema (schema_version, protocol_id, evaluation_split, valid, success_source,
 # termination_reason, planner, runtime), built from the session's `robot_result` entry. The planner
 # is recorded as it ran: backend "pi", the model without its provider prefix, --thinking as
-# reasoning_effort, --max-turns; the units mode (--units, --stateless) is recorded next to it.
+# reasoning_effort, --max-turns; the units mode (--units, --stateless) and visual differencing
+# (--vdm, --vdm-model, --vdm-wrist) are recorded next to it.
 #
 # An episode is valid when the environment produced a result and the planner did not fail
 # (`env_error`, `planner_error`, a missing or duplicate result and a killed process are invalid,
@@ -38,6 +39,7 @@ full=""
 [ "$splits" = atomic,composite_seen,composite_unseen ] && [ -z "${TASKS:-}${SEEDS:-}" ] && full=1
 model="" thinking="" turns=${MAX_TURNS:-100} units=false stateless=false
 anchor=false
+vdm=false vdm_model="" vdm_wrist=false
 privileged=false
 args=("$@")
 for ((i = 0; i < ${#args[@]}; i++)); do
@@ -69,6 +71,17 @@ for ((i = 0; i < ${#args[@]}; i++)); do
 		echo "${args[i]}: pi ignores a boolean flag's value and would turn it on; omit --privileged for a run without ground truth" >&2
 		exit 2
 		;;
+	--vdm | --vdm-wrist) case ${args[i + 1]:-} in "" | -* | @* | true) [ "${args[i]}" = --vdm ] && vdm=true || vdm_wrist=true ;; *)
+		echo "${args[i]} takes no value: pi would turn it on and swallow '${args[i + 1]}'" >&2 && exit 2 ;;
+	esac ;;
+	--vdm=true) vdm=true ;;
+	--vdm-wrist=true) vdm_wrist=true ;;
+	--vdm=* | --vdm-wrist=*)
+		echo "${args[i]}: pi ignores a boolean flag's value and would turn it on; omit it to leave it off" >&2
+		exit 2
+		;;
+	--vdm-model) vdm_model=${args[i + 1]:-} ;;
+	--vdm-model=*) vdm_model=${args[i]#*=} ;;
 	# --anchor-image (keep the first camera frame in context) is a boolean like --stateless.
 	--anchor-image) case ${args[i + 1]:-} in "" | -* | @* | true) anchor=true ;; *)
 		echo "--anchor-image takes no value: pi would turn it on and swallow '${args[i + 1]}'" >&2 && exit 2 ;;
@@ -88,14 +101,14 @@ export RLDX_MAX_CHUNKS=$(protocol m.runtime_protocol.rldx_max_chunks)
 export RLDX_SETTLE_PATIENCE=$(protocol m.runtime_protocol.rldx_settle_patience)
 export RLDX_ACTION_STEPS_PER_CHUNK=$(protocol m.runtime_protocol.rldx_action_steps_per_chunk)
 unset RLDX_RESET_SEED
-config=("$model" "$thinking" "$turns" "$units" "$stateless" "$privileged" "$anchor")
+config=("$model" "$thinking" "$turns" "$units" "$stateless" "$privileged" "$anchor" "$vdm" "$vdm_model" "$vdm_wrist")
 # The protocol pins the task-memory snapshot (hf profile); PI_EMBODIED_MEMORY_REVISION overrides it.
 export PI_EMBODIED_MEMORY_REVISION=${PI_EMBODIED_MEMORY_REVISION:-$(protocol m.dependencies.task_memory.revision)}
 
 record() { # <dir> <exit code> <split> <task> <seed> <cell timeout> <elapsed s>: write result.json
 	node --input-type=module -e '
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
-const [dir, code, manifest, split, task, seed, limit, elapsed, model, thinking, turns, units, stateless, privileged, anchor] = process.argv.slice(1);
+const [dir, code, manifest, split, task, seed, limit, elapsed, model, thinking, turns, units, stateless, privileged, anchor, vdm, vdmModel, vdmWrist] = process.argv.slice(1);
 const m = JSON.parse(readFileSync(manifest, "utf8"));
 const results = [];
 for (const f of readdirSync(dir).filter((f) => f.endsWith(".jsonl"))) {
@@ -146,7 +159,8 @@ const result = {
 	thinking: thinking || null,
 	max_turns: Number(turns),
 	units,
-	anchor_image: anchor === "true", stateless: stateless === "true",
+	anchor_image: anchor === "true",
+	vdm: vdm === "true", vdm_model: vdmModel || null, vdm_wrist: vdmWrist === "true", stateless: stateless === "true",
 	privileged: privileged === "true",
 };
 writeFileSync(`${dir}/result.json`, `${JSON.stringify(result, null, 2)}\n`);
@@ -156,13 +170,16 @@ console.log(JSON.stringify({ status, termination_reason: result.termination_reas
 
 valid() { # <dir>: 0 = a valid result of this configuration, 2 = a valid result of another one, 1 = none
 	node -e '
-const [path, protocolId, model, thinking, turns, units, stateless, privileged, anchor] = process.argv.slice(1);
+const [path, protocolId, model, thinking, turns, units, stateless, privileged, anchor, vdm, vdmModel, vdmWrist] = process.argv.slice(1);
 const r = JSON.parse(require("fs").readFileSync(path, "utf8"));
 if (r.status !== "success" && r.status !== "failure") process.exit(1);
 const same = r.protocol_id === protocolId && r.model === (model || null) && r.thinking === (thinking || null) && r.max_turns === Number(turns)
 	&& r.units === units && r.stateless === (stateless === "true") && (r.privileged ?? false) === (privileged === "true")
 	// Results written before --anchor-image existed ran without it.
-	&& (r.anchor_image ?? false) === (anchor === "true");
+	&& (r.anchor_image ?? false) === (anchor === "true")
+	// Results written before --vdm existed ran without it.
+	&& (r.vdm ?? false) === (vdm === "true") && (r.vdm_model ?? null) === (vdmModel || null)
+	&& (r.vdm_wrist ?? false) === (vdmWrist === "true");
 process.exit(same ? 0 : 2);
 ' "$1/result.json" "$(protocol m.protocol_id)" "${config[@]}" 2>/dev/null
 }
@@ -186,7 +203,7 @@ while read -r split task seed limit; do
 	valid "$dir"
 	case $? in
 	0) continue ;;
-	2) echo "$dir holds a result of another protocol, model, thinking level, --max-turns, units mode, --privileged or --anchor-image (or an older result format); use another out dir" >&2 && exit 1 ;;
+	2) echo "$dir holds a result of another protocol, model, thinking level, --max-turns, units mode, vdm, --privileged or --anchor-image (or an older result format); use another out dir" >&2 && exit 1 ;;
 	esac
 	rm -rf "$dir" && mkdir -p "$dir"
 	echo "== $split $task seed $seed"
@@ -215,7 +232,7 @@ const rows = cells.trim().split("\n").map((line) => {
 	}
 });
 const scoredRows = rows.filter((r) => r.status === "success" || r.status === "failure");
-const configs = new Set(scoredRows.map((r) => `${r.model}/${r.thinking}/turns=${r.max_turns}/units=${r.units}${r.stateless ? "/stateless" : ""}${r.anchor_image ? "/anchor" : ""}${r.privileged ? "/privileged" : ""}`));
+const configs = new Set(scoredRows.map((r) => `${r.model}/${r.thinking}/turns=${r.max_turns}/units=${r.units}${r.stateless ? "/stateless" : ""}${r.anchor_image ? "/anchor" : ""}${r.vdm ? `/vdm=${r.vdm_model ?? "default"}${r.vdm_wrist ? "+wrist" : ""}` : ""}${r.privileged ? "/privileged" : ""}`));
 if (configs.size > 1) {
 	console.log(`refusing to summarize: ${out} mixes configurations ${[...configs].join(", ")}`);
 	process.exit(1);

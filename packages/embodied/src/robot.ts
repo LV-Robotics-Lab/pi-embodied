@@ -134,8 +134,11 @@ export type RobotSpec = {
 	units?: UnitsSpec;
 	/** Mount Flash (../flash, `--model flash/replay`): the robot's plans and how it re-localizes them. */
 	flash?: FlashHook;
-	/** Mount visual differencing (../vdm.ts, `--vdm`): how many camera images an observation result carries, and the wrist one. */
-	vdm?: VdmSpec;
+	/**
+	 * Mount visual differencing (../vdm.ts, `--vdm`): how many camera images an observation result
+	 * carries, and the wrist one(s); a function when that depends on the robot's cameras (undefined: none yet).
+	 */
+	vdm?: VdmSpec | (() => VdmSpec | undefined);
 	/**
 	 * Simulation only (CaP-X's S1 tier): the env call behind `ground_truth_poses` (the server's
 	 * `env.ground_truth_poses`). It registers `--privileged`; real robots leave it unset, so they have no such flag.

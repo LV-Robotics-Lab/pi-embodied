@@ -175,8 +175,11 @@ export function vdm(
 		const modelRef = String(pi.getFlag("vdm-model") || pi.getFlag("units-vlm-model") || "");
 		const entry: Record<string, unknown> = { kind, tool: event.toolName, wrist: wrists.length > 0 };
 		const seconds = Number(pi.getFlag("vdm-timeout"));
-		const timeout = seconds > 0 ? AbortSignal.timeout(seconds * 1000) : undefined;
-		const signal = AbortSignal.any([ctx.signal, timeout].filter((x): x is AbortSignal => x !== undefined));
+		// A plain (ref'd) timer, not AbortSignal.timeout(): Node unrefs that one, so a call that hangs
+		// with no other handle open would end the process instead of timing out.
+		const timeout = new AbortController();
+		const timer = seconds > 0 ? setTimeout(() => timeout.abort(), seconds * 1000) : undefined;
+		const signal = AbortSignal.any([ctx.signal, timeout.signal].filter((x): x is AbortSignal => x !== undefined));
 		const started = Date.now();
 		let note: string | undefined;
 		let slot: string | undefined;
@@ -202,7 +205,7 @@ export function vdm(
 			} else {
 				// The episode goes on without the description.
 				errors++;
-				entry.error = timeout?.aborted
+				entry.error = timeout.signal.aborted
 					? `timed out after ${seconds} s`
 					: err instanceof Error
 						? err.message
@@ -210,6 +213,7 @@ export function vdm(
 				note = `[visual differencing unavailable: ${entry.error}]`;
 			}
 		} finally {
+			clearTimeout(timer);
 			if (slot) release(slot);
 		}
 		entry.ms = Date.now() - started;

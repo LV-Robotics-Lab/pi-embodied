@@ -10,7 +10,7 @@
 # Each result records the model, thinking level, --max-turns, --time-limit, the units mode
 # (--units, --stateless, --unit-tol), code mode (--code, --code-api: high, low or low-noexamples = CaP-X's S2-S4,
 # --code-oracle: a reference program run instead of the model, ./oracle) and visual differencing (--vdm,
-# --vdm-model, --vdm-wrist; the model only with --vdm), and the summary covers only the requested
+# --vdm-model, --vdm-wrist, --vdm-video and its --vdm-video-frames; the model only with --vdm or --vdm-video), and the summary covers only the requested
 # cells and refuses to mix configurations.
 # A --privileged run (simulator ground truth) is recorded as such and never shares an out dir with one without.
 # The fallback planner (--fallback-model, --fallback-after, --fallback-retry-primary; src/fallback.ts) is part of the
@@ -25,7 +25,7 @@ expand() { for part in ${1//,/ }; do seq "${part%-*}" "${part#*-}"; done; }
 model="" thinking="" turns=0 limit=${TIME_LIMIT:-1800} limited="" units=false stateless=false
 anchor=false
 approval=standard max_tool_calls=0 max_tokens=0
-vdm=false vdm_model="" vdm_wrist=false
+vdm=false vdm_model="" vdm_wrist=false vdm_video=false vdm_video_frames=8
 # The robot's default (src/libero/index.ts --unit-tol).
 unit_tol=0.004
 privileged=false
@@ -69,12 +69,15 @@ for ((i = 0; i < ${#args[@]}; i++)); do
 		echo "${args[i]}: pi ignores a boolean flag's value and would run stateless; omit --stateless for a stateful run" >&2
 		exit 2
 		;;
-	--vdm | --vdm-wrist) case ${args[i + 1]:-} in "" | -* | @* | true) [ "${args[i]}" = --vdm ] && vdm=true || vdm_wrist=true ;; *)
+	--vdm | --vdm-wrist | --vdm-video) case ${args[i + 1]:-} in "" | -* | @* | true) case ${args[i]} in --vdm) vdm=true ;; --vdm-wrist) vdm_wrist=true ;; *) vdm_video=true ;; esac ;; *)
 		echo "${args[i]} takes no value: pi would turn it on and swallow '${args[i + 1]}'" >&2 && exit 2 ;;
 	esac ;;
 	--vdm=true) vdm=true ;;
 	--vdm-wrist=true) vdm_wrist=true ;;
-	--vdm=* | --vdm-wrist=*)
+	--vdm-video=true) vdm_video=true ;;
+	--vdm-video-frames) vdm_video_frames=${args[i + 1]:-8} ;;
+	--vdm-video-frames=*) vdm_video_frames=${args[i]#*=} ;;
+	--vdm=* | --vdm-wrist=* | --vdm-video=*)
 		echo "${args[i]}: pi ignores a boolean flag's value and would turn it on; omit it to leave it off" >&2
 		exit 2
 		;;
@@ -120,8 +123,10 @@ done
 [ "$units" != false ] && [ -n "${units_plugins+x}" ] && units="$units+plugins=$units_plugins"
 [ "$units" != false ] && units="$units${units_opts-}"
 [ "$code" = pure ] && code=true
-# Without --vdm no VDM call runs, so its model is not part of the configuration.
-[ "$vdm" = true ] || vdm_model=""
+# Without --vdm or --vdm-video no VDM call runs, so its model is not part of the configuration;
+# --vdm-video is recorded as its frame count.
+[ "$vdm" = true ] || [ "$vdm_video" = true ] || vdm_model=""
+[ "$vdm_video" = true ] && vdm_video=$vdm_video_frames || vdm_video=""
 # --time-limit (default $TIME_LIMIT, 1800 s; 0 = none) ends the planner gracefully, as a failure;
 # `timeout` is only the backstop for a hung process, and a killed episode is invalid.
 [ -n "$limited" ] || set -- "$@" --time-limit "$limit"
@@ -129,12 +134,12 @@ backstop=()
 [ "$limit" -gt 0 ] && command -v timeout >/dev/null && backstop=(timeout -k 30 $((limit + 900)))
 mkdir -p "$out"
 case $libero_prompt in rpent | compact) ;; *) echo "--libero-prompt must be rpent or compact, not '$libero_prompt'" >&2 && exit 2 ;; esac
-config=("$model" "$thinking" "$turns" "$limit" "$units" "$stateless" "$vdm" "$vdm_model" "$vdm_wrist" "$privileged" "$anchor" "$unit_tol" "$code" "$code_api" "$fallback_model" "$fallback_after" "$fallback_retry" "$approval" "$max_tool_calls" "$max_tokens" "$libero_prompt" "$code_oracle")
+config=("$model" "$thinking" "$turns" "$limit" "$units" "$stateless" "$vdm" "$vdm_model" "$vdm_wrist" "$privileged" "$anchor" "$unit_tol" "$code" "$code_api" "$fallback_model" "$fallback_after" "$fallback_retry" "$approval" "$max_tool_calls" "$max_tokens" "$libero_prompt" "$code_oracle" "$vdm_video")
 
 record() { # <dir> <exit code>: write result.json from the episode's session
 	node --input-type=module -e '
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
-const [dir, code, model, thinking, turns, limit, units, stateless, vdm, vdmModel, vdmWrist, privileged, anchor, unitTol, codeMode, codeApi, fallbackModel, fallbackAfter, fallbackRetry, approval, maxToolCalls, maxTokens, liberoPrompt, codeOracle] = process.argv.slice(1);
+const [dir, code, model, thinking, turns, limit, units, stateless, vdm, vdmModel, vdmWrist, privileged, anchor, unitTol, codeMode, codeApi, fallbackModel, fallbackAfter, fallbackRetry, approval, maxToolCalls, maxTokens, liberoPrompt, codeOracle, vdmVideo] = process.argv.slice(1);
 const results = [];
 for (const f of readdirSync(dir).filter((f) => f.endsWith(".jsonl"))) {
 	for (const line of readFileSync(`${dir}/${f}`, "utf8").split("\n")) {
@@ -156,7 +161,7 @@ const status = Number(code) === 124 ? "timeout" : results.length > 1 ? "duplicat
 	: last.env_error ? "env_error" : last.planner_error ? "planner_error" : last.terminated ? "success" : "failure";
 const result = { ...(last ?? {}), status, exit_code: Number(code), model: model || null, thinking: thinking || null,
 	max_turns: Number(turns), time_limit: Number(limit), units, anchor_image: anchor === "true", approval, max_tool_calls: Number(maxToolCalls), max_tokens: Number(maxTokens), stateless: stateless === "true",
-	vdm: vdm === "true", vdm_model: vdmModel || null, vdm_wrist: vdmWrist === "true",
+	vdm: vdm === "true", vdm_model: vdmModel || null, vdm_wrist: vdmWrist === "true", vdm_video: vdmVideo ? Number(vdmVideo) : null,
 	privileged: privileged === "true", unit_tol: Number(unitTol),
 	code: codeMode, code_api: codeMode === "false" ? null : codeApi, code_oracle: codeMode === "false" ? null : codeOracle || null,
 	fallback_model: fallbackModel || null, fallback_after: fallbackModel ? Number(fallbackAfter) : null, fallback_retry_primary: fallbackModel ? Number(fallbackRetry) : null,
@@ -168,14 +173,15 @@ console.log(JSON.stringify({ status, terminated: result.terminated, claimed: res
 
 valid() { # <dir>: 0 = a valid result of this configuration, 2 = a valid result of another one, 1 = none
 	node -e '
-const [path, model, thinking, turns, limit, units, stateless, vdm, vdmModel, vdmWrist, privileged, anchor, unitTol, codeMode, codeApi, fallbackModel, fallbackAfter, fallbackRetry, approval, maxToolCalls, maxTokens, liberoPrompt, codeOracle] = process.argv.slice(1);
+const [path, model, thinking, turns, limit, units, stateless, vdm, vdmModel, vdmWrist, privileged, anchor, unitTol, codeMode, codeApi, fallbackModel, fallbackAfter, fallbackRetry, approval, maxToolCalls, maxTokens, liberoPrompt, codeOracle, vdmVideo] = process.argv.slice(1);
 const r = JSON.parse(require("fs").readFileSync(path, "utf8"));
 if (r.status !== "success" && r.status !== "failure") process.exit(1);
 const same = r.model === (model || null) && r.thinking === (thinking || null) && r.max_turns === Number(turns)
 	&& r.time_limit === Number(limit) && r.units === units && r.stateless === (stateless === "true")
 	// Results written before --vdm existed ran without it.
 	&& (r.vdm ?? false) === (vdm === "true") && (r.vdm_model ?? null) === (vdmModel || null)
-	&& (r.vdm_wrist ?? false) === (vdmWrist === "true") && (r.privileged ?? false) === (privileged === "true")
+	&& (r.vdm_wrist ?? false) === (vdmWrist === "true") && (r.vdm_video ?? null) === (vdmVideo ? Number(vdmVideo) : null)
+	&& (r.privileged ?? false) === (privileged === "true")
 	// Results written before --anchor-image existed ran without it.
 	&& (r.anchor_image ?? false) === (anchor === "true")
 	// Results written before --approval, --max-tool-calls and --max-tokens existed ran with standard approval and neither budget.
@@ -225,7 +231,7 @@ const rows = cells.map((c) => {
 	}
 });
 const configs = new Set(rows.filter((r) => r.status === "success" || r.status === "failure")
-	.map((r) => `${r.model}/${r.thinking}/turns=${r.max_turns}/limit=${r.time_limit}/units=${r.units}${r.units_wrist_view === false ? `/no-wrist:${(r.units_plugins ?? []).join("+")}` : ""}${r.stateless ? "/stateless" : ""}${r.anchor_image ? "/anchor" : ""}${(r.approval ?? "standard") !== "standard" ? `/approval=${r.approval}` : ""}${r.max_tool_calls ? `/tool_calls=${r.max_tool_calls}` : ""}${r.max_tokens ? `/tokens=${r.max_tokens}` : ""}/unit_tol=${r.unit_tol ?? 0.004}${r.vdm ? `/vdm=${r.vdm_model ?? "default"}${r.vdm_wrist ? "+wrist" : ""}` : ""}${r.privileged ? "/privileged" : ""}${r.fallback_model ? `/fallback=${r.fallback_model}:${r.fallback_after}:${r.fallback_retry_primary}` : ""}${r.code && r.code !== "false" ? `/code=${r.code}:${r.code_api}${r.code_oracle ? `:oracle=${r.code_oracle}` : ""}` : ""}/prompt=${r.libero_prompt ?? "compact"}`));
+	.map((r) => `${r.model}/${r.thinking}/turns=${r.max_turns}/limit=${r.time_limit}/units=${r.units}${r.units_wrist_view === false ? `/no-wrist:${(r.units_plugins ?? []).join("+")}` : ""}${r.stateless ? "/stateless" : ""}${r.anchor_image ? "/anchor" : ""}${(r.approval ?? "standard") !== "standard" ? `/approval=${r.approval}` : ""}${r.max_tool_calls ? `/tool_calls=${r.max_tool_calls}` : ""}${r.max_tokens ? `/tokens=${r.max_tokens}` : ""}/unit_tol=${r.unit_tol ?? 0.004}${r.vdm ? `/vdm=${r.vdm_model ?? "default"}${r.vdm_wrist ? "+wrist" : ""}` : ""}${r.vdm_video ? `/vdm_video=${r.vdm_video}:${r.vdm_model ?? "default"}` : ""}${r.privileged ? "/privileged" : ""}${r.fallback_model ? `/fallback=${r.fallback_model}:${r.fallback_after}:${r.fallback_retry_primary}` : ""}${r.code && r.code !== "false" ? `/code=${r.code}:${r.code_api}${r.code_oracle ? `:oracle=${r.code_oracle}` : ""}` : ""}/prompt=${r.libero_prompt ?? "compact"}`));
 if (configs.size > 1) {
 	console.log(`refusing to summarize: ${out} mixes configurations ${[...configs].join(", ")}`);
 	process.exit(1);

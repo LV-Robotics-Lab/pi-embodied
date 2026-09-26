@@ -115,6 +115,15 @@ test("libero/eval.sh records --unit-tol and drops --vdm-model when --vdm is off"
 	assert.equal(run1(["--unit-tol=0.006"]).result?.unit_tol, 0.006);
 });
 
+test("libero/eval.sh records --vdm-video as its frame count, with the model, and refuses a value pi would ignore", () => {
+	const run1 = (args: string[]) => run("libero", ["libero_10_task", "0", "0"], "libero_10_task_t0_s0", args);
+	assert.equal(run1(["--vdm-video=false"]).status, 2);
+	assert.equal(run1([]).result?.vdm_video, null);
+	assert.equal(run1(["--vdm-video"]).result?.vdm_video, 8);
+	const on = run1(["--vdm-video", "--vdm-video-frames", "4", "--vdm-model", "selfhost/muse"]).result;
+	assert.deepEqual([on?.vdm, on?.vdm_video, on?.vdm_model], [false, 4, "selfhost/muse"]);
+});
+
 test("robotwin/eval.sh records the env server's planner and never mixes results of another one in one out dir", () => {
 	const [, positional, cell] = CELLS.find(([r]) => r === "robotwin") as (typeof CELLS)[number];
 	const contract = readFileSync(

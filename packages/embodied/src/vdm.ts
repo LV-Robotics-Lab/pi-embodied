@@ -22,6 +22,15 @@
  * call (the episode ended) is recorded, not counted. Off (the default), only the flags exist: no
  * hook runs, no result is touched, and the robot result carries no vdm fields.
  *
+ * `--vdm-video` (CaP-X's video differencing) describes each change from the video of the step instead:
+ * the agentview frames the robot recorded (../video.ts publishes each on FRAME_EVENT) between the
+ * previous observation and this one, `--vdm-video-frames` of them sampled evenly (first and last
+ * included) and sent in order as a strip of images. The initial scene is still described from its
+ * observation; a step that recorded no frame (a robot without an episode video, a tool that stepped
+ * nothing) falls back to the before/after images. The video carries the main view only (the robot
+ * streams no wrist frames); `--vdm-wrist` still adds the wrist view to the initial description.
+ * `--vdm-video` alone turns VDM on; its calls are `vdm` entries of kind "video".
+ *
  * The previous frame is not restored on resume or fork: every session start restarts the robot's
  * episode, so its first observation is a new initial scene.
  *
@@ -32,9 +41,12 @@
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { API_GATE_EVENT, acquire, release } from "./api-gate.ts";
+import { encodePng } from "./png.ts";
+import type { NdArray } from "./rpc.ts";
 import { askVlm, VLM_COST_EVENT, type VlmPrompt } from "./units/vlm.ts";
+import { FRAME_EVENT } from "./video.ts";
 
-/** Session entry per VDM call: `{ kind: "initial" | "diff", tool, model, text | error | aborted, wrist, ms, cost_usd }`. */
+/** Session entry per VDM call: `{ kind: "initial" | "diff" | "video", tool, model, text | error | aborted, wrist, ms, cost_usd }`. */
 export const VDM_ENTRY = "vdm";
 
 export type VdmSpec = {
@@ -96,10 +108,42 @@ export function diffPrompt(task: string, before: Frame, after: Frame): VlmPrompt
 	};
 }
 
+/** trial.py _get_video_differencing_feedback: the step's frames, sampled in order, stand in for the video. */
+export function videoPrompt(task: string, frames: ImageContent[], recorded: number): VlmPrompt {
+	const rule = "Provide objective information and no assumptions. Do *NOT* write any code.";
+	return {
+		system: `You are a helpful assistant that analyzes robot execution videos. You describe what happened during the robot's code execution, what actions were taken, how the environment changed, and whether the task appears to have been completed. ${rule}`,
+		content: [
+			text(task),
+			text(
+				`The following video shows the robot executing code in the environment from the main camera view. Describe what happened during execution, including what actions the robot took, how the objects in the scene changed, and whether the task appears to have been completed. ${rule}`,
+			),
+			text(
+				`Main camera video (${frames.length} frame${frames.length === 1 ? "" : "s"} sampled evenly, in order, from the ${recorded} recorded during this step):`,
+			),
+			...frames,
+		],
+	};
+}
+
+/** `n` indices spread evenly over `0..length-1`, first and last included (all of them when there are no more than `n`). */
+export function sampleIndices(length: number, n: number): number[] {
+	if (length <= n) return Array.from({ length }, (_, i) => i);
+	if (n <= 1) return [length - 1];
+	return Array.from({ length: n }, (_, i) => Math.round((i * (length - 1)) / (n - 1)));
+}
+
+/** An HxWx3 uint8 frame as a PNG image block. */
+function framePng(f: NdArray): ImageContent {
+	const [height, width] = f.shape;
+	return { type: "image", data: encodePng(f.data, width, height).toString("base64"), mimeType: "image/png" };
+}
+
 /** The text appended to the tool result (launch_utils.py's headers, "code" read as the tool call). */
 export const HEADERS = {
 	initial: "The initial state of the environment is described as follows:",
 	diff: "Included below is the observed differences between the current state of the environment (after the tool call above was executed) and the previous state of the environment (before it was executed):",
+	video: "Included below is a description of the robot's execution based on video observation of this turn:",
 };
 
 /**
@@ -129,13 +173,26 @@ export function vdm(
 		default: false,
 		description: "VDM: also give the model the wrist view(s)",
 	});
+	pi.registerFlag("vdm-video", {
+		type: "boolean",
+		default: false,
+		description: "VDM from the step's video: describe each change from frames sampled between two observations",
+	});
+	pi.registerFlag("vdm-video-frames", {
+		type: "string",
+		default: "8",
+		description: "--vdm-video: frames sampled per step",
+	});
 	pi.registerFlag("vdm-timeout", {
 		type: "string",
 		default: "60",
 		description: "VDM: seconds each call may take (0 = no limit)",
 	});
-	const on = () => pi.getFlag("vdm") === true;
+	const video = () => pi.getFlag("vdm-video") === true;
+	const on = () => pi.getFlag("vdm") === true || video();
 	let prev: Frame | undefined;
+	/** --vdm-video: the frames recorded since the last observation. */
+	let clip: NdArray[] = [];
 	let calls = 0;
 	let errors = 0;
 	let cost = 0;
@@ -148,10 +205,15 @@ export function vdm(
 
 	pi.on("session_start", () => {
 		prev = undefined;
+		clip = [];
 		calls = errors = cost = 0;
 		if (on() && !hooked) {
 			hooked = true;
 			pi.on("tool_result", describe);
+			if (video())
+				pi.events.on(FRAME_EVENT, (f) => {
+					clip.push(f as NdArray);
+				});
 		}
 	});
 
@@ -165,15 +227,32 @@ export function vdm(
 		const s = current();
 		const shown = event.content.filter((c): c is ImageContent => c.type === "image");
 		if (!s || shown.length !== s.views) return undefined;
+		// The step's frames: everything recorded since the previous observation.
+		const steps = clip;
+		clip = [];
 		const wrists = pi.getFlag("vdm-wrist") === true ? wristsOf(s).map((i) => shown[i]) : [];
 		const frame: Frame = { main: shown[0], wrists };
 		const before = prev;
 		prev = frame;
 		// Looking moves nothing: the frame is the new previous one, there is no change to describe.
 		if (before && s.observe?.includes(event.toolName)) return undefined;
-		const kind = before ? "diff" : "initial";
+		const strip = before && video() && steps.length > 0 ? steps : undefined;
+		const kind = !before ? "initial" : strip ? "video" : "diff";
 		const modelRef = String(pi.getFlag("vdm-model") || pi.getFlag("units-vlm-model") || "");
 		const entry: Record<string, unknown> = { kind, tool: event.toolName, wrist: wrists.length > 0 };
+		let prompt: VlmPrompt;
+		if (strip) {
+			const picked = sampleIndices(
+				strip.length,
+				Math.max(1, Math.floor(Number(pi.getFlag("vdm-video-frames")) || 8)),
+			);
+			prompt = videoPrompt(
+				task(),
+				picked.map((i) => framePng(strip[i])),
+				strip.length,
+			);
+			Object.assign(entry, { wrist: false, frames: picked.length, recorded: strip.length });
+		} else prompt = before ? diffPrompt(task(), before, frame) : initialPrompt(task(), frame);
 		const seconds = Number(pi.getFlag("vdm-timeout"));
 		// A plain (ref'd) timer, not AbortSignal.timeout(): Node unrefs that one, so a call that hangs
 		// with no other handle open would end the process instead of timing out.
@@ -186,14 +265,7 @@ export function vdm(
 		calls++;
 		try {
 			if (gate) slot = await acquire(gate.dir, gate.n, 250, signal);
-			const reply = await askVlm(
-				ctx,
-				modelRef,
-				pi.getThinkingLevel(),
-				before ? diffPrompt(task(), before, frame) : initialPrompt(task(), frame),
-				[],
-				signal,
-			);
+			const reply = await askVlm(ctx, modelRef, pi.getThinkingLevel(), prompt, [], signal);
 			cost += reply.cost;
 			pi.events.emit(VLM_COST_EVENT, reply.cost);
 			Object.assign(entry, { model: reply.model, text: reply.text, cost_usd: reply.cost });
@@ -227,6 +299,7 @@ export function vdm(
 			on()
 				? {
 						vdm: true,
+						...(video() ? { vdm_video: true, vdm_video_frames: Number(pi.getFlag("vdm-video-frames")) } : {}),
 						vdm_wrist: pi.getFlag("vdm-wrist") === true && wristsOf(current()).length > 0,
 						vdm_calls: calls,
 						vdm_errors: errors,

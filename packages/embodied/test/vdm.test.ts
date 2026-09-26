@@ -7,9 +7,12 @@ import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { API_GATE_EVENT } from "../src/api-gate.ts";
+import { decodePngChannel } from "../src/png.ts";
 import { defineRobot, RESULT_ENTRY, type RobotSpec } from "../src/robot.ts";
+import { NdArray } from "../src/rpc.ts";
 import type { UnitsSpec } from "../src/units/index.ts";
-import { HEADERS, VDM_ENTRY } from "../src/vdm.ts";
+import { HEADERS, sampleIndices, VDM_ENTRY } from "../src/vdm.ts";
+import { FRAME_EVENT } from "../src/video.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 /** A faux VLM reply: its text and cost, an error, or "hang" (answers only when the call's signal aborts). */
@@ -414,4 +417,79 @@ test("with eval-parallel's api gate loaded, a VDM call holds one of its slots", 
 	await f.emit("tool_result", observed("move", "a0", "w0"));
 	assert.deepEqual(held, ["slot-0"], "the slot is held during the call");
 	assert.deepEqual(readdirSync(dir), [], "and given back after it");
+});
+
+/** A 2x2 frame whose pixels all hold `v` (the frame's index in the tests). */
+const frameOf = (v: number) => new NdArray("uint8", [2, 2, 3], Buffer.alloc(12, v));
+/** The pixel value of each PNG image in a prompt (which recorded frames it carries). */
+const frameValues = (content: any[]) =>
+	content.filter((c) => c.type === "image").map((c) => decodePngChannel(Buffer.from(c.data, "base64")).data[0]);
+
+test("sampleIndices spreads n picks evenly with both ends, or takes all", () => {
+	assert.deepEqual(sampleIndices(20, 4), [0, 6, 13, 19]);
+	assert.deepEqual(sampleIndices(3, 8), [0, 1, 2]);
+	assert.deepEqual(sampleIndices(5, 1), [4]);
+	assert.deepEqual(sampleIndices(0, 8), []);
+});
+
+test("--vdm alone listens to no frames; --vdm-video describes each step from its sampled frames", async () => {
+	const plain = await toy({ vdm: true });
+	assert.equal(plain.bus.listenerCount(FRAME_EVENT), 0, "without --vdm-video no frame is kept");
+
+	// --vdm-video alone turns VDM on.
+	const f = await toy({ "vdm-video": true, "vdm-video-frames": "4" }, [
+		{ text: "scene" },
+		{ text: "the gripper went down to the bowl", usd: 0.01 },
+		{ text: "no frames" },
+	]);
+	// Frames recorded before the first observation belong to no step.
+	f.bus.emit(FRAME_EVENT, frameOf(99));
+	const first = await f.emit("tool_result", observed("move", "a0", "w0"));
+	assert.equal(texts(first.content).at(-1), `${HEADERS.initial}\nscene`);
+	assert.deepEqual(images(f.asked[0].content), ["a0"], "the initial scene is its observation");
+
+	for (let i = 0; i < 20; i++) f.bus.emit(FRAME_EVENT, frameOf(i));
+	const second = await f.emit("tool_result", observed("move", "a1", "w1"));
+	assert.deepEqual(images(second.content), ["a1", "w1"], "the camera images stay");
+	assert.equal(texts(second.content).at(-1), `${HEADERS.video}\nthe gripper went down to the bowl`);
+	assert.match(f.asked[1].system ?? "", /analyzes robot execution videos/);
+	assert.equal(f.asked[1].content[0].text, "put the bowl on the plate");
+	assert.match(texts(f.asked[1].content)[2], /4 frames sampled evenly, in order, from the 20 recorded/);
+	assert.deepEqual(frameValues(f.asked[1].content), [0, 6, 13, 19], "first and last included, in order");
+
+	// A step that recorded no frame falls back to the before/after pair.
+	const third = await f.emit("tool_result", observed("move", "a2", "w2"));
+	assert.equal(texts(third.content).at(-1), `${HEADERS.diff}\nno frames`);
+	assert.deepEqual(images(f.asked[2].content), ["a1", "a2"]);
+
+	assert.deepEqual(
+		f.entries.filter((e) => e.type === VDM_ENTRY).map((e) => [e.data.kind, e.data.frames, e.data.recorded]),
+		[
+			["initial", undefined, undefined],
+			["video", 4, 20],
+			["diff", undefined, undefined],
+		],
+	);
+	await f.tools.get("finish").execute("id", { status: "success", summary: "" });
+	await f.emit("agent_end");
+	const r = result(f);
+	assert.deepEqual([r.vdm, r.vdm_video, r.vdm_video_frames, r.vdm_calls], [true, true, 4, 3]);
+	await plain.tools.get("finish").execute("id", { status: "success", summary: "" });
+	await plain.emit("agent_end");
+	assert.equal("vdm_video" in result(plain), false, "plain --vdm reports no video fields");
+});
+
+test("--vdm-video: a look or a reset ends the step, so its frames are not described later", async () => {
+	const f = await toy({ "vdm-video": true }, [{ text: "scene" }, { text: "pair" }, { text: "again" }], {
+		vdm: { views: 2, wrist: 1, observe: ["look"] },
+	});
+	await f.emit("tool_result", observed("look", "a0", "w0"));
+	f.bus.emit(FRAME_EVENT, frameOf(1));
+	assert.equal(await f.emit("tool_result", observed("look", "a1", "w1")), undefined, "a look makes no call");
+	const moved = await f.emit("tool_result", observed("move", "a2", "w2"));
+	assert.equal(texts(moved.content).at(-1), `${HEADERS.diff}\npair`, "the look took the frame");
+	f.bus.emit(FRAME_EVENT, frameOf(2));
+	const reset = await f.emit("tool_result", observed("reset", "a3", "w3"));
+	assert.equal(texts(reset.content).at(-1), `${HEADERS.initial}\nagain`);
+	assert.deepEqual(images(f.asked[2].content), ["a3"]);
 });

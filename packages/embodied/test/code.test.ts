@@ -109,7 +109,11 @@ const inTier = (tier: string) =>
 /** A fake env server: `code.api` answers with API (+ helpers, + ground truth when privileged); `code.run` with `answer`. */
 function fakeEnv(answer: (kwargs: Record<string, unknown>) => Partial<RunResult> | Promise<Partial<RunResult>>) {
 	const calls: { method: string; kwargs: Record<string, unknown>; signal?: AbortSignal }[] = [];
+	let interrupts = 0;
 	const rpc = {
+		interrupt: async () => {
+			interrupts++;
+		},
 		call: async <T>(
 			method: string,
 			kwargs: Record<string, unknown> = {},
@@ -138,7 +142,7 @@ function fakeEnv(answer: (kwargs: Record<string, unknown>) => Partial<RunResult>
 			throw new Error(`unexpected ${method}`);
 		},
 	};
-	return { rpc, calls };
+	return { rpc, calls, interrupts: () => interrupts };
 }
 
 const UNITS: UnitsSpec = {
@@ -327,12 +331,32 @@ test("error and timeout runs keep their status, error and traceback; a refused e
 	assert.equal(ended.env.calls.filter((c) => c.method === "code.run").length, 0);
 });
 
-test("the abort signal reaches the env RPC, so pi's abort stops the server's run", async () => {
-	const f = await toyRobot({ code: true });
+test("pi's abort stops the server's run but waits for its result, so the steps it took are absorbed", async () => {
 	const ac = new AbortController();
-	await f.run("run_code", { code: "pass" }, ac.signal);
+	const f = await toyRobot(
+		{ code: true },
+		{
+			answer: async () => {
+				ac.abort(); // the operator aborts while the program runs
+				await new Promise((r) => setTimeout(r, 20));
+				return { status: "error", cancelled: true, steps: 7, success_step: 3 };
+			},
+		},
+	);
+	const r = await f.run("run_code", { code: "pass" }, ac.signal);
 	const run = f.env.calls.find((c) => c.method === "code.run");
-	assert.equal(run?.signal, ac.signal);
+	assert.equal(run?.signal, undefined, "the call is not abandoned");
+	assert.equal(f.env.interrupts(), 1, "the server was told to stop");
+	assert.equal(r.details.status, "error");
+	assert.equal(r.details.run.cancelled, true);
+	assert.equal(f.observed[0]?.steps, 7, "the effects before the stop are absorbed");
+	// An abort that already happened: nothing runs.
+	const g = await toyRobot({ code: true });
+	const done = new AbortController();
+	done.abort();
+	const out = await g.run("run_code", { code: "pass" }, done.signal);
+	assert.equal(g.env.calls.filter((c) => c.method === "code.run").length, 0);
+	assert.match(out.content[0].text, /aborted before it ran/);
 });
 
 test("--privileged asks for the ground-truth primitive and the prompt says so", async () => {

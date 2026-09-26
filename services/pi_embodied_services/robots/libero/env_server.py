@@ -296,6 +296,7 @@ class LiberoEnvFacade(BaseEnvFacade):
         self._rpc.update(
             {
                 "env.raw_obs": self.raw_obs,
+                "env.code_raw_obs": self.code_raw_obs,
                 "env.render_camera": self.render_camera,
                 "env.get_camera_meta": self.get_camera_meta,
                 "env.get_task_language": self.get_task_language,
@@ -420,6 +421,7 @@ class LiberoEnvFacade(BaseEnvFacade):
         term = self._succeeded(info)
         trunc = self._strip(to_numpy_tree(trunc))
         self._absorb(obs, bool(term), bool(np.any(trunc)))
+        self._count_run_steps([bool(term)])
         return (
             obs,
             self._strip(to_numpy_tree(rew)),
@@ -453,6 +455,7 @@ class LiberoEnvFacade(BaseEnvFacade):
         term = np.array([self._succeeded(i) for i in info], dtype=bool)
         trunc = self._strip(to_numpy_tree(trunc))
         self._absorb(obs_list[-1], bool(term.any()), bool(np.any(trunc)))
+        self._count_run_steps([bool(t) for t in term])
         obs_field = obs_list if return_all_frames else obs_list[-1]
         return (
             obs_field,
@@ -464,6 +467,15 @@ class LiberoEnvFacade(BaseEnvFacade):
 
     def raw_obs(self) -> dict:
         return to_numpy_tree(self._env.current_raw_obs[self._env_idx])
+
+    def code_raw_obs(self) -> dict:
+        """The low tier's ``raw_obs``: the robot's own keys (``robot0_*``) and the images. The
+        object poses in LIBERO's raw observation are privileged (``ground_truth_poses``)."""
+        return {
+            k: v
+            for k, v in self.raw_obs().items()
+            if k.startswith("robot0_") or k.endswith("_image") or k.endswith("_depth")
+        }
 
     def get_env_meta(self) -> dict:
         """Return the meta info this server was launched with."""
@@ -572,14 +584,17 @@ class LiberoEnvFacade(BaseEnvFacade):
     def _live(self) -> bool:
         return not (self._terminated or self._truncated)
 
+    def _count_run_steps(self, terms: list[bool]) -> None:
+        """Every env step counts for the run, the low tier's raw ``step`` / ``chunk_step`` like
+        the high tier's primitives; the first success within the run is its step."""
+        for term in terms:
+            self._run_steps += 1
+            if term and self._run_success is None:
+                self._run_success = self._run_steps
+
     def _act(self, action) -> None:
         """One env step of a primitive (pi's tools step the same way)."""
-        _obs, _rew, term, _trunc, _info = self.step(
-            np.asarray(action, dtype=np.float32)
-        )
-        self._run_steps += 1
-        if bool(term) and self._run_success is None:
-            self._run_success = self._run_steps
+        self.step(np.asarray(action, dtype=np.float32))
 
     def _frame(self, _primitive=None) -> None:
         """After a mutating primitive (the runner's `after` hook): one agentview frame for the video."""

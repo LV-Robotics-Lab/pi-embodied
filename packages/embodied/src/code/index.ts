@@ -70,7 +70,7 @@ export const DEFAULT_MAX_MOVE_M = 3;
 
 export type CodeSpec = {
 	/** The env server that serves `code.api` / `code.run` (up after the robot's `start`). */
-	rpc: () => Pick<RpcClient, "call">;
+	rpc: () => Pick<RpcClient, "call" | "interrupt">;
 	/**
 	 * Turn a `code.run` result into the robot's observation: absorb the new state (steps, success,
 	 * the latest obs, frames) and return the latest camera images and state, as the robot's motion
@@ -244,20 +244,30 @@ export function code(
 				return { content: [text(why)], details: { status: "error", error: why } };
 			}
 		}
-		const r = await spec.rpc().call<RunResult>(
-			"code.run",
-			{
-				code: params.code,
-				timeout_s,
-				tier: tier(),
-				max_calls: maxCalls(),
-				max_move_m: maxMove(),
-				helpers: helpersOn(),
-			},
-			(timeout_s + 60) * 1000,
-			[],
-			signal,
-		);
+		// An abort stops the server (its stop kills the program), but the call itself is waited
+		// out: the run's result carries the steps it took and any success before the stop, which
+		// an abandoned call would lose.
+		const rpc = spec.rpc();
+		if (signal?.aborted) return { content: [text("run_code: aborted before it ran")], details: { status: "error" } };
+		const onAbort = () => void rpc.interrupt();
+		signal?.addEventListener("abort", onAbort, { once: true });
+		let r: RunResult;
+		try {
+			r = await rpc.call<RunResult>(
+				"code.run",
+				{
+					code: params.code,
+					timeout_s,
+					tier: tier(),
+					max_calls: maxCalls(),
+					max_move_m: maxMove(),
+					helpers: helpersOn(),
+				},
+				(timeout_s + 60) * 1000,
+			);
+		} finally {
+			signal?.removeEventListener("abort", onAbort);
+		}
 		const observed = await spec.observe(r, signal);
 		const report: Json = {
 			status: r.status,

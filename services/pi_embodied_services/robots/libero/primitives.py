@@ -66,8 +66,8 @@ LIBERO_PRIMITIVES = (
     ),
     Primitive(
         "raw_obs",
-        "env.raw_obs",
-        "The simulator's current observation dict (proprioception and images).",
+        "env.code_raw_obs",
+        "The simulator's current observation dict (the robot's proprioception and the images).",
         tiers=("low",),
     ),
     Primitive(

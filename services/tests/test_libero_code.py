@@ -83,6 +83,17 @@ class ArmSim:
         zeros = np.zeros(1, dtype=bool)
         return self._obs(), np.zeros(1), zeros, zeros, self._info()
 
+    def chunk_step(self, actions):
+        obs, rews, terms, truncs, infos = [], [], [], [], []
+        for a in np.asarray(actions, dtype=np.float64).reshape(-1, 7):
+            o, r, t, tr, i = self.step(a)
+            obs.append(o)
+            rews.append(r)
+            terms.append(t)
+            truncs.append(tr)
+            infos.append(i)
+        return obs, np.stack(rews), np.stack(terms), np.stack(truncs), infos
+
     def render_camera(self, camera_name, height, width, depth):
         rgb = np.zeros((height, width, 3), dtype=np.uint8)
         rgb[0, 0] = (
@@ -268,6 +279,34 @@ def test_a_run_reports_steps_success_the_latest_obs_and_frames():
     assert len(out["frames"]) == 2, "one agentview frame per motion primitive"
     assert [c["name"] for c in out["calls"]] == ["set_gripper", "move_to", "get_state"]
     assert out["calls"][1]["move_m"] == pytest.approx(0.4)
+
+
+def test_the_low_tiers_raw_steps_count_and_its_raw_obs_has_no_object_poses():
+    f = facade()
+    raw = f.raw_obs
+    f.raw_obs = lambda: {
+        **raw(),
+        "akita_black_bowl_1_pos": np.zeros(3),
+        "agentview_image": np.zeros((4, 4, 3), np.uint8),
+    }
+    out = f._rpc["code.run"](
+        "obs = raw_obs()\n"
+        "for _ in range(3):\n"
+        "    step([0, 0, 1, 0, 0, 0, -1])\n"
+        "chunk_step([[0, 0, 1, 0, 0, 0, -1]] * 2)\n"
+        "RESULT = sorted(obs)\n",
+        timeout_s=30,
+        tier="low",
+    )
+    assert out["status"] == "ran", out
+    assert out["result"] == [
+        "agentview_image",
+        "robot0_eef_pos",
+        "robot0_eef_quat",
+        "robot0_gripper_qpos",
+    ], "the object pose is privileged"
+    assert out["steps"] == 5, "raw steps count like the primitives' steps"
+    assert out["terminated"] == (out["success_step"] is not None)
 
 
 def test_a_finished_episode_stops_every_motion_primitive():

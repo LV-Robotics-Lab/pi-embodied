@@ -23,7 +23,8 @@
 
 1. ``capture``: the human jogs the arm (freedrive / pendant) to 15-30 poses that
    keep the checkerboard in view; each Enter records the TCP pose and a frame under
-   ``--samples``. The tool never moves the arm.
+   ``--samples``, once the arm has stood still and the camera queue was drained so
+   the frame shows that pose (:func:`capture_sample`). The tool never moves the arm.
 2. ``solve``: detects the board, solves ``cv2.calibrateHandEye`` (eye-to-hand for a
    fixed camera -> ``T_base_cam``; eye-in-hand for a wrist camera -> ``T_tcp_cam``),
    rejects outliers and re-solves, prints the residuals and writes
@@ -46,6 +47,7 @@ import math
 import os
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -53,6 +55,13 @@ from typing import Any
 import numpy as np
 import yaml
 from scipy.spatial.transform import Rotation
+
+from pi_embodied_services.components.cameras import (
+    Frame,
+    intrinsic_matrix,
+    intrinsics_from_config,
+    undistort_pixels,
+)
 
 EYE_TO_HAND = "eye_to_hand"
 EYE_IN_HAND = "eye_in_hand"
@@ -152,10 +161,18 @@ class Board:
 
 
 def detect_board(
-    image: np.ndarray, K: np.ndarray, D: np.ndarray, board: Board
+    image: np.ndarray, intr: dict[str, Any], board: Board
 ) -> tuple[np.ndarray, float]:
     """(``T_cam_board``, mean reprojection error px) of the checkerboard in ``image``
-    (RGB or grey). Raises ValueError with a short reason when it is not found."""
+    (RGB or grey) under the colour intrinsics ``intr`` (RealSense layout with
+    ``distortion_model`` and ``coeffs``). Raises ValueError with a short reason when
+    it is not found.
+
+    The corners are undistorted per the intrinsics' model (``undistort_pixels``) and
+    solved as a pinhole with zero distortion: RealSense colour streams report
+    ``inverse_brown_conrady`` coefficients, which undistort rather than distort and
+    give a wrong pose when passed to ``cv2.solvePnP`` as OpenCV's forward model.
+    """
     import cv2
 
     gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY) if image.ndim == 3 else image
@@ -166,12 +183,13 @@ def detect_board(
     )
     if not found:
         raise ValueError("checkerboard_not_found")
-    corners = np.asarray(corners, dtype=np.float64).reshape(-1, 2)
+    corners = undistort_pixels(np.asarray(corners, dtype=np.float64), intr)
+    K = np.asarray(intrinsic_matrix(intr), dtype=np.float64)
     obj = board.object_points()
-    ok, rvec, tvec = cv2.solvePnP(obj, corners, K, D, flags=cv2.SOLVEPNP_ITERATIVE)
+    ok, rvec, tvec = cv2.solvePnP(obj, corners, K, None, flags=cv2.SOLVEPNP_ITERATIVE)
     if not ok:
         raise ValueError("solvepnp_failed")
-    projected, _ = cv2.projectPoints(obj, rvec, tvec, K, D)
+    projected, _ = cv2.projectPoints(obj, rvec, tvec, K, None)
     reproj = float(np.mean(np.linalg.norm(projected.reshape(-1, 2) - corners, axis=1)))
     R, _ = cv2.Rodrigues(rvec)
     return transform(R, tvec.reshape(3)), reproj
@@ -494,24 +512,21 @@ def format_residuals(res: dict[str, Any]) -> str:
 # -- sample directories -------------------------------------------------------
 
 
-def load_intrinsics(path: str | Path) -> tuple[np.ndarray, np.ndarray]:
-    """K (3x3) and D (distortion coefficients) from ``intrinsics.json`` (RealSense
-    layout ``fx, fy, ppx, ppy[, coeffs]``)."""
+def load_intrinsics(path: str | Path) -> dict[str, Any]:
+    """Colour intrinsics from ``intrinsics.json`` (RealSense layout ``fx, fy, ppx,
+    ppy[, width, height, distortion_model, coeffs]``), validated like the config's."""
     data = json.loads(Path(path).expanduser().read_text())
-    K = np.array(
-        [
-            [data["fx"], 0.0, data["ppx"]],
-            [0.0, data["fy"], data["ppy"]],
-            [0.0, 0.0, 1.0],
-        ],
-        dtype=np.float64,
+    if not isinstance(data, dict):
+        raise ValueError(f"{path}: intrinsics.json must be a mapping")
+    intr = intrinsics_from_config(
+        data, int(data.get("width", 0)), int(data.get("height", 0))
     )
-    D = np.asarray(data.get("coeffs") or [0.0] * 5, dtype=np.float64)
-    return K, D
+    assert intr is not None
+    return intr
 
 
 def load_samples(
-    directory: str | Path, K: np.ndarray, D: np.ndarray, board: Board
+    directory: str | Path, intr: dict[str, Any], board: Board
 ) -> list[Sample]:
     """The ``NNNN.json`` (+ ``NNNN.png``) pairs of a capture directory as samples: the
     JSON holds ``tcp_pose`` (7) or ``tcp_pose_rotvec`` (6) and, optionally, a
@@ -544,12 +559,80 @@ def load_samples(
                 else:
                     try:
                         s.T_cam_board, s.reprojection_px = detect_board(
-                            bgr[:, :, ::-1], K, D, board
+                            bgr[:, :, ::-1], intr, board
                         )
                     except ValueError as exc:
                         s.reject = str(exc)
         samples.append(s)
     return samples
+
+
+# -- capture ------------------------------------------------------------------
+
+
+def capture_sample(
+    arm: Any,
+    cam: Any,
+    *,
+    settle_s: float = 0.5,
+    speed_eps_radps: float = 2e-3,
+    pose_eps_m: float = 5e-4,
+    pose_eps_rad: float = 2e-3,
+    max_age_s: float = 0.5,
+    timeout_s: float = 10.0,
+    attempts: int = 3,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> tuple[np.ndarray, np.ndarray, Frame]:
+    """One (TCP pose, joints, frame) sample whose frame shows that pose.
+
+    Waits until every joint speed stayed under ``speed_eps_radps`` for ``settle_s``
+    (a hand-guided arm still sways after the human lets go), then reads a fresh
+    frame (the camera's queue drained, so it is not the image from before the last
+    move) and the pose before and after it; a pose that changed in between or a frame
+    older than ``max_age_s`` is retried. Raises RuntimeError when the arm keeps
+    moving past ``timeout_s`` or no consistent sample is found in ``attempts``.
+    """
+    t0 = clock()
+    still_since: float | None = None
+    while True:
+        now = clock()
+        speeds = np.abs(np.asarray(arm.joint_speeds(), dtype=np.float64))
+        if speeds.size and float(np.max(speeds)) <= speed_eps_radps:
+            if still_since is None:
+                still_since = now
+            if now - still_since >= settle_s:
+                break
+        else:
+            still_since = None
+        if now - t0 > timeout_s:
+            raise RuntimeError(
+                f"the arm is still moving after {timeout_s} s (max joint speed "
+                f"{float(np.max(speeds)) if speeds.size else 0.0:.4f} rad/s); let it "
+                "come to rest before recording"
+            )
+        sleep(0.05)
+    last = ""
+    for _ in range(max(1, attempts)):
+        before = np.asarray(arm.tcp_pose(), dtype=np.float64)
+        frame = cam.read_fresh()
+        after = np.asarray(arm.tcp_pose(), dtype=np.float64)
+        joints = np.asarray(arm.joints(), dtype=np.float64)
+        moved_m = float(np.linalg.norm(after[:3] - before[:3]))
+        moved_rad = float(
+            (
+                Rotation.from_rotvec(after[3:]) * Rotation.from_rotvec(before[3:]).inv()
+            ).magnitude()
+        )
+        age = frame.age_s(clock())
+        if moved_m > pose_eps_m or moved_rad > pose_eps_rad:
+            last = f"the TCP moved {moved_m:.4f} m / {moved_rad:.4f} rad during the capture"
+        elif age > max_age_s:
+            last = f"the frame is {age:.2f} s old (> {max_age_s} s)"
+        else:
+            return after, joints, frame
+        sleep(0.05)
+    raise RuntimeError(f"no consistent sample: {last}")
 
 
 # -- CLI ----------------------------------------------------------------------
@@ -621,17 +704,21 @@ def cmd_capture(args: argparse.Namespace) -> int:
             answer = input(f"[{n} recorded] > ").strip().lower()
             if answer in ("q", "quit", "exit"):
                 break
-            pose = np.asarray(arm.tcp_pose(), dtype=np.float64)
-            frame = cam.read()
+            try:
+                pose, joints, frame = capture_sample(arm, cam)
+            except RuntimeError as exc:
+                print(f"  not recorded: {exc}")
+                continue
             stem = f"{n:04d}"
             cv2.imwrite(str(out / f"{stem}.png"), frame.rgb[:, :, ::-1])
             (out / f"{stem}.json").write_text(
                 json.dumps(
                     {
                         "tcp_pose_rotvec": pose.tolist(),
-                        "joints": np.asarray(arm.joints()).tolist(),
+                        "joints": joints.tolist(),
                         "image": f"{stem}.png",
                         "timestamp_s": frame.timestamp_s,
+                        "frame_age_s": frame.age_s(),
                     }
                 )
             )
@@ -662,8 +749,8 @@ def cmd_solve(args: argparse.Namespace) -> int:
             "--mode is required when cameras.devices.<name>.mount is not set"
         )
     samples_dir = Path(args.samples).expanduser()
-    K, D = load_intrinsics(args.intrinsics or samples_dir / "intrinsics.json")
-    samples = load_samples(samples_dir, K, D, Board.parse(args.board))
+    intr = load_intrinsics(args.intrinsics or samples_dir / "intrinsics.json")
+    samples = load_samples(samples_dir, intr, Board.parse(args.board))
     result = calibrate(
         samples,
         mode,

@@ -15,17 +15,22 @@
 """The camera interface every real-robot env server reads through.
 
 A camera yields :class:`Frame` objects: an RGB image, the metric depth aligned to it
-when the sensor has depth (``None`` otherwise), and the wall-clock capture time. Its
-``intrinsics()`` are the colour intrinsics in the RealSense layout (``fx, fy, ppx, ppy,
-width, height``) when the device reports them or the config supplies them, else
-``None``. Sources are described by a mapping (a robot YAML's ``cameras.devices.<name>``
-or a ``name=type:source`` flag) and opened with :func:`open_camera`.
+when the sensor has depth (``None`` otherwise), the wall-clock capture time and a
+monotonic capture time (``monotonic_s``) so a reader can tell how old a frame is.
+``read`` returns the next frame the driver hands out, which for a buffered source
+may predate the call; ``read_fresh`` returns a frame captured after the call started.
+Its ``intrinsics()`` are the colour intrinsics in the RealSense layout (``fx, fy, ppx,
+ppy, width, height, distortion_model, coeffs``) when the device reports them or the
+config supplies them, else ``None``. Sources are described by a mapping (a robot
+YAML's ``cameras.devices.<name>`` or a ``name=type:source`` flag) and opened with
+:func:`open_camera`.
 """
 
 from __future__ import annotations
 
+import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -57,15 +62,21 @@ DEVICE_KEYS = frozenset(
 @dataclass(frozen=True)
 class Frame:
     """One capture: ``rgb`` uint8 [H, W, 3]; ``depth`` float32 [H, W] metres aligned to
-    ``rgb`` (0 = no return) or None for an RGB-only source; ``timestamp_s`` wall clock."""
+    ``rgb`` (0 = no return) or None for an RGB-only source; ``timestamp_s`` wall clock;
+    ``monotonic_s`` the capture time on ``time.monotonic`` (defaults to construction)."""
 
     rgb: np.ndarray
     depth: np.ndarray | None
     timestamp_s: float
+    monotonic_s: float = field(default_factory=time.monotonic)
 
     @property
     def has_depth(self) -> bool:
         return self.depth is not None
+
+    def age_s(self, now: float | None = None) -> float:
+        """Seconds since the capture (``now`` on ``time.monotonic``)."""
+        return float((time.monotonic() if now is None else now) - self.monotonic_s)
 
 
 class Camera(ABC):
@@ -85,6 +96,13 @@ class Camera(ABC):
     def read(self) -> Frame:
         """The next frame (blocks up to the source's timeout)."""
 
+    def read_fresh(self) -> Frame:
+        """A frame captured after this call started. Drivers whose SDK queues a frame
+        between reads (a one-deep pipeline queue) discard one frame first; drivers
+        that already return the newest frame override this with ``read``."""
+        self.read()
+        return self.read()
+
     @abstractmethod
     def close(self) -> None:
         """Release the device; idempotent."""
@@ -92,6 +110,83 @@ class Camera(ABC):
     def describe(self) -> dict[str, Any]:
         """Static metadata for ``env.get_camera_meta``."""
         return {"camera_type": self.kind, "has_depth": self.has_depth}
+
+
+#: Distortion models :func:`undistort_pixels` handles (the librealsense names; an
+#: OpenCV ``calibrateCamera`` result is ``brown_conrady`` with ``[k1, k2, p1, p2, k3]``).
+DISTORTION_MODELS = (
+    "none",
+    "brown_conrady",
+    "modified_brown_conrady",
+    "inverse_brown_conrady",
+)
+
+
+def _distort(xy: np.ndarray, coeffs: np.ndarray, modified: bool) -> np.ndarray:
+    """Brown-Conrady forward model on normalized points ``[N, 2]``: radial
+    ``1 + k1 r^2 + k2 r^4 + k3 r^6`` and tangential ``p1, p2``. ``modified`` (the
+    librealsense D4xx depth model) applies the tangential terms to the radially
+    distorted point; plain Brown-Conrady (OpenCV) applies them to the undistorted one."""
+    k1, k2, p1, p2, k3 = (float(c) for c in coeffs[:5])
+    x, y = xy[:, 0], xy[:, 1]
+    r2 = x * x + y * y
+    f = 1.0 + k1 * r2 + k2 * r2 * r2 + k3 * r2 * r2 * r2
+    xr, yr = x * f, y * f
+    tx, ty = (xr, yr) if modified else (x, y)
+    xd = xr + 2.0 * p1 * tx * ty + p2 * (r2 + 2.0 * tx * tx)
+    yd = yr + 2.0 * p2 * tx * ty + p1 * (r2 + 2.0 * ty * ty)
+    return np.stack([xd, yd], axis=1)
+
+
+def undistort_normalized(
+    xy: np.ndarray, model: str, coeffs: Any, iterations: int = 20
+) -> np.ndarray:
+    """Undistorted normalized image points of distorted ones ``[N, 2]`` under
+    ``model``.
+
+    ``inverse_brown_conrady`` (RealSense colour streams) stores coefficients that
+    *undistort*: the polynomial is applied once to the distorted point. The forward
+    models (``brown_conrady``, ``modified_brown_conrady``) are inverted by fixed-point
+    iteration. Those coefficients must never be handed to ``cv2.solvePnP`` as-is when
+    the model is the inverse one, which is why callers undistort the points here and
+    solve with zero distortion.
+    """
+    pts = np.asarray(xy, dtype=np.float64).reshape(-1, 2)
+    if model not in DISTORTION_MODELS:
+        raise ValueError(
+            f"distortion model {model!r} is not supported (one of {DISTORTION_MODELS}); "
+            "kannala_brandt4 / ftheta lenses need their own undistortion"
+        )
+    c = np.zeros(5)
+    given = np.asarray(coeffs if coeffs is not None else [], dtype=np.float64).reshape(
+        -1
+    )
+    if given.size > 5:
+        raise ValueError(
+            f"expected at most 5 distortion coefficients, got {given.size}"
+        )
+    c[: given.size] = given
+    if model == "none" or not np.any(c):
+        return pts.copy()
+    if model == "inverse_brown_conrady":
+        return _distort(pts, c, modified=False)
+    modified = model == "modified_brown_conrady"
+    und = pts.copy()
+    for _ in range(iterations):
+        und = und + (pts - _distort(und, c, modified))
+    return und
+
+
+def undistort_pixels(uv: np.ndarray, intr: dict[str, Any]) -> np.ndarray:
+    """Pixel coordinates ``[N, 2]`` corrected for the lens distortion in ``intr``
+    (RealSense layout), so a pinhole solve with zero distortion applies to them."""
+    K = np.asarray(intrinsic_matrix(intr), dtype=np.float64)
+    pts = np.asarray(uv, dtype=np.float64).reshape(-1, 2)
+    xy = (pts - K[:2, 2]) / np.array([K[0, 0], K[1, 1]])
+    und = undistort_normalized(
+        xy, str(intr.get("distortion_model", "none")), intr.get("coeffs")
+    )
+    return und * np.array([K[0, 0], K[1, 1]]) + K[:2, 2]
 
 
 def intrinsics_from_config(
@@ -116,6 +211,18 @@ def intrinsics_from_config(
     ]
     if missing:
         raise ValueError(f"intrinsics is missing {missing}")
+    coeffs = [float(c) for c in (value.get("coeffs") or [])]
+    if len(coeffs) > 5:
+        raise ValueError("intrinsics.coeffs is [k1, k2, p1, p2, k3] (at most 5 values)")
+    coeffs += [0.0] * (5 - len(coeffs))
+    # Coefficients without a model are an OpenCV calibration (forward Brown-Conrady).
+    model = str(
+        value.get("distortion_model") or ("brown_conrady" if any(coeffs) else "none")
+    )
+    if model not in DISTORTION_MODELS:
+        raise ValueError(
+            f"intrinsics.distortion_model must be one of {DISTORTION_MODELS}, got {model!r}"
+        )
     out = {
         "width": int(value.get("width", width)),
         "height": int(value.get("height", height)),
@@ -123,10 +230,10 @@ def intrinsics_from_config(
         "fy": float(value["fy"]),
         "ppx": float(ppx),
         "ppy": float(ppy),
-        "distortion_model": str(value.get("distortion_model", "none")),
-        "coeffs": [float(c) for c in value.get("coeffs", [0.0] * 5)],
+        "distortion_model": model,
+        "coeffs": coeffs,
     }
-    if not all(np.isfinite([out["fx"], out["fy"], out["ppx"], out["ppy"]])):
+    if not all(np.isfinite([out["fx"], out["fy"], out["ppx"], out["ppy"], *coeffs])):
         raise ValueError("intrinsics must be finite")
     return out
 

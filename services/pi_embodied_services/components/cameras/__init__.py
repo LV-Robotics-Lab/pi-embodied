@@ -23,6 +23,7 @@ mapping and :func:`parse_sources` from a ``name=type:source,...`` flag.
 
 from pi_embodied_services.components.cameras.base import (
     CAMERA_TYPES,
+    DISTORTION_MODELS,
     Camera,
     Frame,
     intrinsic_matrix,
@@ -30,11 +31,14 @@ from pi_embodied_services.components.cameras.base import (
     open_camera,
     parse_source,
     parse_sources,
+    undistort_normalized,
+    undistort_pixels,
     validate_device,
 )
 
 __all__ = [
     "CAMERA_TYPES",
+    "DISTORTION_MODELS",
     "Camera",
     "Frame",
     "intrinsic_matrix",
@@ -42,5 +46,7 @@ __all__ = [
     "open_camera",
     "parse_source",
     "parse_sources",
+    "undistort_normalized",
+    "undistort_pixels",
     "validate_device",
 ]

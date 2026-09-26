@@ -3,7 +3,8 @@
 #
 # The server refuses to start until limits.z_floor_m, the workspace box and
 # calibration.arm_id are set (the arm's serial number must match it), and refuses
-# reset until calibration.begin_joints is set. Copy this file, calibrate on the
+# reset until calibration.begin_joints is set (reset: open the gripper unless it holds
+# an object, lift reset_lift_m, moveJ to begin_joints). Copy this file, calibrate on the
 # hardware and pass it with --robot-config. Read live values without moving the arm:
 #   python -m pi_embodied_services.robots.ur5e.env_server --robot-config my_ur5e.yaml --read-pose
 #   python -m pi_embodied_services.robots.ur5e.env_server --robot-config my_ur5e.yaml --print-identity
@@ -26,6 +27,7 @@ cameras:
   height: 480
   fps: 30
   read_timeout_s: 5.0        # RTSP: how long a read waits for a new frame
+  max_frame_age_s: 0.5       # an observation frame older than this is re-read, then refused
   devices:
     # type: realsense (D400 / L515; serial from `rs-enumerate-devices | grep Serial`,
     #   empty = the first device; an L515 needs pyrealsense2 2.54.1 = the services'
@@ -34,7 +36,10 @@ cameras:
     # mount: wrist (moves with the TCP; calibration = T_tcp_cam, eye_in_hand) or fixed
     #   (calibration = T_base_cam, eye_to_hand). calibration: the hand-eye YAML written
     #   by robots/ur5e/calibrate.py (bound to calibration.arm_id below).
-    # intrinsics: {fx, fy, ppx, ppy} for RGB-only sources (back_project needs them).
+    # intrinsics: {fx, fy, ppx, ppy[, distortion_model, coeffs]} for RGB-only sources
+    #   (back_project and hand-eye calibration need them). coeffs are OpenCV's
+    #   [k1, k2, p1, p2, k3]; distortion_model defaults to brown_conrady when coeffs
+    #   are given (an OpenCV calibrateCamera result), none otherwise.
     wrist:
       type: realsense
       serial: ""
@@ -77,12 +82,15 @@ limits:                      # !! CAPTURE ON HARDWARE !!
   rotate_tolerance_rad: 0.02
   joint_tolerance_rad: 0.02
   divergence_resync_m: 0.01  # measured vs setpoint gap that re-anchors the setpoint
+  divergence_resync_rad: 0.05
+  reset_lift_m: 0.05         # reset: straight-up moveL before the joint move (kept under workspace_max z)
 
 gripper:                     # Robotiq 2F-85: 0.085 m stroke (2F-140: 0.14)
   stroke_m: 0.085
   speed: 255                 # SPE / FOR registers, 0..255
   force: 100
   timeout_s: 5.0
+  ack_timeout_s: 0.5         # fingers showing no fresh status (OBJ/POS) after a command by then are stuck
   poll_s: 0.05
   motion_eps_m: 0.003        # fingers that moved less than this "did not move" (jammed)
   close_threshold_m: 0.075   # below this width the gripper counts as closed

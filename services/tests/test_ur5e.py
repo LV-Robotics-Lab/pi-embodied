@@ -28,12 +28,14 @@ import pytest
 import yaml
 from scipy.spatial.transform import Rotation
 
+from pi_embodied_services.components.cameras import undistort_pixels
 from pi_embodied_services.components.cameras.mock import MOCK_ENV, MockCamera
 from pi_embodied_services.robots.ur5e import calibrate
 from pi_embodied_services.robots.ur5e.calibrate import (
     EYE_IN_HAND,
     EYE_TO_HAND,
     Sample,
+    capture_sample,
     load_calibration_yaml,
     write_calibration_yaml,
 )
@@ -464,13 +466,17 @@ def test_stop_halts_the_reset_with_stopJ():
     assert f.controller.target is None
 
 
-def test_reset_opens_moves_to_begin_and_needs_begin_joints():
+def test_reset_opens_lifts_then_moves_to_begin_and_needs_begin_joints():
     arm = MockUrArm((0.5, 0.0, 0.3, *DOWN))
     grip = MockRobotiq(position=255)
     f = facade(arm, grip)
     r = call(f, "env.reset")
-    assert r["ok"] and r["gripper"]["ok"] and r["move"]["ok"]
+    assert r["ok"] and r["gripper"]["ok"] and r["lift"]["ok"] and r["move"]["ok"]
     assert grip.commands[0] == 0 and grip.pos == 0
+    # Order: gripper, a straight-up moveL of reset_lift_m, then the moveJ.
+    assert len(arm.moves) == 1 and len(arm.joint_moves) == 1
+    np.testing.assert_allclose(arm.moves[0][:3], [0.5, 0.0, 0.35], atol=1e-9)
+    assert r["info"]["lifted_m"] == pytest.approx(0.05)
     np.testing.assert_allclose(arm.q, CFG["calibration"]["begin_joints"], atol=1e-9)
     assert r["robot_state"]["raw_base_state"]["setpoint_pose"] is not None
     bare = facade(
@@ -479,6 +485,106 @@ def test_reset_opens_moves_to_begin_and_needs_begin_joints():
     with pytest.raises(ValueError, match="begin_joints is not set"):
         call(bare, "env.reset")
     assert bare.controller.commands == 0
+
+
+def test_reset_lift_is_clamped_to_the_box_ceiling_and_a_blocked_lift_stops_the_reset():
+    # 2 cm below the ceiling: the lift is 2 cm, not 5.
+    arm = MockUrArm((0.5, 0.0, 0.58, *DOWN))
+    f = facade(arm)
+    r = call(f, "env.reset")
+    assert r["ok"] and r["info"]["lifted_m"] == pytest.approx(0.02)
+    np.testing.assert_allclose(arm.moves[0][:3], [0.5, 0.0, 0.60], atol=1e-9)
+    # At the ceiling there is no lift at all, only the joint move.
+    arm = MockUrArm((0.5, 0.0, 0.60, *DOWN))
+    f = facade(arm)
+    r = call(f, "env.reset")
+    assert r["ok"] and r["lift"] is None and "lifted_m" not in r["info"]
+    assert arm.moves == [] and len(arm.joint_moves) == 1
+    # A lift that does not arrive (a wall) fails the reset before any moveJ.
+    arm = MockUrArm((0.5, 0.0, 0.3, *DOWN), protective_stop_after=2)
+    f = facade(arm)
+    r = call(f, "env.reset")
+    assert r["ok"] is False and r["lift"]["ok"] is False and r["move"] is None
+    assert r["lift"]["protective_stopped"] is True and arm.joint_moves == []
+
+
+def test_reset_fails_when_the_begin_pose_leaves_the_workspace():
+    arm = MockUrArm((0.5, 0.0, 0.3, *DOWN), home_pose=(0.9, 0.0, 0.4, *DOWN))
+    f = facade(arm)
+    r = call(f, "env.reset")
+    assert r["move"]["ok"] and r["ok"] is False
+    assert r["info"]["begin_pose_outside_workspace"] is True
+    assert "outside the workspace" in r["info"]["note"]
+
+
+def test_reset_releases_a_held_object_and_says_so():
+    grip = MockRobotiq(object_pos=150)
+    f = facade(gripper=grip)
+    assert call(f, "env.set_gripper", open=False)["object_detected"]
+    r = call(f, "env.reset")
+    assert r["ok"] and grip.pos == 0 and r["info"]["released_object"] is True
+    assert "released" in r["info"]["note"]
+    # A closed but empty gripper is simply opened (nothing to report).
+    f2 = facade(gripper=MockRobotiq(position=255, object_pos=None))
+    r2 = call(f2, "env.reset")
+    assert r2["ok"] and "released_object" not in r2["info"]
+
+
+# -- protective stop and rejected commands -------------------------------------------
+
+
+def test_motion_is_refused_while_the_robot_is_protective_stopped():
+    arm = MockUrArm((0.5, 0.0, 0.3, *DOWN))
+    f = facade(arm)
+    call(f, "env.move_delta", [0.0, 0.0, 0.0])
+    assert f.controller.target is not None
+    arm.protective_stopped = True
+    for method, kwargs in (
+        ("env.move_delta", {"delta_xyz": [0.01, 0.0, 0.0]}),
+        ("env.move_pose", {"xyz": [0.5, 0.0, 0.31]}),
+        ("env.rotate_delta", {"delta_rpy": [0.0, 0.0, 0.1]}),
+        ("env.reset", {}),
+    ):
+        with pytest.raises(
+            RuntimeError, match="protective stopped.*nothing was commanded"
+        ):
+            call(f, method, **kwargs)
+    assert len(arm.moves) == 1, "only the settling move before the stop was sent"
+    assert arm.joint_moves == [] and f.controller.target is None
+    state = call(f, "env.get_robot_state")["raw_base_state"]
+    assert state["robot_status"]["protective_stopped"] is True
+    arm.protective_stopped = False
+    assert call(f, "env.move_delta", [0.01, 0.0, 0.0])["ok"]
+
+
+def test_a_rejected_move_raises_and_clears_the_setpoint():
+    arm = MockUrArm((0.5, 0.0, 0.3, *DOWN))
+    f = facade(arm)
+    call(f, "env.move_delta", [0.0, 0.0, 0.0])
+    arm.accept_moves = False
+    with pytest.raises(RuntimeError, match="moveL was rejected by the controller"):
+        call(f, "env.move_delta", [0.01, 0.0, 0.0])
+    assert f.controller.target is None and len(arm.moves) == 1
+    with pytest.raises(RuntimeError, match="moveL was rejected"):
+        call(f, "env.reset")  # the lift is the first command
+    with pytest.raises(RuntimeError, match="moveJ was rejected by the controller"):
+        f.controller.move_joints(CFG["calibration"]["begin_joints"])
+    assert arm.joint_moves == []
+
+
+def test_a_protective_stop_during_a_move_is_reported_in_the_result():
+    arm = MockUrArm((0.5, 0.0, 0.3, *DOWN), protective_stop_after=2)
+    f = facade(arm)
+    r = call(f, "env.move_delta", [0.05, 0.0, 0.0])
+    assert r["ok"] is False and r["protective_stopped"] is True
+    assert "protective stopped" in r["note"] and "teach pendant" in r["note"]
+    assert f.controller.target is None
+    arm = MockUrArm((0.5, 0.0, 0.3, *DOWN), joints=(0.0,) * 6, protective_stop_after=2)
+    f = facade(arm)
+    r = call(f, "env.reset")
+    assert r["ok"] is False
+    stage = r["lift"] if r["move"] is None else r["move"]
+    assert stage["protective_stopped"] is True
 
 
 # -- gripper ------------------------------------------------------------------------
@@ -530,6 +636,144 @@ def test_gripper_is_activated_once_before_the_first_command():
     call(f, "env.set_gripper", open=True)
     call(f, "env.set_gripper", open=False)
     assert grip.activations == 1
+
+
+def test_a_stale_object_status_is_not_taken_for_settled_fingers():
+    # After GTO the OBJ register still shows the previous motion (3 = at position)
+    # for a few reads; the old check settled at once and called the unmoved fingers
+    # jammed. Grasping an object through the lag must report the grasp.
+    grip = MockRobotiq(object_pos=150, stale_polls=3, moving_polls=2)
+    f = facade(gripper=grip)
+    r = call(f, "env.set_gripper", open=False)
+    assert r["ok"] and r["object_detected"] and "gripper_jammed" not in r
+    assert grip.pos == 150
+    # Opening an already open gripper (POS == PRE) settles without waiting.
+    grip = MockRobotiq(stale_polls=3)
+    f = facade(gripper=grip)
+    r = call(f, "env.set_gripper", open=True)
+    assert r["ok"] and "gripper_jammed" not in r
+    # Fingers that never report motion are still jammed, after the ack timeout.
+    clock = {"t": 0.0}
+
+    def tick():
+        clock["t"] += 0.1
+        return clock["t"]
+
+    jam = MockRobotiq(jammed=True, stale_polls=100)
+    c = UR5eController(
+        MockUrArm(), jam, limits_from_config(cfg()), sleep=lambda s: None, clock=tick
+    )
+    r = c.set_gripper(open=False)
+    assert r["gripper_jammed"] is True and r["ok"] is False
+    assert 0.5 < clock["t"] < 2.0, "settled after gripper_ack_timeout_s, not at once"
+
+
+def test_stop_during_a_gripper_command_stops_the_gripper():
+    grip = MockRobotiq(object_pos=150, stale_polls=100)
+    f = facade(gripper=grip)
+    f.controller._stop = lambda: True
+    r = call(f, "env.set_gripper", open=False)
+    assert r["cancelled"] is True and r["ok"] is False and grip.stopped == 1
+
+
+def test_setpoint_resyncs_on_orientation_drift_too():
+    arm = MockUrArm((0.5, 0.0, 0.3, *DOWN), step_rad=1.0)
+    f = facade(arm)
+    call(f, "env.move_delta", [0.0, 0.0, 0.0])
+    # The tool was turned 0.1 rad by hand (position unchanged): the next command
+    # starts from the measured orientation, not the stale setpoint.
+    turned = (Rotation.from_euler("z", 0.1) * Rotation.from_rotvec(DOWN)).as_rotvec()
+    arm.pose[3:] = turned
+    r = call(f, "env.move_delta", [0.01, 0.0, 0.0])
+    assert r["ok"]
+    np.testing.assert_allclose(arm.moves[-1][3:], turned, atol=1e-9)
+    assert f.controller.limits.divergence_resync_rad == 0.05
+
+
+# -- camera health and freshness -------------------------------------------------------
+
+
+def test_a_dead_camera_blocks_motion_until_it_delivers_frames_again():
+    front = MockCamera("cam0", depth_m=None, fail_reads=4)
+    cams = {"wrist": MockCamera("1"), "front": front}
+    arm = MockUrArm((0.5, 0.0, 0.3, *DOWN))
+    f = facade(arm, cams=cams)
+    with pytest.raises(RuntimeError, match="camera read failed: front"):
+        call(f, "env.get_observation")
+    assert "front" in f.camera_errors and "wrist" not in f.camera_errors
+    with pytest.raises(RuntimeError, match="camera 'front' is not delivering frames"):
+        call(f, "env.move_delta", [0.01, 0.0, 0.0])
+    with pytest.raises(RuntimeError, match="not delivering frames"):
+        call(f, "env.set_gripper", open=True)
+    assert arm.moves == [] and f.controller.commands == 0
+    # The camera came back (its reads succeed): motion is allowed again.
+    front.fail_reads = 0
+    assert call(f, "env.move_delta", [0.01, 0.0, 0.0])["ok"]
+    assert f.camera_errors == {}
+
+
+def test_observations_are_fresh_and_carry_the_frame_age():
+    cams = {
+        "wrist": MockCamera("1"),
+        "front": MockCamera("cam0", depth_m=None, buffered=True),
+    }
+    f = facade(cams=cams)
+    cams["front"].scene = 7
+    obs = call(f, "env.get_observation")
+    assert MockCamera.scene_of(obs["images"]["front"]) == 7, (
+        "the queued pre-motion frame was drained"
+    )
+    assert set(obs["frame_age_s"]) == {"wrist", "front"}
+    assert obs["frame_age_s"]["front"] < 0.5 and obs["max_frame_age_s"] == 0.5
+    # A source that only hands out old frames is refused after one re-read.
+    stale = {
+        "wrist": MockCamera("1"),
+        "front": MockCamera("cam0", depth_m=None, age_s=2),
+    }
+    g = facade(cams=stale)
+    with pytest.raises(RuntimeError, match="front: frame is 2.0. s old"):
+        call(g, "env.get_observation")
+    assert stale["front"].reads == 4, "read_fresh twice, each discarding one frame"
+    with pytest.raises(ValueError, match="max_frame_age_s must be positive"):
+        facade(config=cfg(cameras={"max_frame_age_s": 0}))
+    with pytest.raises(ValueError, match="unknown cameras keys"):
+        facade(config=cfg(cameras={"max_frame_age": 1}))
+
+
+def test_hand_eye_capture_waits_for_rest_and_takes_a_fresh_frame():
+    arm = MockUrArm((0.5, 0.0, 0.3, *DOWN))
+    cam = MockCamera("cam0", depth_m=None, buffered=True)
+    clock = {"t": 0.0}
+
+    def tick():
+        clock["t"] += 0.05
+        return clock["t"]
+
+    # The arm was moved to a new pose (scene 1) since the camera's last read of
+    # scene 0: a plain read would pair the new pose with the old image.
+    cam.read()
+    arm.pose[0] = 0.55
+    cam.scene = 1
+    assert MockCamera.scene_of(cam.read()) == 0
+    pose, joints, frame = capture_sample(
+        arm, cam, clock=tick, sleep=lambda s: None, settle_s=0.2
+    )
+    assert MockCamera.scene_of(frame) == 1 and pose[0] == pytest.approx(0.55)
+    assert joints.shape == (6,)
+    # A swaying arm is not sampled.
+    arm.speeds = np.array([0.0, 0.01, 0.0, 0.0, 0.0, 0.0])
+    with pytest.raises(RuntimeError, match="still moving"):
+        capture_sample(arm, cam, clock=tick, sleep=lambda s: None, timeout_s=1.0)
+    arm.speeds = np.zeros(6)
+    # A frame that is too old is refused (real clock: the mock backdates against it).
+    with pytest.raises(RuntimeError, match="s old"):
+        capture_sample(
+            arm,
+            MockCamera("x", depth_m=None, age_s=3.0),
+            sleep=lambda s: None,
+            max_age_s=0.5,
+            settle_s=0.0,
+        )
 
 
 # -- arm binding ---------------------------------------------------------------------
@@ -886,7 +1130,6 @@ def test_board_detection_round_trips_a_rendered_checkerboard():
     cv2 = pytest.importorskip("cv2")
     board = calibrate.Board(8, 5, 0.03)  # even x odd: no 180-degree ambiguity
     K = np.array([[800.0, 0, 320], [0, 800.0, 240], [0, 0, 1]])
-    D = np.zeros(5)
     R = Rotation.from_euler("xyz", [0.25, -0.2, 0.1]).as_matrix()
     t = np.array([-0.08, -0.05, 0.6])
     # Render the board's squares by projecting their outer corners.
@@ -903,7 +1146,8 @@ def test_board_detection_round_trips_a_rendered_checkerboard():
             uv = (K @ pts.T).T
             uv = uv[:, :2] / uv[:, 2:]
             cv2.fillConvexPoly(img, np.round(uv).astype(np.int32), 0)
-    T, reproj = calibrate.detect_board(img, K, D, board)
+    intr = {"fx": 800.0, "fy": 800.0, "ppx": 320.0, "ppy": 240.0}
+    T, reproj = calibrate.detect_board(img, intr, board)
     assert reproj < 1.0
     # The board frame's origin corner is a convention of the detector; the recovered
     # corners must coincide with the rendered ones (as a set) and lie in the same plane.
@@ -915,4 +1159,11 @@ def test_board_detection_round_trips_a_rendered_checkerboard():
     normal = calibrate.rotation_deg(T[:3, :3], R)
     assert normal < 0.5 or abs(normal - 180) < 0.5
     with pytest.raises(ValueError, match="checkerboard_not_found"):
-        calibrate.detect_board(np.zeros((480, 640), np.uint8), K, D, board)
+        calibrate.detect_board(np.zeros((480, 640), np.uint8), intr, board)
+    # The same board seen through an inverse-Brown-Conrady lens (RealSense colour
+    # streams) solves to the same pose once the corners are undistorted: distort the
+    # rendered image's corner set analytically instead of re-rendering.
+    coeffs = [0.05, -0.02, 0.001, -0.001, 0.0]
+    inv = {**intr, "distortion_model": "inverse_brown_conrady", "coeffs": coeffs}
+    und = undistort_pixels(np.array([[100.0, 80.0], [500.0, 400.0]]), inv)
+    assert not np.allclose(und, [[100.0, 80.0], [500.0, 400.0]])

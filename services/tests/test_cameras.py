@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+import time
+
 import numpy as np
 import pytest
 
@@ -26,8 +28,11 @@ from pi_embodied_services.components.cameras import (
     intrinsics_from_config,
     parse_source,
     parse_sources,
+    undistort_normalized,
+    undistort_pixels,
     validate_device,
 )
+from pi_embodied_services.components.cameras.base import _distort
 from pi_embodied_services.components.cameras.mock import MOCK_ENV, MockCamera
 
 
@@ -92,6 +97,68 @@ def test_config_intrinsics_take_the_realsense_layout():
         intrinsics_from_config(
             {"fx": float("nan"), "fy": 1, "ppx": 1, "ppy": 1}, 640, 480
         )
+    # Distortion: no coeffs = none; coeffs without a model = OpenCV's forward
+    # Brown-Conrady, padded to [k1, k2, p1, p2, k3]; unknown models are refused.
+    assert intr["distortion_model"] == "none" and intr["coeffs"] == [0.0] * 5
+    base = {"fx": 500, "fy": 510, "cx": 320, "cy": 240}
+    fwd = intrinsics_from_config({**base, "coeffs": [0.1, -0.2, 0.0, 0.0]}, 640, 480)
+    assert fwd["distortion_model"] == "brown_conrady"
+    assert fwd["coeffs"] == [0.1, -0.2, 0.0, 0.0, 0.0]
+    inv = intrinsics_from_config(
+        {**base, "distortion_model": "inverse_brown_conrady", "coeffs": [0.1] * 5},
+        640,
+        480,
+    )
+    assert inv["distortion_model"] == "inverse_brown_conrady"
+    with pytest.raises(ValueError, match="distortion_model must be one of"):
+        intrinsics_from_config({**base, "distortion_model": "kannala_brandt4"}, 1, 1)
+    with pytest.raises(ValueError, match="at most 5"):
+        intrinsics_from_config({**base, "coeffs": [0.0] * 6}, 640, 480)
+
+
+def test_undistortion_follows_the_intrinsics_distortion_model():
+    rng = np.random.default_rng(0)
+    xy = rng.uniform(-0.4, 0.4, (50, 2))
+    coeffs = [0.08, -0.03, 0.002, -0.001, 0.01]
+    # Forward models: distort, then undistort round-trips.
+    for model, modified in (("brown_conrady", False), ("modified_brown_conrady", True)):
+        distorted = _distort(xy, np.asarray(coeffs), modified)
+        assert not np.allclose(distorted, xy)
+        np.testing.assert_allclose(
+            undistort_normalized(distorted, model, coeffs), xy, atol=1e-9
+        )
+    # The two forward models differ (tangential terms applied at different points).
+    assert not np.allclose(
+        _distort(xy, np.asarray(coeffs), False), _distort(xy, np.asarray(coeffs), True)
+    )
+    # The inverse model (RealSense colour) stores undistorting coefficients: applied
+    # once, no iteration, and not the same as inverting the forward model.
+    inv = undistort_normalized(xy, "inverse_brown_conrady", coeffs)
+    np.testing.assert_allclose(inv, _distort(xy, np.asarray(coeffs), False))
+    assert not np.allclose(inv, undistort_normalized(xy, "brown_conrady", coeffs))
+    # No coefficients or model none: identity; short coefficient lists are padded.
+    np.testing.assert_allclose(undistort_normalized(xy, "none", coeffs), xy)
+    np.testing.assert_allclose(undistort_normalized(xy, "brown_conrady", None), xy)
+    np.testing.assert_allclose(
+        undistort_normalized(xy, "brown_conrady", coeffs[:2]),
+        undistort_normalized(xy, "brown_conrady", coeffs[:2] + [0, 0, 0]),
+    )
+    with pytest.raises(ValueError, match="not supported"):
+        undistort_normalized(xy, "ftheta", coeffs)
+    # Pixels go through K and back; the principal point is a fixed point.
+    intr = {
+        "fx": 600.0,
+        "fy": 600.0,
+        "ppx": 320.0,
+        "ppy": 240.0,
+        "distortion_model": "brown_conrady",
+        "coeffs": coeffs,
+    }
+    uv = np.array([[320.0, 240.0], [100.0, 50.0]])
+    out = undistort_pixels(uv, intr)
+    np.testing.assert_allclose(out[0], [320.0, 240.0])
+    assert np.linalg.norm(out[1] - uv[1]) > 1.0
+    np.testing.assert_allclose(undistort_pixels(uv, {**intr, "coeffs": None}), uv)
 
 
 def test_mock_camera_is_test_only_and_yields_frames(monkeypatch):
@@ -113,3 +180,29 @@ def test_mock_camera_is_test_only_and_yields_frames(monkeypatch):
     assert not rgb_only.has_depth and rgb_only.read().depth is None
     rgb_only.close()
     assert rgb_only.closed
+
+
+def test_frames_carry_a_monotonic_capture_time_and_read_fresh_drains_a_queue(
+    monkeypatch,
+):
+    monkeypatch.setenv(MOCK_ENV, "1")
+    # A frame built without one gets the construction time (older drivers/mocks).
+    before = time.monotonic()
+    f = Frame(rgb=np.zeros((2, 2, 3), np.uint8), depth=None, timestamp_s=0.0)
+    assert before <= f.monotonic_s <= time.monotonic() and f.age_s() < 1.0
+    assert f.age_s(f.monotonic_s + 2.5) == pytest.approx(2.5)
+    old = MockCamera("s", 4, 4, age_s=3.0).read()
+    assert old.age_s() >= 3.0
+    # A buffered source (a V4L2 queue) hands out the scene as of the previous read;
+    # read_fresh discards that frame and returns the current scene.
+    cam = MockCamera("q", 4, 4, buffered=True)
+    cam.read()
+    cam.scene = 5
+    assert MockCamera.scene_of(cam.read()) == 0
+    cam.scene = 6
+    assert MockCamera.scene_of(cam.read_fresh()) == 6 and cam.reads == 4
+    # A dead source raises for the configured reads, then recovers.
+    dead = MockCamera("d", 4, 4, fail_reads=1)
+    with pytest.raises(RuntimeError, match="no frame"):
+        dead.read()
+    assert dead.read().rgb.shape == (4, 4, 3)

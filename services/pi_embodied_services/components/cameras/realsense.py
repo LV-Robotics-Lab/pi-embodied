@@ -190,7 +190,8 @@ class RealSenseRGBD(Camera):
             "fy": float(i.fy),
             "ppx": float(i.ppx),
             "ppy": float(i.ppy),
-            "distortion_model": str(i.model),
+            # str(rs.distortion.x) is "distortion.x"; keep the librealsense name.
+            "distortion_model": str(i.model).split(".")[-1],
             "coeffs": [float(c) for c in i.coeffs],
         }
 
@@ -205,6 +206,7 @@ class RealSenseRGBD(Camera):
 
     def _read_once(self) -> Frame:
         frames = self.pipeline.wait_for_frames(timeout_ms=self.read_timeout_ms)
+        captured = time.monotonic()
         if self.align is not None:
             frames = self.align.process(frames)
         color = frames.get_color_frame()
@@ -219,7 +221,9 @@ class RealSenseRGBD(Camera):
             depth_m = (
                 np.asanyarray(depth.get_data()).astype(np.float32) * self.depth_scale
             )
-        return Frame(rgb=rgb, depth=depth_m, timestamp_s=time.time())
+        return Frame(
+            rgb=rgb, depth=depth_m, timestamp_s=time.time(), monotonic_s=captured
+        )
 
     def read(self) -> Frame:
         error: Exception | None = None

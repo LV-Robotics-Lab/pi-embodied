@@ -40,8 +40,12 @@ logger = get_logger("ur5e_hw")
 
 #: Robotiq URCap socket on the UR controller.
 ROBOTIQ_PORT = 63352
-#: ``OBJ`` register: 0 moving, 1 stopped opening on an object, 2 stopped closing on an
-#: object, 3 at the requested position (nothing detected).
+#: ``OBJ`` register (gOBJ in the 2F manual): 0 fingers moving toward the requested
+#: position, 1 stopped by contact while opening, 2 stopped by contact while closing,
+#: 3 at the requested position (nothing detected). The register keeps the previous
+#: command's value until the fingers start moving, so right after ``GTO`` it can still
+#: read 3 from the last motion; ``PRE`` (gPR, the echoed requested position) tells
+#: whether a new command was taken.
 OBJ_MOVING, OBJ_OPENING_CONTACT, OBJ_CLOSING_CONTACT, OBJ_AT_POSITION = 0, 1, 2, 3
 
 
@@ -78,6 +82,7 @@ class RtdeArm:
         return np.asarray(self._recv.getActualQd(), dtype=np.float64)
 
     def status(self) -> dict[str, Any]:
+        """Safety state from the receive interface (works while control is refused)."""
         r = self._recv
         return {
             "robot_mode": int(r.getRobotMode()),
@@ -106,13 +111,22 @@ class RtdeArm:
 
     # -- motion (asynchronous: returns at once, poll ``busy``) ------------------
 
-    def move_l(self, pose: Any, speed: float, accel: float) -> None:
-        self._control().moveL(
-            [float(v) for v in pose], float(speed), float(accel), True
+    def move_l(self, pose: Any, speed: float, accel: float) -> bool:
+        """Start a moveL; False when the controller rejected it (unreachable pose,
+        not in remote control, protective stop, RTDE script not running)."""
+        return bool(
+            self._control().moveL(
+                [float(v) for v in pose], float(speed), float(accel), True
+            )
         )
 
-    def move_j(self, q: Any, speed: float, accel: float) -> None:
-        self._control().moveJ([float(v) for v in q], float(speed), float(accel), True)
+    def move_j(self, q: Any, speed: float, accel: float) -> bool:
+        """Start a moveJ; False when the controller rejected it (see ``move_l``)."""
+        return bool(
+            self._control().moveJ(
+                [float(v) for v in q], float(speed), float(accel), True
+            )
+        )
 
     def busy(self) -> bool:
         """Whether an asynchronous motion is still running."""
@@ -203,6 +217,11 @@ class RobotiqGripper:
     def position(self) -> int:
         return self._get("POS")
 
+    def requested_position(self) -> int:
+        """``PRE``: the position request the gripper is acting on (echoed back once
+        a ``GTO`` command was taken, so it tells a fresh status from a stale one)."""
+        return self._get("PRE")
+
     def object_status(self) -> int:
         return self._get("OBJ")
 
@@ -214,6 +233,10 @@ class RobotiqGripper:
         self._set("FOR", max(0, min(255, int(force))))
         self._set("POS", max(0, min(255, int(position))))
         self._set("GTO", 1)
+
+    def stop(self) -> None:
+        """``SET GTO 0``: the fingers stop where they are (a cancelled command)."""
+        self._set("GTO", 0)
 
     def close(self) -> None:
         sock, self._sock = self._sock, None

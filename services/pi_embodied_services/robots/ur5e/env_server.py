@@ -24,12 +24,17 @@ Differences: ``env.move_pose`` (absolute pose within the per-call limits), no
 Safety, all on this server (pi's robot adds its own gate on top): a translation
 beyond ``limits.max_move_m`` or a turn beyond ``max_rotate_rad`` is refused before
 anything is commanded; so is a target outside the workspace box, below
-``z_floor_m`` or tilting the tool past ``max_tilt_rad``. A running moveL/moveJ polls
-``stop`` and is brought to rest with stopL/stopJ (``cancelled: true``); a stop,
-timeout, driver error or missed target clears the setpoint, so the next command
-starts from the measured pose. The config (limits, begin pose, every camera's
-hand-eye calibration) is bound to one arm: ``calibration.arm_id`` must equal the
-controller's serial number, and each calibration YAML must name the same arm.
+``z_floor_m`` or tilting the tool past ``max_tilt_rad``, and any motion while the
+robot is protective/emergency stopped or while a camera cannot deliver frames (the
+agent would act blind). A moveL/moveJ the controller rejects raises; one that ends
+in a protective stop is reported (``protective_stopped: true``). A running motion
+polls ``stop`` and is brought to rest with stopL/stopJ (``cancelled: true``); a
+stop, timeout, driver error or missed target clears the setpoint, so the next
+command starts from the measured pose. Observations are fresh frames (the capture
+queue is drained first) and refuse frames older than ``cameras.max_frame_age_s``.
+The config (limits, begin pose, every camera's hand-eye calibration) is bound to
+one arm: ``calibration.arm_id`` must equal the controller's serial number, and each
+calibration YAML must name the same arm.
 
 Deploying: on the UR pendant enable Remote Control and the RTDE/URCap ports; on the
 workstation install the services' ``ur5e`` extra (``ur-rtde``, cameras; add
@@ -43,6 +48,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import time
 from collections.abc import Callable
@@ -96,7 +102,19 @@ _GRIPPER_KEYS = {
     "motion_eps_m": "gripper_motion_eps_m",
     "close_threshold_m": "close_threshold_m",
     "empty_width_m": "empty_width_m",
+    "ack_timeout_s": "gripper_ack_timeout_s",
 }
+#: ``cameras:`` keys besides ``devices`` (per-device defaults and read policy).
+_CAMERA_KEYS = (
+    "devices",
+    "width",
+    "height",
+    "fps",
+    "read_timeout_s",
+    "max_frame_age_s",
+)
+#: Frames older than this (seconds, monotonic) are re-read once, then refused.
+DEFAULT_MAX_FRAME_AGE_S = 0.5
 _LIMIT_KEYS = tuple(
     f
     for f in UR5eLimits.__dataclass_fields__
@@ -162,6 +180,9 @@ def camera_devices(
     ``--cameras name=type:source,...`` override (the config's devices supply
     ``mount`` / ``calibration`` / ``intrinsics`` for names they share)."""
     cams = cfg.get("cameras") or {}
+    unknown = sorted(set(cams) - set(_CAMERA_KEYS))
+    if unknown:
+        raise ValueError(f"unknown cameras keys {unknown}; valid: {list(_CAMERA_KEYS)}")
     configured = cams.get("devices") or {}
     if not isinstance(configured, dict):
         raise ValueError("cameras.devices must be a mapping")
@@ -182,6 +203,18 @@ def camera_devices(
     return main[0], sorted(n for n in devices if n != main[0]), devices
 
 
+def max_frame_age(cfg: dict[str, Any]) -> float:
+    """``cameras.max_frame_age_s`` (default :data:`DEFAULT_MAX_FRAME_AGE_S`)."""
+    value = (cfg.get("cameras") or {}).get("max_frame_age_s", DEFAULT_MAX_FRAME_AGE_S)
+    try:
+        age = float(value)
+    except (TypeError, ValueError):
+        raise ValueError("cameras.max_frame_age_s must be a number") from None
+    if not math.isfinite(age) or age <= 0:
+        raise ValueError("cameras.max_frame_age_s must be positive")
+    return age
+
+
 def load_config(path: str | Path | None, cameras: str = "") -> dict[str, Any]:
     """Load and validate the robot YAML (see config/example.yaml)."""
     cfg = yaml.safe_load(Path(path or DEFAULT_CONFIG).expanduser().read_text()) or {}
@@ -195,6 +228,7 @@ def load_config(path: str | Path | None, cameras: str = "") -> dict[str, Any]:
     limits_from_config(cfg)
     check_binding(cfg)
     camera_devices(cfg, cameras)
+    max_frame_age(cfg)
     return cfg
 
 
@@ -214,6 +248,7 @@ class UR5eEnvFacade(BaseEnvFacade):
         camera_flag: str = "",
         task_description: str = "",
         sleep: Callable[[float], None] = time.sleep,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         super().__init__()
         self._cfg = cfg
@@ -222,13 +257,23 @@ class UR5eEnvFacade(BaseEnvFacade):
         self._arm = arm
         self._gripper = gripper
         self._cameras = cameras
+        self._clock = clock
         self._main, self._extras, self._devices = camera_devices(cfg, camera_flag)
         missing = sorted({self._main, *self._extras} - set(cameras))
         if missing:
             raise ValueError(f"cameras not connected: {missing}")
+        self.max_frame_age_s = max_frame_age(cfg)
+        #: Cameras whose last read failed, with the error; motion is refused while
+        #: one is listed and a fresh read still fails.
+        self.camera_errors: dict[str, str] = {}
         self.arm_id = self._bound_identity()
         self.controller = UR5eController(
-            arm, gripper, limits_from_config(cfg), self.stop_requested, sleep=sleep
+            arm,
+            gripper,
+            limits_from_config(cfg),
+            self.stop_requested,
+            sleep=sleep,
+            clock=clock,
         )
         self._calibrations: dict[str, dict[str, Any] | None] = {
             name: self._load_calibration(name) for name in cameras
@@ -419,19 +464,74 @@ class UR5eEnvFacade(BaseEnvFacade):
             "arm_id": self.arm_id,
         }
 
+    def _fresh_frame(self, name: str) -> Any:
+        """A frame from camera ``name`` no older than ``max_frame_age_s`` (one re-read
+        when the first is stale); records the camera as unhealthy on failure."""
+        cam = self._cameras[name]
+        try:
+            frame = cam.read_fresh()
+            age = frame.age_s(self._clock())
+            if age > self.max_frame_age_s:
+                frame = cam.read_fresh()
+                age = frame.age_s(self._clock())
+            if age > self.max_frame_age_s:
+                raise RuntimeError(
+                    f"frame is {age:.2f} s old (> cameras.max_frame_age_s "
+                    f"{self.max_frame_age_s} s): the source is buffering or stalled"
+                )
+        except Exception as exc:
+            self.camera_errors[name] = str(exc)
+            raise
+        self.camera_errors.pop(name, None)
+        return frame
+
+    def _require_cameras(self, what: str) -> None:
+        """Refuse ``what`` while a camera that failed its last read still fails: the
+        agent would move without seeing the result."""
+        for name in sorted(self.camera_errors):
+            try:
+                self._fresh_frame(name)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"{what} refused: camera {name!r} is not delivering frames ({exc}); "
+                    "reconnect it (or restart the env server); nothing was commanded"
+                ) from exc
+
     def get_observation(self) -> dict[str, Any]:
-        """Live frames per camera: ``images[name]`` uint8 [H,W,3]; ``depths[name]``
-        float32 [H,W] m for cameras with depth; ``timestamps[name]``."""
+        """Fresh frames per camera: ``images[name]`` uint8 [H,W,3]; ``depths[name]``
+        float32 [H,W] m for cameras with depth; ``timestamps[name]`` wall clock;
+        ``frame_age_s[name]`` seconds between the capture and this call. Every
+        camera is read before a failure is raised, so one dead camera marks only
+        itself unhealthy."""
         images: dict[str, np.ndarray] = {}
         depths: dict[str, np.ndarray] = {}
         stamps: dict[str, float] = {}
-        for name, cam in self._cameras.items():
-            f = cam.read()
+        ages: dict[str, float] = {}
+        errors: dict[str, str] = {}
+        for name in self._cameras:
+            try:
+                f = self._fresh_frame(name)
+            except Exception as exc:
+                errors[name] = str(exc)
+                continue
             images[name] = np.ascontiguousarray(f.rgb)
             if f.depth is not None:
                 depths[name] = np.asarray(f.depth, dtype=np.float32)
             stamps[name] = float(f.timestamp_s)
-        return {"images": images, "depths": depths, "timestamps": stamps}
+            ages[name] = f.age_s(self._clock())
+        if errors:
+            raise RuntimeError(
+                "camera read failed: "
+                + "; ".join(f"{name}: {err}" for name, err in errors.items())
+                + ". Motion is refused until the camera delivers frames again"
+            )
+        return {
+            "images": images,
+            "depths": depths,
+            "timestamps": stamps,
+            "frame_age_s": ages,
+            "max_frame_age_s": self.max_frame_age_s,
+        }
 
     def get_camera_meta(self) -> dict[str, Any]:
         return {
@@ -447,24 +547,30 @@ class UR5eEnvFacade(BaseEnvFacade):
     # -- motion -----------------------------------------------------------
 
     def move_delta(self, delta_xyz: Any) -> dict[str, Any]:
+        self._require_cameras("the move")
         return self.controller.move_delta(delta_xyz)
 
     def move_pose(
         self, xyz: Any, rotvec: Any = None, rpy: Any = None
     ) -> dict[str, Any]:
+        self._require_cameras("the move")
         return self.controller.move_pose(xyz, rotvec=rotvec, rpy=rpy)
 
     def rotate_delta(self, delta_rpy: Any) -> dict[str, Any]:
+        self._require_cameras("the rotation")
         return self.controller.rotate_delta(delta_rpy)
 
     def set_gripper(self, *, open: bool) -> dict[str, Any]:
+        self._require_cameras("the gripper command")
         result = self.controller.set_gripper(open=bool(open))
         result["robot_state"] = self.get_robot_state()
         result["states"] = None
         return result
 
     def reset(self) -> dict[str, Any]:
-        """Open the gripper, moveJ to ``calibration.begin_joints`` (moves the arm)."""
+        """Open the gripper (a held object is released and reported), lift clear, moveJ
+        to ``calibration.begin_joints`` (moves the arm). Not gated on the cameras: it is
+        the fixed move home, the one motion that needs no observation after it."""
         result = self.controller.reset()
         result["robot_state"] = self.get_robot_state()
         result["states"] = None

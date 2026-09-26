@@ -16,11 +16,14 @@
 # acceleration 0.5; Robotiq positions 0 = open .. 255 = closed). The safety layer is
 # pi-embodied's (robots/franka_polymetis/control.py, robots/piper/controller.py):
 # per-call translation/rotation limits that refuse instead of clamping, a workspace
-# box and Z floor checked before anything is commanded, a tool tilt limit, ``stop``
-# polled while a motion runs (stopL / stopJ bring the arm to rest), a setpoint that
-# is cleared after a stop or a failure, and a gripper that reports jammed fingers
-# and empty grasps. OpenETA's move_to_pose passed ``rpy`` straight into moveL as a
-# rotation vector when no ``rotvec`` was given (ur5e.py:177); ``pose_rotvec`` converts.
+# box and Z floor checked before anything is commanded, a tool tilt limit, a
+# protective-stop check before and after every motion (moveL/moveJ return False
+# when the controller rejects them; OpenETA ignored that), ``stop`` polled while a
+# motion runs (stopL / stopJ bring the arm to rest, GTO 0 stops the gripper), a
+# setpoint that is cleared after a stop or a failure, a reset that lifts clear
+# before the joint move, and a gripper that reports jammed fingers and empty grasps.
+# OpenETA's move_to_pose passed ``rpy`` straight into moveL as a rotation vector when
+# no ``rotvec`` was given (ur5e.py:177); ``pose_rotvec`` converts.
 
 """UR5e motion primitives and safety limits on top of the ur_rtde handles.
 
@@ -76,6 +79,11 @@ def tool_tilt(rotvec: np.ndarray) -> float:
     return float(math.acos(max(-1.0, min(1.0, -z[2]))))
 
 
+def rotation_gap(a: np.ndarray, b: np.ndarray) -> float:
+    """Angle (rad) between two rotation vectors."""
+    return float((Rotation.from_rotvec(a) * Rotation.from_rotvec(b).inv()).magnitude())
+
+
 @dataclass
 class UR5eLimits:
     """Safety limits and motion settings (config/example.yaml documents each)."""
@@ -97,10 +105,13 @@ class UR5eLimits:
     rotate_tolerance_rad: float = 0.02
     joint_tolerance_rad: float = 0.02
     divergence_resync_m: float = 0.01
+    divergence_resync_rad: float = 0.05
+    reset_lift_m: float = 0.05
     gripper_stroke_m: float = 0.085
     gripper_speed: int = 255
     gripper_force: int = 100
     gripper_timeout_s: float = 5.0
+    gripper_ack_timeout_s: float = 0.5
     gripper_poll_s: float = 0.05
     gripper_motion_eps_m: float = 0.003
     close_threshold_m: float = 0.075
@@ -146,7 +157,10 @@ class UR5eLimits:
         bound("joint_speed_radps", 1e-3, 1.0)
         bound("joint_accel_radps2", 1e-2, 2.0)
         bound("poll_s", 0.0, 0.5)
+        bound("divergence_resync_rad", 1e-3, math.pi)
+        bound("reset_lift_m", 0.0, 0.2)
         bound("gripper_stroke_m", 0.01, 0.3)
+        bound("gripper_ack_timeout_s", 0.0, 5.0)
         if self.max_tilt_rad is not None:
             bound("max_tilt_rad", 0.0, math.pi)
         if self.begin_joints is not None and np.asarray(self.begin_joints).shape != (
@@ -195,13 +209,15 @@ class UR5eController:
 
     def setpoint(self) -> np.ndarray:
         """The pose the next command starts from: the setpoint while the measured
-        pose is within ``divergence_resync_m`` of it, else the measured pose (the
-        setpoint is re-anchored there)."""
+        pose is within ``divergence_resync_m`` / ``divergence_resync_rad`` of it,
+        else the measured pose (the setpoint is re-anchored there)."""
         pose = self.measured()
         if (
             self.target is None
             or np.linalg.norm(self.target[:3] - pose[:3])
             > self.limits.divergence_resync_m
+            or rotation_gap(self.target[3:], pose[3:])
+            > self.limits.divergence_resync_rad
         ):
             self.target = pose.copy()
         return self.target.copy()
@@ -292,10 +308,59 @@ class UR5eController:
 
     # -- motion ------------------------------------------------------------
 
+    def safety_stopped(self) -> str | None:
+        """Why the robot cannot move right now (``protective_stopped`` or
+        ``emergency_stopped``, with the safety mode), or None."""
+        status = self.arm.status()
+        for key in ("emergency_stopped", "protective_stopped"):
+            if status.get(key):
+                return (
+                    f"{key.replace('_', ' ')} (safety mode {status.get('safety_mode')})"
+                )
+        return None
+
+    def _require_movable(self, what: str) -> None:
+        """Refuse ``what`` before anything is commanded while the robot is stopped by
+        its safety system; the setpoint is cleared (the arm may have been moved)."""
+        reason = self.safety_stopped()
+        if reason is not None:
+            self.target = None
+            raise RuntimeError(
+                f"{what} refused: the robot is {reason}. Clear the stop on the teach "
+                "pendant (unlock protective stop / release the e-stop) and re-enable "
+                "remote control; nothing was commanded"
+            )
+
+    def _rejected(self, what: str) -> RuntimeError:
+        """The controller returned False from moveL/moveJ: the command never ran."""
+        self.target = None
+        reason = self.safety_stopped()
+        return RuntimeError(
+            f"{what} was rejected by the controller"
+            + (f": the robot is {reason}" if reason else "")
+            + " (the target may be unreachable, remote control may be off, or the RTDE "
+            "control script is not running); the setpoint was cleared"
+        )
+
+    def _after_motion(self, result: dict[str, Any], what: str) -> None:
+        """A safety stop during the motion makes the result not ok and says so."""
+        reason = self.safety_stopped()
+        if reason is not None:
+            self.target = None
+            result["ok"] = False
+            result["protective_stopped"] = True
+            result["note"] = (
+                f"{what} ended with the robot {reason}: it hit something or left the "
+                "safety limits. Clear the stop on the teach pendant before the next "
+                "command; the setpoint was cleared"
+            )
+
     def _run_l(self, start: np.ndarray, target: np.ndarray, timeout_s: float):
         """Start a moveL to ``target`` and wait for it; stop it on ``stop`` or timeout."""
         lim = self.limits
-        self.arm.move_l(target, lim.speed_mps, lim.accel_mps2)
+        self._require_movable("the move")
+        if not self.arm.move_l(target, lim.speed_mps, lim.accel_mps2):
+            raise self._rejected("moveL")
         self.commands += 1
         t0 = self._clock()
         cancelled = timed_out = False
@@ -325,11 +390,7 @@ class UR5eController:
             ) from exc
         final = self.measured()
         pos_err = float(np.linalg.norm(target[:3] - final[:3]))
-        rot_err = float(
-            (
-                Rotation.from_rotvec(target[3:]) * Rotation.from_rotvec(final[3:]).inv()
-            ).magnitude()
-        )
+        rot_err = rotation_gap(target[3:], final[3:])
         ok = (
             not cancelled
             and not timed_out
@@ -357,6 +418,7 @@ class UR5eController:
             result["note"] = (
                 f"moveL did not finish within {timeout_s} s and was stopped"
             )
+        self._after_motion(result, "the move")
         return result
 
     def move_delta(self, delta_xyz: Any) -> dict[str, Any]:
@@ -416,11 +478,7 @@ class UR5eController:
                 f"the pose is {dist:.4f} m from the current setpoint; the limit is "
                 f"{lim.max_move_m} m per call; nothing was commanded"
             )
-        angle = float(
-            (
-                Rotation.from_rotvec(rv) * Rotation.from_rotvec(start[3:]).inv()
-            ).magnitude()
-        )
+        angle = rotation_gap(rv, start[3:])
         if angle > lim.max_rotate_rad + 1e-9:
             raise ValueError(
                 f"the pose turns the tool {angle:.4f} rad; the limit is {lim.max_rotate_rad} "
@@ -434,16 +492,40 @@ class UR5eController:
 
     # -- gripper -----------------------------------------------------------
 
-    def _await_gripper(self) -> tuple[bool, bool]:
-        """Poll until the fingers stopped (``OBJ`` != moving). (settled, cancelled)."""
+    def _await_gripper(self, requested: int) -> tuple[bool, bool]:
+        """Poll until the fingers settled after a ``go_to(requested)``; (settled,
+        cancelled). A stop sends the gripper a stop.
+
+        ``OBJ`` lags: right after the command it still reads the previous motion's
+        value (3 = at position), which the old check took for "settled" and then
+        reported unmoved fingers as jammed. The status counts as fresh only once the
+        gripper echoes the request (``PRE``) and either reports motion (``OBJ`` 0),
+        the position changed, or the position equals the request. Fingers that show
+        none of that within ``gripper_ack_timeout_s`` are taken as settled where they
+        are (so a real jam is still reported).
+        """
         lim = self.limits
         t0 = self._clock()
+        pos0 = int(self.gripper.position())
+        fresh = False
         while True:
             if self._stop():
+                try:
+                    self.gripper.stop()
+                except Exception:
+                    pass
                 return False, True
-            if int(self.gripper.object_status()) != 0:
-                return True, False
-            if self._clock() - t0 > lim.gripper_timeout_s:
+            elapsed = self._clock() - t0
+            if int(self.gripper.requested_position()) == int(requested):
+                obj = int(self.gripper.object_status())
+                pos = int(self.gripper.position())
+                if obj == 0 or pos != pos0 or pos == int(requested):
+                    fresh = True
+                if fresh and obj != 0:
+                    return True, False
+                if not fresh and elapsed > lim.gripper_ack_timeout_s:
+                    return True, False
+            if elapsed > lim.gripper_timeout_s:
                 return False, False
             self._sleep(lim.gripper_poll_s)
 
@@ -459,11 +541,12 @@ class UR5eController:
             self.gripper.activate()
             self.commands += 1
         before = self.width()
-        self.gripper.go_to(0 if open else 255, lim.gripper_speed, lim.gripper_force)
+        requested = 0 if open else 255
+        self.gripper.go_to(requested, lim.gripper_speed, lim.gripper_force)
         self.commands += 1
         self.commanded_open = bool(open)
         steps = 1
-        settled, cancelled = self._await_gripper()
+        settled, cancelled = self._await_gripper(requested)
         grip = self.gripper_state()
         width = grip["width_m"]
         result: dict[str, Any] = {
@@ -492,7 +575,7 @@ class UR5eController:
             self.commands += 1
             self.commanded_open = True
             steps += 1
-            _, cancelled = self._await_gripper()
+            _, cancelled = self._await_gripper(0)
             width = self.width()
             result["grasp_empty"] = True
             result["note"] = (
@@ -523,8 +606,10 @@ class UR5eController:
         target = np.asarray(q, dtype=np.float64).reshape(-1)
         if target.shape != (6,) or not np.all(np.isfinite(target)):
             raise ValueError("joints must be 6 finite angles (rad)")
+        self._require_movable("the joint move")
         self.target = None
-        self.arm.move_j(target, lim.joint_speed_radps, lim.joint_accel_radps2)
+        if not self.arm.move_j(target, lim.joint_speed_radps, lim.joint_accel_radps2):
+            raise self._rejected("moveJ")
         self.commands += 1
         t0 = self._clock()
         cancelled = timed_out = False
@@ -562,34 +647,82 @@ class UR5eController:
             result["cancelled"] = True
         if timed_out:
             result["timed_out"] = True
+            result["note"] = (
+                f"moveJ did not finish within {lim.reset_timeout_s} s and was stopped"
+            )
+        self._after_motion(result, "the joint move")
         return result
 
     def reset(self) -> dict[str, Any]:
-        """Open the gripper, then moveJ to ``begin_joints`` (refused when unset)."""
-        if self.limits.begin_joints is None:
+        """Open the gripper, lift ``reset_lift_m`` clear of the workspace, then moveJ
+        to ``begin_joints`` (refused when unset); the same sequence as the Franka
+        servers. A held object is released where the arm is (like Franka's reset, so
+        the reset between episodes always runs) and reported as ``released_object``.
+        The result is not ok when the lift or the joint move did not arrive, or when
+        the begin pose leaves the TCP outside the workspace box.
+        """
+        lim = self.limits
+        if lim.begin_joints is None:
             raise ValueError(
                 "calibration.begin_joints is not set: jog the arm to its begin pose, run "
                 "the env server with --read-pose and copy joints_rad; nothing was commanded"
             )
-        grip = self.set_gripper(open=True) if self.gripper is not None else {"ok": True}
-        if grip.get("cancelled"):
-            return {"ok": False, "cancelled": True, "gripper": grip, "move": None}
-        move = self.move_joints(self.limits.begin_joints)
-        info: dict[str, Any] = {}
-        if move["ok"]:
-            try:
-                self.check_target(self.measured(), self.measured(), "the begin pose")
-            except ValueError as exc:
-                info["begin_pose_outside_workspace"] = True
-                info["note"] = str(exc)
+        self._require_movable("the reset")
+        info: dict[str, Any] = {"begin_joints": list(lim.begin_joints)}
         out: dict[str, Any] = {
-            "ok": bool(move["ok"]) and bool(grip.get("ok", True)),
-            "gripper": grip,
-            "move": move,
+            "ok": False,
+            "gripper": None,
+            "lift": None,
+            "move": None,
             "info": info,
         }
+        grip: dict[str, Any] = {"ok": True}
+        if self.gripper is not None:
+            held = self.gripper_state()
+            if held["grasped"]:
+                info["released_object"] = True
+                info["note"] = (
+                    f"the gripper held an object (width {held['width_m']:.4f} m); "
+                    "it was released where the arm was"
+                )
+            grip = self.set_gripper(open=True)
+            out["gripper"] = grip
+            if grip.get("cancelled"):
+                out["cancelled"] = True
+                return out
+        start = self.setpoint()
+        room = float(lim.workspace_max[2]) - float(start[2])
+        lift = max(0.0, min(lim.reset_lift_m, room))
+        if lift > 1e-4:
+            target = start.copy()
+            target[2] += lift
+            lifted = self._run_l(start, target, lim.move_timeout_s)
+            info["lifted_m"] = lift
+            out["lift"] = lifted
+            if not lifted["ok"]:
+                if lifted.get("cancelled"):
+                    out["cancelled"] = True
+                info["note"] = lifted.get(
+                    "note", "the lift before the joint move did not arrive"
+                )
+                return out
+        move = self.move_joints(lim.begin_joints)
+        out["move"] = move
         if move.get("cancelled"):
             out["cancelled"] = True
+        ok = bool(move["ok"]) and bool(grip.get("ok", True))
+        if move["ok"]:
+            final = self.measured()
+            if np.any(self._violation(final[:3]) > 1e-6):
+                lo, hi = lim.workspace_min, lim.workspace_max
+                info["begin_pose_outside_workspace"] = True
+                info["note"] = (
+                    f"the begin pose puts the TCP at {np.round(final[:3], 4).tolist()}, "
+                    f"outside the workspace (x {lo[0]}..{hi[0]}, y {lo[1]}..{hi[1]}, z "
+                    f"{lim.z_floor_m}..{hi[2]} m); fix calibration.begin_joints or the box"
+                )
+                ok = False
+        out["ok"] = ok
         return out
 
     def hold(self) -> None:

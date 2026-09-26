@@ -199,6 +199,12 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		default: String(spec.keepImages),
 		description: "Camera frames kept in context",
 	});
+	pi.registerFlag("anchor-image", {
+		type: "boolean",
+		default: false,
+		description: "Also keep the episode's first camera frame (OpenETA's visual-history anchor) beyond --keep-images",
+	});
+	const anchored = () => pi.getFlag("anchor-image") === true;
 	pi.registerFlag("max-turns", {
 		type: "string",
 		default: String(spec.budget?.turns ?? 0),
@@ -462,13 +468,27 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		const reason = refusal(event.toolName);
 		return reason === undefined ? undefined : { block: true, reason, terminate: true };
 	});
+	/**
+	 * Older camera frames are replaced by a stub, keeping the latest --keep-images. With --anchor-image
+	 * the episode's first frame stays too (OpenETA's bounded visual history): the first image of the
+	 * earliest tool result that carries one, which is the robot's first observation, main view first.
+	 */
 	pi.on("context", (event) => {
 		let keep = Number(pi.getFlag("keep-images"));
+		const anchor = anchored()
+			? event.messages.find((m) => m.role === "toolResult" && m.content.some((p) => p.type === "image"))
+			: undefined;
 		let pruned = false;
 		const messages = [...event.messages].reverse().map((m) => {
 			if (m.role !== "toolResult") return m;
+			let first = m === anchor;
 			const content = m.content.map((part) => {
-				if (part.type !== "image" || keep-- > 0) return part;
+				if (part.type !== "image") return part;
+				if (first) {
+					first = false;
+					return part;
+				}
+				if (keep-- > 0) return part;
 				pruned = true;
 				return { type: "text" as const, text: spec.imageStub ?? "[older camera frame omitted]" };
 			});
@@ -486,7 +506,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		if (reported || (failed === undefined && !(ready && ran))) return;
 		reported = true;
 		// Ground truth was on offer (--privileged): not comparable with a run without it.
-		const mark = privileged() ? { privileged: true } : {};
+		const mark = { ...(privileged() ? { privileged: true } : {}), ...(anchored() ? { anchor_image: true } : {}) };
 		const r =
 			failed !== undefined
 				? { robot: name, ...task, ...mark, env_error: true, error: failed }

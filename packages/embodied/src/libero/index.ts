@@ -193,13 +193,18 @@ export type Claim = {
 
 /**
  * Run a claimed path leg by leg: servo to each waypoint with the claim's full orientation, or drive the
- * gripper in place. Stops at the episode's end or at the first leg that ends more than 3 cm short
- * (`stalled`, with the `error` the model reads).
+ * gripper in place. Stops at the episode's end, at a leg the servo refused (--ik: no collision-free
+ * path, or predicted contact; `stalled` with its reason as `error`) or at the first leg that ends more
+ * than 3 cm short (`stalled`, with the `error` the model reads).
  */
 export async function runClaim(
 	c: Claim,
 	io: {
-		servo: (target: number[], quat: number[], g: number) => Promise<{ steps: number; final_dist_m: number }>;
+		servo: (
+			target: number[],
+			quat: number[],
+			g: number,
+		) => Promise<{ steps: number; final_dist_m: number; refused?: string }>;
 		actuate: (g: number) => Promise<number>;
 		width: () => number;
 		ended: () => boolean;
@@ -220,6 +225,7 @@ export async function runClaim(
 		const r = await io.servo(c.waypoints[leg.to], c.eef_quat_xyzw, leg.gripper);
 		steps += r.steps;
 		legs.push({ to: leg.to, final_dist_m: r.final_dist_m });
+		if (r.refused) return { legs, steps_used: steps, stalled: leg.to, error: r.refused };
 		// Short of the waypoint because the episode ended is not a stall.
 		if (r.final_dist_m > 0.03 && !io.ended())
 			return {
@@ -731,13 +737,19 @@ export default function libero(pi: ExtensionAPI) {
 	 * Servo xyz and the full orientation (roll, pitch, yaw; any tilt direction) toward a target each
 	 * step: the OSC's rotation delta is the world-frame rotation vector to it (orientationError).
 	 */
-	async function servoOrientation(target: number[], quatTarget: number[], g: number, max_steps = 150) {
+	async function servoOrientation(
+		target: number[],
+		quatTarget: number[],
+		g: number,
+		max_steps = 150,
+		{ tol = 0.012, ori_tol = 0.05 } = {},
+	) {
 		let steps = 0;
 		for (; steps < max_steps && !terminated && !truncated; steps++) {
 			const diff = target.map((v: number, i: number) => v - eef()[i]);
 			const err = orientationError(await quat(), quatTarget);
 			const angle = Math.hypot(...err);
-			if (Math.hypot(...diff) < 0.012 && angle < 0.05) break;
+			if (Math.hypot(...diff) < tol && angle < ori_tol) break;
 			const scale = Math.min(1, 0.08 / Math.max(angle, 1e-9));
 			await step([
 				...diff.map((d: number) => clip(clip(d, -0.02, 0.02) / 0.05, -1, 1)),
@@ -761,11 +773,48 @@ export default function libero(pi: ExtensionAPI) {
 	}
 
 	/**
+	 * servoOrientation along a collision-free path (--ik): `env.plan_motion` to the target with the
+	 * target orientation, `env.check_motion` before each of its segments, the last segment at
+	 * servoOrientation's own tolerances; `refused` when no path exists or contact is predicted. An
+	 * unknown plan (no ik service answered) servos straight, as without --ik.
+	 */
+	async function plannedServo(
+		target: number[],
+		quatTarget: number[],
+		g: number,
+		max_steps = 150,
+	): Promise<{ steps: number; final_dist_m: number; refused?: string }> {
+		const dist = () => round(Math.hypot(...target.map((v: number, i: number) => v - eef()[i])));
+		const plan = await call<MotionPlan>(env, "env.plan_motion", { pos: target, quat_xyzw: quatTarget });
+		const refusal = planRefusal(plan);
+		if (refusal) return { steps: 0, final_dist_m: dist(), refused: refusal };
+		if (plan.status !== "planned") return servoOrientation(target, quatTarget, g, max_steps);
+		let steps = 0;
+		for (let i = 0; i < plan.waypoints.length; i++) {
+			const check = await call<MotionCheck>(env, "env.check_motion", { segment: i });
+			if (check.status === "contact")
+				return { steps, final_dist_m: dist(), refused: `stopped: collision check: ${check.message}` };
+			const last = i === plan.waypoints.length - 1;
+			const r = await servoOrientation(
+				last ? target : plan.waypoints[i].slice(0, 3),
+				quatTarget,
+				g,
+				max_steps - steps,
+				last ? {} : { tol: 0.02, ori_tol: Math.PI },
+			);
+			steps += r.steps;
+			if (steps >= max_steps || terminated || truncated) break;
+		}
+		return { steps, final_dist_m: dist() };
+	}
+
+	/**
 	 * Execute a planned grasp or place id (../primitives/grasp.ts) from one resolution: the env server
 	 * resolves the candidate's whole path at once (`env.claim_waypoints`: pre-grasp, grasp, lift, or
 	 * pre-place, place, retreat) and the legs run on those coordinates, since their own steps expire the
-	 * id. A stale id is refused unmoved and recorded as `detections_expired`; with --ik an unreachable
-	 * waypoint is refused before the claim.
+	 * id. A stale id is refused unmoved and recorded as `detections_expired`. With --ik the grasp pose
+	 * must be reachable and the first leg must have a collision-free path before the claim (refused
+	 * unmoved otherwise), and every leg then follows its own planned path (`plannedServo`).
 	 */
 	async function executePlanned(
 		name: string,
@@ -780,21 +829,24 @@ export default function libero(pi: ExtensionAPI) {
 					name,
 					error: `${id} is a ${resolved.kind} id; use ${kind === "grasp" ? "execute_place" : "execute_grasp"}`,
 				};
-			const pre = await call<{ eef_position: number[] }>(env, "env.resolve_grasp", {
+			const pre = await call<{ eef_position: number[]; eef_quat_xyzw: number[] }>(env, "env.resolve_grasp", {
 				grasp_id: id,
 				standoff: kwargs.standoff,
 			});
 			const far = xyRefusal(eef(), pre.eef_position, `${name}'s first leg`);
 			if (far) return { name, id, refused: far, steps_used: 0 };
-			if (flag("ik", "")) {
-				for (const standoff of [kwargs.standoff, 0]) {
-					const pose = await call<{ eef_position: number[] }>(env, "env.resolve_grasp", {
-						grasp_id: id,
-						standoff,
-					});
-					const refusal = reachRefusal(await call<Reach>(env, "env.preview_reach", { pos: pose.eef_position }));
-					if (refusal) return { name, id, refused: refusal, steps_used: 0 };
-				}
+			const planned = Boolean(flag("ik", ""));
+			if (planned) {
+				const grasp = await call<{ eef_position: number[] }>(env, "env.resolve_grasp", {
+					grasp_id: id,
+					standoff: 0,
+				});
+				const unreachable = reachRefusal(await call<Reach>(env, "env.preview_reach", { pos: grasp.eef_position }));
+				if (unreachable) return { name, id, refused: unreachable, steps_used: 0 };
+				const blocked = planRefusal(
+					await call<MotionPlan>(env, "env.plan_motion", { pos: pre.eef_position, quat_xyzw: pre.eef_quat_xyzw }),
+				);
+				if (blocked) return { name, id, refused: blocked, steps_used: 0 };
 			}
 			const c = await call<Claim>(env, "env.claim_waypoints", {
 				grasp_id: id,
@@ -802,7 +854,10 @@ export default function libero(pi: ExtensionAPI) {
 				lift: kwargs.lift,
 			});
 			const run = await runClaim(c, {
-				servo: (target, q, g) => servoOrientation(target, q, g, kwargs.max_steps),
+				servo: (target, q, g) =>
+					planned
+						? plannedServo(target, q, g, kwargs.max_steps)
+						: servoOrientation(target, q, g, kwargs.max_steps),
 				actuate,
 				width: gripper,
 				ended: () => terminated || truncated,

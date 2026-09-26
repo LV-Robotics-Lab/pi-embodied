@@ -171,7 +171,8 @@ per reset). `path_checked` is always false: only the end pose is solved, not the
 robot's `primitives.py` declares `preview_reach` in `code.api` (high and low tiers).
 
 Collision-free motion (`--ik`, `utils/motion.py`): LIBERO's `env.move_to` (and pi's `move_to`
-tool, through `env.plan_motion` / `env.check_motion`) and the Frankas' `env.move_delta` /
+tool and every leg of its `execute_grasp` / `execute_place`, through `env.plan_motion` /
+`env.check_motion`) and the Frankas' `env.move_delta` /
 `env.rotate_delta` (single and dual) first plan a path with `ik.plan` from the current joints
 through the server's planning world and raise (`... refused: no collision-free path ...`,
 nothing moves) when none exists; they then servo through the path's TCP waypoints within the

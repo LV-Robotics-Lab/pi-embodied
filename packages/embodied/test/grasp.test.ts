@@ -220,6 +220,20 @@ test("a claimed grasp runs leg by leg with the claim's orientation and stops at 
 	assert.equal(finished.error, undefined);
 	const ended = await runClaim(claim, { ...io(), ended: () => true });
 	assert.deepEqual(ended, { legs: [], steps_used: 0 });
+	// --ik: a leg without a collision-free path (or with predicted contact) stops the claim with its reason.
+	log.length = 0;
+	const refusing = io();
+	const refused = await runClaim(claim, {
+		...refusing,
+		servo: async (target: number[], q: number[], g: number) =>
+			target === claim.waypoints.grasp
+				? { steps: 2, final_dist_m: 0.1, refused: "refused: no collision-free path: IK_FAIL" }
+				: refusing.servo(target, q, g),
+	});
+	assert.equal(refused.stalled, "grasp");
+	assert.equal(refused.error, "refused: no collision-free path: IK_FAIL");
+	assert.equal(refused.steps_used, 7);
+	assert.equal(log.length, 1, "nothing after the refused leg");
 });
 
 test("plan_grasp relays the env call, records expired ids and a stale refusal", async () => {

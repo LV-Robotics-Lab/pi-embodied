@@ -3,6 +3,7 @@ import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import genesis, { CAMERAS, maskPixels, medianPoint, STEP_M, TASKS, VECTORS } from "../src/genesis/index.ts";
 import { ground, MOVE_UNITS } from "../src/units/index.ts";
+import { checkSimExplore, f32, fakeEnv, rgb } from "./sim-stub.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
@@ -83,4 +84,49 @@ test("segment subsamples the mask evenly and takes the median of the back-projec
 	const pts = Array.from({ length: 12 }, (_, i) => [0.5 + i * 0.001, -0.1, 0.02]);
 	assert.deepEqual(medianPoint([...pts, null, [Number.NaN, 0, 0]]), [0.5055, -0.1, 0.02]);
 	assert.equal(medianPoint(pts.slice(0, 5)), null, "too few points");
+});
+
+/** A fake Genesis env server running cube_pick at seed 0. */
+async function fakeGenesis() {
+	const obs = () => ({
+		agentview: rgb(),
+		wrist: rgb(),
+		tcp_pos: f32([0.4, 0, 0.3]),
+		tcp_quat_wxyz: f32([0, 1, 0, 0]),
+		gripper_width: 0.08,
+		gripper_command: "open",
+		qpos: f32([0]),
+		success: false,
+		is_grasped: false,
+		lift_m: 0,
+		env_steps: 0,
+	});
+	return fakeEnv((c) => {
+		if (c.method === "env.get_env_meta")
+			return {
+				task: "cube_pick",
+				seed: 0,
+				instruction: "pick up the cube",
+				workspace: { min: [0, 0, 0], max: [1, 1, 1] },
+				z_floor_m: 0,
+				max_move_m: 0.2,
+				lift_m: 0.08,
+			};
+		if (c.method === "env.reset") return [obs(), {}];
+		if (c.method === "env.move_delta")
+			return { ...obs(), commanded_m: [0, 0, 0], moved_m: [0, 0, 0], decisions: 1, control_steps: 1 };
+		return undefined;
+	});
+}
+
+test("memory and exploration: reset restarts the seeded scene, the cell is genesis_<task>_s<seed>", async (t) => {
+	const env = await fakeGenesis();
+	t.after(env.close);
+	await checkSimExplore({
+		load: genesis,
+		values: { env: env.url, task: "cube_pick", seed: "0" },
+		tag: "genesis_cube_pick_s0",
+		resets: () => env.calls.filter((c) => c.method === "env.reset").length,
+		observe: "view_env_state",
+	});
 });

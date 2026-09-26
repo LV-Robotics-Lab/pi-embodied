@@ -13,6 +13,8 @@ This is a single episode. You may recover within it (re-position, re-grasp), but
 [tool:segment]- `segment` finds an object by name (or by a point) and returns its pixel centroid and its median xyz.[/tool:segment]
 [tool:view_camera_meta]- `view_camera_meta` gives the camera's intrinsics and camera-to-world extrinsic if you need to project yourself.[/tool:view_camera_meta]
 
+{{memory}}
+
 # Rules
 1. [tool:view_env_state]Start with `view_env_state`. [/tool:view_env_state]Judge where the object is relative to the gripper in both images before each move.
 2. Approach from above: align x/y at 5-10 cm above the object, then descend until the fingertips straddle the object's body, then close.

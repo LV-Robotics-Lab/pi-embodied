@@ -35,6 +35,8 @@ export const FRAME_EVENT = "pi-embodied:frame";
  */
 export const NOTE_EVENT = "pi-embodied:video-note";
 export type VideoNote = { actor: "agent" | "human" | null; action?: string };
+/** `pi.events` channel naming this session's video directory (a string), at every session start (../dashboard lists its mp4s). */
+export const VIDEO_DIR_EVENT = "pi-embodied:video-dir";
 
 /** What a frame of the overlay video says. `width` is filled in when the robot's state arrives. */
 export type Note = {
@@ -270,6 +272,7 @@ export function episodeVideo(pi: ExtensionAPI) {
 		const file = sm.getSessionFile();
 		if (base) dir = join(String(base), sm.getSessionId());
 		else dir = file ? file.replace(/\.jsonl$/, "") : join(tmpdir(), "pi-embodied", sm.getSessionId());
+		pi.events.emit(VIDEO_DIR_EVENT, dir);
 		frames = [];
 		notes = [];
 		note = agentNote = pendingAgent = undefined;

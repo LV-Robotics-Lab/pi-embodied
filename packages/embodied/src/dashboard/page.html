@@ -60,6 +60,17 @@ tr.step.sel { background: var(--code); }
 .tp-side form, .tp-row { display: flex; gap: 6px; align-items: center; padding: 0; border: 0; background: none; flex-wrap: wrap; }
 .tp-side input[type=text] { width: 160px; }
 .badge.rec { color: var(--bad); }
+.queued { width: 100%; display: flex; flex-direction: column; gap: 3px; }
+.queued div { display: flex; gap: 6px; align-items: center; font-size: 12px; }
+.queued span.t { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+details.ops { border-top: 1px solid var(--line); background: var(--panel); }
+details.ops > summary { padding: 6px 12px; font-weight: 600; cursor: pointer; }
+.ops-body { display: flex; flex-direction: column; gap: 8px; padding: 0 12px 8px; }
+.ops-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.ops-row select, .ops-row input[type=text] { font: inherit; padding: 4px 6px; background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; }
+#primFields label { display: flex; gap: 4px; align-items: center; font-size: 12px; }
+#primFields input[type=text] { width: 200px; }
+.ops-body a { color: var(--accent); }
 </style>
 </head>
 <body>
@@ -71,6 +82,8 @@ tr.step.sel { background: var(--code); }
   <span id="task" class="meta"></span>
   <span id="lang"></span>
   <span class="grow"></span>
+  <button id="llmCheck" data-t="llmCheck"></button>
+  <span id="llmResult" class="meta"></span>
   <span id="usage" class="meta"></span>
   <span id="conn" class="meta"></span>
 </header>
@@ -100,10 +113,25 @@ tr.step.sel { background: var(--code); }
         <div class="status" id="tpStatus"></div>
       </div>
     </div>
+    <details class="ops" id="ops">
+      <summary data-t="opsTitle"></summary>
+      <div class="ops-body">
+        <div class="ops-row"><b data-t="primTitle"></b><select id="primName"></select><button id="primReload" data-t="reload"></button></div>
+        <form id="primForm" class="ops-row" style="padding:0;border:0;background:none"><span id="primFields" class="ops-row"></span><button class="primary" data-t="run"></button></form>
+        <div class="status" id="primStatus"></div>
+        <div class="ops-row"><b data-t="downloads"></b>
+          <a href="/download/session?format=jsonl" data-t="sessionJsonl"></a>
+          <a href="/download/session?format=html" data-t="sessionHtml"></a>
+          <button id="videosReload" data-t="videos"></button>
+        </div>
+        <div id="videos" class="ops-row"></div>
+      </div>
+    </details>
     <div class="composer">
       <textarea id="msg" rows="2"></textarea>
       <button id="send" class="primary" data-t="send"></button>
       <button id="stop" data-t="interrupt"></button>
+      <div class="queued" id="queued"></div>
       <div class="status" id="msgStatus"></div>
     </div>
     <form id="newTask">
@@ -152,6 +180,12 @@ const COPY = {
     help: "keys: W/S/A/D move · Q/E up/down · G grasp · R release · Space toggle gripper · hold to repeat",
     helpDual: "left W/S/A/D Q/E, G or L-Shift grasp, R release, L-Ctrl STILL · right I/K/J/L U/O, R-Shift grasp, . release, R-Ctrl STILL · hold to repeat",
     arms: { arm: "arm", left: "left arm", right: "right arm" },
+    llmCheck: "Check LLM", llmChecking: "checking…", llmOk: (r) => `LLM ok · ${r.ms} ms`, llmBad: (r) => `LLM failed: ${r.detail}`,
+    opsTitle: "Operator tools", primTitle: "Robot tool", reload: "Reload", downloads: "Download", sessionJsonl: "session (JSONL)",
+    sessionHtml: "session (HTML)", videos: "videos", noVideos: "no videos yet (episode.mp4 is written when the session ends)",
+    primUnavailable: (r) => `not available: ${r}`, primNone: "no robot tools", primRunning: "running…", primDone: "done",
+    withdraw: "Withdraw", queuedStates: { queued: "queued", delivered: "delivered", withdrawn: "withdrawn", dropped: "dropped" },
+    withdrawn: "Withdrawn; the text is back in the box.",
     axes: { rotate: "rotate", roll: "roll", pitch: "pitch", yaw: "yaw" },
     turns: (rt, any) => rt ? "turns: RT roll/pitch/yaw (v5, --units-rt)" : any ? "turns: ROTATE (v3)" : "turns: none (no yaw on this robot)",
   },
@@ -180,6 +214,12 @@ const COPY = {
     help: "按键:W/S/A/D 平移 · Q/E 上/下 · G 抓取 · R 松开 · 空格 切换夹爪 · 按住连续执行",
     helpDual: "左臂 W/S/A/D Q/E,G 或左 Shift 抓取,R 松开,左 Ctrl 保持 · 右臂 I/K/J/L U/O,右 Shift 抓取,. 松开,右 Ctrl 保持 · 按住连续执行",
     arms: { arm: "机械臂", left: "左臂", right: "右臂" },
+    llmCheck: "检查 LLM", llmChecking: "检查中…", llmOk: (r) => `LLM 正常 · ${r.ms} ms`, llmBad: (r) => `LLM 失败:${r.detail}`,
+    opsTitle: "操作员工具", primTitle: "机器人工具", reload: "刷新", downloads: "下载", sessionJsonl: "会话(JSONL)",
+    sessionHtml: "会话(HTML)", videos: "视频", noVideos: "暂无视频(episode.mp4 在会话结束时写出)",
+    primUnavailable: (r) => `不可用:${r}`, primNone: "没有机器人工具", primRunning: "执行中…", primDone: "完成",
+    withdraw: "撤回", queuedStates: { queued: "排队中", delivered: "已送达", withdrawn: "已撤回", dropped: "已丢弃" },
+    withdrawn: "已撤回;文字已放回输入框。",
     axes: { rotate: "旋转", roll: "横滚", pitch: "俯仰", yaw: "偏航" },
     turns: (rt, any) => rt ? "转动:RT 横滚/俯仰/偏航(v5,--units-rt)" : any ? "转动:ROTATE(v3)" : "转动:无(此机器人没有偏航)",
   },
@@ -323,12 +363,13 @@ function connect() {
       if ($("stream").checked) showStream(); else { $("frames").replaceChildren(el("div", "empty", T.noFrame)); $("caption").textContent = ""; }
       $("live").checked = true;
       if (!op.items.length) $("transcript").append(el("div", "empty", T.noEvents));
-      op.items.forEach(putItem); op.steps.forEach(putStep); renderEpisode(); renderGumi(op.gumi);
+      op.items.forEach(putItem); op.steps.forEach(putStep); renderEpisode(); renderGumi(op.gumi); renderQueued(op.queued ?? []);
     } else if (op.op === "item") putItem(op.item);
     else if (op.op === "append") appendText(op.id, op.text);
     else if (op.op === "step") putStep(op.step);
     else if (op.op === "episode") { episode = op.episode; renderEpisode(); }
     else if (op.op === "gumi") renderGumi(op.gumi);
+    else if (op.op === "queued") renderQueued(op.queued);
   };
 }
 
@@ -475,6 +516,98 @@ document.addEventListener("keydown", (e) => {
 });
 document.addEventListener("keyup", (e) => release(`key:${e.code}`));
 window.addEventListener("blur", () => { for (const id of [...held.keys()]) release(id); });
+// ---- queued messages (pi's steering queue): withdraw one the agent has not taken yet.
+function renderQueued(list) {
+  $("queued").replaceChildren(...list.slice(-5).map((q) => {
+    const row = el("div"); row.append(el("span", "t", q.text), el("span", "meta", T.queuedStates[q.status] ?? q.status));
+    if (q.status === "queued") {
+      const b = el("button", "", T.withdraw);
+      b.onclick = async () => {
+        try { const r = await post("/message/withdraw", { id: q.id }); if (!$("msg").value) $("msg").value = r.text; $("msgStatus").textContent = T.withdrawn; }
+        catch (err) { $("msgStatus").textContent = T.failed(err.message); }
+      };
+      row.append(b);
+    }
+    return row;
+  }));
+}
+
+// ---- LLM connectivity: one real 1-token completion to the session's model.
+$("llmCheck").onclick = async () => {
+  $("llmResult").textContent = T.llmChecking; $("llmResult").className = "meta";
+  try { const r = await post("/llm-check", {}); $("llmResult").textContent = r.ok ? T.llmOk(r) : T.llmBad(r); $("llmResult").className = r.ok ? "ok" : "bad"; $("llmResult").title = `${r.model}: ${r.detail}`; }
+  catch (err) { $("llmResult").textContent = T.failed(err.message); $("llmResult").className = "bad"; }
+};
+
+// ---- manual robot tool calls (operator mode): fields from the tool's JSON schema.
+let prims = [];
+async function loadPrims() {
+  try {
+    const r = await (await fetch("/primitives")).json();
+    prims = r.tools ?? [];
+    const keep = $("primName").value;
+    $("primName").replaceChildren(...prims.map((t) => { const o = el("option", "", t.name); o.value = t.name; o.title = t.description; return o; }));
+    if (prims.some((t) => t.name === keep)) $("primName").value = keep;
+    renderPrimFields();
+    $("primStatus").textContent = !prims.length ? T.primNone : r.available ? "" : T.primUnavailable(r.reason);
+  } catch (err) { $("primStatus").textContent = T.failed(err.message); }
+}
+function fieldFor(name, schema, required) {
+  const label = el("label"); label.title = schema.description ?? "";
+  label.append(el("span", "", name + (required ? "*" : "")));
+  let input;
+  const enumValues = schema.enum ?? (schema.anyOf?.every((x) => "const" in x) ? schema.anyOf.map((x) => x.const) : null);
+  if (enumValues) {
+    input = el("select"); if (!required) input.append(el("option", "", ""));
+    for (const v of enumValues) { const o = el("option", "", String(v)); o.value = JSON.stringify(v); input.append(o); }
+    input.dataset.kind = "json";
+  } else if (schema.type === "boolean") { input = el("input"); input.type = "checkbox"; input.style.width = "auto"; input.dataset.kind = "bool"; }
+  else if (schema.type === "number" || schema.type === "integer") {
+    input = el("input"); input.type = "number"; input.step = schema.type === "integer" ? "1" : "any"; input.dataset.kind = "number";
+    if (schema.minimum !== undefined) input.min = schema.minimum; if (schema.maximum !== undefined) input.max = schema.maximum;
+  } else if (schema.type === "string") { input = el("input"); input.type = "text"; input.dataset.kind = "string"; }
+  else { input = el("input"); input.type = "text"; input.placeholder = "JSON"; input.dataset.kind = "json"; }
+  input.name = name; input.dataset.required = required ? "1" : "";
+  label.append(input);
+  return label;
+}
+function renderPrimFields() {
+  const t = prims.find((p) => p.name === $("primName").value);
+  $("primName").title = t?.description ?? "";
+  const props = t?.parameters?.properties ?? {};
+  const req = new Set(t?.parameters?.required ?? []);
+  $("primFields").replaceChildren(...Object.entries(props).map(([k, v]) => fieldFor(k, v, req.has(k))));
+}
+$("primName").onchange = renderPrimFields;
+$("primReload").onclick = loadPrims;
+$("ops").ontoggle = () => { if ($("ops").open) { loadPrims(); loadVideos(); } };
+$("primForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const args = {};
+  try {
+    for (const input of $("primFields").querySelectorAll("input, select")) {
+      const k = input.dataset.kind;
+      if (k === "bool") { args[input.name] = input.checked; continue; }
+      if (input.value === "") { if (input.dataset.required) throw new Error(`${input.name} is required`); continue; }
+      args[input.name] = k === "number" ? Number(input.value) : k === "json" ? JSON.parse(input.value) : input.value;
+    }
+  } catch (err) { $("primStatus").textContent = T.failed(err.message); return; }
+  $("primStatus").textContent = T.primRunning;
+  try { const r = await post("/primitive", { name: $("primName").value, arguments: args }); $("primStatus").textContent = `${T.primDone}: ${short(r.text, 300)}`; }
+  catch (err) { $("primStatus").textContent = T.failed(err.message); }
+};
+
+// ---- downloads: pi's /export of the session, and the sessions' episode videos.
+async function loadVideos() {
+  try {
+    const r = await (await fetch("/downloads")).json();
+    const links = r.sessions.flatMap((s) => s.videos.map((v) => {
+      const a = el("a", "", `${s.current ? "" : s.id.slice(0, 8) + "/"}${v}`); a.href = `/download/video/${s.id}/${encodeURIComponent(v)}`; return a;
+    }));
+    $("videos").replaceChildren(...(links.length ? links : [el("span", "meta", T.noVideos)]));
+  } catch (err) { $("videos").replaceChildren(el("span", "bad", T.failed(err.message))); }
+}
+$("videosReload").onclick = loadVideos;
 connect();
 </script>
 </body>

@@ -22,6 +22,7 @@ function fakePi(flagValues: Record<string, unknown> = {}) {
 		},
 		getFlag: (name: string) => flags[name],
 		getThinkingLevel: () => "low",
+		registerCommand: () => {},
 		events: {
 			emit: (channel: string, data: unknown) => {
 				for (const fn of listeners.get(channel) ?? []) fn(data);

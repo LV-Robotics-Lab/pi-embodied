@@ -31,7 +31,7 @@
  * Show-Harness's runners write it. `rollouts_to_alpaca.py <root>/<MMDD>/task_<id>` converts every run of a task.
  */
 
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -872,7 +872,7 @@ export function gumi(
 
 	/** The operator's calls (the dashboard's /gumi/* endpoints). Errors carry an HTTP status. */
 	const fail = (status: number, msg: string) => Object.assign(new Error(msg), { status });
-	return {
+	const controller = {
 		state,
 		takeover,
 		/** Parse and run a teleop request: each step records (obs_t, a_t) then executes. */
@@ -1044,6 +1044,91 @@ export function gumi(
 			return { ok: true, state: state() };
 		},
 	};
+
+	// Show-Harness scripts/trajectory/replay_rollout.py: a recording's units, in order, on this robot.
+	pi.registerCommand("gumi-replay", {
+		description:
+			"Replay a GUMI recording's units on the robot as operator steps: /gumi-replay <run dir> [--dry-run] [--pause <s>]",
+		handler: async (args, c) => {
+			const words = args.trim().split(/\s+/).filter(Boolean);
+			const dry = words.includes("--dry-run");
+			const p = words.indexOf("--pause");
+			const pause = p >= 0 ? Number(words[p + 1]) : 0;
+			const dir = words.find((w, i) => !w.startsWith("--") && (p < 0 || i !== p + 1));
+			if (!dir || !(pause >= 0)) {
+				c.ui.notify("Usage: /gumi-replay <run dir> [--dry-run] [--pause <s>]", "error");
+				return;
+			}
+			let plan: ReplayStep[];
+			try {
+				plan = replayPlan(dir, arms);
+			} catch (e) {
+				c.ui.notify(`gumi-replay: ${(e as Error).message}`, "error");
+				return;
+			}
+			const lines = plan.map((r, i) => `${i}: ${replayLabel(r, arms)}`);
+			c.ui.notify(
+				`gumi-replay ${dir}: ${plan.length} record(s), relative to the robot's pose now (place the scene as recorded)\n${lines.join("\n")}`,
+				"info",
+			);
+			if (dry) return;
+			for (const [i, r] of plan.entries()) {
+				try {
+					await controller.step(replayBody(r, arms));
+				} catch (e) {
+					c.ui.notify(`gumi-replay stopped at record ${i}: ${(e as Error).message}`, "error");
+					return;
+				}
+				if (pause > 0 && i < plan.length - 1) await new Promise((res) => setTimeout(res, pause * 1000));
+			}
+			c.ui.notify(`gumi-replay: ${plan.length} record(s) executed`, "info");
+		},
+	});
+	return controller;
 }
 
 export type Gumi = ReturnType<typeof gumi>;
+
+/** One recorded step to replay: the unit per arm, repeated `n` times. */
+export type ReplayStep = { step: Step; n: number };
+
+/**
+ * A GUMI run's recorded steps in file order: actions.jsonl (the collectors' {token} / {left: {token}, right: {token}}),
+ * else steps.jsonl (the runners' {act} / {left: {act}, right: {act}}). `n` is an agent `act` call's repeat count.
+ */
+export function replayPlan(dir: string, arms: readonly string[]): ReplayStep[] {
+	const file = ["actions.jsonl", "steps.jsonl"].map((f) => join(dir, f)).find((f) => existsSync(f));
+	if (!file) throw new Error(`${dir} has no actions.jsonl or steps.jsonl`);
+	const key = file.endsWith("actions.jsonl") ? "token" : "act";
+	const dual = arms.length > 1;
+	return readFileSync(file, "utf8")
+		.split("\n")
+		.filter((l) => l.trim())
+		.map((line, i) => {
+			const rec = JSON.parse(line) as Record<string, unknown>;
+			const unit = (v: unknown) => {
+				const u = (v as Record<string, unknown> | undefined)?.[key];
+				if (typeof u !== "string" || !u) throw new Error(`record ${i} has no ${key}`);
+				return u;
+			};
+			const recDual = arms.some((a) => a in rec);
+			if (dual !== recDual)
+				throw new Error(
+					`record ${i} is a ${recDual ? "two" : "one"}-arm record; this robot has ${arms.length} arm(s)`,
+				);
+			const step: Step = dual ? Object.fromEntries(arms.map((a) => [a, unit(rec[a])])) : { [arms[0]]: unit(rec) };
+			return { step, n: Math.max(1, Math.floor(Number(rec.n ?? 1)) || 1) };
+		});
+}
+
+const replayLabel = (r: ReplayStep, arms: readonly string[]) =>
+	(arms.length > 1 ? arms.map((a) => `${a[0].toUpperCase()}:${r.step[a]}`).join(" ") : r.step[arms[0]]) +
+	(r.n > 1 ? ` x${r.n}` : "");
+
+/** The teleop request (`parseSteps`) that runs one recorded step `n` times. */
+export function replayBody(r: ReplayStep, arms: readonly string[]): Record<string, unknown> {
+	const times = (u: string) => (r.n > 1 ? `${u}*${r.n}` : u);
+	return arms.length > 1
+		? Object.fromEntries(arms.map((a) => [a, times(r.step[a])]))
+		: { units: times(r.step[arms[0]]) };
+}

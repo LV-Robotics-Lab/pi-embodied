@@ -11,6 +11,7 @@ import { closeSync, openSync, writeSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import { validateToolArguments } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
 import { robotCheck } from "./check.ts";
@@ -90,8 +91,21 @@ export type RobotStatus = {
 	solved?: boolean;
 };
 type Result = AgentToolResult<unknown>;
+/** `pi.events` channel on which the robot publishes its tools each session, for an operator's manual calls (../dashboard). */
+export const PRIMITIVES_EVENT = "pi-embodied:primitives";
+export type PrimitivesHandle = {
+	robot: string;
+	/** The robot's own tools active this session, with their schemas. */
+	tools: () => { name: string; description: string; parameters: TSchema }[];
+	/**
+	 * Check one call as the agent's would be checked (an active tool, the robot's and the operator's gates,
+	 * the arguments against its schema; throws the reason) and return the call, which runs the tool's execute.
+	 */
+	prepare: (name: string, args: unknown) => (signal?: AbortSignal) => Promise<Result>;
+};
 /** What the agent claims in `finish`. */
 type Claim = { status: string; summary: string };
+type Call = (params: unknown, signal: AbortSignal | undefined, ctx: ExtensionContext) => Promise<Result>;
 type Ended = "agent_end" | "shutdown";
 
 export type RobotSpec = {
@@ -307,6 +321,8 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 
 	/** Every tool registered with `tool` (the robot's own and the units'): ../gumi holds them all during a takeover. */
 	const robotTools: string[] = [];
+	const defs = new Map<string, { description: string; parameters: TSchema; call: Call }>();
+	let sessionCtx: ExtensionContext | undefined;
 	/** Register a sequential robot tool; its result terminates the batch when the batch also calls `finish`. */
 	function tool<P extends TSchema>(
 		toolName: string,
@@ -315,23 +331,25 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		run: (params: Static<P>, signal: AbortSignal | undefined, ctx: ExtensionContext) => Promise<Result>,
 	) {
 		robotTools.push(toolName);
+		const call: Call = async (params, sig, ctx) => {
+			signal = sig;
+			try {
+				return { ...(await run(params as Static<P>, sig, ctx)), terminate: finishing };
+			} catch (err) {
+				if (err instanceof RpcUnavailable) fail(err.message);
+				throw err;
+			} finally {
+				signal = undefined;
+			}
+		};
+		defs.set(toolName, { description, parameters, call });
 		pi.registerTool({
 			name: toolName,
 			label: toolName,
 			description,
 			parameters,
 			executionMode: "sequential",
-			async execute(_id, params, sig, _onUpdate, ctx) {
-				signal = sig;
-				try {
-					return { ...(await run(params, sig, ctx)), terminate: finishing };
-				} catch (err) {
-					if (err instanceof RpcUnavailable) fail(err.message);
-					throw err;
-				} finally {
-					signal = undefined;
-				}
-			},
+			execute: (_id, params, sig, _onUpdate, ctx) => call(params, sig, ctx),
 		});
 	}
 	// An operator's unit (../gumi) passes the gates an `act` call passes, without counting as a planner turn.
@@ -387,6 +405,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
+		sessionCtx = ctx;
 		await stop();
 		try {
 			// A flag the robot cannot honour fails closed, before the robot boots.
@@ -423,8 +442,37 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 				ctx.shutdown();
 			}
 		}
+		pi.events.emit(PRIMITIVES_EVENT, primitives);
 		publish();
 	});
+
+	const primitives: PrimitivesHandle = {
+		robot: name,
+		tools: () =>
+			pi
+				.getActiveTools()
+				.filter((t) => defs.has(t))
+				.map((t) => {
+					const { description, parameters } = defs.get(t) as { description: string; parameters: TSchema };
+					return { name: t, description, parameters };
+				}),
+		prepare(toolName, args) {
+			const def = defs.get(toolName);
+			if (!def || !sessionCtx || !pi.getActiveTools().includes(toolName))
+				throw new Error(`${toolName} is not an active ${name} tool`);
+			const why = refusal(toolName) ?? op.refuse(toolName);
+			if (why) throw new Error(why);
+			const tool = { name: toolName, description: def.description, parameters: def.parameters };
+			const params = validateToolArguments(tool, {
+				type: "toolCall",
+				id: "operator",
+				name: toolName,
+				arguments: args as Json,
+			});
+			const ctx = sessionCtx;
+			return (sig) => def.call(params, sig, ctx);
+		},
+	};
 
 	/** The robot broke mid-episode: end the episode; its result is an env_error. */
 	function fail(why: string) {

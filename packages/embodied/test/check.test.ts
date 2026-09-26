@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import {
 	formatTable,
+	llmCheck,
 	parseFlags,
 	pathRows,
 	plannerRow,
@@ -26,6 +27,14 @@ async function rpcServer(ok: boolean) {
 		});
 		req.on("end", () => {
 			if (req.url === "/models") return res.writeHead(401).end("{}");
+			if (req.url === "/chat/completions") {
+				const auth = req.headers.authorization;
+				const b = JSON.parse(body) as { max_tokens?: number };
+				if (auth !== "Bearer sk-test") return res.writeHead(401).end('{"error":"bad key"}');
+				return res
+					.writeHead(200, { "Content-Type": "application/json" })
+					.end(JSON.stringify({ choices: [{ message: { content: "OK" } }], max_tokens: b.max_tokens }));
+			}
 			const { method } = JSON.parse(body) as { method: string };
 			res.writeHead(ok ? 200 : 500, { "Content-Type": "application/json" });
 			res.end(JSON.stringify(ok ? { ok: true, result: { method } } : { ok: false, error: "model not loaded" }));
@@ -132,6 +141,60 @@ test("portRow reports a port in use", async () => {
 	}
 	assert.equal((await portRow(port)).status, "PASS");
 	assert.equal((await portRow(0)).status, "SKIP");
+});
+
+test("probeEndpoint sends an env server a real read-only request after healthz", async () => {
+	const up = await rpcServer(true);
+	const sick = await rpcServer(false);
+	try {
+		const ok = await probeEndpoint(up.url, 3000, ["get_env_meta"]);
+		assert.equal(ok.ok, true);
+		assert.match(ok.detail, /healthz ok .*; get_env_meta ok in \d+ ms \{"method":"get_env_meta"\}/);
+		assert.equal((await probeEndpoint(sick.url, 3000, ["get_env_meta"])).ok, false);
+	} finally {
+		up.close();
+		sick.close();
+	}
+});
+
+test("plannerRow: a real 1-token completion when the key resolves, pi's registry in pi", async () => {
+	const gw = await rpcServer(true);
+	const dir = mkdtempSync(join(tmpdir(), "check-"));
+	const models = join(dir, "models.json");
+	writeFileSync(
+		models,
+		JSON.stringify({
+			providers: {
+				keyed: { baseUrl: gw.url, apiKey: "PLANNER_KEY" },
+				wrong: { baseUrl: gw.url, apiKey: "sk-wrong" },
+			},
+		}),
+	);
+	try {
+		const ok = await plannerRow("keyed/m", undefined, models, undefined, { PLANNER_KEY: "sk-test" });
+		assert.equal(ok.status, "PASS", ok.detail);
+		assert.match(ok.detail, /1-token completion in \d+ ms/);
+		const bad = await plannerRow("wrong/m", undefined, models, undefined, {});
+		assert.equal(bad.status, "FAIL");
+		assert.match(bad.detail, /HTTP 401/);
+		const inPi = await plannerRow("x/y", undefined, models, async () => ({
+			ok: false,
+			model: "x/y",
+			ms: 3,
+			detail: "no credits",
+		}));
+		assert.deepEqual(inPi, { status: "FAIL", check: "planner", detail: "x/y: no credits" });
+		const registry = {
+			streamSimple: (_m: unknown, _c: unknown, o: { maxTokens?: number }) => ({
+				result: async () => ({ stopReason: o.maxTokens === 1 ? "length" : "error", content: [] }),
+			}),
+		};
+		const r = await llmCheck(registry as never, { provider: "p", id: "m" } as never);
+		assert.equal(r.ok, true);
+		assert.equal(r.model, "p/m");
+	} finally {
+		gw.close();
+	}
 });
 
 test("plannerRow looks the provider up in models.json; 401 still means the gateway is up", async () => {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -23,6 +23,8 @@ import {
 	RIGHT_RT_ALIASES,
 	RT_ALIASES,
 	RT_KEYS,
+	replayBody,
+	replayPlan,
 	Takeover,
 	UNITS_EVENT,
 	type UnitsHandle,
@@ -456,6 +458,7 @@ function fakePi(flags: Record<string, unknown>) {
 	const handlers = new Map<string, Handler[]>();
 	const listeners = new Map<string, ((d: unknown) => void)[]>();
 	const sent: unknown[] = [];
+	const commands = new Map<string, any>();
 	let idle = true;
 	const pi = {
 		on: (name: string, fn: Handler) => handlers.set(name, [...(handlers.get(name) ?? []), fn]),
@@ -464,6 +467,7 @@ function fakePi(flags: Record<string, unknown>) {
 		},
 		getFlag: (name: string) => flags[name],
 		sendUserMessage: (content: unknown, options: unknown) => sent.push({ content, options }),
+		registerCommand: (name: string, c: unknown) => commands.set(name, c),
 		events: {
 			emit: (channel: string, data: unknown) => {
 				for (const fn of listeners.get(channel) ?? []) fn(data);
@@ -485,6 +489,7 @@ function fakePi(flags: Record<string, unknown>) {
 		pi,
 		emit,
 		sent,
+		commands,
 		setIdle: (v: boolean) => {
 			idle = v;
 		},
@@ -970,4 +975,66 @@ test("gumi: RT_* keys with --units-rt; recorded token unchanged; prepare keeps t
 	);
 	assert.notEqual(bad.status, 0);
 	assert.match(bad.stderr, /unknown prompt version v9/);
+});
+
+test("replay: a recording's units in order (actions.jsonl, else steps.jsonl), repeats kept, arms checked", () => {
+	const one = mkdtempSync(join(tmpdir(), "gumi-replay-"));
+	writeFileSync(
+		join(one, "actions.jsonl"),
+		[
+			{ step: 0, token: "MV_FWD" },
+			{ step: 1, token: "GRASP", n: 1 },
+			{ step: 2, token: "MV_UP", n: 3 },
+		]
+			.map((r) => JSON.stringify(r))
+			.join("\n"),
+	);
+	const plan = replayPlan(one, [ARM]);
+	assert.deepEqual(plan, [
+		{ step: { arm: "MV_FWD" }, n: 1 },
+		{ step: { arm: "GRASP" }, n: 1 },
+		{ step: { arm: "MV_UP" }, n: 3 },
+	]);
+	assert.deepEqual(replayBody(plan[2], [ARM]), { units: "MV_UP*3" });
+	assert.throws(() => replayPlan(one, ["left", "right"]), /one-arm record; this robot has 2 arm/);
+	const two = mkdtempSync(join(tmpdir(), "gumi-replay-"));
+	writeFileSync(join(two, "steps.jsonl"), JSON.stringify({ i: 0, left: { act: "MV_FWD" }, right: { act: "STILL" } }));
+	const dual = replayPlan(two, ["left", "right"]);
+	assert.deepEqual(replayBody(dual[0], ["left", "right"]), { left: "MV_FWD", right: "STILL" });
+	assert.throws(
+		() => replayPlan(mkdtempSync(join(tmpdir(), "gumi-replay-")), [ARM]),
+		/no actions.jsonl or steps.jsonl/,
+	);
+});
+
+test("/gumi-replay runs the recording through the operator's units path; --dry-run moves nothing", async () => {
+	const f = fakePi({});
+	gumi(f.pi);
+	const robot = fakeRobot();
+	await f.emit("session_start");
+	f.pi.events.emit(UNITS_EVENT, robot.handle);
+	const dir = mkdtempSync(join(tmpdir(), "gumi-replay-"));
+	writeFileSync(
+		join(dir, "actions.jsonl"),
+		`${JSON.stringify({ step: 0, token: "MV_FWD", n: 2 })}\n${JSON.stringify({ step: 1, token: "GRASP" })}\n`,
+	);
+	const notes: string[] = [];
+	const c = { ui: { notify: (m: string) => notes.push(m) } };
+	await f.commands.get("gumi-replay").handler(`${dir} --dry-run`, c);
+	assert.deepEqual(robot.calls, []);
+	assert.match(notes[0], /2 record\(s\)[\s\S]*0: MV_FWD x2\n1: GRASP/);
+	await f.commands.get("gumi-replay").handler(dir, c);
+	assert.deepEqual(
+		(robot.calls as { unit: string; operator?: boolean }[]).map((x) => [x.unit, x.operator]),
+		[
+			["MV_FWD", true],
+			["MV_FWD", true],
+			["GRASP", true],
+		],
+	);
+	assert.match(notes.at(-1) as string, /2 record\(s\) executed/);
+	// The robot's gates stop a replay like any operator step.
+	robot.refusal = "The episode is finished.";
+	await f.commands.get("gumi-replay").handler(dir, c);
+	assert.match(notes.at(-1) as string, /stopped at record 0: The episode is finished/);
 });

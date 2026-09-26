@@ -8,9 +8,11 @@
  * Checks, per robot (SPECS): the services Python (its version, and importing the robot's env server
  * module and simulator packages the way the env server will), the checkpoint / asset paths the
  * services read from the environment, GPU visibility (nvidia-smi and CUDA_VISIBLE_DEVICES), the model
- * servers the robot attaches to (the services' RPC `healthz`; a ws:// server by TCP connect), the
- * planner's provider (`<baseUrl>/models` from ~/.pi/agent/models.json, or the running model in pi)
- * and whether the dashboard port is free. Flags take the robot's own names and fall back to the same
+ * servers the robot attaches to (the services' RPC `healthz`, then a real read-only request where the
+ * server has one: an env server's `get_env_meta`; a ws:// server by TCP connect; no VLA server offers
+ * a dry-run act, so a VLA gets healthz only), the planner (a real 1-token completion: in pi through
+ * its model registry, `llmCheck`; standalone to an OpenAI-compatible provider of ~/.pi/agent/models.json
+ * whose key resolves, else `<baseUrl>/models`) and whether the dashboard port is free. Flags take the robot's own names and fall back to the same
  * environment variables and defaults as the robot. Model servers the robot only needs for its own
  * tools (VLA, SAM3) are warnings with --units=true, whose `act` tool does not use them.
  *
@@ -23,6 +25,7 @@ import { createServer, Socket } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 const SERVICES = fileURLToPath(new URL("../../../services", import.meta.url));
@@ -42,8 +45,13 @@ type PathSpec = {
 	fallback?: string;
 	contains?: string;
 };
-/** A server the robot attaches to: `flag` (and its default) names the endpoint. */
-type EndpointSpec = { flag: string; default?: string; why: string; toolsOnly?: boolean };
+/**
+ * A server the robot attaches to: `flag` (and its default) names the endpoint. `calls`: read-only
+ * methods sent after healthz, each a real request the robot makes too (an env server's `get_env_meta`).
+ */
+type EndpointSpec = { flag: string; default?: string; why: string; toolsOnly?: boolean; calls?: string[] };
+/** What a running env server is asked beyond healthz. */
+const ENV_CALLS = ["get_env_meta"];
 
 export type RobotCheckSpec = {
 	/** The flag naming the services Python, and the environment variables it defaults to. */
@@ -138,7 +146,7 @@ export const SPECS: Record<string, RobotCheckSpec> = {
 		python: PY(),
 		imports: [ENV_SERVER("franka")],
 		endpoints: [
-			{ flag: "robot-env", why: "running env server" },
+			{ flag: "robot-env", why: "running env server", calls: ENV_CALLS },
 			{ flag: "robot-vla", why: "Pi0.5 VLA", toolsOnly: true },
 		],
 		gpu: false,
@@ -147,7 +155,7 @@ export const SPECS: Record<string, RobotCheckSpec> = {
 		python: PY(),
 		imports: [ENV_SERVER("dual_franka")],
 		endpoints: [
-			{ flag: "robot-env", why: "running env server" },
+			{ flag: "robot-env", why: "running env server", calls: ENV_CALLS },
 			{ flag: "robot-vla", why: "Pi0.5 VLA", toolsOnly: true },
 			{ flag: "robot-sam3", why: "SAM3", toolsOnly: true },
 		],
@@ -156,7 +164,7 @@ export const SPECS: Record<string, RobotCheckSpec> = {
 	piper: {
 		python: PY(),
 		imports: [ENV_SERVER("piper")],
-		endpoints: [{ flag: "robot-env", why: "running env server" }],
+		endpoints: [{ flag: "robot-env", why: "running env server", calls: ENV_CALLS }],
 		gpu: false,
 	},
 };
@@ -330,8 +338,42 @@ async function gpuRows(needed: boolean): Promise<Row[]> {
 	];
 }
 
-/** A services RPC server's healthz (`POST <url>/call {"method":"healthz"}`), or a TCP connect for ws:// servers. */
-export async function probeEndpoint(endpoint: string, timeoutMs = 3000): Promise<{ ok: boolean; detail: string }> {
+/** One services RPC call (`POST <base>/call`): its result, or why it failed. */
+async function rpcCall(
+	base: string,
+	method: string,
+	timeoutMs: number,
+): Promise<{ ok: true; result: unknown; ms: number } | { ok: false; detail: string }> {
+	const t0 = Date.now();
+	try {
+		const res = await fetch(`${base.replace(/\/$/, "")}/call`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ method, kwargs: {}, args: [] }),
+			signal: AbortSignal.timeout(timeoutMs),
+		});
+		const text = await res.text();
+		let body: { ok?: unknown; result?: unknown; error?: unknown } | undefined;
+		try {
+			body = JSON.parse(text);
+		} catch {}
+		if (res.ok && body?.ok === true) return { ok: true, result: body.result, ms: Date.now() - t0 };
+		return { ok: false, detail: `HTTP ${res.status} ${clip(String(body?.error ?? text), 100)}` };
+	} catch (err) {
+		const e = err as Error & { cause?: { code?: string } };
+		return { ok: false, detail: e.cause?.code ?? e.message };
+	}
+}
+
+/**
+ * A services RPC server's healthz (`POST <url>/call {"method":"healthz"}`), then each of `calls` (read-only
+ * methods, e.g. an env server's `get_env_meta`); or a TCP connect for ws:// servers.
+ */
+export async function probeEndpoint(
+	endpoint: string,
+	timeoutMs = 3000,
+	calls: readonly string[] = [],
+): Promise<{ ok: boolean; detail: string }> {
 	const base = endpoint.includes("://") ? endpoint : `http://${endpoint}`;
 	const url = new URL(base);
 	if (url.protocol === "ws:" || url.protocol === "wss:") {
@@ -347,25 +389,16 @@ export async function probeEndpoint(endpoint: string, timeoutMs = 3000): Promise
 			sock.connect(port, url.hostname, () => done(true, "accepts connections"));
 		});
 	}
-	try {
-		const res = await fetch(`${base.replace(/\/$/, "")}/call`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ method: "healthz", kwargs: {}, args: [] }),
-			signal: AbortSignal.timeout(timeoutMs),
-		});
-		const text = await res.text();
-		let body: { ok?: unknown; result?: unknown; error?: unknown } | undefined;
-		try {
-			body = JSON.parse(text);
-		} catch {}
-		if (res.ok && body?.ok === true)
-			return { ok: true, detail: `healthz ok ${clip(JSON.stringify(body.result ?? ""), 80)}` };
-		return { ok: false, detail: `HTTP ${res.status} ${clip(String(body?.error ?? text), 100)}` };
-	} catch (err) {
-		const e = err as Error & { cause?: { code?: string } };
-		return { ok: false, detail: e.cause?.code ?? e.message };
+	const health = await rpcCall(base, "healthz", timeoutMs);
+	if (!health.ok) return health;
+	const parts = [`healthz ok ${clip(JSON.stringify(health.result ?? ""), 80)}`];
+	for (const method of calls) {
+		// A real request can take longer than healthz (the env server answers between env steps).
+		const r = await rpcCall(base, method, Math.max(timeoutMs, 10_000));
+		if (!r.ok) return { ok: false, detail: `${parts.join("; ")}; ${method} failed: ${r.detail}` };
+		parts.push(`${method} ok in ${r.ms} ms ${clip(JSON.stringify(r.result ?? ""), 80)}`);
 	}
+	return { ok: true, detail: parts.join("; ") };
 }
 
 async function endpointRows(spec: RobotCheckSpec, flags: Flags): Promise<Row[]> {
@@ -373,7 +406,9 @@ async function endpointRows(spec: RobotCheckSpec, flags: Flags): Promise<Row[]> 
 	const named = (str(flags.endpoint) ?? "").split(",").filter((s) => s.includes("="));
 	const wanted = [
 		...(spec.endpoints ?? []).map((e) => ({ ...e, url: str(flags[e.flag]) ?? e.default })),
-		...(str(flags.env) ? [{ flag: "env", why: "running env server", url: str(flags.env), toolsOnly: false }] : []),
+		...(str(flags.env)
+			? [{ flag: "env", why: "running env server", url: str(flags.env), toolsOnly: false, calls: ENV_CALLS }]
+			: []),
 		...named.map((s) => ({
 			flag: s.slice(0, s.indexOf("=")),
 			why: "extra endpoint",
@@ -385,7 +420,7 @@ async function endpointRows(spec: RobotCheckSpec, flags: Flags): Promise<Row[]> 
 		wanted.map(async (e): Promise<Row> => {
 			const check = `--${e.flag}`;
 			if (!e.url) return { status: "SKIP", check, detail: `not set (${e.why})` };
-			const r = await probeEndpoint(e.url);
+			const r = await probeEndpoint(e.url, 3000, "calls" in e ? (e.calls ?? []) : []);
 			if (r.ok) return { status: "PASS", check, detail: `${e.url} ${r.detail}` };
 			const soft = e.toolsOnly && units;
 			return {
@@ -397,33 +432,110 @@ async function endpointRows(spec: RobotCheckSpec, flags: Flags): Promise<Row[]> 
 	);
 }
 
-/** The planner's provider from models.json (`--model provider/id`), checked with GET <baseUrl>/models. */
+/** The outcome of one real minimal completion: whether the model answered, its latency, and the reply or error. */
+export type LlmCheck = { ok: boolean; model: string; ms: number; detail: string };
+
+/**
+ * Send `model` one real minimal completion (at most one output token) through pi's model registry, the
+ * way the agent's own requests go (provider, key, headers), and report whether it answered and how fast.
+ */
+export async function llmCheck(
+	registry: ExtensionContext["modelRegistry"],
+	model: Model<Api>,
+	timeoutMs = 30_000,
+): Promise<LlmCheck> {
+	const name = `${model.provider}/${model.id}`;
+	const t0 = Date.now();
+	try {
+		const reply = await registry
+			.streamSimple(
+				model,
+				{ messages: [{ role: "user", content: "Reply with the single word OK.", timestamp: Date.now() }] },
+				{ maxTokens: 1, signal: AbortSignal.timeout(timeoutMs) },
+			)
+			.result();
+		const ms = Date.now() - t0;
+		if (reply.stopReason === "error" || reply.stopReason === "aborted")
+			return { ok: false, model: name, ms, detail: clip(reply.errorMessage ?? reply.stopReason, 300) };
+		const text = reply.content
+			.map((c) => (c.type === "text" ? c.text : ""))
+			.join("")
+			.trim();
+		return { ok: true, model: name, ms, detail: `answered in ${ms} ms${text ? ` ("${clip(text, 40)}")` : ""}` };
+	} catch (err) {
+		return {
+			ok: false,
+			model: name,
+			ms: Date.now() - t0,
+			detail: clip(err instanceof Error ? err.message : String(err), 300),
+		};
+	}
+}
+
+type ProviderConfig = { baseUrl?: string; api?: string; apiKey?: string };
+
+/** A models.json `apiKey`: the named environment variable's value, else the literal; a `!command` key is not run here. */
+function resolveKey(key: string | undefined, env: NodeJS.ProcessEnv): string | undefined {
+	if (!key || key.startsWith("!")) return undefined;
+	return env[key] ?? key;
+}
+
+/**
+ * The planner. In pi (`complete`, ../robot.ts's /robot-check): one real 1-token completion through pi's
+ * model registry (`llmCheck`). Standalone: the provider from models.json (`--model provider/id`); an
+ * OpenAI-compatible one whose key resolves gets a real 1-token `chat/completions` request, any other
+ * a `GET <baseUrl>/models` (any answer below 500 means the gateway is up).
+ */
 export async function plannerRow(
 	model: string | undefined,
 	baseUrl?: string,
 	modelsJson = join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"), "models.json"),
+	complete?: () => Promise<LlmCheck>,
+	env: NodeJS.ProcessEnv = process.env,
 ): Promise<Row> {
-	if (!model) return { status: "SKIP", check: "planner", detail: "no --model given" };
-	let url = baseUrl;
-	if (!url) {
-		const provider = model.split("/")[0];
-		try {
-			const cfg = JSON.parse(readFileSync(modelsJson, "utf8")) as {
-				providers?: Record<string, { baseUrl?: string }>;
-			};
-			url = cfg.providers?.[provider]?.baseUrl;
-		} catch {}
-		if (!url)
-			return { status: "SKIP", check: "planner", detail: `${model}: no baseUrl for "${provider}" in ${modelsJson}` };
+	if (complete) {
+		const r = await complete();
+		return { status: r.ok ? "PASS" : "FAIL", check: "planner", detail: `${r.model}: ${r.detail}` };
 	}
+	if (!model) return { status: "SKIP", check: "planner", detail: "no --model given" };
+	const provider = model.split("/")[0];
+	let cfg: ProviderConfig | undefined;
 	try {
-		const res = await fetch(`${url.replace(/\/$/, "")}/models`, { signal: AbortSignal.timeout(5000) });
+		cfg = (JSON.parse(readFileSync(modelsJson, "utf8")) as { providers?: Record<string, ProviderConfig> })
+			.providers?.[provider];
+	} catch {}
+	const url = baseUrl ?? cfg?.baseUrl;
+	if (!url)
+		return { status: "SKIP", check: "planner", detail: `${model}: no baseUrl for "${provider}" in ${modelsJson}` };
+	const base = url.replace(/\/$/, "");
+	const key = resolveKey(cfg?.apiKey, env);
+	try {
+		if (key && (cfg?.api ?? "openai-completions") === "openai-completions") {
+			const t0 = Date.now();
+			const res = await fetch(`${base}/chat/completions`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+				body: JSON.stringify({
+					model: model.slice(provider.length + 1),
+					messages: [{ role: "user", content: "Reply with the single word OK." }],
+					max_tokens: 1,
+				}),
+				signal: AbortSignal.timeout(30_000),
+			});
+			const text = await res.text();
+			const ms = Date.now() - t0;
+			return {
+				status: res.ok ? "PASS" : "FAIL",
+				check: "planner",
+				detail: `${model} via ${url}: ${res.ok ? `1-token completion in ${ms} ms` : `HTTP ${res.status} ${clip(text, 120)}`}`,
+			};
+		}
+		const res = await fetch(`${base}/models`, { signal: AbortSignal.timeout(5000) });
 		await res.body?.cancel();
-		// Any answer below 500 means the gateway is up; the models list may need the key.
 		return {
 			status: res.status < 500 ? "PASS" : "FAIL",
 			check: "planner",
-			detail: `${model} via ${url}: HTTP ${res.status}${res.status === 401 || res.status === 403 ? " (up; needs the key)" : ""}`,
+			detail: `${model} via ${url}: HTTP ${res.status}${res.status === 401 || res.status === 403 ? " (up; needs the key)" : ""} (no key: gateway only, no completion sent)`,
 		};
 	} catch (err) {
 		const e = err as Error & { cause?: { code?: string } };
@@ -455,7 +567,7 @@ export async function runChecks(
 	flags: Flags,
 	o: {
 		spec?: RobotCheckSpec;
-		planner?: { model: string; baseUrl?: string };
+		planner?: { model: string; baseUrl?: string; complete?: () => Promise<LlmCheck> };
 		dashboard?: "skip";
 		timeoutMs?: number;
 	} = {},
@@ -474,7 +586,7 @@ export async function runChecks(
 		pythonRows(spec, flags, o.timeoutMs ?? Number(str(flags.timeout) ?? 300) * 1000),
 		gpuRows(spec.gpu),
 		endpointRows(spec, flags),
-		plannerRow(o.planner?.model ?? str(flags.model), o.planner?.baseUrl),
+		plannerRow(o.planner?.model ?? str(flags.model), o.planner?.baseUrl, undefined, o.planner?.complete),
 		o.dashboard === "skip"
 			? Promise.resolve<Row>({ status: "SKIP", check: "dashboard port", detail: "served by this pi" })
 			: portRow(port, str(flags["dashboard-host"]) === "0.0.0.0" ? "0.0.0.0" : "127.0.0.1"),
@@ -521,7 +633,11 @@ export function robotCheck(pi: ExtensionAPI, robot?: string) {
 				: undefined;
 			const rows = await runChecks(which, parseFlags(process.argv.slice(2)), {
 				planner: ctx.model
-					? { model: `${ctx.model.provider}/${ctx.model.id}`, baseUrl: ctx.model.baseUrl }
+					? {
+							model: `${ctx.model.provider}/${ctx.model.id}`,
+							baseUrl: ctx.model.baseUrl,
+							complete: () => llmCheck(ctx.modelRegistry, ctx.model as Model<Api>),
+						}
 					: undefined,
 				dashboard,
 			});

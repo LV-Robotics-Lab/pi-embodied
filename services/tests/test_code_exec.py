@@ -354,7 +354,9 @@ def test_the_child_sees_no_secret_environment_variables(monkeypatch):
         "import os\n"
         "RESULT = [k for k in ('FAKE_API_KEY', 'SOME_TOKEN', 'AWS_REGION', 'PLAIN_SETTING', 'PATH')"
         " if k in os.environ]\n"
-        "RESULT.append(open('/proc/self/environ', 'rb').read().count(b'sk-1'))\n"
+        # /proc exists on Linux only; elsewhere the scrubbed os.environ is the whole check.
+        "p = '/proc/self/environ'\n"
+        "RESULT.append(open(p, 'rb').read().count(b'sk-1') if os.path.exists(p) else 0)\n"
     )
     assert out["status"] == "ran", out
     assert out["result"] == ["PLAIN_SETTING", "PATH", 0]

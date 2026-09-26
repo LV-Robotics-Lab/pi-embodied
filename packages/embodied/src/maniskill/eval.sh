@@ -97,6 +97,10 @@ done
 [ "$units" = pure ] && units=true
 # --units-plugins is part of the units mode: a result with other plugins is another configuration.
 [ "$units" != false ] && [ -n "${units_plugins+x}" ] && units="$units+plugins=$units_plugins"
+# The RLinf rigs ("-" = BlockPAP-v1) run their own Panda: another --robot would fail every cell.
+case ",$envs," in *,BlockPAP-v1,* | *,BlockStack-v1,*)
+	[ "$robot" = panda ] || { echo "BlockPAP-v1 / BlockStack-v1 (and \"-\") are real2sim rigs with their own Panda; --robot $robot takes stock env ids" >&2 && exit 2; } ;;
+esac
 # --time-limit (default $TIME_LIMIT, 1800 s; 0 = none) ends the planner gracefully, as a failure;
 # `timeout` is only the backstop for a hung process, and a killed episode is invalid.
 [ -n "$limited" ] || set -- "$@" --time-limit "$limit"

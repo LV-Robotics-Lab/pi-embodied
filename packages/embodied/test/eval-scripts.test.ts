@@ -382,6 +382,13 @@ test("maniskill/eval.sh records --robot as maniskill_robot and never mixes arms 
 	const [, same] = rerun("maniskill", positional, {}, ["--robot", "xarm6_robotiq"], ["--robot=xarm6_robotiq"]);
 	assert.equal(same.status, 0, same.stdout + same.stderr);
 	assert.match(same.stdout, /\/robot=xarm6_robotiq: success 1\/1/);
+	// "-" (BlockPAP-v1) and the rigs run their own Panda: another arm is refused up front, not per cell.
+	for (const envs of ["-", "PickCube-v1,BlockStack-v1"]) {
+		const rig = run("maniskill", [envs, "0"], "BlockPAP-v1_s0", ["--robot", "xarm6_robotiq"]);
+		assert.equal(rig.status, 2, envs);
+		assert.match(rig.stderr, /real2sim rigs with their own Panda; --robot xarm6_robotiq takes stock env ids/);
+		assert.equal(rig.argv, undefined, "pi never started");
+	}
 	// The Panda keeps its summary key; `--robot panda` is the default run.
 	const [, panda] = rerun("maniskill", positional, {}, [], ["--robot", "panda"]);
 	assert.equal(panda.status, 0, panda.stdout + panda.stderr);

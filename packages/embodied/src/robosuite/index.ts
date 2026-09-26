@@ -21,6 +21,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
 import { template } from "../context-version.ts";
+import { ikArgs, type Reach, registerIkFlag } from "../ik.ts";
 import { decodePngChannel, encodePng } from "../png.ts";
 import { graspActive, graspArgs, graspTools, mountGraspTool, registerGraspFlags } from "../primitives/grasp.ts";
 import { attach, defineRobot, type Json, median, SERVICES, toolResult } from "../robot.ts";
@@ -112,10 +113,8 @@ export default function robosuite(pi: ExtensionAPI) {
 		default: "http://127.0.0.1:18300",
 		description: "SAM3 server (segment, and code mode's segment primitive)",
 	});
-	pi.registerFlag("ik", {
-		type: "string",
-		description: "IK service URL (components/ik_server.py): the env server checks reach before every move",
-	});
+	// --ik: the env server checks reach before every move, and preview_reach asks it (../ik.ts).
+	registerIkFlag(pi);
 	// --graspnet / --graspgenx / --anyplace / --anygrasp: plan_grasp, plan_place and check_attached (../primitives/grasp.ts).
 	registerGraspFlags(pi);
 	pi.registerFlag("max-move", {
@@ -572,6 +571,21 @@ export default function robosuite(pi: ExtensionAPI) {
 		"read",
 	);
 
+	tool(
+		"preview_reach",
+		"Whether move_to could reach a world xyz from the arm's current joints (IK only; nothing moves). status unreachable means move_to would refuse it; unknown means the check could not run.",
+		Type.Object({
+			xyz,
+			arm,
+			quat_xyzw: Type.Optional(
+				Type.Array(Type.Number(), { minItems: 4, maxItems: 4, description: "Default: the current orientation" }),
+			),
+		}),
+		async ({ xyz: target, arm: a, quat_xyzw }) =>
+			call<Reach>("env.preview_reach", { pos: target, quat_xyzw: quat_xyzw ?? null, arm: armOf(a) ?? null }),
+		"read",
+	);
+
 	// plan_grasp / plan_place / check_attached over the env server's grasp planner (active with a backend flag).
 	for (const d of graspTools(pi, {
 		call: (method, kwargs, timeoutMs) => call<Json>(method, kwargs, [], robot.signal, timeoutMs ?? 120_000),
@@ -653,7 +667,7 @@ export default function robosuite(pi: ExtensionAPI) {
 					...["--task", task, "--seed", seed, "--max-move", flag("max-move", String(MAX_MOVE_M))],
 					...["--sam3", flag("sam3", "")],
 					...(cuda ? ["--cuda-device", cuda] : []),
-					...(pi.getFlag("ik") ? ["--ik", flag("ik", "")] : []),
+					...ikArgs(pi.getFlag("ik")),
 					...graspArgs(pi),
 				],
 				cwd: services,
@@ -677,6 +691,8 @@ export default function robosuite(pi: ExtensionAPI) {
 			"move_to",
 			"move_delta",
 			...(hasGripper(task) ? ["gripper"] : []),
+			// The env server serves env.preview_reach only with --ik.
+			...(flag("ik", "") ? ["preview_reach"] : []),
 			// Grasping needs fingers: Wipe's sponge has none.
 			...(hasGripper(task) ? graspActive(pi) : []),
 			"finish",

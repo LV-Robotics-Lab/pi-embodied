@@ -264,3 +264,30 @@ test("Wipe's sponge has no fingers: no grasp tools even with a backend", async (
 	assert.ok(s.active().includes("move_to"));
 	assert.ok(!s.active().includes("plan_grasp") && !s.active().includes("gripper"));
 });
+
+test("--ik activates preview_reach, which asks env.preview_reach for the named arm without moving", async (t) => {
+	const env = await fakeRobosuite("TwoArmLift", (c) =>
+		c.method === "env.preview_reach" ? { status: "unreachable", reachable: false, message: "far" } : undefined,
+	);
+	t.after(env.close);
+	const s = simPi({ env: env.url, task: "TwoArmLift", ik: "http://127.0.0.1:1" });
+	robosuite(s.pi);
+	await s.emit("session_start");
+	process.exitCode = undefined;
+	assert.ok(s.active().includes("preview_reach"));
+	const r = await s.run("preview_reach", { xyz: [0.1, 0.2, 0.9], arm: "robot1" });
+	assert.equal(r.details.status, "unreachable");
+	const call = env.calls.find((c) => c.method === "env.preview_reach")!;
+	assert.deepEqual(call.kwargs, { pos: [0.1, 0.2, 0.9], quat_xyzw: null, arm: "robot1" });
+	assert.ok(!env.calls.some((c) => c.method.startsWith("env.move")));
+	assert.match((await s.emit("before_agent_start")).systemPrompt as string, /`preview_reach` tells/);
+	// Two arms: the arm is required.
+	await assert.rejects(() => s.run("preview_reach", { xyz: [0, 0, 1] }), /pass arm/);
+
+	const off = simPi({ env: env.url, task: "TwoArmLift" });
+	robosuite(off.pi);
+	await off.emit("session_start");
+	process.exitCode = undefined;
+	assert.ok(!off.active().includes("preview_reach"));
+	assert.doesNotMatch((await off.emit("before_agent_start")).systemPrompt as string, /preview_reach/);
+});

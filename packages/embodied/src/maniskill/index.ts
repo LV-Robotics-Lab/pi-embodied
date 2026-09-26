@@ -436,7 +436,7 @@ export default function maniskill(pi: ExtensionAPI) {
 	let success = false;
 	let everGrasped = false;
 	let envStep = 0;
-	/** Panda mimic gripper command: +1 open, -1 close. */
+	/** pi's gripper command: +1 open, -1 close; the server maps it to the robot's action. */
 	let gripper = 1;
 	let language = "";
 	/** The server runs an RLinf rig (BlockPAP-v1 / BlockStack-v1). */

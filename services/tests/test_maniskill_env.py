@@ -293,6 +293,25 @@ def test_servo_holds_the_robots_gripper_action_and_the_width_is_its_own():
     assert xarm._gripper_width(qpos) == 0.0  # closed on nothing
 
 
+def test_code_mode_raw_actions_use_pis_gripper_sign_on_every_robot():
+    """step / chunk_step take [dx, dy, dz, gripper] with > 0 open on every robot: the
+    Panda's passes through unchanged (continuous values too), the Robotiq's gripper sign
+    is flipped (its +1 closes)."""
+    panda = _facade("panda")
+    assert np.array_equal(
+        panda._native([0.1, -0.2, 0.3, 0.5]), np.float32([0.1, -0.2, 0.3, 0.5])
+    )
+    x = _facade("xarm6_robotiq")
+    assert np.allclose(x._native([0.1, 0, 0, 1.0]), [0.1, 0, 0, -1.0])
+    assert np.allclose(x._native([0, 0, 0, -0.4]), [0, 0, 0, 0.4])
+    sent = []
+    x._step = lambda a: (sent.append(a) or "obs", 0.0, False, False, {})
+    x._pack = lambda obs: obs
+    x.stop_requested = lambda: False
+    x.chunk_step([[0, 0, 0, 1.0], [0, 0, 0, -1.0]])
+    assert [float(a[-1]) for a in sent] == [-1.0, 1.0]
+
+
 def test_a_robot_without_a_wrist_camera_observes_the_agentview_alone():
     f = _facade("widowxai", wrist=False)
     f._rgb = lambda obs, name: f"{name}-image"

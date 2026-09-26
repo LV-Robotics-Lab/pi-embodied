@@ -63,7 +63,7 @@ MANISKILL_PRIMITIVES = (
     Primitive(
         "step",
         "env.step",
-        "One pd_ee_delta_pos action [dx, dy, dz, gripper].",
+        "One pd_ee_delta_pos action [dx, dy, dz, gripper] (gripper > 0 open, < 0 close on every robot).",
         {"action": Param("array", "4 floats")},
         mutating=True,
         tiers=("low",),

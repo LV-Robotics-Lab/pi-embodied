@@ -19,8 +19,8 @@
 """RPC server wrapping one ManiSkill 3 env in ``pd_ee_delta_pos``.
 
 Action ``[dx, dy, dz, gripper]`` in [-1, 1]: a base-frame position delta normalised by
-the arm's 0.1 m bound, and the robot's gripper action (the Panda's mimic gripper: +1
-open, -1 close; ``ROBOTS`` maps "open" / "close" for each ``--robot``). Observations
+the arm's 0.1 m bound, and the gripper in pi's convention (> 0 open, < 0 close) whatever
+the ``--robot``; the server gives it the robot's sign (the Robotiq's +1 closes). Observations
 carry the agentview (``base_camera``; ``external_cam`` on the RLinf rigs) and, on a robot
 with a wrist camera, the wrist (``hand_camera``) RGB, the TCP pose and the gripper
 opening; ``info`` is flattened to plain scalars (``success``, ``is_grasped``, ...). An env id of ./scenes.py (BlockPAP-v1,
@@ -672,8 +672,16 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
                 f"(need >= {MIN_VISIBLE_PX}); refusing the episode"
             )
 
+    def _native(self, action) -> np.ndarray:
+        """A code-mode action ``[dx, dy, dz, gripper]`` in pi's convention (> 0 open) with
+        the robot's gripper sign: the value's magnitude kept, negated on a robot whose
+        open action is negative (the Robotiq's +1 closes). The Panda's is unchanged."""
+        a = np.asarray(action, dtype=np.float32).reshape(-1).copy()
+        a[-1] *= self._robot.gripper[0]
+        return a
+
     def step(self, action):
-        obs, rew, term, trunc, info = self._step(action)
+        obs, rew, term, trunc, info = self._step(self._native(action))
         return self._pack(obs), rew, term, trunc, info
 
     def chunk_step(self, actions, *, return_all_frames: bool = False):
@@ -685,7 +693,7 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
             if self.stop_requested():
                 info["cancelled"] = True
                 break
-            obs, rew, term, trunc, info = self._step(action)
+            obs, rew, term, trunc, info = self._step(self._native(action))
             frames.append(obs)
             rews.append(rew)
             terms.append(term)

@@ -258,6 +258,8 @@ export default function maniskill(pi: ExtensionAPI) {
 	const robot = defineRobot(pi, {
 		name: "maniskill",
 		task: ["env-id", "seed", "scene"],
+		// The env server's primitive registry (code.api), recorded per episode.
+		codeApi: () => env,
 		keepImages: 4,
 		video: true,
 		// Observations carry the agentview then the wrist image.

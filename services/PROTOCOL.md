@@ -107,7 +107,7 @@ wrapper; single-env servers strip the leading env dimension.
 world frame, metres, rounded to 1e-5. The names are the simulator's own object list (per server
 below); an unknown name is an error that lists them.
 
-`code.api` (read-only; franka-env, franka-polymetis-env, dual-franka-env so far): the server's
+`code.api` (read-only; every env server: each robot's `primitives.py`): the server's
 primitive registry (`components/code_api.py`), what a code-as-policy caller may use. kw
 `tier=null` (`"high"`, `"low"`, `"privileged"` = high plus ground truth; null = every non-privileged
 primitive) -> `{"tier": str | null, "primitives": [{"name", "method", "doc", "params": {name:

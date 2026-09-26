@@ -295,6 +295,8 @@ async function mockServer(o: ServerOpts = {}) {
 				};
 			case "env.reset":
 				return { ok: true, robot_state: state() };
+			case "code.api":
+				return { tier: null, primitives: [], digest: "0".repeat(64) };
 			case "env.get_observation":
 				return { images: Object.fromEntries(cameras.map((c) => [c, img])), robot_state: state() };
 			case "env.get_robot_state":

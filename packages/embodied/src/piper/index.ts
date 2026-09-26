@@ -295,6 +295,8 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 	const spec: RobotSpec = {
 		name: dual ? "piper_dual" : "piper",
 		task: ["task"],
+		// The env server's primitive registry (code.api), recorded per episode.
+		codeApi: () => env,
 		keepImages: 4,
 		video: true,
 		// Observations carry cameras() in order; the front view has to lead to be the main one.

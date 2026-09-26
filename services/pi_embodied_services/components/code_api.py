@@ -79,6 +79,21 @@ class Primitive:
         }
 
 
+#: The simulators' ground truth (``env.ground_truth_poses``, utils/ground_truth.py): the privileged tier.
+GROUND_TRUTH = Primitive(
+    "ground_truth_poses",
+    "env.ground_truth_poses",
+    "Simulator ground truth: {frame, poses: {name: {pos, quat_xyzw}}} of the named objects (default all).",
+    {"names": Param("array", "object names (default all)", required=False)},
+    tiers=("privileged",),
+)
+
+#: The task instruction every env server answers.
+TASK_LANGUAGE = Primitive(
+    "get_task_language", "env.get_task_language", "The task instruction."
+)
+
+
 class CodeApi:
     """A validated set of primitives over a facade's registered RPC methods."""
 

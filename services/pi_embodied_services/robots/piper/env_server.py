@@ -57,8 +57,10 @@ from typing import Any
 import numpy as np
 import yaml
 
+from pi_embodied_services.components.code_api import register_code_api
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
 from pi_embodied_services.robots.piper.controller import PiperController, PiperLimits
+from pi_embodied_services.robots.piper.primitives import PIPER_PRIMITIVES
 from pi_embodied_services.utils.logging import get_logger
 
 logger = get_logger("piper_env_server")
@@ -296,6 +298,7 @@ class PiperEnvFacade(BaseEnvFacade):
             "halt_arm",
         ):
             self._rpc[f"env.{name}"] = getattr(self, name)
+        register_code_api(self, PIPER_PRIMITIVES)
 
     def close(self) -> None:
         for cam in self._cameras.values():

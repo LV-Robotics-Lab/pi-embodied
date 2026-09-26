@@ -164,6 +164,8 @@ export default function robocasa(pi: ExtensionAPI) {
 	const robot = defineRobot(pi, {
 		name: "robocasa",
 		task: ["task-name", "split", "seed"],
+		// The env server's primitive registry (code.api), recorded per episode.
+		codeApi: () => env,
 		keepImages: 6,
 		budget: { turns: 0, seconds: 0 },
 		// Observations carry the agentview, navview and wrist images.

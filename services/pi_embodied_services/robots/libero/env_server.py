@@ -27,7 +27,9 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from pi_embodied_services.components.code_api import register_code_api
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
+from pi_embodied_services.robots.libero.primitives import LIBERO_PRIMITIVES
 from pi_embodied_services.utils import ground_truth
 from pi_embodied_services.utils.logging import get_logger
 from pi_embodied_services.utils.serialization import to_numpy_tree
@@ -224,6 +226,7 @@ class LiberoEnvFacade(BaseEnvFacade):
             }
         )
         self._readonly_methods.add("env.get_task_language")
+        register_code_api(self, LIBERO_PRIMITIVES)
 
     # ---- shape helpers ----
 

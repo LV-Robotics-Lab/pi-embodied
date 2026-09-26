@@ -379,6 +379,8 @@ export default function robotwin(pi: ExtensionAPI) {
 	const robot = defineRobot(pi, {
 		name: "robotwin",
 		task: ["task-name", "task-config", "seed"],
+		// The env server's primitive registry (code.api), recorded per episode.
+		codeApi: () => env,
 		keepImages: 6,
 		imageStub: "[older camera frame omitted; view_env_state(step) re-reads it]",
 		budget: { turns: 100, seconds: 4800 },

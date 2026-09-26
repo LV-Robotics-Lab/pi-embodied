@@ -129,6 +129,8 @@ export default function robolab(pi: ExtensionAPI) {
 	const robot = defineRobot(pi, {
 		name: "robolab",
 		task: ["task", "seed"],
+		// The env server's primitive registry (code.api), recorded per episode.
+		codeApi: () => env,
 		keepImages: 4,
 		video: true,
 		// Observations carry the front then the wrist image.

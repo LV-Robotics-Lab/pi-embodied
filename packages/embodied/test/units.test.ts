@@ -73,7 +73,12 @@ function fakePi(
 		},
 		shutdown: () => {},
 		signal: aborted ? AbortSignal.abort() : undefined,
-		sessionManager: { getBranch: () => branch, getSessionDir: () => dir },
+		sessionManager: {
+			getBranch: () => branch,
+			getSessionDir: () => dir,
+			getSessionFile: () => join(dir, "session.jsonl"),
+			getSessionId: () => "session",
+		},
 		model: { provider: "relay", id: "planner" },
 		modelRegistry: {
 			find: (provider: string, id: string) => ({ provider, id }),

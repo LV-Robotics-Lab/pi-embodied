@@ -37,7 +37,9 @@ import torch
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
+from pi_embodied_services.components.code_api import register_code_api
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
+from pi_embodied_services.robots.robotwin.primitives import ROBOTWIN_PRIMITIVES
 from pi_embodied_services.utils import ground_truth
 from pi_embodied_services.utils.logging import get_logger
 from pi_embodied_services.utils.serialization import to_numpy_tree
@@ -219,6 +221,7 @@ class RoboTwinEnvFacade(BaseEnvFacade):
         super()._register_rpc()
         self._rpc["env.plan_arm_path"] = self.plan_arm_path
         self._rpc["env.ground_truth_poses"] = self.ground_truth_poses
+        register_code_api(self, ROBOTWIN_PRIMITIVES)
 
     def get_env_meta(self) -> dict[str, Any]:
         """Return immutable identity for endpoint compatibility checks."""

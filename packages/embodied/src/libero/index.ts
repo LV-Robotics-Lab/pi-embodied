@@ -201,6 +201,8 @@ export default function libero(pi: ExtensionAPI) {
 	const robot = defineRobot(pi, {
 		name: "libero",
 		task: ["suite", "task", "seed"],
+		// The env server's primitive registry (code.api), recorded per episode.
+		codeApi: () => env,
 		keepImages: 4,
 		memory: {
 			cell: () => ({ tag: tag(), reference: tag().replace(/_s\d+$/, "_s0") }),

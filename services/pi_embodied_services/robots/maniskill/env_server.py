@@ -33,7 +33,9 @@ from typing import Any
 
 import numpy as np
 
+from pi_embodied_services.components.code_api import register_code_api
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
+from pi_embodied_services.robots.maniskill.primitives import MANISKILL_PRIMITIVES
 from pi_embodied_services.utils import ground_truth
 from pi_embodied_services.utils.logging import get_logger
 from pi_embodied_services.utils.rpc.main_thread_serve import MainThreadServeMixin
@@ -264,6 +266,7 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         self._rpc["env.state"] = self.state
         self._rpc["env.servo"] = self.servo
         self._rpc["env.ground_truth_poses"] = self.ground_truth_poses
+        register_code_api(self, MANISKILL_PRIMITIVES)
 
     # ---- helpers ----
 

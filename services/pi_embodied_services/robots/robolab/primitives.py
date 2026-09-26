@@ -46,6 +46,18 @@ ROBOLAB_PRIMITIVES = (
         mutating=True,
     ),
     Primitive(
+        "rotate_delta",
+        "env.rotate_delta",
+        "Turn the hand by a yaw (rad) about the base vertical axis through it (+ = counter-clockwise seen from above; clipped to 0.3 per call), holding its position and tilt.",
+        {
+            "yaw": Param("number", "rad about base +z"),
+            "return_frames": Param(
+                "boolean", "also return every decision's front frame", False
+            ),
+        },
+        mutating=True,
+    ),
+    Primitive(
         "render_camera",
         "env.render_camera",
         "The latest frame of a camera.",

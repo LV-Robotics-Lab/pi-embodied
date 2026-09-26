@@ -102,6 +102,45 @@ for (const [robot, positional, cell, env] of CELLS) {
 	});
 }
 
+test("robolab/eval.sh records --instruction-type and --subtask and never mixes them in one out dir", () => {
+	const positional = ["BananaInBowlTask", "0"];
+	const run1 = (args: string[]) => run("robolab", positional, "BananaInBowlTask_s0", args);
+	for (const args of [["--subtask=false"], ["--subtask", "false"]]) {
+		const r = run1(args);
+		assert.equal(r.status, 2, args.join(" "));
+		assert.match(r.stderr, /subtask/);
+		assert.equal(r.argv, undefined, "pi never ran");
+	}
+	const plain = run1([]).result;
+	assert.equal(plain?.instruction_type, "default");
+	assert.equal(plain?.subtask, false);
+	const on = run1(["--instruction-type", "vague", "--subtask"]);
+	assert.equal(on.result?.instruction_type, "vague");
+	assert.equal(on.result?.subtask, true);
+	assert.ok(on.argv?.includes("--subtask") && on.argv?.includes("vague"), String(on.argv));
+	assert.equal(run1(["--instruction-type=specific"]).result?.instruction_type, "specific");
+	// A phrasing is a different task; a subtask run a different configuration.
+	for (const [first, second] of [
+		[["--instruction-type", "vague"], []],
+		[[], ["--instruction-type=specific"]],
+		[[], ["--subtask"]],
+	]) {
+		const [a, b] = rerun("robolab", positional, {}, first, second);
+		assert.equal(a.status, 0, a.stdout + a.stderr);
+		assert.equal(b.status, 1);
+		assert.match(b.stderr, /--instruction-type or --subtask \(or an older result without them\)/);
+	}
+	const [, same] = rerun(
+		"robolab",
+		positional,
+		{},
+		["--instruction-type", "vague", "--subtask"],
+		["--instruction-type=vague", "--subtask"],
+	);
+	assert.equal(same.status, 0, same.stdout + same.stderr);
+	assert.match(same.stdout, /\/vague\/subtask: success 1\/1/);
+});
+
 /** eval.sh twice into one out dir, with a stand-in pi that records one successful episode: `first` args, then `second`. */
 function rerun(robot: string, positional: string[], env: Record<string, string>, first: string[], second: string[]) {
 	const dir = mkdtempSync(join(tmpdir(), "eval-"));

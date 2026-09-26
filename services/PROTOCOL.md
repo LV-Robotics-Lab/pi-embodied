@@ -49,7 +49,7 @@ Every service except the LingBot-VLA launcher speaks the same JSON-over-HTTP RPC
 | `stop` / `cancel` | - | `{"ok": true, "stop_generation": int, "call_in_progress": bool}` |
 | `shutdown` | - | `{"ok": true}`; the process exits after answering |
 
-Service names: `libero-env`, `robocasa-env`, `rldx-vla`, `robotwin-env`, `franka-env`,
+Service names: `libero-env`, `robocasa-env`, `rldx-vla`, `robotwin-env`, `robolab-env`, `franka-env`,
 `dual-franka-env`, `franka-polymetis-env`, `pi05-vla`, `sam3`, `molmo`.
 
 ### `stop` semantics
@@ -71,6 +71,7 @@ client's queued calls.
 | libero-env | queued calls | a running `env.chunk_step` (one RLinf `LiberoEnv.chunk_step`, typically 5 actions), `env.step`, `env.reset`, renders |
 | robocasa-env | queued calls | any running call (each is a single robosuite operation; there is no server-side chunk loop) |
 | robotwin-env | queued calls; `env.chunk_step` before each native action (`info.cancelled = true`) | the native action being executed (one `take_action`, i.e. one planned qpos/ee motion), `env.step`, `env.reset`, `env.plan_arm_path`, renders |
+| robolab-env | queued calls; `env.move_delta` / `env.rotate_delta` before each control step; `env.chunk_step` before each action | the Isaac Lab `env.step` in progress (one control step of 8 physics substeps), `env.reset` |
 | franka-env | queued calls; `env.move_delta` / `env.rotate_delta` / `env.set_gripper` before each servo step; `env.chunk_step` after each action | the servo step in progress (one RLinf `env.step`: one Cartesian target plus the pacing sleep, and up to 0.6 s when it toggles the gripper); `env.reset` (RLinf go-to-rest / joint reset) |
 | franka-polymetis-env | queued calls; `env.move_delta` / `env.rotate_delta` before each servo tick (setpoint advance <= `servo_step_m` / `servo_step_rad`) and during settle; `env.set_gripper` between width polls; `env.reset` between lift ticks and joint-stream ticks (`reset.method: joint_stream`) | the ZeroRPC call in flight (one setpoint); a gripper command already sent; `env.reset` with `reset.method: move_to_joint_positions` (blocking on the NUC) |
 | dual-franka-env | as franka-env; `env.recover_joint_posture` skips its return-to-start moves and reports `cancelled: true, ok: false` | as franka-env; in `recover_joint_posture` the two-arm joint reset and the gripper re-commands that restore the pre-recovery gripper state |
@@ -179,6 +180,32 @@ L-BFGS step on torch ops instead of its fused CUDA kernel, so cuRobo returns the
 start and target (about 150 ms per plan instead of 50), and `env.reset` reseeds the worker's global
 Python, numpy and torch RNGs with the episode seed. The same actions then give bitwise-identical
 transitions and frames in any process and after any number of resets.
+
+### robolab-env (`robots/robolab/env_server.py`)
+
+One RoboLab (Isaac Lab) task on a Franka + Panda hand under relative IK. The motion primitives
+hold the orientation at the reset pose by a per-control-step correction in the IK's rotation
+slots; `env.rotate_delta` turns that hold's reference about the base vertical (+yaw = right-handed
+about +z, counter-clockwise seen from above) and runs the hold with zero translation until the
+heading is reached. Each observation is `{"agentview" uint8[H,W,3], "wrist" uint8[256,256,3]
+(fingertips at the top), "eef_pos" float32[3], "eef_quat_wxyz" float32[4], "tilt_deg", "yaw_deg"
+(from the reset heading), "gripper_width", "gripper_command", "success", "terminated",
+"truncated", "env_steps"[, "subtask"]}`. `code.api` serves the registry of
+`robots/robolab/primitives.py`.
+
+| method | args | result |
+|---|---|---|
+| `env.get_env_meta` | - | `{"task", "seed", "instruction", "instruction_type", "subtask", "robot", "step_m", "command_gain", "steps_per_decision", "gripper_hold_steps", "settle_steps", "episode_length_s", "control_hz", "ik_scale", "output_dir", ...}` |
+| `env.reset` | - | `[obs, {"instruction"}]` (opens the gripper, settles, latches the orientation hold) |
+| `env.step` | `action` float[7] `[dx, dy, dz, drx, dry, drz, gripper]` (raw relative IK, no hold) | `[obs, 0.0, terminated, truncated, {"success"}]` |
+| `env.chunk_step` | `actions` float[N,7], kw `return_all_frames=false` | `[obs or list[obs], terminated, truncated, info[, "cancelled"]]` |
+| `env.move_delta` | `delta_xyz` float[3] (m, base frame; refused beyond 0.3 m), kw `gripper` "open"/"close"/null, `return_frames=false` | obs + `{"commanded_m", "moved_m", "decisions", "control_steps"[, "frames" (agentview per decision), "cancelled", "error"]}` |
+| `env.rotate_delta` | `yaw` float (rad about base +z; clipped to 0.3), kw `return_frames=false` | obs + `{"requested_yaw", "commanded_yaw", "yaw" (executed, measured), "moved_m" (drift), "decisions", "control_steps"[, "clipped", "frames", "cancelled", "error"]}` |
+| `env.state` | - | the obs without images (no stepping) |
+| `env.render_camera` | `camera_name="agentview"` or `"wrist"` | the latest frame |
+| `env.get_camera_meta` | `camera_name="agentview"` | `{"intrinsic_K" 3x3, "extrinsic_cam2world" 4x4, "width", "height"}` |
+| `env.get_task_language` | - | str |
+| `env.ground_truth_poses` | kw `names=null` | the scene's object poses (behind pi's `--privileged`) |
 
 ### franka-env (`robots/franka/env_server.py`)
 

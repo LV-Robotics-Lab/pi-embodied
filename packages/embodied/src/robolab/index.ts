@@ -10,10 +10,12 @@
  * Franka USDs). `--instruction-type` picks RoboLab's default/vague/specific phrasing, `--subtask`
  * records its subtask progress (score) in the tool-result details and `robot_result`, never in the
  * planner's context. Isaac Sim takes about a minute to come up (longer
- * on a cold shader cache). `move_delta` and the units hook `apply` share one motion path: a
- * base-frame delta in metres runs as ~2 cm relative-IK decisions with the orientation locked
- * (Show-Harness's calibration); every result carries the front and wrist images and the state;
- * success is the task's own RoboLab termination predicate, recorded in `robot_result`.
+ * on a cold shader cache). `move_delta`, `rotate_delta` and the units hook `apply` share one
+ * motion path: a base-frame delta in metres runs as ~2 cm relative-IK decisions with the orientation
+ * held (Show-Harness's calibration), a yaw turns the hold's reference about the base vertical
+ * (ROTATE_CW = +yaw, counter-clockwise seen from above, as LIBERO_TURNS); every result carries the
+ * front and wrist images and the state; success is the task's own RoboLab termination predicate,
+ * recorded in `robot_result`.
  *
  * Copyright 2026 The Show-Harness Authors (github.com/showlab/Show-Harness @137d571).
  * Licensed under the Apache License, Version 2.0.
@@ -27,7 +29,6 @@ import { join } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { recipeFlash } from "../flash/recipe.ts";
 import { encodePng } from "../png.ts";
 import { attach, defineRobot, SERVICES } from "../robot.ts";
 import type { NdArray, RpcClient } from "../rpc.ts";
@@ -51,13 +52,21 @@ export const VECTORS: Record<MoveUnit, Vec3> = {
 export const STEP_M = 0.02;
 /** Largest translation one call may command, m (the server refuses more). */
 export const MAX_MOVE_M = 0.3;
+/**
+ * Radians per ROTATE_CW (LIBERO_TURNS' step); ROTATE_CW is +yaw about base +z, counter-clockwise seen
+ * from above, as Show-Harness executes it (see ../libero LIBERO_TURNS), and the wrist view turns with it.
+ */
+export const YAW_STEP_RAD = 0.15;
+/** Largest yaw one call may command, rad (the server clips more; the units layer splits longer turns). */
+export const MAX_ROTATE_RAD = 0.3;
 /** A closed Panda hand at or below this width holds nothing, m. */
 export const EMPTY_WIDTH_M = 0.005;
 
 /** How the front and wrist cameras look: verified on Isaac Sim 6.1 frames (BananaInBowlTask seed 0, 10 cm probe moves along each axis). */
 export const VIEWS = `Each result shows the front view (a fixed camera in front of the robot, facing it; the robot base is at the top of the image), then the wrist view (it looks straight down from the gripper, rotated so the fingers are at the top of the image).
 - Front view: MV_LEFT / MV_RIGHT move toward the image left / right, MV_FWD toward the image bottom (toward the camera), MV_BACK toward the image top (toward the robot base).
-- Wrist view: MV_LEFT / MV_RIGHT move the gripper toward the image left / right, MV_FWD toward the image bottom, MV_BACK toward the image top; an object centered in the image is under the gripper: MV_DOWN.`;
+- Wrist view: MV_LEFT / MV_RIGHT move the gripper toward the image left / right, MV_FWD toward the image bottom, MV_BACK toward the image top; an object centered in the image is under the gripper: MV_DOWN.
+- ROTATE_CW turns the gripper counter-clockwise seen from above (the scene turns clockwise in the wrist view), ROTATE_CCW the opposite; the front view and the MV_* directions stay in the base frame.`;
 
 type Obs = {
 	agentview: NdArray;
@@ -65,6 +74,8 @@ type Obs = {
 	eef_pos: NdArray;
 	eef_quat_wxyz: NdArray;
 	tilt_deg: number;
+	/** Heading from the reset pose, deg (+ = counter-clockwise seen from above). */
+	yaw_deg: number;
 	gripper_width: number;
 	gripper_command: "open" | "close";
 	success: boolean;
@@ -74,8 +85,7 @@ type Obs = {
 	/** RoboLab's subtask progress (`--subtask`): completed/total subtasks and the partial-credit score. */
 	subtask?: { completed: number; total: number; score: number; info: string };
 };
-type Moved = Obs & {
-	commanded_m: number[];
+type Motion = Obs & {
 	moved_m: number[];
 	decisions: number;
 	control_steps: number;
@@ -83,6 +93,8 @@ type Moved = Obs & {
 	cancelled?: boolean;
 	error?: string;
 };
+type Moved = Motion & { commanded_m: number[] };
+type Rotated = Motion & { requested_yaw: number; commanded_yaw: number; yaw: number; clipped?: boolean };
 type Meta = {
 	task: string;
 	seed: number;
@@ -151,16 +163,6 @@ export default function robolab(pi: ExtensionAPI) {
 			primitives: ["move_delta", "act"],
 			published: false,
 		},
-		// Flash replays the solved exploration's recipe as recorded: its moves are relative and the robot has no
-		// back-projection to re-anchor them, so it reproduces the recorded seed (--model flash/replay).
-		flash: recipeFlash(pi, {
-			names: () => [tag(robot.task.seed), tag("0")],
-			memory: () => robot.mem?.render("{{memory_dir}}") ?? "",
-			observe: "view_env_state",
-			targets: {},
-			over: (latest) => latest.json.success === true,
-			solved: (latest) => latest.json.success === true,
-		}),
 		explore: {
 			// The exploration `reset` tool is not a robot.tool, so robot.signal is unset here; use its own signal.
 			reset: async (result, _ctx, signal) => {
@@ -213,14 +215,18 @@ export default function robolab(pi: ExtensionAPI) {
 			instruction: () => meta.instruction,
 			views: VIEWS,
 			emptyWidthM: EMPTY_WIDTH_M,
+			yawStepRad: YAW_STEP_RAD,
+			maxYawRad: () => MAX_ROTATE_RAD,
+			// A grounded unit is a move or a turn (the rotation plugin's realign is a bare yaw); STOP is an empty move.
 			apply: async (m, signal) => {
-				if (m.yaw) throw new Error("this robot has no yaw (the relative IK holds the orientation)");
-				return observe(await move(m.delta, m.gripper, signal));
+				const moved = m.yaw && !m.gripper && !Math.hypot(...m.delta) ? {} : await move(m.delta, m.gripper, signal);
+				return observe(m.yaw ? { ...moved, rotate: await rotate(m.yaw, signal) } : moved);
 			},
 			state: async () => ({
 				eef_xyz: obs.eef_pos.toArray().map((v) => round(v)),
 				gripper_width: obs.gripper_width,
 				tilt_deg: obs.tilt_deg,
+				yaw_deg: obs.yaw_deg,
 			}),
 		},
 	});
@@ -251,6 +257,44 @@ export default function robolab(pi: ExtensionAPI) {
 		};
 	}
 
+	/** Turn the gripper by `yaw` (rad, + = counter-clockwise seen from above) about the base vertical; frames go to the video. */
+	async function rotate(yaw: number, signal: AbortSignal | undefined) {
+		if (!(Math.abs(yaw) <= MAX_ROTATE_RAD))
+			throw new Error(`yaw ${round(yaw)} rad; the limit is ${MAX_ROTATE_RAD} rad per call. Split the turn.`);
+		const r = await env.call<Rotated>(
+			"env.rotate_delta",
+			{ yaw, return_frames: true },
+			300_000,
+			[],
+			signal ?? robot.signal,
+		);
+		for (const f of r.frames ?? []) video.frame(f);
+		const {
+			frames: _frames,
+			requested_yaw: _requested,
+			commanded_yaw,
+			yaw: turned,
+			clipped,
+			moved_m,
+			decisions,
+			control_steps,
+			cancelled,
+			error,
+			...o
+		} = r;
+		obs = o;
+		return {
+			commanded_yaw: round(commanded_yaw),
+			yaw: turned,
+			...(clipped ? { clipped } : {}),
+			moved_m,
+			decisions,
+			control_steps,
+			...(cancelled ? { cancelled } : {}),
+			...(error ? { error } : {}),
+		};
+	}
+
 	/** The result with the new state, then the front and wrist images. */
 	function observe(result: Record<string, unknown>) {
 		const images = [obs.agentview, obs.wrist].map((a) => encodePng(a.data, a.shape[1], a.shape[0]));
@@ -265,6 +309,7 @@ export default function robolab(pi: ExtensionAPI) {
 				gripper_width: obs.gripper_width,
 				gripper_command: obs.gripper_command,
 				tilt_deg: obs.tilt_deg,
+				yaw_deg: obs.yaw_deg,
 			},
 			images: [
 				`front ${obs.agentview.shape[1]}x${obs.agentview.shape[0]}`,
@@ -291,7 +336,7 @@ export default function robolab(pi: ExtensionAPI) {
 
 	robot.tool(
 		"move_delta",
-		`Translate the gripper by a base-frame [dx, dy, dz] in metres (+x away from the base, +y toward the robot's left, +z up; at most ${MAX_MOVE_M} m per call), optionally opening or closing the gripper first. The orientation is locked. Returns the new state and images.`,
+		`Translate the gripper by a base-frame [dx, dy, dz] in metres (+x away from the base, +y toward the robot's left, +z up; at most ${MAX_MOVE_M} m per call), optionally opening or closing the gripper first. The orientation is held. Returns the new state and images.`,
 		Type.Object({
 			delta_xyz: Type.Array(Type.Number(), { minItems: 3, maxItems: 3 }),
 			gripper: Type.Optional(StringEnum(["open", "close"] as const)),
@@ -299,6 +344,16 @@ export default function robolab(pi: ExtensionAPI) {
 		async ({ delta_xyz, gripper }, signal) => {
 			if (obs.success) return observe({ error: "the task is already solved; call finish" });
 			return observe(await move(delta_xyz as Vec3, gripper ?? null, signal));
+		},
+	);
+
+	robot.tool(
+		"rotate_delta",
+		`Turn the gripper by \`yaw\` radians about the vertical axis through it (+ = counter-clockwise seen from above, - = clockwise; at most ${MAX_ROTATE_RAD} rad per call), holding its position and downward tilt. The wrist view turns with it. Returns the new state and images.`,
+		Type.Object({ yaw: Type.Number() }),
+		async ({ yaw }, signal) => {
+			if (obs.success) return observe({ error: "the task is already solved; call finish" });
+			return observe(await rotate(yaw, signal));
 		},
 	);
 
@@ -325,12 +380,18 @@ export default function robolab(pi: ExtensionAPI) {
 		}
 		meta = await env.call<Meta>("env.get_env_meta");
 		const instructionType = flag("instruction-type", "default");
-		if (meta.task !== task || meta.seed !== Number(seed) || meta.instruction_type !== instructionType)
+		const subtask = Boolean(pi.getFlag("subtask"));
+		if (
+			meta.task !== task ||
+			meta.seed !== Number(seed) ||
+			meta.instruction_type !== instructionType ||
+			meta.subtask !== subtask
+		)
 			throw new Error(
-				`env server runs ${meta.task} seed ${meta.seed} (${meta.instruction_type}), not ${task} seed ${seed} (${instructionType})`,
+				`env server runs ${meta.task} seed ${meta.seed} (${meta.instruction_type}, subtask ${meta.subtask}), not ${task} seed ${seed} (${instructionType}, subtask ${subtask})`,
 			);
 		// The server comes up reset; a new session on an attached server resets it again.
 		[obs] = await env.call<[Obs, unknown]>("env.reset", {}, 300_000);
-		return ["view_env_state", "move_delta", "finish"];
+		return ["view_env_state", "move_delta", "rotate_delta", "finish"];
 	}
 }

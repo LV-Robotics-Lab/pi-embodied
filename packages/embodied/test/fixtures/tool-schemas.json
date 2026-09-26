@@ -2785,7 +2785,7 @@
 		"robolab": [
 			{
 				"name": "act",
-				"description": "Execute one action unit (MV_FWD, MV_BACK, MV_LEFT, MV_RIGHT, MV_UP, MV_DOWN, STOP, GRASP, RELEASE, DONE), repeated n times. MV_* move the gripper ~2 cm; GRASP closes, RELEASE opens, STOP holds one step, DONE means the task is complete (call finish). Returns the new images and state.",
+				"description": "Execute one action unit (MV_FWD, MV_BACK, MV_LEFT, MV_RIGHT, MV_UP, MV_DOWN, ROTATE_CW, ROTATE_CCW, STOP, GRASP, RELEASE, DONE), repeated n times. MV_* move the gripper ~2 cm, ROTATE_* turn it ~9 deg; GRASP closes, RELEASE opens, STOP holds one step, DONE means the task is complete (call finish). Returns the new images and state.",
 				"parameters": {
 					"type": "object",
 					"required": [
@@ -2801,6 +2801,8 @@
 								"MV_RIGHT",
 								"MV_UP",
 								"MV_DOWN",
+								"ROTATE_CW",
+								"ROTATE_CCW",
 								"STOP",
 								"GRASP",
 								"RELEASE",
@@ -2935,7 +2937,7 @@
 			},
 			{
 				"name": "move_delta",
-				"description": "Translate the gripper by a base-frame [dx, dy, dz] in metres (+x away from the base, +y toward the robot's left, +z up; at most 0.3 m per call), optionally opening or closing the gripper first. The orientation is locked. Returns the new state and images.",
+				"description": "Translate the gripper by a base-frame [dx, dy, dz] in metres (+x away from the base, +y toward the robot's left, +z up; at most 0.3 m per call), optionally opening or closing the gripper first. The orientation is held. Returns the new state and images.",
 				"parameters": {
 					"type": "object",
 					"required": [
@@ -2956,6 +2958,21 @@
 								"open",
 								"close"
 							]
+						}
+					}
+				}
+			},
+			{
+				"name": "rotate_delta",
+				"description": "Turn the gripper by `yaw` radians about the vertical axis through it (+ = counter-clockwise seen from above, - = clockwise; at most 0.3 rad per call), holding its position and downward tilt. The wrist view turns with it. Returns the new state and images.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"yaw"
+					],
+					"properties": {
+						"yaw": {
+							"type": "number"
 						}
 					}
 				}

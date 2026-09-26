@@ -24,7 +24,10 @@ ceil(|delta| / 2 cm) decisions (Show-Harness's action lattice); each decision co
 RoboLab's relative IK achieves a constant ~28% of what it is asked for (0.072 m commanded over
 8 steps measured 20.1 mm). The orientation is held at the reset pose by a per-step correction
 in the rotation slots. A gripper command holds still for ``gripper_hold_steps`` so the fingers
-finish moving. Success is the task's own termination predicate.
+finish moving. ``env.rotate_delta`` turns the hand about the base vertical axis through the
+same hold: its reference orientation is turned by the yaw and the hold servo runs with zero
+translation until the heading is reached, so the tilt stays where the hold keeps it. Success is
+the task's own termination predicate.
 
 Isaac Sim starts in ``__init__`` (tens of seconds, minutes on a cold shader cache), before the
 server binds, so healthz answers only once the task is loaded. Every call runs on the main
@@ -62,6 +65,13 @@ GRIPPER_HOLD_STEPS = 10
 MAX_DELTA_M = 0.05
 #: Largest translation one call may command, m.
 MAX_MOVE_M = 0.3
+#: Largest yaw one call may command, rad (Franka's rotate_max_step_rad; more is clipped and reported).
+MAX_ROTATE_RAD = 0.3
+#: rotate_delta stops once the heading is within this of its target, rad, checked per decision.
+YAW_TOL_RAD = 0.01
+#: rotate_delta gives up after this many decisions (the saturated IK closes the error geometrically:
+#: 0.3 rad commanded took 2 decisions to 0.2976 rad measured, 0.3 mm of drift, on BananaInBowlTask).
+MAX_ROTATE_DECISIONS = 6
 #: BinaryJointPositionZeroToOneAction: action > 0.5 closes.
 OPEN, CLOSE = 0.0, 1.0
 #: The wrist camera's raw frame has the fingertips entering from the left; 270 deg CCW puts them
@@ -86,12 +96,15 @@ class RobolabEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         self._closed = False
         self._gripper = OPEN
         self._quat_ref: np.ndarray | None = None
+        #: The heading at reset, which ``yaw_deg`` is measured from.
+        self._quat_home: np.ndarray | None = None
         self._steps = 0
         self._terminated = self._truncated = False
 
     def _register_rpc(self) -> None:
         super()._register_rpc()
         self._rpc["env.move_delta"] = self.move_delta
+        self._rpc["env.rotate_delta"] = self.rotate_delta
         self._rpc["env.state"] = self.state
         self._rpc["env.ground_truth_poses"] = self.ground_truth_poses
         register_code_api(self, ROBOLAB_PRIMITIVES)
@@ -113,6 +126,12 @@ class RobolabEnvFacade(MainThreadServeMixin, BaseEnvFacade):
             "eef_pos": sim.rl_tcp(self._env).astype(np.float32),
             "eef_quat_wxyz": quat.astype(np.float32),
             "tilt_deg": round(sim.ee_tilt_deg(quat), 2),
+            "yaw_deg": round(
+                math.degrees(sim.yaw_between(self._quat_home, quat))
+                if self._quat_home is not None
+                else 0.0,
+                2,
+            ),
             "gripper_width": round(sim.rl_gripper_width(self._env), 5),
             "gripper_command": "close" if self._gripper == CLOSE else "open",
             "success": sim.rl_success(self._env) or self._terminated,
@@ -145,10 +164,11 @@ class RobolabEnvFacade(MainThreadServeMixin, BaseEnvFacade):
                 return i, True
             self._obs, term, trunc = sim.step(self._env, self._action(delta_m))
             self._steps += 1
-            self._terminated |= term
-            self._truncated |= trunc
-            if term or trunc:
-                # RoboLab freezes a terminated env; a truncated one was reset by Isaac Lab.
+            # RoboLab froze the env (success or time-out); a termination it reset away instead
+            # (its first-steps physics artifact) is not an ending.
+            if sim.rl_ended(self._env, term, trunc):
+                self._terminated |= term
+                self._truncated |= trunc
                 return i + 1, False
         return n, False
 
@@ -162,7 +182,7 @@ class RobolabEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         self._terminated = self._truncated = False
         self._obs = sim.reset(self._env)
         self._control(np.zeros(3), int(self._meta["settle_steps"]))
-        self._quat_ref = sim.rl_ee_quat(self._env)
+        self._quat_ref = self._quat_home = sim.rl_ee_quat(self._env)
         return self._pack(), {"instruction": self._h.instruction}
 
     def step(self, action):
@@ -171,8 +191,9 @@ class RobolabEnvFacade(MainThreadServeMixin, BaseEnvFacade):
             self._env, np.asarray(action, dtype=np.float32).reshape(-1)
         )
         self._steps += 1
-        self._terminated |= term
-        self._truncated |= trunc
+        if sim.rl_ended(self._env, term, trunc):
+            self._terminated |= term
+            self._truncated |= trunc
         return self._pack(), 0.0, term, trunc, {"success": sim.rl_success(self._env)}
 
     def chunk_step(self, actions, *, return_all_frames: bool = False):
@@ -246,6 +267,62 @@ class RobolabEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         end = sim.rl_tcp(self._env)
         report.update(
             moved_m=[round(float(v), 4) for v in end - start],
+            decisions=done,
+            control_steps=steps,
+        )
+        if cancelled:
+            report["cancelled"] = True
+        if return_frames:
+            report["frames"] = frames
+        return {**self._pack(), **report}
+
+    def rotate_delta(self, yaw: float, return_frames: bool = False) -> dict:
+        """Turn the hand by ``yaw`` (rad) about the base vertical axis through it, holding its
+        position and tilt. +yaw is right-handed about base +z (counter-clockwise seen from above),
+        the units layer's ROTATE_CW; |yaw| beyond ``MAX_ROTATE_RAD`` is clipped (``clipped``).
+
+        The orientation hold's reference turns by the yaw and the hold servo runs, zero
+        translation, in decisions of ``STEPS_PER_DECISION`` control steps until the heading is
+        within ``YAW_TOL_RAD`` of it (at most ``MAX_ROTATE_DECISIONS``). Returns the new observation
+        plus ``commanded_yaw``, ``yaw`` (executed, measured off the hand), ``moved_m`` (the position
+        drift) and step counts; ``frames`` as in ``move_delta``. Refused once the episode is over.
+        """
+        start = sim.rl_tcp(self._env)
+        quat_start = sim.rl_ee_quat(self._env)
+        requested = float(yaw)
+        commanded = float(np.clip(requested, -MAX_ROTATE_RAD, MAX_ROTATE_RAD))
+        report: dict[str, Any] = {
+            "requested_yaw": requested,
+            "commanded_yaw": commanded,
+        }
+        if commanded != requested:
+            report["clipped"] = True
+        if self._terminated or self._truncated:
+            return {
+                **self._pack(),
+                **report,
+                "error": "the episode is over",
+                "yaw": 0.0,
+                "moved_m": [0.0, 0.0, 0.0],
+            }
+        self._quat_ref = sim.yaw_quat(self._quat_ref, commanded)
+        frames: list[np.ndarray] = []
+        steps = done = 0
+        cancelled = False
+        for _ in range(MAX_ROTATE_DECISIONS):
+            if cancelled or self._terminated or self._truncated:
+                break
+            left = sim.yaw_between(sim.rl_ee_quat(self._env), self._quat_ref)
+            if abs(left) <= YAW_TOL_RAD:
+                break
+            n, cancelled = self._control(np.zeros(3), STEPS_PER_DECISION)
+            steps += n
+            done += 1
+            if return_frames:
+                frames.append(self._images()["agentview"])
+        report.update(
+            yaw=round(sim.yaw_between(quat_start, sim.rl_ee_quat(self._env)), 4),
+            moved_m=[round(float(v), 4) for v in sim.rl_tcp(self._env) - start],
             decisions=done,
             control_steps=steps,
         )
@@ -387,6 +464,15 @@ def main():
     os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
     os.environ.setdefault("OMNI_KIT_ACCEPT_EULA", "YES")
     device = f"cuda:{args.cuda_device}"
+    # robolab-isaac61.patch ports only the realtime renderer to Isaac Lab 3 (SimulationCfg.render
+    # is gone); create_env would raise after the minute-long Kit start.
+    if sim.isaaclab_major() >= 3 and (
+        args.renderer != "realtime" or args.rendering_type is not None
+    ):
+        raise SystemExit(
+            f"--renderer {args.renderer} / --rendering-type {args.rendering_type}: only the realtime "
+            "renderer without a rendering type is ported to Isaac Lab 3 (robolab-isaac61.patch)"
+        )
     logs = Path(
         os.environ.get("PI_EMBODIED_LOGS", Path.home() / ".cache" / "pi-embodied")
     )

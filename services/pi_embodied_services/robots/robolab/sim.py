@@ -31,6 +31,7 @@ divided by the arm action's ``scale`` (0.5), the rotation slots carry the orient
 
 from __future__ import annotations
 
+import functools
 import os
 import sys
 from dataclasses import dataclass
@@ -321,11 +322,18 @@ def _camera_preset(name: str) -> list:
 # -- tensor/obs accessors ----------------------------------------------------
 
 
-def isaaclab_xyzw() -> bool:
-    """Isaac Lab 3 (Isaac Sim 6) orders quaternions ``(x, y, z, w)``; 2.x used ``(w, x, y, z)``."""
+@functools.cache
+def isaaclab_major() -> int:
+    """The installed Isaac Lab's major version (3 on Isaac Sim 6); read once (the metadata lookup
+    costs ~10 ms, and the accessors ask on every control step)."""
     from importlib.metadata import version
 
-    return int(version("isaaclab").split(".")[0]) >= 3
+    return int(version("isaaclab").split(".")[0])
+
+
+def isaaclab_xyzw() -> bool:
+    """Isaac Lab 3 (Isaac Sim 6) orders quaternions ``(x, y, z, w)``; 2.x used ``(w, x, y, z)``."""
+    return isaaclab_major() >= 3
 
 
 def lab_quat(wxyz) -> tuple[float, float, float, float]:
@@ -443,14 +451,26 @@ def rl_gripper_width(env: Any) -> float:
     return 0.0
 
 
+def rl_ended(env: Any, terminated: bool, truncated: bool) -> bool:
+    """Whether a step's ``terminated`` / ``truncated`` ended the episode: RoboLab froze env 0.
+
+    RobolabEnv freezes an env that terminates (success) or times out and records the result in
+    ``_env_results``, except in its first two steps, where Isaac's termination is a physics
+    artifact: that env is reset normally and keeps running, so the flag must not count (it once
+    made a fresh episode "succeed" before the arm had moved). Without the freeze bookkeeping
+    (a stock Isaac Lab env) any termination ends the episode.
+    """
+    frozen = getattr(env, "_frozen_envs", None)
+    if frozen is None:
+        return bool(terminated or truncated)
+    return bool(to_np(frozen).reshape(-1)[0])
+
+
 def rl_success(env: Any) -> bool:
-    """The task's success predicate: RoboLab puts it in *terminated* (time_out is *truncated*);
-    a terminated env is frozen and its result stays in ``_env_results``."""
-    stored = getattr(env, "_env_results", {}).get(0)
-    if stored is not None:
-        return bool(stored)
-    manager = getattr(env, "termination_manager", None)
-    return bool(manager is not None and to_np(manager.terminated).reshape(-1)[0])
+    """The task's success predicate: RoboLab puts it in *terminated* (time_out is *truncated*) and,
+    when it freezes the env, stores it in ``_env_results``. Only that stored result counts: a raw
+    termination can be the first-steps physics artifact :func:`rl_ended` describes."""
+    return bool(getattr(env, "_env_results", {}).get(0))
 
 
 def rl_subtask(env: Any) -> dict | None:
@@ -467,6 +487,10 @@ def rl_subtask(env: Any) -> dict | None:
     if term is None or not getattr(term, "subtask_state_machines", None):
         return None
     info = term.infos[0]
+    # The term's reset() restarts its state machines but leaves ``infos`` at the last episode's
+    # values until the first step refreshes them: a fresh episode has done nothing yet.
+    if not getattr(env, "_has_stepped", True):
+        info = {"total": info.get("total", 0)}
     return {
         "completed": int(info.get("completed", 0)),
         "total": int(info.get("total", 0)),
@@ -522,6 +546,29 @@ def hold_orientation_rotvec(
     rotvec = (vec / norm) * angle * float(gain)
     mag = float(np.linalg.norm(rotvec))
     return rotvec * (float(max_rad) / mag) if mag > float(max_rad) else rotvec
+
+
+def yaw_quat(quat_wxyz: np.ndarray, yaw: float) -> np.ndarray:
+    """``quat_wxyz`` turned by ``yaw`` (rad) about world +z: the left product ``Rz(yaw) * q``.
+
+    The same frame as the relative IK's rotation slots (Isaac Lab's ``apply_delta_pose``
+    left-multiplies its axis-angle onto the current orientation) and :func:`hold_orientation_rotvec`,
+    so a hold reference turned this way is what ``[0, 0, yaw]`` in the action would reach. +yaw is
+    right-handed about +z: counter-clockwise seen from above. The tilt is unchanged.
+    """
+    rw, rx, ry, rz = (float(v) for v in np.asarray(quat_wxyz, dtype=np.float64))
+    c, s = float(np.cos(yaw / 2.0)), float(np.sin(yaw / 2.0))
+    return np.array(
+        [c * rw - s * rz, c * rx - s * ry, c * ry + s * rx, c * rz + s * rw]
+    )
+
+
+def yaw_between(quat_from: np.ndarray, quat_to: np.ndarray) -> float:
+    """World +z component (rad) of the rotation that takes ``quat_from`` to ``quat_to`` (both wxyz):
+    the yaw the hand turned, positive counter-clockwise seen from above."""
+    return float(
+        hold_orientation_rotvec(quat_to, quat_from, gain=1.0, max_rad=np.inf)[2]
+    )
 
 
 # -- stepping ----------------------------------------------------------------

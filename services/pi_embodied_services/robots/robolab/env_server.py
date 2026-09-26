@@ -349,7 +349,13 @@ class RobolabEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         return self._images()[camera_name]
 
     def get_camera_meta(self, camera_name: str = "agentview", **_: Any) -> dict:
-        """OpenCV intrinsics and camera-to-base extrinsic of the front camera."""
+        """OpenCV intrinsics and camera-to-base extrinsic of the front camera, as rendered.
+
+        The intrinsics are the calibrated D435's focal lengths with the principal point at the
+        image centre (``franka.FRONT_CAM_K_RENDERED``): Isaac's RTX render drops the calibration's
+        principal-point offset (+29, +30 px), so the calibrated K would place every point about
+        4 cm off on the table (measured on BananaInBowl: the bowl's pixels centre within 5 px of
+        the centred projection, 25-33 px from the calibrated one)."""
         if camera_name != "agentview":
             raise ValueError(
                 "only the agentview (front camera) has a fixed calibration"
@@ -360,9 +366,9 @@ class RobolabEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         cam2base[:3, :3] = np.asarray(franka.FRONT_CAM_R)
         cam2base[:3, 3] = franka.FRONT_CAM_POS
         return {
-            "intrinsic_K": np.asarray(franka.FRONT_CAM_K, dtype=np.float64).reshape(
-                3, 3
-            ),
+            "intrinsic_K": np.asarray(
+                franka.FRONT_CAM_K_RENDERED, dtype=np.float64
+            ).reshape(3, 3),
             "extrinsic_cam2world": cam2base,
             "width": franka.FRONT_CAM_W,
             "height": franka.FRONT_CAM_H,

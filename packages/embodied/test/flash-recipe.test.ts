@@ -4,14 +4,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
-import { anchorPlan, generate, parseTargets, pathOf, sessionPlan } from "../src/flash/generate.ts";
+import { anchorPlan, firstView, generate, parseTargets, pathOf, sessionPlan } from "../src/flash/generate.ts";
 import { type FlashCall, type FlashHook, type FlashReply, type FlashRobot, runFlash } from "../src/flash/index.ts";
-import { pixelOnPlane, projectPixel, unletterbox } from "../src/flash/plane.ts";
+import { anchorPlane, HALF_HEIGHT_M, pixelOnPlane, projectPixel, unletterbox } from "../src/flash/plane.ts";
 import {
 	type AnchoredEntry,
 	loadProgram,
 	type RecipeProgram,
 	recipeFlash,
+	splitAngle,
 	splitMove,
 	startRecipe,
 } from "../src/flash/recipe.ts";
@@ -136,6 +137,31 @@ test("an anchor that is not found stops the replay; without Molmo or back-projec
 		);
 		assert.equal(s.localized, 0);
 		assert.deepEqual(s.rewrite(anchored.plan[0]), { name: "move_to", arguments: { xyz: [0.51, 0.08, 0.9] } });
+	}
+});
+
+test("with a fixed camera and a recorded view, an anchor moves by the difference of the live and the recorded reading", async () => {
+	// Molmo points 20 px further right in the live image; the plane maps pixel [c, r] to (c/100, r/100).
+	const point = {
+		call: async (_m: string, a: { image_base64: string }) => ({
+			point_xy: a.image_base64 === "IMG" ? [30, 20] : [10, 20],
+		}),
+	};
+	const planeOf = async (_r: FlashRobot, [c, r]: [number, number]) => [c / 100, r / 100, 0.8];
+	const program = { ...anchored, view: "RECORDED" };
+	const f = fakeRobot(undefined);
+	const options = { observe: "view_env_state", targets: TARGETS, backProject: planeOf, fixedCamera: true };
+	const r = await startRecipe(program, f.robot, options, point as unknown as RpcClient);
+	// Read (0.1, 0.2) then and (0.3, 0.2) now: the recorded mug (0.5, 0.1) moves by (+0.2, 0), whatever the pointer's bias.
+	assert.deepEqual(r.rewrite(anchored.plan[0]), { name: "move_to", arguments: { xyz: [0.71, 0.08, 0.9] } });
+	assert.match(f.notes.join("\n"), /recorded view pixel 10,20, read \(0\.100,0\.200\) then, \(0\.300,0\.200\) now/);
+	// Without fixedCamera (live depth) or without a view the live reading is taken as is.
+	for (const [o, p] of [
+		[{ ...options, fixedCamera: false }, program],
+		[options, anchored],
+	] as const) {
+		const s = await startRecipe(p, fakeRobot(undefined).robot, o, point as unknown as RpcClient);
+		assert.deepEqual(s.rewrite(anchored.plan[0]), { name: "move_to", arguments: { xyz: [0.31, 0.18, 0.9] } });
 	}
 });
 
@@ -291,7 +317,21 @@ function fakeSession(): SessionEntry[] {
 			} as unknown as SessionEntry,
 			{
 				type: "message",
-				message: { role: "toolResult", toolCallId: id, toolName: name, content: [], details, isError: false },
+				message: {
+					role: "toolResult",
+					toolCallId: id,
+					toolName: name,
+					content:
+						name === "act"
+							? ["agentview", "wrist"].map((v) => ({
+									type: "image",
+									data: Buffer.from(`${v}-${i}`).toString("base64"),
+									mimeType: "image/png",
+								}))
+							: [],
+					details,
+					isError: false,
+				},
 			} as unknown as SessionEntry,
 		];
 	});
@@ -357,6 +397,11 @@ test("a session becomes delta waypoints with absolute end positions, gripper cha
 	});
 	assert.deepEqual([out.calls, out.anchored, out.anchors], [6, 6, 2]);
 	assert.equal(JSON.parse(readFileSync(out.path, "utf8")).plan[2].to[2], 0.21);
+	// The opening view (the first result's first image) is written beside the plan and loads with it.
+	assert.equal(out.view, "cell_view.png");
+	assert.equal(readFileSync(join(dir, "flash", "cell_view.png"), "utf8"), "agentview-0");
+	assert.equal(loadProgram(out.path, "cell").view, Buffer.from("agentview-0").toString("base64"));
+	assert.equal(firstView(fakeSession().slice(2)), Buffer.from("agentview-2").toString("base64"));
 	assert.throws(() => generate({ session, anchors: "x", targets: "a=xyz", destination: dir }), /--name/);
 });
 
@@ -438,14 +483,95 @@ test("a session's heading changes become the yaw tool's calls, before the waypoi
 		destination: join(dir, "flash"),
 		name: "cell",
 	};
-	const out = generate({ ...base, turn: "rotate_delta=yaw", heading: "state.yaw_deg" });
+	const out = generate({ ...base, turn: "rotate_delta=yaw", heading: "state.yaw_deg", "max-turn": "0.3" });
 	assert.equal(out.calls, 4);
 	assert.deepEqual(JSON.parse(readFileSync(out.path, "utf8")).plan[0], {
 		action: "rotate_delta",
 		arguments: { yaw: 0.1499 },
 	});
 	assert.throws(() => generate({ ...base, turn: "rotate_delta=yaw" }), /--heading go together/);
+	assert.throws(() => generate({ ...base, turn: "rotate_delta=yaw", heading: "state.yaw_deg" }), /--max-turn/);
+	assert.throws(
+		() => generate({ ...base, turn: "rotate_delta=yaw", heading: "state.yaw_deg", "max-turn": "0" }),
+		/positive cap/,
+	);
 	assert.throws(() => generate({ ...base, turn: "rotate_delta", heading: "state.yaw_deg" }), /bad --turn/);
+});
+
+test("a planned turn beyond the per-call cap is wrapped to +-180 deg and split at replay", async () => {
+	const turns = { rotate_delta: { arg: "yaw", maxStep: 0.3 } };
+	const deg = (d: number) => (d * Math.PI) / 180;
+	// -350 deg is +10 deg: one call.
+	assert.deepEqual(splitAngle({ action: "rotate_delta", arguments: { yaw: deg(-350) } }, turns.rotate_delta), [
+		{ name: "rotate_delta", arguments: { yaw: 0.1745 } },
+	]);
+	// A recorded full-cap turn that reads back a hair over the cap stays one call.
+	assert.equal(splitAngle({ action: "rotate_delta", arguments: { yaw: -0.30002 } }, turns.rotate_delta).length, 1);
+	// 0.7 rad in three calls of 0.2333, each within the cap.
+	const f = fakeRobot(undefined, { eef_pos: [0.3, 0, 0.4] });
+	const r = await startRecipe(
+		{ name: "p", anchors: [], plan: [] },
+		f.robot,
+		{ observe: "view_env_state", targets: {}, turns },
+		undefined,
+	);
+	const calls = r.rewrite({ action: "rotate_delta", arguments: { yaw: 0.7 } }) as FlashCall[];
+	assert.deepEqual(
+		calls.map((c) => c.arguments.yaw),
+		[0.2333, 0.2333, 0.2333],
+	);
+	// -200 deg is +160 deg (2.7925 rad): ten calls of 0.2793, each within the cap.
+	const wrapped = splitAngle({ action: "rotate_delta", arguments: { yaw: deg(-200) } }, turns.rotate_delta);
+	assert.equal(wrapped.length, 10);
+	assert.ok(wrapped.every((c) => c.arguments.yaw === 0.2793));
+	// Other tools pass untouched.
+	assert.deepEqual(r.rewrite({ action: "release", arguments: {} }), { name: "release", arguments: {} });
+});
+
+test("a recorded turn is wrapped to +-180 deg and split to the yaw tool's cap when the plan is generated", () => {
+	const eef = (json: Record<string, unknown>) => (json.state as { eef_pos?: number[] } | undefined)?.eef_pos;
+	const headings = [0, 45, 45, 179, -179, 170];
+	const entries = headings.flatMap((yaw, i): SessionEntry[] => [
+		{
+			type: "message",
+			message: { role: "assistant", content: [{ type: "toolCall", id: `h${i}`, name: "act", arguments: {} }] },
+		} as unknown as SessionEntry,
+		{
+			type: "message",
+			message: {
+				role: "toolResult",
+				toolCallId: `h${i}`,
+				toolName: "act",
+				content: [],
+				details: {
+					success: i === headings.length - 1,
+					state: { eef_pos: [0.4, 0, 0.3], yaw_deg: yaw, gripper_command: "open" },
+				},
+				isError: false,
+			},
+		} as unknown as SessionEntry,
+	]);
+	const plan = sessionPlan(entries, {
+		targets: parseTargets("move_delta=delta_xyz", eef),
+		motion: ["act"],
+		gripper: pathOf("state.gripper_command"),
+		turn: { tool: "rotate_delta", argument: "yaw", heading: pathOf("state.yaw_deg"), maxStep: 0.3 },
+	});
+	assert.deepEqual(
+		plan.map((e) => e.arguments.yaw),
+		[
+			// +45 deg = 0.7854 rad: three calls of 0.2618.
+			0.2618,
+			0.2618,
+			0.2618,
+			// +134 deg = 2.3387 rad: eight calls of 0.2923.
+			...Array.from({ length: 8 }, () => 0.2923),
+			// 179 -> -179 deg is +2 deg (not -358); -179 -> 170 deg is -11 deg (not +349).
+			0.0349,
+			-0.192,
+		],
+	);
+	assert.ok(plan.every((e) => e.action === "rotate_delta" && Math.abs(e.arguments.yaw as number) <= 0.3));
 });
 
 /** RLinf's calibrated front D435 as ../robolab franka.py states it: camera -> base, OpenCV, 640x480. */
@@ -495,6 +621,10 @@ test("a pixel ray meets the table plane where the projected point was; the lette
 	const [c, r] = unletterbox([0, 32], box);
 	assert.ok(Math.abs(c - 0.75) < 1e-9 && Math.abs(r - 0.75) < 1e-9, `${c},${r}`);
 	assert.deepEqual(unletterbox([10, 20], { ...box, size: 0 }), [10, 20]);
+	// The plane: the anchor's recorded height, else the table's plus a half object height, else none.
+	assert.equal(anchorPlane([0.5, 0, 0.06], 0.1), 0.06);
+	assert.equal(anchorPlane([0.5, 0], 0.1), 0.1 + HALF_HEIGHT_M);
+	assert.equal(anchorPlane([0.5, 0]), undefined);
 });
 
 test("the hook finds the cell's program first, then the reference's, in flash/ then task_only/", () => {

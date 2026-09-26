@@ -22,7 +22,12 @@
  * A robot with a yaw tool (../robolab's `rotate_delta`, the units' ROTATE_*) also records the heading
  * (`--heading`, a path to the degrees in the result's JSON): each motion result that turned it becomes
  * a call of `--turn <tool>=<argument>` with the turn in radians, before that result's waypoint, so the
- * plan carries the turns a recipe or a delta waypoint cannot.
+ * plan carries the turns a recipe or a delta waypoint cannot. A turn is wrapped to (-180, 180] deg and
+ * split evenly into calls of at most `--max-turn` rad (the tool's per-call cap; the replay splits again,
+ * ./recipe.ts `turns`).
+ * The episode's opening main-camera image is written beside the plan (`<name>_view.png`, the plan's
+ * `view`): a robot with a fixed calibrated camera re-localizes each anchor by pointing at it in both
+ * that image and the live one (./recipe.ts), so the pointer's own bias cancels.
  */
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -31,7 +36,15 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { parseSessionEntries, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { toolCalls } from "../memory/index.ts";
-import { type Anchor, type AnchoredEntry, loadProgram, type RelativeTarget, type Target, targetOf } from "./recipe.ts";
+import {
+	type Anchor,
+	type AnchoredEntry,
+	loadProgram,
+	type RelativeTarget,
+	splitAngle,
+	type Target,
+	targetOf,
+} from "./recipe.ts";
 
 type Json = Record<string, unknown>;
 /** Beyond this a target was not written relative to the anchor. */
@@ -81,8 +94,11 @@ export function parseTargets(spec: string, position?: (json: Json) => number[] |
 	);
 }
 
-/** A yaw tool and where a result's JSON says the heading, deg (the tool takes radians). */
-export type TurnTool = { tool: string; argument: string; heading: (json: Json) => unknown };
+/**
+ * A yaw tool, where a result's JSON says the heading, deg (the tool takes radians), and the tool's
+ * per-call cap, rad.
+ */
+export type TurnTool = { tool: string; argument: string; heading: (json: Json) => unknown; maxStep?: number };
 /** Heading changes below this are the hold's drift, not a turn, deg. */
 const TURN_MIN_DEG = 0.5;
 
@@ -127,9 +143,13 @@ export function sessionPlan(
 		const g = o.gripper(json(c));
 		const h = o.turn ? o.turn.heading(json(c)) : undefined;
 		if (o.turn && typeof h === "number" && Number.isFinite(h)) {
-			const turned = heading === undefined ? 0 : h - heading;
-			if (motion.has(c.name) && Math.abs(turned) >= TURN_MIN_DEG)
-				plan.push({ action: o.turn.tool, arguments: { [o.turn.argument]: r4((turned * Math.PI) / 180) } });
+			// The shorter way round: a -350 deg change is +10 deg.
+			const turned = heading === undefined ? 0 : ((((h - heading) % 360) + 540) % 360) - 180;
+			if (motion.has(c.name) && Math.abs(turned) >= TURN_MIN_DEG) {
+				const entry = { action: o.turn.tool, arguments: { [o.turn.argument]: (turned * Math.PI) / 180 } };
+				const turn = { arg: o.turn.argument, maxStep: o.turn.maxStep ?? Number.POSITIVE_INFINITY };
+				for (const call of splitAngle(entry, turn)) plan.push({ action: call.name, arguments: call.arguments });
+			}
 			heading = h;
 		}
 		if (motion.has(c.name) && isVec3(p)) {
@@ -152,6 +172,30 @@ export function sessionPlan(
 	return plan;
 }
 
+/**
+ * The episode's opening main-camera image (base64): the image of the last successful `reset`'s
+ * result, else of the first result after it that carries one. Tool results list the main view first.
+ */
+export function firstView(entries: SessionEntry[]): string | undefined {
+	type Part = { type: string; data?: string };
+	type Result = { toolName: string; isError?: boolean; content?: Part[]; details?: Json };
+	const results: Result[] = [];
+	for (const e of entries)
+		if (e.type === "message" && e.message.role === "toolResult") results.push(e.message as unknown as Result);
+	const failed = (r: Result) =>
+		r.isError === true || !!r.details?.error || !!(r.details?.result as Json | undefined)?.error;
+	const image = (r: Result) => r.content?.find((c) => c.type === "image" && c.data)?.data;
+	let start = 0;
+	results.forEach((r, i) => {
+		if (r.toolName === "reset" && !failed(r)) start = i;
+	});
+	for (const r of results.slice(start)) {
+		const data = !failed(r) ? image(r) : undefined;
+		if (data) return data;
+	}
+	return undefined;
+}
+
 export function generate(o: {
 	recipe?: string;
 	session?: string;
@@ -162,6 +206,7 @@ export function generate(o: {
 	motion?: string;
 	turn?: string;
 	heading?: string;
+	"max-turn"?: string;
 	destination: string;
 	name?: string;
 }) {
@@ -186,19 +231,39 @@ export function generate(o: {
 	if (Boolean(o.turn) !== Boolean(o.heading)) throw new Error("--turn <tool>=<argument> and --heading go together");
 	const [turnTool, turnArgument] = (o.turn ?? "").split("=");
 	if (o.turn && (!turnTool || !turnArgument)) throw new Error(`bad --turn ${o.turn}: use <tool>=<yaw argument>`);
+	const maxTurn = o["max-turn"] === undefined ? undefined : Number(o["max-turn"]);
+	if (maxTurn !== undefined && !(maxTurn > 0)) throw new Error(`--max-turn ${o["max-turn"]}: a positive cap in rad`);
+	if (o.turn && maxTurn === undefined) throw new Error("--turn needs --max-turn, the tool's per-call cap in rad");
 	const plan = o.session
 		? sessionPlan(parseSessionEntries(readFileSync(o.session, "utf8")) as SessionEntry[], {
 				targets,
 				motion: (o.motion ?? "act").split(",").filter(Boolean),
 				gripper: pathOf(o.gripper ?? "state.gripper_command"),
-				turn: o.turn ? { tool: turnTool, argument: turnArgument, heading: pathOf(o.heading as string) } : undefined,
+				turn: o.turn
+					? { tool: turnTool, argument: turnArgument, heading: pathOf(o.heading as string), maxStep: maxTurn }
+					: undefined,
 			})
 		: loadProgram(o.recipe as string, name).plan;
 	const anchored = anchorPlan(plan, anchors, targets);
 	mkdirSync(o.destination, { recursive: true });
 	const path = join(o.destination, `${name}_plan.json`);
-	writeFileSync(path, `${JSON.stringify({ name, source, anchors, plan: anchored }, null, 2)}\n`);
-	return { path, calls: anchored.length, anchored: anchored.filter((e) => e.anchor).length, anchors: anchors.length };
+	// The recorded opening view, for re-localizing anchors relative to where the same pointing put them then.
+	const image = o.session
+		? firstView(parseSessionEntries(readFileSync(o.session, "utf8")) as SessionEntry[])
+		: undefined;
+	const view = image ? `${name}_view.png` : undefined;
+	if (image && view) writeFileSync(join(o.destination, view), Buffer.from(image, "base64"));
+	writeFileSync(
+		path,
+		`${JSON.stringify({ name, source, anchors, ...(view ? { view } : {}), plan: anchored }, null, 2)}\n`,
+	);
+	return {
+		path,
+		calls: anchored.length,
+		anchored: anchored.filter((e) => e.anchor).length,
+		anchors: anchors.length,
+		view: view ?? null,
+	};
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
@@ -213,13 +278,14 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
 			motion: { type: "string" },
 			turn: { type: "string" },
 			heading: { type: "string" },
+			"max-turn": { type: "string" },
 			destination: { type: "string" },
 			name: { type: "string" },
 		},
 	});
 	if ((!values.recipe && !values.session) || !values.anchors || !values.targets || !values.destination) {
 		console.error(
-			"usage: generate.ts (--recipe <cell>_recipe.jsonl | --session <session>.jsonl --name <name> --position <json path> [--gripper <json path>] [--motion act,...] [--turn <tool>=<yaw arg> --heading <json path, deg>]) --anchors anchors.json --targets <tool>=xyz|xy|<delta arg>,... --destination <dir> [--name <name>]",
+			"usage: generate.ts (--recipe <cell>_recipe.jsonl | --session <session>.jsonl --name <name> --position <json path> [--gripper <json path>] [--motion act,...] [--turn <tool>=<yaw arg> --heading <json path, deg> --max-turn <rad>]) --anchors anchors.json --targets <tool>=xyz|xy|<delta arg>,... --destination <dir> [--name <name>]",
 		);
 		process.exit(2);
 	}

@@ -79,6 +79,19 @@ FRONT_CAM_R = (
 FRONT_CAM_POS = (1.1002696, -0.00701879, 0.2589829)
 FRONT_CAM_K = (607.875, 0.0, 348.961, 0.0, 607.719, 270.486, 0.0, 0.0, 1.0)
 FRONT_CAM_W, FRONT_CAM_H = 640, 480
+#: FRONT_CAM_K as the render realizes it: the spawn's aperture offsets (the calibrated principal
+#: point, 348.961 / 270.486) do not reach the RTX image, whose principal point is the image centre.
+FRONT_CAM_K_RENDERED = (
+    FRONT_CAM_K[0],
+    0.0,
+    FRONT_CAM_W / 2,
+    0.0,
+    FRONT_CAM_K[4],
+    FRONT_CAM_H / 2,
+    0.0,
+    0.0,
+    1.0,
+)
 
 
 def _quat_wxyz_from_matrix(matrix) -> tuple[float, float, float, float]:

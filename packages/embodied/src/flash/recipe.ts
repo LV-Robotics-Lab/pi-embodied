@@ -14,7 +14,9 @@
  *                         replayed as recorded: meaningful on the recorded seed
  * Re-anchoring: after one observation, each anchor phrase is pointed at by Molmo in the robot's main
  * camera image and turned into a world point by the robot's own back-projection (a tool, or a
- * ray-plane intersection at the anchor's recorded height, ./plane.ts); a target attached to an
+ * ray-plane intersection at the anchor's recorded height, ./plane.ts); with a fixed camera and the
+ * plan's recorded view the anchor moves by the difference of the live and the recorded reading
+ * (`fixedCamera`), else it is the live reading; a target attached to an
  * anchor then moves with it in x/y (its height is the recorded one). A relative target (a delta
  * move) is a reconstructed absolute waypoint: at replay the delta is the anchored waypoint minus
  * where the end effector is now, split into moves the robot's per-call limit allows. An anchor that
@@ -23,7 +25,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { RpcClient } from "../rpc.ts";
 import type { FlashCall, FlashHook, FlashPicks, FlashReply, FlashRobot } from "./index.ts";
@@ -38,7 +40,8 @@ export type AnchoredEntry = {
 	to?: number[];
 };
 export type Anchor = { phrase: string; xyz: number[] };
-export type RecipeProgram = { name: string; plan: AnchoredEntry[]; anchors: Anchor[] };
+/** `view`: the recorded episode's opening main-camera image (base64 PNG), when the plan names one. */
+export type RecipeProgram = { name: string; plan: AnchoredEntry[]; anchors: Anchor[]; view?: string };
 
 /**
  * A tool that moves by a base-frame delta (`move_delta`). Its plan entries carry the absolute end
@@ -72,6 +75,19 @@ export type RecipeFlashOptions = {
 	 * (a robot with no back-projection) anchors stay where they were recorded.
 	 */
 	backProject?: (robot: FlashRobot, pixel: [number, number], anchor: Anchor) => Promise<number[] | undefined>;
+	/**
+	 * `backProject` depends on the pixel alone (a fixed calibrated camera, no live depth), so a pixel of
+	 * the plan's recorded view back-projects as truly as a live one. Anchors are then re-localized
+	 * differentially: pointed at in both images, the recorded anchor moves by the difference of the two
+	 * readings, and the pointer's bias on an object (where on a banana it points) cancels.
+	 */
+	fixedCamera?: boolean;
+	/**
+	 * Tools that turn the hand by a relative angle (rad) under a per-call cap (RoboLab's `rotate_delta`):
+	 * a planned turn is wrapped to (-pi, pi] and split into calls of at most `maxStep`, so a plan whose
+	 * turn exceeds the cap (an older generator's, or a hand-written one) is not refused at replay.
+	 */
+	turns?: Record<string, { arg: string; maxStep: number }>;
 	picks?: FlashPicks;
 	over: (latest: FlashReply) => boolean;
 	solved: (latest: FlashReply) => boolean;
@@ -86,9 +102,10 @@ const isVec = (v: unknown, n: number): v is number[] =>
 export function loadProgram(path: string, name: string): RecipeProgram {
 	const text = readFileSync(path, "utf8");
 	if (path.endsWith("_plan.json")) {
-		const doc = JSON.parse(text) as { plan?: AnchoredEntry[]; anchors?: Anchor[] };
+		const doc = JSON.parse(text) as { plan?: AnchoredEntry[]; anchors?: Anchor[]; view?: string };
 		if (!Array.isArray(doc.plan) || !doc.plan.length) throw new Error(`${path} has no plan`);
-		return { name, plan: doc.plan, anchors: doc.anchors ?? [] };
+		const view = doc.view ? readFileSync(join(dirname(path), doc.view)).toString("base64") : undefined;
+		return { name, plan: doc.plan, anchors: doc.anchors ?? [], ...(view ? { view } : {}) };
 	}
 	const plan = text
 		.split("\n")
@@ -126,6 +143,24 @@ export function splitMove(entry: AnchoredEntry, where: RelativeTarget, delta: nu
 	}));
 }
 
+/**
+ * A relative turn as calls the tool accepts: its angle wrapped to (-pi, pi] (a -350 deg turn is +10 deg)
+ * and split evenly into steps of at most `maxStep` rad; other arguments ride on the first call.
+ */
+export function splitAngle(entry: AnchoredEntry, turn: { arg: string; maxStep: number }): FlashCall[] {
+	const raw = entry.arguments[turn.arg];
+	if (typeof raw !== "number" || !Number.isFinite(raw))
+		return [{ name: entry.action, arguments: { ...entry.arguments } }];
+	const yaw = Math.atan2(Math.sin(raw), Math.cos(raw));
+	// Measured at the 0.1 mrad the plan stores: a recorded full-cap turn reads back a hair over it.
+	const n = Math.max(1, Math.ceil(r4(Math.abs(yaw)) / turn.maxStep - 1e-9));
+	const step = r4(yaw / n);
+	return Array.from({ length: n }, (_, i) => ({
+		name: entry.action,
+		arguments: i === 0 ? { ...entry.arguments, [turn.arg]: step } : { [turn.arg]: step },
+	}));
+}
+
 /** Molmo's point for `query` in a base64 image, as [col, row] in that image's pixels. */
 async function point(molmo: RpcClient, image: string, query: string): Promise<[number, number] | undefined> {
 	const res = await molmo.call<{ point_xy?: number[] }>("molmo.ground", { image_base64: image, query }, 180_000);
@@ -136,7 +171,7 @@ async function point(molmo: RpcClient, image: string, query: string): Promise<[n
 export async function startRecipe(
 	program: RecipeProgram,
 	robot: FlashRobot,
-	o: Pick<RecipeFlashOptions, "observe" | "targets" | "backProject" | "picks">,
+	o: Pick<RecipeFlashOptions, "observe" | "targets" | "backProject" | "picks" | "fixedCamera" | "turns">,
 	endpoint: RpcClient | undefined,
 ) {
 	const live = new Map<string, number[]>();
@@ -153,11 +188,21 @@ export async function startRecipe(
 			}
 			const image = robot.latest().images[0];
 			const px = image ? await point(molmo, image, a.phrase) : undefined;
-			const xyz = px && locator ? await locator(robot, px, a) : undefined;
+			const seen = px && locator ? await locator(robot, px, a) : undefined;
+			// Differential: where the same pointing put the anchor in the recorded view.
+			const was = o.fixedCamera && program.view && seen ? await point(molmo, program.view, a.phrase) : undefined;
+			const then = was && locator ? await locator(robot, was, a) : undefined;
+			const xyz =
+				seen && then ? [a.xyz[0] + seen[0] - then[0], a.xyz[1] + seen[1] - then[1], ...a.xyz.slice(2)] : seen;
 			if (xyz) live.set(a.phrase, xyz);
+			const pixel = (p: number[] | undefined) => (p ? p.map((v) => Math.round(v)).join(",") : "-");
 			robot.note(
 				xyz
-					? `${a.phrase} at (${xyz[0].toFixed(3)},${xyz[1].toFixed(3)}), recorded (${a.xyz[0].toFixed(3)},${a.xyz[1].toFixed(3)})${px ? ` [pixel ${px.map((v) => Math.round(v)).join(",")}]` : ""}`
+					? `${a.phrase} at (${xyz[0].toFixed(3)},${xyz[1].toFixed(3)}), recorded (${a.xyz[0].toFixed(3)},${a.xyz[1].toFixed(3)}) [pixel ${pixel(px)}${
+							then && seen
+								? `; recorded view pixel ${pixel(was)}, read (${then[0].toFixed(3)},${then[1].toFixed(3)}) then, (${seen[0].toFixed(3)},${seen[1].toFixed(3)}) now`
+								: ""
+						}]`
 					: `${a.phrase} not located`,
 			);
 		}
@@ -185,6 +230,8 @@ export async function startRecipe(
 		localized: molmo ? live.size : 0,
 		picks: o.picks,
 		rewrite(entry: AnchoredEntry): FlashCall | FlashCall[] | "stop" {
+			const turn = o.turns?.[entry.action];
+			if (turn) return splitAngle(entry, turn);
 			const where = o.targets[entry.action];
 			if (where !== undefined && typeof where !== "string") return relative(entry, where);
 			if (!entry.anchor || !where || !targetOf(entry, where))

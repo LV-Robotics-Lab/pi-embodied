@@ -29,7 +29,7 @@ import { join } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { type CameraMeta, pixelOnPlane } from "../flash/plane.ts";
+import { anchorPlane, type CameraMeta, pixelOnPlane } from "../flash/plane.ts";
 import { recipeFlash } from "../flash/recipe.ts";
 import { encodePng } from "../png.ts";
 import { attach, defineRobot, SERVICES } from "../robot.ts";
@@ -166,11 +166,12 @@ export default function robolab(pi: ExtensionAPI) {
 			published: false,
 		},
 		// Flash replays a solved episode's plan (../flash/generate.ts --session --position state.eef_pos
-		// --turn rotate_delta=yaw --heading state.yaw_deg: move_delta waypoints with their absolute end
-		// positions, rotate_delta turns from the heading changes). Anchors are pointed at by Molmo in the front image (sent raw, 640x480) and met
-		// with the plane at their recorded height through the front camera's calibration (env.get_camera_meta:
-		// camera -> base, the frame of eef_pos); anchored waypoints then move with them, as deltas from the live
-		// eef position, in moves of at most MAX_MOVE_M.
+		// --turn rotate_delta=yaw --heading state.yaw_deg --max-turn MAX_ROTATE_RAD: move_delta waypoints with
+		// their absolute end positions, rotate_delta turns from the heading changes, wrapped and split to the
+		// cap). Anchors are pointed at by Molmo in the front image (sent raw, 640x480) and met with the plane at
+		// their recorded height through the front camera's calibration (env.get_camera_meta: camera -> base, the
+		// frame of eef_pos); anchored waypoints then move with them, as deltas from the live eef position, in
+		// moves of at most MAX_MOVE_M. Turns replay as recorded (headings are not re-anchored).
 		flash: recipeFlash(pi, {
 			names: () => [tag(robot.task.seed), tag("0")],
 			memory: () => robot.mem?.render("{{memory_dir}}") ?? "",
@@ -182,7 +183,14 @@ export default function robolab(pi: ExtensionAPI) {
 					maxStep: MAX_MOVE_M,
 				},
 			},
+			// The scene states no table height: an anchor must carry its recorded height (generate.ts's anchors).
+			// The agentview is a fixed calibrated camera: anchors re-localize against the plan's recorded view.
+			fixedCamera: true,
+			// A planned turn beyond the per-call cap is wrapped and split, never refused.
+			turns: { rotate_delta: { arg: "yaw", maxStep: MAX_ROTATE_RAD } },
 			backProject: async (_fr, pixel, anchor) => {
+				const z = anchorPlane(anchor.xyz);
+				if (z === undefined) return undefined;
 				const meta = await env.call<CameraMeta>(
 					"env.get_camera_meta",
 					{ camera_name: "agentview" },
@@ -190,7 +198,7 @@ export default function robolab(pi: ExtensionAPI) {
 					[],
 					robot.signal,
 				);
-				return pixelOnPlane(meta, pixel, anchor.xyz[2]);
+				return pixelOnPlane(meta, pixel, z);
 			},
 			over: (latest) => latest.json.success === true,
 			solved: (latest) => latest.json.success === true,

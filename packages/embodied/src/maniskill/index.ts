@@ -32,7 +32,7 @@ import { dirname, join } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { type CameraMeta, pixelOnPlane, unletterbox } from "../flash/plane.ts";
+import { anchorPlane, type CameraMeta, pixelOnPlane, unletterbox } from "../flash/plane.ts";
 import { recipeFlash } from "../flash/recipe.ts";
 import { encodePng } from "../png.ts";
 import { attach, defineRobot, SERVICES } from "../robot.ts";
@@ -478,7 +478,8 @@ export default function maniskill(pi: ExtensionAPI) {
 		},
 		// Flash replays a solved episode's plan (../flash/generate.ts --session: move_delta waypoints with their
 		// absolute end positions). Anchors are pointed at by Molmo in the agentview and met with the plane at
-		// their recorded height through the calibrated camera (no depth here); anchored waypoints then move
+		// their recorded height (else table_z + HALF_HEIGHT_M) through the calibrated camera (no depth here),
+		// after undoing the view's letterbox; anchored waypoints then move
 		// with them, as deltas from the live TCP position, in moves of at most MAX_MOVE_M.
 		flash: recipeFlash(pi, {
 			names: () => [tag(robot.task.seed), tag("0")],
@@ -491,9 +492,13 @@ export default function maniskill(pi: ExtensionAPI) {
 					maxStep: MAX_MOVE_M,
 				},
 			},
+			// The agentview is a fixed calibrated camera: anchors re-localize against the plan's recorded view.
+			fixedCamera: true,
 			backProject: async (_fr, pixel, anchor) => {
+				const z = anchorPlane(anchor.xyz, tableZ);
+				if (z === undefined) return undefined;
 				const meta = await call<CameraMeta>("env.get_camera_meta", { camera_name: "agentview" });
-				return pixelOnPlane(meta, unletterbox(pixel, { ...AGENTVIEW_PX, size: viewSize }), anchor.xyz[2]);
+				return pixelOnPlane(meta, unletterbox(pixel, { ...AGENTVIEW_PX, size: viewSize }), z);
 			},
 			over: (latest) => latest.json.success === true,
 			solved: (latest) => latest.json.success === true,

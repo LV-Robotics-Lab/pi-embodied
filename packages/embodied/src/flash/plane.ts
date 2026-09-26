@@ -4,8 +4,9 @@
  * gives the OpenCV intrinsics K and the camera-to-world transform of the RAW sensor frame; the model
  * sees that frame letterboxed into a square (ManiSkill's `_rgb`) or as is (RoboLab's front camera).
  * A pointed pixel is mapped back to raw pixels, cast as a ray, and met with the horizontal plane at
- * the height the pointed object is known to have: a Flash anchor's recorded height, since anchors
- * slide on the table between seeds but do not leave it. Computed locally, no tool call.
+ * the height the pointed object is known to have: a Flash anchor's recorded height (the table's plus
+ * half the object's), since anchors slide on the table between seeds but do not leave it; an anchor
+ * recorded without one is met at the table height plus HALF_HEIGHT_M. Computed locally, no tool call.
  *
  * Error budget: both robots' front camera (RLinf's calibrated D435, 1.1 m in front of the base,
  * 0.26 m up) sees the table at about 20 deg elevation, so a plane 1 cm off puts the point about
@@ -55,6 +56,18 @@ export function pixelOnPlane(meta: CameraMeta, [col, row]: [number, number], z: 
 	const s = (z - origin[2]) / dir[2];
 	if (s <= 0) return undefined;
 	return origin.map((o, i) => o + s * dir[i]);
+}
+
+/** Half the height of a typical tabletop object (a 4 cm block), m: an anchor without a recorded height sits this far above the table. */
+export const HALF_HEIGHT_M = 0.02;
+
+/**
+ * The height of the plane an anchor is met at: its recorded height, else the table's (`tableZ`, e.g.
+ * ManiSkill's `get_env_meta().table_z`) plus HALF_HEIGHT_M, else undefined (the anchor cannot be placed).
+ */
+export function anchorPlane(xyz: readonly number[], tableZ?: number): number | undefined {
+	if (Number.isFinite(xyz[2])) return xyz[2];
+	return tableZ !== undefined && Number.isFinite(tableZ) ? tableZ + HALF_HEIGHT_M : undefined;
 }
 
 /** The raw pixel [col, row] a world point projects to, or undefined behind the camera (the inverse, for checks). */

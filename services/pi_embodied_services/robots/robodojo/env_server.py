@@ -55,6 +55,11 @@ from pi_embodied_services.components.env_facade_base import BaseEnvFacade
 from pi_embodied_services.robots.robodojo import sim
 from pi_embodied_services.robots.robodojo.primitives import ROBODOJO_PRIMITIVES
 from pi_embodied_services.utils import ground_truth
+from pi_embodied_services.utils.perception import (
+    add_perception_arguments,
+    install_perception,
+    render_view,
+)
 from pi_embodied_services.utils.rpc.main_thread_serve import MainThreadServeMixin
 
 #: End-effector travel per control step (25 Hz): 1 cm = 0.25 m/s.
@@ -629,12 +634,20 @@ class RobodojoEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         """The current state (no stepping, no rendering)."""
         return self._state()
 
-    def render_camera(self, camera_name: str = "head", **_: Any):
-        """Latest frame of ``head``, ``left_wrist`` or ``right_wrist``."""
+    def render_camera(self, camera_name: str = "head", depth: bool = False, **_: Any):
+        """Latest frame of ``head``, ``left_wrist`` or ``right_wrist``; with ``depth``, the head's
+        ``[rgb, depth_m]`` from its same-step metric depth (the wrists have none: rgb alone)."""
         images = self._images() if self._obs else self._pack()
         if camera_name not in images:
             raise ValueError(f"camera_name must be one of {sorted(images)}")
-        return images[camera_name]
+        rgb = images[camera_name]
+        if not depth or camera_name != "head":
+            return rgb
+        d = self._obs.get("vision", {}).get("cam_head", {}).get("depth")
+        if d is None:
+            return rgb
+        d = np.asarray(d, dtype=np.float32)
+        return [rgb, np.ascontiguousarray(d.reshape(d.shape[:2]))]
 
     def get_camera_meta(self, camera_name: str = "head", **_: Any) -> dict:
         """OpenCV intrinsics and camera-to-env extrinsic (the frame of ``eef_pos``) of the head camera."""
@@ -741,6 +754,7 @@ def main():
         action="store_true",
         help="exit when stdin closes (the parent died)",
     )
+    add_perception_arguments(p, sam3=True)
     args = p.parse_args()
 
     # RoboDojo hard-codes cuda:0 (cuRobo, warp buffers): expose only the chosen GPU, before any CUDA init.
@@ -799,6 +813,15 @@ def main():
                 "cuda_device": args.cuda_device,
                 "root": str(root),
             },
+        )
+        # --sam3 / --unidepth: env.detect, env.select_detection, env.reject_detection,
+        # env.enhance_depth (the head has depth and a calibration; the wrists' depth comes from UniDepth).
+        install_perception(
+            facade,
+            args,
+            cameras=["head", "left_wrist", "right_wrist"],
+            view=render_view(facade),
+            mutating=("env.go_home",),
         )
         _, info = facade.reset()
         print(

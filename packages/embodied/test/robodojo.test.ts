@@ -6,6 +6,7 @@ import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import robodojo, { ARMS, FLYWHEEL, MAX_MOVE_M, STEP_M, VECTORS, YAW_STEP_RAD } from "../src/robodojo/index.ts";
 import { ground, MOVE_UNITS } from "../src/units/index.ts";
+import { checkDetections, checkPoint, perceptionAnswers } from "./sim-stub.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
@@ -54,7 +55,9 @@ function stubPi(values: Record<string, unknown> = {}) {
 }
 
 /** A fake RoboDojo env server (the wire protocol of ../src/rpc.ts): moves land exactly, `solveAfter` motions succeed. */
-async function fakeEnv(o: { layouts?: number; task?: string; solveAfter?: number; resetError?: string } = {}) {
+async function fakeEnv(
+	o: { layouts?: number; task?: string; solveAfter?: number; resetError?: string; perception?: boolean } = {},
+) {
 	const calls: { method: string; args: unknown[]; kwargs: Record<string, unknown> }[] = [];
 	const pos: Record<string, number[]> = { left: [-0.3, -0.15, 0.97], right: [0.3, -0.15, 0.97] };
 	let steps = 0;
@@ -103,9 +106,12 @@ async function fakeEnv(o: { layouts?: number; task?: string; solveAfter?: number
 				layouts: o.layouts ?? 85,
 				instruction: "Stack the three bowls together.",
 				step_lim: 800,
+				...(o.perception ? { capabilities: { perception: { segment: true, enhance_depth: true } } } : {}),
 			};
 			let result: unknown = { status: "ok" };
+			const perceived = o.perception ? perceptionAnswers({ method, args, kwargs }) : undefined;
 			if (method === "code.api") result = { tier: null, primitives: [], digest: "d" };
+			else if (perceived !== undefined) result = perceived;
 			else if (method === "env.get_env_meta") result = meta;
 			else if (method === "env.reset")
 				result = [obs(), { instruction: meta.instruction, ...(o.resetError ? { error: o.resetError } : {}) }];
@@ -288,4 +294,25 @@ test("flags default to the benchmark's first layout set on GPU 0", () => {
 	const schema = JSON.stringify(s.tools.get("move_to").parameters);
 	assert.doesNotMatch(schema, /anyOf/);
 	assert.match(schema, /"enum":\["left","right"\]/);
+});
+
+test("--detections / --unidepth / --point: the env server's perception and Molmo; the head's detections and points get env-frame xyz", async (t) => {
+	const env = await fakeEnv({ perception: true });
+	t.after(env.close);
+	const s = await checkDetections({
+		load: robodojo,
+		values: { env: env.url },
+		calls: env.calls as never,
+		camera: "head",
+	});
+	const d = await s.run("detect", { prompt: "bowl" });
+	assert.deepEqual(d.details.detections[0].centroid_xyz, [0.01, 0.01, 0.75]);
+	const { one } = await checkPoint({
+		load: robodojo,
+		values: { env: env.url },
+		url: env.url,
+		calls: env.calls as never,
+		cameras: ["head", "left_wrist"],
+	});
+	assert.deepEqual(one.details.world_xyz, [0.01, 0.01, 0.75]);
 });

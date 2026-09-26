@@ -17,6 +17,16 @@ This is a single episode with a step limit. You may recover within it (re-positi
 - `locate` gives the env-frame xyz of pixels of the latest head image, from its depth. A visible surface point is not an object's centre or grasp point.
 [/tool:locate]
 
+[tool:point]
+- `point` (Molmo) finds what a short phrase names in a camera's current image and returns the pixel, marked on the image and, in the head image, its env-frame point; with `cameras` it points over several views at once and names the camera of each point.
+[/tool:point]
+[tool:detect]
+- `detect` gives SAM3 masks with ids (`d3`) on a camera's current image, drawn on an overlay, each with its `centroid_pixel` and `depth_m` (`centroid_xyz` in the head image); `all: true` returns every candidate. Ids expire at the next motion.[tool:select_detection] `select_detection` names the target.[/tool:select_detection][tool:reject_detection] `reject_detection` rules one out.[/tool:reject_detection]
+[/tool:detect]
+[tool:enhance_depth]
+- `enhance_depth` fuses a UniDepth estimate into a camera's depth (or supplies depth where it has none) until the next motion.[tool:detect] `detect` then measures through it.[/tool:detect]
+[/tool:enhance_depth]
+
 # Rules
 1. [tool:view_env_state]Start with `view_env_state`. [/tool:view_env_state]Bind every object the task names in the head view before moving; pick the arm on the object's side.
 2. Approach along the fingers (forward[tool:move_to], or from above after turning them down[/tool:move_to]): line the gripper up with the object in the head view, check it in the wrist view (the object centred between the fingers), move in until the fingertips straddle it, then close.

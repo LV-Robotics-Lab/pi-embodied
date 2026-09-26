@@ -28,7 +28,16 @@ import { template } from "../context-version.ts";
 import { recipeFlash } from "../flash/recipe.ts";
 import type { FlywheelObs, FlywheelSpec } from "../flywheel.ts";
 import { encodePng } from "../png.ts";
-import { attach, defineRobot, SERVICES, u8 } from "../robot.ts";
+import {
+	detectionActive,
+	detectionArgs,
+	detectionTools,
+	type PerceptionCaps,
+	registerDetectionFlags,
+} from "../primitives/detections.ts";
+import { mountGraspTool } from "../primitives/grasp.ts";
+import { pointActive, pointTool, registerPointFlags } from "../primitives/pointing.ts";
+import { attach, defineRobot, type Json, rgbOf, SERVICES, u8 } from "../robot.ts";
 import type { NdArray, RpcClient } from "../rpc.ts";
 import type { MoveUnit, Vec3 } from "../units/index.ts";
 
@@ -135,6 +144,7 @@ type Meta = {
 	layouts: number;
 	instruction: string;
 	step_lim: number;
+	capabilities?: { perception?: PerceptionCaps };
 };
 
 const round = (v: number, d = 4) => Number(v.toFixed(d));
@@ -160,6 +170,10 @@ export default function robodojo(pi: ExtensionAPI) {
 		description: "GPU for Isaac Sim and cuRobo (the server sets CUDA_VISIBLE_DEVICES to it)",
 	});
 	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
+	// --detections (with --sam3) / --unidepth: SAM3 masks with ids and UniDepth on the env server; --point:
+	// Molmo's point over --molmo (../primitives/detections.ts, ../primitives/pointing.ts).
+	registerDetectionFlags(pi, { sam3: true });
+	registerPointFlags(pi);
 	pi.registerFlag("services", {
 		type: "string",
 		default: process.env.PI_EMBODIED_SERVICES ?? SERVICES,
@@ -490,6 +504,47 @@ export default function robodojo(pi: ExtensionAPI) {
 		},
 	);
 
+	// SAM3 masks with ids and UniDepth over the env server's perception (active with --detections / --unidepth).
+	for (const d of detectionTools(pi, {
+		call: (method, kwargs, timeoutMs) => env.call<Json>(method, kwargs, timeoutMs ?? READ_MS, [], robot.signal),
+		cameras: VIEWS,
+		// The head has depth and a calibration: the centroid's env-frame xyz.
+		locate: async (camera, d) => {
+			const rc = d.centroid_rc as number[] | null;
+			if (camera !== "head" || !rc) return {};
+			const r = await env.call<{ xyz: (number[] | null)[] }>(
+				"env.back_project",
+				{ pixels: [[rc[1], rc[0]]] },
+				READ_MS,
+				[],
+				robot.signal,
+			);
+			return r.xyz[0] ? { centroid_xyz: r.xyz[0], frame: "env" } : {};
+		},
+	}))
+		mountGraspTool(robot.tool, d);
+
+	// Molmo pointing on the latest images (active with --point); the head's point gets its env-frame xyz.
+	mountGraspTool(
+		robot.tool,
+		pointTool(pi, {
+			cameras: VIEWS,
+			frame: async (c) => rgbOf(obs[c as (typeof VIEWS)[number]]),
+			locate: async (c, row, col) => {
+				if (c !== "head") return undefined;
+				const r = await env.call<{ xyz: (number[] | null)[] }>(
+					"env.back_project",
+					{ pixels: [[col, row]] },
+					READ_MS,
+					[],
+					robot.signal,
+				);
+				return r.xyz[0] ? { world_xyz: r.xyz[0], frame: "env" } : undefined;
+			},
+			signal: () => robot.signal,
+		}),
+	);
+
 	// TODO(xpolicy): mount `xpolicy_act` (../xpolicy.ts, env_cfg_type "arx_x5") once that module is on main;
 	// the server side is ready (`env.get_obs` is RoboDojo's native observation, `env.step` / `env.chunk_step`
 	// take native action dicts).
@@ -506,6 +561,7 @@ export default function robodojo(pi: ExtensionAPI) {
 					...["-m", "pi_embodied_services.robots.robodojo.env_server"],
 					...["--task", task, "--seed", seed, "--eval-seed", flag("eval-seed", "0")],
 					...["--cuda-device", flag("cuda-device", "0")],
+					...detectionArgs(pi, flag("sam3", "")),
 				],
 				cwd: services,
 				env: { ...process.env, PYTHONPATH: services, OMNI_KIT_ACCEPT_EULA: "YES" },
@@ -532,6 +588,10 @@ export default function robodojo(pi: ExtensionAPI) {
 		if (info.error) throw new Error(`RoboDojo reset: ${info.error}`);
 		meta = { ...meta, instruction: info.instruction };
 		await startFlywheel();
-		return ["view_env_state", "move_to", "move_delta", "rotate_delta", "set_gripper", "go_home", "locate", "finish"];
+		return [
+			...["view_env_state", "move_to", "move_delta", "rotate_delta", "set_gripper", "go_home", "locate", "finish"],
+			...detectionActive(pi, meta.capabilities?.perception),
+			...pointActive(pi),
+		];
 	}
 }

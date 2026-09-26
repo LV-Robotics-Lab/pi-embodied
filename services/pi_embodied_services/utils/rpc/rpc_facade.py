@@ -16,7 +16,8 @@
 # one at a time behind a process-wide lock (read-only calls no longer overlap);
 # added the lock-free ``stop``/``cancel`` method and the stop generation that
 # long operations poll; ``healthz`` reports version and service name; the
-# pickle socket transport is removed (HTTP only).
+# pickle socket transport is removed (HTTP only); an opt-in per-server RPC token
+# (``REQUIRE_TOKEN``) and the refusal of business calls while a ``run_code`` program runs.
 
 """Base class for subprocess RPC servers.
 
@@ -39,6 +40,14 @@ call that is executing sees :meth:`RpcFacade.stop_requested` turn true, which
 long operations poll between steps. Subclasses propagate the stop to
 backends with their own loops by overriding :meth:`RpcFacade._on_stop`.
 
+Token (opt-in, ``REQUIRE_TOKEN``): the server draws a random token at start and prints it
+on its ``RPC server listening on <url> (token <hex>)`` line, which only the process that
+spawned it reads (its stdout pipe); every business call and ``shutdown`` must carry it
+(``"token"`` in the request). ``healthz``, ``stop`` and ``cancel`` need none. Busy: while
+:meth:`RpcFacade._exclusive_call_active` is true (a ``code.run`` program executes, whose
+primitives the server calls itself, not over the transport), every business call that
+arrives is refused at once instead of queueing behind it.
+
 Client-side counterparts live in :mod:`pi_embodied_services.utils.rpc.rpc_client`.
 
 Usage::
@@ -57,6 +66,8 @@ Usage::
 
 from __future__ import annotations
 
+import hmac
+import secrets
 import threading
 import time
 import traceback
@@ -103,6 +114,10 @@ class RpcFacade:
 
     #: Service name reported by ``healthz``; defaults to the class name.
     SERVICE_NAME: str | None = None
+    #: Require this server's random token on every business call and ``shutdown`` (see the
+    #: module docstring). Opt-in: servers pi attaches to by URL, and the model servers the env
+    #: servers call, have no way to learn a token.
+    REQUIRE_TOKEN: bool = False
 
     def __init__(
         self,
@@ -123,6 +138,9 @@ class RpcFacade:
         self._active_generation: int | None = None
         self._rpc: dict[str, Callable] = {}
         self._readonly_methods: set[str] = set()
+        self._rpc_token: str | None = (
+            secrets.token_hex(16) if self.REQUIRE_TOKEN else None
+        )
 
     @property
     def service_name(self) -> str:
@@ -187,12 +205,44 @@ class RpcFacade:
         """Stop generation the running call was received under (None when idle)."""
         return self._active_generation
 
+    # ---- admission ---------------------------------------------------------
+
+    def _exclusive_call_active(self) -> bool:
+        """Hook: true while the running call must not be joined by any other business call
+        (a ``code.run`` program executes). Default: never."""
+        return False
+
+    def _admit(self, method: str, token: str | None) -> None:
+        """Refuse a transport call without this server's token (``REQUIRE_TOKEN``), and any
+        business call while :meth:`_exclusive_call_active`."""
+        if method in ("healthz", "stop", "cancel"):
+            return
+        if self._rpc_token is not None and not (
+            isinstance(token, str)
+            and hmac.compare_digest(token.encode(), self._rpc_token.encode())
+        ):
+            raise PermissionError(
+                f"{method}: refused: this server requires its RPC token "
+                "(printed on its 'RPC server listening' line)"
+            )
+        if method != "shutdown" and self._exclusive_call_active():
+            raise RuntimeError(
+                f"{method}: refused: a run_code program is running on this server"
+            )
+
     # ---- dispatch ----------------------------------------------------------
 
     def _serve_dispatch(
-        self, method: str, args: tuple, kwargs: dict, *, session_id: str | None = None
+        self,
+        method: str,
+        args: tuple,
+        kwargs: dict,
+        *,
+        session_id: str | None = None,
+        token: str | None = None,
     ) -> Any:
-        """Transport entry point: lock-free framework methods, locked business calls."""
+        """Transport entry point: admission, lock-free framework methods, locked business calls."""
+        self._admit(method, token)
         if method in LOCK_FREE_METHODS:
             return self._builtin_dispatch(method, args, kwargs)
         return self._run_call(
@@ -380,7 +430,9 @@ class RpcFacade:
         bound_host, bound_port = server.server_address
         client_host = "127.0.0.1" if bound_host == "0.0.0.0" else bound_host
         url = f"{transport}://{client_host}:{bound_port}"
-        print(f"RPC server listening on {url}", flush=True)
+        # The token goes to stdout only (the spawning process's pipe), never to the log.
+        tail = f" (token {self._rpc_token})" if self._rpc_token else ""
+        print(f"RPC server listening on {url}{tail}", flush=True)
         logger.info("RPC server listening on %s", url)
         return server
 

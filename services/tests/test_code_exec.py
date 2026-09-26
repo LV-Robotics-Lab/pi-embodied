@@ -355,8 +355,12 @@ def test_the_child_sees_no_secret_environment_variables(monkeypatch):
         "RESULT = [k for k in ('FAKE_API_KEY', 'SOME_TOKEN', 'AWS_REGION', 'PLAIN_SETTING', 'PATH')"
         " if k in os.environ]\n"
         # /proc exists on Linux only; elsewhere the scrubbed os.environ is the whole check.
+        # Under a dropped uid the child is non-dumpable: even its own environ is unreadable.
         "p = '/proc/self/environ'\n"
-        "RESULT.append(open(p, 'rb').read().count(b'sk-1') if os.path.exists(p) else 0)\n"
+        "try:\n"
+        "    RESULT.append(open(p, 'rb').read().count(b'sk-1') if os.path.exists(p) else 0)\n"
+        "except PermissionError:\n"
+        "    RESULT.append(0)\n"
     )
     assert out["status"] == "ran", out
     assert out["result"] == ["PLAIN_SETTING", "PATH", 0]
@@ -419,9 +423,209 @@ def test_the_timeout_stops_the_robot_inside_a_running_primitive():
         on_timeout=stop,
     )
     t0 = time.monotonic()
-    out = r.run("slow(30)\nRESULT = 'never'", timeout_s=0.5)
+    out = r.run("slow(30)\nRESULT = 'never'", timeout_s=2)
     assert time.monotonic() - t0 < 5, (
         "the primitive returned through the stop, not after 30 s"
     )
     assert out["status"] == "timeout" and out["stop_issued"] is True
     assert out["calls"][0]["name"] == "slow" and out["result"] is None
+
+
+# ---- the audit's findings (sandbox) ----------------------------------------------------------
+
+LINUX = os.path.isdir("/proc/self") and hasattr(os, "getresuid")
+
+
+def _pipe_of(name: str) -> str:
+    """Program text that digs the stub's pipe out of its closure (a tampering program)."""
+    return (
+        f"c = [x.cell_contents for x in {name}.__closure__"
+        " if hasattr(x.cell_contents, 'send_bytes')][0]\n"
+    )
+
+
+def test_a_nan_argument_is_refused_before_any_accounting_and_keeps_the_move_cap():
+    toy = Toy()
+    out = runner(toy).run(
+        "errs = []\n"
+        "for d in ([float('nan'), 0, 0], [float('inf'), 0, 0], np.array([0, np.nan, 0])):\n"
+        "    try:\n"
+        "        move(d)\n"
+        "    except RuntimeError as e:\n"
+        "        errs.append(str(e))\n"
+        "for _ in range(5):\n"
+        "    move([0.5, 0, 0])\n",
+        max_move_m=1.0,
+    )
+    assert out["status"] == "error" and out["limit"] == "max_move_m", out
+    assert toy.calls == ["move", "move"], "only the two finite moves within the cap ran"
+    assert out["move_m"] == 1.0
+    assert all("non-finite" in c["error"] for c in out["calls"][:3])
+
+
+@pytest.mark.parametrize(
+    "tamper, reason",
+    [
+        ('c.send_bytes(b\'["call", "move", 5, {}]\')\nc.recv_bytes()\n', "args"),
+        (
+            "c.send_bytes(b'[' * 200000 + b']' * 200000)\nc.recv_bytes()\n",
+            "RecursionError",
+        ),
+        (
+            'c.send_bytes(b\'["done", {"stdout": 5, "traceback": ""}]\')\n'
+            "import time; time.sleep(2)\n",
+            "stdout",
+        ),
+        ("c.send_bytes(b'{\"call\": 1}')\nc.recv_bytes()\n", "list"),
+    ],
+)
+def test_a_malformed_message_is_the_childs_failure_and_the_accounting_is_kept(
+    tamper, reason
+):
+    finished = []
+    r = runner(Toy(), finish=lambda: finished.append(1) or {"steps": 3})
+    out = r.run("move([0.01, 0, 0])\n" + _pipe_of("move") + tamper)
+    assert finished == [1]
+    assert out["status"] == "error" and out["steps"] == 3, out
+    assert "malformed message" in out["error"] and reason in out["error"], out["error"]
+    assert out["n_calls"] == 1 and out["move_m"] == 0.01
+
+
+def test_a_result_that_cannot_cross_the_pipe_is_that_calls_error():
+    r = CodeRunner([Primitive("names", lambda: np.array(["a", "b"]), ("high",))])
+    out = r.run("try:\n    names()\nexcept RuntimeError as e:\n    RESULT = str(e)\n")
+    assert out["status"] == "ran", out
+    assert "cannot cross the pipe" in out["result"]
+    assert "cannot cross the pipe" in out["calls"][0]["error"]
+
+
+def test_the_runs_deadline_bounds_every_outbound_rpc_of_a_primitive():
+    import http.server
+
+    class Hang(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802
+            time.sleep(10)
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Hang)
+    srv.daemon_threads = True
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    from pi_embodied_services.utils.rpc.http_rpc import HttpRpcClient
+
+    client = HttpRpcClient(f"http://127.0.0.1:{srv.server_address[1]}")
+
+    def segment():
+        # like env.segment: one SAM3 call with its own 120 s timeout, no stop polling
+        return client.call("sam3.segment", timeout_s=120.0)
+
+    r = CodeRunner([Primitive("segment", segment, ("high",))], on_timeout=lambda: None)
+    t0 = time.monotonic()
+    out = r.run("segment()\n", timeout_s=1.5)
+    took = time.monotonic() - t0
+    srv.shutdown()
+    assert out["status"] == "timeout", out
+    assert took < 4, f"the primitive outlived the run's timeout by {took - 1.5:.1f} s"
+
+
+def test_the_servers_environment_is_never_modified_during_a_spawn(monkeypatch):
+    monkeypatch.setenv("FAKE_API_KEY", "sk-1")
+    seen: list[str | None] = []
+    stop = threading.Event()
+
+    def watch():
+        while not stop.is_set():
+            seen.append(os.environ.get("FAKE_API_KEY"))
+
+    th = threading.Thread(target=watch)
+    th.start()
+    try:
+        out = runner(Toy()).run("x = 1\n" + "#" * (2 << 20) + "\n")
+    finally:
+        stop.set()
+        th.join()
+    assert out["status"] == "ran", out
+    assert seen and all(v == "sk-1" for v in seen)
+    env = code_exec.child_env({"FAKE_API_KEY": "x", "PATH": "/bin"}, "/tmp/w")
+    assert "FAKE_API_KEY" not in env and env["HOME"] == "/tmp/w"
+    assert env["PYTHONPATH"].split(os.pathsep)[0].endswith("services")
+
+
+@pytest.mark.skipif(not LINUX, reason="/proc and prctl are Linux-only")
+def test_the_child_cannot_read_the_servers_environ_or_memory():
+    # The secret is in the server's initial environment block (as pi's API keys are), which
+    # is what /proc/<pid>/environ shows: start the server as a subprocess to get one.
+    import subprocess
+    import sys
+
+    prog = (
+        "import os, json\n"
+        "from pi_embodied_services.utils.code_exec import CodeRunner, Primitive\n"
+        "r = CodeRunner([Primitive('noop', lambda: {}, ('high',))])\n"
+        'out = r.run("import os\\n'
+        "pid = os.getppid()\\n"
+        "res = {'uid': os.getuid()}\\n"
+        "for what in ('environ', 'mem'):\\n"
+        "    try:\\n"
+        "        with open(f'/proc/{pid}/{what}', 'rb') as f:\\n"
+        "            res[what] = f.read(1 << 20).count(b'sk-audit-1')\\n"
+        "    except OSError as e:\\n"
+        "        res[what] = type(e).__name__\\n"
+        'RESULT = res\\n")\n'
+        "print(json.dumps([os.getuid(), out['status'], out['result']]))\n"
+    )
+    env = {**os.environ, "FAKE_API_KEY": "sk-audit-1"}
+    done = subprocess.run(
+        [sys.executable, "-c", prog],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert done.returncode == 0, done.stderr
+    import json
+
+    server_uid, status, res = json.loads(done.stdout.strip().splitlines()[-1])
+    assert status == "ran", res
+    assert res["environ"] == "PermissionError", res
+    assert res["mem"] == "PermissionError", res
+    if server_uid == 0:
+        assert res["uid"] >= code_exec.SANDBOX_UID_BASE, "a root server drops the uid"
+
+
+@pytest.mark.skipif(not LINUX, reason="/proc is Linux-only")
+def test_a_setsid_double_forked_grandchild_dies_with_the_run():
+    marker = f"/tmp/run_code_marker_{os.getpid()}"
+    out = runner(Toy()).run(
+        "import os, time\n"
+        "try:\n"
+        "    pid = os.fork()\n"
+        "except OSError:\n"
+        "    RESULT = None  # RLIMIT_NPROC refused it\n"
+        "else:\n"
+        "    if pid == 0:\n"
+        "        os.setsid()\n"
+        "        if os.fork() == 0:\n"
+        f"            open({marker!r}, 'w').write(str(os.getpid()))\n"
+        "            time.sleep(60)\n"
+        "        os._exit(0)\n"
+        "    os.waitpid(pid, 0)\n"
+        "    time.sleep(0.5)\n"
+        f"    RESULT = int(open({marker!r}).read())\n"
+    )
+    with __import__("contextlib").suppress(OSError):
+        os.unlink(marker)
+    assert out["status"] == "ran", out
+    gpid = out["result"]
+    if gpid is None:
+        return
+    time.sleep(0.2)
+    try:
+        with open(f"/proc/{gpid}/stat") as f:
+            state = f.read().rsplit(")", 1)[1].split()[0]
+    except OSError:
+        return
+    if state != "Z":
+        os.kill(gpid, 9)
+        raise AssertionError("the grandchild outlived the run")

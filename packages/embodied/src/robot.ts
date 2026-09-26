@@ -689,11 +689,13 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 						return;
 					}
 					held += chunk.toString();
-					const m = /RPC server listening on http:\/\/[^\s:]+:(\d+)/.exec(held);
+					const m = /RPC server listening on http:\/\/[^\s:]+:(\d+)(?: \(token ([0-9a-f]+)\))?\r?\n/.exec(held);
 					if (!m) return;
+					if (m[2]) rpc.token = m[2];
 					log = o.log(Number(m[1]));
 					fd = openSync(log, "a");
-					writeSync(fd, held);
+					// The token stays out of the log file (a run_code program may be able to read it).
+					writeSync(fd, m[2] ? held.replace(m[2], "<redacted>") : held);
 					held = "";
 					resolve(Number(m[1]));
 				};

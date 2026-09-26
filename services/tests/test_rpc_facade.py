@@ -187,3 +187,65 @@ def test_stop_interrupts_running_loop_and_drops_queued_calls(served):
 def test_socket_transport_is_gone():
     with pytest.raises(ValueError, match="only 'http'"):
         Dummy()._bind_and_announce("socket", "127.0.0.1", 0, lambda *a, **k: None)
+
+
+# ---- token and run_code exclusivity ---------------------------------------------------------
+
+
+class Guarded(Dummy):
+    """A server like LIBERO's: token required; ``busy`` stands for a running code.run."""
+
+    REQUIRE_TOKEN = True
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.busy = False
+
+    def _exclusive_call_active(self) -> bool:
+        return self.busy
+
+
+@pytest.mark.parametrize("cls", ["plain", "main_thread"])
+def test_a_token_server_refuses_calls_without_its_token_but_answers_healthz_and_stop(
+    cls, capsys
+):
+    facade = (
+        Guarded()
+        if cls == "plain"
+        else type("M", (MainThreadServeMixin, Guarded), {})()
+    )
+    client, _ = _serve(facade)
+    line = [
+        ln
+        for ln in capsys.readouterr().out.splitlines()
+        if "RPC server listening" in ln
+    ][-1]
+    token = facade._rpc_token
+    assert token and line.endswith(f"(token {token})")
+    assert client.call("healthz")["status"] == "ok"
+    assert client.call("stop")["ok"] is True
+    for method in ("read", "shutdown"):
+        with pytest.raises(RpcError, match="requires its RPC token"):
+            client.call(method)
+    wrong = HttpRpcClient(client._base_url, token="0" * 32)
+    with pytest.raises(RpcError, match="requires its RPC token"):
+        wrong.call("read")
+    good = HttpRpcClient(client._base_url, token=token)
+    assert good.call("read") == "read"
+    # While a program runs, even the token holder's business calls are refused at once
+    # (they would otherwise run after it, outside its budgets); stop still goes through.
+    facade.busy = True
+    t0 = time.monotonic()
+    with pytest.raises(RpcError, match="run_code program is running"):
+        good.call("read")
+    assert time.monotonic() - t0 < 2
+    assert good.call("stop")["ok"] is True
+    facade.busy = False
+    good.call("shutdown", timeout_s=10)
+
+
+def test_servers_without_the_opt_in_need_no_token(capsys):
+    client, stop = _serve(Dummy())
+    assert "token" not in capsys.readouterr().out
+    assert client.call("read") == "read"
+    stop()

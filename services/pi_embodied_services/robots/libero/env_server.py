@@ -64,6 +64,20 @@ GRASP_RES = 512
 CODE_CAMERAS = GRASP_CAMERAS
 CODE_RES = GRASP_RES
 CODE_MAX_FRAMES = 32
+#: A program's raw ``chunk_step`` runs at most this many actions in one call (a chunk is one
+#: worker call that no stop interrupts; the run's wall clock must bound it).
+CODE_MAX_CHUNK = 64
+#: A program's ``render_camera`` renders at most this many pixels per side.
+CODE_MAX_RENDER = 1024
+
+
+def _finite(name: str, value) -> np.ndarray:
+    """``value`` as float64, or a ValueError naming ``name`` when it holds NaN or infinity."""
+    arr = np.asarray(value, dtype=np.float64)
+    if not np.isfinite(arr).all():
+        raise ValueError(f"{name} must be finite, got {value!r}")
+    return arr
+
 
 # torch and LiberoEnv are only imported at call time (after --cuda-device
 # sets CUDA_VISIBLE_DEVICES in main()); LiberoEnv transitively imports torch.
@@ -242,6 +256,9 @@ class LiberoEnvFacade(BaseEnvFacade):
     """
 
     SERVICE_NAME = "libero-env"
+    #: Code mode: a program could otherwise call this server's port itself (outside its
+    #: budgets, and after its run); pi reads the token from the listening line.
+    REQUIRE_TOKEN = True
     #: Set by __init__; class defaults so the registry can be built on a bare facade (tests).
     _sam3_url: str | None = None
     _grasp: "GraspPlanner | None" = None
@@ -329,7 +346,11 @@ class LiberoEnvFacade(BaseEnvFacade):
         # methods above; the runner adds the sandbox, the budgets and the stop handling.
         self._code = CodeRunner(
             registry_primitives(
-                api, self._rpc, move_m=self._code_move_m, after=self._frame
+                api,
+                self._rpc,
+                move_m=self._code_move_m,
+                after=self._frame,
+                check=self._code_check,
             ),
             stop_requested=self.stop_requested,
             # A timed-out program is killed; the robot gets a stop like an abort would send.
@@ -344,6 +365,10 @@ class LiberoEnvFacade(BaseEnvFacade):
     def _on_stop(self, generation: int) -> None:
         # A stop while a program runs kills its process; the primitive loops see stop_requested.
         self._code.abort()
+
+    def _exclusive_call_active(self) -> bool:
+        # While a program runs, only its own primitives (called in-process) touch the env.
+        return self._code.active
 
     # ---- grasp planning views ----
 
@@ -570,6 +595,19 @@ class LiberoEnvFacade(BaseEnvFacade):
             a = a.reshape(-1, a.shape[-1])[:, :3]
             return float(np.linalg.norm(np.clip(a, -1, 1) * 0.05, axis=1).sum())
         return 0.0
+
+    def _code_check(self, method: str, kwargs: dict) -> None:
+        """Refuse a program's call that the run's wall clock could not bound."""
+        if method == "env.chunk_step":
+            n = len(np.asarray(kwargs.get("actions"), dtype=np.float64).reshape(-1, 7))
+            if n > CODE_MAX_CHUNK:
+                raise ValueError(
+                    f"chunk_step runs at most {CODE_MAX_CHUNK} actions per call, got {n}"
+                )
+        if method == "env.render_camera":
+            for k in ("height", "width"):
+                if int(kwargs.get(k, 1024)) > CODE_MAX_RENDER:
+                    raise ValueError(f"render_camera {k} is at most {CODE_MAX_RENDER}")
 
     def _yaw(self) -> float:
         x, y, z, w = self._quat_xyzw() / np.linalg.norm(self._quat_xyzw())
@@ -837,10 +875,11 @@ class LiberoEnvFacade(BaseEnvFacade):
             >>> move_to([0.05, 0.12, 0.25])          # above the target
             >>> move_to([0.05, 0.12, 0.06]); set_gripper(True); move_to([0.05, 0.12, 0.25])
         """
-        target = np.asarray(xyz, dtype=np.float64).reshape(3)
+        target = _finite("xyz", xyz).reshape(3)
+        tol = float(_finite("tol", tol))
         grip = self._grip_value(gripper)
         self._grip = grip
-        steps, cancelled = self._servo(target, grip, float(tol), int(max_steps), 0.025)
+        steps, cancelled = self._servo(target, grip, tol, int(max_steps), 0.025)
         return self._motion_result(
             "move_to",
             steps,
@@ -865,7 +904,7 @@ class LiberoEnvFacade(BaseEnvFacade):
         Example:
             >>> move_delta([0, 0, -0.05])   # descend 5 cm
         """
-        d = np.asarray(dxyz, dtype=np.float64).reshape(3)
+        d = _finite("dxyz", dxyz).reshape(3)
         if np.linalg.norm(d) > 0.10 + 1e-9:
             raise ValueError(
                 "move_delta moves at most 0.10 m per call; split the motion"
@@ -924,9 +963,9 @@ class LiberoEnvFacade(BaseEnvFacade):
         if target_yaw is None and delta_yaw is None:
             raise ValueError("give target_yaw or delta_yaw")
         goal = (
-            float(target_yaw)
+            float(_finite("target_yaw", target_yaw))
             if target_yaw is not None
-            else self._yaw() + float(delta_yaw)
+            else self._yaw() + float(_finite("delta_yaw", delta_yaw))
         )
         grip = self._grip_value(gripper)
         self._grip = grip
@@ -946,7 +985,7 @@ class LiberoEnvFacade(BaseEnvFacade):
         Returns:
             dict with ``yaw`` (final, rad), ``final_err``, ``steps_used``, ``eef_pos``.
         """
-        if abs(float(delta_yaw)) > np.pi / 2 + 1e-9:
+        if abs(float(_finite("delta_yaw", delta_yaw))) > np.pi / 2 + 1e-9:
             raise ValueError("rotate_delta turns at most pi/2 per call")
         return self.rotate_wrist(
             delta_yaw=float(delta_yaw), gripper=gripper, max_steps=max_steps

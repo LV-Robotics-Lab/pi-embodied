@@ -244,12 +244,17 @@ export function code(
 				return { content: [text(why)], details: { status: "error", error: why } };
 			}
 		}
-		// An abort stops the server (its stop kills the program), but the call itself is waited
+		// An abort stops the server (its stop kills the program), but a sent call itself is waited
 		// out: the run's result carries the steps it took and any success before the stop, which
-		// an abandoned call would lose.
+		// an abandoned call would lose. A call still queued behind another one is never sent.
 		const rpc = spec.rpc();
 		if (signal?.aborted) return { content: [text("run_code: aborted before it ran")], details: { status: "error" } };
-		const onAbort = () => void rpc.interrupt();
+		let sent = false;
+		const unsent = new AbortController();
+		const onAbort = () => {
+			void rpc.interrupt();
+			if (!sent) unsent.abort();
+		};
 		signal?.addEventListener("abort", onAbort, { once: true });
 		let r: RunResult;
 		try {
@@ -264,11 +269,28 @@ export function code(
 					helpers: helpersOn(),
 				},
 				(timeout_s + 60) * 1000,
+				[],
+				unsent.signal,
+				() => {
+					sent = true;
+				},
 			);
+		} catch (err) {
+			if (!sent && unsent.signal.aborted)
+				return { content: [text("run_code: aborted before it ran")], details: { status: "error" } };
+			throw err;
 		} finally {
 			signal?.removeEventListener("abort", onAbort);
 		}
-		const observed = await spec.observe(r, signal);
+		// After an abort the run's effects are absorbed, but the robot's observation (camera
+		// images) is not fetched: its calls would fail on the aborted signal.
+		let observed: Result;
+		try {
+			observed = await spec.observe(r, signal);
+		} catch (err) {
+			if (!signal?.aborted) throw err;
+			observed = { content: [text("aborted: the latest images were not fetched")], details: {} };
+		}
 		const report: Json = {
 			status: r.status,
 			...(r.error ? { error: r.error } : {}),

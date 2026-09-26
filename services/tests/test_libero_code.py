@@ -385,3 +385,73 @@ def test_calls_go_through_the_registry_resolve():
     assert out["result"] == pytest.approx(0.05, abs=0.005)
     assert out["calls"][1]["move_m"] == pytest.approx(0.01)
     assert len(out["frames"]) == 2, "raw steps are mutating too"
+
+
+def test_non_finite_targets_are_refused_by_the_facade_methods_pi_calls_too():
+    f = facade()
+    nan, inf = float("nan"), float("inf")
+    for call in (
+        lambda: f.move_to([nan, 0, 0.2]),
+        lambda: f.move_to([0, 0, 0.2], tol=nan),
+        lambda: f.move_delta([0, inf, 0]),
+        lambda: f.rotate_wrist(target_yaw=nan),
+        lambda: f.rotate_wrist(delta_yaw=inf),
+        lambda: f.rotate_delta(nan),
+    ):
+        with pytest.raises(ValueError, match="finite"):
+            call()
+    assert f._env.steps == 0, "nothing reached the simulator"
+
+
+def test_a_programs_nan_step_is_refused_and_the_move_cap_holds():
+    f = facade()
+    out = f._rpc["code.run"](
+        "try:\n"
+        "    step([float('nan'), 0, 0, 0, 0, 0, -1])\n"
+        "except RuntimeError as e:\n"
+        "    RESULT = str(e)\n"
+        "for _ in range(30):\n"
+        "    step([1, 0, 0, 0, 0, 0, -1])\n",
+        timeout_s=30,
+        tier="low",
+        max_move_m=0.5,
+    )
+    assert "non-finite" in out["calls"][0]["error"]
+    assert out["limit"] == "max_move_m" and out["steps"] == 10, out
+
+
+def test_a_long_raw_chunk_is_refused_before_it_runs():
+    f = facade()
+    out = f._rpc["code.run"](
+        "chunk_step([[0, 0, 0, 0, 0, 0, -1]] * 1000)\n", timeout_s=30, tier="low"
+    )
+    assert out["status"] == "error" and "at most 64 actions" in out["error"], out
+    assert out["steps"] == 0
+
+
+def test_the_server_requires_a_token_and_is_exclusive_while_a_program_runs():
+    f = facade()
+    assert LiberoEnvFacade.REQUIRE_TOKEN and f._rpc_token
+    token = f._rpc_token
+    seen = {}
+
+    def probe():
+        # What a program calling the server's port itself would get, mid-run.
+        try:
+            f._serve_dispatch("env.step", ([0] * 7,), {}, token=token)
+        except RuntimeError as exc:
+            seen["refused"] = str(exc)
+        return {}
+
+    f._rpc["env.get_state"] = probe
+    f._code._primitives["get_state"] = type(f._code._primitives["get_state"])(
+        "get_state", probe, ("high", "low")
+    )
+    out = f._serve_dispatch(
+        "code.run", ("get_state()\n",), {"timeout_s": 30}, token=token
+    )
+    assert out["status"] == "ran", out
+    assert "run_code program is running" in seen["refused"]
+    assert out["steps"] == 0
+    with pytest.raises(PermissionError):
+        f._serve_dispatch("env.get_state", (), {})

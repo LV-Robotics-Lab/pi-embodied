@@ -24,16 +24,30 @@ apply. CaP-X's executor instead ``exec``'d the code in-process with ``env`` in i
 
 The pipe carries JSON, never pickle (arrays as ``{"__ndarray__": ...}`` of a numeric dtype,
 see :func:`encode` / :func:`decode`): a message from the child cannot make the server
-unpickle an object, and a message over :data:`MAX_MESSAGE` ends the run. The child starts
-with the secret-looking environment variables removed (:func:`scrub_env`: names containing
-KEY, TOKEN, SECRET, PASSWORD and the like, the cloud and git prefixes), in its own process
-group (killed as a group, so the program's own subprocesses die with it), and under
-``RLIMIT_NPROC`` (no new processes or threads), ``RLIMIT_FSIZE``, ``RLIMIT_AS`` and
-``RLIMIT_CPU``. It can still open sockets: a server that must keep the program off the
-network runs inside a container, as pi's own isolation does.
+unpickle an object, a message over :data:`MAX_MESSAGE` ends the run, and any other message
+the protocol does not allow (wrong kinds or field types, nesting too deep) ends it as the
+child's failure, with the run's accounting kept.
+
+Isolation. The child is a fresh ``python -c`` process (it does not re-import the server's
+main module) started with an environment built for it (:func:`child_env`: the server's
+minus the secret-looking variables, :func:`scrub_env`; the server's own ``os.environ`` is
+never touched). It runs in its own session, with stdin and stdout on /dev/null. The server
+is non-dumpable (``prctl(PR_SET_DUMPABLE, 0)``, set when a runner is built and before every
+run), so no process of its uid can read its /proc/<pid>/environ or memory or ptrace it. A
+root server also runs the program under an unprivileged uid of its own
+(:func:`sandbox_uid`, ``PI_EMBODIED_CODE_UID`` overrides): the child imports what it needs
+(:data:`PRELOAD`), sets its rlimits, then drops to that uid and gid for good before the
+program runs, in a temporary directory it owns. ``RLIMIT_NPROC`` (then binding: the uid
+already has this process) refuses new processes and threads, and ``RLIMIT_FSIZE``,
+``RLIMIT_AS`` and ``RLIMIT_CPU`` apply. At the end of every run :func:`kill_tree` kills the
+child's session and group, its descendants and every process of the sandbox uid (cgroups
+are read-only in the containers the servers run in). It can still open sockets: the env
+server refuses business calls while a run executes, and a server that must keep the
+program off the network runs inside a container, as pi's own isolation does.
 
 Per run: a wall-clock timeout (a stop is issued to the robot the moment it passes, also
-inside a running primitive, and the child is killed), a primitive-call budget, an
+inside a running primitive, whose outbound RPCs are bounded by what is left of it, and the
+child is killed), a primitive-call budget, arguments with NaN or infinity refused, an
 accumulated translation cap (the units' ``maxMoveM`` idea), a temporary working directory,
 and stdout, stderr, the traceback and ``RESULT`` each capped at 8 KB. A ``stop`` that
 arrives while a run executes kills the child (:meth:`CodeRunner.abort`, from the facade's
@@ -60,6 +74,8 @@ import os
 import re
 import shutil
 import signal
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -71,6 +87,7 @@ from typing import Any, Callable
 import numpy as np
 
 from pi_embodied_services.components import code_api as registry
+from pi_embodied_services.utils.rpc.deadline import call_deadline
 
 #: ``code.api`` / ``code.run`` tiers: CaP-X's S2 (perception + high-level primitives), S3
 #: (low-level moves only) and S4 (S3 with the docstrings' examples stripped). S1 is any tier
@@ -120,6 +137,8 @@ class Primitive:
     tiers: tuple[str, ...] = ("high", "low")
     move_m: Callable[[tuple, dict], float] | None = None
     privileged: bool = False
+    #: Raises to refuse a call before it runs (e.g. a size the run's wall clock cannot bound).
+    check: Callable[[tuple, dict], None] | None = None
     #: Shown instead of ``fn``'s own signature and docstring (registry-declared primitives).
     signature: str | None = None
     doc: str | None = None
@@ -160,12 +179,14 @@ def registry_primitives(
     *,
     move_m: Callable[[str, dict], float] | None = None,
     after: Callable[[registry.Primitive], None] | None = None,
+    check: Callable[[str, dict], None] | None = None,
 ) -> list[Primitive]:
     """The runner's primitives for a server's declared registry: one stub per declared primitive
     whose calls go through ``api.resolve`` (declared name, parameters, tier) to the registered RPC
     method. Positional arguments fill the declared parameters in order. ``move_m(method, kwargs)``
-    estimates a call's translation for the run's cap; ``after(primitive)`` runs after every
-    mutating call (frames for the episode video)."""
+    estimates a call's translation for the run's cap; ``check(method, kwargs)`` raises to refuse a
+    call before it runs; ``after(primitive)`` runs after every mutating call (frames for the
+    episode video)."""
     out: list[Primitive] = []
     for p in api.primitives("privileged") + [
         q for q in api.primitives("low") if "high" not in q.tiers
@@ -190,6 +211,13 @@ def registry_primitives(
                     )
                 )
                 if move_m
+                else None,
+                check=(
+                    lambda a, k, _p=p, _t=tier_of: check(
+                        *api.resolve(_p.name, _bind(_p, a, k), _t)
+                    )
+                )
+                if check
                 else None,
                 privileged=privileged,
                 signature=_registry_signature(p),
@@ -544,6 +572,149 @@ def describe_helpers() -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Process isolation (Linux; best effort elsewhere)
+
+#: The unprivileged uids a root server runs its programs as: one per server, held by an
+#: flock on ``<lock dir>/pi-embodied-sandbox-<uid>.lock`` for the server's lifetime, so a
+#: sweep of "every process of the sandbox uid" only ever hits this server's program.
+SANDBOX_UID_BASE = 61000
+SANDBOX_UID_COUNT = 256
+#: ``PI_EMBODIED_CODE_UID``: a fixed uid for the programs, or ``none`` to keep the server's
+#: uid (then only PR_SET_DUMPABLE protects the server).
+SANDBOX_UID_ENV = "PI_EMBODIED_CODE_UID"
+#: Modules imported before the child drops its uid: afterwards a root server's interpreter
+#: (e.g. under /root, mode 0700) may be unreadable, so later imports can fail.
+PRELOAD = tuple(
+    "array bisect cmath collections copy dataclasses datetime decimal enum fractions "
+    "functools heapq itertools json math numbers operator pprint random re statistics "
+    "string struct textwrap time typing numpy.linalg numpy.random numpy.fft".split()
+)
+PRELOAD_OPTIONAL = ("scipy.spatial.transform",)
+PR_SET_DUMPABLE = 4
+
+_sandbox_lock: Any = None
+_sandbox_uid: int | None = None
+
+
+def _prctl_dumpable_off() -> bool:
+    """``prctl(PR_SET_DUMPABLE, 0)``: other processes of this uid can no longer read this
+    process's /proc/<pid>/environ, /proc/<pid>/mem or ptrace it. Linux only."""
+    try:
+        import ctypes
+
+        libc = ctypes.CDLL(None, use_errno=True)
+        return libc.prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) == 0
+    except (OSError, AttributeError):
+        return False
+
+
+def sandbox_uid() -> int | None:
+    """The uid this server's programs run as, or None (not root, not Linux, or disabled)."""
+    global _sandbox_lock, _sandbox_uid
+    if _sandbox_uid is not None:
+        return _sandbox_uid
+    fixed = os.environ.get(SANDBOX_UID_ENV, "").strip()
+    if fixed.lower() == "none":
+        return None
+    if not hasattr(os, "getuid") or os.getuid() != 0 or not os.path.isdir("/proc"):
+        return None
+    if fixed:
+        _sandbox_uid = int(fixed)
+        return _sandbox_uid
+    import fcntl
+
+    lock_dir = "/run/lock" if os.path.isdir("/run/lock") else tempfile.gettempdir()
+    for uid in range(SANDBOX_UID_BASE, SANDBOX_UID_BASE + SANDBOX_UID_COUNT):
+        path = os.path.join(lock_dir, f"pi-embodied-sandbox-{uid}.lock")
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            continue
+        if _uid_processes(uid):
+            # A leftover of a server that died without its sweep: take the next uid.
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+            continue
+        _sandbox_lock, _sandbox_uid = fd, uid
+        return uid
+    return None
+
+
+def _proc_status(pid: int) -> dict[str, str]:
+    out: dict[str, str] = {}
+    try:
+        with open(f"/proc/{pid}/status") as f:
+            for line in f:
+                k, _, v = line.partition(":")
+                out[k] = v.strip()
+    except OSError:
+        pass
+    return out
+
+
+def _pids() -> list[int]:
+    try:
+        return [int(p) for p in os.listdir("/proc") if p.isdigit()]
+    except OSError:
+        return []
+
+
+def _uid_processes(uid: int) -> list[int]:
+    """Live processes with ``uid`` as any of their real / effective / saved uids."""
+    out = []
+    for pid in _pids():
+        st = _proc_status(pid)
+        uids = st.get("Uid", "").split()
+        if str(uid) in uids[:3] and not st.get("State", "").startswith("Z"):
+            out.append(pid)
+    return out
+
+
+def _tree(root: int) -> set[int]:
+    """``root``'s descendants (by parent pid) and every process in its session or group."""
+    table = {}
+    for pid in _pids():
+        try:
+            with open(f"/proc/{pid}/stat") as f:
+                fields = f.read().rsplit(")", 1)[1].split()
+        except (OSError, IndexError):
+            continue
+        if fields[0] == "Z":
+            continue
+        table[pid] = (int(fields[1]), int(fields[2]), int(fields[3]))  # ppid, pgrp, sid
+    found = {p for p, (_, pgrp, sid) in table.items() if pgrp == root or sid == root}
+    frontier = {root} | found
+    while frontier:
+        nxt = {p for p, (ppid, _, _) in table.items() if ppid in frontier} - found
+        found |= nxt
+        frontier = nxt
+    found.discard(os.getpid())
+    return found
+
+
+def kill_tree(pid: int | None, uid: int | None) -> None:
+    """SIGKILL the child's session and group, its descendants and, when it ran under the
+    sandbox uid, every process of that uid (which catches double-forked orphans), until
+    none is left. Called before the child is reaped, so its pid is not reused meanwhile."""
+    if pid is None:
+        return
+    with contextlib.suppress(OSError):
+        os.killpg(pid, signal.SIGKILL)
+    if not os.path.isdir("/proc"):
+        return
+    for _ in range(50):
+        victims = _tree(pid) | (set(_uid_processes(uid)) if uid is not None else set())
+        if not victims:
+            return
+        for v in victims:
+            with contextlib.suppress(OSError):
+                os.kill(v, signal.SIGKILL)
+        time.sleep(0.02)
+
+
+# ---------------------------------------------------------------------------
 # The child
 
 
@@ -586,27 +757,73 @@ def _stub(conn, name: str) -> Callable[..., Any]:
     return call
 
 
+def _drop_privileges(uid: int) -> None:
+    """Become ``uid`` (and gid ``uid``, no supplementary groups) for good; refuse to go on
+    if it did not take."""
+    os.setgroups([])
+    os.setresgid(uid, uid, uid)
+    os.setresuid(uid, uid, uid)
+    if os.getresuid() != (uid, uid, uid) or os.getresgid() != (uid, uid, uid):
+        raise SystemExit("run_code: could not drop privileges")
+    try:
+        os.setuid(0)
+    except PermissionError:
+        return
+    raise SystemExit("run_code: privileges came back")
+
+
+def _child_entry(fd: int) -> None:
+    """``python -c`` entry of the child: the setup arrives as the first pipe message."""
+    from multiprocessing.connection import Connection
+
+    conn = Connection(fd)
+    setup = json.loads(conn.recv_bytes(MAX_MESSAGE).decode("utf-8"))
+    _child_main(
+        conn,
+        setup["code"],
+        setup["names"],
+        setup["helpers"],
+        setup["limits"],
+        setup["cwd"],
+        setup.get("uid"),
+    )
+
+
 def _child_main(
-    conn, code: str, names: list[str], helpers: list[str], limits: dict, cwd: str
+    conn,
+    code: str,
+    names: list[str],
+    helpers: list[str],
+    limits: dict,
+    cwd: str,
+    uid: int | None = None,
 ):
-    """The spawned process: rlimits, a temp cwd, stubs for the tier's primitives, then the
-    program; nothing else of the server is in its globals."""
+    """The child: stdin off, preloaded modules, rlimits, the sandbox uid, a temp cwd, stubs
+    for the tier's primitives, then the program; nothing else of the server is in its globals."""
+    import importlib
     import resource
 
-    # Its own process group: the parent kills the group, so the program's subprocesses go too.
     with contextlib.suppress(OSError):
-        os.setpgrp()
+        null = os.open(os.devnull, os.O_RDONLY)
+        os.dup2(null, 0)
+        os.close(null)
+    if uid is not None:  # only a dropped uid may be unable to import later
+        for name in (*PRELOAD, *PRELOAD_OPTIONAL):
+            with contextlib.suppress(ImportError):
+                importlib.import_module(name)
     cap = _mapped_bytes() + limits["as_bytes"]
     _set_limit(resource.RLIMIT_AS, cap, cap)
-    # Relative too: importing the server's main module (torch) already cost CPU seconds.
     used = resource.getrusage(resource.RUSAGE_SELF)
     cpu = int(math.ceil(used.ru_utime + used.ru_stime)) + limits["cpu_s"]
     _set_limit(resource.RLIMIT_CPU, cpu, cpu + 5)
     _set_limit(resource.RLIMIT_FSIZE, limits["fsize_bytes"], limits["fsize_bytes"])
-    # No new processes or threads (every clone counts against NPROC; the user already has
-    # more than one process, so any further one is refused; root is exempt).
+    if uid is not None:
+        _drop_privileges(uid)
+    # No new processes or threads: every clone counts against NPROC and the uid already has
+    # this process (root is exempt, hence the uid drop above).
     _set_limit(resource.RLIMIT_NPROC, 1, 1)
     os.chdir(cwd)
+    os.environ["HOME"] = cwd
     g: dict[str, Any] = {"__name__": "__main__", "RESULT": None, "np": np, "math": math}
     for name in names:
         g[name] = _stub(conn, name)
@@ -637,21 +854,85 @@ def _child_main(
     conn.close()
 
 
-def _kill(proc: multiprocessing.process.BaseProcess) -> None:
-    """SIGKILL the child's process group (its subprocesses with it, whether or not the child
-    itself still runs), then the child if it is somehow still alive. Called before the child
-    is joined: until then its pid is not reused, so the group is its own."""
-    pid = proc.pid
-    if pid is None:
-        return
-    with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
-        os.killpg(pid, signal.SIGKILL)
-    if proc.is_alive():
-        proc.kill()
+def child_env(env: Mapping[str, str], cwd: str) -> dict[str, str]:
+    """The child's whole environment, built explicitly (the server's own ``os.environ`` is
+    never modified): ``env`` scrubbed, the services root on PYTHONPATH, HOME the temp dir."""
+    out = scrub_env(env)
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    out["PYTHONPATH"] = os.pathsep.join(
+        p for p in (root, out.get("PYTHONPATH", "")) if p
+    )
+    out["HOME"] = cwd
+    out["PYTHONDONTWRITEBYTECODE"] = "1"
+    return out
+
+
+def _malformed(reason: str) -> _Outcome:
+    return _Outcome("died", f"it sent a malformed message ({reason})")
+
+
+@dataclass(frozen=True)
+class _Outcome:
+    kind: str
+    reason: str = ""
 
 
 # ---------------------------------------------------------------------------
 # The parent
+
+
+def _nonfinite(value: Any, depth: int = 0) -> bool:
+    """Whether ``value`` holds a NaN or an infinity (numbers, numeric arrays, lists, dicts)."""
+    if depth > 64:
+        return False
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, (int, np.integer)):
+        return False
+    if isinstance(value, (float, np.floating)):
+        return not math.isfinite(float(value))
+    if isinstance(value, np.ndarray):
+        return value.dtype.kind in "fc" and not bool(np.isfinite(value).all())
+    if isinstance(value, dict):
+        return any(_nonfinite(v, depth + 1) for v in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_nonfinite(v, depth + 1) for v in value)
+    return False
+
+
+def _parse(msg: Any) -> tuple[str, Any]:
+    """A child message as ``("done", fields)`` or ``("call", (name, args, kwargs))``; a
+    ValueError names what is wrong with anything else."""
+    if not isinstance(msg, list) or not msg or not isinstance(msg[0], str):
+        raise ValueError("not a [kind, ...] list")
+    if msg[0] == "done":
+        if len(msg) != 2 or not isinstance(msg[1], dict):
+            raise ValueError("done without its fields")
+        done = msg[1]
+        for k in ("stdout", "stderr"):
+            if not isinstance(done.get(k, ""), str):
+                raise ValueError(f"done.{k} is not a string")
+        if not isinstance(done.get("traceback"), (str, type(None))):
+            raise ValueError("done.traceback is not a string")
+        result = jsonable(done.get("result"))
+        if len(json.dumps(result).encode("utf-8")) > OUTPUT_CAP:
+            result = {"truncated": f"RESULT is over {OUTPUT_CAP} bytes; return less"}
+        return "done", {
+            "stdout": done.get("stdout", ""),
+            "stderr": done.get("stderr", ""),
+            "traceback": done.get("traceback"),
+            "result": result,
+        }
+    if msg[0] == "call":
+        if len(msg) != 4:
+            raise ValueError("call is not [call, name, args, kwargs]")
+        _, name, args, kwargs = msg
+        if not isinstance(name, str) or not isinstance(args, list):
+            raise ValueError("call name / args of the wrong type")
+        if not isinstance(kwargs, dict):
+            raise ValueError("call kwargs is not an object")
+        return "call", (name, tuple(args), kwargs)
+    raise ValueError(f"unknown message kind {msg[0][:40]!r}")
 
 
 class CodeRunner:
@@ -660,7 +941,8 @@ class CodeRunner:
     ``stop_requested`` is the facade's; ``on_timeout`` is called once when a run hits its
     wall-clock timeout (the facade issues a stop to the robot); ``begin`` / ``finish`` bracket
     a run for the facade's bookkeeping (``finish`` returns fields merged into the result:
-    steps taken, the latest observation, frames).
+    steps taken, the latest observation, frames). :attr:`active` is true while a run
+    executes (the facade refuses other business calls meanwhile).
     """
 
     def __init__(
@@ -678,8 +960,18 @@ class CodeRunner:
         self._begin = begin
         self._finish = finish
         self._lock = threading.Lock()
-        self._proc: multiprocessing.process.BaseProcess | None = None
+        self._proc: subprocess.Popen | None = None
+        self._uid: int | None = None
         self._abort = threading.Event()
+        self._active = False
+        # The floor of the isolation: no process of this uid may read this one's memory or
+        # /proc/<pid>/environ (the server's API keys), whether or not the uid drop happens.
+        _prctl_dumpable_off()
+
+    @property
+    def active(self) -> bool:
+        """Whether a run is executing (its program may be calling the server)."""
+        return self._active
 
     def primitives(self, tier: str, privileged: bool = False) -> list[Primitive]:
         """The tier's primitives; the registry's ``privileged`` tier (or ``privileged=True``) adds
@@ -706,9 +998,9 @@ class CodeRunner:
         """Kill the running child (a ``stop`` while a run executes); no-op when idle."""
         self._abort.set()
         with self._lock:
-            proc = self._proc
+            proc, uid = self._proc, self._uid
         if proc is not None:
-            _kill(proc)
+            kill_tree(proc.pid, uid)
 
     def run(
         self,
@@ -720,19 +1012,22 @@ class CodeRunner:
         helpers: bool = False,
         privileged: bool = False,
     ) -> dict:
-        """Run ``code`` in a fresh spawned process; see the module docstring for the limits.
+        """Run ``code`` in a fresh subprocess; see the module docstring for the limits.
 
-        Result: ``status`` (``ran``, ``error``: the program raised or was stopped, ``timeout``),
-        ``stdout``, ``stderr`` (8 KB each), ``traceback``, ``error`` (its last line), ``result``
-        (the program's ``RESULT`` variable, JSON-able), ``calls`` (the primitive log), ``n_calls``,
-        ``move_m``, ``limit`` (the budget that refused a call, if any), ``cancelled`` (a stop
-        arrived), ``stop_issued`` (a timeout stopped the robot), ``ms``, plus ``finish``'s fields.
+        Result: ``status`` (``ran``, ``error``: the program raised, was stopped or broke the
+        pipe protocol, ``timeout``), ``stdout``, ``stderr`` (8 KB each), ``traceback``,
+        ``error`` (its last line), ``result`` (the program's ``RESULT`` variable, JSON-able),
+        ``calls`` (the primitive log), ``n_calls``, ``move_m``, ``limit`` (the budget that
+        refused a call, if any), ``cancelled`` (a stop arrived), ``stop_issued`` (a timeout
+        stopped the robot), ``ms``, plus ``finish``'s fields (always, whatever the child did).
         """
         if not isinstance(code, str) or not code.strip():
             raise ValueError("code must be a non-empty string")
         timeout_s = float(timeout_s)
-        if not (timeout_s > 0):
+        if not (timeout_s > 0) or not math.isfinite(timeout_s):
             raise ValueError("timeout_s must be positive")
+        if max_move_m is not None and not (float(max_move_m) >= 0):
+            raise ValueError("max_move_m must be a non-negative number")
         allowed = self.primitives(tier, privileged)
         names = [p.name for p in allowed]
         helper_names = list(HELPERS) if helpers else []
@@ -742,34 +1037,68 @@ class CodeRunner:
             max_move_m=max_move_m,
             deadline=started + timeout_s,
         )
-        ctx = multiprocessing.get_context("spawn")
-        parent_conn, child_conn = ctx.Pipe()
+        uid = sandbox_uid()
+        _prctl_dumpable_off()
         cwd = tempfile.mkdtemp(prefix="run_code-")
-        limits = {
-            "as_bytes": RLIMIT_AS_BYTES,
-            "cpu_s": int(math.ceil(timeout_s)) + 2,
-            "fsize_bytes": RLIMIT_FSIZE_BYTES,
+        if uid is not None:
+            os.chown(cwd, uid, uid)
+        parent_conn, child_conn = multiprocessing.Pipe()
+        setup = {
+            "code": code,
+            "names": names,
+            "helpers": helper_names,
+            "limits": {
+                "as_bytes": RLIMIT_AS_BYTES,
+                "cpu_s": int(math.ceil(timeout_s)) + 2,
+                "fsize_bytes": RLIMIT_FSIZE_BYTES,
+            },
+            "cwd": cwd,
+            "uid": uid,
         }
-        proc = ctx.Process(
-            target=_child_main,
-            args=(child_conn, code, names, helper_names, limits, cwd),
-            daemon=True,
-        )
         if self._begin:
             self._begin()
         with self._lock:
             self._abort.clear()
-            self._proc = proc
+            self._active = True
+            self._uid = uid
+        proc: subprocess.Popen | None = None
+        outcome = _Outcome("died", "it did not start")
         try:
-            self._start_scrubbed(proc)
+            fd = child_conn.fileno()
+            proc = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-c",
+                    "from pi_embodied_services.utils.code_exec import _child_entry; "
+                    f"_child_entry({fd})",
+                ],
+                pass_fds=(fd,),
+                env=child_env(os.environ, cwd),
+                cwd=cwd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            with self._lock:
+                self._proc = proc
             child_conn.close()
+            if not self._abort.is_set():
+                parent_conn.send_bytes(json.dumps(setup).encode("utf-8"))
             outcome = self._serve(parent_conn, proc, allowed, state)
+        except Exception as exc:  # never lose the run's accounting (finish below)
+            outcome = _Outcome("died", f"{type(exc).__name__}: {exc}"[:500])
         finally:
-            _kill(proc)
-            proc.join(5)
+            kill_tree(proc.pid if proc is not None else None, uid)
+            if proc is not None:
+                with contextlib.suppress(Exception):
+                    proc.kill()
+                with contextlib.suppress(Exception):
+                    proc.wait(5)
             with self._lock:
                 self._proc = None
+                self._active = False
             parent_conn.close()
+            child_conn.close()
             shutil.rmtree(cwd, ignore_errors=True)
         done = state.done or {}
         result: dict[str, Any] = {
@@ -787,47 +1116,37 @@ class CodeRunner:
         }
         if state.limit:
             result["limit"] = state.limit
-        if outcome == "timeout":
+        if outcome.kind == "timeout":
             result["status"] = "timeout"
             result["error"] = (
                 f"the program ran past its {timeout_s:g} s timeout and was killed"
             )
             result["stop_issued"] = True
             self._issue_stop(state)
-        elif outcome == "oversized":
+        elif outcome.kind == "oversized":
             result["status"] = "error"
             result["error"] = (
                 f"the program sent a message over {MAX_MESSAGE >> 20} MB and was killed"
             )
-        elif outcome == "cancelled":
+        elif outcome.kind == "cancelled":
             result["status"] = "error"
             result["cancelled"] = True
             result["error"] = "stopped: the run was aborted"
-        elif outcome == "died":
+        elif outcome.kind == "died":
             result["status"] = "error"
+            rc = proc.returncode if proc is not None else None
             result["error"] = (
-                f"the code process exited unexpectedly (exit code {proc.exitcode})"
+                f"the code process was killed: {outcome.reason}"
+                if outcome.reason
+                else f"the code process exited unexpectedly (exit code {rc})"
             )
         elif done.get("traceback"):
             result["status"] = "error"
-            result["error"] = done["traceback"].rstrip().splitlines()[-1][:2000]
+            lines = done["traceback"].rstrip().splitlines()
+            result["error"] = (lines[-1] if lines else "the program failed")[:2000]
         if self._finish:
             result.update(self._finish())
         return result
-
-    @staticmethod
-    def _start_scrubbed(proc: multiprocessing.process.BaseProcess) -> None:
-        """Start the child with the secret-looking variables out of its environment: spawn
-        hands the child the parent's environment as it is at start, so they are removed for
-        the moment of the start and put back (/proc/<child>/environ never held them)."""
-        kept = scrub_env(os.environ)
-        removed = {k: v for k, v in os.environ.items() if k not in kept}
-        for k in removed:
-            del os.environ[k]
-        try:
-            proc.start()
-        finally:
-            os.environ.update(removed)
 
     def _issue_stop(self, state: _Run) -> None:
         """Stop the robot once per run (the timeout: from the timer inside a primitive, or
@@ -839,63 +1158,76 @@ class CodeRunner:
         if self._on_timeout:
             self._on_timeout()
 
-    def _serve(self, conn, proc, allowed: list[Primitive], state: _Run) -> str:
-        """Answer the child's primitive calls until it is done, times out, is aborted or dies."""
+    def _gone(self, proc: subprocess.Popen) -> _Outcome:
+        return _Outcome("cancelled" if self._abort.is_set() else "died")
+
+    def _serve(
+        self, conn, proc: subprocess.Popen, allowed: list[Primitive], state: _Run
+    ) -> _Outcome:
+        """Answer the child's primitive calls until it is done, times out, is aborted, dies or
+        breaks the protocol (the child's failure: the run's accounting is kept)."""
         by_name = {p.name: p for p in allowed}
         deadline = state.deadline
         while True:
             now = time.monotonic()
             if state.stop_issued or now >= deadline:
-                return "timeout"
+                return _Outcome("timeout")
             if self._abort.is_set():
-                return "cancelled"
+                return _Outcome("cancelled")
             try:
                 ready = conn.poll(min(0.05, deadline - now))
             except (EOFError, OSError):
-                return "cancelled" if self._abort.is_set() else "died"
+                return self._gone(proc)
             if not ready:
-                if not proc.is_alive():
-                    return "cancelled" if self._abort.is_set() else "died"
+                if proc.poll() is not None:
+                    return self._gone(proc)
                 continue
             try:
-                msg = _recv(conn)
+                raw = conn.recv_bytes(MAX_MESSAGE)
             except (EOFError, OSError) as exc:
                 if "bad message length" in str(exc):
-                    return "oversized"
-                return "cancelled" if self._abort.is_set() else "died"
-            except (ValueError, UnicodeDecodeError):
-                return "died"  # not our protocol: the program tampered with the pipe
-            if not isinstance(msg, list) or len(msg) < 2:
-                return "died"
-            if msg[0] == "done":
-                state.done = msg[1] if isinstance(msg[1], dict) else {}
-                return "done"
-            if len(msg) != 4 or not isinstance(msg[3], dict):
-                return "died"
-            _, name, args, kwargs = msg
-            reply = self._call(by_name, str(name), tuple(args), kwargs, state)
+                    return _Outcome("oversized")
+                return self._gone(proc)
+            try:
+                kind, payload = _parse(decode(json.loads(raw.decode("utf-8"))))
+            except (ValueError, TypeError, RecursionError, MemoryError) as exc:
+                return _malformed(f"{type(exc).__name__}: {exc}"[:200])
+            if kind == "done":
+                state.done = payload
+                return _Outcome("done")
+            name, args, kwargs = payload
+            try:
+                reply = self._call(by_name, name, args, kwargs, state)
+            except RecursionError:
+                return _malformed("arguments nested too deeply")
             # The timeout's stop may have aborted this run too: it is still a timeout.
             if state.stop_issued or time.monotonic() >= deadline:
-                return "timeout"
+                return _Outcome("timeout")
             if self._abort.is_set():
-                return "cancelled"
+                return _Outcome("cancelled")
             try:
-                _send(conn, reply)
+                data = json.dumps(encode(reply)).encode("utf-8")
+            except (TypeError, ValueError, RecursionError) as exc:
+                why = f"{name} returned a value that cannot cross the pipe: {exc}"[:500]
+                state.log[-1]["error"] = why
+                data = json.dumps(["error", why]).encode("utf-8")
+            try:
+                conn.send_bytes(data)
             except (BrokenPipeError, OSError):
-                return "cancelled" if self._abort.is_set() else "died"
+                return self._gone(proc)
 
     def _call(
         self, by_name: dict[str, Primitive], name: str, args, kwargs, state: _Run
     ):
         entry: dict[str, Any] = {
-            "name": name,
+            "name": name[:LOG_STR_CAP],
             "args": jsonable(list(args), 64, LOG_STR_CAP),
             "kwargs": jsonable(dict(kwargs), 64, LOG_STR_CAP),
         }
         state.log.append(entry)
         prim = by_name.get(name)
         if prim is None:
-            entry["error"] = f"{name} is not a primitive of this tier"
+            entry["error"] = f"{name[:LOG_STR_CAP]} is not a primitive of this tier"
             return ("error", entry["error"])
         if self._stop_requested():
             entry["error"] = "stopped: a stop was requested"
@@ -907,12 +1239,30 @@ class CodeRunner:
                 f"call budget exhausted: at most {state.max_calls} primitive calls per run_code"
             )
             return ("limit", entry["error"])
+        # Before any accounting: a NaN would pass every budget comparison (and poison the
+        # accumulated translation, so that every later move passed the cap too).
+        if _nonfinite(args) or _nonfinite(kwargs):
+            entry["error"] = (
+                f"ValueError: {name}() got a non-finite number (NaN or inf)"
+            )
+            return ("error", entry["error"])
+        if prim.check is not None:
+            try:
+                prim.check(args, kwargs)
+            except Exception as exc:
+                entry["error"] = f"{type(exc).__name__}: {exc}"[:2000]
+                return ("error", entry["error"])
         move = 0.0
         if prim.move_m is not None:
             try:
                 move = float(prim.move_m(args, kwargs))
             except Exception as exc:  # a malformed argument: the primitive reports it
-                entry["error"] = f"{type(exc).__name__}: {exc}"
+                entry["error"] = f"{type(exc).__name__}: {exc}"[:2000]
+                return ("error", entry["error"])
+            if not math.isfinite(move) or move < 0:
+                entry["error"] = (
+                    f"ValueError: {name}() commands a non-finite translation"
+                )
                 return ("error", entry["error"])
             if (
                 state.max_move_m is not None
@@ -927,14 +1277,16 @@ class CodeRunner:
         state.calls += 1
         t0 = time.monotonic()
         # The wall clock holds inside the primitive too: when the deadline passes while it
-        # runs, the robot gets its stop now (the primitive returns through it), not after.
+        # runs, the robot gets its stop now (the primitive returns through it), not after;
+        # and every outbound RPC it makes is bounded by what is left (utils/rpc/deadline.py).
         timer = threading.Timer(
             max(0.0, state.deadline - t0), self._issue_stop, args=(state,)
         )
         timer.daemon = True
         timer.start()
         try:
-            out = prim.fn(*args, **kwargs)
+            with call_deadline(state.deadline):
+                out = prim.fn(*args, **kwargs)
         except Exception as exc:
             entry["ms"] = int((time.monotonic() - t0) * 1000)
             entry["error"] = f"{type(exc).__name__}: {exc}"[:2000]
@@ -984,6 +1336,9 @@ __all__ = [
     "describe_helpers",
     "encode",
     "jsonable",
+    "child_env",
+    "kill_tree",
+    "sandbox_uid",
     "scrub_env",
     "strip_examples",
 ]

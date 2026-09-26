@@ -110,6 +110,8 @@ const inTier = (tier: string) =>
 function fakeEnv(answer: (kwargs: Record<string, unknown>) => Partial<RunResult> | Promise<Partial<RunResult>>) {
 	const calls: { method: string; kwargs: Record<string, unknown>; signal?: AbortSignal }[] = [];
 	let interrupts = 0;
+	/** While set, `code.run` waits in the client's queue (behind another call) until it resolves. */
+	const queue: { hold?: Promise<void> } = {};
 	const rpc = {
 		interrupt: async () => {
 			interrupts++;
@@ -120,7 +122,15 @@ function fakeEnv(answer: (kwargs: Record<string, unknown>) => Partial<RunResult>
 			_t?: number,
 			_a?: unknown[],
 			signal?: AbortSignal,
+			onSent?: () => void,
 		): Promise<T> => {
+			if (method === "code.run" && queue.hold) {
+				await queue.hold;
+				// RpcClient: a call released while it waited is never sent.
+				if (signal?.aborted)
+					throw new Error("code.run: aborted waiting for env.step, which the server is still running");
+			}
+			onSent?.();
 			calls.push({ method, kwargs, signal });
 			if (method === "code.api")
 				return { tier: kwargs.tier, primitives: inTier(String(kwargs.tier)), digest: "d".repeat(64) } as T;
@@ -142,7 +152,7 @@ function fakeEnv(answer: (kwargs: Record<string, unknown>) => Partial<RunResult>
 			throw new Error(`unexpected ${method}`);
 		},
 	};
-	return { rpc, calls, interrupts: () => interrupts };
+	return { rpc, calls, interrupts: () => interrupts, queue };
 }
 
 const UNITS: UnitsSpec = {
@@ -168,6 +178,8 @@ async function toyRobot(
 		hasUI?: boolean;
 		confirm?: () => Promise<boolean>;
 		ended?: boolean;
+		/** `observe` fails on an aborted signal, as a robot's image calls do. */
+		observeNeedsSignal?: boolean;
 	} = {},
 ) {
 	const f = fakePi(flags, o.hasUI ?? true, o.confirm);
@@ -187,8 +199,9 @@ async function toyRobot(
 			instruction: () => "put the cube in the bowl",
 			refuse: () => (o.ended ? "Episode already ended." : undefined),
 			real: o.real,
-			observe: async (r) => {
+			observe: async (r, signal) => {
 				observed.push(r);
+				if (o.observeNeedsSignal && signal?.aborted) throw new Error("env.raw_obs: aborted");
 				return {
 					content: [
 						{ type: "text", text: JSON.stringify({ step: r.steps }) },
@@ -345,7 +358,7 @@ test("pi's abort stops the server's run but waits for its result, so the steps i
 	);
 	const r = await f.run("run_code", { code: "pass" }, ac.signal);
 	const run = f.env.calls.find((c) => c.method === "code.run");
-	assert.equal(run?.signal, undefined, "the call is not abandoned");
+	assert.equal(run?.signal?.aborted, false, "the sent call is not abandoned");
 	assert.equal(f.env.interrupts(), 1, "the server was told to stop");
 	assert.equal(r.details.status, "error");
 	assert.equal(r.details.run.cancelled, true);
@@ -505,4 +518,45 @@ test("renderPrimitives and renderHelpers lay each entry out as a def with its do
 		"def h(v):\n    Does h.\n\n    Args:\n        v: x",
 	);
 	assert.equal(renderHelpers([{ name: "k", signature: "()", doc: "" }]), "def k():");
+});
+
+test("an abort while run_code is still queued cancels it: it is never sent", async () => {
+	const ac = new AbortController();
+	const f = await toyRobot({ code: true });
+	let release!: () => void;
+	f.env.queue.hold = new Promise<void>((r) => {
+		release = r;
+	});
+	const pending = f.run("run_code", { code: "move_to([0, 0, 0.3])" }, ac.signal);
+	await new Promise((r) => setTimeout(r, 10));
+	ac.abort();
+	release();
+	const out = await pending;
+	assert.equal(
+		f.env.calls.filter((c) => c.method === "code.run").length,
+		0,
+		"the queued run never reached the server",
+	);
+	assert.match(out.content[0].text, /aborted before it ran/);
+	assert.equal(f.observed.length, 0);
+});
+
+test("after an abort the run's effects are absorbed and the result is clean, without images", async () => {
+	const ac = new AbortController();
+	const f = await toyRobot(
+		{ code: true },
+		{
+			observeNeedsSignal: true,
+			answer: async () => {
+				ac.abort();
+				return { status: "error", cancelled: true, error: "stopped: the run was aborted", steps: 4 };
+			},
+		},
+	);
+	const r = await f.run("run_code", { code: "pass" }, ac.signal);
+	assert.equal(f.observed[0]?.steps, 4, "absorbed");
+	assert.equal(r.details.status, "error");
+	assert.equal(r.details.run.cancelled, true);
+	assert.doesNotMatch(JSON.stringify(r.content), /env\.raw_obs: aborted/);
+	assert.match(r.content[0].text, /"cancelled": true/);
 });

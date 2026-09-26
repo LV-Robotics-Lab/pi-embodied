@@ -36,6 +36,7 @@ from typing import Any, Callable
 import numpy as np
 
 from pi_embodied_services.utils.logging import get_logger
+from pi_embodied_services.utils.rpc import deadline
 from pi_embodied_services.utils.rpc.rpc_client import (
     RpcClient,
     RpcError,
@@ -93,9 +94,16 @@ class HttpRpcClient(RpcClient):
         and is fully session-unaware.
     """
 
-    def __init__(self, base_url: str, *, enable_sessions: bool = False) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        enable_sessions: bool = False,
+        token: str | None = None,
+    ) -> None:
         super().__init__(enable_sessions=enable_sessions)
         self._base_url = base_url.rstrip("/")
+        self._token = token
         self._opener = (
             urllib.request.build_opener(urllib.request.ProxyHandler({}))
             if _is_direct_url(self._base_url)
@@ -117,9 +125,16 @@ class HttpRpcClient(RpcClient):
             "kwargs": kwargs or {},
             "session_id": self._session_id,
         }
+        if self._token is not None:
+            payload["token"] = self._token
         body = json.dumps(payload, cls=_NumpyEncoder).encode("utf-8")
         url = f"{self._base_url}/call"
-        request_timeout = timeout_s if timeout_s is not None else DEFAULT_TIMEOUT_S
+        request_timeout = deadline.remaining(
+            timeout_s if timeout_s is not None else DEFAULT_TIMEOUT_S
+        )
+        if request_timeout <= 0:
+            # Inside a run_code primitive whose run is out of time (utils/rpc/deadline.py).
+            raise RpcError(method, "not sent: the run_code timeout has passed")
 
         req = urllib.request.Request(
             url,
@@ -189,12 +204,10 @@ class _HttpRpcHandler(BaseHTTPRequestHandler):
             args = tuple(_from_json(v) for v in request.get("args", []))
             kwargs = {k: _from_json(v) for k, v in request.get("kwargs", {}).items()}
             session_id = request.get("session_id")
-            if session_id is None:
-                result = self.server.dispatch(method, args, kwargs)
-            else:
-                result = self.server.dispatch(  # type: ignore[attr-defined]
-                    method, args, kwargs, session_id=session_id
-                )
+            extra = {} if session_id is None else {"session_id": session_id}
+            if "token" in request:
+                extra["token"] = request["token"]
+            result = self.server.dispatch(method, args, kwargs, **extra)
             response: dict = {"ok": True, "result": result}
         except Exception as exc:
             response = make_error_response(exc)

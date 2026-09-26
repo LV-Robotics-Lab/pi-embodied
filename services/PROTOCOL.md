@@ -7,9 +7,10 @@ Every service except the LingBot-VLA launcher speaks the same JSON-over-HTTP RPC
 ## Transport
 
 - `POST /call` with a JSON body. Any other path answers `404`.
-- Request: `{"method": str, "args": [..], "kwargs": {..}, "session_id": str | null}`.
+- Request: `{"method": str, "args": [..], "kwargs": {..}, "session_id": str | null, "token": str}`.
   `args` and `kwargs` may be omitted. `session_id` is only meaningful for session servers
-  (RLDX, below); send `null` otherwise.
+  (RLDX, below); send `null` otherwise. `token` only matters on a server that requires one
+  (below); omit it otherwise.
 - Response: always HTTP `200`, body `{"ok": true, "result": <value>}` or
   `{"ok": false, "error": str, "traceback": str}`. On the RoboCasa env server (which runs
   calls on its main thread) `error` of a failed business call is the full server traceback.
@@ -17,6 +18,15 @@ Every service except the LingBot-VLA launcher speaks the same JSON-over-HTTP RPC
   rules below) makes the server drop the connection instead of answering.
 - The server binds `--host` (default `127.0.0.1`) and `--port` (default `0` = any free
   port) and prints `RPC server listening on http://HOST:PORT` to stdout once bound.
+- **Token (opt-in per server; today libero-env, the one server with `code.run`).** The
+  server draws a random 32-hex-digit token at start and prints it on that line only:
+  `RPC server listening on http://HOST:PORT (token HEX)` (stdout, i.e. the pipe of the process
+  that spawned it; never the log). Every business call and `shutdown` must carry it as
+  `"token"`, or it fails with `requires its RPC token`; `healthz`, `stop` and `cancel` need
+  none. pi (`robot.serve`) reads it from the line, sends it on every call and writes the line
+  to its log file with the token redacted. The other servers do not require it: pi attaches to
+  some of them by URL, and the env servers call the model servers, neither of which has a way
+  to learn a token.
 - Only HTTP exists. The pickle-framed `socket` transport was removed (unpickling a
   request is remote code execution for anyone who can reach the port); `--transport`
   accepts only `http`.
@@ -40,6 +50,11 @@ Every service except the LingBot-VLA launcher speaks the same JSON-over-HTTP RPC
   parallel; that is gone (a concurrent `env.render_camera` broke LIBERO's worker pipe).
 - Lock-free methods, answered at once even while a call runs: `healthz`, `stop`, `cancel`,
   `shutdown` (`shutdown` still waits for the running call before it takes effect).
+- While a `code.run` program executes, every other business call that arrives is refused at
+  once (`refused: a run_code program is running`) instead of queueing behind it: the program's
+  primitives run inside the server, never over the port, so anything arriving on the port then
+  is not pi's (pi sends one call at a time per endpoint) and would otherwise run after the
+  program, outside its budgets.
 
 ## Framework methods (every RPC server)
 
@@ -178,19 +193,38 @@ privileged tier is the high tier plus `ground_truth_poses`. `gripper=None` keeps
 | `code.run` | kw `code` str, `timeout_s=60`, `tier="high"` (`high`, `low`, `privileged`), `max_calls=50`, `max_move_m=null`, `helpers=false` | `{"status": "ran" | "error" | "timeout", "stdout", "stderr" (8 KB each), "traceback", "error", "result" (the program's `RESULT`, JSON-able), "calls": [{name, args, kwargs, ms, error?, refused?, move_m?, cancelled?}], "n_calls", "move_m", "limit"?, "cancelled"?, "stop_issued"?, "timeout_s", "ms"}` plus the server's run fields (libero-env: `steps`, `success_step` (within the run, or null), `terminated`, `truncated`, `obs` (pi's `Obs`), `frames` (one agentview image per mutating primitive, at most 32)) |
 | `code.helpers` | - | `[{"name", "signature", "doc", "kind": "helper"}]`: CaP-X's nine numpy helpers a run with `helpers=true` injects (pure computation) |
 
-`code.run` spawns a fresh Python process (`multiprocessing` spawn) that holds no env object:
-its globals are `np`, `math`, `RESULT` and one stub per primitive of the tier (positional
-arguments fill the declared parameters in order); a stub sends the call over a pipe and the
-parent resolves and executes it. The child gets `RLIMIT_AS` (4 GiB beyond what the interpreter
+`code.run` starts a fresh Python process (`python -c`, not a re-import of the server) that
+holds no env object: its globals are `np`, `math`, `RESULT` and one stub per primitive of the
+tier (positional arguments fill the declared parameters in order); a stub sends the call over a
+pipe and the parent resolves and executes it. Isolation: the child's environment is built for
+it (the server's minus secret-looking names; the server's own environment is never modified),
+it runs in its own session with stdin/stdout on /dev/null, and the server is non-dumpable
+(`prctl(PR_SET_DUMPABLE, 0)`), so no process of the server's uid can read its
+`/proc/<pid>/environ` or memory. A root server runs the program as an unprivileged uid of its
+own (61000 + n, one per server, held by an flock in /run/lock; `PI_EMBODIED_CODE_UID=<uid>` or
+`none` overrides): the child preloads common stdlib modules, `numpy.linalg/random/fft` and
+`scipy.spatial.transform`, sets its limits and drops to that uid and gid for good before the
+program runs (other imports may then fail when the interpreter lives under a private home).
+Limits: `RLIMIT_NPROC` 1 (no processes or threads), `RLIMIT_AS` (4 GiB beyond what the interpreter
 had mapped when the program starts), `RLIMIT_CPU` (the timeout + 2 s beyond the CPU already
-spent) and a temporary working directory. Past `timeout_s` the child is killed, `status` is
-`timeout` and the server issues itself a `stop` (`stop_issued`). Past `max_calls` calls or
+spent), `RLIMIT_FSIZE`, a temporary working directory owned by the program's uid. At the end of
+every run the child's session and group, its descendants and every process of the sandbox uid
+are killed. Past `timeout_s` the child is killed, `status` is `timeout` and the server issues
+itself a `stop` (`stop_issued`); every outbound RPC a primitive makes (SAM3, the grasp planners,
+IK) has its timeout cut to what is left of the run, and a raw `chunk_step` runs at most 64
+actions and `render_camera` at most 1024 px per side, so no primitive outlives the timeout by
+more than one env step or one render. Past `max_calls` calls or
 `max_move_m` metres of commanded translation (estimated per call before it runs: `move_to`'s
 distance to the target, `move_delta`'s norm, a raw `step`'s clipped translation) the call is
-refused: the program gets a `CodeLimitError` and the result carries `limit`. A `stop` while a run
-executes kills the child and the running primitive returns at its next env step
+refused: the program gets a `CodeLimitError` and the result carries `limit`. A call with a NaN or
+infinite number anywhere in its arguments is refused before any accounting (and `move_to`,
+`move_delta`, `rotate_wrist`, `rotate_delta` refuse non-finite values for pi's tools too). A
+`stop` while a run executes kills the child and the running primitive returns at its next env step
 (`cancelled: true`). A program that raises ends with `status: "error"` and its `traceback`;
-`error` is the traceback's last line.
+`error` is the traceback's last line. A child that breaks the pipe protocol (wrong message kinds
+or field types, nesting too deep) is killed with `status: "error"` and `error` naming the
+malformed message; like every other ending, the run's fields (`steps`, `success_step`, ...) are
+still reported.
 
 The env runs with `ignore_terminations: True`: it keeps stepping after success, and `terminated` is
 RLinf's latched `success_once` ("LIBERO success at or before this step"). Only `truncated` (max

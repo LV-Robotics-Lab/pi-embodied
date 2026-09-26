@@ -149,6 +149,8 @@ export class RpcClient {
 
 	/** How long a sent call that timed out or was aborted may stay unanswered before the endpoint is given up on. */
 	graceMs: number | undefined;
+	/** The server's RPC token (services/PROTOCOL.md), sent with every call when set. */
+	token: string | undefined;
 
 	constructor(endpoint: string, o: { graceMs?: number } = {}) {
 		this.graceMs = o.graceMs;
@@ -162,7 +164,7 @@ export class RpcClient {
 	 * endpoint until the server answers it. A server that still has not answered `graceMs` later
 	 * (default: `timeoutMs`, at least 60 s) is given up on: the endpoint is marked unresponsive
 	 * (until `forgetUnresponsive`) and every later call fails with `RpcUnavailable`, as do transport
-	 * errors. A timeout itself is an ordinary error.
+	 * errors. A timeout itself is an ordinary error. `onSent` runs when the call leaves the queue.
 	 */
 	async call<T = unknown>(
 		method: string,
@@ -170,11 +172,18 @@ export class RpcClient {
 		timeoutMs = 120_000,
 		args: unknown[] = [],
 		signal?: AbortSignal,
+		onSent?: () => void,
 	): Promise<T> {
 		if (signal?.aborted) throw new Error(`${method}: aborted`);
 		const down = dead.get(this.url);
 		if (down) throw new RpcUnavailable(`${method}: ${this.url} stopped answering (${down})`);
-		const body = JSON.stringify({ method, args: encode(args), kwargs: encode(kwargs), session_id: this.session });
+		const body = JSON.stringify({
+			method,
+			args: encode(args),
+			kwargs: encode(kwargs),
+			session_id: this.session,
+			...(this.token ? { token: this.token } : {}),
+		});
 		const previous = busy.get(this.url);
 		let sent = false;
 		let gaveUp = false;
@@ -186,6 +195,7 @@ export class RpcClient {
 			const down = dead.get(this.url);
 			if (down) throw new RpcUnavailable(`${method}: ${this.url} stopped answering (${down})`);
 			sent = true;
+			onSent?.();
 			return post(this.url, body, abandon.signal);
 		})();
 		const slot = { method, answered };

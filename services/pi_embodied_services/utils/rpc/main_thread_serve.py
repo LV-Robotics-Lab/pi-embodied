@@ -52,7 +52,13 @@ class MainThreadServeMixin:
     """
 
     def _dispatch_main_thread(
-        self, method: str, args: tuple, kwargs: dict, *, session_id: str | None = None
+        self,
+        method: str,
+        args: tuple,
+        kwargs: dict,
+        *,
+        session_id: str | None = None,
+        token: str | None = None,
     ) -> Any:
         """Transport-side proxy for :meth:`serve`.
 
@@ -62,8 +68,9 @@ class MainThreadServeMixin:
         for the main thread; ``shutdown`` additionally pushes a ``None``
         sentinel to wake the consumer loop. Everything else (business
         calls, session-aware or not) is enqueued with its ``session_id`` and
-        executed on the main thread.
+        executed on the main thread. :meth:`RpcFacade._admit` runs first (token, busy).
         """
+        self._admit(method, token)
         if method in LOCK_FREE_METHODS:
             result = self._builtin_dispatch(method, args, kwargs)
             if method == "shutdown":

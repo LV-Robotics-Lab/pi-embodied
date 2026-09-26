@@ -133,3 +133,38 @@ test("NaN and Infinity from Python's json.dumps parse as numbers, not errors", a
 	assert.equal(result.e, 0.001);
 	assert.throws(() => parseJson("{bad NaN"), SyntaxError);
 });
+
+test("the server's token rides on every call, and onSent fires only when a call leaves the queue", async (t) => {
+	const bodies: Record<string, unknown>[] = [];
+	const server = createServer((req, res) => {
+		let body = "";
+		req.on("data", (c) => {
+			body += c;
+		});
+		req.on("end", async () => {
+			const parsed = JSON.parse(body) as Record<string, unknown>;
+			bodies.push(parsed);
+			if (parsed.method === "slow") await new Promise((r) => setTimeout(r, 100));
+			res.end(JSON.stringify({ ok: true, result: parsed.method }));
+		});
+	});
+	await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+	t.after(() => {
+		server.closeAllConnections();
+		server.close();
+	});
+	const rpc = new RpcClient(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
+	rpc.token = "ab12";
+	const sent: string[] = [];
+	const slow = rpc.call("slow", {}, 5_000, [], undefined, () => sent.push("slow"));
+	const next = rpc.call("next", {}, 5_000, [], undefined, () => sent.push("next"));
+	await new Promise((r) => setTimeout(r, 30));
+	assert.deepEqual(sent, ["slow"], "next waits in the queue");
+	assert.equal(await slow, "slow");
+	assert.equal(await next, "next");
+	assert.deepEqual(sent, ["slow", "next"]);
+	assert.deepEqual(
+		bodies.map((b) => b.token),
+		["ab12", "ab12"],
+	);
+});

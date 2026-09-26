@@ -65,8 +65,11 @@ def _move(target, q_wxyz):
     legs = max(1, math.ceil(np.linalg.norm(target - start) / MAX_LEG_M))
     for k in range(1, legs + 1):
         kw = {"arm": ARM} if ARM else {}
+        # From where the last leg really ended; a stalled leg leaves more than planned, and no
+        # call may ask for more than MAX_LEG_M.
+        here = start if k == 1 else _eef()
         move_to(
-            (start + (target - start) * k / legs).tolist(),
+            (here + (target - here) / max(legs - k + 1, math.ceil(np.linalg.norm(target - here) / MAX_LEG_M))).tolist(),
             quat_xyzw=_xyzw(q_wxyz),
             max_steps=200,
             **kw,

@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import robosuite, {
@@ -59,6 +60,7 @@ function stubPi(values: Record<string, unknown> = {}) {
 		appendEntry: (type: string, data: any) => entries.push({ type, data }),
 		events: { emit: () => {}, on: () => () => {} },
 	} as unknown as ExtensionAPI;
+	const sessionDir = mkdtempSync(join(tmpdir(), "robosuite-"));
 	const ctx = {
 		hasUI: false,
 		cwd: tmpdir(),
@@ -68,7 +70,7 @@ function stubPi(values: Record<string, unknown> = {}) {
 		sessionManager: {
 			getBranch: () => [],
 			getEntries: () => [],
-			getSessionDir: () => tmpdir(),
+			getSessionDir: () => sessionDir,
 			getSessionFile: () => undefined,
 			getSessionId: () => "sess",
 		},
@@ -83,7 +85,7 @@ function stubPi(values: Record<string, unknown> = {}) {
 	}
 	const run = async (name: string, params: unknown) =>
 		(await tools.get(name)!.execute("id", params, undefined, undefined, ctx)) as any;
-	return { pi, flags, tools, entries, emit, run, active: () => active };
+	return { pi, flags, tools, entries, emit, run, sessionDir, active: () => active };
 }
 
 const close = (a: number[], b: number[]) => a.every((x, k) => Math.abs(x - b[k]) < 1e-9);
@@ -578,6 +580,10 @@ test("--code-oracle runs the ported CaP-X program once, without the model, and r
 	assert.deepEqual(await s.emit("input", { text: "again" }), { action: "handled" });
 	assert.equal(env.calls.filter((c) => c.method === "code.run").length, 1);
 	assert.equal(s.entries.find((e) => e.type === "code_oracle")?.data.file, "lift_privileged.py");
+	// No session file is written without an assistant message: the report is kept in the session dir.
+	const kept = JSON.parse(readFileSync(join(s.sessionDir, "code_oracle.json"), "utf8"));
+	assert.equal(kept.file, "lift_privileged.py");
+	assert.equal(kept.run.status, "ran");
 	await s.emit("session_shutdown");
 	const result = s.entries.find((e) => e.type === "robot_result")?.data;
 	assert.equal(result.code_oracle, "lift_privileged.py");

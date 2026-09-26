@@ -42,7 +42,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
@@ -398,7 +398,17 @@ export function code(
 		oracleRun = o;
 		const r = await runCode({ code: o.code, timeout_s: timeoutCap() }, undefined, ctx);
 		const details = (r.details ?? {}) as Json;
-		pi.appendEntry(ORACLE_ENTRY, { file: o.name, sha256: o.sha256, header: o.header, run: details.run ?? null });
+		const entry = { file: o.name, sha256: o.sha256, header: o.header, run: details.run ?? null };
+		pi.appendEntry(ORACLE_ENTRY, entry);
+		// pi writes no session file for a session without an assistant message: the run's full report
+		// (stdout, traceback, the primitive log) is kept next to where the session would be.
+		try {
+			const dir = ctx.sessionManager.getSessionDir();
+			if (dir) {
+				mkdirSync(dir, { recursive: true });
+				writeFileSync(join(dir, "code_oracle.json"), `${JSON.stringify(entry, null, 1)}\n`);
+			}
+		} catch {}
 		base.oracleRan?.();
 		const summary = `code oracle ${o.name}: ${details.status ?? "error"}`;
 		if (ctx.hasUI) ctx.ui.notify(summary, details.status === "ran" ? "info" : "warning");

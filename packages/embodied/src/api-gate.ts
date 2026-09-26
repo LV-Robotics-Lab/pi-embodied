@@ -7,7 +7,8 @@
  * the request and gives it back when the assistant message ends, so N workers whose episodes spend
  * most of their time in the simulator or the VLA share n model calls. A slot whose pid is gone (a
  * killed pi) is taken over; two processes taking over the same dead slot at once can let one extra
- * call through.
+ * call through. The gate announces itself on `pi.events` (API_GATE_EVENT) so the robot extension's
+ * side VLM calls (../vdm.ts) take a slot too.
  */
 
 import { closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
@@ -36,10 +37,11 @@ function take(path: string) {
 	}
 }
 
-/** Take a free slot of `n` in `dir` (waiting as long as all are held); returns its path. */
-export async function acquire(dir: string, n: number, pollMs = 250): Promise<string> {
+/** Take a free slot of `n` in `dir` (waiting as long as all are held, or until `signal` aborts); returns its path. */
+export async function acquire(dir: string, n: number, pollMs = 250, signal?: AbortSignal): Promise<string> {
 	mkdirSync(dir, { recursive: true });
 	for (;;) {
+		if (signal?.aborted) throw new Error("aborted while waiting for a model-call slot");
 		for (let i = 0; i < n; i++) {
 			const path = join(dir, `slot-${i}`);
 			if (take(path)) return path;
@@ -55,9 +57,22 @@ export async function acquire(dir: string, n: number, pollMs = 250): Promise<str
 				if (take(path)) return path;
 			}
 		}
-		await new Promise((r) => setTimeout(r, pollMs));
+		await new Promise<void>((r) => {
+			const t = setTimeout(() => {
+				signal?.removeEventListener("abort", stop);
+				r();
+			}, pollMs);
+			const stop = () => {
+				clearTimeout(t);
+				r();
+			};
+			signal?.addEventListener("abort", stop, { once: true });
+		});
 	}
 }
+
+/** `pi.events` channel on which the gate publishes `{ dir, n }` at session start; other extensions' side model calls share the slots through `acquire`. */
+export const API_GATE_EVENT = "pi-embodied:api-gate";
 
 export function release(path: string) {
 	try {
@@ -76,11 +91,20 @@ export default function apiGate(pi: ExtensionAPI) {
 		if (held) release(held);
 		held = undefined;
 	};
-	pi.on("context", async () => {
+	const config = () => {
 		const dir = pi.getFlag("api-slots") as string | undefined;
 		const n = Number(pi.getFlag("max-api-concurrency"));
-		if (held || !dir || !(n > 0)) return;
-		held = await acquire(dir, n);
+		return dir && n > 0 ? { dir, n } : undefined;
+	};
+	pi.on("session_start", () => {
+		const g = config();
+		if (g) pi.events.emit(API_GATE_EVENT, g);
+	});
+	pi.on("context", async (_event, ctx) => {
+		const g = config();
+		if (held || !g) return;
+		// An abort (the user's, or the robot's budget) must not wait behind the other workers' calls.
+		held = await acquire(g.dir, g.n, 250, ctx.signal);
 	});
 	pi.on("message_end", (event) => {
 		if (event.message.role === "assistant") free();

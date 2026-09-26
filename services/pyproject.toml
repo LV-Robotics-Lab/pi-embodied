@@ -51,11 +51,57 @@ molmo = [
     "torchvision",
     "pillow>=10",
 ]
+unidepth = [
+    # UniDepth V2 (components/unidepth_server.py): its package pins timm/xformers
+    # versions the robot extras do not share, so install it into its own environment
+    # and point the env servers at it with --unidepth. The checkpoint
+    # (lpiccinelli/unidepth-v2-vitl14) is fetched by huggingface_hub; set HF_ENDPOINT
+    # to a mirror where huggingface.co is unreachable.
+    "unidepth @ git+https://github.com/lpiccinelli-eth/UniDepth.git@main",
+    "huggingface-hub",
+    "torch",
+    "torchvision",
+    "pillow>=10",
+]
 flywheel = [
     # LeRobot v3.0 export of Flywheel episodes (/flywheel-export; lerobot 0.4 writes
     # v3.0, Python >= 3.10). Its numpy 2 and huggingface-hub pins break the LIBERO
     # extra, so install it into its own environment and point pi's --flywheel-python at it.
     "lerobot>=0.4.4,<0.5",
+]
+# Third-party VLA adapters (components/openvla_server.py, openvla_oft_server.py,
+# gr00t_server.py): one venv each. Their repositories pin torch 2.2 / transformers 4.40
+# (OpenVLA family; OFT needs its transformers fork for bidirectional attention) or
+# torch 2.9 / transformers 4.57 (GR00T), none of which a robot extra shares. Their torch
+# pins have no sm_120 kernels: install the cu128 torch first, then the repo with --no-deps
+# and the pins below (see README). Checkpoints are pinned per server, fetched via HF_ENDPOINT.
+openvla = [
+    "openvla @ git+https://github.com/openvla/openvla.git@c8f03f48af692657d3060c19588038c7220e9af9",
+    "transformers==4.40.1",
+    "timm==0.9.10",
+    "tokenizers==0.19.1",
+    "accelerate",
+    "huggingface-hub",
+    "pillow>=10",
+]
+openvla-oft = [
+    # LIBERO checkpoints (moojink/openvla-7b-oft-finetuned-libero-*): L1 action head + proprio
+    # projector; get_vla_action needs tensorflow for the 0.9 center crop.
+    "openvla-oft @ git+https://github.com/moojink/openvla-oft.git@e4287e94541f459edc4feabc4e181f537cd569a8",
+    "transformers @ git+https://github.com/moojink/transformers-openvla-oft.git",
+    "timm==0.9.10",
+    "tokenizers==0.19.1",
+    "json-numpy",
+    "tensorflow-cpu==2.15.0 ; python_version < '3.12'",
+    "accelerate",
+    "huggingface-hub",
+    "pillow>=10",
+]
+gr00t = [
+    # Isaac-GR00T (N1.6 / N1.7 policies, Python 3.12; runs on torch 2.7.1+cu128 without flash-attn).
+    "gr00t @ git+https://github.com/NVIDIA/Isaac-GR00T.git@51d4c89f72fda44cbf77285c6a8114b52676b8a1",
+    "huggingface-hub",
+    "pillow>=10",
 ]
 libero = [
     "pi-embodied-services[rlinf,sam3]",
@@ -72,7 +118,7 @@ libero-plus = [
     # LIBERO-plus requires robosuite<1.5, so it cannot inherit the standard LIBERO extra.
     "pi-embodied-services[rlinf,sam3]",
     "rpent-openpi @ git+https://github.com/RLinf/openpi.git@rpent",
-    "rlinf-liberoplus",
+    "rlinf-liberoplus==0.1.5",
     "mujoco==3.3.0",
     "h5py",
 ]
@@ -94,6 +140,19 @@ maniskill = [
     # BlockPAP/BlockStack view transform (Show-Harness's cv2 letterbox)
     "opencv-python-headless",
 ]
+metaworld = [
+    # Metaworld MT50 / ML45 (Sawyer, MuJoCo). metaworld 3.1.1 pins mujoco==3.3.0, the
+    # version the LIBERO extras pin too, so it shares no conflict with them.
+    "metaworld==3.1.1",
+    "pillow>=10",
+]
+genesis = [
+    # Genesis 1.4 (OpenETA's Franka cube_pick, robots/genesis); its own venv: it wants
+    # torch>=2.8 and pulls gs-madrona and quadrants. On sm_120 install a cu128 torch first.
+    "genesis-world==1.4.2",
+    "torch>=2.8",
+    "pillow>=10",
+]
 piper = [
     # AgileX Piper over ROS topics (Show-Harness's Cobot Magic stack); ROS itself
     # (rospy, the piper_msgs packages) comes from the host's ROS Noetic install.
@@ -103,12 +162,17 @@ piper = [
 # RoboLab needs Isaac Sim + Isaac Lab from NVIDIA's index; its venv is built by a
 # script (see README), so this extra only marks the robot.
 robolab = []
+# BEHAVIOR-1K (OmniGibson + BDDL) needs Isaac Sim from NVIDIA's index and OmniGibson from
+# the BEHAVIOR-1K checkout; its venv is built by robots/behavior/install.sh, so this extra
+# only marks the robot.
+behavior = []
 franka-polymetis = [
     # Franka on a Polymetis NUC (Show-Harness's stack); no RLinf, no VLA. Cameras
     # through the shared components/cameras layer (the cameras extra).
     "pi-embodied-services[cameras]",
     "zerorpc",
     "omegaconf",
+    "pillow>=10",  # utils/perception.py decodes SAM3 masks and encodes frames as PNG
 ]
 # The shared camera layer (components/cameras): RealSense D400 through pyrealsense2,
 # webcams and RTSP streams through OpenCV, checkerboard detection for calibrate.py.
@@ -134,6 +198,16 @@ robocasa = [
     "rpent-robocasa365 @ git+https://github.com/RLinf/robocasa.git@rpent",
     "rlinf-rldx @ git+https://github.com/RLinf/RLDX-1.git@rpent",
     "robosuite @ git+https://github.com/RLinf/robosuite.git@rpent",
+]
+robosuite = [
+    # CaP-X's seven robosuite tasks on upstream robosuite 1.5 (OSC_POSE, its own MuJoCo);
+    # LIBERO and RoboCasa pin robosuite 1.4 forks, so this is its own venv.
+    "robosuite>=1.5.1,<1.6",
+    # robosuite 1.5.1's joint lookups assert on MuJoCo 3.14's joint-type enums; 3.3.0 (LIBERO's pin) works.
+    "mujoco==3.3.0",
+    # robosuite.utils.camera_utils imports h5py without declaring it.
+    "h5py",
+    "pillow>=10",
 ]
 robotwin = [
     "pi-embodied-services[rlinf]",
@@ -171,6 +245,18 @@ conflicts = [
     [{ extra = "franka" }, { extra = "robocasa" }],
     [{ extra = "franka" }, { extra = "robotwin" }],
     [{ extra = "robocasa" }, { extra = "robotwin" }],
+    [{ extra = "openvla" }, { extra = "libero" }],
+    [{ extra = "openvla" }, { extra = "molmo" }],
+    [{ extra = "openvla" }, { extra = "gr00t" }],
+    [{ extra = "openvla-oft" }, { extra = "libero" }],
+    [{ extra = "openvla-oft" }, { extra = "molmo" }],
+    [{ extra = "openvla-oft" }, { extra = "gr00t" }],
+    [{ extra = "gr00t" }, { extra = "libero" }],
+    # robosuite 1.5 against the robosuite 1.4 forks of LIBERO and RoboCasa.
+    [{ extra = "robosuite" }, { extra = "libero" }],
+    [{ extra = "robosuite" }, { extra = "libero-pro" }],
+    [{ extra = "robosuite" }, { extra = "libero-plus" }],
+    [{ extra = "robosuite" }, { extra = "robocasa" }],
 ]
 
 [tool.uv.extra-build-dependencies]

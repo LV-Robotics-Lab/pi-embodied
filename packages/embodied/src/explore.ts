@@ -21,6 +21,7 @@ import type {
 	SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { toolSections } from "./robot.ts";
 
 const SESSION = "explore_session";
 
@@ -35,9 +36,9 @@ type Robot = {
 	render: (text: string, extra?: Record<string, string | number>) => string;
 	/** memory.ts `tools`: the built-in file tools the agent reads and writes memory with. */
 	tools: readonly string[];
-	/** The robot's exploration instructions, appended to its system prompt and rendered like memory text. */
+	/** The robot's exploration instructions, appended to its system prompt and rendered like memory text; its `[tool:name]` blocks follow the active tools. */
 	prompt: () => string;
-	/** A DISTIL pass sent once the cell is solved; `finish` waits for it and its suite draft. */
+	/** A DISTIL pass sent once the cell is solved (`[tool:name]` blocks as in `prompt`); `finish` waits for it and its suite draft. */
 	distil?: string;
 	/** Lines of the robot's single-episode prompt that exploration replaces. */
 	rewrite?: [RegExp, string][];
@@ -225,7 +226,7 @@ export function explore(pi: ExtensionAPI, robot: Robot) {
 		const p = progress(ctx.sessionManager.getBranch());
 		const vars = { session_number: p.n, session_max: sessions(), attempt_budget: budget() || "unlimited" };
 		const base = (robot.rewrite ?? []).reduce((text, [from, to]) => text.replace(from, to), event.systemPrompt);
-		return { systemPrompt: `${base}\n\n${robot.render(robot.prompt(), vars)}` };
+		return { systemPrompt: `${base}\n\n${toolSections(robot.render(robot.prompt(), vars), pi.getActiveTools())}` };
 	});
 
 	pi.on("tool_call", (event, ctx) => {
@@ -244,7 +245,13 @@ export function explore(pi: ExtensionAPI, robot: Robot) {
 			event.entries.some((e) => e.type === "custom_message" && e.customType === "explore_distil")
 		)
 			return undefined;
-		return { entries: [...event.entries, note("explore_distil", robot.render(robot.distil))], continue: true };
+		return {
+			entries: [
+				...event.entries,
+				note("explore_distil", toolSections(robot.render(robot.distil), pi.getActiveTools())),
+			],
+			continue: true,
+		};
 	});
 
 	// A model that stops talking has not handed off: send it back, at most twice per session.

@@ -220,6 +220,15 @@ export function mergeMemory(root: string, cell: string, runDir: string, solved: 
 			}
 			const { meta, body } = draft;
 			const scope = meta.scope as "global" | "suite";
+			// A LIBERO-plus cell (`_plus_` in its tag) has its own suite notes, `suite: <family>_plus`: task 5 of
+			// the plus suite is another scene than task 5 of the standard/pro one, whose names stay as they are.
+			const plus = /(^|_)plus_/.test(cell);
+			if (scope === "suite" && plus !== /_plus$/.test(str(meta.suite))) {
+				result.skipped.push(
+					`${name}: suite ${repr(meta.suite)} ${plus ? "must end with _plus for" : "must not carry _plus for"} cell ${cell}`,
+				);
+				continue;
+			}
 			const id = canonicalId(name, meta);
 			if (!id || id.includes("/") || id.includes("\\") || id.startsWith(".")) {
 				result.skipped.push(`${name}: id ${repr(id)} is not a file name`);

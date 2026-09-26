@@ -35,6 +35,7 @@ from pi_embodied_services.robots.maniskill.primitives import MANISKILL_PRIMITIVE
 from pi_embodied_services.robots.piper.primitives import PIPER_PRIMITIVES
 from pi_embodied_services.robots.robocasa.primitives import ROBOCASA_PRIMITIVES
 from pi_embodied_services.robots.robolab.primitives import ROBOLAB_PRIMITIVES
+from pi_embodied_services.robots.robosuite.primitives import ROBOSUITE_PRIMITIVES
 from pi_embodied_services.robots.robotwin.primitives import ROBOTWIN_PRIMITIVES
 
 ROBOTS = Path(__file__).resolve().parents[1] / "pi_embodied_services" / "robots"
@@ -47,6 +48,7 @@ SERVERS = [
     ("maniskill/env_server.py", "ManiskillEnvFacade", MANISKILL_PRIMITIVES),
     ("robolab/env_server.py", "RobolabEnvFacade", ROBOLAB_PRIMITIVES),
     ("piper/env_server.py", "PiperEnvFacade", PIPER_PRIMITIVES),
+    ("robosuite/env_server.py", "RobosuiteEnvFacade", ROBOSUITE_PRIMITIVES),
 ]
 
 
@@ -102,6 +104,7 @@ def test_the_sims_add_ground_truth_and_real_robots_do_not(path, cls, primitives)
         ("pi_embodied_services.robots.maniskill.env_server", "ManiskillEnvFacade"),
         ("pi_embodied_services.robots.robolab.env_server", "RobolabEnvFacade"),
         ("pi_embodied_services.robots.piper.env_server", "PiperEnvFacade"),
+        ("pi_embodied_services.robots.robosuite.env_server", "RobosuiteEnvFacade"),
     ],
 )
 def test_the_server_serves_code_api(module, cls):

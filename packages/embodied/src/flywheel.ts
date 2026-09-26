@@ -32,8 +32,18 @@ export type FlywheelSpec = {
 	/** Length of the state vector (`states`) and of the action vector (`actions`). */
 	state: number;
 	action: number;
+	/**
+	 * Other float vectors of every observation, by transitions.npz key: their lengths. Recorded for
+	 * the services spec to export another action space from (RoboTwin's joint space).
+	 */
+	vectors?: Record<string, number>;
 };
-export type FlywheelObs = { images: Record<string, NdArray | null | undefined>; state: number[] };
+export type FlywheelObs = {
+	images: Record<string, NdArray | null | undefined>;
+	state: number[];
+	/** The spec's `vectors`. */
+	vectors?: Record<string, number[]>;
+};
 /**
  * Where the episode goes and what it says about itself: `path` below `raw/<robot>/` (the export
  * selects a prefix of it), and episode.json fields (`task_language` required).
@@ -64,6 +74,10 @@ function vector(name: string, v: number[], size: number): number[] {
 	if (v.length !== size || !v.every(Number.isFinite))
 		throw new Error(`flywheel: ${name} must be ${size} finite values`);
 	return v;
+}
+
+function extra(spec: FlywheelSpec, key: string, obs: FlywheelObs): Buffer {
+	return f32(vector(key, obs.vectors?.[key] ?? [], spec.vectors?.[key] ?? 0));
 }
 
 /** numpy '<U' array: fixed-width UTF-32LE. */
@@ -97,6 +111,10 @@ function episode(root: string, spec: FlywheelSpec, meta: FlywheelMeta, first: Fl
 			Object.entries(shapes).map(([k, shape]) => [k, [image(k, first.images[k], shape)]]),
 		) as Record<string, Buffer[]>,
 		states: [f32(vector("states", first.state, spec.state))],
+		vectors: Object.fromEntries(Object.keys(spec.vectors ?? {}).map((k) => [k, [extra(spec, k, first)]])) as Record<
+			string,
+			Buffer[]
+		>,
 		actions: [] as Buffer[],
 		rewards: [] as number[],
 		terminated: [] as boolean[],
@@ -127,6 +145,12 @@ function write(ep: Episode): { path: string; step_count: number; is_success: boo
 			]),
 		),
 		states: { descr: "<f4", shape: [n + 1, spec.state], data: Buffer.concat(ep.states) },
+		...Object.fromEntries(
+			Object.entries(spec.vectors ?? {}).map(([k, size]) => [
+				k,
+				{ descr: "<f4", shape: [n + 1, size], data: Buffer.concat(ep.vectors[k]) },
+			]),
+		),
 		actions: { descr: "<f4", shape: [n, spec.action], data: Buffer.concat(ep.actions) },
 		rewards: { descr: "<f4", shape: [n], data: f32(ep.rewards) },
 		terminated: { descr: "|b1", shape: [n], data: Buffer.from(ep.terminated.map(Number)) },
@@ -137,17 +161,22 @@ function write(ep: Episode): { path: string; step_count: number; is_success: boo
 		proposal_index: { descr: "<i2", shape: [n], data: Buffer.from(Int16Array.from(ep.index).buffer) },
 	});
 	const p = ep.proposals;
-	const horizon = p[0]?.actions.length ?? 0;
-	if (p.some((x) => x.actions.length !== horizon)) throw new Error("flywheel: VLA chunks differ in horizon");
+	// Policies with different horizons in one episode (Pi0.5's 5 next to OpenVLA-OFT's 8): shorter
+	// chunks are zero-padded to the longest and `horizon` keeps each chunk's own length. One horizon
+	// writes the same arrays as before.
+	const horizons = p.map((x) => x.actions.length);
+	const horizon = Math.max(0, ...horizons);
+	const mixed = horizons.some((h) => h !== horizon);
+	const padded = (x: Proposal) => [
+		...x.actions.flat(),
+		...new Array((horizon - x.actions.length) * spec.action).fill(0),
+	];
 	writeNpz(join(partial, "proposals.npz"), {
-		actions: {
-			descr: "<f4",
-			shape: [p.length, horizon, spec.action],
-			data: f32(p.flatMap((x) => x.actions.flat())),
-		},
+		actions: { descr: "<f4", shape: [p.length, horizon, spec.action], data: f32(p.flatMap(padded)) },
 		created_step: { descr: "<i4", shape: [p.length], data: i32(p.map((x) => x.created_step)) },
 		primitive_id: { descr: "<i4", shape: [p.length], data: i32(p.map((x) => x.primitive_id)) },
 		instruction: strings(p.map((x) => x.instruction)),
+		...(mixed ? { horizon: { descr: "<i4", shape: [p.length], data: i32(horizons) } } : {}),
 	});
 	const stop = ep.terminated.includes(true)
 		? "env_terminated"
@@ -289,9 +318,11 @@ export function flywheel(pi: ExtensionAPI, spec: FlywheelSpec, select: () => str
 			const a = f32(vector("action", action, spec.action));
 			const shots = Object.entries(ep.shapes).map(([k, shape]) => [k, image(k, obs.images[k], shape)] as const);
 			const state = f32(vector("states", obs.state, spec.state));
+			const extras = Object.keys(ep.vectors).map((k) => [k, extra(spec, k, obs)] as const);
 			ep.actions.push(a);
 			for (const [k, data] of shots) ep.images[k].push(data);
 			ep.states.push(state);
+			for (const [k, data] of extras) ep.vectors[k].push(data);
 			ep.rewards.push(Number(reward));
 			ep.terminated.push(terminated);
 			ep.truncated.push(truncated);

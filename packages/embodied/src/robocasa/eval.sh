@@ -25,15 +25,33 @@
 # replaced by the planner that actually ran, everything else (protocol, matrix, timeouts, RLDX
 # settings, success source) unchanged. That validator's `overall.success_rate` is the Target50 score.
 # A --privileged run (simulator ground truth) is recorded as such and never shares an out dir with one without.
+#
+# RoboCasa365 manifest mode (protocol `robocasa365`, separate from Target50): the second argument is
+# a RoboCasa365 split, `pretrain`, `target` or `pretrain,target`, and the matrix is the full task table
+# (services/.../robocasa/eval/robocasa365.json: 317 tasks x 50 manifest scenes per split), narrowed by
+# TASKS=OpenDrawer,PrepareCoffee and SCENES=0-4 (ranges or lists of manifest indices).
+#   eval.sh runs/rc365 target --model openai/gpt-5.5 --thinking low
+# Each cell runs in <out>/<split>/<Task>_m<scene>/ with `--scene <index>` (the table's seed for that
+# scene) and ends with a result.json of the robocasa365 schema: protocol "robocasa365", split, task_name,
+# scene, seed, env_id, success, status, termination_reason, the planner and the units/stateless/privileged
+# modes as above. The cell timeout is TIME_LIMIT (default 1800 s). Reruns retry invalid cells the same
+# way. The summary is per split (success rate, task-weighted rate, invalid cells), printed and written to
+# <out>/robocasa365-summary.json; validate_target50.py never sees these results. An out dir holds results
+# of one protocol only: a Target50 run refuses a dir with robocasa365 results and vice versa.
+# The fallback planner (--fallback-model, --fallback-after, --fallback-retry-primary; src/fallback.ts) is part of the
+# configuration too, and the summary totals the turns each planner model planned (planner_models).
 set -uo pipefail
 out=$1 splits=$2
 shift 2
 here=$(cd "$(dirname "$0")" && pwd)
 SERVICES=${PI_EMBODIED_SERVICES:-$(cd "$here/../../../../services" && pwd)}
 manifest=${TARGET50:-$SERVICES/pi_embodied_services/robots/robocasa/eval/target50.json}
+table=$SERVICES/pi_embodied_services/robots/robocasa/eval/robocasa365.json
 validator=$SERVICES/pi_embodied_services/robots/robocasa/eval/validate_target50.py
 PI=${PI:-pi}
 PY=${PI_EMBODIED_PYTHON:-python3}
+mode=target50
+case $splits in pretrain | target | pretrain,target | target,pretrain) mode=robocasa365 ;; esac
 [ "$splits" = all ] && splits=atomic,composite_seen,composite_unseen
 full=""
 [ "$splits" = atomic,composite_seen,composite_unseen ] && [ -z "${TASKS:-}${SEEDS:-}" ] && full=1
@@ -41,6 +59,7 @@ model="" thinking="" turns=${MAX_TURNS:-100} units=false stateless=false
 anchor=false
 vdm=false vdm_model="" vdm_wrist=false
 privileged=false
+fallback_model="" fallback_after=2 fallback_retry=0
 args=("$@")
 for ((i = 0; i < ${#args[@]}; i++)); do
 	case ${args[i]} in
@@ -80,6 +99,12 @@ for ((i = 0; i < ${#args[@]}; i++)); do
 		echo "${args[i]}: pi ignores a boolean flag's value and would turn it on; omit it to leave it off" >&2
 		exit 2
 		;;
+	--fallback-model) fallback_model=${args[i + 1]:-} ;;
+	--fallback-model=*) fallback_model=${args[i]#*=} ;;
+	--fallback-after) fallback_after=${args[i + 1]:-2} ;;
+	--fallback-after=*) fallback_after=${args[i]#*=} ;;
+	--fallback-retry-primary) fallback_retry=${args[i + 1]:-0} ;;
+	--fallback-retry-primary=*) fallback_retry=${args[i]#*=} ;;
 	--vdm-model) vdm_model=${args[i + 1]:-} ;;
 	--vdm-model=*) vdm_model=${args[i]#*=} ;;
 	# --anchor-image (keep the first camera frame in context) is a boolean like --stateless.
@@ -94,6 +119,206 @@ for ((i = 0; i < ${#args[@]}; i++)); do
 	esac
 done
 [ "$units" = pure ] && units=true
+
+# One protocol per out dir: Target50 results carry protocol_id, robocasa365 results protocol "robocasa365".
+node -e '
+const fs = require("fs");
+const [out, protocol] = process.argv.slice(1);
+const found = new Set();
+const walk = (dir, depth) => {
+	for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+		if (e.isDirectory() && depth < 2) walk(`${dir}/${e.name}`, depth + 1);
+		else if (e.name === "result.json") {
+			try {
+				const r = JSON.parse(fs.readFileSync(`${dir}/result.json`, "utf8"));
+				found.add(r.protocol === "robocasa365" ? "robocasa365" : r.protocol_id ? "target50" : "unknown");
+			} catch {
+				found.add("unknown");
+			}
+		}
+	}
+};
+if (fs.existsSync(out)) walk(out, 0);
+found.delete(protocol);
+if (found.size) {
+	console.error(`${out} holds ${[...found].join(", ")} results; a ${protocol} run needs another out dir`);
+	process.exit(1);
+}
+' "$out" "$mode" || exit 1
+
+if [ "$mode" = robocasa365 ]; then
+	limit=${TIME_LIMIT:-1800}
+	config=("$model" "$thinking" "$turns" "$limit" "$units" "$stateless" "$privileged" "$fallback_model" "$fallback_after" "$fallback_retry")
+	unset RLDX_RESET_SEED
+
+	record365() { # <dir> <exit code> <split> <task> <scene> <elapsed s>: write result.json (robocasa365 schema)
+		node --input-type=module -e '
+import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+const [dir, code, table, split, task, scene, elapsed, model, thinking, turns, limit, units, stateless, privileged, fallbackModel, fallbackAfter, fallbackRetry] = process.argv.slice(1);
+const t = JSON.parse(readFileSync(table, "utf8")).tasks.find((t) => t.name === task);
+const results = [];
+for (const f of readdirSync(dir).filter((f) => f.endsWith(".jsonl"))) {
+	for (const line of readFileSync(`${dir}/${f}`, "utf8").split("\n")) {
+		if (!line.includes("\"robot_result\"")) continue;
+		const e = JSON.parse(line);
+		if (e.type === "custom" && e.customType === "robot_result") results.push(e.data);
+	}
+}
+const last = results.length === 1 ? results[0] : undefined;
+const killed = Number(code) === 124 || Number(code) === 137;
+const status = killed ? "timeout" : results.length > 1 ? "duplicate_result"
+	: !last ? (Number(code) ? "env_error" : "missing")
+	: last.env_error ? "env_error" : last.planner_error ? "planner_error" : last.success ? "success" : "failure";
+const valid = status === "success" || status === "failure";
+const slash = model.indexOf("/");
+const result = {
+	...(last ?? {}),
+	protocol: "robocasa365",
+	benchmark: "RoboCasa365",
+	split,
+	task_name: task,
+	env_id: `robocasa365/${split}/${task}`,
+	scene: Number(scene),
+	seed: t.manifest[Number(scene)],
+	horizon: t.horizon,
+	valid,
+	success: last?.success === true,
+	success_source: "state.success",
+	termination_reason: !valid ? "infrastructure_error" : status === "failure" && last.planner_budget_exhausted ? "planner_timeout" : "completed",
+	elapsed_s: Number(elapsed),
+	planner: {
+		backend: "pi",
+		model: (slash >= 0 ? model.slice(slash + 1) : model) || null,
+		reasoning_effort: thinking || null,
+		max_turns: Number(turns),
+	},
+	planner_provider: slash >= 0 ? model.slice(0, slash) : null,
+	runtime: {
+		cell_timeout_seconds: Number(limit),
+		rldx_max_chunks: last?.rldx_max_chunks ?? null,
+		rldx_settle_patience: last?.rldx_settle_patience ?? null,
+		rldx_action_steps_per_chunk: last?.rldx_action_steps_per_chunk ?? null,
+	},
+	status,
+	exit_code: Number(code),
+	model: model || null,
+	thinking: thinking || null,
+	max_turns: Number(turns),
+	time_limit: Number(limit),
+	units,
+	stateless: stateless === "true",
+	privileged: privileged === "true",
+	fallback_model: fallbackModel || null, fallback_after: fallbackModel ? Number(fallbackAfter) : null, fallback_retry_primary: fallbackModel ? Number(fallbackRetry) : null,
+};
+writeFileSync(`${dir}/result.json`, `${JSON.stringify(result, null, 2)}\n`);
+console.log(JSON.stringify({ status, termination_reason: result.termination_reason, success: result.success, claimed: result.claimed, env_steps: result.env_steps }));
+' "$1" "$2" "$table" "$3" "$4" "$5" "$6" "${config[@]}"
+	}
+
+	valid365() { # <dir>: 0 = a valid result of this configuration, 2 = a valid result of another one, 1 = none
+		node -e '
+const [path, model, thinking, turns, limit, units, stateless, privileged, fallbackModel, fallbackAfter, fallbackRetry] = process.argv.slice(1);
+const r = JSON.parse(require("fs").readFileSync(path, "utf8"));
+if (r.status !== "success" && r.status !== "failure") process.exit(1);
+const same = r.protocol === "robocasa365" && r.model === (model || null) && r.thinking === (thinking || null) && r.max_turns === Number(turns)
+	&& r.time_limit === Number(limit) && r.units === units && r.stateless === (stateless === "true") && (r.privileged ?? false) === (privileged === "true")
+	// Results written before --fallback-model existed ran without a fallback planner.
+	&& (r.fallback_model ?? null) === (fallbackModel || null) && (r.fallback_after ?? null) === (fallbackModel ? Number(fallbackAfter) : null)
+	&& (r.fallback_retry_primary ?? null) === (fallbackModel ? Number(fallbackRetry) : null);
+process.exit(same ? 0 : 2);
+' "$1/result.json" "${config[@]}" 2>/dev/null
+	}
+
+	cells=$(node -e '
+const t = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+const [splits, tasks, scenes] = process.argv.slice(2);
+const only = (s) => (s ? s.split(",") : null);
+const expand = (s) => s.split(",").flatMap((p) => { const [a, b] = p.split("-").map(Number); return Array.from({ length: (b ?? a) - a + 1 }, (_, i) => a + i); });
+const names = new Set(t.tasks.map((x) => x.name));
+for (const name of only(tasks) ?? []) if (!names.has(name)) throw new Error(`TASKS: ${name} is not a RoboCasa365 task`);
+const idx = scenes ? expand(scenes) : Array.from({ length: t.scenes_per_task }, (_, i) => i);
+for (const i of idx) if (!(i >= 0 && i < t.scenes_per_task)) throw new Error(`SCENES: ${i} is not a manifest index 0..${t.scenes_per_task - 1}`);
+for (const split of splits.split(",")) {
+	if (!t.splits.includes(split)) throw new Error(`unknown RoboCasa365 split ${split}`);
+	for (const task of t.tasks)
+		if (!tasks || only(tasks).includes(task.name))
+			for (const i of idx) console.log(`${split} ${task.name} ${i}`);
+}' "$table" "$splits" "${TASKS:-}" "${SCENES:-}") || exit 1
+	[ -n "$cells" ] || { echo "no RoboCasa365 cells match splits=$splits TASKS=${TASKS:-} SCENES=${SCENES:-}" >&2 && exit 1; }
+
+	while read -r split task scene; do
+		dir=$out/$split/${task}_m$scene
+		valid365 "$dir"
+		case $? in
+		0) continue ;;
+		2) echo "$dir holds a result of another model, thinking level, --max-turns, TIME_LIMIT, units mode, fallback or --privileged (or of another protocol); use another out dir" >&2 && exit 1 ;;
+		esac
+		rm -rf "$dir" && mkdir -p "$dir"
+		echo "== $split $task scene $scene"
+		start=$SECONDS
+		backstop=()
+		[ "$limit" -gt 0 ] && command -v timeout >/dev/null && backstop=(timeout -k 30 $((limit + 900)))
+		${backstop[@]+"${backstop[@]}"} $PI -p --session-dir "$dir" -e "$here" --task-name "$task" --split "$split" \
+			--scene "$scene" --max-turns "$turns" --time-limit "$limit" --log-dir "$dir" "Solve the task." "$@" \
+			</dev/null >"$dir/stdout.log" 2>"$dir/stderr.log"
+		code=$?
+		record365 "$dir" "$code" "$split" "$task" "$scene" $((SECONDS - start))
+	done <<<"$cells"
+
+	# The summary per split: success, task-weighted success (mean over tasks of their scene success rate), invalid cells.
+	node -e '
+const fs = require("fs");
+const [out, cells] = process.argv.slice(1);
+const rows = cells.trim().split("\n").map((line) => {
+	const [split, task, scene] = line.split(" ");
+	try {
+		return { split, task, ...JSON.parse(fs.readFileSync(`${out}/${split}/${task}_m${scene}/result.json`, "utf8")) };
+	} catch {
+		return { split, task, status: "missing" };
+	}
+});
+const scoredRows = rows.filter((r) => r.status === "success" || r.status === "failure");
+const configs = new Set(scoredRows.map((r) => `${r.model}/${r.thinking}/turns=${r.max_turns}/limit=${r.time_limit}/units=${r.units}${r.stateless ? "/stateless" : ""}${r.privileged ? "/privileged" : ""}${r.fallback_model ? `/fallback=${r.fallback_model}:${r.fallback_after}:${r.fallback_retry_primary}` : ""}`));
+if (configs.size > 1) {
+	console.log(`refusing to summarize: ${out} mixes configurations ${[...configs].join(", ")}`);
+	process.exit(1);
+}
+const pm = rows.reduce((a, r) => r.planner_models ? { primary: a.primary + (r.planner_models.primary ?? 0), fallback: a.fallback + (r.planner_models.fallback ?? 0), rows: a.rows + 1 } : a, { primary: 0, fallback: 0, rows: 0 });
+const summary = { protocol: "robocasa365", config: [...configs][0] ?? null, planner_models: pm.rows ? { primary: pm.primary, fallback: pm.fallback } : null, splits: {} };
+let invalid = 0;
+for (const split of new Set(rows.map((r) => r.split))) {
+	const all = rows.filter((r) => r.split === split);
+	const s = scoredRows.filter((r) => r.split === split);
+	const ok = s.filter((r) => r.status === "success").length;
+	const perTask = new Map();
+	for (const r of s) {
+		const [k, n] = perTask.get(r.task) ?? [0, 0];
+		perTask.set(r.task, [k + (r.status === "success"), n + 1]);
+	}
+	const weighted = perTask.size ? [...perTask.values()].reduce((a, [k, n]) => a + k / n, 0) / perTask.size : 0;
+	const bad = all.length - s.length;
+	invalid += bad;
+	summary.splits[split] = {
+		tasks: perTask.size,
+		cells: all.length,
+		valid_cells: s.length,
+		successes: ok,
+		success_rate: s.length ? ok / s.length : null,
+		task_weighted_success_rate: perTask.size ? weighted : null,
+		planner_timeout: s.filter((r) => r.termination_reason === "planner_timeout").length,
+		claimed_but_failed: s.filter((r) => r.status === "failure" && r.claimed === "success").length,
+		invalid: Object.fromEntries(["env_error", "planner_error", "timeout", "missing", "duplicate_result"].map((k) => [k, all.filter((r) => r.status === k).length])),
+	};
+	const x = summary.splits[split];
+	console.log(`robocasa365 ${split}: success ${ok}/${s.length} (${s.length ? ((100 * ok) / s.length).toFixed(1) : "-"}%) over ${perTask.size} tasks, task-weighted ${perTask.size ? (100 * weighted).toFixed(1) : "-"}%, planner_timeout ${x.planner_timeout}, claimed-but-failed ${x.claimed_but_failed}, invalid ${bad} of ${all.length}`);
+}
+fs.writeFileSync(`${out}/robocasa365-summary.json`, `${JSON.stringify(summary, null, 2)}\n`);
+console.log(`${summary.config ?? "-"}: summary written to ${out}/robocasa365-summary.json`);
+if (invalid) process.exit(1);
+' "$out" "$cells"
+	exit $?
+fi
+
 protocol() { # <expr>: a value from the manifest
 	node -e 'const m = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); console.log(eval(process.argv[2]))' "$manifest" "$1"
 }
@@ -101,14 +326,14 @@ export RLDX_MAX_CHUNKS=$(protocol m.runtime_protocol.rldx_max_chunks)
 export RLDX_SETTLE_PATIENCE=$(protocol m.runtime_protocol.rldx_settle_patience)
 export RLDX_ACTION_STEPS_PER_CHUNK=$(protocol m.runtime_protocol.rldx_action_steps_per_chunk)
 unset RLDX_RESET_SEED
-config=("$model" "$thinking" "$turns" "$units" "$stateless" "$privileged" "$anchor" "$vdm" "$vdm_model" "$vdm_wrist")
+config=("$model" "$thinking" "$turns" "$units" "$stateless" "$privileged" "$anchor" "$vdm" "$vdm_model" "$vdm_wrist" "$fallback_model" "$fallback_after" "$fallback_retry")
 # The protocol pins the task-memory snapshot (hf profile); PI_EMBODIED_MEMORY_REVISION overrides it.
 export PI_EMBODIED_MEMORY_REVISION=${PI_EMBODIED_MEMORY_REVISION:-$(protocol m.dependencies.task_memory.revision)}
 
 record() { # <dir> <exit code> <split> <task> <seed> <cell timeout> <elapsed s>: write result.json
 	node --input-type=module -e '
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
-const [dir, code, manifest, split, task, seed, limit, elapsed, model, thinking, turns, units, stateless, privileged, anchor, vdm, vdmModel, vdmWrist] = process.argv.slice(1);
+const [dir, code, manifest, split, task, seed, limit, elapsed, model, thinking, turns, units, stateless, privileged, anchor, vdm, vdmModel, vdmWrist, fallbackModel, fallbackAfter, fallbackRetry] = process.argv.slice(1);
 const m = JSON.parse(readFileSync(manifest, "utf8"));
 const results = [];
 for (const f of readdirSync(dir).filter((f) => f.endsWith(".jsonl"))) {
@@ -162,6 +387,7 @@ const result = {
 	anchor_image: anchor === "true",
 	vdm: vdm === "true", vdm_model: vdmModel || null, vdm_wrist: vdmWrist === "true", stateless: stateless === "true",
 	privileged: privileged === "true",
+	fallback_model: fallbackModel || null, fallback_after: fallbackModel ? Number(fallbackAfter) : null, fallback_retry_primary: fallbackModel ? Number(fallbackRetry) : null,
 };
 writeFileSync(`${dir}/result.json`, `${JSON.stringify(result, null, 2)}\n`);
 console.log(JSON.stringify({ status, termination_reason: result.termination_reason, success: result.success, claimed: result.claimed, env_steps: result.env_steps }));
@@ -170,7 +396,7 @@ console.log(JSON.stringify({ status, termination_reason: result.termination_reas
 
 valid() { # <dir>: 0 = a valid result of this configuration, 2 = a valid result of another one, 1 = none
 	node -e '
-const [path, protocolId, model, thinking, turns, units, stateless, privileged, anchor, vdm, vdmModel, vdmWrist] = process.argv.slice(1);
+const [path, protocolId, model, thinking, turns, units, stateless, privileged, anchor, vdm, vdmModel, vdmWrist, fallbackModel, fallbackAfter, fallbackRetry] = process.argv.slice(1);
 const r = JSON.parse(require("fs").readFileSync(path, "utf8"));
 if (r.status !== "success" && r.status !== "failure") process.exit(1);
 const same = r.protocol_id === protocolId && r.model === (model || null) && r.thinking === (thinking || null) && r.max_turns === Number(turns)
@@ -179,7 +405,10 @@ const same = r.protocol_id === protocolId && r.model === (model || null) && r.th
 	&& (r.anchor_image ?? false) === (anchor === "true")
 	// Results written before --vdm existed ran without it.
 	&& (r.vdm ?? false) === (vdm === "true") && (r.vdm_model ?? null) === (vdmModel || null)
-	&& (r.vdm_wrist ?? false) === (vdmWrist === "true");
+	&& (r.vdm_wrist ?? false) === (vdmWrist === "true")
+	// Results written before --fallback-model existed ran without a fallback planner.
+	&& (r.fallback_model ?? null) === (fallbackModel || null) && (r.fallback_after ?? null) === (fallbackModel ? Number(fallbackAfter) : null)
+	&& (r.fallback_retry_primary ?? null) === (fallbackModel ? Number(fallbackRetry) : null);
 process.exit(same ? 0 : 2);
 ' "$1/result.json" "$(protocol m.protocol_id)" "${config[@]}" 2>/dev/null
 }
@@ -203,7 +432,7 @@ while read -r split task seed limit; do
 	valid "$dir"
 	case $? in
 	0) continue ;;
-	2) echo "$dir holds a result of another protocol, model, thinking level, --max-turns, units mode, vdm, --privileged or --anchor-image (or an older result format); use another out dir" >&2 && exit 1 ;;
+	2) echo "$dir holds a result of another protocol, model, thinking level, --max-turns, units mode, vdm, fallback, --privileged or --anchor-image (or an older result format); use another out dir" >&2 && exit 1 ;;
 	esac
 	rm -rf "$dir" && mkdir -p "$dir"
 	echo "== $split $task seed $seed"
@@ -232,11 +461,13 @@ const rows = cells.trim().split("\n").map((line) => {
 	}
 });
 const scoredRows = rows.filter((r) => r.status === "success" || r.status === "failure");
-const configs = new Set(scoredRows.map((r) => `${r.model}/${r.thinking}/turns=${r.max_turns}/units=${r.units}${r.stateless ? "/stateless" : ""}${r.anchor_image ? "/anchor" : ""}${r.vdm ? `/vdm=${r.vdm_model ?? "default"}${r.vdm_wrist ? "+wrist" : ""}` : ""}${r.privileged ? "/privileged" : ""}`));
+const configs = new Set(scoredRows.map((r) => `${r.model}/${r.thinking}/turns=${r.max_turns}/units=${r.units}${r.stateless ? "/stateless" : ""}${r.anchor_image ? "/anchor" : ""}${r.vdm ? `/vdm=${r.vdm_model ?? "default"}${r.vdm_wrist ? "+wrist" : ""}` : ""}${r.privileged ? "/privileged" : ""}${r.fallback_model ? `/fallback=${r.fallback_model}:${r.fallback_after}:${r.fallback_retry_primary}` : ""}`));
 if (configs.size > 1) {
 	console.log(`refusing to summarize: ${out} mixes configurations ${[...configs].join(", ")}`);
 	process.exit(1);
 }
+const pm = rows.reduce((a, r) => r.planner_models ? { primary: a.primary + (r.planner_models.primary ?? 0), fallback: a.fallback + (r.planner_models.fallback ?? 0), rows: a.rows + 1 } : a, { primary: 0, fallback: 0, rows: 0 });
+const planned = pm.rows ? `, planner_models primary=${pm.primary} fallback=${pm.fallback}` : "";
 const n = (s) => rows.filter((r) => r.status === s).length;
 const rate = (ok, all) => (all ? ((100 * ok) / all).toFixed(1) : "-");
 const scored = scoredRows.length;
@@ -255,7 +486,7 @@ for (const split of new Set(rows.map((r) => r.split))) {
 	const ok = s.filter((r) => r.status === "success").length;
 	console.log(`${split}: success ${ok}/${s.length} (${rate(ok, s.length)}%)`);
 }
-console.log(`${[...configs][0] ?? "-"}: success ${n("success")}/${scored} (${rate(n("success"), scored)}%), task-weighted ${perTask.size ? (100 * weighted).toFixed(1) : "-"}%, planner_timeout ${timeouts}, claimed-but-failed ${lies}, invalid ${invalid} (env_error ${n("env_error")}, planner_error ${n("planner_error")}, timeout ${n("timeout")}, missing ${n("missing")}, duplicate ${n("duplicate_result")}) of ${rows.length}`);
+console.log(`${[...configs][0] ?? "-"}: success ${n("success")}/${scored} (${rate(n("success"), scored)}%), task-weighted ${perTask.size ? (100 * weighted).toFixed(1) : "-"}%, planner_timeout ${timeouts}, claimed-but-failed ${lies}, invalid ${invalid} (env_error ${n("env_error")}, planner_error ${n("planner_error")}, timeout ${n("timeout")}, missing ${n("missing")}, duplicate ${n("duplicate_result")}) of ${rows.length}${planned}`);
 if (invalid) process.exit(1);
 ' "$out" "$cells"
 summary=$?

@@ -23,7 +23,8 @@ the arm's 0.1 m bound, and the Panda mimic gripper (+1 open, -1 close). Observat
 carry the agentview (``base_camera``; ``external_cam`` on the RLinf rigs) and wrist
 (``hand_camera``) RGB, the TCP pose and the gripper opening; ``info`` is flattened to
 plain scalars (``success``, ``is_grasped``, ...). An env id of ./scenes.py (BlockPAP-v1,
-BlockStack-v1) runs that rig with Show-Harness's calibrated cameras, reset and views.
+BlockStack-v1) runs that rig with Show-Harness's calibrated cameras, reset and views; the
+other ids (``ENV_IDS``) are stock ManiSkill tabletop tasks on the shared oblique camera.
 """
 
 from __future__ import annotations
@@ -42,7 +43,10 @@ from pi_embodied_services.utils.rpc.main_thread_serve import MainThreadServeMixi
 
 logger = get_logger("env_server")
 
-#: Show-Harness core/sim/maniskill_scenes.py SCENES (stock ManiSkill rows): the task text.
+#: Show-Harness core/sim/maniskill_scenes.py SCENES (stock ManiSkill rows), then the stock
+#: tabletop tasks of OpenETA's ManiSkill table (every registered env minus locomotion,
+#: humanoid and dexterous hands) that a translation-only Panda with a gripper can attempt on
+#: the shared table scene: the task text.
 INSTRUCTIONS = {
     # PickCube's success is the cube inside a goal sphere (goal_thresh 2.5 cm, up to 0.3 m above
     # the table), not the lift alone: the text names it, and SHOW_GOALS renders the sphere.
@@ -52,7 +56,21 @@ INSTRUCTIONS = {
     "PullCube-v1": "pull the cube to the goal marker",
     "PokeCube-v1": "poke the cube to the goal marker",
     "LiftPegUpright-v1": "lift the peg upright",
+    # PlaceSphere succeeds with the ball resting on the bin's floor within 5 mm of its centre.
+    "PlaceSphere-v1": "pick up the blue ball and place it inside the small bin",
+    # StackPyramid: cubes A (red) and B (green) side by side, cube C (blue) resting on both.
+    "StackPyramid-v1": "put the red and green cubes side by side, touching, then stack the blue cube on top so it rests on both",
+    # PullCubeTool: the cube starts out of reach; success is the cube within 0.6 m of the base.
+    "PullCubeTool-v1": "pick up the L-shaped tool and use its hook to pull the blue cube toward the robot, within reach",
+    # PegInsertionSide: the peg's head into the hole on the side of the box.
+    "PegInsertionSide-v1": "pick up the peg and insert its head sideways into the hole of the box",
+    # PlugCharger: position within 5 mm and orientation within 0.2 rad of the receptacle's slots.
+    "PlugCharger-v1": "pick up the charger and plug its two prongs into the receptacle",
+    # PickSingleYCB samples one YCB object per episode (ycb assets); the goal sphere is SHOW_GOALS.
+    "PickSingleYCB-v1": "pick up the object on the table and move it into the green goal sphere",
 }
+#: --env-id accepts these: the RLinf rigs (./scenes.py) and the stock tasks above.
+ENV_IDS = ["BlockPAP-v1", "BlockStack-v1", *INSTRUCTIONS]
 CAMERAS = {"agentview": "base_camera", "wrist": "hand_camera"}
 #: The actors each task needs the model to see, by env attribute: checked in the agentview
 #: at every reset (``check_visible``).
@@ -63,11 +81,17 @@ TASK_ACTORS = {
     "PullCube-v1": ["obj", "goal_region"],
     "PokeCube-v1": ["cube", "peg", "goal_region"],
     "LiftPegUpright-v1": ["peg"],
+    "PlaceSphere-v1": ["obj", "bin"],
+    "StackPyramid-v1": ["cubeA", "cubeB", "cubeC"],
+    "PullCubeTool-v1": ["cube", "l_shape_tool"],
+    "PegInsertionSide-v1": ["peg", "box"],
+    "PlugCharger-v1": ["charger", "receptacle"],
+    "PickSingleYCB-v1": ["obj", "goal_site"],
 }
 #: Success markers a task keeps in ``_hidden_objects`` (drawn for the human viewer only, never
 #: in the sensor cameras) although its success depends on them: shown to the cameras at every
 #: reset, so the model can see the goal (and ``check_visible`` can require it).
-SHOW_GOALS = {"PickCube-v1": ["goal_site"]}
+SHOW_GOALS = {"PickCube-v1": ["goal_site"], "PickSingleYCB-v1": ["goal_site"]}
 #: Fewest agentview pixels (640x480 sensor) a task actor may show; a 4 cm cube at the far
 #: edge of the workspace covers ~60.
 MIN_VISIBLE_PX = 20
@@ -199,6 +223,8 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
 
         from pi_embodied_services.robots.maniskill import scenes
 
+        if env_id not in ENV_IDS:
+            raise ValueError(f"unknown env id {env_id!r}; one of {ENV_IDS}")
         #: An RLinf real2sim rig (./scenes.py) and its options, or None for a stock scene.
         self._rig = scenes.SCENES.get(env_id)
         self._scene = None
@@ -543,7 +569,7 @@ def main():
     p.add_argument("--transport", choices=["http"], default="http")
     p.add_argument("--host", type=str, default="127.0.0.1")
     p.add_argument("--port", type=int, default=0)
-    p.add_argument("--env-id", default="BlockPAP-v1")
+    p.add_argument("--env-id", choices=ENV_IDS, default="BlockPAP-v1")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--robot-uids", default="panda_wristcam")
     p.add_argument(

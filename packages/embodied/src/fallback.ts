@@ -8,8 +8,10 @@
  * every turn is planned by the primary (`relay/gpt-6-astra`), or by `--fallback-model` once the primary
  * has failed `--fallback-after` turns in a row (default 2; a failed turn is retried on the primary until
  * then). The backup keeps planning for the rest of the episode, or until `--fallback-retry-primary M`
- * of its turns have passed (default 0: never), when the primary is tried again. Each switch writes a
- * `planner_fallback` entry {from, to, reason, turn} and, without a UI, a `[fallback] ...` stderr line.
+ * of its turns have passed (default 0: never), when the primary is tried again; that probe switches
+ * back to the backup on its first failure (the failure count is not reset by the switch). Each switch
+ * writes a `planner_fallback` entry {from, to, reason, turn, failed} and, without a UI, a `[fallback] ...`
+ * stderr line.
  *
  * A failure is a turn that ends in an error pi-ai deems retryable (5xx, 429, network and transport
  * errors, timeouts), one whose message matches `--fallback-on` (default `RELAY_ERRORS`: a relay's 4xx
@@ -17,18 +19,23 @@
  * (default 120; 0 = none). Any other error (a bad request, missing auth) ends the turn as it would
  * without this provider; so does the backup failing. An abort is never a failure.
  *
- * The delegate's events are relayed once its turn has completed, not as they stream: a turn that fails
- * midway leaves nothing behind and is redone on the other model inside the same request, so pi's own
- * retry never sees it and nothing is counted twice. The relayed reply is the delegate's, with its
- * usage, cost and model id, so `--max-cost` (../robot.ts reads `usage.cost` from assistant messages)
- * and pricing stay right. `result()` gives `planner_models`, the turns each model planned, for the
- * `robot_result` row.
+ * Streaming is per turn, not per token: the delegate's events are relayed once its turn has completed.
+ * A turn that fails midway thus leaves nothing behind and is redone on the other model inside the same
+ * request, so pi's own retry never sees it and no turn is counted twice. The relayed reply is the
+ * delegate's, with its usage, cost and model id, so `--max-cost` (../robot.ts reads `usage.cost` from
+ * assistant messages) and pricing stay right. What the failed attempts consumed before failing (when
+ * the delegate reported any usage) goes into the budget through `VLM_COST_EVENT`, the path the side
+ * VLM calls use, and into the next switch entry as `failed: {attempts, cost_usd, tokens}`. `result()`
+ * gives `planner_models`, the turns each model planned, for the `robot_result` row.
  *
  * pi resolves `--model` when it loads the extensions, before any session runs, and reads the flags into
  * the runtime only after that; so the module reads `--model` and `--fallback-model` from `argv` itself
  * and registers nothing without `--fallback-model`. `defineRobot` mounts it; without a robot, mount it
- * with `-e packages/embodied/src/fallback.ts`. pi compacts against this model's window (128k), not the
- * delegates' own.
+ * with `-e packages/embodied/src/fallback.ts`. The registered model carries placeholder limits; at
+ * session start the session's model object (what pi compacts against and checks cut replies with) is
+ * sized to the smaller delegate's contextWindow and maxTokens, so the backup never receives a request
+ * the primary's window would allow but its own would not. pi forwards no maxTokens to the delegates;
+ * each uses its own.
  */
 
 import {
@@ -45,6 +52,7 @@ import {
 	type Usage,
 } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ModelRegistry } from "@earendil-works/pi-coding-agent";
+import { VLM_COST_EVENT } from "./units/vlm.ts";
 
 /** The custom entry written at each switch: {from, to, reason, turn}. */
 export const FALLBACK_ENTRY = "planner_fallback";
@@ -115,6 +123,8 @@ export function fallback(pi: ExtensionAPI, argv: readonly string[] = process.arg
 	/** Turns the backup has planned since the last switch. */
 	let onFallback = 0;
 	const turns: Record<Role, number> = { primary: 0, fallback: 0 };
+	/** What the failed attempts since the last switch consumed (when the delegate reported usage before failing). */
+	let wasted = { attempts: 0, cost_usd: 0, tokens: 0 };
 
 	const note = (line: string) => {
 		if (!hasUI) console.error(`[fallback] ${line}`);
@@ -130,17 +140,29 @@ export function fallback(pi: ExtensionAPI, argv: readonly string[] = process.arg
 		errorMessage: err instanceof Error ? err.message : String(err),
 		timestamp: Date.now(),
 	});
-	function delegate(ref: string): Model<Api> {
+	const find = (ref: string) => {
 		const i = ref.indexOf("/");
-		const model = i > 0 ? registry?.find(ref.slice(0, i), ref.slice(i + 1)) : undefined;
+		return i > 0 ? registry?.find(ref.slice(0, i), ref.slice(i + 1)) : undefined;
+	};
+	function delegate(ref: string): Model<Api> {
+		const model = find(ref);
 		if (!model) throw new Error(`fallback: unknown model ${ref || "(--model is not fallback/<primary>)"}`);
 		return model;
+	}
+	/** Size the session's `fallback/...` model object, which pi compacts against, to the smaller delegate. */
+	function fit(model: Model<Api>) {
+		const both = [find(refs.primary), find(refs.fallback)];
+		if (!both[0] || !both[1]) return;
+		model.contextWindow = Math.min(both[0].contextWindow, both[1].contextWindow);
+		model.maxTokens = Math.min(both[0].maxTokens, both[1].maxTokens);
 	}
 	function switchTo(to: Role, reason: string, turn: number) {
 		const from = active;
 		active = to;
 		onFallback = 0;
-		pi.appendEntry(FALLBACK_ENTRY, { from: refs[from], to: refs[to], reason, turn });
+		const failed = { ...wasted, cost_usd: Number(wasted.cost_usd.toFixed(6)) };
+		wasted = { attempts: 0, cost_usd: 0, tokens: 0 };
+		pi.appendEntry(FALLBACK_ENTRY, { from: refs[from], to: refs[to], reason, turn, failed });
 		note(`turn ${turn}: ${refs[from]} -> ${refs[to]} (${reason})`);
 	}
 
@@ -166,7 +188,6 @@ export function fallback(pi: ExtensionAPI, argv: readonly string[] = process.arg
 				timedOut = true;
 				own.abort();
 			}, idle);
-			timer.unref();
 		};
 		const events: AssistantMessageEvent[] = [];
 		let message: AssistantMessage | undefined;
@@ -231,6 +252,14 @@ export function fallback(pi: ExtensionAPI, argv: readonly string[] = process.arg
 			const counts =
 				m.stopReason === "error" && (a.timedOut || isRetryableAssistantError(m) || on.test(m.errorMessage ?? ""));
 			if (!counts || options?.signal?.aborted || active === "fallback") return end(m);
+			// pi never sees this attempt: what it consumed goes to the budget here and into the next switch entry.
+			const usd = m.usage?.cost?.total ?? 0;
+			wasted = {
+				attempts: wasted.attempts + 1,
+				cost_usd: wasted.cost_usd + usd,
+				tokens: wasted.tokens + (m.usage?.totalTokens ?? 0),
+			};
+			if (usd > 0) pi.events.emit(VLM_COST_EVENT, usd);
 			failures++;
 			if (failures < after) {
 				note(`turn ${turn}: ${refs.primary} failed (${failures}/${after}): ${brief(m.errorMessage)}`);
@@ -274,6 +303,8 @@ export function fallback(pi: ExtensionAPI, argv: readonly string[] = process.arg
 		warned = false;
 		active = "primary";
 		failures = onFallback = turns.primary = turns.fallback = 0;
+		wasted = { attempts: 0, cost_usd: 0, tokens: 0 };
+		if (ctx.model?.provider === "fallback") fit(ctx.model);
 	});
 	pi.on("before_agent_start", (_event, ctx) => {
 		if (ctx.model?.provider === "fallback" || warned) return;

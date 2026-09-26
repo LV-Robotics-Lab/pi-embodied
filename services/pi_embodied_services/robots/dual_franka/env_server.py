@@ -64,6 +64,43 @@ class DualFrankaEnvFacade(FrankaEnvFacade):
     _METHODS = (*FrankaEnvFacade._METHODS, "recover_joint_posture")
     _PRIMITIVES = DUAL_FRANKA_PRIMITIVES
 
+    def _grasp_planner(self):
+        """The planner over the registered projection views (right_base frame), one grasp-to-EEF
+        calibration per arm (``--grasp-to-eef '{"left": ..., "right": ...}'``)."""
+        from pi_embodied_services.robots.dual_franka import perception as p
+        from pi_embodied_services.robots.franka.grasp_views import dual_franka_view
+        from pi_embodied_services.utils.grasp import GraspPlanner, GraspToEef
+
+        urls = self._grasp_urls or {}
+        if not any(
+            urls.get(k) for k in ("graspnet", "graspgenx", "anygrasp", "anyplace")
+        ):
+            return None
+        bundle = p.load_calibration_bundle()
+        views = p._projection_cameras()
+
+        def camera_transform(key: str) -> np.ndarray:
+            entry = bundle.get(key)
+            if not isinstance(entry, dict) or "transformation" not in entry:
+                raise ValueError(f"calibration entry {key!r} is missing")
+            return p._transform_to_matrix(entry["transformation"])
+
+        def eef_pose(arm: str | None):
+            state = self._backend.get_robot_state()
+            tcp = np.asarray(state[f"{arm or 'right'}_arm"]["tcp_pose"], dtype=float)
+            return tcp[:3], tcp[3:7]
+
+        cal = urls.get("grasp_to_eef")
+        if not isinstance(cal, dict):
+            cal = {"left": cal or GraspToEef(), "right": cal or GraspToEef()}
+        return GraspPlanner.from_args(
+            dual_franka_view(self._backend, views, camera_transform),
+            cameras=sorted(views),
+            masks=self._perception.book if self._perception is not None else None,
+            eef_pose=eef_pose,
+            **{**urls, "grasp_to_eef": cal},
+        )
+
 
 def _batch_raw_obs(raw_obs: dict[str, Any]) -> dict[str, Any]:
     """Add the vector-env batch axis to one raw real-world observation."""

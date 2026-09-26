@@ -18,6 +18,7 @@ function fakePi(o: { robot?: boolean; sessionDir?: string; answers?: Answers; cw
 	const sent: { text: string; options: unknown }[] = [];
 	const notes: string[] = [];
 	const asked: string[] = [];
+	const confirms: string[] = [];
 	const a = {
 		select: [...(o.answers?.select ?? [])],
 		input: [...(o.answers?.input ?? [])],
@@ -57,8 +58,9 @@ function fakePi(o: { robot?: boolean; sessionDir?: string; answers?: Answers; cw
 				asked.push(title);
 				return a.input.shift();
 			},
-			confirm: async (title: string) => {
+			confirm: async (title: string, message: string) => {
 				asked.push(title);
+				confirms.push(message);
 				return a.confirm.shift() ?? false;
 			},
 		},
@@ -69,6 +71,7 @@ function fakePi(o: { robot?: boolean; sessionDir?: string; answers?: Answers; cw
 		sent,
 		notes,
 		asked,
+		confirms,
 		commands,
 		start: async () => {
 			for (const fn of handlers.get("session_start") ?? [])
@@ -146,6 +149,12 @@ test("/embodied-setup writes the experiment settings and hands the install to th
 	assert.match(text, /^\/skill:embodied-quickstart /);
 	assert.match(text, /setup\.sh libero-pro`/);
 	assert.match(text, /--libero-type pro --suite libero_10 --task 0 --seed 0 --units=true --dashboard=true/);
+	assert.match(text, /trust the project/);
+	assert.doesNotMatch(text, /adapter|serve\.sh/, "units mode serves no adapter");
+	// The confirmation says what happens: one confirmation, then the agent runs the whole install.
+	const summary = p.confirms.at(-1) ?? "";
+	assert.match(summary, /the agent runs it after this confirmation \(pi does not ask per step\)/);
+	assert.doesNotMatch(summary, /approval/);
 });
 
 test("tools mode asks about weights; a declined confirmation writes and sends nothing", async () => {
@@ -183,6 +192,14 @@ test("a remote box writes nothing locally and gives the agent the settings for t
 	assert.match(text, /\/data\/pi-embodied\/services\/setup\.sh maniskill`/);
 	assert.match(text, /"\/data\/pi-embodied\/packages\/embodied\/src\/finetuned\/index\.ts"/);
 	assert.match(text, /--units=true --model finetuned\/qwen3_5_2b_showharness_sim/);
+	// Fine-tuned mode: the adapter download and the vLLM server are part of the handoff.
+	assert.match(text, /FT_ADAPTER=qwen3_5_2b_sim \/data\/pi-embodied\/services\/setup\.sh finetuned/);
+	assert.match(text, /\/data\/pi-embodied\/services\/pi_embodied_services\/finetuned\/serve\.sh/);
+	assert.match(text, /--ft-endpoint defaults to http:\/\/127\.0\.0\.1:8010\/v1/);
+	assert.match(
+		p.confirms.at(-1) ?? "",
+		/the adapter download and the vLLM server; the agent runs it after this confirmation/,
+	);
 });
 
 test("setup.sh parses and its dry run prints the plan without running it", async () => {

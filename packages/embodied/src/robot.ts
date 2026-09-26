@@ -7,14 +7,14 @@
  */
 
 import { type ChildProcess, execFile, spawn } from "node:child_process";
-import { closeSync, openSync } from "node:fs";
-import { createServer } from "node:net";
+import { closeSync, openSync, writeSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
 import { robotCheck } from "./check.ts";
+import { type CodeSpec, code } from "./code/index.ts";
 import { explore } from "./explore.ts";
 import { fallback } from "./fallback.ts";
 import { type FlashHook, flash } from "./flash/index.ts";
@@ -133,6 +133,8 @@ export type RobotSpec = {
 	};
 	/** Mount the human-in-the-loop operator (../operator.ts). */
 	operator?: { step: () => number; reset?: () => Promise<Json> };
+	/** Mount code mode (../code, `--code`): the server's `code.run` over its primitive registry (`codeApi`), and how a run becomes an observation. */
+	code?: CodeSpec;
 	/** Mount the episode video (../video.ts). */
 	video?: boolean;
 	/**
@@ -340,6 +342,9 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 				refuse: () => refusal("act") ?? op.refuse("act"),
 			})
 		: undefined;
+	const co = spec.code
+		? code(pi, spec.code, tool, () => task, { unitsOn: () => un?.mode() !== undefined, privileged })
+		: undefined;
 	const vd = spec.vdm
 		? vdm(
 				pi,
@@ -383,7 +388,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		await stop();
 		try {
 			// A flag the robot cannot honour fails closed, before the robot boots.
-			const misconfigured = un?.configError();
+			const misconfigured = un?.configError() ?? co?.configError();
 			if (misconfigured) throw new Error(misconfigured);
 			api = undefined;
 			const tools = await spec.start(ctx);
@@ -393,12 +398,14 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 				if (api) pi.appendEntry(CODE_API_ENTRY, api);
 			}
 			pi.events.emit(CODE_API_EVENT, api);
-			// Pure units mode hides the robot's own tools and memory's (Show-Harness's pure mode).
-			const mode = un?.mode();
+			// Code mode fetches its tier of the registry once the robot is up and registers run_code.
+			const coded = (await co?.start()) ?? [];
+			// Pure units or code mode hides the robot's own tools and memory's (Show-Harness's pure mode).
+			const mode = un?.mode() ?? co?.mode();
 			const own =
 				mode === "pure"
-					? [...(un?.tools() ?? []), "finish"]
-					: [...tools, ...(mem?.tools ?? []), ...(mode === "both" ? (un?.tools() ?? []) : [])];
+					? [...(un?.tools() ?? []), ...coded, "finish"]
+					: [...tools, ...(mem?.tools ?? []), ...(mode === "both" ? [...(un?.tools() ?? []), ...coded] : [])];
 			pi.setActiveTools([...new Set([...own, ...op.tools(), ...groundTruth()])]);
 			ready = true;
 		} catch (err) {
@@ -440,13 +447,14 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 				deadline.unref();
 			}
 		}
-		const mode = un?.mode();
-		// The robot's prompt describes only the tools left active by --tools/--exclude-tools and --units.
-		const filled = spec.prompt?.();
-		const own = filled === undefined ? undefined : toolSections(filled, pi.getActiveTools());
+		// Units and code mode are mutually exclusive (configError): at most one of them shapes the prompt.
+		const mod = un?.mode() ? un : co?.mode() ? co : undefined;
+		const mode = mod?.mode();
+		// The prompt (the robot's and the mode's) describes only the tools left active by --tools/--exclude-tools and --units/--code.
+		const own = spec.prompt?.();
 		const systemPrompt =
-			mode === "pure" ? un?.prompt() : mode === "both" ? `${own ?? ""}\n\n${un?.prompt()}`.trim() : own;
-		return systemPrompt === undefined ? undefined : { systemPrompt };
+			mode === "pure" ? mod?.prompt() : mode === "both" ? `${own ?? ""}\n\n${mod?.prompt()}`.trim() : own;
+		return systemPrompt === undefined ? undefined : { systemPrompt: toolSections(systemPrompt, pi.getActiveTools()) };
 	});
 	pi.on("message_end", (event) => {
 		const m = event.message;
@@ -531,6 +539,8 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 						...mark,
 						// The units verifier: whether the success finish was checked, and the call's error.
 						...un?.result(),
+						// Code mode (../code): `code` and `code_api`, so evaluations never mix it with tool runs.
+						...co?.result(),
 						...vd?.result(),
 						// With --fallback-model: the turns each planner model planned (../fallback.ts).
 						...fb?.result(),
@@ -649,8 +659,8 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 			return api;
 		},
 		/**
-		 * Start `python ...args --transport http --host 127.0.0.1 --port <free> --parent-watch` (a service
-		 * RPC server; it exits with pi) and wait for healthz. It is stopped at the next start and at shutdown.
+		 * Start `python ...args --transport http --host 127.0.0.1 --port 0 --parent-watch` (a service RPC
+		 * server; it picks its port and exits with pi) and wait for healthz. It is stopped at the next start and at shutdown.
 		 */
 		async serve(o: {
 			python: string;
@@ -660,20 +670,55 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 			log: (port: number) => string;
 			readyMs?: number;
 		}): Promise<RpcClient> {
-			const port = await freePort();
-			const log = o.log(port);
-			const fd = openSync(log, "a");
-			const argv = [...o.args, "--transport", "http", "--host", "127.0.0.1", "--port", String(port)];
-			const proc = spawn(o.python, [...argv, "--parent-watch"], { cwd: o.cwd, env: o.env, stdio: ["pipe", fd, fd] });
-			closeSync(fd);
-			const rpc = new RpcClient(`http://127.0.0.1:${port}`);
+			// The server binds port 0 and prints the port it got: probing a free port here and passing it on
+			// would race every other process on the box for it between the probe and the bind.
+			const argv = [...o.args, "--transport", "http", "--host", "127.0.0.1", "--port", "0", "--parent-watch"];
+			const proc = spawn(o.python, argv, { cwd: o.cwd, env: o.env, stdio: ["pipe", "pipe", "pipe"] });
+			const rpc = new RpcClient("http://127.0.0.1:0");
 			server = { proc, rpc };
+			// Its output goes to the log file, whose name carries the port, so it is held until the port is known.
+			let fd: number | undefined;
+			let held = "";
+			let log = "";
+			const listening = new Promise<number>((resolve) => {
+				const sink = (chunk: Buffer) => {
+					if (fd !== undefined) {
+						writeSync(fd, chunk);
+						return;
+					}
+					held += chunk.toString();
+					const m = /RPC server listening on http:\/\/[^\s:]+:(\d+)/.exec(held);
+					if (!m) return;
+					log = o.log(Number(m[1]));
+					fd = openSync(log, "a");
+					writeSync(fd, held);
+					held = "";
+					resolve(Number(m[1]));
+				};
+				proc.stdout?.on("data", sink);
+				proc.stderr?.on("data", sink);
+			});
+			proc.once("close", () => {
+				if (fd !== undefined) closeSync(fd);
+			});
+			const where = () => (log ? `see ${log}` : `it printed:\n${held.trim()}`);
 			const exited = new Promise<never>((_, reject) => {
-				proc.once("exit", (code) => reject(new Error(`env server exited (${code}); see ${log}`)));
+				proc.once("exit", (code) => reject(new Error(`env server exited (${code}); ${where()}`)));
 				proc.once("error", (err) => reject(new Error(`env server failed to start: ${err.message}`)));
 			});
 			exited.catch(() => {});
-			await Promise.race([rpc.ready(o.readyMs), exited]);
+			const readyMs = o.readyMs ?? 300_000;
+			const deadline = Date.now() + readyMs;
+			const late = new Promise<never>((_, reject) => {
+				setTimeout(
+					() => reject(new Error(`env server bound no port in ${readyMs} ms; ${where()}`)),
+					readyMs,
+				).unref();
+			});
+			late.catch(() => {});
+			const port = await Promise.race([listening, exited, late]);
+			rpc.url = rpc.url.replace(":0/", `:${port}/`);
+			await Promise.race([rpc.ready(deadline - Date.now()), exited]);
 			// Stopping it clears `server` first; any other exit is the robot breaking mid-episode.
 			proc.once("exit", (code, sig) => {
 				if (server?.proc === proc) fail(`env server exited (${code ?? sig}); see ${log}`);
@@ -711,17 +756,6 @@ export async function shutdown(proc: ChildProcess, rpc: RpcClient) {
 /** The environment of a service process: the services dir on PYTHONPATH, plus `r.env`. */
 export function servicesEnv(r: Services): NodeJS.ProcessEnv {
 	return { ...process.env, PYTHONPATH: [r.root, process.env.PYTHONPATH].filter(Boolean).join(":"), ...r.env };
-}
-
-export function freePort(): Promise<number> {
-	return new Promise((resolve, reject) => {
-		const srv = createServer();
-		srv.listen(0, "127.0.0.1", () => {
-			const { port } = srv.address() as { port: number };
-			srv.close(() => resolve(port));
-		});
-		srv.on("error", reject);
-	});
 }
 
 /** Run `python -c code ...args` in the services dir; the last stdout line is JSON. */

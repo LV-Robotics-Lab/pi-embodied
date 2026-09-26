@@ -408,6 +408,58 @@ test("a failure inside a multi-call turn stops the replay at that call: the rest
 	}
 });
 
+test("a code-mode session replays every run_code program verbatim", async () => {
+	// A program with quotes, newlines, indentation and unicode, as the model wrote it.
+	const program =
+		'obs = get_observation()\nfor i in range(3):\n    move_to([0.1, -0.2, 0.3], gripper=+1)  # "carry"\nRESULT = {"done": True, "note": "héllo\\n"}\n';
+	const dir = sessionOf([
+		{ content: [call("run_code", { code: "print(get_state())" })] },
+		{
+			content: [call("run_code", { code: program, timeout_s: 45 })],
+			errors: { run_code: 'run_code: {\n "status": "error"' },
+		},
+		{ content: [call("run_code", { code: "set_gripper(False)" })] },
+		{ content: [call("finish", { status: "success", summary: "ok" })] },
+	]);
+	const rec = loadRecording(dir);
+	assert.deepEqual(
+		rec.turns.map((t) => t.calls.map((c) => c.name)),
+		[["run_code"], ["run_code"], ["run_code"], ["finish"]],
+	);
+	assert.equal(rec.turns[1].calls[0].arguments.code, program);
+	const p = fakePi({ replay: dir }, {});
+	try {
+		await p.emit("session_start");
+		const t1 = await p.turn();
+		assert.deepEqual(
+			calls(t1).map((c: any) => c.arguments),
+			[{ code: "print(get_state())" }],
+		);
+		const history = [t1, ...(await runBatch(p, t1)).results];
+		const t2 = await p.turn(history);
+		assert.deepEqual(
+			calls(t2).map((c: any) => c.arguments),
+			[{ code: program, timeout_s: 45 }],
+			"the program is sent byte for byte, with its timeout",
+		);
+		// A run_code that errored in the recording (the program raised) errors again: noted, replay goes on.
+		history.push(t2, ...(await runBatch(p, t2, { run_code: 'run_code: {\n "status": "error"' })).results);
+		const t3 = await p.turn(history);
+		assert.deepEqual(
+			calls(t3).map((c: any) => c.arguments),
+			[{ code: "set_gripper(False)" }],
+		);
+		assert.match(text(t3), /run_code failed, as in the recording/);
+		history.push(t3, ...(await runBatch(p, t3)).results);
+		assert.deepEqual(
+			calls(await p.turn(history)).map((c: any) => c.name),
+			["finish"],
+		);
+	} finally {
+		p.restore();
+	}
+});
+
 test("a call that failed in the recording but succeeds now stops the replay", async () => {
 	const dir = sessionOf([
 		{ content: [call("grip", { v: 1 }), call("move", { xyz: [1, 0, 0] })], errors: { grip: "gripper jammed" } },

@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import behavior from "../src/behavior/index.ts";
 import dualFranka from "../src/dual_franka/index.ts";
 import franka from "../src/franka/index.ts";
 import libero from "../src/libero/index.ts";
@@ -21,6 +22,7 @@ import robotwin from "../src/robotwin/index.ts";
  */
 const FIXTURE = fileURLToPath(new URL("./fixtures/tool-schemas.json", import.meta.url));
 const ROBOTS: Record<string, (pi: ExtensionAPI) => unknown> = {
+	behavior,
 	dual_franka: dualFranka,
 	franka,
 	libero,

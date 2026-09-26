@@ -24,7 +24,9 @@ import { join, resolve } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
+import { ikArgs, registerIkFlag } from "../ik.ts";
 import { encodePng } from "../png.ts";
+import { graspActive, graspArgs, graspTools, registerGraspFlags } from "../primitives/grasp.ts";
 import { type MotionRig, moveDelta, rotateDelta, setGripper } from "../primitives/motion.ts";
 import { viewCameraMeta, viewEnvState } from "../primitives/perception.ts";
 import { type Step as BaseStep, getStep, outcome, type StepsIO, stepParam, type ToolDef } from "../primitives/steps.ts";
@@ -88,7 +90,30 @@ type Caps = {
 	max_move_m?: number | null;
 	max_rotate_rad?: number | null;
 	table_z_m?: number | null;
+	/** Server-side perception (--robot-sam3 / --robot-unidepth): which of its primitives exist. */
+	perception?: { segment?: boolean; enhance_depth?: boolean };
 	[k: string]: unknown;
+};
+/** A mask of the current observation, as the env server reports it (`env.segment`). */
+type Detection = {
+	id: string;
+	rank: number;
+	score: number | null;
+	box: number[] | null;
+	area_px: number;
+	centroid_rc: [number, number] | null;
+	depth_m: number | null;
+	point_camera: number[] | null;
+	mask_png_base64?: string;
+	[k: string]: unknown;
+};
+/** Session entry: detection ids that stopped being valid (a new observation was taken). */
+export const DETECTIONS_ENTRY = "robot_detections";
+const PERCEPTION_TOOLS: Record<string, keyof NonNullable<Caps["perception"]>> = {
+	segment: "segment",
+	select_detection: "segment",
+	reject_detection: "segment",
+	enhance_depth: "enhance_depth",
 };
 const BACKENDS: Record<string, string> = {
 	rlinf: "pi_embodied_services.robots.franka.env_server",
@@ -115,6 +140,10 @@ const TOOLS = [
 	"view_env_state",
 	"view_camera_meta",
 	"view_perception_setup",
+	"segment",
+	"select_detection",
+	"reject_detection",
+	"enhance_depth",
 	"back_project",
 	"back_project_correspondence",
 	"move_delta",
@@ -212,6 +241,14 @@ export default function franka(pi: ExtensionAPI) {
 		type: "string",
 		description: "External Franka Pi0.5 VLA server (attach-only; enables vla_grasp)",
 	});
+	pi.registerFlag("robot-sam3", {
+		type: "string",
+		description: "SAM3 server for the env server's segment / select_detection / reject_detection (off without it)",
+	});
+	pi.registerFlag("robot-unidepth", {
+		type: "string",
+		description: "UniDepth server for the env server's enhance_depth (off without it)",
+	});
 	pi.registerFlag("services", {
 		type: "string",
 		default: process.env.PI_EMBODIED_SERVICES ?? SERVICES,
@@ -248,6 +285,9 @@ export default function franka(pi: ExtensionAPI) {
 		default: "0.5",
 		description: "Largest rotate_delta per call, rad (norm of delta_rpy)",
 	});
+	// --graspnet/--graspgenx/--anyplace/--anygrasp: plan_grasp, plan_place, check_attached (../primitives/grasp.ts).
+	registerGraspFlags(pi);
+	registerIkFlag(pi);
 
 	let env: RpcClient | undefined;
 	let vla: RpcClient | undefined;
@@ -402,8 +442,16 @@ export default function franka(pi: ExtensionAPI) {
 
 	// ---- env client (the server returns camera frames, the client caches states)
 
+	/** Ids of the masks segment returned for the current observation (env-side `DetectionBook`). */
+	let liveIds: string[] = [];
+
 	async function observation(): Promise<Json> {
 		const obs = await call("env.get_observation");
+		// A new observation: the env server drops every detection id; record that they died here.
+		if (liveIds.length) {
+			pi.appendEntry(DETECTIONS_ENTRY, { invalidated: liveIds, step: steps.length, reason: "new observation" });
+			liveIds = [];
+		}
 		if (!("states" in obs) && lastStates !== undefined) obs.states = lastStates;
 		remember(obs.states);
 		return obs;
@@ -690,6 +738,152 @@ export default function franka(pi: ExtensionAPI) {
 		}
 	}
 
+	const cameraParam = Type.Optional(StringEnum(["wrist", "third_person"] as const, { description: "Default wrist" }));
+	const idParam = Type.String({ description: "A detection id from segment (e.g. d3) of the current observation" });
+
+	/** Base-frame point of a detection's centroid through the latest step's depth, or the reason there is none. */
+	function locate(s: Step, alias: "wrist" | "third_person", d: Detection): Json {
+		if (!d.centroid_rc) return { point_base: null, point_error: "empty mask" };
+		const p = projectView(s, alias, d.centroid_rc[0], d.centroid_rc[1]);
+		return p.point_base ? { point_base: p.point_base } : { point_base: null, point_error: p.error };
+	}
+
+	/** `invalidated` from a perception result: ids the env server dropped that we had not recorded yet. */
+	function noteInvalidated(res: Json) {
+		const ids = Array.isArray(res.invalidated)
+			? res.invalidated.filter((v: unknown) => liveIds.includes(String(v)))
+			: [];
+		if (!ids.length) return;
+		pi.appendEntry(DETECTIONS_ENTRY, { invalidated: ids, step: steps.length - 1, reason: "env server" });
+		liveIds = liveIds.filter((id) => !ids.includes(id));
+	}
+
+	tool(
+		"segment",
+		"SAM3 masks on the latest camera image, each with a short id (d3) drawn on the returned overlay in rank order (red, blue, green, yellow, ...). Give exactly one of a text prompt or a positive point [row, col]. all=true returns every candidate instead of only the best; then pick one with select_detection. Ids die with the observation: segment again after any motion.",
+		Type.Object({
+			prompt: Type.Optional(Type.String()),
+			point: Type.Optional(Type.Array(Type.Integer(), { minItems: 2, maxItems: 2 })),
+			camera: cameraParam,
+			min_score: Type.Optional(Type.Number({ description: "Default 0.2" })),
+			all: Type.Optional(Type.Boolean({ description: "Return every mask, not only the best (default false)" })),
+		}),
+		async ({ prompt, point, camera = "wrist", min_score = 0.2, all = false }) => {
+			// Models often fill both optional fields; a non-empty prompt wins.
+			const text = prompt?.trim();
+			if (!text && !point) return { error: "give a text prompt or a point [row, col]" };
+			const alias = cameraAlias(camera);
+			const s = getStep(steps, -1);
+			const res = await call<Json>(
+				"env.segment",
+				{ camera: alias, ...(text ? { text_prompt: text } : { point }), min_score, all },
+				120_000,
+			);
+			noteInvalidated(res);
+			const detections: Detection[] = res.detections ?? [];
+			liveIds = [...liveIds, ...detections.map((d) => d.id)];
+			if (!res.found)
+				return {
+					found: false,
+					camera: alias,
+					error: res.reason ?? "no mask",
+					fallback: "Pick pixels in the image and use back_project.",
+				};
+			const out: Json = {
+				found: true,
+				camera: alias,
+				step: s.blob.step_idx,
+				count: res.count,
+				ids: res.ids,
+				detections: detections.map((d) => ({
+					id: d.id,
+					score: d.score === null || d.score === undefined ? null : round(d.score, 3),
+					box: d.box,
+					area_px: d.area_px,
+					centroid_pixel: d.centroid_rc,
+					depth_m: d.depth_m,
+					...locate(s, alias, d),
+				})),
+				coordinate_frame: "franka_base",
+			};
+			if (res.overlay instanceof NdArray) {
+				const img = rgbOf(res.overlay);
+				const png = encodePng(img.rgb, img.width, img.height);
+				const n = String(res.observation).padStart(4, "0");
+				writeFileSync(join(s.dir, `${alias}_segment_overlay_${n}.png`), png);
+				out.overlay_path = join(s.dir, `${alias}_segment_overlay_${n}.png`);
+				out._pngs = [png];
+			}
+			return out;
+		},
+		false,
+	);
+
+	tool(
+		"select_detection",
+		"Choose one segment mask (by id) as the target of the current observation, after checking the overlay.",
+		Type.Object({ id: idParam }),
+		async ({ id }) => {
+			const res = await call<Json>("env.select_detection", { id });
+			noteInvalidated(res);
+			if (!res.ok) return { error: res.error, ids: res.ids, selected: res.selected, rejected: res.rejected };
+			const { mask_png_base64: _mask, ...d } = res.detection as Detection;
+			return {
+				selected: res.selected,
+				rejected: res.rejected,
+				detection: { ...d, ...locate(getStep(steps, -1), cameraAlias(String(d.camera)), res.detection) },
+			};
+		},
+		false,
+	);
+
+	tool(
+		"reject_detection",
+		"Rule out one segment mask (by id) of the current observation; it stays listed as rejected.",
+		Type.Object({ id: idParam }),
+		async ({ id }) => {
+			const res = await call<Json>("env.reject_detection", { id });
+			noteInvalidated(res);
+			if (!res.ok) return { error: res.error, ids: res.ids, selected: res.selected, rejected: res.rejected };
+			return { rejected: res.rejected, selected: res.selected, ids: res.ids };
+		},
+		false,
+	);
+
+	tool(
+		"enhance_depth",
+		"Fill the holes of a camera's depth on the latest step with a UniDepth estimate scaled to the sensor (or supply depth where the camera has none). back_project and segment on this step then use the filled depth; the sensor depth is kept as <camera>_depth_sensor.f32.",
+		Type.Object({ camera: cameraParam }),
+		async ({ camera = "wrist" }) => {
+			const alias = cameraAlias(camera);
+			const s = getStep(steps, -1);
+			const res = await call<Json>("env.enhance_depth", { camera: alias }, 180_000);
+			noteInvalidated(res);
+			if (!(res.depth instanceof NdArray)) throw new Error("env.enhance_depth returned no depth map");
+			const g = gridOf(res.depth);
+			const name = ARTIFACTS[alias === "wrist" ? "main" : "extra_0"][1];
+			try {
+				if (!s.blob.artifacts.includes(`${name}_sensor.f32`)) {
+					writeFileSync(join(s.dir, `${name}_sensor.f32`), readFileSync(join(s.dir, `${name}.f32`)));
+					s.blob.artifacts.push(`${name}_sensor.f32`);
+				}
+			} catch {
+				// No sensor depth for this camera: the estimate is the only depth there is.
+			}
+			writeFileSync(join(s.dir, `${name}.f32`), Buffer.from(g.data.buffer));
+			writeFileSync(join(s.dir, `${name}.json`), JSON.stringify({ height: g.height, width: g.width }));
+			if (!s.blob.artifacts.includes(`${name}.f32`)) s.blob.artifacts.push(`${name}.f32`);
+			return {
+				camera: alias,
+				step: s.blob.step_idx,
+				depth_path: join(s.dir, `${name}.f32`),
+				report: res.report,
+				estimate: res.estimate,
+			};
+		},
+		false,
+	);
+
 	tool(
 		"back_project",
 		"Back-project one wrist or external-camera pixel into Franka base coordinates.",
@@ -971,6 +1165,15 @@ export default function franka(pi: ExtensionAPI) {
 		},
 	);
 
+	// plan_grasp / plan_place / check_attached (../primitives/grasp.ts): the env server plans over its
+	// calibrated RGB-D cameras; active with --graspnet/--graspgenx/--anyplace/--anygrasp.
+	for (const d of graspTools(pi, {
+		call: (method, kwargs, timeoutMs) => call(method, kwargs, timeoutMs ?? 120_000),
+		cameras: ["wrist", "third_person"],
+		task: () => setup?.task.instruction ?? "",
+	}))
+		tool(d.name, d.description, d.parameters, d.run, false);
+
 	// ---- lifecycle
 
 	async function startRobot(ctx: ExtensionContext) {
@@ -996,6 +1199,10 @@ export default function franka(pi: ExtensionAPI) {
 						args: [
 							...["-m", BACKENDS[backend || "rlinf"]],
 							...["--task-description", setup.task.instruction, ...(config ? ["--robot-config", config] : [])],
+							...ikArgs(flag("ik")),
+							...(flag("robot-sam3") ? ["--sam3", flag("robot-sam3")] : []),
+							...(flag("robot-unidepth") ? ["--unidepth", flag("robot-unidepth")] : []),
+							...graspArgs(pi),
 						],
 						cwd: r.root,
 						env: servicesEnv(r),
@@ -1023,6 +1230,14 @@ export default function franka(pi: ExtensionAPI) {
 		remember(reset.states);
 		attemptStart = (await dumpState(null, null, null)).blob.step_idx;
 		ctx.ui.notify(`Franka ready (${caps.backend}): task ${task()} (${setup.task.name}); steps under ${out}`, "info");
-		return TOOLS.filter((name) => name !== "vla_grasp" || caps.has_vla);
+		// Perception tools exist only when the env server was started with --sam3 / --unidepth.
+		return [
+			...TOOLS.filter(
+				(name) =>
+					(name !== "vla_grasp" || caps.has_vla) &&
+					(!(name in PERCEPTION_TOOLS) || caps.perception?.[PERCEPTION_TOOLS[name]] === true),
+			),
+			...graspActive(pi),
+		];
 	}
 }

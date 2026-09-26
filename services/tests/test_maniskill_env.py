@@ -49,3 +49,57 @@ def test_pickcube_goal_is_shown_to_the_cameras_and_required_in_view():
     seg[0, 20:25, 20:25] = 2
     facade.check_visible(obs)
     assert facade._meta["visible_px"] == {"cube": 100, "goal_site": 25}
+
+
+#: The task table before OpenETA's tasks were added: these rows must stay byte-identical
+#: (the eight ids pi's --env-id accepted, and their texts, actors and shown goals).
+_FROZEN = {
+    "BlockPAP-v1": None,
+    "BlockStack-v1": None,
+    "PickCube-v1": (
+        "pick up the red cube and move it into the green goal sphere",
+        ["cube", "goal_site"],
+        ["goal_site"],
+    ),
+    "StackCube-v1": (
+        "stack the red cube on top of the green cube",
+        ["cubeA", "cubeB"],
+        None,
+    ),
+    "PushCube-v1": ("push the cube to the goal marker", ["obj", "goal_region"], None),
+    "PullCube-v1": ("pull the cube to the goal marker", ["obj", "goal_region"], None),
+    "PokeCube-v1": (
+        "poke the cube to the goal marker",
+        ["cube", "peg", "goal_region"],
+        None,
+    ),
+    "LiftPegUpright-v1": ("lift the peg upright", ["peg"], None),
+}
+#: OpenETA's ManiSkill table (sim/envs/maniskill at 7d4a0a1: every registered env minus
+#: locomotion, humanoids and dexterous hands), the part a translation-only Panda can attempt.
+_ADDED = [
+    "PlaceSphere-v1",
+    "StackPyramid-v1",
+    "PullCubeTool-v1",
+    "PegInsertionSide-v1",
+    "PlugCharger-v1",
+    "PickSingleYCB-v1",
+]
+
+
+def test_the_eight_existing_env_ids_are_unchanged_and_openeta_tasks_are_complete():
+    assert ms.ENV_IDS[:8] == list(_FROZEN)
+    assert ms.ENV_IDS[8:] == _ADDED
+    for env_id, row in _FROZEN.items():
+        if row is None:
+            assert env_id not in ms.INSTRUCTIONS  # a rig: scenes.py owns its text
+            continue
+        text, actors, goals = row
+        assert ms.INSTRUCTIONS[env_id] == text
+        assert ms.TASK_ACTORS[env_id] == actors
+        assert ms.SHOW_GOALS.get(env_id) == goals
+    # Every added task has a text and a visibility list; PickSingleYCB's hidden goal is shown.
+    for env_id in _ADDED:
+        assert ms.INSTRUCTIONS[env_id] and len(ms.TASK_ACTORS[env_id]) >= 2
+    assert ms.SHOW_GOALS["PickSingleYCB-v1"] == ["goal_site"]
+    assert "goal" in ms.INSTRUCTIONS["PickSingleYCB-v1"]

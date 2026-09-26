@@ -27,6 +27,7 @@ import numpy as np
 
 from pi_embodied_services.components.code_api import register_code_api
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
+from pi_embodied_services.robots.robocasa import tasks
 from pi_embodied_services.robots.robocasa.primitives import ROBOCASA_PRIMITIVES
 from pi_embodied_services.utils import ground_truth
 from pi_embodied_services.utils.logging import get_logger
@@ -90,22 +91,41 @@ class RoboCasaEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         task_name,
         split="target",
         seed=0,
+        scene=None,
         camera_h=256,
         camera_w=256,
         cameras=None,
         use_camera_obs=False,
     ):
+        """``scene`` (a manifest index, 0-49) picks the task's scene seed from the
+        RoboCasa365 table and reseeds every reset with it; without one ``seed`` seeds
+        the env once, as robosuite does."""
         super().__init__()
+        self.table = tasks.load_table()
+        self.cameras = list(cameras) if cameras else list(DEFAULT_CAMS)
+        self.camera_h, self.camera_w = camera_h, camera_w
+        self.use_camera_obs = use_camera_obs
+        self.env = None
+        self._make(task_name, split, seed, scene)
+
+    def _make(self, task_name, split, seed, scene):
+        """Build the robosuite env of ``task_name`` in ``split`` (closing the current one)."""
         import robocasa  # noqa: F401 — registers robocasa envs
         import robosuite
         from robosuite.controllers import load_composite_controller_config
 
-        self.task_name = task_name
-        self.split = split
-        self.seed = seed
-        self.cameras = list(cameras) if cameras else list(DEFAULT_CAMS)
-        self.camera_h, self.camera_w = camera_h, camera_w
-
+        if scene is not None:
+            seed = tasks.scene_seed(self.table, task_name, split, scene)
+        else:
+            tasks.find_task(self.table, task_name)
+        if self.env is not None:
+            self.close()
+        self.task_name, self.split, self.seed, self.scene = (
+            task_name,
+            split,
+            seed,
+            scene,
+        )
         controller_config = load_composite_controller_config(
             controller=None, robot="PandaOmron"
         )
@@ -114,13 +134,13 @@ class RoboCasaEnvFacade(MainThreadServeMixin, BaseEnvFacade):
             robots="PandaOmron",
             controller_configs=controller_config,
             camera_names=self.cameras,
-            camera_widths=camera_w,
-            camera_heights=camera_h,
+            camera_widths=self.camera_w,
+            camera_heights=self.camera_h,
             has_renderer=False,
             has_offscreen_renderer=True,
             ignore_done=True,
             use_object_obs=True,
-            use_camera_obs=use_camera_obs,  # off -> no per-step render (EGL-safe OSC loops)
+            use_camera_obs=self.use_camera_obs,  # off -> no per-step render (EGL-safe OSC loops)
             camera_depths=False,  # depth rendered on demand
             seed=seed,
             **_split_kwargs(split),
@@ -130,6 +150,10 @@ class RoboCasaEnvFacade(MainThreadServeMixin, BaseEnvFacade):
             "task_name": self.task_name,
             "split": self.split,
             "seed": self.seed,
+            "scene": self.scene,
+            "env_id": tasks.env_id(self.task_name, self.split)
+            if self.split in self.table["splits"]
+            else None,
             "camera_h": self.camera_h,
             "camera_w": self.camera_w,
         }
@@ -137,6 +161,8 @@ class RoboCasaEnvFacade(MainThreadServeMixin, BaseEnvFacade):
     def _register_rpc(self):
         """Register all RPC methods."""
         super()._register_rpc()
+        self._rpc["env.list_tasks"] = self.list_tasks
+        self._readonly_methods.add("env.list_tasks")
         self._rpc["env.check_success"] = self.check_success
         self._rpc["env.get_camera_transform"] = self.get_camera_transform
         self._rpc["env.grasp_contact"] = self.grasp_contact
@@ -159,18 +185,36 @@ class RoboCasaEnvFacade(MainThreadServeMixin, BaseEnvFacade):
     def get_env_meta(self):
         return self._meta
 
+    def list_tasks(self, split):
+        """The RoboCasa365 table's tasks of ``split`` (pretrain | target)."""
+        return tasks.list_tasks(self.table, split)
+
     # ---- lifecycle ----
-    def reset(self):
+    def reset(self, task=None, split=None, scene=None):
+        """Reset the env; ``task`` / ``split`` switch to another env (rebuilt when they
+        differ from the current one), ``scene`` to another manifest scene of it."""
+        if (task, split, scene) != (None, None, None):
+            task = task if task is not None else self.task_name
+            split = split if split is not None else self.split
+            scene = scene if scene is not None else self.scene
+            if (task, split) != (self.task_name, self.split):
+                self._make(task, split, self.seed, scene)
+            elif scene != self.scene:
+                self.seed = tasks.scene_seed(self.table, task, split, scene)
+                self.scene = scene
+                self._meta.update(seed=self.seed, scene=self.scene)
         # RLDX_RESET_SEED=<episode_seed> -> reproduce the EXACT scene the fullshot eval
         # generated for that episode, seeded the SAME way as the eval's VideoRecordingWrapper
         # (random.seed + np.random.seed + robosuite env.rng/seed) BEFORE reset. Lets the
         # hybrid run on the IDENTICAL reset layouts fullshot was scored on (true paired
         # comparison). The eval formula: episode_seed = (run_seed + env_idx)*100000 + episode_id.
+        # A manifest scene reseeds the same way with its scene seed, so every reset of it
+        # samples the same kitchen and objects.
         rs_env = os.environ.get("RLDX_RESET_SEED")
-        if rs_env:
+        if rs_env or self.scene is not None:
             import random
 
-            sd = int(rs_env)
+            sd = int(rs_env) if rs_env else self.seed
             random.seed(sd)
             np.random.seed(sd)
             if hasattr(self.env, "seed"):
@@ -418,6 +462,12 @@ def main():
     p.add_argument("--task-name", default="OpenDrawer")
     p.add_argument("--split", default="target")
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument(
+        "--scene",
+        type=int,
+        default=None,
+        help="RoboCasa365 manifest scene index (0-49); overrides --seed",
+    )
     args = p.parse_args()
 
     if args.cuda_device is not None:
@@ -452,6 +502,7 @@ def main():
         args.task_name,
         split=args.split,
         seed=args.seed,
+        scene=args.scene,
     )
     facade.serve(
         transport=args.transport,

@@ -69,12 +69,17 @@ export type FlashPicks = {
 	release: string;
 };
 
+export type Rewritten = FlashCall | FlashCall[] | "skip" | "stop";
+
 /** A replay underway: how the plan meets the live scene. */
 export type FlashReplay<E extends FlashEntry = FlashEntry> = {
 	/** Anchors located on the live scene, for the summary. */
 	localized: number;
-	/** The call to send for `entry`, with its arguments rewritten; "skip" to leave it out; "stop" to end the replay. */
-	rewrite(entry: E): FlashCall | "skip" | "stop" | Promise<FlashCall | "skip" | "stop">;
+	/**
+	 * The call to send for `entry`, with its arguments rewritten (several when one planned move is split
+	 * into the robot's per-call steps); "skip" to leave it out; "stop" to end the replay.
+	 */
+	rewrite(entry: E): Rewritten | Promise<Rewritten>;
 	/** Called after each sent call (after its retries). */
 	after?: (call: FlashCall, reply: FlashReply) => void | Promise<void>;
 	/** Retry picks that did not take hold; without it every call runs once. */
@@ -117,25 +122,28 @@ export async function runFlash<P extends FlashProgram>(hook: FlashHook<P>, progr
 			if (!picks.isPick(name)) continue;
 			skipCarry = false;
 		}
-		const call = await replay.rewrite(entry);
-		if (call === "stop") break;
-		if (call === "skip") continue;
-		let reply = await robot.move(call);
-		if (picks?.isPick(call.name) && !picks.succeeded(reply)) {
-			for (let attempt = 1; attempt < picks.attempts && !over(); attempt++) {
-				for (const again of recent) await robot.move({ name: again.name, arguments: { ...again.arguments } });
-				reply = await robot.move({ name: call.name, arguments: { ...call.arguments } });
-				if (picks.succeeded(reply)) break;
+		const rewritten = await replay.rewrite(entry);
+		if (rewritten === "stop") break;
+		if (rewritten === "skip") continue;
+		for (const call of Array.isArray(rewritten) ? rewritten : [rewritten]) {
+			if (over()) break;
+			let reply = await robot.move(call);
+			if (picks?.isPick(call.name) && !picks.succeeded(reply)) {
+				for (let attempt = 1; attempt < picks.attempts && !over(); attempt++) {
+					for (const again of recent) await robot.move({ name: again.name, arguments: { ...again.arguments } });
+					reply = await robot.move({ name: call.name, arguments: { ...call.arguments } });
+					if (picks.succeeded(reply)) break;
+				}
+				if (!picks.succeeded(reply)) {
+					robot.note("pick unconfirmed, skipping its carry");
+					skipCarry = true;
+				}
 			}
-			if (!picks.succeeded(reply)) {
-				robot.note("pick unconfirmed, skipping its carry");
-				skipCarry = true;
-			}
+			await replay.after?.(call, reply);
+			if (!picks) continue;
+			if (picks.isPick(call.name) || picks.boundary.includes(call.name)) recent = [];
+			else if (picks.approach.includes(call.name)) recent = [...recent, call].slice(-picks.keep);
 		}
-		await replay.after?.(call, reply);
-		if (!picks) continue;
-		if (picks.isPick(call.name) || picks.boundary.includes(call.name)) recent = [];
-		else if (picks.approach.includes(call.name)) recent = [...recent, call].slice(-picks.keep);
 	}
 	return { done: hook.solved(robot.latest()), anchors: replay.localized, plan: program.plan.length };
 }

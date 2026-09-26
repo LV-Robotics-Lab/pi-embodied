@@ -131,14 +131,21 @@ def test_method_list_matches_the_rlinf_server():
 
     assert METHODS == FrankaEnvFacade._METHODS
     f = facade()
+    # Both servers also answer env.preview_reach (utils/reach.py; "unknown" without --ik).
     assert {m for m in f._rpc if m.startswith("env.")} == {
         f"env.{m}" for m in FrankaEnvFacade._METHODS
-    }
-    # Both backends serve the same primitive registry.
-    assert (
-        "code.api" in f._rpc
-        and FrankaEnvFacade._PRIMITIVES is env_server.FRANKA_PRIMITIVES
+    } | {"env.preview_reach"}
+    # Both backends serve the same primitive registry (without perception: the base set).
+    from pi_embodied_services.robots.franka.primitives import (
+        FRANKA_PRIMITIVES,
+        franka_primitives,
     )
+
+    assert "code.api" in f._rpc and FrankaEnvFacade._PRIMITIVES is FRANKA_PRIMITIVES
+    assert franka_primitives(None) == FRANKA_PRIMITIVES
+    assert [p["name"] for p in f._rpc["code.api"]("high")["primitives"]] == [
+        p.name for p in FRANKA_PRIMITIVES if "high" in p.tiers
+    ]
 
 
 def test_capabilities_have_the_same_keys_on_both_backends():
@@ -1162,6 +1169,7 @@ def test_code_api_lists_the_primitives_and_resolves_to_the_facade_methods():
     high = call(f, "code.api", tier="high")
     assert [p["name"] for p in high["primitives"]] == [
         "get_robot_state",
+        "preview_reach",
         "move_delta",
         "rotate_delta",
         "set_gripper",

@@ -124,9 +124,10 @@ export function denied(path: string, access: Access, g: Guard): string | undefin
 	return `reading this memory path is denied: ${path}`;
 }
 
-type Call = { name: string; args: Record<string, unknown>; details: Details; isError: boolean };
+export type Call = { name: string; args: Record<string, unknown>; details: Details; isError: boolean };
 
-function toolCalls(entries: SessionEntry[]): Call[] {
+/** The session's tool calls in order, each with its arguments and its result's details (../flash/generate.ts reads them too). */
+export function toolCalls(entries: SessionEntry[]): Call[] {
 	const args = new Map<string, Record<string, unknown>>();
 	const calls: Call[] = [];
 	for (const entry of entries) {

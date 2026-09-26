@@ -8,9 +8,12 @@
 # the planner did not fail (`env_error`, `planner_error` and a missing result are invalid),
 # whatever the outcome. Rerunning retries exactly the invalid episodes; valid ones are kept.
 # Each result records the model, thinking level, --max-turns, --time-limit, the units mode
-# (--units, --stateless) and visual differencing (--vdm, --vdm-model, --vdm-wrist), and the summary
-# covers only the requested cells and refuses to mix configurations.
+# (--units, --stateless, --unit-tol), code mode (--code, --code-api) and visual differencing (--vdm,
+# --vdm-model, --vdm-wrist; the model only with --vdm), and the summary covers only the requested
+# cells and refuses to mix configurations.
 # A --privileged run (simulator ground truth) is recorded as such and never shares an out dir with one without.
+# The fallback planner (--fallback-model, --fallback-after, --fallback-retry-primary; src/fallback.ts) is part of the
+# configuration too, and the summary totals the turns each planner model planned (planner_models).
 set -uo pipefail
 out=$1 suite=$2 tasks=$3 seeds=$4
 shift 4
@@ -20,7 +23,11 @@ expand() { for part in ${1//,/ }; do seq "${part%-*}" "${part#*-}"; done; }
 model="" thinking="" turns=0 limit=${TIME_LIMIT:-1800} limited="" units=false stateless=false
 anchor=false
 vdm=false vdm_model="" vdm_wrist=false
+# The robot's default (src/libero/index.ts --unit-tol).
+unit_tol=0.004
 privileged=false
+fallback_model="" fallback_after=2 fallback_retry=0
+code=false code_api=high
 args=("$@")
 for ((i = 0; i < ${#args[@]}; i++)); do
 	case ${args[i]} in
@@ -34,6 +41,11 @@ for ((i = 0; i < ${#args[@]}; i++)); do
 	--time-limit=*) limit=${args[i]#*=} limited=1 ;;
 	--units) [[ ${args[i + 1]:---} == --* ]] && units=true || units=${args[i + 1]} ;;
 	--units=*) units=${args[i]#*=} ;;
+	# --code / --code-api (run_code, packages/embodied/src/code) are string flags like --units.
+	--code) [[ ${args[i + 1]:---} == --* ]] && code=true || code=${args[i + 1]} ;;
+	--code=*) code=${args[i]#*=} ;;
+	--code-api) code_api=${args[i + 1]:-high} ;;
+	--code-api=*) code_api=${args[i]#*=} ;;
 	# pi sets a boolean flag to true whatever value it is given (`--stateless=false` runs stateless)
 	# and takes a following word as that value: only the forms that say what pi runs are accepted.
 	--stateless) case ${args[i + 1]:-} in "" | -* | @* | true) stateless=true ;; *)
@@ -53,8 +65,16 @@ for ((i = 0; i < ${#args[@]}; i++)); do
 		echo "${args[i]}: pi ignores a boolean flag's value and would turn it on; omit it to leave it off" >&2
 		exit 2
 		;;
+	--fallback-model) fallback_model=${args[i + 1]:-} ;;
+	--fallback-model=*) fallback_model=${args[i]#*=} ;;
+	--fallback-after) fallback_after=${args[i + 1]:-2} ;;
+	--fallback-after=*) fallback_after=${args[i]#*=} ;;
+	--fallback-retry-primary) fallback_retry=${args[i + 1]:-0} ;;
+	--fallback-retry-primary=*) fallback_retry=${args[i]#*=} ;;
 	--vdm-model) vdm_model=${args[i + 1]:-} ;;
 	--vdm-model=*) vdm_model=${args[i]#*=} ;;
+	--unit-tol) unit_tol=${args[i + 1]:-} ;;
+	--unit-tol=*) unit_tol=${args[i]#*=} ;;
 	# --privileged (simulator ground truth, ground_truth_poses) is a boolean like --stateless.
 	--privileged) case ${args[i + 1]:-} in "" | -* | @* | true) privileged=true ;; *)
 		echo "--privileged takes no value: pi would turn it on and swallow '${args[i + 1]}'" >&2 && exit 2 ;;
@@ -76,18 +96,21 @@ for ((i = 0; i < ${#args[@]}; i++)); do
 	esac
 done
 [ "$units" = pure ] && units=true
+[ "$code" = pure ] && code=true
+# Without --vdm no VDM call runs, so its model is not part of the configuration.
+[ "$vdm" = true ] || vdm_model=""
 # --time-limit (default $TIME_LIMIT, 1800 s; 0 = none) ends the planner gracefully, as a failure;
 # `timeout` is only the backstop for a hung process, and a killed episode is invalid.
 [ -n "$limited" ] || set -- "$@" --time-limit "$limit"
 backstop=()
 [ "$limit" -gt 0 ] && command -v timeout >/dev/null && backstop=(timeout -k 30 $((limit + 900)))
 mkdir -p "$out"
-config=("$model" "$thinking" "$turns" "$limit" "$units" "$stateless" "$vdm" "$vdm_model" "$vdm_wrist" "$privileged" "$anchor")
+config=("$model" "$thinking" "$turns" "$limit" "$units" "$stateless" "$vdm" "$vdm_model" "$vdm_wrist" "$privileged" "$anchor" "$unit_tol" "$code" "$code_api" "$fallback_model" "$fallback_after" "$fallback_retry")
 
 record() { # <dir> <exit code>: write result.json from the episode's session
 	node --input-type=module -e '
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
-const [dir, code, model, thinking, turns, limit, units, stateless, vdm, vdmModel, vdmWrist, privileged, anchor] = process.argv.slice(1);
+const [dir, code, model, thinking, turns, limit, units, stateless, vdm, vdmModel, vdmWrist, privileged, anchor, unitTol, codeMode, codeApi, fallbackModel, fallbackAfter, fallbackRetry] = process.argv.slice(1);
 const results = [];
 for (const f of readdirSync(dir).filter((f) => f.endsWith(".jsonl"))) {
 	for (const line of readFileSync(`${dir}/${f}`, "utf8").split("\n")) {
@@ -103,7 +126,9 @@ const status = Number(code) === 124 ? "timeout" : results.length > 1 ? "duplicat
 const result = { ...(last ?? {}), status, exit_code: Number(code), model: model || null, thinking: thinking || null,
 	max_turns: Number(turns), time_limit: Number(limit), units, anchor_image: anchor === "true", stateless: stateless === "true",
 	vdm: vdm === "true", vdm_model: vdmModel || null, vdm_wrist: vdmWrist === "true",
-	privileged: privileged === "true" };
+	privileged: privileged === "true", unit_tol: Number(unitTol),
+	code: codeMode, code_api: codeMode === "false" ? null : codeApi,
+	fallback_model: fallbackModel || null, fallback_after: fallbackModel ? Number(fallbackAfter) : null, fallback_retry_primary: fallbackModel ? Number(fallbackRetry) : null };
 writeFileSync(`${dir}/result.json`, `${JSON.stringify(result, null, 2)}\n`);
 console.log(JSON.stringify({ status, terminated: result.terminated, claimed: result.claimed, env_steps: result.env_steps }));
 ' "$1" "$2" "${config[@]}"
@@ -111,7 +136,7 @@ console.log(JSON.stringify({ status, terminated: result.terminated, claimed: res
 
 valid() { # <dir>: 0 = a valid result of this configuration, 2 = a valid result of another one, 1 = none
 	node -e '
-const [path, model, thinking, turns, limit, units, stateless, vdm, vdmModel, vdmWrist, privileged, anchor] = process.argv.slice(1);
+const [path, model, thinking, turns, limit, units, stateless, vdm, vdmModel, vdmWrist, privileged, anchor, unitTol, codeMode, codeApi, fallbackModel, fallbackAfter, fallbackRetry] = process.argv.slice(1);
 const r = JSON.parse(require("fs").readFileSync(path, "utf8"));
 if (r.status !== "success" && r.status !== "failure") process.exit(1);
 const same = r.model === (model || null) && r.thinking === (thinking || null) && r.max_turns === Number(turns)
@@ -120,7 +145,14 @@ const same = r.model === (model || null) && r.thinking === (thinking || null) &&
 	&& (r.vdm ?? false) === (vdm === "true") && (r.vdm_model ?? null) === (vdmModel || null)
 	&& (r.vdm_wrist ?? false) === (vdmWrist === "true") && (r.privileged ?? false) === (privileged === "true")
 	// Results written before --anchor-image existed ran without it.
-	&& (r.anchor_image ?? false) === (anchor === "true");
+	&& (r.anchor_image ?? false) === (anchor === "true")
+	// Results written before --unit-tol was recorded ran with the default tolerance.
+	&& (r.unit_tol ?? 0.004) === Number(unitTol)
+	// Results written before --code existed ran without it.
+	&& (r.code ?? "false") === codeMode && (r.code_api ?? null) === (codeMode === "false" ? null : codeApi)
+	// Results written before --fallback-model existed ran without a fallback planner.
+	&& (r.fallback_model ?? null) === (fallbackModel || null) && (r.fallback_after ?? null) === (fallbackModel ? Number(fallbackAfter) : null)
+	&& (r.fallback_retry_primary ?? null) === (fallbackModel ? Number(fallbackRetry) : null);
 process.exit(same ? 0 : 2);
 ' "$1/result.json" "${config[@]}" 2>/dev/null
 }
@@ -133,7 +165,7 @@ for task in $(expand "$tasks"); do
 		valid "$dir"
 		case $? in
 		0) continue ;;
-		2) echo "$dir holds a result of another model, thinking level, --max-turns, --time-limit, units mode, vdm, --privileged or --anchor-image; use another out dir" >&2 && exit 1 ;;
+		2) echo "$dir holds a result of another model, thinking level, --max-turns, --time-limit, units mode, --unit-tol, code mode, vdm, fallback, --privileged or --anchor-image; use another out dir" >&2 && exit 1 ;;
 		esac
 		rm -rf "$dir" && mkdir -p "$dir"
 		echo "== $suite task $task seed $seed"
@@ -155,16 +187,18 @@ const rows = cells.map((c) => {
 	}
 });
 const configs = new Set(rows.filter((r) => r.status === "success" || r.status === "failure")
-	.map((r) => `${r.model}/${r.thinking}/turns=${r.max_turns}/limit=${r.time_limit}/units=${r.units}${r.stateless ? "/stateless" : ""}${r.anchor_image ? "/anchor" : ""}${r.vdm ? `/vdm=${r.vdm_model ?? "default"}${r.vdm_wrist ? "+wrist" : ""}` : ""}${r.privileged ? "/privileged" : ""}`));
+	.map((r) => `${r.model}/${r.thinking}/turns=${r.max_turns}/limit=${r.time_limit}/units=${r.units}${r.stateless ? "/stateless" : ""}${r.anchor_image ? "/anchor" : ""}/unit_tol=${r.unit_tol ?? 0.004}${r.vdm ? `/vdm=${r.vdm_model ?? "default"}${r.vdm_wrist ? "+wrist" : ""}` : ""}${r.privileged ? "/privileged" : ""}${r.fallback_model ? `/fallback=${r.fallback_model}:${r.fallback_after}:${r.fallback_retry_primary}` : ""}${r.code && r.code !== "false" ? `/code=${r.code}:${r.code_api}` : ""}`));
 if (configs.size > 1) {
 	console.log(`refusing to summarize: ${out} mixes configurations ${[...configs].join(", ")}`);
 	process.exit(1);
 }
+const pm = rows.reduce((a, r) => r.planner_models ? { primary: a.primary + (r.planner_models.primary ?? 0), fallback: a.fallback + (r.planner_models.fallback ?? 0), rows: a.rows + 1 } : a, { primary: 0, fallback: 0, rows: 0 });
+const planned = pm.rows ? `, planner_models primary=${pm.primary} fallback=${pm.fallback}` : "";
 const n = (s) => rows.filter((r) => r.status === s).length;
 const scored = n("success") + n("failure");
 const lies = rows.filter((r) => r.status === "failure" && r.claimed === "success").length;
 const rate = scored ? ((100 * n("success")) / scored).toFixed(1) : "-";
 const invalid = rows.length - scored;
-console.log(`${[...configs][0] ?? "-"}: success ${n("success")}/${scored} (${rate}%), claimed-but-failed ${lies}, invalid ${invalid} (env_error ${n("env_error")}, planner_error ${n("planner_error")}, timeout ${n("timeout")}, missing ${n("missing")}, duplicate ${n("duplicate_result")}) of ${rows.length}`);
+console.log(`${[...configs][0] ?? "-"}: success ${n("success")}/${scored} (${rate}%), claimed-but-failed ${lies}, invalid ${invalid} (env_error ${n("env_error")}, planner_error ${n("planner_error")}, timeout ${n("timeout")}, missing ${n("missing")}, duplicate ${n("duplicate_result")}) of ${rows.length}${planned}`);
 if (invalid) process.exit(1);
 ' "$out" "${cells[@]}"

@@ -13,7 +13,7 @@ import { defineRobot, RESULT_ENTRY } from "../src/robot.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 /** One scripted delegate turn: a reply, an error message, an error after some text, or silence. */
-type Script = "ok" | { error: string } | { midway: string } | "hang";
+type Script = "ok" | { error: string; cost?: number } | { midway: string } | "hang";
 
 const PRIMARY = "relay/gpt-6-astra";
 const BACKUP = "selfhost/muse-glimmer-30b";
@@ -30,8 +30,9 @@ const model = (ref: string): Model<any> => {
 		reasoning: true,
 		input: ["text"],
 		cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
-		contextWindow: 1000,
-		maxTokens: 100,
+		// The primary's window is far larger than the backup's (relay GPT vs a 64k self-hosted model).
+		contextWindow: ref === PRIMARY ? 400_000 : 65_536,
+		maxTokens: ref === PRIMARY ? 128_000 : 16_384,
 	};
 };
 
@@ -57,8 +58,9 @@ function fakePi(flagValues: Record<string, unknown> = {}) {
 		setActiveTools: () => {},
 		getActiveTools: () => [],
 		appendEntry: (type: string, data: any) => entries.push({ type, data }),
-		events: { emit: () => {}, on: () => () => {} },
+		events: { emit: (channel: string, data: any) => events.push({ channel, data }), on: () => () => {} },
 	} as unknown as ExtensionAPI;
+	const events: { channel: string; data: any }[] = [];
 	const registry = {
 		find: (provider: string, id: string) => {
 			const ref = `${provider}/${id}`;
@@ -101,6 +103,14 @@ function fakePi(flagValues: Record<string, unknown> = {}) {
 			if (script === "hang") return stream;
 			stream.push({ type: "start", partial: message });
 			if (typeof script === "object" && "error" in script) {
+				// A delegate that billed something before failing reports it on the error message.
+				if (script.cost !== undefined)
+					message.usage = {
+						...message.usage,
+						totalTokens: 30,
+						cost: { ...message.usage.cost, total: script.cost },
+					};
+				else message.usage = { ...message.usage, totalTokens: 0, cost: { ...message.usage.cost, total: 0 } };
 				fail(script.error);
 				return stream;
 			}
@@ -122,7 +132,11 @@ function fakePi(flagValues: Record<string, unknown> = {}) {
 		hasUI: false,
 		cwd: "/",
 		ui: { notify: () => {} },
-		model: { provider: "fallback" },
+		// The session's model object: pi compacts against its contextWindow, so the module sizes it at session start.
+		model: { provider: "fallback", id: PRIMARY, contextWindow: 128_000, maxTokens: 16_384 } as Record<
+			string,
+			unknown
+		>,
 		modelRegistry: registry,
 		sessionManager: { getBranch: () => [] },
 	};
@@ -143,7 +157,7 @@ function fakePi(flagValues: Record<string, unknown> = {}) {
 		return { events, message: await stream.result() };
 	};
 	const switches = () => entries.filter((e) => e.type === FALLBACK_ENTRY).map((e) => e.data);
-	return { pi, ctx, emit, turn, providers, entries, switches, stderr, scripts, calls, tools, restore };
+	return { pi, ctx, emit, turn, providers, entries, events, switches, stderr, scripts, calls, tools, restore };
 }
 
 test("fallbackArgs reads --model fallback/<primary> and --fallback-model in both flag forms", () => {
@@ -200,6 +214,7 @@ test("the primary is retried until --fallback-after, then the backup plans; the 
 			to: BACKUP,
 			reason: "2 consecutive failures; last: Request failed (400): model not supported by this channel",
 			turn: 1,
+			failed: { attempts: 2, cost_usd: 0, tokens: 0 },
 		},
 	]);
 	// The rest of the episode is planned by the backup without asking the primary.
@@ -352,6 +367,47 @@ test("--fallback-retry-primary tries the primary again after M backup turns", as
 		],
 	);
 	assert.deepEqual(fb.result(), { planner_models: { primary: 1, fallback: 4 } });
+});
+
+test("session start sizes the session's model to the smaller delegate's window and output cap", async (t) => {
+	const f = fakePi();
+	t.after(f.restore);
+	fallback(f.pi, ARGV);
+	await f.emit("session_start");
+	assert.equal(f.ctx.model.contextWindow, 65_536, "the backup's window, not the primary's 400k");
+	assert.equal(f.ctx.model.maxTokens, 16_384);
+	// Another model selected: the session's object is left alone.
+	f.ctx.model = { provider: "relay", id: "gpt-6-astra", contextWindow: 400_000, maxTokens: 128_000 };
+	await f.emit("session_start");
+	assert.equal(f.ctx.model.contextWindow, 400_000);
+});
+
+test("what failed attempts consumed goes to the budget and into the switch entry", async (t) => {
+	const f = fakePi();
+	t.after(f.restore);
+	fallback(f.pi, ARGV);
+	await f.emit("session_start");
+	f.scripts[PRIMARY].push(
+		{ error: "Request failed (503): down", cost: 0.02 },
+		{ error: "Request failed (502): down", cost: 0.03 },
+	);
+	const r = await f.turn();
+	assert.equal(r.message.model, "muse-glimmer-30b");
+	assert.deepEqual(
+		f.events.map((e) => [e.channel, e.data]),
+		[
+			["pi-embodied:vlm-cost", 0.02],
+			["pi-embodied:vlm-cost", 0.03],
+		],
+		"each swallowed attempt's cost is reported the way side VLM calls are",
+	);
+	assert.deepEqual(f.switches()[0].failed, { attempts: 2, cost_usd: 0.05, tokens: 60 });
+	// A failure that reported no usage costs nothing and emits nothing.
+	await f.emit("session_start");
+	f.scripts[PRIMARY].push({ error: "Request failed (503): down" }, { error: "Request failed (503): down" });
+	await f.turn();
+	assert.equal(f.events.length, 2);
+	assert.deepEqual(f.switches()[1].failed, { attempts: 2, cost_usd: 0, tokens: 0 });
 });
 
 test("an unknown delegate is an error, not a crash", async (t) => {

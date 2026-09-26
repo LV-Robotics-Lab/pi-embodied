@@ -136,14 +136,15 @@ class Sam3Facade(RpcFacade):
         text_prompt: str | None,
         point: list[int] | None,
         min_score: float,
-    ) -> Sam3Result:
+        all: bool = False,
+    ) -> Sam3Result | dict[str, Any]:
         """Run one prompt against the cached latest-image features."""
         with self._lock:
             state = self._state_for_image(image_bytes)
             height = int(state["original_height"])
             width = int(state["original_width"])
             if text_prompt is not None:
-                return self._segment_text(state, text_prompt, min_score)
+                return self._segment_text(state, text_prompt, min_score, all)
             assert point is not None
             row, col = point
             if row < 0 or col < 0 or row >= height or col >= width:
@@ -151,7 +152,7 @@ class Sam3Facade(RpcFacade):
                     f"point [row, col] {point} is outside image shape "
                     f"[{height}, {width}]"
                 )
-            return self._segment_point(state, row, col, min_score)
+            return self._segment_point(state, row, col, min_score, all)
 
     def _inference_context(self):
         if self._torch is None or not self._device.startswith("cuda"):
@@ -178,10 +179,12 @@ class Sam3Facade(RpcFacade):
         state: dict[str, Any],
         prompt: str,
         min_score: float,
-    ) -> Sam3Result:
+        all: bool = False,
+    ) -> Sam3Result | dict[str, Any]:
         with self._inference_context():
             output = self._processor.set_text_prompt(prompt=prompt, state=state)
-        return self._select_top(
+        select = self._select_all if all else self._select_top
+        return select(
             masks=output.get("masks"),
             scores=output.get("scores"),
             boxes=output.get("boxes"),
@@ -194,7 +197,8 @@ class Sam3Facade(RpcFacade):
         row: int,
         col: int,
         min_score: float,
-    ) -> Sam3Result:
+        all: bool = False,
+    ) -> Sam3Result | dict[str, Any]:
         if getattr(self._model, "inst_interactive_predictor", None) is None:
             raise RuntimeError("SAM3 instance interactivity is not enabled")
         point_coords = np.asarray([[col, row]], dtype=np.float32)
@@ -206,7 +210,8 @@ class Sam3Facade(RpcFacade):
                 point_labels=point_labels,
                 multimask_output=True,
             )
-        return self._select_top(
+        select = self._select_all if all else self._select_top
+        return select(
             masks=masks,
             scores=scores,
             boxes=None,
@@ -214,15 +219,12 @@ class Sam3Facade(RpcFacade):
         )
 
     @staticmethod
-    def _select_top(
-        *,
-        masks: Any,
-        scores: Any,
-        boxes: Any,
-        min_score: float,
-    ) -> Sam3Result:
+    def _candidates(
+        masks: Any, scores: Any, boxes: Any
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None] | None:
+        """SAM3's candidate tensors as (masks [N,H,W], scores [N], boxes or None)."""
         if masks is None or scores is None:
-            return Sam3Result(found=False, reason="SAM3 returned no candidate")
+            return None
         masks_array = (
             masks
             if isinstance(masks, np.ndarray)
@@ -234,7 +236,7 @@ class Sam3Facade(RpcFacade):
             else scores.detach().float().cpu().numpy()
         ).reshape(-1)
         if masks_array.size == 0 or scores_array.size == 0:
-            return Sam3Result(found=False, reason="SAM3 returned no candidate")
+            return None
         if masks_array.ndim == 4 and masks_array.shape[1] == 1:
             masks_array = masks_array[:, 0]
         if masks_array.ndim == 2:
@@ -244,18 +246,95 @@ class Sam3Facade(RpcFacade):
                 "unexpected SAM3 candidate shapes: "
                 f"masks={masks_array.shape}, scores={scores_array.shape}"
             )
-
-        index = int(np.argmax(scores_array))
-        score = float(scores_array[index])
-        box: list[float] | None = None
+        boxes_array = None
         if boxes is not None:
             boxes_array = (
                 boxes
                 if isinstance(boxes, np.ndarray)
                 else boxes.detach().float().cpu().numpy()
             )
-            if boxes_array.ndim >= 2 and index < boxes_array.shape[0]:
-                box = [float(value) for value in boxes_array[index].reshape(-1)[:4]]
+        return masks_array, scores_array, boxes_array
+
+    @staticmethod
+    def _box_of(boxes_array: np.ndarray | None, index: int) -> list[float] | None:
+        if boxes_array is None:
+            return None
+        if boxes_array.ndim >= 2 and index < boxes_array.shape[0]:
+            return [float(value) for value in boxes_array[index].reshape(-1)[:4]]
+        return None
+
+    @classmethod
+    def _select_all(
+        cls,
+        *,
+        masks: Any,
+        scores: Any,
+        boxes: Any,
+        min_score: float,
+    ) -> dict[str, Any]:
+        """Every non-empty candidate at or above ``min_score``, best first.
+
+        ``detections[i]``: ``index`` (rank), ``score``, ``box`` (when SAM3 gave one),
+        ``area_px``, ``mask_png_base64``, ``mask_shape``. Point prompts yield SAM3's
+        three multimask candidates, text prompts one per instance found.
+        """
+        arrays = cls._candidates(masks, scores, boxes)
+        if arrays is None:
+            return {
+                "found": False,
+                "count": 0,
+                "detections": [],
+                "reason": "SAM3 returned no candidate",
+            }
+        masks_array, scores_array, boxes_array = arrays
+        detections: list[dict[str, Any]] = []
+        for source in np.argsort(-scores_array, kind="stable"):
+            score = float(scores_array[source])
+            if score < min_score:
+                break
+            mask = np.asarray(masks_array[source]) > 0
+            if mask.ndim != 2 or not mask.any():
+                continue
+            detection: dict[str, Any] = {
+                "index": len(detections),
+                "score": score,
+                "area_px": int(mask.sum()),
+                "mask_png_base64": _encode_mask_png(mask),
+                "mask_shape": [int(mask.shape[0]), int(mask.shape[1])],
+            }
+            box = cls._box_of(boxes_array, int(source))
+            if box is not None:
+                detection["box"] = box
+            detections.append(detection)
+        out: dict[str, Any] = {
+            "found": bool(detections),
+            "count": len(detections),
+            "detections": detections,
+        }
+        if not detections:
+            out["reason"] = (
+                f"no candidate at or above min_score {min_score:.3f} "
+                f"(top score {float(scores_array.max()):.3f})"
+            )
+        return out
+
+    @classmethod
+    def _select_top(
+        cls,
+        *,
+        masks: Any,
+        scores: Any,
+        boxes: Any,
+        min_score: float,
+    ) -> Sam3Result:
+        arrays = cls._candidates(masks, scores, boxes)
+        if arrays is None:
+            return Sam3Result(found=False, reason="SAM3 returned no candidate")
+        masks_array, scores_array, boxes_array = arrays
+
+        index = int(np.argmax(scores_array))
+        score = float(scores_array[index])
+        box = cls._box_of(boxes_array, index)
         if score < min_score:
             return Sam3Result(
                 found=False,
@@ -287,7 +366,14 @@ class Sam3Facade(RpcFacade):
         text_prompt: str | None = None,
         point: list[int] | None = None,
         min_score: float = 0.2,
+        all: bool = False,
     ) -> dict[str, Any]:
+        """One mask (the best) or, with ``all=True``, every mask for the prompt.
+
+        ``all=False``: ``{"found", "score"?, "box"?, "mask_png_base64"?, "mask_shape"?,
+        "reason"?}`` as before. ``all=True``: ``{"found", "count", "detections": [...],
+        "reason"?}`` (see :meth:`_select_all`).
+        """
         has_text = isinstance(text_prompt, str) and bool(text_prompt.strip())
         has_point = point is not None
         if has_text == has_point:
@@ -313,8 +399,9 @@ class Sam3Facade(RpcFacade):
             text_prompt=text_prompt,
             point=point,
             min_score=min_score,
+            all=bool(all),
         )
-        return response.to_dict()
+        return response if isinstance(response, dict) else response.to_dict()
 
 
 def _build_argparser() -> argparse.ArgumentParser:

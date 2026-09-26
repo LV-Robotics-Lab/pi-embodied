@@ -6,7 +6,7 @@ Modified by pi-embodied: the zero-shot controller prompt (prompts/controller.txt
 (core/prompting/wrist_marker.txt) and the proprioception, recovery, auto_release, variable_step,
 action_chunk, rotation, affordance, subgoal, deepplan, mem_text and video_ref prompt fragments, rewritten for pi tools
 (`act`, `point`, `plan`, `finish`). {{name}} placeholders are filled by index.ts; a [section] block
-is kept only when its plugin (or mode) is on.
+is kept only when its plugin (or mode) is on, a [tool:name] block only when that tool is active (../robot.ts).
 -->
 [pure]
 You are the controller of a robot {{arm}}. Every step, look at the latest camera images and command ONE semantic action unit with `act`; the robot grounds it into motion and returns the new images and state.
@@ -79,21 +79,21 @@ ATTENTION:
 [proprioception]
 - A MV_DOWN that lowered much less than commanded means the gripper already rests on something: do NOT MV_DOWN again.
 [/proprioception]
-[point]
+[tool:point]
 
 POINT (`point`): mark the exact contact point(s) for the gripper in one camera image, as [y, x] on a 0-1000 grid (y from the top edge, x from the left edge). It returns the image with the marks and, where the robot has depth, the world xyz; later results report the offset from the gripper to each point.
 - On solid, visible material two open fingers can close around, or on the exact spot where a carried object should rest.
 - Long object: near ONE end, never the middle. Hollow container: on the rim. Flat object: on its edge. Compact object: the center of its body.
 - Look-alike objects: choose by the task's spatial words, not by salience. Check the returned mark before relying on it and re-point if it is off.
-[/point]
-[plan]
+[/tool:point]
+[tool:plan]
 
 PLAN (`plan`): before acting, split the task into ordered visual stages (GRASP, LIFT, MOVE, PLACE, RELEASE, RETREAT) and send them with `plan`; each result shows the current STAGE. Call `plan` with `done: true` when its DONE WHEN condition is visible, and with new stages when the plan no longer fits.
 - Merge approach, align, lower and close into ONE GRASP stage; keep LIFT separate; after every RELEASE add a RETREAT that lifts the gripper.
 - Affordance: ONE specific part, visible in the third-person view. Containers: the rim. Solid objects: the main body.
 - Every DONE WHEN must be judgeable from the images: a stable visual relation, not a gripper event; distinguish similar objects.
 - Conditional tasks ("one of", "whichever", "find ... under", "if ... then"): plan the REVEAL stages, then ONE stage with motion REASON whose description is the complete rule ("IF <visible condition> THEN <what the rest of the plan becomes>", including the case where nothing is left), then one placeholder goal stage. On reaching REASON, judge the rule from the live images and send the concrete stages with `plan`.
-[/plan]
+[/tool:plan]
 [video_ref]
 
 {{video_ref}}

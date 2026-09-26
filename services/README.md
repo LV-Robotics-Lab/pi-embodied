@@ -65,6 +65,19 @@ uv pip install -e "services[robocasa]" \
 # (sparse-clones the rig code, fetches the table textures with sha256 checks, and writes
 # BlockStack's extended-finger Panda URDF, which is not published anywhere).
 
+# BEHAVIOR-1K / R1Pro (OmniGibson + BDDL; Isaac Sim from NVIDIA's index, the challenge dataset:
+# tens of GB): robots/behavior/install.sh <venv> <BEHAVIOR-1K checkout> [--dataset]; the env
+# server takes --gpu-id (OMNIGIBSON_GPU_ID). See robots/behavior/README.md for what runs where.
+bash services/pi_embodied_services/robots/behavior/install.sh services/.venv-behavior ~/BEHAVIOR-1K --dataset
+
+# Metaworld (Sawyer MT50; metaworld==3.1.1 pins mujoco==3.3.0, no assets; MUJOCO_GL=egl)
+uv venv services/.venv-metaworld --python 3.11 && source services/.venv-metaworld/bin/activate
+uv pip install -e "services[metaworld]"
+
+# Genesis (OpenETA's Franka cube_pick; Genesis 1.4 wants torch>=2.8, on sm_120 a cu128 build)
+uv venv services/.venv-genesis --python 3.11 && source services/.venv-genesis/bin/activate
+uv pip install -e "services[genesis]"
+
 # RoboTwin (SAPIEN 3.0.0b1, LingBot runtime, cuRobo built from GitHub against torch==2.7.1)
 uv venv services/.venv-robotwin --python 3.11 && source services/.venv-robotwin/bin/activate
 uv pip install -e "services[robotwin]"
@@ -79,6 +92,23 @@ uv pip install -e "services[molmo]"
 # Flywheel LeRobot export: its own venv, Python >= 3.10 (lerobot 0.4 pins numpy 2 /
 # huggingface-hub); pass its python to pi as --flywheel-python
 uv pip install -e "services[flywheel]"
+
+# IK / reach preview (components/ik_server.py, PyRoKi on the CPU): its own venv; the env
+# servers reach it over RPC (pi: --ik http://127.0.0.1:18400). [ik-curobo] adds the GPU backend.
+uv venv services/.venv-ik --python 3.12 && source services/.venv-ik/bin/activate
+uv pip install -e "services[ik]"
+python -m pi_embodied_services.components.ik_server --port 18400   # --backend curobo (GPU)
+
+# Third-party VLAs (components/openvla_server.py, openvla_oft_server.py, gr00t_server.py): one venv
+# each; their repos pin torch 2.2 / their own transformers, which no robot extra shares. On sm_120
+# install the cu128 torch first, then the extra without its torch pin:
+uv venv services/.venv-openvla --python 3.10 && source services/.venv-openvla/bin/activate
+uv pip install torch==2.7.1 torchvision==0.22.1 --index-url https://download.pytorch.org/whl/cu128
+uv pip install -e "services[openvla]"       # or [openvla-oft] (Python 3.10/3.11) / [gr00t] (Python 3.12)
+# Checkpoints are pinned by commit hash in each server (OPENVLA_CHECKPOINTS, OPENVLA_OFT_CHECKPOINTS,
+# GR00T_CHECKPOINTS) and fetched by huggingface_hub at that revision when --model-path is not a
+# directory: set HF_ENDPOINT=https://hf-mirror.com (never a gateway proxy) where huggingface.co is
+# unreachable, or snapshot_download them yourself and pass the directory.
 ```
 
 Every dataset pi-embodied exports is LeRobot v3.0 with the same feature names:
@@ -140,6 +170,15 @@ PI05_CHECKPOINT_PATH=/ckpt/rlinf-pi05-libero-130-fullshot-sft \
 python -m pi_embodied_services.components.pi05_vla_server --embodiment libero --port 18200
 # dual Franka: --embodiment dual_franka --model-path CKPT --repo-id ORG/DATASET [--norm-stats-path DIR]
 
+# OpenVLA / OpenVLA-OFT / GR00T (own venvs; pi mounts openvla_act / openvla_oft_act / gr00t_act with
+# --openvla / --openvla-oft / --gr00t <url>; libero/serve.sh starts them when OPENVLA_PYTHON etc. are set)
+OPENVLA_CHECKPOINT_PATH=/ckpt/openvla-7b-finetuned-libero-spatial \
+python -m pi_embodied_services.components.openvla_server --port 18600        # [--suite libero_spatial|...] [--unnorm-key K]
+OPENVLA_OFT_CHECKPOINT_PATH=/ckpt/openvla-7b-oft-finetuned-libero-spatial \
+python -m pi_embodied_services.components.openvla_oft_server --port 18700    # [--no-center-crop] [--repo <openvla-oft clone>]
+GR00T_CHECKPOINT_PATH=/ckpt/RLinf-Gr00t-N1.6-SFT-Spatial \
+python -m pi_embodied_services.components.gr00t_server --port 18800          # [--embodiment libero_panda]
+
 # SAM3 (shared)
 SAM3_CHECKPOINT_PATH=/ckpt/sam3/sam3.pt python -m pi_embodied_services.components.sam3_server --port 18300
 
@@ -169,7 +208,8 @@ python -m pi_embodied_services.robots.dual_franka.env_server --task-description 
 ```
 
 Environment variables read by the servers: `PI05_CHECKPOINT_PATH`,
-`PI05_NORM_STATS_PATH`, `SAM3_CHECKPOINT_PATH`, `MOLMO_CHECKPOINT_PATH`, `LIBERO_ROBOT_BASE`,
+`PI05_NORM_STATS_PATH`, `OPENVLA_CHECKPOINT_PATH`, `OPENVLA_OFT_CHECKPOINT_PATH`, `GR00T_CHECKPOINT_PATH`
+(and `HF_ENDPOINT` for their pinned downloads), `SAM3_CHECKPOINT_PATH`, `MOLMO_CHECKPOINT_PATH`, `LIBERO_ROBOT_BASE`,
 `ROBOT_PLATFORM`, `MUJOCO_EGL_DEVICE_ID`, `RLDX_RESET_SEED`, `RLDX_ATTN_IMPL`, `HF_HOME` /
 `HF_HUB_CACHE` (RLDX backbone metadata), `ROBOTWIN_ASSETS_PATH`, `QWEN25_PATH` (LingBot),
 `PI_EMBODIED_RLINF` / `RLINF_REPO_PATH` (an RLinf checkout the dual-Franka server puts on
@@ -217,6 +257,11 @@ Not vendored; installed by the extras or provided by the host:
   `RLWRLD/RLDX-1-VLM` metadata (rev `4b9f870`), `RLinf/LingBot-VLA-RoboTwin-EEF-ckpt1500`
   (rev `e727b46`), the RoboTwin asset snapshot, the dual-Franka Pi0.5 checkpoint and its SFT
   dataset repo id.
+- Third-party VLAs: `openvla/openvla-7b-finetuned-libero-{spatial,object,goal,10}` (revs in
+  `openvla_server.OPENVLA_CHECKPOINTS`, spatial `962318c`), `moojink/openvla-7b-oft-finetuned-libero-*`
+  (`openvla_oft_server.OPENVLA_OFT_CHECKPOINTS`, spatial `6d0231a`), `RLinf/RLinf-Gr00t-N1.6-SFT-Spatial`
+  (rev `e39614a`, the `libero_panda` embodiment) and the `nvidia/GR00T-N1.6-3B` / `GR00T-N1.7-3B` bases
+  (`gr00t_server.GR00T_CHECKPOINTS`).
 
 Known caveat: `dual_franka/env_server.py` uses RLinf attributes
 (`_left_ctrl`/`_right_ctrl`, `get_raw_camera_snapshot`, `get_raw_camera_metadata`) that the

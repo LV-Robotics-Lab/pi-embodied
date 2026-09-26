@@ -14,7 +14,9 @@
 # eval.sh's: a cell already holding a valid result is skipped, an invalid one is rerun, and a result
 # of another configuration stops the run. Workers take units in order from a shared list (a unit is
 # claimed with an atomic mkdir), so the set of cells does not depend on N and an interrupted run is
-# finished by running the same command again.
+# finished by running the same command again. Each worker runs in its own process group; INT, TERM
+# and HUP (an ssh drop) stop every group and wait for it, and a rerun refuses to start while a group
+# of an earlier run (.parallel/w*.pid) is still alive, since it would race it for the same cells.
 #
 # Options:
 #   -j, --workers N            parallel eval.sh workers (default 1)
@@ -24,8 +26,8 @@
 #                              CUDA_VISIBLE_DEVICES=<gpu>, and MUJOCO_EGL_DEVICE_ID set to the EGL device
 #                              on the same PCI bus (nvidia-smi bus id -> /dev/dri/by-path card -> EGL
 #                              device's DRM file, as OpenETA's sim worker pool does; probed with
-#                              $EGL_PYTHON, default $PI_EMBODIED_PYTHON). RoboCasa and RoboLab also get
-#                              --cuda-device <gpu>, since their env servers pin the GPU themselves.
+#                              $EGL_PYTHON, default $PI_EMBODIED_PYTHON). LIBERO, RoboCasa and RoboLab
+#                              also get --cuda-device <gpu>: their env servers pin the GPU themselves.
 #   --variant NAME=ARGS        repeatable: extra pi args (split on spaces) for variant NAME, whose cells
 #                              go to <out-dir>/NAME; every variant runs the same cells and seeds. With no
 #                              --variant the cells go to <out-dir> itself, as with a serial eval.sh run.
@@ -39,12 +41,16 @@
 # Env servers need no port setting: each pi starts its own on a free port (robot.ts serve()). Shared
 # services (VLA, SAM3, RLDX, vLLM) are started once, before this script, and every worker uses them.
 #
-# GPU lock: with LOCK set (e.g. LOCK=/root/autodl-tmp/locks/gpu1.lock) this script takes the lock once,
-# exclusively, before starting the workers and holds it until they have all finished; the workers and
-# their pi processes and env servers do not hold it. Taking it per worker or per episode would
-# serialize the workers (an exclusive flock admits one holder), and a worker waiting on it while its
-# siblings run would deadlock with anything that waits for this run to finish. The flip side: a
+# GPU lock: with LOCK set (e.g. LOCK=/root/autodl-tmp/locks/gpu1.lock) a HEAVY robot's run takes the
+# lock once, exclusively, before starting the workers and holds it until they have all finished; the
+# workers and their pi processes and env servers do not hold it. Taking it per worker or per episode
+# would serialize the workers (an exclusive flock admits one holder), and a worker waiting on it while
+# its siblings run would deadlock with anything that waits for this run to finish. The flip side: a
 # service this run needs must not be started under the same lock, or this script waits forever.
+# Heavy: robolab (Isaac Sim) and robotwin (cuRobo). Light: libero, maniskill, metaworld and robocasa
+# (an EGL or SAPIEN renderer per episode, the planner off the GPU); they share the GPU with whatever
+# else runs and never take LOCK (it is noted and ignored), so a lock queue of light jobs cannot form.
+# Check the GPU's free memory before starting a light run on a shared GPU.
 #
 # The summary gives, per variant, the success rate over valid cells, Pass@k (the unbiased estimator
 # 1 - C(n-c,k)/C(n,k) over a task's n valid seeds with c successes, averaged over the tasks with at
@@ -87,9 +93,9 @@ robot=$1 out=$2
 shift 2
 case $robot in
 libero) npos=3 ;;
-maniskill | robolab) npos=2 ;;
+maniskill | robolab | metaworld | robosuite) npos=2 ;;
 robotwin | robocasa) npos=1 ;;
-*) die "unknown robot $robot (libero, maniskill, robolab, robotwin, robocasa)" ;;
+*) die "unknown robot $robot (libero, maniskill, metaworld, robolab, robotwin, robocasa)" ;;
 esac
 [ $# -ge $npos ] || die "$robot takes $npos selection arguments"
 sel=("${@:1:npos}")
@@ -121,9 +127,10 @@ units() { # one line per unit: <task key> TAB <cell dirs> TAB <env assignments o
 	libero) for t in $(expand "$2"); do for s in $(expand "$3"); do
 		printf '%s\t%s\t-\t%s\n' "${1}_t$t" "${1}_t${t}_s$s" "$1 $t $s"
 	done; done ;;
-	maniskill | robolab)
+	maniskill | robolab | metaworld | robosuite)
 		local tasks=$1
 		[ "$robot:$tasks" = maniskill:- ] && tasks=BlockPAP-v1
+		[ "$robot:$tasks" = metaworld:- ] && tasks=reach-v3
 		for t in ${tasks//,/ }; do for s in $(expand "$2"); do printf '%s\t%s\t-\t%s\n' "$t" "${t}_s$s" "$t $s"; done; done ;;
 	robotwin) node -e '
 const table = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).tasks;
@@ -153,8 +160,11 @@ mkdir -p "$state"
 if [ -f "$state/pid" ] && kill -0 "$(cat "$state/pid")" 2>/dev/null; then
 	die "$out is being run by pid $(cat "$state/pid")"
 fi
+# A run whose shell died without its stop handler leaves its workers' process groups (w*.pid) running.
+live=$(cat "$state"/w*.pid 2>/dev/null | while read -r g; do pgrep -g "$g"; done | tr '\n' ' ')
+[ -z "$live" ] || die "$out still has episodes of an earlier run (pids $live); stop them first (kill -TERM -- -<pgid> per $state/w*.pid)"
 echo $$ >"$state/pid"
-rm -rf "$state/claims" "$state/api" "$state/abort" "$state"/w*.log
+rm -rf "$state/claims" "$state/api" "$state/abort" "$state"/w*.log "$state"/w*.pid
 mkdir -p "$state/claims"
 unitlist=$(units "${sel[@]}") || die "cannot list the cells of $robot ${sel[*]}"
 [ -n "$unitlist" ] || die "no cells match $robot ${sel[*]}"
@@ -190,9 +200,14 @@ for g in ${gpus[@]+"${gpus[@]}"}; do
 done
 
 if [ -n "${LOCK:-}" ]; then
-	command -v flock >/dev/null || die "LOCK is set but flock is missing"
-	exec 9>"$LOCK"
-	flock -n 9 || { echo "$(date +%T) waiting for $LOCK" && flock 9; } || die "cannot lock $LOCK"
+	case $robot in
+	robolab | robotwin)
+		command -v flock >/dev/null || die "LOCK is set but flock is missing"
+		exec 9>"$LOCK"
+		flock -n 9 || { echo "$(date +%T) waiting for $LOCK" && flock 9; } || die "cannot lock $LOCK"
+		;;
+	*) echo "eval-parallel.sh: $robot is a light job (renderer only, planner off the GPU); LOCK is for robolab and robotwin and is not taken" >&2 ;;
+	esac
 fi
 
 worker() { # <k>
@@ -201,12 +216,12 @@ worker() { # <k>
 	if [ ${#gpus[@]} -gt 0 ]; then
 		gpu=${gpus[k % ${#gpus[@]}]}
 		export CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=$gpu
-		if [ -n "${egl[gpu]:-}" ]; then
-			export MUJOCO_EGL_DEVICE_ID=${egl[gpu]}
-			# robosuite asserts MUJOCO_EGL_DEVICE_ID is among CUDA_VISIBLE_DEVICES; keep <gpu> first (cuda:0).
-			[ "${egl[gpu]}" = "$gpu" ] || CUDA_VISIBLE_DEVICES=$gpu,${egl[gpu]}
-		fi
-		case $robot in robocasa | robolab) extra+=(--cuda-device "$gpu") ;; esac
+		[ -n "${egl[gpu]:-}" ] && export MUJOCO_EGL_DEVICE_ID=${egl[gpu]}
+		# robosuite asserts at import that MUJOCO_EGL_DEVICE_ID is among CUDA_VISIBLE_DEVICES (it takes the EGL
+		# index for a CUDA ordinal). Widening CUDA_VISIBLE_DEVICES to <gpu>,<egl> would satisfy it but expose a
+		# second GPU to the worker; instead the MuJoCo env servers get --cuda-device, clear CUDA_VISIBLE_DEVICES
+		# for themselves before importing robosuite and pin torch with set_device.
+		case $robot in libero | robocasa | robolab | robosuite) extra+=(--cuda-device "$gpu") ;; esac
 	fi
 	[ "$api" -gt 0 ] && extra+=(-e "$here/api-gate.ts" --api-slots "$state/api" --max-api-concurrency "$api")
 	[ ${#ports[@]} -gt 0 ] && extra+=(-e "$here/dashboard" --dashboard=true --dashboard-port "${ports[k]}")
@@ -239,31 +254,34 @@ worker() { # <k>
 }
 
 pids=()
-tree() { # <pid>: it and its descendants
-	local c
-	for c in $(pgrep -P "$1"); do tree "$c"; done
-	echo "$1"
-}
-stop() {
-	trap - INT TERM
-	local all=() p
-	# shellcheck disable=SC2207
-	for p in ${pids[@]+"${pids[@]}"}; do all+=($(tree "$p")); done
-	[ ${#all[@]} -gt 0 ] && kill -TERM "${all[@]}" 2>/dev/null
+stop() { # on INT, TERM or HUP (an ssh drop): no episode may outlive this run, or a rerun races it for the cells
+	trap - INT TERM HUP
+	local g groups
+	# Each worker is its own process group (set -m): eval.sh, pi and the env servers go with it.
+	for g in ${pids[@]+"${pids[@]}"}; do kill -TERM -- "-$g" 2>/dev/null; done
 	wait
+	groups=$(IFS=, && echo "${pids[*]}")
+	for ((i = 0; i < 300; i++)); do
+		pgrep -g "$groups" >/dev/null || break
+		sleep 0.1
+	done
+	for g in ${pids[@]+"${pids[@]}"}; do kill -KILL -- "-$g" 2>/dev/null; done
 	echo "interrupted; rerun the same command to finish the invalid cells" >&2
-	rm -f "$state/pid"
+	rm -f "$state/pid" "$state"/w*.pid
 	exit 130
 }
-trap stop INT TERM
+trap stop INT TERM HUP
 echo "$(wc -l <"$state/jobs" | tr -d ' ') jobs (${#vnames[@]} variant(s)) on $workers worker(s); logs in $state"
+set -m
 for ((k = 0; k < workers; k++)); do
-	worker "$k" 9>&- &
+	worker "$k" 9>&- </dev/null &
 	pids+=($!)
+	echo $! >"$state/w$k.pid"
 done
+set +m
 wait
-trap - INT TERM
-rm -f "$state/pid"
+trap - INT TERM HUP
+rm -f "$state/pid" "$state"/w*.pid
 aborted=0
 if [ -s "$state/abort" ]; then
 	cat "$state/abort" >&2
@@ -300,6 +318,7 @@ vdirs.forEach((vdir, v) => {
 	const configs = new Set(rows.filter(valid).map((r) =>
 		[r.model, r.thinking, `turns=${r.max_turns}`, r.time_limit === undefined ? "" : `limit=${r.time_limit}`, `units=${r.units}`,
 			r.stateless ? "stateless" : "", r.anchor_image ? "anchor" : "",
+			r.unit_tol === undefined ? "" : `unit_tol=${r.unit_tol}`,
 			r.vdm ? `vdm=${r.vdm_model ?? "default"}${r.vdm_wrist ? "+wrist" : ""}` : "", r.privileged ? "privileged" : "",
 			r.protocol_id ?? ""].filter(Boolean).join("/")));
 	const name = vdir === "." ? "-" : vdir;

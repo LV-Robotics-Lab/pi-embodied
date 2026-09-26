@@ -3,7 +3,7 @@ Cell `{{recipe_tag}}`. Use the local exploration corpus at `{{memory_dir}}/`. Re
 
 Its three layers have different jobs; use every one that is available:
 - GLOBAL: `{{memory_dir}}/global/`, reusable robot, perception and primitive lessons, indexed by `{{memory_dir}}/MEMORY.md`.
-- SUITE: the leaf for this task and regime under `{{memory_dir}}/suite/` (named like `suite_<suite family>_<regime>_t{{task}}.md`, e.g. `suite_libero10_swap_t{{task}}.md`): the task strategy, validated ranges and failure table.
+- SUITE: the leaf for this task and regime under `{{memory_dir}}/suite/` (named like `suite_<suite family>_<regime>_t{{task}}.md`, e.g. `suite_libero10_swap_t{{task}}.md`; a LIBERO-plus cell, `{{recipe_tag}}` containing `_plus_`, has its own: `suite_libero10_plus_swap_t{{task}}.md`): the task strategy, validated ranges and failure table.
 - TASK: `{{memory_dir}}/task_only/{{reference_tag}}.json` plus `{{memory_dir}}/task_only/{{reference_tag}}_recipe.jsonl`: the matched successful audit and command order from seed 0.
 
 1. Read each available layer first, before your first motion, in this order: the task audit, the task recipe, the matching suite leaf, then `MEMORY.md` and only the relevant global leaves. If a layer is absent, say so and continue with the others. Recipes are technique references, not coordinates: treat every absolute coordinate as stale and re-localize every entity in the current image.

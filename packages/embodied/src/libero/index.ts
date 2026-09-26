@@ -16,10 +16,28 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
 import { type FlywheelObs, type FlywheelSpec, flywheelSuite } from "../flywheel.ts";
+import { ikArgs, type Reach, reachRefusal, registerIkFlag } from "../ik.ts";
 import { decodePngChannel, encodePng } from "../png.ts";
-import { defineRobot, mark, median, SERVICES } from "../robot.ts";
+import {
+	DETECTIONS_EXPIRED_ENTRY,
+	graspActive,
+	graspArgs,
+	graspTools,
+	isStale,
+	mountGraspTool,
+	registerGraspFlags,
+} from "../primitives/grasp.ts";
+import { defineRobot, mark, median, message, SERVICES } from "../robot.ts";
 import { NdArray, RpcClient } from "../rpc.ts";
 import { finishMove, type Move, type UnitsSpec } from "../units/index.ts";
+import {
+	PICK_PARAMETERS,
+	type PickParams,
+	pickDescription,
+	pickTracker,
+	VLA_ADAPTERS,
+	vlaIdentity,
+} from "../vla-adapters.ts";
 import { vlaSeeds } from "../vla-seed.ts";
 import { liberoFlash } from "./flash.ts";
 
@@ -49,7 +67,16 @@ const PRIMITIVES = [
 	"rotate_pitch",
 	"move_pose",
 ];
-const TOOLS = [...PRIMITIVES, "view_env_state", "view_camera_meta", "segment", "back_project", "finish"];
+/** `preview_reach` is served only with --ik (startEpisode filters it out otherwise). */
+const TOOLS = [
+	...PRIMITIVES,
+	"view_env_state",
+	"view_camera_meta",
+	"segment",
+	"back_project",
+	"preview_reach",
+	"finish",
+];
 const CAMERAS = { agentview: "agentview", wrist: "robot0_eye_in_hand" } as const;
 /** Units mode (../units): how the two images look, and which way each unit moves in them. */
 const VIEWS = `Each result shows the agentview, then the wrist view (verified in LIBERO: MV_FWD is world +x, MV_LEFT is -y).
@@ -171,8 +198,12 @@ export default function libero(pi: ExtensionAPI) {
 	pi.registerFlag("seed", { type: "string", default: "0", description: "Initial-state seed" });
 	pi.registerFlag("libero-type", { type: "string", default: "pro", description: "standard | pro | plus" });
 	pi.registerFlag("vla", { type: "string", default: "http://127.0.0.1:18200", description: "Pi0.5 VLA server" });
+	// The third-party VLAs (../vla-adapters.ts): `--openvla <url>` mounts `openvla_act`, and so on; unset mounts nothing.
+	for (const a of VLA_ADAPTERS)
+		pi.registerFlag(a.flag, { type: "string", description: `${a.model} server; mounts ${a.tool}` });
 	const seeds = vlaSeeds(pi, () => ["libero", robot.task]);
 	pi.registerFlag("sam3", { type: "string", default: "http://127.0.0.1:18300", description: "SAM3 server" });
+	registerIkFlag(pi);
 	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
 	pi.registerFlag("services", {
 		type: "string",
@@ -184,6 +215,7 @@ export default function libero(pi: ExtensionAPI) {
 		default: process.env.PI_EMBODIED_PYTHON ?? "python",
 		description: "Python for the env server",
 	});
+	pi.registerFlag("cuda-device", { type: "string", description: "GPU ordinal for MuJoCo EGL rendering and torch" });
 	// 4 mm stops a 2 cm unit about 3.6 mm short (measured: 16.4 mm in 5 steps); the aaroncaozj adapters
 	// were labelled with full 2 cm steps.
 	pi.registerFlag("unit-tol", {
@@ -191,9 +223,14 @@ export default function libero(pi: ExtensionAPI) {
 		default: "0.004",
 		description: "Units mode: an MV_* servo stops within this distance of its target, m",
 	});
+	// --graspnet/--graspgenx/--anyplace/--anygrasp: plan_grasp, plan_place, check_attached (../primitives/grasp.ts).
+	registerGraspFlags(pi);
 
 	let env: RpcClient;
 	let vla: RpcClient;
+	/** The mounted third-party VLA clients by tool name, and which VLA each grasp tool used this episode (healthz name, model@revision). */
+	const adapters = new Map<string, RpcClient>();
+	const vlaUsed: Record<string, string> = {};
 	let sam3: RpcClient;
 	let obs: Obs;
 	let terminated = false;
@@ -227,7 +264,7 @@ export default function libero(pi: ExtensionAPI) {
 		},
 		groundTruth: (names) => call(env, "env.ground_truth_poses", { names: names ?? null }),
 		// Observations carry the agentview, then the wrist view.
-		vdm: { views: 2, wrist: 1 },
+		vdm: { views: 2, wrist: 1, observe: ["view_env_state"] },
 		flash: liberoFlash(pi, () => ({
 			suite: robot.task.suite,
 			task: robot.task.task,
@@ -268,8 +305,35 @@ export default function libero(pi: ExtensionAPI) {
 			success_step: successStep ?? null,
 			truncated,
 			env_steps: envStep,
+			vla: vlaUsed,
 		}),
 		status: () => ({ language, step: envStep, solved: terminated }),
+		// Code mode (../code): the env server runs the program against its registry's primitives
+		// (env_server.py, primitives.py CODE_PRIMITIVES); the result carries the steps it took,
+		// LIBERO's flags and the frames.
+		code: {
+			rpc: () => env,
+			instruction: () => language,
+			refuse: () => {
+				op.check();
+				return terminated || truncated
+					? `Episode already ended (terminated=${terminated}, truncated=${truncated}).`
+					: undefined;
+			},
+			observe: async (r) => {
+				const before = envStep;
+				const steps = Number(r.steps) || 0;
+				envStep += steps;
+				const first = r.success_step;
+				if (typeof first === "number" && successStep === undefined) successStep = before + first;
+				terminated = successStep !== undefined;
+				truncated ||= r.truncated === true;
+				if (r.obs) obs = r.obs as Obs;
+				for (const f of (r.frames as NdArray[] | undefined) ?? []) video.frame(f);
+				worldMaps.clear();
+				return observe({ name: "run_code", status: r.status, env_steps: steps });
+			},
+		},
 		units: {
 			vectors: {
 				MV_FWD: [1, 0, 0],
@@ -347,8 +411,12 @@ export default function libero(pi: ExtensionAPI) {
 		absorb(ret, 1);
 	}
 
-	/** One Pi0.5 forward pass with `prompt` as the instruction, executed as one action chunk; returns its seed. */
-	async function vlaChunk(prompt: string) {
+	/**
+	 * One VLA forward pass (Pi0.5 by default, or a mounted adapter) with `prompt` as the instruction,
+	 * executed as one action chunk; returns its seed. The first call of a tool records which VLA answered.
+	 */
+	async function vlaChunk(prompt: string, client = vla, toolName = "pi0") {
+		if (!(toolName in vlaUsed)) vlaUsed[toolName] = await vlaIdentity(client).catch(() => "unknown");
 		const wire = {
 			main_images: obs.main_images.batched(),
 			wrist_images: obs.wrist_images ? obs.wrist_images.batched() : null,
@@ -359,7 +427,7 @@ export default function libero(pi: ExtensionAPI) {
 		op.check();
 		const seed = seeds.next();
 		const options = seed === undefined ? { mode: "eval" } : { mode: "eval", seed };
-		const actions = await call<NdArray>(vla, "vla.predict", {}, 120_000, [wire, options]);
+		const actions = await call<NdArray>(client, "vla.predict", {}, 120_000, [wire, options]);
 		const chunk = new NdArray(actions.dtype, actions.shape.slice(1), actions.data);
 		const vlaId = fly.proposal(prompt, chunk);
 		op.check();
@@ -519,6 +587,32 @@ export default function libero(pi: ExtensionAPI) {
 	const num = (description: string) => Type.Optional(Type.Number({ description }));
 	const int = (description: string) => Type.Optional(Type.Integer({ description }));
 	const camera = Type.Optional(StringEnum(["agentview", "wrist"] as const, { description: "Default agentview" }));
+	const graspId = Type.Optional(
+		Type.String({ description: "A grasp (g1) or place (p1) id from plan_grasp / plan_place instead of xyz" }),
+	);
+
+	/**
+	 * The EEF pose of a planned grasp or place id (../primitives/grasp.ts): the env server refuses an
+	 * id from an earlier observation (the robot moved since), which is recorded as `detections_expired`.
+	 */
+	async function resolveGrasp(
+		id: string | undefined,
+		standoff: number,
+	): Promise<{ error?: string; eef_position?: number[]; eef_yaw?: number; eef_pitch?: number }> {
+		if (!id) return {};
+		try {
+			const r = await call<Record<string, unknown>>(env, "env.resolve_grasp", { grasp_id: id, standoff });
+			return {
+				eef_position: r.eef_position as number[],
+				eef_yaw: r.eef_yaw as number,
+				eef_pitch: r.eef_pitch as number,
+			};
+		} catch (err) {
+			if (isStale(err))
+				pi.appendEntry(DETECTIONS_EXPIRED_ENTRY, { tool: "resolve_grasp", ids: [id], error: message(err) });
+			return { error: message(err) };
+		}
+	}
 
 	tool(
 		"view_env_state",
@@ -529,9 +623,11 @@ export default function libero(pi: ExtensionAPI) {
 
 	tool(
 		"move_to",
-		"Scripted EEF servo to a world xyz; holds orientation. gripper -1 = open, +1 = close (hold +1 while carrying). Never move more than 0.30 m in xy in one call; split long moves.",
+		"Scripted EEF servo to a world xyz, or to a planned grasp (grasp_id from plan_grasp / plan_place, valid for the current observation only; standoff backs off along its approach); holds orientation, or turns to the grasp's yaw. gripper -1 = open, +1 = close (hold +1 while carrying). Never move more than 0.30 m in xy in one call; split long moves.",
 		Type.Object({
-			xyz,
+			xyz: Type.Optional(xyz),
+			grasp_id: graspId,
+			standoff: num("With grasp_id: metres to stop short of the grasp along its approach (0.1 = pre-grasp)"),
 			gripper: num("-1 open (default), +1 close"),
 			tol: num("Position tolerance, m (default 0.012)"),
 			step_clip: num("Per-step xyz cap, m (default 0.025)"),
@@ -541,7 +637,9 @@ export default function libero(pi: ExtensionAPI) {
 			yaw_step_clip: num("Per-step yaw clip, rad (default 0.10)"),
 		}),
 		async ({
-			xyz: target,
+			xyz: given,
+			grasp_id,
+			standoff = 0,
 			gripper: g = -1,
 			tol = 0.012,
 			step_clip = 0.025,
@@ -550,6 +648,17 @@ export default function libero(pi: ExtensionAPI) {
 			target_yaw,
 			yaw_step_clip = 0.1,
 		}) => {
+			const planned = await resolveGrasp(grasp_id, standoff);
+			if (planned.error) return { name: "move_to", ...planned };
+			const target = planned.eef_position ?? given;
+			if (!target) return { name: "move_to", error: "give xyz or grasp_id" };
+			target_yaw ??= planned.eef_yaw;
+			if (flag("ik", "")) {
+				// --ik: the env server solves IK from the current joints; an unreachable target is refused unmoved.
+				const refusal = reachRefusal(await call<Reach>(env, "env.preview_reach", { pos: target }));
+				if (refusal)
+					return { name: "move_to", refused: refusal, final_eef_pos: eef().map((v) => round(v)), steps_used: 0 };
+			}
 			let steps = 0;
 			for (; steps < max_steps && !terminated && !truncated; steps++) {
 				const diff = target.map((v: number, i: number) => v - eef()[i]);
@@ -575,68 +684,59 @@ export default function libero(pi: ExtensionAPI) {
 	);
 
 	tool(
+		"preview_reach",
+		"Whether move_to could reach a world xyz from the current joints (IK only; nothing moves). status unreachable means move_to would refuse it; unknown means the check could not run.",
+		Type.Object({ xyz, quat_xyzw: Type.Optional(Type.Array(Type.Number(), { minItems: 4, maxItems: 4 })) }),
+		async ({ xyz: target, quat_xyzw }) =>
+			call<Reach>(env, "env.preview_reach", { pos: target, quat_xyzw: quat_xyzw ?? null }),
+		false,
+	);
+
+	/** A closed-loop grasp with `client`'s VLA: chunks until the pick heuristics (../vla-adapters.ts) say lifted, the episode ends, or the budget runs out. */
+	async function pick(client: RpcClient, toolName: string, p: PickParams) {
+		const track = pickTracker(eef()[2], gripper(), p);
+		const max_chunks = p.max_chunks ?? 24;
+		let success = false;
+		let chunks = 0;
+		const vla_seeds: (number | null)[] = [];
+		while (chunks < max_chunks) {
+			vla_seeds.push((await vlaChunk(p.prompt, client, toolName)) ?? null);
+			chunks++;
+			if (track.update(eef()[2], gripper())) {
+				success = true;
+				break;
+			}
+			if (terminated || truncated) {
+				success = terminated;
+				break;
+			}
+		}
+		const motion = track.summary();
+		return {
+			name: "pick",
+			instruction: p.prompt,
+			success,
+			chunks_used: chunks,
+			peak_lift_m: round(motion.peak_lift_m),
+			descent_m: round(motion.descent_m),
+			min_gripper_opening: round(motion.min_gripper_opening),
+			final_gripper_opening: round(gripper()),
+			vla_seeds,
+		};
+	}
+
+	tool(
 		"pi0_pick",
 		"Pi0.5 closed-loop grasp. Use it only for the grasp; you do every move_to and release. Success needs a descent then a lift with the gripper partly closed; it is a hint, confirm from gripper opening and the wrist image.",
-		Type.Object({
-			prompt: Type.String({ description: "VLA instruction, e.g. 'pick up the black bowl'" }),
-			max_chunks: int("Action-chunk budget (default 24)"),
-			lift_thresh: num("Post-descent ascent for success, m (default 0.05)"),
-			gripper_closed_thresh: num("Finger separation below which the gripper counts as closed (default 0.06)"),
-			gripper_open_thresh: num("Minimum finger separation accepted as holding (default 0.0)"),
-			descent_thresh: num("Required descent before lift detection, m (default 0.10)"),
-		}),
-		async ({
-			prompt,
-			max_chunks = 24,
-			lift_thresh = 0.05,
-			gripper_closed_thresh = 0.06,
-			gripper_open_thresh = 0,
-			descent_thresh = 0.1,
-		}) => {
-			const start = eef()[2];
-			let minZ = start;
-			let postMinPeak = start;
-			let minGrip = gripper();
-			let success = false;
-			let chunks = 0;
-			const vla_seeds: (number | null)[] = [];
-			while (chunks < max_chunks) {
-				vla_seeds.push((await vlaChunk(prompt)) ?? null);
-				chunks++;
-				const z = eef()[2];
-				if (z < minZ) {
-					minZ = z;
-					postMinPeak = z;
-				} else postMinPeak = Math.max(postMinPeak, z);
-				minGrip = Math.min(minGrip, gripper());
-				const g = gripper();
-				if (
-					start - minZ >= descent_thresh &&
-					postMinPeak - minZ >= lift_thresh &&
-					g >= gripper_open_thresh &&
-					g < gripper_closed_thresh
-				) {
-					success = true;
-					break;
-				}
-				if (terminated || truncated) {
-					success = terminated;
-					break;
-				}
-			}
-			return {
-				name: "pick",
-				instruction: prompt,
-				success,
-				chunks_used: chunks,
-				peak_lift_m: round(postMinPeak - minZ),
-				descent_m: round(start - minZ),
-				min_gripper_opening: round(minGrip),
-				final_gripper_opening: round(gripper()),
-				vla_seeds,
-			};
-		},
+		PICK_PARAMETERS,
+		(p) => pick(vla, "pi0", p),
 	);
+
+	// The same grasp tool per mounted third-party VLA (`--openvla <url>` etc.); its client is made at start.
+	for (const a of VLA_ADAPTERS) {
+		if (!flag(a.flag, "")) continue;
+		tool(a.tool, pickDescription(a.model), PICK_PARAMETERS, (p) => pick(adapters.get(a.tool)!, a.tool, p));
+	}
 
 	tool(
 		"pi0_doubled",
@@ -766,9 +866,11 @@ export default function libero(pi: ExtensionAPI) {
 
 	tool(
 		"move_pose",
-		"Servo xyz and pitch/yaw together each step. Use when move_to stalls on deep or low reaches (cabinet fronts, microwave). gripper defaults to -1 (open): pass +1 while holding.",
+		"Servo xyz and pitch/yaw together each step, to a world xyz or to a planned grasp (grasp_id, standoff as in move_to; its pitch and yaw become the targets). Use when move_to stalls on deep or low reaches (cabinet fronts, microwave). gripper defaults to -1 (open): pass +1 while holding.",
 		Type.Object({
-			xyz,
+			xyz: Type.Optional(xyz),
+			grasp_id: graspId,
+			standoff: num("With grasp_id: metres to stop short of the grasp along its approach"),
 			target_pitch: num("rad"),
 			target_yaw: num("rad"),
 			gripper: num("Default -1"),
@@ -781,7 +883,9 @@ export default function libero(pi: ExtensionAPI) {
 			max_steps: int("Default 150"),
 		}),
 		async ({
-			xyz: target,
+			xyz: given,
+			grasp_id,
+			standoff = 0,
 			target_pitch,
 			target_yaw,
 			gripper: g = -1,
@@ -793,6 +897,12 @@ export default function libero(pi: ExtensionAPI) {
 			action_scale = 0.05,
 			max_steps = 150,
 		}) => {
+			const planned = await resolveGrasp(grasp_id, standoff);
+			if (planned.error) return { name: "move_pose", ...planned };
+			const target = planned.eef_position ?? given;
+			if (!target) return { name: "move_pose", error: "give xyz or grasp_id" };
+			target_yaw ??= planned.eef_yaw;
+			target_pitch ??= planned.eef_pitch;
 			let steps = 0;
 			for (; steps < max_steps && !terminated && !truncated; steps++) {
 				const q = await quat();
@@ -970,6 +1080,14 @@ export default function libero(pi: ExtensionAPI) {
 		false,
 	);
 
+	// plan_grasp / plan_place / check_attached over the env server's grasp primitives (active with a backend flag).
+	for (const d of graspTools(pi, {
+		call: (method, kwargs, timeoutMs) => call(env, method, kwargs, timeoutMs),
+		cameras: ["agentview", "wrist"],
+		task: () => language,
+	}))
+		mountGraspTool(robot.tool, d);
+
 	/**
 	 * One action unit (../units): drive the gripper, servo the EEF to its current position plus
 	 * `delta` (holding the gripper command), turn the wrist by `yaw` or an RT_* `rot`, or hold one step (STOP).
@@ -1072,6 +1190,8 @@ export default function libero(pi: ExtensionAPI) {
 	async function startEpisode() {
 		const { suite, task, seed } = robot.task;
 		vla = new RpcClient(flag("vla", ""));
+		for (const a of VLA_ADAPTERS) if (flag(a.flag, "")) adapters.set(a.tool, new RpcClient(flag(a.flag, "")));
+		for (const k of Object.keys(vlaUsed)) delete vlaUsed[k];
 		sam3 = new RpcClient(flag("sam3", ""));
 		const endpoint = pi.getFlag("env") as string | undefined;
 		if (endpoint) {
@@ -1079,11 +1199,17 @@ export default function libero(pi: ExtensionAPI) {
 			await env.ready();
 		} else {
 			const services = flag("services", SERVICES);
+			const cuda = pi.getFlag("cuda-device") as string | undefined;
 			env = await robot.serve({
 				python: flag("python", "python"),
 				args: [
 					...["-m", "pi_embodied_services.robots.libero.env_server"],
 					...["--suite", suite, "--task", task, "--seed", seed],
+					// Code mode's `segment` primitive asks the same SAM3 server as the `segment` tool.
+					...(flag("sam3", "") ? ["--sam3", flag("sam3", "")] : []),
+					...ikArgs(flag("ik", "")),
+					...(cuda ? ["--cuda-device", cuda] : []),
+					...graspArgs(pi),
 				],
 				cwd: services,
 				env: {
@@ -1099,6 +1225,7 @@ export default function libero(pi: ExtensionAPI) {
 		await resetEpisode();
 		language = await call<string>(env, "env.get_task_language");
 		fly.reset(flyObs(obs), flyMeta());
-		return TOOLS;
+		const tools = flag("ik", "") ? TOOLS : TOOLS.filter((name) => name !== "preview_reach");
+		return [...tools, ...graspActive(pi), ...adapters.keys()];
 	}
 }

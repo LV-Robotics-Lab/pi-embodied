@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
 	calibrate,
+	ENV_IDS,
 	GRIPPER_STEPS,
 	grasped,
 	phases,
@@ -91,4 +93,34 @@ test("probe-axes: a short unit is scaled up to stepM, a mirrored axis is refused
 		p.unit === "MV_LEFT" ? { ...p, moved: [0, 0.08, 0] as [number, number, number] } : p,
 	);
 	assert.throws(() => calibrate(VECTORS, STEP_M, mirrored), /MV_LEFT/);
+});
+
+test("--env-id: the RLinf rigs first (BlockPAP-v1 the default), the eight original ids unchanged, then OpenETA's tasks", () => {
+	assert.deepEqual(ENV_IDS.slice(0, 8), [
+		"BlockPAP-v1",
+		"BlockStack-v1",
+		"PickCube-v1",
+		"StackCube-v1",
+		"PushCube-v1",
+		"PullCube-v1",
+		"PokeCube-v1",
+		"LiftPegUpright-v1",
+	]);
+	assert.deepEqual(ENV_IDS.slice(8), [
+		"PlaceSphere-v1",
+		"StackPyramid-v1",
+		"PullCubeTool-v1",
+		"PegInsertionSide-v1",
+		"PlugCharger-v1",
+		"PickSingleYCB-v1",
+	]);
+	// The same list as the env server's ENV_IDS (its INSTRUCTIONS keys after the rigs).
+	const py = readFileSync(
+		new URL("../../../services/pi_embodied_services/robots/maniskill/env_server.py", import.meta.url),
+		"utf8",
+	);
+	const table = py.slice(py.indexOf("INSTRUCTIONS = {"), py.indexOf("ENV_IDS = "));
+	const ids = [...table.matchAll(/^ {4}"([A-Za-z0-9-]+)": "/gm)].map((m) => m[1]);
+	assert.deepEqual(ids, ENV_IDS.slice(2));
+	assert.equal(new Set(ENV_IDS).size, ENV_IDS.length);
 });

@@ -1,21 +1,25 @@
 /**
  * Flash from a robot's memory recipe, for any robot whose tools take world targets (../robocasa,
- * ../robotwin): the replay (./index.ts) of a solved episode's primitive calls, re-anchored on the
- * live scene when the plan says what each target was relative to.
+ * ../robotwin) or base-frame deltas (../maniskill, ../robolab): the replay (./index.ts) of a solved
+ * episode's primitive calls, re-anchored on the live scene when the plan says what each target was
+ * relative to.
  *
  *   pi -p -e src/<robot> --model flash/replay <the robot's task flags> [--molmo URL|off] "Solve the task."
  *
  * A program is, in the robot's plan directories (--flash-plans, else the memory's `flash/` then
  * `task_only/`), under the first of the robot's program names that has one:
  *   <name>_plan.json      an anchored plan (./generate.ts): `{plan: [{action, arguments, anchor?,
- *                         offset?}], anchors: [{phrase, xyz}]}`
+ *                         offset?, to?}], anchors: [{phrase, xyz}]}`
  *   <name>_recipe.jsonl   the memory recipe exploration exports (`{action, ...arguments}` per line),
  *                         replayed as recorded: meaningful on the recorded seed
  * Re-anchoring: after one observation, each anchor phrase is pointed at by Molmo in the robot's main
- * camera image and turned into a world point by the robot's own back-projection tool (`locate`); a
- * target attached to an anchor then moves with it in x/y (its height is the recorded one). An
- * anchor that cannot be found stops the replay before the first call that needs it. With
- * `--molmo off` anchors stay where they were recorded.
+ * camera image and turned into a world point by the robot's own back-projection (a tool, or a
+ * ray-plane intersection at the anchor's recorded height, ./plane.ts); a target attached to an
+ * anchor then moves with it in x/y (its height is the recorded one). A relative target (a delta
+ * move) is a reconstructed absolute waypoint: at replay the delta is the anchored waypoint minus
+ * where the end effector is now, split into moves the robot's per-call limit allows. An anchor that
+ * cannot be found stops the replay before the first call that needs it. With `--molmo off` anchors
+ * stay where they were recorded.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -25,12 +29,33 @@ import { RpcClient } from "../rpc.ts";
 import type { FlashCall, FlashHook, FlashPicks, FlashReply, FlashRobot } from "./index.ts";
 
 type Json = Record<string, unknown>;
-export type AnchoredEntry = { action: string; arguments: Json; anchor?: string; offset?: [number, number] };
+/** One planned call; `to` is a relative target's absolute end position (the recording's, before anchoring). */
+export type AnchoredEntry = {
+	action: string;
+	arguments: Json;
+	anchor?: string;
+	offset?: [number, number];
+	to?: number[];
+};
 export type Anchor = { phrase: string; xyz: number[] };
 export type RecipeProgram = { name: string; plan: AnchoredEntry[]; anchors: Anchor[] };
 
-/** Where a tool's world target lives in its arguments: `xyz` ([x, y, z]) or `xy` ([x, y]). */
-export type Target = "xyz" | "xy";
+/**
+ * A tool that moves by a base-frame delta (`move_delta`). Its plan entries carry the absolute end
+ * position the recording reached (`to`, from the tool's own results); at replay an anchored entry's
+ * delta is that waypoint, moved with its anchor, minus `position` of the latest result, in moves of
+ * at most `maxStep` m.
+ */
+export type RelativeTarget = {
+	/** The argument holding the base-frame [dx, dy, dz], m. */
+	delta: string;
+	/** The end-effector position in a motion result's JSON (e.g. `state.tcp_pos`). */
+	position: (json: Json) => number[] | undefined;
+	/** Largest translation one call may run, m; a longer move is split evenly. */
+	maxStep?: number;
+};
+/** Where a tool's world target lives: an `xyz` / `xy` argument, or a delta (a relative target). */
+export type Target = "xyz" | "xy" | RelativeTarget;
 
 export type RecipeFlashOptions = {
 	/** Program names for this episode, most specific first (e.g. the cell, then its reference). */
@@ -42,10 +67,11 @@ export type RecipeFlashOptions = {
 	/** Tools whose world target follows an anchor, and which argument holds it. */
 	targets: Record<string, Target>;
 	/**
-	 * A world point for pixel [col, row] of the latest main image, through the robot's own tools.
-	 * Without it (a robot with no back-projection) anchors stay where they were recorded.
+	 * A world point for pixel [col, row] of the latest main image, through the robot's own tools or
+	 * its camera calibration (`anchor.xyz[2]` is the height the anchor was recorded at). Without it
+	 * (a robot with no back-projection) anchors stay where they were recorded.
 	 */
-	backProject?: (robot: FlashRobot, pixel: [number, number]) => Promise<number[] | undefined>;
+	backProject?: (robot: FlashRobot, pixel: [number, number], anchor: Anchor) => Promise<number[] | undefined>;
 	picks?: FlashPicks;
 	over: (latest: FlashReply) => boolean;
 	solved: (latest: FlashReply) => boolean;
@@ -76,17 +102,29 @@ export function loadProgram(path: string, name: string): RecipeProgram {
 	return { name, plan, anchors: [] };
 }
 
-/** The world target of a call's arguments, and its arguments with the target moved to `xy`. */
-export function targetOf(args: Json, where: Target): number[] | undefined {
-	const v = args[where];
-	return isVec(v, where === "xyz" ? 3 : 2) ? (v as number[]) : undefined;
+/** The world target of a plan entry: its `xyz` / `xy` argument, or a relative target's end position `to`. */
+export function targetOf(entry: AnchoredEntry, where: Target): number[] | undefined {
+	if (typeof where !== "string") return isVec(entry.to, 3) ? entry.to : undefined;
+	const v = entry.arguments[where];
+	return isVec(v, where === "xyz" ? 3 : 2) ? v : undefined;
 }
-const moved = (args: Json, where: Target, xy: number[]): Json => {
+const moved = (args: Json, where: "xyz" | "xy", xy: number[]): Json => {
 	const v = [...(args[where] as number[])];
 	v[0] = r4(xy[0]);
 	v[1] = r4(xy[1]);
 	return { ...args, [where]: v };
 };
+
+/** `delta` as the calls of one plan entry: one, or evenly split when it exceeds the tool's per-call limit. */
+export function splitMove(entry: AnchoredEntry, where: RelativeTarget, delta: number[]): FlashCall[] {
+	const n = where.maxStep ? Math.max(1, Math.ceil(Math.hypot(...delta) / where.maxStep - 1e-9)) : 1;
+	const step = delta.map((v) => r4(v / n));
+	return Array.from({ length: n }, (_, i) => ({
+		name: entry.action,
+		// The other arguments (a gripper command) run once, with the first move.
+		arguments: i === 0 ? { ...entry.arguments, [where.delta]: step } : { [where.delta]: step },
+	}));
+}
 
 /** Molmo's point for `query` in a base64 image, as [col, row] in that image's pixels. */
 async function point(molmo: RpcClient, image: string, query: string): Promise<[number, number] | undefined> {
@@ -104,8 +142,10 @@ export async function startRecipe(
 	const live = new Map<string, number[]>();
 	const locator = o.backProject;
 	const molmo = locator ? endpoint : undefined;
-	if (program.anchors.length) {
+	// Relative targets need the end-effector position before their first move, anchors an image.
+	if (program.anchors.length || program.plan.some((e) => typeof o.targets[e.action] === "object"))
 		await robot.move({ name: o.observe, arguments: {} });
+	if (program.anchors.length) {
 		for (const a of program.anchors) {
 			if (!molmo) {
 				live.set(a.phrase, a.xyz);
@@ -113,22 +153,41 @@ export async function startRecipe(
 			}
 			const image = robot.latest().images[0];
 			const px = image ? await point(molmo, image, a.phrase) : undefined;
-			const xyz = px && locator ? await locator(robot, px) : undefined;
+			const xyz = px && locator ? await locator(robot, px, a) : undefined;
 			if (xyz) live.set(a.phrase, xyz);
 			robot.note(
 				xyz
-					? `${a.phrase} at (${xyz[0].toFixed(3)},${xyz[1].toFixed(3)}), recorded (${a.xyz[0].toFixed(3)},${a.xyz[1].toFixed(3)})`
+					? `${a.phrase} at (${xyz[0].toFixed(3)},${xyz[1].toFixed(3)}), recorded (${a.xyz[0].toFixed(3)},${a.xyz[1].toFixed(3)})${px ? ` [pixel ${px.map((v) => Math.round(v)).join(",")}]` : ""}`
 					: `${a.phrase} not located`,
 			);
 		}
 		if (!molmo) robot.note("anchors kept at their recorded positions (no Molmo or no back-projection)");
 	}
+
+	/** A delta move: the anchored waypoint minus where the end effector is now, else the recorded delta. */
+	function relative(entry: AnchoredEntry, where: RelativeTarget): FlashCall[] | "stop" {
+		const recorded = entry.arguments[where.delta];
+		if (!isVec(recorded, 3)) return [{ name: entry.action, arguments: { ...entry.arguments } }];
+		const to = targetOf(entry, where);
+		if (!entry.anchor || !to) return splitMove(entry, where, recorded);
+		const a = live.get(entry.anchor);
+		if (!a) {
+			robot.note(`${entry.anchor} unavailable; stopping replay`);
+			return "stop";
+		}
+		const now = where.position(robot.latest().json);
+		if (!isVec(now, 3)) throw new Error(`${entry.action}: the latest result carries no end-effector position`);
+		const off = entry.offset ?? [0, 0];
+		return splitMove(entry, where, [a[0] + off[0] - now[0], a[1] + off[1] - now[1], to[2] - now[2]]);
+	}
+
 	return {
 		localized: molmo ? live.size : 0,
 		picks: o.picks,
-		rewrite(entry: AnchoredEntry): FlashCall | "stop" {
+		rewrite(entry: AnchoredEntry): FlashCall | FlashCall[] | "stop" {
 			const where = o.targets[entry.action];
-			if (!entry.anchor || !where || !targetOf(entry.arguments, where))
+			if (where !== undefined && typeof where !== "string") return relative(entry, where);
+			if (!entry.anchor || !where || !targetOf(entry, where))
 				return { name: entry.action, arguments: { ...entry.arguments } };
 			const a = live.get(entry.anchor);
 			if (!a) {

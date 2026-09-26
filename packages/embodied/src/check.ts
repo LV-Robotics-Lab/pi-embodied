@@ -84,6 +84,19 @@ export const SPECS: Record<string, RobotCheckSpec> = {
 		paths: [{ env: "VK_ICD_FILENAMES", kind: "file", required: false, why: "SAPIEN's Vulkan renderer" }],
 		gpu: true,
 	},
+	metaworld: {
+		python: PY(),
+		imports: [ENV_SERVER("metaworld"), "metaworld.env_dict", "mujoco"],
+		pyEnv: { MUJOCO_GL: "egl" },
+		gpu: true,
+	},
+	robosuite: {
+		python: PY(),
+		imports: [ENV_SERVER("robosuite"), "robosuite", "mujoco"],
+		pyEnv: { MUJOCO_GL: "egl" },
+		endpoints: [{ flag: "sam3", default: "http://127.0.0.1:18300", why: "SAM3 (segment)", toolsOnly: true }],
+		gpu: true,
+	},
 	robolab: {
 		python: PY(),
 		imports: [ENV_SERVER("robolab")],

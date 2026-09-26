@@ -82,6 +82,30 @@ function cells(out: string) {
 	return found;
 }
 
+/** Whether `pid` has exited. A zombie not yet reaped counts: kill(pid, 0) still succeeds on it. */
+function gone(pid: number) {
+	try {
+		process.kill(pid, 0);
+		const state =
+			process.platform === "linux"
+				? readFileSync(`/proc/${pid}/stat`, "utf8").replace(/^.*\) /, "")[0]
+				: spawnSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }).stdout.trim()[0];
+		return state === "Z" || state === undefined;
+	} catch {
+		return true;
+	}
+}
+
+async function untilGone(pid: number, ms = 3000) {
+	for (let t = 0; t < ms && !gone(pid); t += 50) await new Promise((r) => setTimeout(r, 50));
+	return gone(pid);
+}
+
+const groups = (out: string) =>
+	readdirSync(join(out, ".parallel"))
+		.filter((f) => /^w\d+\.pid$/.test(f))
+		.map((f) => Number(readFileSync(join(out, ".parallel", f), "utf8")));
+
 const summary = (out: string) =>
 	(JSON.parse(readFileSync(join(out, "summary.json"), "utf8")).variants as Record<string, unknown>[]).map(
 		({ dir: _dir, ...v }) => v,
@@ -226,10 +250,13 @@ test("an interrupted run stops its episodes, and the rerun only fills the cells 
 	for (let i = 0; i < 200 && !existsSync(pidFile); i++) await new Promise((r) => setTimeout(r, 50));
 	await new Promise((r) => setTimeout(r, 200));
 	const hung = Number(readFileSync(pidFile, "utf8"));
+	const pgids = groups(out);
+	assert.equal(pgids.length, 2, "one process group per worker");
 	child.kill("SIGTERM");
 	assert.equal(await exited, 130);
-	await new Promise((r) => setTimeout(r, 200));
-	assert.throws(() => process.kill(hung, 0), "the hung episode was stopped");
+	assert.ok(await untilGone(hung), "the hung episode was stopped");
+	assert.deepEqual(groups(out), [], "the groups are forgotten once they are gone");
+	for (const g of pgids) assert.notEqual(spawnSync("pgrep", ["-g", String(g)]).status, 0, `group ${g} is empty`);
 	const done = cells(out);
 	assert.equal(done["PickCube-v1_s2"], undefined);
 	const before = s.calls().length;
@@ -246,7 +273,36 @@ test("an interrupted run stops its episodes, and the rerun only fills the cells 
 	assert.equal(Object.keys(cells(out)).length, 6);
 });
 
-test("workers get their GPU, the EGL device on its PCI bus, and share one GPU lock", () => {
+test("a rerun refuses to start while an earlier run's worker groups are alive", async () => {
+	const s = sandbox();
+	const out = join(s.dir, "out");
+	const hang = join(s.dir, "hang");
+	writeFileSync(hang, "");
+	const args = ["maniskill", out, "PickCube-v1", "2", "--model", "m/x"];
+	const child = spawn("bash", [RUNNER, ...args], { env: { ...s.env, FAKE_HANG: hang }, stdio: "ignore" });
+	const pidFile = join(out, "PickCube-v1_s2/pid");
+	for (let i = 0; i < 200 && !existsSync(pidFile); i++) await new Promise((r) => setTimeout(r, 50));
+	const hung = Number(readFileSync(pidFile, "utf8"));
+	// The shell dies without its stop handler; the worker's group (eval.sh, pi, the episode) lives on.
+	child.kill("SIGKILL");
+	await new Promise<void>((r) => child.once("exit", () => r()));
+	const [pgid, ...rest] = groups(out);
+	assert.deepEqual(rest, []);
+	assert.ok(!gone(hung));
+	const refused = s.run(args);
+	assert.equal(refused.status, 2);
+	assert.match(refused.stderr, /still has episodes of an earlier run/);
+	assert.ok(!gone(hung), "the rerun did not touch the running episode");
+	process.kill(-pgid, "SIGTERM");
+	assert.ok(await untilGone(hung));
+	for (let t = 0; t < 3000 && spawnSync("pgrep", ["-g", String(pgid)]).status === 0; t += 50)
+		await new Promise((r) => setTimeout(r, 50));
+	const rerun = s.run(args);
+	assert.equal(rerun.status, 0, rerun.stdout + rerun.stderr);
+	assert.deepEqual(cells(out), { "PickCube-v1_s2": "success" });
+});
+
+test("workers get their GPU and the EGL device on its PCI bus; only a heavy robot's run takes the GPU lock, once", () => {
 	const s = sandbox();
 	s.tool("nvidia-smi", `printf '0, 00000000:98:00.0\\n1, 00000000:C8:00.0\\n'`);
 	const dri = join(s.dir, "by-path");
@@ -263,8 +319,13 @@ test("workers get their GPU, the EGL device on its PCI bus, and share one GPU lo
 	const r = s.run(["-j", "3", "--gpus", "1", "maniskill", join(s.dir, "one"), "PickCube-v1", "0-5"], env);
 	assert.equal(r.status, 0, r.stdout + r.stderr);
 	const seen = new Set(s.calls().map(([, ...e]) => e.join(" ")));
-	// robosuite wants MUJOCO_EGL_DEVICE_ID among CUDA_VISIBLE_DEVICES: GPU 1 first, then EGL 0.
-	assert.deepEqual([...seen], ["CVD=1,0 EGL=0 ORDER=PCI_BUS_ID"]);
+	// Only GPU 1 is exposed; the EGL index (0) is not added to CUDA_VISIBLE_DEVICES for robosuite's check.
+	assert.deepEqual([...seen], ["CVD=1 EGL=0 ORDER=PCI_BUS_ID"]);
+	// ManiSkill is a light job: it shares the GPU and never takes LOCK.
+	assert.ok(!existsSync(flocks), "a light robot takes no lock");
+	assert.match(r.stderr, /maniskill is a light job .* LOCK is for robolab and robotwin/);
+	const heavy = s.run(["-j", "2", "--gpus", "1", "robolab", join(s.dir, "heavy"), "BananaInBowlTask", "0-1"], env);
+	assert.equal(heavy.status, 0, heavy.stdout + heavy.stderr);
 	assert.deepEqual(
 		readFileSync(flocks, "utf8").trim().split("\n"),
 		["-n 9"],
@@ -278,7 +339,12 @@ test("workers get their GPU, the EGL device on its PCI bus, and share one GPU lo
 			.filter(([d]) => d.includes("/two/"))
 			.map(([, cvd, egl]) => `${cvd} ${egl}`),
 	);
-	assert.deepEqual([...byGpu].sort(), ["CVD=0,1 EGL=1", "CVD=1,0 EGL=0"]);
+	assert.deepEqual([...byGpu].sort(), ["CVD=0 EGL=1", "CVD=1 EGL=0"]);
+	// The MuJoCo env servers pin the GPU themselves (and drop CUDA_VISIBLE_DEVICES before importing robosuite).
+	const lib = s.run(["--gpus", "1", "libero", join(s.dir, "lib"), "libero_10_task", "0", "0"], env);
+	assert.equal(lib.status, 0, lib.stdout + lib.stderr);
+	const argv = readFileSync(join(s.dir, "lib/libero_10_task_t0_s0/argv"), "utf8").split("\n");
+	assert.equal(argv[argv.indexOf("--cuda-device") + 1], "1");
 	const plain = s.run(["maniskill", join(s.dir, "none"), "PickCube-v1", "0"]);
 	assert.equal(plain.status, 0);
 	assert.equal(s.calls().at(-1)?.slice(1).join(" "), "CVD=unset EGL=unset ORDER=unset");
@@ -332,4 +398,8 @@ test("api-gate admits n model calls at once and takes over the slot of a dead pr
 	assert.equal(readFileSync(join(dir, "slot-0"), "utf8"), String(process.pid));
 	// Two slots: a second holder does not wait.
 	assert.equal(await acquire(dir, 2, 10), join(dir, "slot-1"));
+	// A waiter whose agent aborts stops waiting instead of taking a slot later.
+	const ac = new AbortController();
+	setTimeout(() => ac.abort(), 30);
+	await assert.rejects(acquire(dir, 2, 10, ac.signal), /aborted/);
 });

@@ -26,6 +26,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
 import { encodePng } from "../png.ts";
+import { graspActive, graspArgs, graspTools, registerGraspFlags } from "../primitives/grasp.ts";
 import { checkRotate, type MotionRig, moveDelta, rotateDelta, setGripper } from "../primitives/motion.ts";
 import { viewCameraMeta, viewEnvState } from "../primitives/perception.ts";
 import { getStep, outcome, type StepsIO, type ToolDef } from "../primitives/steps.ts";
@@ -136,6 +137,8 @@ export default function dualFranka(pi: ExtensionAPI) {
 		description:
 			"Lowest right_base TCP z for move_delta and units, m (required: the robot does not start without it)",
 	});
+	// --graspnet/--graspgenx/--anyplace/--anygrasp: plan_grasp, plan_place, check_attached (../primitives/grasp.ts).
+	registerGraspFlags(pi);
 
 	let env: RpcClient | undefined;
 	let vla: RpcClient | undefined;
@@ -612,6 +615,15 @@ export default function dualFranka(pi: ExtensionAPI) {
 		vla: () => vla,
 	});
 
+	// plan_grasp / plan_place / check_attached (../primitives/grasp.ts): the env server plans over its
+	// calibrated RGB-D cameras; active with --graspnet/--graspgenx/--anyplace/--anygrasp.
+	for (const d of graspTools(pi, {
+		call: (method, kwargs, timeoutMs) => call(method, kwargs, timeoutMs ?? 120_000),
+		task: () => setup?.task.instruction ?? "",
+		arm: { schema: arm, name: armName },
+	}))
+		tool(d.name, d.description, d.parameters, d.run, false);
+
 	// ---- lifecycle
 
 	async function startRobot(ctx: ExtensionContext) {
@@ -646,6 +658,7 @@ export default function dualFranka(pi: ExtensionAPI) {
 						args: [
 							...["-m", "pi_embodied_services.robots.dual_franka.env_server"],
 							...["--task-description", setup.task.instruction, ...(config ? ["--robot-config", config] : [])],
+							...graspArgs(pi),
 						],
 						cwd: r.root,
 						env: servicesEnv(r),
@@ -666,6 +679,6 @@ export default function dualFranka(pi: ExtensionAPI) {
 		sam3 = sam3Rpc;
 		attemptStart = (await dumpState(null, null, null)).blob.step_idx;
 		ctx.ui.notify(`Dual Franka ready: task ${task()} (${setup.task.name}); steps under ${out}`, "info");
-		return [...TOOLS, "finish"];
+		return [...TOOLS, "finish", ...graspActive(pi)];
 	}
 }

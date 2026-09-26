@@ -4,6 +4,7 @@
  *   pi -e packages/embodied/src/maniskill --seed 0                    (BlockPAP-v1, Show-Harness's default scene)
  *   pi -e packages/embodied/src/maniskill --units --scene table_tex=white,cam_t=0302 --seed 3
  *   pi -e packages/embodied/src/maniskill --env-id StackCube-v1 --seed 0   (a stock ManiSkill scene)
+ *   pi -e packages/embodied/src/maniskill --env-id PlaceSphere-v1 --seed 0  (one of OpenETA's tasks, ENV_IDS)
  *
  * BlockPAP-v1 / BlockStack-v1 are RLinf's real2sim replicas of the real Franka rig (services/.../
  * robots/maniskill/scenes.py; fetch_real2sim.sh installs them): their calibrated front RealSense
@@ -29,6 +30,7 @@ import { dirname, join } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { type CameraMeta, pixelOnPlane, unletterbox } from "../flash/plane.ts";
 import { recipeFlash } from "../flash/recipe.ts";
 import { encodePng } from "../png.ts";
 import { attach, defineRobot, SERVICES } from "../robot.ts";
@@ -41,6 +43,30 @@ const MEMORY = read("./memory.md");
 const EXPLORE = read("./explore.md");
 /** A memory cell tag part: the scene options (`table_tex=white`) with the characters a tag may not hold replaced. */
 const tagPart = (s: string) => s.replace(/[^\w.-]+/g, "-");
+
+/**
+ * `--env-id` takes one of these: the RLinf rigs (BlockPAP-v1 default, BlockStack-v1) and the stock
+ * ManiSkill tabletop tasks the env server has a task text and a visibility list for (its INSTRUCTIONS
+ * / TASK_ACTORS; the last six are OpenETA's ManiSkill table, sim/envs/maniskill at 7d4a0a1, minus
+ * what a one-arm translation-only Panda cannot attempt). The same list, in the same order.
+ */
+export const ENV_IDS = [
+	"BlockPAP-v1",
+	"BlockStack-v1",
+	"PickCube-v1",
+	"StackCube-v1",
+	"PushCube-v1",
+	"PullCube-v1",
+	"PokeCube-v1",
+	"LiftPegUpright-v1",
+	"PlaceSphere-v1",
+	"StackPyramid-v1",
+	"PullCubeTool-v1",
+	"PegInsertionSide-v1",
+	"PlugCharger-v1",
+	"PickSingleYCB-v1",
+] as const;
+export type EnvId = (typeof ENV_IDS)[number];
 
 /** configs/robot_maniskill.yaml `move_vectors`: +x away from the base, -y = MV_LEFT, +z up. */
 export const VECTORS: Record<MoveUnit, Vec3> = {
@@ -119,9 +145,16 @@ const SCENE_TEXT = {
 	},
 };
 
-type Meta = { env_id: string; seed: number; scene: Record<string, unknown> | null; table_z?: number } & Partial<
-	typeof VIEW_SETUP
->;
+type Meta = {
+	env_id: string;
+	seed: number;
+	scene: Record<string, unknown> | null;
+	table_z?: number;
+	/** The letterbox square the views are sent as (env server --view-size; 0 = raw). */
+	view_size?: number;
+} & Partial<typeof VIEW_SETUP>;
+/** The raw agentview frame both scene kinds render (env server AGENTVIEW, the rigs' external_cam), letterboxed to view_size. */
+export const AGENTVIEW_PX = { width: 640, height: 480 };
 /** The env server camera setup VIEWS describes; a server rendering anything else is refused. */
 export const VIEW_SETUP = { agentview: "oblique", wrist_mount: "centered", wrist_rotation: 270, wrist_flip: "none" };
 /** The same for the RLinf rigs (RIG_VIEWS): their calibrated external_cam and the 180 deg wrist. */
@@ -217,7 +250,7 @@ export default function maniskill(pi: ExtensionAPI) {
 	pi.registerFlag("env-id", {
 		type: "string",
 		default: "BlockPAP-v1",
-		description: "ManiSkill env id: BlockPAP-v1 / BlockStack-v1 (RLinf rigs) or a stock task (PickCube-v1, ...)",
+		description: `ManiSkill env id: ${ENV_IDS.join(", ")} (BlockPAP-v1 / BlockStack-v1 are the RLinf rigs)`,
 	});
 	pi.registerFlag("scene", {
 		type: "string",
@@ -256,6 +289,8 @@ export default function maniskill(pi: ExtensionAPI) {
 	/** The server runs an RLinf rig (BlockPAP-v1 / BlockStack-v1). */
 	let rig = false;
 	let tableZ = 0;
+	/** The views' letterbox square (meta.view_size), for Flash's pixel -> raw pixel mapping. */
+	let viewSize = 256;
 	const text = () => SCENE_TEXT[rig ? "rig" : "stock"];
 	/** The --probe-axes vectors (undefined: VECTORS) and their calibration record. */
 	let vectors: Record<MoveUnit, Vec3> | undefined;
@@ -279,13 +314,25 @@ export default function maniskill(pi: ExtensionAPI) {
 			primitives: ["move_delta", "act"],
 			published: false,
 		},
-		// Flash replays the solved exploration's recipe as recorded: its moves are relative and the robot has no
-		// back-projection to re-anchor them, so it reproduces the recorded seed (--model flash/replay).
+		// Flash replays a solved episode's plan (../flash/generate.ts --session: move_delta waypoints with their
+		// absolute end positions). Anchors are pointed at by Molmo in the agentview and met with the plane at
+		// their recorded height through the calibrated camera (no depth here); anchored waypoints then move
+		// with them, as deltas from the live TCP position, in moves of at most MAX_MOVE_M.
 		flash: recipeFlash(pi, {
 			names: () => [tag(robot.task.seed), tag("0")],
 			memory: () => robot.mem?.render("{{memory_dir}}") ?? "",
 			observe: "view_env_state",
-			targets: {},
+			targets: {
+				move_delta: {
+					delta: "delta_xyz",
+					position: (json) => (json.state as { tcp_pos?: number[] } | undefined)?.tcp_pos,
+					maxStep: MAX_MOVE_M,
+				},
+			},
+			backProject: async (_fr, pixel, anchor) => {
+				const meta = await call<CameraMeta>("env.get_camera_meta", { camera_name: "agentview" });
+				return pixelOnPlane(meta, unletterbox(pixel, { ...AGENTVIEW_PX, size: viewSize }), anchor.xyz[2]);
+			},
 			over: (latest) => latest.json.success === true,
 			solved: (latest) => latest.json.success === true,
 		}),
@@ -486,6 +533,8 @@ export default function maniskill(pi: ExtensionAPI) {
 
 	async function startEpisode(ctx: ExtensionContext) {
 		const envId = robot.task["env-id"];
+		if (!(ENV_IDS as readonly string[]).includes(envId))
+			throw new Error(`unknown --env-id ${envId}; one of ${ENV_IDS.join(", ")}`);
 		const seed = robot.task.seed;
 		const scene = robot.task.scene ?? "";
 		const endpoint = pi.getFlag("env") as string | undefined;
@@ -514,6 +563,7 @@ export default function maniskill(pi: ExtensionAPI) {
 			throw new Error(`env server runs ${meta.env_id} seed ${meta.seed}, not ${envId} seed ${seed}`);
 		rig = Boolean(meta.scene);
 		tableZ = meta.table_z ?? 0;
+		viewSize = meta.view_size ?? 256;
 		const want = rig ? RIG_VIEW_SETUP : VIEW_SETUP;
 		const setup = Object.entries(want).filter(([k, v]) => meta[k as keyof typeof VIEW_SETUP] !== v);
 		if (setup.length)

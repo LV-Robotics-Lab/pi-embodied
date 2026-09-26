@@ -3,7 +3,7 @@
  * per project, and `/embodied-setup` asks for the robot, the mode, where the services run and the
  * planner, writes the experiment directory's `.pi/settings.json`, and hands the install to the agent
  * (the embodied-quickstart skill), which runs services/setup.sh and the preflight with its own tools
- * under the user's approvals.
+ * once the user has confirmed the plan (pi does not gate each tool call).
  *
  * A robot extension replaces the coding tools, so robots never load by default: the experiment
  * directory's settings load one robot (and the dashboard) through `extensions`, and a delta entry
@@ -46,6 +46,8 @@ export type Robot = {
 	weights?: string;
 	/** Fine-tuned mode: model and flags. */
 	finetuned?: string;
+	/** Fine-tuned mode: the released adapter `setup.sh finetuned` fetches (FT_ADAPTER); unset when the user serves their own. */
+	adapter?: string;
 };
 
 const SIM_FT = "--model finetuned/qwen3_5_2b_showharness_sim";
@@ -78,6 +80,23 @@ export const ROBOTS: Robot[] = [
 		modes: ["tools", "units", "finetuned"],
 		task: "--env-id PickCube-v1 --seed 0",
 		finetuned: SIM_FT,
+		adapter: "qwen3_5_2b_sim",
+	},
+	{
+		id: "metaworld",
+		label: "Metaworld MT50 (sim)",
+		extension: "src/metaworld/index.ts",
+		needs: "NVIDIA GPU (MuJoCo EGL)",
+		modes: ["tools", "units"],
+		task: "--task reach-v3 --seed 0",
+	},
+	{
+		id: "robosuite",
+		label: "Robosuite (sim, CaP-X tasks)",
+		extension: "src/robosuite/index.ts",
+		needs: "NVIDIA GPU (MuJoCo EGL), SAM3 for segment",
+		modes: ["tools", "units"],
+		task: "--task Lift --seed 0",
 	},
 	{
 		id: "robocasa",
@@ -105,6 +124,7 @@ export const ROBOTS: Robot[] = [
 		modes: ["tools", "units", "finetuned"],
 		task: "--task BananaInBowlTask --seed 0",
 		finetuned: SIM_FT,
+		adapter: "qwen3_5_2b_sim",
 	},
 	{
 		id: "franka",
@@ -138,6 +158,7 @@ export const ROBOTS: Robot[] = [
 		modes: ["tools", "units", "finetuned"],
 		task: "--robot-config <yaml> --task banana_plate --operator=true",
 		finetuned: "--model finetuned/qwen3_5_2b_showharness_ft --ft-prompt v4-piper",
+		adapter: "qwen3_5_2b",
 	},
 ];
 
@@ -232,6 +253,17 @@ function handoff(c: Choice, settingsText: string): string {
 	const settings = c.remote
 		? `write this to <experiment dir on the box>/.pi/settings.json (the package paths become ${c.remote.checkout}/packages/embodied):\n${settingsText}`
 		: `${join(c.dir, ".pi/settings.json")} is written`;
+	// Fine-tuned mode: the adapter and its base model, and the vLLM server the launch's --ft-endpoint (default :8010) expects.
+	const ft = c.robot.adapter ? `FT_ADAPTER=${c.robot.adapter} ${c.services}/setup.sh finetuned` : undefined;
+	const finetuned =
+		c.mode === "finetuned"
+			? [
+					ft
+						? `- adapter: \`${ft}\` (finetuned/download.py fetches the adapter and its base model, pinned and verified)`
+						: "- adapter: none is released for this robot; ask me which adapter to serve and where its files are",
+					`- serve: \`MODEL=<base dir> LORA=<name>=<adapter dir> VLLM_VENV=<venv with vllm> bash ${c.services}/pi_embodied_services/finetuned/serve.sh\` (${ft ? "setup.sh finetuned prints the exact command; " : ""}the launch's --ft-endpoint defaults to http://127.0.0.1:8010/v1); it must be running for the episodes`,
+				]
+			: [];
 	return [
 		`/skill:embodied-quickstart Install and verify pi-embodied with the choices I confirmed in /embodied-setup (skill file: ${SKILL}):`,
 		`- robot: ${c.robot.label}; setup target \`${c.robot.id}\`; needs ${c.robot.needs}`,
@@ -239,8 +271,10 @@ function handoff(c: Choice, settingsText: string): string {
 		`- services: ${where}`,
 		`- install: \`${setup}\`${c.weights ? ` (weights: ${c.robot.weights})` : ""}`,
 		c.model ? `- planner: ${c.model}` : "- planner: the policy named in the launch flags",
+		...finetuned,
 		`- experiment dir: ${c.dir}; ${settings}`,
 		`- launch: \`cd ${c.dir} && source ${venv}/pi-embodied.env && pi ${launchFlags(c)}\``,
+		"- trust: the first pi in the experiment dir asks whether to trust the project (its .pi/settings.json loads the robot extension); I answer yes there, or the robot does not load (/trust saves the decision)",
 		"Run the install, then the preflight, fix what fails, and end with the launch command. Ask me before sudo, anything touching real hardware, or downloads not listed here.",
 	].join("\n");
 }
@@ -312,7 +346,7 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<vo
 	const summary = [
 		`${robot.label}, ${mode}${model ? `, planner ${model}` : ""}`,
 		remote ? `services on ${remote.host}:${services}` : `services at ${services}`,
-		`install: ${services}/setup.sh ${robot.id}${weights ? " --weights" : ""} (the agent runs it with your approvals)`,
+		`install: ${services}/setup.sh ${robot.id}${weights ? " --weights" : ""}${mode === "finetuned" ? ", the adapter download and the vLLM server" : ""}; the agent runs it after this confirmation (pi does not ask per step)`,
 		remote ? "settings: the agent writes them on the box" : `writes ${file}`,
 		`launch: cd ${dir} && pi ${launchFlags(choice)}`,
 	].join("\n");

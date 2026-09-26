@@ -1,18 +1,26 @@
 /**
  * Visual differencing (VDM): a second vision model describes what each robot action changed.
  *
- *   pi -e packages/embodied/src/libero --vdm [--vdm-model provider/id] [--vdm-wrist] ...
+ *   pi -e packages/embodied/src/libero --vdm [--vdm-model provider/id] [--vdm-wrist] [--vdm-timeout 60] ...
  *
  * A robot opts in with `vdm` in its defineRobot spec (how many camera images its observation results
- * carry, and which are wrist views; a function when that depends on the robot's cameras); ../robot.ts
- * mounts this module. With `--vdm`, the first
- * robot tool result that carries the robot's camera views gets a description of the initial scene,
- * and every later one a description of what changed between the previous and the current image of
- * the same view(s) and whether the task looks complete, appended to the result as text. `--vdm-wrist`
- * adds the wrist view(s) to both (a two-armed robot has one per arm). Results with another number of images (a segmentation overlay) are
- * not observations and are left alone. Each call is a `vdm` session entry; its cost counts toward
- * the robot's --max-cost budget (VLM_COST_EVENT). A failed call is noted in the result and the
- * episode goes on. Off (the default), no result is touched and nothing is written.
+ * carry, which are wrist views, and which tools only look; a function when that depends on the
+ * robot's cameras); ../robot.ts mounts this module. With `--vdm`, the first robot tool result that
+ * carries the robot's camera views gets a description of the initial scene, and every later one of a
+ * tool that moves the robot a description of what changed between the previous and the current image
+ * of the same view(s) and whether the task looks complete, appended to the result as text. A tool in
+ * `spec.observe` (view_env_state) moves nothing: its frame becomes the previous one, and no call is
+ * made. A scene reset (exploration's `reset`, the operator's `request_scene_reset`) starts over: the
+ * next observation, the reset's own when it carries the views, is described as a new initial scene
+ * instead of being diffed against the old one. `--vdm-wrist` adds the wrist view(s) to both prompts
+ * (a two-armed robot has one per arm). Results with another number of images (a segmentation overlay)
+ * are not observations and are left alone. Each call is a `vdm` session entry; its cost counts toward
+ * the robot's --max-cost budget (VLM_COST_EVENT). Each call has its own timeout (--vdm-timeout) and,
+ * when eval-parallel.sh's --max-api-concurrency gate is loaded (./api-gate.ts), takes one of its
+ * shared model-call slots like a planner call (the wait counts toward the timeout). A failed or
+ * timed-out call is noted in the result and counted (`vdm_errors`); the episode goes on. An aborted
+ * call (the episode ended) is recorded, not counted. Off (the default), only the flags exist: no
+ * hook runs, no result is touched, and the robot result carries no vdm fields.
  *
  * The previous frame is not restored on resume or fork: every session start restarts the robot's
  * episode, so its first observation is a new initial scene.
@@ -22,10 +30,11 @@
  */
 
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { API_GATE_EVENT, acquire, release } from "./api-gate.ts";
 import { askVlm, VLM_COST_EVENT, type VlmPrompt } from "./units/vlm.ts";
 
-/** Session entry per VDM call: `{ kind: "initial" | "diff", tool, model, text | error, wrist, ms, cost_usd }`. */
+/** Session entry per VDM call: `{ kind: "initial" | "diff", tool, model, text | error | aborted, wrist, ms, cost_usd }`. */
 export const VDM_ENTRY = "vdm";
 
 export type VdmSpec = {
@@ -33,7 +42,12 @@ export type VdmSpec = {
 	views: number;
 	/** Index (or indices, one per arm) of the wrist view(s) among them (`--vdm-wrist`). */
 	wrist?: number | readonly number[];
+	/** Tools whose observation moves nothing (view_env_state): recorded as the previous frame, not described. */
+	observe?: readonly string[];
 };
+
+/** Tools that restore the scene (../robot.ts names them next to the robot's own): the next observation is initial again. */
+const RESETS = ["reset", "request_scene_reset"];
 
 type Frame = { main: ImageContent; wrists: ImageContent[] };
 
@@ -89,8 +103,8 @@ export const HEADERS = {
 };
 
 /**
- * Register the VDM flags and the tool_result hook. `tools()` names the robot's tools (only their
- * results are observations); `task()` is the task text given to the VDM model.
+ * Register the VDM flags and, with `--vdm`, the tool_result hook. `tools()` names the robot's tools and
+ * the scene resets (only their results are observations); `task()` is the task text given to the VDM model.
  */
 export function vdm(
 	pi: ExtensionAPI,
@@ -115,19 +129,39 @@ export function vdm(
 		default: false,
 		description: "VDM: also give the model the wrist view(s)",
 	});
+	pi.registerFlag("vdm-timeout", {
+		type: "string",
+		default: "60",
+		description: "VDM: seconds each call may take (0 = no limit)",
+	});
 	const on = () => pi.getFlag("vdm") === true;
 	let prev: Frame | undefined;
 	let calls = 0;
 	let errors = 0;
 	let cost = 0;
+	/** eval-parallel.sh's model-call gate (api-gate.ts), announced on the event bus when loaded. */
+	let gate: { dir: string; n: number } | undefined;
+	pi.events.on(API_GATE_EVENT, (g) => {
+		gate = g as { dir: string; n: number };
+	});
+	let hooked = false;
 
 	pi.on("session_start", () => {
 		prev = undefined;
 		calls = errors = cost = 0;
+		if (on() && !hooked) {
+			hooked = true;
+			pi.on("tool_result", describe);
+		}
 	});
 
-	pi.on("tool_result", async (event, ctx) => {
+	async function describe(
+		event: { toolName: string; isError: boolean; content: (TextContent | ImageContent)[] },
+		ctx: ExtensionContext,
+	) {
 		if (!on() || event.isError || !tools().includes(event.toolName)) return undefined;
+		// A restored scene: whatever comes next is a new initial scene, not a change.
+		if (RESETS.includes(event.toolName)) prev = undefined;
 		const s = current();
 		const shown = event.content.filter((c): c is ImageContent => c.type === "image");
 		if (!s || shown.length !== s.views) return undefined;
@@ -135,48 +169,65 @@ export function vdm(
 		const frame: Frame = { main: shown[0], wrists };
 		const before = prev;
 		prev = frame;
+		// Looking moves nothing: the frame is the new previous one, there is no change to describe.
+		if (before && s.observe?.includes(event.toolName)) return undefined;
 		const kind = before ? "diff" : "initial";
 		const modelRef = String(pi.getFlag("vdm-model") || pi.getFlag("units-vlm-model") || "");
 		const entry: Record<string, unknown> = { kind, tool: event.toolName, wrist: wrists.length > 0 };
+		const seconds = Number(pi.getFlag("vdm-timeout"));
+		const timeout = seconds > 0 ? AbortSignal.timeout(seconds * 1000) : undefined;
+		const signal = AbortSignal.any([ctx.signal, timeout].filter((x): x is AbortSignal => x !== undefined));
 		const started = Date.now();
-		let note: string;
+		let note: string | undefined;
+		let slot: string | undefined;
 		calls++;
 		try {
+			if (gate) slot = await acquire(gate.dir, gate.n, 250, signal);
 			const reply = await askVlm(
 				ctx,
 				modelRef,
 				pi.getThinkingLevel(),
 				before ? diffPrompt(task(), before, frame) : initialPrompt(task(), frame),
 				[],
-				ctx.signal,
+				signal,
 			);
 			cost += reply.cost;
 			pi.events.emit(VLM_COST_EVENT, reply.cost);
 			Object.assign(entry, { model: reply.model, text: reply.text, cost_usd: reply.cost });
 			note = `${HEADERS[kind]}\n${reply.text.trim()}`;
 		} catch (err) {
-			// The episode goes on without the description.
-			errors++;
-			entry.error = err instanceof Error ? err.message : String(err);
-			note = `[visual differencing unavailable: ${entry.error}]`;
+			if (ctx.signal?.aborted) {
+				// The episode ended (an operator verdict, the time limit): not a failure of the call.
+				entry.aborted = true;
+			} else {
+				// The episode goes on without the description.
+				errors++;
+				entry.error = timeout?.aborted
+					? `timed out after ${seconds} s`
+					: err instanceof Error
+						? err.message
+						: String(err);
+				note = `[visual differencing unavailable: ${entry.error}]`;
+			}
+		} finally {
+			if (slot) release(slot);
 		}
 		entry.ms = Date.now() - started;
 		pi.appendEntry(VDM_ENTRY, entry);
-		return { content: [...event.content, text(note)] };
-	});
+		return note === undefined ? undefined : { content: [...event.content, text(note)] };
+	}
 
 	return {
-		/** The robot result's VDM fields. */
-		result: () => ({
-			vdm: on(),
-			...(on()
+		/** The robot result's VDM fields (none when --vdm is off). */
+		result: () =>
+			on()
 				? {
+						vdm: true,
 						vdm_wrist: pi.getFlag("vdm-wrist") === true && wristsOf(current()).length > 0,
 						vdm_calls: calls,
 						vdm_errors: errors,
 						vdm_cost_usd: Number(cost.toFixed(6)),
 					}
-				: {}),
-		}),
+				: {},
 	};
 }

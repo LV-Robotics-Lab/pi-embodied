@@ -1,5 +1,288 @@
 {
 	"robots": {
+		"behavior": [
+			{
+				"name": "finish",
+				"description": "End the episode after checking the latest state. Success is the BDDL task's own predicate, not this call.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"status",
+						"summary"
+					],
+					"properties": {
+						"status": {
+							"type": "string",
+							"enum": [
+								"success",
+								"failure"
+							]
+						},
+						"summary": {
+							"type": "string"
+						}
+					}
+				}
+			},
+			{
+				"name": "view_env_state",
+				"description": "Current state with the head (ZED) image and the left and right wrist (RealSense) images. Pixel (row, col) in these images feed back_project.",
+				"parameters": {
+					"type": "object",
+					"properties": {}
+				}
+			},
+			{
+				"name": "get_robot_position",
+				"description": "World pose of the base (position, xyzw, yaw in rad) and of both end effectors; no motion.",
+				"parameters": {
+					"type": "object",
+					"properties": {}
+				}
+			},
+			{
+				"name": "navigate_to_pose",
+				"description": "Drive the base to world (x, y) facing yaw (rad about +z; 0 = +x). The planner avoids obstacles and refuses goals inside them or farther than 5 m; stand about 0.5 m from a table edge, facing it. Returns ok, the pose reached and images.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"x",
+						"y",
+						"yaw"
+					],
+					"properties": {
+						"x": {
+							"type": "number"
+						},
+						"y": {
+							"type": "number"
+						},
+						"yaw": {
+							"type": "number"
+						}
+					}
+				}
+			},
+			{
+				"name": "move_hand",
+				"description": "Plan and move one arm's end effector to a world position (and xyzw orientation, default the current one), avoiding obstacles. Reach is about 1.5 m from the base in xy: navigate first. Returns ok, the eef pose reached, distance_left_m and images.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"arm",
+						"position"
+					],
+					"properties": {
+						"arm": {
+							"type": "string",
+							"enum": [
+								"left",
+								"right"
+							],
+							"description": "Which arm"
+						},
+						"position": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 3,
+							"maxItems": 3,
+							"description": "World [x, y, z], m"
+						},
+						"quat_xyzw": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 4,
+							"maxItems": 4,
+							"description": "World xyzw orientation (default: keep the current one)"
+						}
+					}
+				}
+			},
+			{
+				"name": "grasp_object",
+				"description": "Grasp at a world pose with one arm: open, move to pregrasp_offset_m above it, descend along the approach, close, settle, lift back. Aim at the object's grasp point from segment / point / back_project. Judge the grasp from gripper_width (near 0 = nothing held) and the wrist image.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"arm",
+						"position"
+					],
+					"properties": {
+						"arm": {
+							"type": "string",
+							"enum": [
+								"left",
+								"right"
+							],
+							"description": "Which arm"
+						},
+						"position": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 3,
+							"maxItems": 3,
+							"description": "World [x, y, z], m"
+						},
+						"quat_xyzw": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 4,
+							"maxItems": 4,
+							"description": "World xyzw orientation (default: keep the current one)"
+						},
+						"pregrasp_offset_m": {
+							"type": "number",
+							"description": "Default 0.1 (0.02-0.5)"
+						}
+					}
+				}
+			},
+			{
+				"name": "open_gripper",
+				"description": "Open one arm's gripper fully (releases what it holds). Returns gripper_width and images.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"arm"
+					],
+					"properties": {
+						"arm": {
+							"type": "string",
+							"enum": [
+								"left",
+								"right"
+							],
+							"description": "Which arm"
+						}
+					}
+				}
+			},
+			{
+				"name": "close_gripper",
+				"description": "Close one arm's gripper fully. Returns gripper_width and images.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"arm"
+					],
+					"properties": {
+						"arm": {
+							"type": "string",
+							"enum": [
+								"left",
+								"right"
+							],
+							"description": "Which arm"
+						}
+					}
+				}
+			},
+			{
+				"name": "segment",
+				"description": "SAM3 segmentation of the latest image of a camera. Give exactly one of a text prompt or a positive point [row, col]. The top mask is projected through that camera's depth; world_xyz is the median over mask pixels, top_xyz the median of its highest points (a grasp point). Returns an overlay image.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"prompt": {
+							"type": "string"
+						},
+						"point": {
+							"type": "array",
+							"items": {
+								"type": "integer"
+							},
+							"minItems": 2,
+							"maxItems": 2
+						},
+						"camera": {
+							"type": "string",
+							"enum": [
+								"head",
+								"left_wrist",
+								"right_wrist"
+							],
+							"description": "Default head"
+						},
+						"min_score": {
+							"type": "number",
+							"description": "Default 0.2"
+						}
+					}
+				}
+			},
+			{
+				"name": "point",
+				"description": "Molmo points at what a short noun phrase names in a camera's latest image ('the radio on the table'). Returns the pixel, its world xyz through the depth (median of a 7x7 window) and the image with the point marked.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"query"
+					],
+					"properties": {
+						"query": {
+							"type": "string"
+						},
+						"camera": {
+							"type": "string",
+							"enum": [
+								"head",
+								"left_wrist",
+								"right_wrist"
+							],
+							"description": "Default head"
+						}
+					}
+				}
+			},
+			{
+				"name": "back_project",
+				"description": "World xyz of a pixel (row, col; row 0 = top) in a camera's latest image, through its metric depth (median of a 3x3 window). Region mode: row_range + col_range returns the median and the xy midpoint over that window.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"row": {
+							"type": "integer"
+						},
+						"col": {
+							"type": "integer"
+						},
+						"camera": {
+							"type": "string",
+							"enum": [
+								"head",
+								"left_wrist",
+								"right_wrist"
+							],
+							"description": "Default head"
+						},
+						"row_range": {
+							"type": "array",
+							"items": {
+								"type": "integer"
+							},
+							"minItems": 2,
+							"maxItems": 2
+						},
+						"col_range": {
+							"type": "array",
+							"items": {
+								"type": "integer"
+							},
+							"minItems": 2,
+							"maxItems": 2
+						}
+					}
+				}
+			}
+		],
 		"dual_franka": [
 			{
 				"name": "request_operator_verdict",
@@ -483,6 +766,114 @@
 						}
 					}
 				}
+			},
+			{
+				"name": "plan_grasp",
+				"description": "Predict grasps for one object from the current RGB-D observation, ranked best first, in the world frame. Give the object as text (segmented with SAM3) or a mask_id of this observation. Each candidate has a short id (g3) valid until the robot moves; motion tools take grasp_id. Try `active` first; after a structured failure (unreachable, collision, empty grasp) call again with next_after=<that id> to get the next rank without re-planning.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"arm"
+					],
+					"properties": {
+						"object": {
+							"type": "string",
+							"description": "Object to grasp (SAM3 text prompt), e.g. 'black bowl'"
+						},
+						"mask_id": {
+							"type": "string",
+							"description": "A mask id (d2) of the current observation instead of object"
+						},
+						"camera": {
+							"type": "string",
+							"description": "Registered RGB-D view name (default: the first configured)"
+						},
+						"backend": {
+							"type": "string",
+							"enum": [
+								"contact_graspnet",
+								"graspgenx",
+								"anygrasp"
+							],
+							"description": "Default: the first configured"
+						},
+						"arm": {
+							"type": "string",
+							"enum": [
+								"left",
+								"right"
+							],
+							"description": "Which arm to command; the other arm is left uncommanded."
+						},
+						"next_after": {
+							"type": "string",
+							"description": "Greedy policy: reject this grasp id and return the next rank of its plan"
+						},
+						"reason": {
+							"type": "string",
+							"description": "With next_after: why that candidate failed"
+						}
+					}
+				}
+			},
+			{
+				"name": "plan_place",
+				"description": "Where to hold the grasped object so it comes to rest on a placement region (AnyPlace). Give the object and the region as text (segmented now) or as mask ids, and the grasp id the object is held with; all three must come from the same observation (plan before moving, or re-segment after). Returns place poses with ids (p1) that motion tools take like grasp ids.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"grasp_id"
+					],
+					"properties": {
+						"object": {
+							"type": "string",
+							"description": "The object being placed (SAM3 text), or object_mask_id"
+						},
+						"object_mask_id": {
+							"type": "string"
+						},
+						"region": {
+							"type": "string",
+							"description": "The surface it goes onto / into (SAM3 text), or region_mask_id"
+						},
+						"region_mask_id": {
+							"type": "string"
+						},
+						"grasp_id": {
+							"type": "string",
+							"description": "The grasp (g id) the object is held with"
+						},
+						"camera": {
+							"type": "string",
+							"description": "Registered RGB-D view name (default: the first configured)"
+						}
+					}
+				}
+			},
+			{
+				"name": "check_attached",
+				"description": "Independent visual check whether the gripper holds the object: a vision model judges the current wrist view and the other cameras cropped around the gripper. Use it after a grasp and lift, before carrying; it does not move the robot.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"object",
+						"arm"
+					],
+					"properties": {
+						"object": {
+							"type": "string",
+							"description": "The object that should be in the gripper"
+						},
+						"arm": {
+							"type": "string",
+							"enum": [
+								"left",
+								"right"
+							],
+							"description": "Which arm to command; the other arm is left uncommanded."
+						}
+					}
+				}
 			}
 		],
 		"franka": [
@@ -701,6 +1092,91 @@
 				}
 			},
 			{
+				"name": "segment",
+				"description": "SAM3 masks on the latest camera image, each with a short id (d3) drawn on the returned overlay in rank order (red, blue, green, yellow, ...). Give exactly one of a text prompt or a positive point [row, col]. all=true returns every candidate instead of only the best; then pick one with select_detection. Ids die with the observation: segment again after any motion.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"prompt": {
+							"type": "string"
+						},
+						"point": {
+							"type": "array",
+							"items": {
+								"type": "integer"
+							},
+							"minItems": 2,
+							"maxItems": 2
+						},
+						"camera": {
+							"type": "string",
+							"enum": [
+								"wrist",
+								"third_person"
+							],
+							"description": "Default wrist"
+						},
+						"min_score": {
+							"type": "number",
+							"description": "Default 0.2"
+						},
+						"all": {
+							"type": "boolean",
+							"description": "Return every mask, not only the best (default false)"
+						}
+					}
+				}
+			},
+			{
+				"name": "select_detection",
+				"description": "Choose one segment mask (by id) as the target of the current observation, after checking the overlay.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"id"
+					],
+					"properties": {
+						"id": {
+							"type": "string",
+							"description": "A detection id from segment (e.g. d3) of the current observation"
+						}
+					}
+				}
+			},
+			{
+				"name": "reject_detection",
+				"description": "Rule out one segment mask (by id) of the current observation; it stays listed as rejected.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"id"
+					],
+					"properties": {
+						"id": {
+							"type": "string",
+							"description": "A detection id from segment (e.g. d3) of the current observation"
+						}
+					}
+				}
+			},
+			{
+				"name": "enhance_depth",
+				"description": "Fill the holes of a camera's depth on the latest step with a UniDepth estimate scaled to the sensor (or supply depth where the camera has none). back_project and segment on this step then use the filled depth; the sensor depth is kept as <camera>_depth_sensor.f32.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"camera": {
+							"type": "string",
+							"enum": [
+								"wrist",
+								"third_person"
+							],
+							"description": "Default wrist"
+						}
+					}
+				}
+			},
+			{
 				"name": "back_project",
 				"description": "Back-project one wrist or external-camera pixel into Franka base coordinates.",
 				"parameters": {
@@ -856,6 +1332,102 @@
 							"minimum": 1,
 							"maximum": 20,
 							"description": "Default 4"
+						}
+					}
+				}
+			},
+			{
+				"name": "plan_grasp",
+				"description": "Predict grasps for one object from the current RGB-D observation, ranked best first, in the world frame. Give the object as text (segmented with SAM3) or a mask_id of this observation. Each candidate has a short id (g3) valid until the robot moves; motion tools take grasp_id. Try `active` first; after a structured failure (unreachable, collision, empty grasp) call again with next_after=<that id> to get the next rank without re-planning.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"object": {
+							"type": "string",
+							"description": "Object to grasp (SAM3 text prompt), e.g. 'black bowl'"
+						},
+						"mask_id": {
+							"type": "string",
+							"description": "A mask id (d2) of the current observation instead of object"
+						},
+						"camera": {
+							"type": "string",
+							"enum": [
+								"wrist",
+								"third_person"
+							],
+							"description": "Default wrist"
+						},
+						"backend": {
+							"type": "string",
+							"enum": [
+								"contact_graspnet",
+								"graspgenx",
+								"anygrasp"
+							],
+							"description": "Default: the first configured"
+						},
+						"next_after": {
+							"type": "string",
+							"description": "Greedy policy: reject this grasp id and return the next rank of its plan"
+						},
+						"reason": {
+							"type": "string",
+							"description": "With next_after: why that candidate failed"
+						}
+					}
+				}
+			},
+			{
+				"name": "plan_place",
+				"description": "Where to hold the grasped object so it comes to rest on a placement region (AnyPlace). Give the object and the region as text (segmented now) or as mask ids, and the grasp id the object is held with; all three must come from the same observation (plan before moving, or re-segment after). Returns place poses with ids (p1) that motion tools take like grasp ids.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"grasp_id"
+					],
+					"properties": {
+						"object": {
+							"type": "string",
+							"description": "The object being placed (SAM3 text), or object_mask_id"
+						},
+						"object_mask_id": {
+							"type": "string"
+						},
+						"region": {
+							"type": "string",
+							"description": "The surface it goes onto / into (SAM3 text), or region_mask_id"
+						},
+						"region_mask_id": {
+							"type": "string"
+						},
+						"grasp_id": {
+							"type": "string",
+							"description": "The grasp (g id) the object is held with"
+						},
+						"camera": {
+							"type": "string",
+							"enum": [
+								"wrist",
+								"third_person"
+							],
+							"description": "Default wrist"
+						}
+					}
+				}
+			},
+			{
+				"name": "check_attached",
+				"description": "Independent visual check whether the gripper holds the object: a vision model judges the current wrist view and the other cameras cropped around the gripper. Use it after a grasp and lift, before carrying; it does not move the robot.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"object"
+					],
+					"properties": {
+						"object": {
+							"type": "string",
+							"description": "The object that should be in the gripper"
 						}
 					}
 				}
@@ -1098,12 +1670,9 @@
 			},
 			{
 				"name": "move_to",
-				"description": "Scripted EEF servo to a world xyz; holds orientation. gripper -1 = open, +1 = close (hold +1 while carrying). Never move more than 0.30 m in xy in one call; split long moves.",
+				"description": "Scripted EEF servo to a world xyz, or to a planned grasp (grasp_id from plan_grasp / plan_place, valid for the current observation only; standoff backs off along its approach); holds orientation, or turns to the grasp's yaw. gripper -1 = open, +1 = close (hold +1 while carrying). Never move more than 0.30 m in xy in one call; split long moves.",
 				"parameters": {
 					"type": "object",
-					"required": [
-						"xyz"
-					],
 					"properties": {
 						"xyz": {
 							"type": "array",
@@ -1113,6 +1682,14 @@
 							"minItems": 3,
 							"maxItems": 3,
 							"description": "World-frame [x, y, z] in meters"
+						},
+						"grasp_id": {
+							"type": "string",
+							"description": "A grasp (g1) or place (p1) id from plan_grasp / plan_place instead of xyz"
+						},
+						"standoff": {
+							"type": "number",
+							"description": "With grasp_id: metres to stop short of the grasp along its approach (0.1 = pre-grasp)"
 						},
 						"gripper": {
 							"type": "number",
@@ -1141,6 +1718,35 @@
 						"yaw_step_clip": {
 							"type": "number",
 							"description": "Per-step yaw clip, rad (default 0.10)"
+						}
+					}
+				}
+			},
+			{
+				"name": "preview_reach",
+				"description": "Whether move_to could reach a world xyz from the current joints (IK only; nothing moves). status unreachable means move_to would refuse it; unknown means the check could not run.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"xyz"
+					],
+					"properties": {
+						"xyz": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 3,
+							"maxItems": 3,
+							"description": "World-frame [x, y, z] in meters"
+						},
+						"quat_xyzw": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 4,
+							"maxItems": 4
 						}
 					}
 				}
@@ -1299,12 +1905,9 @@
 			},
 			{
 				"name": "move_pose",
-				"description": "Servo xyz and pitch/yaw together each step. Use when move_to stalls on deep or low reaches (cabinet fronts, microwave). gripper defaults to -1 (open): pass +1 while holding.",
+				"description": "Servo xyz and pitch/yaw together each step, to a world xyz or to a planned grasp (grasp_id, standoff as in move_to; its pitch and yaw become the targets). Use when move_to stalls on deep or low reaches (cabinet fronts, microwave). gripper defaults to -1 (open): pass +1 while holding.",
 				"parameters": {
 					"type": "object",
-					"required": [
-						"xyz"
-					],
 					"properties": {
 						"xyz": {
 							"type": "array",
@@ -1314,6 +1917,14 @@
 							"minItems": 3,
 							"maxItems": 3,
 							"description": "World-frame [x, y, z] in meters"
+						},
+						"grasp_id": {
+							"type": "string",
+							"description": "A grasp (g1) or place (p1) id from plan_grasp / plan_place instead of xyz"
+						},
+						"standoff": {
+							"type": "number",
+							"description": "With grasp_id: metres to stop short of the grasp along its approach"
 						},
 						"target_pitch": {
 							"type": "number",
@@ -1467,6 +2078,102 @@
 						"z_max": {
 							"type": "number",
 							"description": "Region mode: keep pixels with world z <= z_max"
+						}
+					}
+				}
+			},
+			{
+				"name": "plan_grasp",
+				"description": "Predict grasps for one object from the current RGB-D observation, ranked best first, in the world frame. Give the object as text (segmented with SAM3) or a mask_id of this observation. Each candidate has a short id (g3) valid until the robot moves; motion tools take grasp_id. Try `active` first; after a structured failure (unreachable, collision, empty grasp) call again with next_after=<that id> to get the next rank without re-planning.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"object": {
+							"type": "string",
+							"description": "Object to grasp (SAM3 text prompt), e.g. 'black bowl'"
+						},
+						"mask_id": {
+							"type": "string",
+							"description": "A mask id (d2) of the current observation instead of object"
+						},
+						"camera": {
+							"type": "string",
+							"enum": [
+								"agentview",
+								"wrist"
+							],
+							"description": "Default agentview"
+						},
+						"backend": {
+							"type": "string",
+							"enum": [
+								"contact_graspnet",
+								"graspgenx",
+								"anygrasp"
+							],
+							"description": "Default: the first configured"
+						},
+						"next_after": {
+							"type": "string",
+							"description": "Greedy policy: reject this grasp id and return the next rank of its plan"
+						},
+						"reason": {
+							"type": "string",
+							"description": "With next_after: why that candidate failed"
+						}
+					}
+				}
+			},
+			{
+				"name": "plan_place",
+				"description": "Where to hold the grasped object so it comes to rest on a placement region (AnyPlace). Give the object and the region as text (segmented now) or as mask ids, and the grasp id the object is held with; all three must come from the same observation (plan before moving, or re-segment after). Returns place poses with ids (p1) that motion tools take like grasp ids.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"grasp_id"
+					],
+					"properties": {
+						"object": {
+							"type": "string",
+							"description": "The object being placed (SAM3 text), or object_mask_id"
+						},
+						"object_mask_id": {
+							"type": "string"
+						},
+						"region": {
+							"type": "string",
+							"description": "The surface it goes onto / into (SAM3 text), or region_mask_id"
+						},
+						"region_mask_id": {
+							"type": "string"
+						},
+						"grasp_id": {
+							"type": "string",
+							"description": "The grasp (g id) the object is held with"
+						},
+						"camera": {
+							"type": "string",
+							"enum": [
+								"agentview",
+								"wrist"
+							],
+							"description": "Default agentview"
+						}
+					}
+				}
+			},
+			{
+				"name": "check_attached",
+				"description": "Independent visual check whether the gripper holds the object: a vision model judges the current wrist view and the other cameras cropped around the gripper. Use it after a grasp and lift, before carrying; it does not move the robot.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"object"
+					],
+					"properties": {
+						"object": {
+							"type": "string",
+							"description": "The object that should be in the gripper"
 						}
 					}
 				}

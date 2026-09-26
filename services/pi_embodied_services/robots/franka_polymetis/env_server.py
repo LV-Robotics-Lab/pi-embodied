@@ -72,14 +72,20 @@ import yaml
 
 from pi_embodied_services.components.code_api import register_code_api
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
-from pi_embodied_services.robots.franka.primitives import FRANKA_PRIMITIVES
+from pi_embodied_services.robots.franka.primitives import franka_primitives
 from pi_embodied_services.robots.franka_polymetis.control import (
     PolymetisController,
     PolymetisLimits,
     flange_to_tcp,
 )
+from pi_embodied_services.utils import reach
 from pi_embodied_services.utils.daemon import watch_parent_death
 from pi_embodied_services.utils.logging import get_logger
+from pi_embodied_services.utils.perception import (
+    FRANKA_CAMERAS,
+    Perception,
+    franka_intrinsics,
+)
 from pi_embodied_services.utils.rpc.main_thread_serve import MainThreadServeMixin
 
 logger = get_logger("franka_polymetis_env_server")
@@ -281,7 +287,13 @@ class FrankaPolymetisFacade(MainThreadServeMixin, BaseEnvFacade):
         config_path: str = "",
         task_description: str = "",
         sleep: Callable[[float], None] = time.sleep,
+        perception: Perception | None = None,
+        ik_reach: reach.ReachPreview | None = None,
     ) -> None:
+        self._perception = perception
+        # --ik: env.preview_reach, and move_delta / rotate_delta refuse a target the ik
+        # service cannot reach from the current joints (utils/reach.py).
+        self._reach = ik_reach
         super().__init__()
         self._cfg = cfg
         self._config_path = config_path
@@ -341,7 +353,12 @@ class FrankaPolymetisFacade(MainThreadServeMixin, BaseEnvFacade):
     def _register_rpc(self) -> None:
         for name in METHODS:
             self._rpc[f"env.{name}"] = getattr(self, name)
-        register_code_api(self, FRANKA_PRIMITIVES)
+        self._rpc["env.preview_reach"] = self.preview_reach
+        # --sam3 / --unidepth: env.segment, env.select_detection, env.reject_detection,
+        # env.enhance_depth over the latest env.get_observation (utils/perception.py).
+        if self._perception is not None:
+            self._perception.install(self)
+        register_code_api(self, franka_primitives(self._perception))
 
     def close(self) -> None:
         for cam in self._cameras.values():
@@ -455,12 +472,39 @@ class FrankaPolymetisFacade(MainThreadServeMixin, BaseEnvFacade):
             "observation_camera_map": self.capabilities()["cameras"],
         }
 
+    # -- reach preview (--ik) ---------------------------------------------
+
+    def preview_reach(self, pos: Any, quat_xyzw: Any = None) -> dict[str, Any]:
+        """Whether the TCP can reach a base-frame pose from the current joints (IK only, the
+        arm does not move); ``quat_xyzw`` None keeps the current orientation."""
+        if self._reach is None:
+            return reach.no_service()
+        state = self.controller.state()
+        tcp = np.asarray(state["tcp_pose"], dtype=np.float64)
+        return self._reach.preview(
+            state["arm_joint_position"],
+            pos,
+            tcp[3:] if quat_xyzw is None else quat_xyzw,
+        )
+
+    def _check_reach(self, action: str, **delta: Any) -> None:
+        """Refuse a motion whose end pose the ik service cannot reach (nothing is commanded)."""
+        if self._reach is None:
+            return
+        state = self.controller.state()
+        pos, quat = reach.delta_target(state["tcp_pose"], **delta)
+        reach.require_reachable(
+            self._reach.preview(state["arm_joint_position"], pos, quat), f"env.{action}"
+        )
+
     # -- motion -----------------------------------------------------------
 
     def move_delta(self, delta_xyz: Any, continuous: bool = False) -> dict[str, Any]:
+        self._check_reach("move_delta", delta_xyz=delta_xyz)
         return self.controller.move_delta(delta_xyz, continuous=bool(continuous))
 
     def rotate_delta(self, delta_rpy: Any) -> dict[str, Any]:
+        self._check_reach("rotate_delta", delta_rpy=delta_rpy)
         return self.controller.rotate_delta(delta_rpy)
 
     def set_gripper(self, *, open: bool) -> dict[str, Any]:
@@ -585,6 +629,13 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Test doubles instead of hardware; refused unless PI_EMBODIED_MOCK_ROBOT=1.",
     )
+    parser.add_argument(
+        "--sam3", default="", help="SAM3 server URL: adds env.segment and detection ids"
+    )
+    parser.add_argument(
+        "--unidepth", default="", help="UniDepth server URL: adds env.enhance_depth"
+    )
+    reach.add_ik_argument(parser)
     args = parser.parse_args(argv)
     if args.mock:
         from pi_embodied_services.robots.franka_polymetis.mock import MOCK_ENV
@@ -607,6 +658,14 @@ def main(argv: list[str] | None = None) -> int:
             cameras,
             config_path=str(args.robot_config or DEFAULT_CONFIG),
             task_description=args.task_description,
+            perception=Perception.from_urls(
+                sam3=args.sam3,
+                unidepth=args.unidepth,
+                cameras=FRANKA_CAMERAS,
+                # Resolved per call, once the facade exists.
+                intrinsics=lambda key: franka_intrinsics(facade.get_camera_meta(), key),
+            ),
+            ik_reach=reach.reach_from_args(args, "panda"),
         )
     except Exception:
         for cam in cameras.values():

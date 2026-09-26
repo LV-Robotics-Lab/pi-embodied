@@ -6,9 +6,11 @@ import dualFranka from "../src/dual_franka/index.ts";
 import franka from "../src/franka/index.ts";
 import libero from "../src/libero/index.ts";
 import maniskill from "../src/maniskill/index.ts";
+import metaworld from "../src/metaworld/index.ts";
 import piper from "../src/piper/index.ts";
 import robocasa from "../src/robocasa/index.ts";
 import robolab from "../src/robolab/index.ts";
+import robosuite from "../src/robosuite/index.ts";
 import { defineRobot, RESULT_ENTRY } from "../src/robot.ts";
 import robotwin from "../src/robotwin/index.ts";
 
@@ -108,6 +110,8 @@ test("only the simulated robots register --privileged; the real ones have no suc
 		["libero", libero, true],
 		["robocasa", robocasa, true],
 		["maniskill", maniskill, true],
+		["metaworld", metaworld, true],
+		["robosuite", robosuite, true],
 		["robotwin", robotwin, true],
 		["robolab", robolab, true],
 		["franka", franka, false],
@@ -126,6 +130,7 @@ test("every robot registers --vdm (visual differencing is not tied to the simula
 		["libero", libero],
 		["robocasa", robocasa],
 		["maniskill", maniskill],
+		["robosuite", robosuite],
 		["robotwin", robotwin],
 		["robolab", robolab],
 		["franka", franka],
@@ -160,6 +165,7 @@ test("every robot mounts the action units (so GUMI and the fine-tuned model driv
 		["libero", libero],
 		["robocasa", robocasa],
 		["maniskill", maniskill],
+		["robosuite", robosuite],
 		["robotwin", robotwin],
 		["robolab", robolab],
 		["franka", franka],

@@ -14,7 +14,10 @@
 #   robocasa        [robocasa] py3.10, kitchen assets (~10 GB, robocasa-download-assets)   --weights: RLDX-1-FT-RC365 + RLDX-1-VLM
 #   robotwin        [robotwin] py3.11, RoboTwin assets   --weights: LingBot-VLA RoboTwin EEF
 #   maniskill       [maniskill] py3.11, real2sim rigs (robots/maniskill/fetch_real2sim.sh)
+#   robosuite       [robosuite] py3.11 (robosuite 1.5, CaP-X tasks; its own venv: LIBERO needs 1.4)
+#   metaworld       [metaworld] py3.11 (Metaworld MT50, no assets; MuJoCo renders through EGL)
 #   robolab         Isaac Sim 6.1 venv + patched RoboLab (robots/robolab/install_isaac61.sh)
+#   behavior        Isaac Sim + OmniGibson/BDDL venv from a BEHAVIOR-1K checkout (robots/behavior/install.sh)
 #   franka          [franka,sam3] py3.11 (real arm; RLinf controller stack and Ray on the box)
 #   franka-polymetis [franka-polymetis] py3.10 (real arm on a Polymetis NUC)
 #   dual-franka     [franka,sam3] py3.11 (two real arms)
@@ -64,10 +67,12 @@ libero | libero-pro | libero-plus) extra=$target py=3.11 ;;
 robocasa) extra=robocasa py=3.10 ;;
 robotwin) extra=robotwin py=3.11 ;;
 maniskill) extra=maniskill py=3.11 ;;
+metaworld) extra=metaworld py=3.11 ;;
+robosuite) extra=robosuite py=3.11 ;;
 franka | dual-franka) extra=franka,sam3 py=3.11 ;;
 franka-polymetis) extra=franka-polymetis py=3.10 ;;
 piper) extra=piper py=system ;;
-robolab | finetuned | llamafactory) extra="" py="" ;;
+robolab | behavior | finetuned | llamafactory) extra="" py="" ;;
 *) die "unknown target '$target' (see --help)" ;;
 esac
 venv=${venv:-$SERVICES/.venv-$target}
@@ -154,21 +159,32 @@ liberopro_assets() {
 }
 
 # liberoplus-download-assets rejects the published assets.zip (its tree sits under a deep build path,
-# not at the archive root), so fetch and unpack it here and link the package to it. The package
-# imports Wand, which needs the system ImageMagick library.
+# not at the archive root), so fetch and unpack it here and link the package to it. The 6.4 GB zip is
+# checked against the sha256 of the pinned revision and deleted after the unpack; the sha256 stays
+# in <dir>/assets.zip.sha256. The package imports Wand, which needs the system ImageMagick library.
 liberoplus_assets() {
 	local dir=$wdir/liberoplus-assets
 	if [ -d "$dir/scenes" ]; then
 		note "LIBERO-plus assets present in $dir"
 	else
 		hf_get Sylvest/LIBERO-plus dd2bd61b7d9a6fef1abc52d606e983b41886a149 "$wdir/liberoplus-zip" assets.zip --repo-type dataset
-		run "$PY" -c 'import os, shutil, sys, zipfile
-z, d = sys.argv[1:]
+		run "$PY" -c 'import hashlib, os, shutil, sys, zipfile
+z, d, want = sys.argv[1:]
+h = hashlib.sha256()
+with open(z, "rb") as f:
+    for chunk in iter(lambda: f.read(1 << 24), b""):
+        h.update(chunk)
+if h.hexdigest() != want:
+    sys.exit(f"{z}: sha256 {h.hexdigest()}, expected {want}")
 t = d + ".tmp"
 shutil.rmtree(t, True)
 zipfile.ZipFile(z).extractall(t)
 os.replace(next(r for r, ds, _ in os.walk(t) if "scenes" in ds), d)
-shutil.rmtree(t)' "$wdir/liberoplus-zip/assets.zip" "$dir"
+shutil.rmtree(t)
+with open(os.path.join(d, "assets.zip.sha256"), "w") as f:
+    f.write(f"{want}  assets.zip ({os.path.getsize(z)} bytes, Sylvest/LIBERO-plus dd2bd61b)\n")
+shutil.rmtree(os.path.dirname(z))' "$wdir/liberoplus-zip/assets.zip" "$dir" \
+			96764a4bfbdaea98d4411598caeab235458318fe0f549611b93d1a323027b3cf
 	fi
 	run "$venv/bin/liberoplus-download-assets" --link "$dir"
 	$dry || "$PY" -c 'import wand.image' 2>/dev/null ||
@@ -181,6 +197,12 @@ robolab)
 	root=${ROBOLAB_ROOT:-$HOME/RoboLab}
 	run bash "$SERVICES/pi_embodied_services/robots/robolab/install_isaac61.sh" "$venv" "$root"
 	export_env ROBOLAB_ROOT "$root"
+	export_env OMNI_KIT_ACCEPT_EULA YES
+	;;
+behavior)
+	root=${BEHAVIOR_1K_ROOT:-$HOME/BEHAVIOR-1K}
+	run bash "$SERVICES/pi_embodied_services/robots/behavior/install.sh" "$venv" "$root"
+	export_env OMNIGIBSON_DATA_PATH "${OMNIGIBSON_DATA_PATH:-$root/datasets}"
 	export_env OMNI_KIT_ACCEPT_EULA YES
 	;;
 finetuned)

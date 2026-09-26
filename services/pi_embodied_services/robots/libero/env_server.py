@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import argparse
+import io
 import os
 import random
 import sys
@@ -29,8 +30,18 @@ import numpy as np
 
 from pi_embodied_services.components.code_api import register_code_api
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
-from pi_embodied_services.robots.libero.primitives import LIBERO_PRIMITIVES
-from pi_embodied_services.utils import ground_truth
+from pi_embodied_services.robots.libero.primitives import libero_primitives
+from pi_embodied_services.utils import ground_truth, reach
+from pi_embodied_services.utils.code_exec import (
+    CodeRunner,
+    describe_helpers,
+    registry_primitives,
+)
+from pi_embodied_services.utils.grasp import (
+    GraspPlanner,
+    add_grasp_arguments,
+    urls_from_args,
+)
 from pi_embodied_services.utils.logging import get_logger
 from pi_embodied_services.utils.serialization import to_numpy_tree
 
@@ -44,6 +55,15 @@ assert "mujoco" not in sys.modules, (
 logger = get_logger("env_server")
 
 os.environ.setdefault("ROBOT_PLATFORM", "LIBERO")
+
+#: The grasp planner's cameras (alias -> LIBERO camera) and its render size.
+GRASP_CAMERAS = {"agentview": "agentview", "wrist": "robot0_eye_in_hand"}
+GRASP_RES = 512
+#: Code mode reads the same cameras at the same size; one run returns at most this many
+#: agentview frames (one per mutating primitive) for the episode video.
+CODE_CAMERAS = GRASP_CAMERAS
+CODE_RES = GRASP_RES
+CODE_MAX_FRAMES = 32
 
 # torch and LiberoEnv are only imported at call time (after --cuda-device
 # sets CUDA_VISIBLE_DEVICES in main()); LiberoEnv transitively imports torch.
@@ -139,18 +159,37 @@ def _exposing_poses(env_fn):
     """Wrap a LIBERO worker ``env_fn`` so the env answers ``ground_truth_poses()`` (through
     the worker's ``env_call``): the world poses of every body in LIBERO's own object list,
     ``obj_body_id`` (its movable objects and fixtures). The sim lives only in the worker
-    process. It never raises: an exception in the worker loop would kill the env."""
+    process. It never raises: the worker loop (rlinf/envs/libero/venv.py ``_worker``) has no
+    try/except around ``env_call``, so an exception there kills the worker and the env with
+    it; a failure comes back as ``{"error": ...}`` and the facade raises it instead."""
 
     def fn():
         env = env_fn()
 
         def poses():
-            rob = env
-            while hasattr(rob, "env"):
-                rob = rob.env
-            return ground_truth.mujoco_body_poses(rob.sim, rob.obj_body_id)
+            try:
+                rob = env
+                while hasattr(rob, "env"):
+                    rob = rob.env
+                return ground_truth.mujoco_body_poses(rob.sim, rob.obj_body_id)
+            except Exception as e:  # noqa: BLE001
+                return {"error": f"{type(e).__name__}: {e}"}
+
+        def robot_base_pose():
+            # The arm's base body (where the IK model's link0 sits), for env.preview_reach.
+            try:
+                rob = env
+                while hasattr(rob, "env"):
+                    rob = rob.env
+                body = "robot0_base"
+                return ground_truth.mujoco_body_poses(
+                    rob.sim, {body: rob.sim.model.body_name2id(body)}
+                )[body]
+            except Exception as e:  # noqa: BLE001
+                return {"error": f"{type(e).__name__}: {e}"}
 
         env.ground_truth_poses = poses
+        env.robot_base_pose = robot_base_pose
         return env
 
     return fn
@@ -203,15 +242,53 @@ class LiberoEnvFacade(BaseEnvFacade):
     """
 
     SERVICE_NAME = "libero-env"
+    #: Set by __init__; class defaults so the registry can be built on a bare facade (tests).
+    _sam3_url: str | None = None
+    _grasp: "GraspPlanner | None" = None
 
-    def __init__(self, env: LiberoEnv, *, meta: dict):
+    def __init__(
+        self,
+        env: LiberoEnv,
+        *,
+        meta: dict,
+        sam3: str | None = None,
+        grasp: dict | None = None,
+        ik_reach: reach.ReachPreview | None = None,
+    ):
         self._env = env
         self._env_idx = 0
         self._closed = False
+        # --ik: env.preview_reach (utils/reach.py); the robot base pose it converts world
+        # targets with is read from the worker once per reset.
+        self._reach = ik_reach
+        self._base_pose: dict | None = None
         # Identifies what task/seed this server was launched with — the
         # client compares against its own expected values at construction
         # and refuses to talk to a stale or mis-configured server.
         self._meta = dict(meta)
+        # Code mode: the episode state its primitives read (LIBERO's latched success and
+        # truncation, the last commanded gripper, the latest obs) and the SAM3 server `segment`
+        # asks; a run's step count, first success and frames are collected between begin/finish.
+        self._sam3_url = sam3
+        self._sam3 = None
+        self._terminated = False
+        self._truncated = False
+        self._grip = -1.0
+        self._last_obs: dict | None = None
+        self._run_steps = 0
+        self._run_success: int | None = None
+        self._run_frames: list = []
+        # --graspnet/--graspgenx/--anygrasp/--anyplace: env.plan_grasp, env.plan_place and the
+        # grasp/placement ids over the 512x512 upright agentview / wrist frames (utils/grasp.py);
+        # None without them, and the server is unchanged.
+        self._grasp = GraspPlanner.from_args(
+            self._view,
+            cameras=list(GRASP_CAMERAS),
+            sam3=sam3,
+            eef_pose=lambda arm: (self._eef(), self._quat_xyzw()),
+            wrist_camera="wrist",
+            **(grasp or {}),
+        )
         super().__init__()
 
     def _register_rpc(self) -> None:
@@ -223,10 +300,79 @@ class LiberoEnvFacade(BaseEnvFacade):
                 "env.get_camera_meta": self.get_camera_meta,
                 "env.get_task_language": self.get_task_language,
                 "env.ground_truth_poses": self.ground_truth_poses,
+                "env.preview_reach": self.preview_reach,
+            }
+        )
+        # Code mode's primitives (primitives.py CODE_PRIMITIVES), registered before the grasp
+        # planner wraps the mutating ones with its id invalidation.
+        self._rpc.update(
+            {
+                "env.get_state": self.get_state,
+                "env.get_observation": self.get_observation,
+                "env.back_project": self.back_project,
+                "env.move_to": self.move_to,
+                "env.move_delta": self.move_delta,
+                "env.rotate_wrist": self.rotate_wrist,
+                "env.rotate_delta": self.rotate_delta,
+                "env.set_gripper": self.set_gripper,
+                **({"env.segment": self.segment} if self._sam3_url else {}),
             }
         )
         self._readonly_methods.add("env.get_task_language")
-        register_code_api(self, LIBERO_PRIMITIVES)
+        primitives = libero_primitives(sam3=bool(self._sam3_url))
+        if self._grasp is not None:
+            self._grasp.install(self, mutating=GraspPlanner.MUTATING + ("env.move_to",))
+            primitives = (*primitives, *self._grasp.primitives())
+        api = register_code_api(self, primitives)
+        # Code mode (run_code): a program's calls go through the registry's resolve to the
+        # methods above; the runner adds the sandbox, the budgets and the stop handling.
+        self._code = CodeRunner(
+            registry_primitives(
+                api, self._rpc, move_m=self._code_move_m, after=self._frame
+            ),
+            stop_requested=self.stop_requested,
+            # A timed-out program is killed; the robot gets a stop like an abort would send.
+            on_timeout=lambda: self.request_stop(),
+            begin=self._begin_run,
+            finish=self._finish_run,
+        )
+        self._rpc["code.run"] = self._code.run
+        self._rpc["code.helpers"] = describe_helpers
+        self._readonly_methods.add("code.helpers")
+
+    def _on_stop(self, generation: int) -> None:
+        # A stop while a program runs kills its process; the primitive loops see stop_requested.
+        self._code.abort()
+
+    # ---- grasp planning views ----
+
+    def _eef(self) -> np.ndarray:
+        return np.asarray(self.raw_obs()["robot0_eef_pos"], dtype=np.float64).reshape(3)
+
+    def _quat_xyzw(self) -> np.ndarray:
+        return np.asarray(self.raw_obs()["robot0_eef_quat"], dtype=np.float64).reshape(
+            4
+        )
+
+    def _view(self, camera: str) -> dict:
+        """One camera, upright: rgb uint8[S,S,3], depth float32[S,S] in metres (0 = none), K,
+        cam2world. LIBERO renders upside down and its depth buffer is normalized (near/far);
+        pi's tools flip and linearize the same way, so pixel (row, col) back-projects with K."""
+        name = GRASP_CAMERAS[camera]
+        rgb, depth = self.render_camera(name, GRASP_RES, GRASP_RES, depth=True)
+        meta = self.get_camera_meta(name, GRASP_RES, GRASP_RES) or {}
+        z = np.asarray(depth, dtype=np.float64).reshape(GRASP_RES, GRASP_RES)
+        near, far = meta.get("depth_near"), meta.get("depth_far")
+        if near is not None and far is not None:
+            z = near / (1 - z * (1 - near / far))
+        return {
+            "rgb": np.ascontiguousarray(np.asarray(rgb, dtype=np.uint8)[::-1]),
+            "depth": np.ascontiguousarray(z[::-1].astype(np.float32)),
+            "intrinsic_K": np.asarray(meta["intrinsic_K"], dtype=np.float64),
+            "extrinsic_cam2world": np.asarray(
+                meta["extrinsic_cam2world"], dtype=np.float64
+            ),
+        }
 
     # ---- shape helpers ----
 
@@ -257,6 +403,10 @@ class LiberoEnvFacade(BaseEnvFacade):
     def reset(self):
         obs, info = self._env.reset()
         obs = self._strip_obs(to_numpy_tree(obs))
+        self._base_pose = None
+        self._terminated = self._truncated = False
+        self._grip = -1.0
+        self._last_obs = obs
         return obs, to_numpy_tree(info)
 
     def _succeeded(self, info) -> np.bool_:
@@ -269,6 +419,7 @@ class LiberoEnvFacade(BaseEnvFacade):
         obs = self._strip_obs(to_numpy_tree(obs))
         term = self._succeeded(info)
         trunc = self._strip(to_numpy_tree(trunc))
+        self._absorb(obs, bool(term), bool(np.any(trunc)))
         return (
             obs,
             self._strip(to_numpy_tree(rew)),
@@ -276,6 +427,12 @@ class LiberoEnvFacade(BaseEnvFacade):
             trunc,
             to_numpy_tree(info),
         )
+
+    def _absorb(self, obs: dict, term: bool, trunc: bool) -> None:
+        """Episode state for the code primitives: success latches, truncation ends the episode."""
+        self._terminated = self._terminated or term
+        self._truncated = self._truncated or trunc
+        self._last_obs = obs
 
     def chunk_step(self, actions, *, return_all_frames: bool = False):
         """Run a full action chunk in one RPC. ``actions`` shape
@@ -295,6 +452,7 @@ class LiberoEnvFacade(BaseEnvFacade):
         obs_list = [self._strip_obs(to_numpy_tree(o)) for o in obs_list]
         term = np.array([self._succeeded(i) for i in info], dtype=bool)
         trunc = self._strip(to_numpy_tree(trunc))
+        self._absorb(obs_list[-1], bool(term.any()), bool(np.any(trunc)))
         obs_field = obs_list if return_all_frames else obs_list[-1]
         return (
             obs_field,
@@ -353,8 +511,487 @@ class LiberoEnvFacade(BaseEnvFacade):
         """World poses of ``names`` (default all) from LIBERO's object list (``--privileged``).
         Unknown names are refused here, before the worker is asked."""
         worker = self._env.env.workers[self._env_idx]
-        return ground_truth.respond(
-            worker.env_call("ground_truth_poses", target="self"), names
+        poses = worker.env_call("ground_truth_poses", target="self")
+        if isinstance(poses.get("error"), str):
+            raise RuntimeError(
+                f"ground_truth_poses failed in the worker: {poses['error']}"
+            )
+        return ground_truth.respond(poses, names)
+
+    # ---- code mode (run_code) --------------------------------------------------------------
+    #
+    # The facade methods behind the registry's CODE_PRIMITIVES (primitives.py): programs reach them
+    # only through CodeApi.resolve, and they step the env as pi's LIBERO tools do (`env.step`), with
+    # LIBERO's success latched and `stop` honoured between env steps. Images come from `_view`
+    # (512x512, upright), so pixel (row, col) of `get_observation` back-projects with its K.
+
+    def _begin_run(self) -> None:
+        self._run_steps = 0
+        self._run_success = None
+        self._run_frames = []
+
+    def _finish_run(self) -> dict:
+        """The run's effect for pi: env steps taken, the first success within them, the episode
+        flags, the latest obs (pi's `Obs`), and one agentview frame per motion primitive."""
+        return {
+            "steps": self._run_steps,
+            "success_step": self._run_success,
+            "terminated": self._terminated,
+            "truncated": self._truncated,
+            "obs": self._last_obs,
+            "frames": list(self._run_frames),
+        }
+
+    def _code_move_m(self, method: str, kwargs: dict) -> float:
+        """How far a program's call may move the arm (the run's translation cap): move_to's
+        distance to its target, move_delta's norm, a raw OSC step's clipped translation."""
+        if method == "env.move_to":
+            target = np.asarray(kwargs["xyz"], dtype=np.float64).reshape(3)
+            return float(np.linalg.norm(target - self._eef()))
+        if method == "env.move_delta":
+            d = np.asarray(kwargs["dxyz"], dtype=np.float64).reshape(3)
+            return float(np.linalg.norm(d))
+        if method in ("env.step", "env.chunk_step"):
+            a = np.asarray(
+                kwargs.get("action", kwargs.get("actions")), dtype=np.float64
+            )
+            a = a.reshape(-1, a.shape[-1])[:, :3]
+            return float(np.linalg.norm(np.clip(a, -1, 1) * 0.05, axis=1).sum())
+        return 0.0
+
+    def _yaw(self) -> float:
+        x, y, z, w = self._quat_xyzw() / np.linalg.norm(self._quat_xyzw())
+        return float(np.arctan2(2 * (x * y + z * w), 1 - 2 * (y * y + z * z)))
+
+    def _gripper_width(self) -> float:
+        q = np.asarray(self.raw_obs()["robot0_gripper_qpos"], dtype=np.float64).reshape(
+            -1
+        )
+        return float(abs(q[0]) + abs(q[1]))
+
+    def _live(self) -> bool:
+        return not (self._terminated or self._truncated)
+
+    def _act(self, action) -> None:
+        """One env step of a primitive (pi's tools step the same way)."""
+        _obs, _rew, term, _trunc, _info = self.step(
+            np.asarray(action, dtype=np.float32)
+        )
+        self._run_steps += 1
+        if bool(term) and self._run_success is None:
+            self._run_success = self._run_steps
+
+    def _frame(self, _primitive=None) -> None:
+        """After a mutating primitive (the runner's `after` hook): one agentview frame for the video."""
+        if self._last_obs is not None and len(self._run_frames) < CODE_MAX_FRAMES:
+            self._run_frames.append(self._last_obs["main_images"])
+
+    def _motion_result(self, name: str, steps: int, cancelled: bool, **fields) -> dict:
+        out = {
+            "name": name,
+            "steps_used": steps,
+            "eef_pos": [round(float(v), 4) for v in self._eef()],
+            "gripper_width": round(self._gripper_width(), 4),
+            "terminated": self._terminated,
+            "truncated": self._truncated,
+            **fields,
+        }
+        if cancelled:
+            out["cancelled"] = True
+        return out
+
+    @staticmethod
+    def _servo_action(diff, step_clip: float, action_scale: float) -> list[float]:
+        return [
+            float(np.clip(np.clip(d, -step_clip, step_clip) / action_scale, -1, 1))
+            for d in diff
+        ]
+
+    def _servo(
+        self,
+        target: np.ndarray,
+        grip: float,
+        tol: float,
+        max_steps: int,
+        step_clip: float,
+    ):
+        """Step toward `target` (world xyz) holding orientation; stops within `tol`, at the
+        step budget, at the episode's end, or at a stop."""
+        steps = 0
+        cancelled = False
+        while steps < max_steps and self._live():
+            if self.stop_requested():
+                cancelled = True
+                break
+            diff = target - self._eef()
+            if np.linalg.norm(diff) < tol:
+                break
+            self._act([*self._servo_action(diff, step_clip, 0.05), 0.0, 0.0, 0.0, grip])
+            steps += 1
+        return steps, cancelled
+
+    def _grip_value(self, gripper) -> float:
+        if gripper is None:
+            return self._grip
+        if isinstance(gripper, bool):
+            return 1.0 if gripper else -1.0
+        g = float(gripper)
+        if g not in (-1.0, 1.0):
+            raise ValueError("gripper must be -1 (open), +1 (close) or None (keep)")
+        return g
+
+    def get_state(self) -> dict:
+        """Proprioception, no images.
+
+        Returns:
+            dict with ``eef_pos`` [x, y, z] (m, world frame), ``eef_quat_xyzw``, ``yaw`` (rad,
+            about world +z), ``gripper_width`` (sum of the two finger joints: about 0.08 open,
+            below 0.01 closed on nothing), ``gripper_cmd`` (-1 open / +1 close, the last command),
+            ``terminated`` (LIBERO judged the task done; it stays true) and ``truncated`` (the
+            episode's step limit ended it).
+        """
+        return {
+            "eef_pos": [round(float(v), 4) for v in self._eef()],
+            "eef_quat_xyzw": [round(float(v), 5) for v in self._quat_xyzw()],
+            "yaw": round(self._yaw(), 4),
+            "gripper_width": round(self._gripper_width(), 4),
+            "gripper_cmd": int(self._grip),
+            "terminated": self._terminated,
+            "truncated": self._truncated,
+        }
+
+    def _camera(self, camera: str) -> str:
+        if camera not in CODE_CAMERAS:
+            raise ValueError(f"camera must be one of {list(CODE_CAMERAS)}")
+        return CODE_CAMERAS[camera]
+
+    def get_observation(self) -> dict:
+        """The current camera images with calibration, plus the state of `get_state`.
+
+        Returns:
+            dict with ``agentview`` and ``wrist``, each ``{"rgb": uint8[512, 512, 3], "depth":
+            float32[512, 512] (metres), "intrinsic_K": float64[3, 3], "extrinsic_cam2world":
+            float64[4, 4]}``, and the `get_state` fields. Pixel (row, col) of an image
+            back-projects as ``x = (col - cx) * z / fx``, ``y = (row - cy) * z / fy`` in the camera
+            frame, then ``extrinsic_cam2world @ [x, y, z, 1]``. The agentview faces the robot
+            (its base is at the image top); the wrist camera looks down between the fingers.
+
+        Example:
+            >>> obs = get_observation()
+            >>> depth = obs["agentview"]["depth"]; K = obs["agentview"]["intrinsic_K"]
+        """
+        out = {camera: self._view(camera) for camera in CODE_CAMERAS}
+        out.update(self.get_state())
+        return out
+
+    def _world_xyz(self, view: dict, row: int, col: int) -> np.ndarray | None:
+        z = float(view["depth"][row, col])
+        if not (z > 0) or not np.isfinite(z):
+            return None
+        K = view["intrinsic_K"]
+        p = np.array(
+            [(col - K[0, 2]) * z / K[0, 0], (row - K[1, 2]) * z / K[1, 1], z, 1.0]
+        )
+        return (view["extrinsic_cam2world"] @ p)[:3]
+
+    def back_project(self, row: int, col: int, camera: str = "agentview") -> dict:
+        """World xyz of pixel (row, col) of the current 512x512 image of `camera` (row 0 = top).
+
+        Args:
+            row, col: pixel in the image `get_observation` returns for that camera.
+            camera: "agentview" (default) or "wrist".
+
+        Returns:
+            dict with ``world_xyz`` [x, y, z] in metres. Raises when the pixel has no depth.
+
+        Example:
+            >>> p = back_project(300, 260)["world_xyz"]
+        """
+        row, col = int(row), int(col)
+        if not (0 <= row < CODE_RES and 0 <= col < CODE_RES):
+            raise ValueError(
+                f"pixel ({row}, {col}) out of bounds for {CODE_RES}x{CODE_RES}"
+            )
+        self._camera(camera)
+        p = self._world_xyz(self._view(camera), row, col)
+        if p is None:
+            raise ValueError(f"no depth at pixel ({row}, {col}); pick another pixel")
+        return {
+            "camera": camera,
+            "pixel": [row, col],
+            "world_xyz": [round(float(v), 4) for v in p],
+        }
+
+    def segment(
+        self, prompt: str, camera: str = "agentview", min_score: float = 0.2
+    ) -> dict:
+        """SAM3 segmentation of the current 512x512 image of `camera` by a text prompt, and the
+        top mask's median world position through the depth image.
+
+        Args:
+            prompt: what to segment, e.g. "black bowl".
+            camera: "agentview" (default) or "wrist".
+            min_score: SAM3 score threshold (default 0.2).
+
+        Returns:
+            dict with ``found`` (bool); when found: ``score``, ``box`` [x1, y1, x2, y2] (pixels),
+            ``mask`` bool[512, 512], ``n_pixels``, ``centroid_rowcol`` [row, col] and
+            ``world_xyz`` (median over the mask's pixels with depth, or None when too few).
+
+        Example:
+            >>> seg = segment("black bowl")
+            >>> if seg["found"]: xyz = seg["world_xyz"]
+        """
+        import base64
+
+        from PIL import Image
+
+        from pi_embodied_services.utils.rpc.http_rpc import HttpRpcClient
+
+        if not self._sam3_url:
+            raise RuntimeError(
+                "segment needs a SAM3 server (start the env server with --sam3)"
+            )
+        if self._sam3 is None:
+            self._sam3 = HttpRpcClient(self._sam3_url)
+        self._camera(camera)
+        view = self._view(camera)
+        buf = io.BytesIO()
+        Image.fromarray(view["rgb"]).save(buf, format="PNG")
+        res = self._sam3.call(
+            "sam3.segment",
+            kwargs={
+                "image_base64": base64.b64encode(buf.getvalue()).decode("ascii"),
+                "text_prompt": str(prompt),
+                "min_score": float(min_score),
+            },
+            timeout_s=120,
+        )
+        if not res.get("found") or not res.get("mask_png_base64"):
+            return {"found": False, "reason": res.get("reason", "no mask")}
+        mask_img = Image.open(io.BytesIO(base64.b64decode(res["mask_png_base64"])))
+        mask = np.asarray(mask_img)
+        if mask.ndim == 3:
+            mask = mask[..., 0]
+        if mask.shape != (CODE_RES, CODE_RES):
+            raise RuntimeError(
+                f"SAM3 mask {mask.shape} does not match the {CODE_RES} image"
+            )
+        mask = mask >= 128
+        rows, cols = np.nonzero(mask)
+        pts = [
+            p
+            for p in (self._world_xyz(view, int(r), int(c)) for r, c in zip(rows, cols))
+            if p is not None
+        ]
+        out: dict[str, Any] = {
+            "found": True,
+            "camera": camera,
+            "score": None
+            if res.get("score") is None
+            else round(float(res["score"]), 3),
+            "box": res.get("box"),
+            "mask": mask,
+            "n_pixels": int(mask.sum()),
+            "centroid_rowcol": [int(np.median(rows)), int(np.median(cols))],
+            "world_xyz": None,
+        }
+        if len(pts) >= 10:
+            arr = np.asarray(pts)
+            out["world_xyz"] = [round(float(v), 4) for v in np.median(arr, axis=0)]
+        return out
+
+    def move_to(
+        self, xyz, gripper=None, tol: float = 0.012, max_steps: int = 80
+    ) -> dict:
+        """Servo the end effector to a world position, holding its orientation.
+
+        Args:
+            xyz: target [x, y, z] in metres (world frame). Keep one call under 0.30 m in xy;
+                split longer moves into waypoints at carry height.
+            gripper: -1 opens, +1 closes and holds (carry with +1); None (default) keeps the
+                last command.
+            tol: stop within this distance (default 0.012 m).
+            max_steps: env-step budget (default 80; about 2.5 cm per step).
+
+        Returns:
+            dict with ``eef_pos``, ``final_dist_m``, ``steps_used``, ``gripper_width``,
+            ``terminated``. A large ``final_dist_m`` means the reach stalled (contact, limits).
+
+        Example:
+            >>> move_to([0.05, 0.12, 0.25])          # above the target
+            >>> move_to([0.05, 0.12, 0.06]); set_gripper(True); move_to([0.05, 0.12, 0.25])
+        """
+        target = np.asarray(xyz, dtype=np.float64).reshape(3)
+        grip = self._grip_value(gripper)
+        self._grip = grip
+        steps, cancelled = self._servo(target, grip, float(tol), int(max_steps), 0.025)
+        return self._motion_result(
+            "move_to",
+            steps,
+            cancelled,
+            final_dist_m=round(float(np.linalg.norm(target - self._eef())), 4),
+        )
+
+    def move_delta(self, dxyz, gripper=None, max_steps: int = 25) -> dict:
+        """Move the end effector by a world-frame offset, holding its orientation.
+
+        Args:
+            dxyz: [dx, dy, dz] in metres (world frame: +x away from the robot toward the
+                agentview camera, +y robot-left, +z up). Keep each call at or below 0.10 m.
+            gripper: -1 opens, +1 closes and holds; None (default) keeps the last command.
+            max_steps: env-step budget (default 25).
+
+        Returns:
+            dict with ``eef_pos``, ``moved_m`` (distance actually travelled), ``steps_used``,
+            ``gripper_width``, ``terminated``. ``moved_m`` well below the command means the
+            move was blocked (contact, table, workspace limit).
+
+        Example:
+            >>> move_delta([0, 0, -0.05])   # descend 5 cm
+        """
+        d = np.asarray(dxyz, dtype=np.float64).reshape(3)
+        if np.linalg.norm(d) > 0.10 + 1e-9:
+            raise ValueError(
+                "move_delta moves at most 0.10 m per call; split the motion"
+            )
+        start = self._eef()
+        grip = self._grip_value(gripper)
+        self._grip = grip
+        steps, cancelled = self._servo(start + d, grip, 0.004, int(max_steps), 0.025)
+        return self._motion_result(
+            "move_delta",
+            steps,
+            cancelled,
+            moved_m=round(float(np.linalg.norm(self._eef() - start)), 4),
+        )
+
+    def _rotate(
+        self, goal: float, grip: float, max_steps: int, tol: float, step_clip: float
+    ):
+        steps = 0
+        cancelled = False
+        wrap = lambda a: (a + np.pi) % (2 * np.pi) - np.pi  # noqa: E731
+        while steps < max_steps and self._live():
+            if self.stop_requested():
+                cancelled = True
+                break
+            err = wrap(goal - self._yaw())
+            if abs(err) < tol:
+                break
+            a = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, grip]
+            a[5] = float(np.clip(np.clip(err, -step_clip, step_clip) / 0.1, -1, 1))
+            self._act(a)
+            steps += 1
+        return steps, cancelled, float(wrap(goal - self._yaw()))
+
+    def rotate_wrist(
+        self,
+        target_yaw: float | None = None,
+        delta_yaw: float | None = None,
+        gripper=None,
+        max_steps: int = 40,
+    ) -> dict:
+        """Turn the gripper about world z, holding its position.
+
+        Args:
+            target_yaw: absolute yaw in radians (world frame), or
+            delta_yaw: relative turn in radians (positive = counter-clockwise seen from above).
+            gripper: -1 / +1 / None (keep).
+            max_steps: env-step budget (default 40; about 0.1 rad per step).
+
+        Returns:
+            dict with ``yaw`` (final), ``final_err`` (rad), ``steps_used``, ``eef_pos``.
+
+        Example:
+            >>> rotate_wrist(delta_yaw=1.5708)   # a quarter turn
+        """
+        if target_yaw is None and delta_yaw is None:
+            raise ValueError("give target_yaw or delta_yaw")
+        goal = (
+            float(target_yaw)
+            if target_yaw is not None
+            else self._yaw() + float(delta_yaw)
+        )
+        grip = self._grip_value(gripper)
+        self._grip = grip
+        steps, cancelled, err = self._rotate(goal, grip, int(max_steps), 0.02, 0.1)
+        return self._motion_result(
+            "rotate_wrist",
+            steps,
+            cancelled,
+            yaw=round(self._yaw(), 4),
+            final_err=round(err, 4),
+        )
+
+    def rotate_delta(self, delta_yaw: float, gripper=None, max_steps: int = 40) -> dict:
+        """Turn the gripper about world z by `delta_yaw` radians (positive = counter-clockwise
+        seen from above), holding its position. At most pi/2 per call.
+
+        Returns:
+            dict with ``yaw`` (final, rad), ``final_err``, ``steps_used``, ``eef_pos``.
+        """
+        if abs(float(delta_yaw)) > np.pi / 2 + 1e-9:
+            raise ValueError("rotate_delta turns at most pi/2 per call")
+        return self.rotate_wrist(
+            delta_yaw=float(delta_yaw), gripper=gripper, max_steps=max_steps
+        )
+
+    def set_gripper(self, close: bool, steps: int = 15) -> dict:
+        """Close or open the gripper in place.
+
+        Args:
+            close: True closes (and the following moves hold +1), False opens.
+            steps: env steps to drive the fingers (default 15; they stop early once they rest
+                on a grasped object).
+
+        Returns:
+            dict with ``gripper_width`` (about 0.08 open; 0.01-0.05 holding an object; near 0
+            closed on nothing), ``steps_used``, ``terminated`` (opening over the goal may end
+            the task).
+
+        Example:
+            >>> set_gripper(True); state = get_state()   # then judge gripper_width
+        """
+        grip = 1.0 if close else -1.0
+        self._grip = grip
+        n = 0
+        cancelled = False
+        widths = [self._gripper_width()]
+        while n < int(steps) and self._live():
+            if self.stop_requested():
+                cancelled = True
+                break
+            self._act([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, grip])
+            n += 1
+            widths.append(self._gripper_width())
+            # LIBERO's fingers travel about 1 mm per step: they have stopped (on an object, or
+            # fully open / closed) when three steps moved them less than 1 mm in total.
+            if n > 3 and abs(widths[-1] - widths[-4]) < 1e-3:
+                break
+        return self._motion_result("set_gripper", n, cancelled, close=bool(close))
+
+    # ---- reach preview (--ik, utils/reach.py) ----
+
+    def preview_reach(self, pos, quat_xyzw=None) -> dict:
+        """Whether the gripper can reach a world position without moving: IK from the current
+        joints, solved by the ik service (``--ik``); the sim is not touched. ``quat_xyzw`` None
+        keeps the current orientation (as ``move_to`` does). ``status`` is ``reachable``,
+        ``unreachable`` or ``unknown`` (no ik service answered; not approval)."""
+        if self._reach is None:
+            return reach.no_service()
+        raw = to_numpy_tree(self._env.current_raw_obs[self._env_idx])
+        if self._base_pose is None:
+            worker = self._env.env.workers[self._env_idx]
+            base = worker.env_call("robot_base_pose", target="self")
+            if "error" in base:
+                raise RuntimeError(f"robot base pose unavailable: {base['error']}")
+            self._base_pose = base
+        return self._reach.preview(
+            raw["robot0_joint_pos"],
+            pos,
+            raw["robot0_eef_quat"] if quat_xyzw is None else quat_xyzw,
+            base_pose=self._base_pose,
         )
 
 
@@ -372,6 +1009,14 @@ def main():
     p.add_argument("--task", type=int, default=9)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--max-episode-steps", type=int, default=10000)
+    reach.add_ik_argument(p)
+    p.add_argument(
+        "--sam3",
+        type=str,
+        default=None,
+        help="SAM3 server URL: lets plan_grasp / segment_mask and code mode's `segment` segment objects by text",
+    )
+    add_grasp_arguments(p)
     p.add_argument(
         "--parent-watch",
         action="store_true",
@@ -428,6 +1073,9 @@ def main():
             "seed": args.seed,
             "max_episode_steps": args.max_episode_steps,
         },
+        ik_reach=reach.reach_from_args(args, "panda_libero"),
+        sam3=args.sam3,
+        grasp=urls_from_args(args),
     )
     try:
         facade.serve(

@@ -53,6 +53,9 @@ The runner owns the RLinf environment process. Do not start, stop, or restart ro
 4. Use the task's VLA segment tools for contact-rich motion.
 [/tool:vla_right_grasp|vla_handoff|vla_left_place]
 5. Finish only when the success evidence is visible and consistent with state.
+[tool:plan_grasp]
+6. Planned grasps: `plan_grasp` (with `arm`) predicts grasps for an object from a registered RGB-D view, in right_base, best first, each with a short id and the EEF pose to reach. Ids die with the next motion (a stale id is refused), so plan immediately before moving and re-plan after any move. Approach the `active` candidate's `eef_position` from above along its `approach` with bounded `move_delta` steps, close the gripper, lift[tool:check_attached], confirm with `check_attached` before carrying[/tool:check_attached]; only after a structured failure of that candidate call `plan_grasp` with `next_after` for the next rank.[tool:plan_place] `plan_place` (object, region and grasp id from one observation) gives the EEF pose to release at.[/tool:plan_place]
+[/tool:plan_grasp]
 
 # Task
 - task_name: {{task_name}}

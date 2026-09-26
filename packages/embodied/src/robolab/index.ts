@@ -29,6 +29,8 @@ import { join } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { type CameraMeta, pixelOnPlane } from "../flash/plane.ts";
+import { recipeFlash } from "../flash/recipe.ts";
 import { encodePng } from "../png.ts";
 import { attach, defineRobot, SERVICES } from "../robot.ts";
 import type { NdArray, RpcClient } from "../rpc.ts";
@@ -163,6 +165,35 @@ export default function robolab(pi: ExtensionAPI) {
 			primitives: ["move_delta", "act"],
 			published: false,
 		},
+		// Flash replays a solved episode's plan (../flash/generate.ts --session: move_delta waypoints with their
+		// absolute end positions). Anchors are pointed at by Molmo in the front image (sent raw, 640x480) and met
+		// with the plane at their recorded height through the front camera's calibration (env.get_camera_meta:
+		// camera -> base, the frame of eef_pos); anchored waypoints then move with them, as deltas from the live
+		// eef position, in moves of at most MAX_MOVE_M.
+		flash: recipeFlash(pi, {
+			names: () => [tag(robot.task.seed), tag("0")],
+			memory: () => robot.mem?.render("{{memory_dir}}") ?? "",
+			observe: "view_env_state",
+			targets: {
+				move_delta: {
+					delta: "delta_xyz",
+					position: (json) => (json.state as { eef_pos?: number[] } | undefined)?.eef_pos,
+					maxStep: MAX_MOVE_M,
+				},
+			},
+			backProject: async (_fr, pixel, anchor) => {
+				const meta = await env.call<CameraMeta>(
+					"env.get_camera_meta",
+					{ camera_name: "agentview" },
+					60_000,
+					[],
+					robot.signal,
+				);
+				return pixelOnPlane(meta, pixel, anchor.xyz[2]);
+			},
+			over: (latest) => latest.json.success === true,
+			solved: (latest) => latest.json.success === true,
+		}),
 		explore: {
 			// The exploration `reset` tool is not a robot.tool, so robot.signal is unset here; use its own signal.
 			reset: async (result, _ctx, signal) => {

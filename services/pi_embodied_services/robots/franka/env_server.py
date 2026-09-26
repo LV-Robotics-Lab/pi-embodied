@@ -30,9 +30,23 @@ import numpy as np
 
 from pi_embodied_services.components.code_api import register_code_api
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
-from pi_embodied_services.robots.franka.primitives import FRANKA_PRIMITIVES
+from pi_embodied_services.robots.franka.primitives import (
+    FRANKA_PRIMITIVES,
+    franka_primitives,
+)
 from pi_embodied_services.robots.franka.runtime_config import load_runtime_config
+from pi_embodied_services.utils import reach
+from pi_embodied_services.utils.grasp import (
+    GraspPlanner,
+    add_grasp_arguments,
+    urls_from_args,
+)
 from pi_embodied_services.utils.logging import get_logger
+from pi_embodied_services.utils.perception import (
+    FRANKA_CAMERAS,
+    Perception,
+    franka_intrinsics,
+)
 from pi_embodied_services.utils.serialization import to_numpy_tree
 
 logger = get_logger("franka_env_server")
@@ -68,8 +82,21 @@ class FrankaEnvFacade(BaseEnvFacade):
         }
     )
 
-    def __init__(self, backend: Any) -> None:
+    def __init__(
+        self,
+        backend: Any,
+        perception: Perception | None = None,
+        grasp: dict | None = None,
+        ik_reach: reach.ReachPreview | None = None,
+    ) -> None:
         self._backend = backend
+        self._perception = perception
+        # --graspnet/--graspgenx/--anygrasp/--anyplace: env.plan_grasp, env.plan_place and
+        # the grasp/placement ids over this server's cameras (utils/grasp.py).
+        self._grasp_urls = grasp
+        # --ik: env.preview_reach, and move_delta / rotate_delta refuse a target the ik
+        # service cannot reach from the current joints (utils/reach.py).
+        self._reach = ik_reach
         super().__init__()
 
     def _register_rpc(self) -> None:
@@ -77,7 +104,10 @@ class FrankaEnvFacade(BaseEnvFacade):
             handler = getattr(self._backend, name)
             if name in self._STOPPABLE:
                 handler = self._stoppable(handler)
+            if self._reach is not None and name in ("move_delta", "rotate_delta"):
+                handler = self._reach_checked(handler, name)
             self._rpc[f"env.{name}"] = handler
+        self._rpc["env.preview_reach"] = self.preview_reach
         self._readonly_methods.update(
             {
                 "env.get_env_meta",
@@ -86,7 +116,54 @@ class FrankaEnvFacade(BaseEnvFacade):
                 "env.get_camera_meta",
             }
         )
-        register_code_api(self, self._PRIMITIVES)
+        # --sam3 / --unidepth: env.segment, env.select_detection, env.reject_detection,
+        # env.enhance_depth over the latest env.get_observation (utils/perception.py).
+        if self._perception is not None:
+            self._perception.install(self)
+        primitives = self._PRIMITIVES
+        if primitives is FRANKA_PRIMITIVES:
+            primitives = franka_primitives(self._perception)
+        grasp = self._grasp_planner()
+        if grasp is not None:
+            grasp.install(self)
+            primitives = (*primitives, *grasp.primitives())
+        register_code_api(self, primitives)
+
+    def _grasp_planner(self) -> GraspPlanner | None:
+        """The planner over the wrist and third-person cameras; the wrist camera rides on the TCP.
+        Mask ids from ``env.segment`` (the perception book) are accepted as ``mask_id``."""
+        from pi_embodied_services.robots.franka.grasp_views import franka_view
+        from pi_embodied_services.robots.franka.perception import (
+            load_calibration_bundle,
+        )
+
+        urls = self._grasp_urls or {}
+        if not any(
+            urls.get(k) for k in ("graspnet", "graspgenx", "anygrasp", "anyplace")
+        ):
+            return None
+        cache: dict[str, Any] = {}
+
+        def calibration() -> dict[str, Any]:
+            if "bundle" not in cache:
+                cache["bundle"] = load_calibration_bundle()
+            return cache["bundle"]
+
+        def eef_pose(arm: str | None):
+            tcp = np.asarray(
+                self._backend.get_robot_state()["raw_base_state"]["tcp_pose"],
+                dtype=float,
+            )
+            return tcp[:3], tcp[3:7]
+
+        return GraspPlanner.from_args(
+            franka_view(self._backend, calibration),
+            cameras=list(FRANKA_CAMERAS),
+            masks=self._perception.book if self._perception is not None else None,
+            eef_pose=eef_pose,
+            wrist_camera="wrist",
+            **urls,
+        )
 
     def _stoppable(self, handler: Callable[..., Any]) -> Callable[..., Any]:
         """Tell the worker which stop generation this call runs under, then run it."""
@@ -103,6 +180,41 @@ class FrankaEnvFacade(BaseEnvFacade):
         request_stop = getattr(self._backend, "request_stop", None)
         if request_stop is not None:
             request_stop(generation)
+
+    # ---- reach preview (--ik) ----
+
+    def _tcp_state(self) -> tuple[Any, Any]:
+        """(tcp_pose xyz+xyzw in the base frame, arm joints) from the robot state."""
+        state = to_numpy_tree(self._backend.get_robot_state())["raw_base_state"]
+        return state["tcp_pose"], state["arm_joint_position"]
+
+    def preview_reach(self, pos, quat_xyzw=None) -> dict[str, Any]:
+        """Whether the TCP can reach a base-frame pose from the current joints (IK only, the
+        arm does not move); ``quat_xyzw`` None keeps the current orientation."""
+        if self._reach is None:
+            return reach.no_service()
+        tcp, q = self._tcp_state()
+        return self._reach.preview(q, pos, tcp[3:] if quat_xyzw is None else quat_xyzw)
+
+    def _reach_checked(
+        self, handler: Callable[..., Any], name: str
+    ) -> Callable[..., Any]:
+        """Refuse a move_delta / rotate_delta whose end pose the ik service cannot reach."""
+
+        def call(*args: Any, **kwargs: Any) -> Any:
+            delta = kwargs.get("delta_xyz" if name == "move_delta" else "delta_rpy")
+            if delta is None and args:
+                delta = args[0]
+            tcp, q = self._tcp_state()
+            pos, quat = reach.delta_target(
+                tcp,
+                delta_xyz=delta if name == "move_delta" else None,
+                delta_rpy=delta if name == "rotate_delta" else None,
+            )
+            reach.require_reachable(self._reach.preview(q, pos, quat), f"env.{name}")
+            return handler(*args, **kwargs)
+
+        return call
 
 
 def rlinf_capabilities(eval_cfg: Any, action_scale: Any) -> dict[str, Any]:
@@ -606,7 +718,17 @@ def main(
         action="store_true",
         help="Print the resolved RLinf config and exit without launching.",
     )
+    parser.add_argument(
+        "--sam3", default="", help="SAM3 server URL: adds env.segment and detection ids"
+    )
+    parser.add_argument(
+        "--unidepth", default="", help="UniDepth server URL: adds env.enhance_depth"
+    )
+    add_grasp_arguments(parser)
+    reach.add_ik_argument(parser)
     args = parser.parse_args()
+    if args.ik and facade_class is not FrankaEnvFacade:
+        parser.error("--ik is only supported by the single-arm franka env server")
 
     runtime = load_runtime_config(
         args.robot_config,
@@ -620,7 +742,19 @@ def main(
     worker, stop_flag = _launch_worker(
         runtime.rlinf, runtime.controller, create_worker_class=create_worker_class
     )
-    facade = facade_class(_RayBackend(worker, stop_flag))
+    backend = _RayBackend(worker, stop_flag)
+    perception = Perception.from_urls(
+        sam3=args.sam3,
+        unidepth=args.unidepth,
+        cameras=FRANKA_CAMERAS,
+        intrinsics=lambda key: franka_intrinsics(backend.get_camera_meta(), key),
+    )
+    facade = facade_class(
+        backend,
+        perception,
+        urls_from_args(args),
+        ik_reach=reach.reach_from_args(args, "panda"),
+    )
     try:
         facade.serve(
             transport=args.transport,

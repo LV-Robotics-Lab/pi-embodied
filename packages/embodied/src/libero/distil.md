@@ -17,7 +17,7 @@ b. SUITE LAYER: `{{memory_inbox}}/suite_{{recipe_tag}}_draft.md`, one file for t
    ---
    id: suite_<suite family>_<regime>_t<task_id>   # e.g. suite_libero10_swap_t3
    scope: suite
-   suite: <suite family, e.g. libero10>
+   suite: <suite family, e.g. libero10; a LIBERO-plus cell ({{recipe_tag}} contains `_plus_`) appends _plus: libero10_plus, id suite_libero10_plus_swap_t3>
    regime: <task|swap|lan|object>
    task_id: <n>
    task_language: <verbatim task text>
@@ -35,7 +35,7 @@ b. SUITE LAYER: `{{memory_inbox}}/suite_{{recipe_tag}}_draft.md`, one file for t
    ## Winning technique          the sequence and per-step success criteria, no absolute xyz
    ## Magic numbers              defaults AND usable ranges (`max_chunks=30 (band 28-32)`), each never-do-this on its own line
    ## Failure modes              table `| symptom | root cause (A<N>) | fix |`, one row per failed attempt
-   ## Re-localization per scene  per entity: the `segment` phrasing that worked and fallbacks, what it looks like, what it is confused with, the reject rule, the score floor; this run's absolutes are counter-examples only, never cached
+   ## Re-localization per scene  per entity: [tool:segment]the `segment` phrasing that worked and fallbacks, [/tool:segment] what it looks like, what it is confused with, the reject rule, the score floor; this run's absolutes are counter-examples only, never cached
    ## Fragility flags            the step most likely to break and its fallback
    ## Difficulty and reliability attempts to convergence, expected single-shot rate, an honest record of what stayed unsolved
    ## Cross-refs                 [[id]] links to global memories

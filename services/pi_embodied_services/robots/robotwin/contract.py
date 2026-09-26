@@ -83,6 +83,13 @@ MODEL_SPEC = RoboTwinModelSpec(
 )
 
 
+#: How the env server plans arm paths: cuRobo with the torch L-BFGS step and deterministic CUDA
+#: kernels (env_server.py ``_torch_lbfgs_step`` / ``_deterministic_cuda``). Part of the env meta and
+#: of robotwin/eval.sh's result.json (its ``planner`` must equal this): results planned with the
+#: nondeterministic CUDA kernel are not comparable and never share an out dir.
+ROBOTWIN_PLANNER = "curobo_lbfgs=torch,deterministic=true"
+
+
 def env_runtime_contract(
     *,
     task_name: str,
@@ -97,6 +104,7 @@ def env_runtime_contract(
         "task_config": task_config,
         "seed": int(seed),
         "seed_mode": "exact",
+        "planner": ROBOTWIN_PLANNER,
         "action_layouts": ["qpos14", MODEL_SPEC.action_layout],
         "execution": {
             "reset": True,

@@ -67,8 +67,11 @@ with `--env` / `--vla` / `--sam3`. Real-arm robots (Franka, dual Franka) stay on
 | LIBERO / LIBERO-PRO | `src/libero` | LIBERO `terminated` | all below, plus flywheel, operator, Flash (Molmo re-anchoring) |
 | RoboCasa | `src/robocasa` | `env._check_success()` | all below, plus flywheel, recipe Flash (Molmo re-anchoring) |
 | RoboTwin | `src/robotwin` | `eval_success` | all below, plus flywheel, recipe Flash (Molmo re-anchoring) |
-| ManiSkill | `src/maniskill` | ManiSkill `success` | all below, plus recipe Flash (recorded seed only) |
-| RoboLab | `src/robolab` | RoboLab's task predicate | all below, plus recipe Flash (recorded seed only) |
+| ManiSkill | `src/maniskill` | ManiSkill `success` | all below, plus recipe Flash (Molmo + ray-plane re-anchoring of delta waypoints) |
+| RoboLab | `src/robolab` | RoboLab's task predicate | all below, plus recipe Flash (Molmo + ray-plane re-anchoring of delta waypoints) |
+| BEHAVIOR-1K / R1Pro | `src/behavior` | the BDDL activity's `success` (`q_score` = partial credit) | video, VDM, code.api, `--privileged` |
+| Metaworld | `src/metaworld` | Metaworld `info["success"]` | all below |
+| Genesis | `src/genesis` | the task predicate (cube_pick: an 8 cm lift) | all below |
 | Franka (real) | `src/franka` | operator verdict (`--operator`) | all below but `--privileged`; explore resets through the operator |
 | Dual Franka (real) | `src/dual_franka` | operator verdict (required) | all below but `--privileged`; explore resets through the operator |
 | Piper / dual Piper (real) | `src/piper` | operator verdict (required) | all below but `--privileged`; explore resets through the operator |
@@ -106,6 +109,15 @@ Shared modules:
   opts in with `units` in its spec (base-frame unit vectors, step, optional yaw step, `apply`,
   `state`); the moves go through its own safety checks (Franka and dual Franka: `--max-move`,
   `--workspace-xy`, `--z-floor`).
+- `src/code/`: code mode (CaP-X's run_code). `--code=true` hides the robot's tools: the model
+  writes Python programs that `run_code` executes on the env server against its primitive registry
+  (`code.api`; `--code-api=high|low`, CaP-X's S2/S3; `--privileged` runs the privileged tier, S1),
+  in a spawned subprocess with no env object whose calls the server resolves through the registry,
+  killed at `--code-timeout` (a stop is issued), refused past `--code-max-calls` calls or
+  `--code-max-move` metres; `--code-helpers` injects CaP-X's numpy helpers. `--code=both` adds
+  `run_code` to the robot's tools. Mutually exclusive with `--units`; `--stateless` applies. Real
+  robots need `--code-real` and `--operator`, and every program is confirmed by the operator.
+  LIBERO today (services/PROTOCOL.md, code mode).
 - `src/dashboard/`: live web dashboard (`--dashboard`) for any robot.
 - `src/libero/flash.ts`: Flash replay without an LLM (`--model flash/replay`).
 
@@ -150,6 +162,9 @@ in a new session. Boolean flags take the next word as their value; write them as
   checkpoint; `src/robocasa/serve.sh`, `src/robocasa/eval.sh` runs Target50.
 - RoboTwin: the services' `[robotwin]` extra (Python 3.11), RoboTwin assets, the LingBot-VLA
   RoboTwin checkpoint; `src/robotwin/serve.sh`, `src/robotwin/eval.sh`.
+- Metaworld: the services' `[metaworld]` extra (Python 3.11, metaworld 3.1.1, no assets); the 50 MT50
+  Sawyer tasks (`--task reach-v3 --seed 0`), a world-frame `move_delta` plus `gripper`, depth tools
+  (`back_project`, `segment` with a SAM3 server), units mode and `--privileged`; `src/metaworld/eval.sh`.
 - Franka / dual Franka: the services' `[franka]` extra, a Ray cluster on the controller nodes,
   hand-eye calibration, and an operator at the emergency stop. Flags use a `--robot-`
   prefix (`--robot-env`, `--robot-vla`, `--robot-sam3`, `--robot-config`).

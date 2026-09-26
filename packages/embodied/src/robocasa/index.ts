@@ -25,6 +25,7 @@ import { attach, defineRobot, median, round, SERVICES } from "../robot.ts";
 import { NdArray, RpcClient } from "../rpc.ts";
 import type { Move } from "../units/index.ts";
 import { vlaSeeds } from "../vla-seed.ts";
+import { type Cell, loadTable, resolveCell } from "./tasks.ts";
 
 const read = (name: string) => readFileSync(new URL(name, import.meta.url), "utf8");
 const SYSTEM = read("./SYSTEM.md");
@@ -34,7 +35,6 @@ const CAMERAS = { agentview: "robot0_agentview_left", navview: "mobilebase0_navv
 const VLA_CAMERAS = ["robot0_agentview_left", "robot0_agentview_right", "robot0_eye_in_hand"];
 const SIZE = 256; // env camera and RLDX observation resolution
 const OSC_ROT_SCALE = 0.5; // action 1.0 -> 0.5 rad
-const SPLITS = ["target", "pretrain", "all"];
 const PRIMITIVES = [
 	"move_to",
 	"move_delta",
@@ -139,8 +139,17 @@ export default function robocasa(pi: ExtensionAPI) {
 		default: "OpenDrawer",
 		description: "RoboCasa task, e.g. OpenDrawer",
 	});
-	pi.registerFlag("split", { type: "string", default: "target", description: "target | pretrain | all" });
-	pi.registerFlag("seed", { type: "string", default: "0", description: "Scene seed" });
+	pi.registerFlag("split", {
+		type: "string",
+		default: "target",
+		description: "target | pretrain (the RoboCasa365 splits, 317 tasks each) | all (seed mode only)",
+	});
+	pi.registerFlag("seed", { type: "string", default: "0", description: "Scene seed (ignored with --scene)" });
+	pi.registerFlag("scene", {
+		type: "string",
+		default: "",
+		description: "RoboCasa365 manifest scene index 0-49 (its seed comes from the task table; empty = --seed)",
+	});
 	pi.registerFlag("hi-res", { type: "string", default: "0", description: "Hi-res agentview resolution (0 = off)" });
 	pi.registerFlag("rldx", { type: "string", default: "http://127.0.0.1:18500", description: "RLDX-1 VLA server" });
 	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
@@ -186,8 +195,19 @@ export default function robocasa(pi: ExtensionAPI) {
 	let hist: Frame[] = [];
 	let lastPrompt: string | undefined;
 	let attempt = 1;
-	const cell = () => ({ task: robot.task["task-name"], split: robot.task.split, seed: robot.task.seed });
-	const tag = () => `${cell().task}_${cell().split}_s${cell().seed}`;
+	/** The resolved --task-name / --split / --scene of this episode, once `startEpisode` checked them against the table. */
+	let picked: Cell | undefined;
+	const cell = () => ({
+		task: robot.task["task-name"],
+		split: robot.task.split,
+		// A manifest scene's seed comes from the table; --seed is ignored with --scene.
+		seed: picked?.seed !== undefined ? String(picked.seed) : robot.task.seed,
+		scene: robot.task.scene,
+	});
+	const tag = () =>
+		cell().scene === ""
+			? `${cell().task}_${cell().split}_s${cell().seed}`
+			: `${cell().task}_${cell().split}_m${cell().scene}`;
 	/** Local corpora (and exploration) key the seed-0 reference by split; the published HF corpus does not. */
 	const local = () => pi.getFlag("memory-profile") === "local" || pi.getFlag("explore") === true;
 	/**
@@ -231,7 +251,7 @@ export default function robocasa(pi: ExtensionAPI) {
 
 	const robot = defineRobot(pi, {
 		name: "robocasa",
-		task: ["task-name", "split", "seed"],
+		task: ["task-name", "split", "seed", "scene"],
 		// The env server's primitive registry (code.api), recorded per episode.
 		codeApi: () => env,
 		keepImages: 6,
@@ -331,7 +351,7 @@ export default function robocasa(pi: ExtensionAPI) {
 				task_language: language,
 				task_name: cell().task,
 				split: cell().split,
-				seed: cell().seed,
+				seed: cell().scene === "" ? cell().seed : `${cell().seed} (manifest scene ${cell().scene})`,
 				memory: explore
 					? ""
 					: mem.render(MEMORY[mem.profile], { task_name: cell().task, memory_files: hfMemoryFiles() }).trim(),
@@ -346,6 +366,9 @@ export default function robocasa(pi: ExtensionAPI) {
 			task_name: cell().task,
 			split: cell().split,
 			seed: Number(cell().seed),
+			// RoboCasa365 manifest mode: the scene index and the env id; null / undefined in seed mode.
+			scene: cell().scene === "" ? null : Number(cell().scene),
+			...(picked?.envId ? { env_id: picked.envId } : {}),
 			task_language: language,
 			success: states[states.length - 1]?.success ?? false,
 			env_steps: envSteps,
@@ -1176,12 +1199,14 @@ export default function robocasa(pi: ExtensionAPI) {
 		vlaDesync = true;
 		attempt = 1;
 		seeds.reset();
-		const { task, split, seed } = cell();
-		if (!SPLITS.includes(split)) throw new Error(`--split must be one of ${SPLITS.join(", ")}`);
+		const services = flag("services", SERVICES);
+		// Checked against the task table before anything starts: an unknown task names its near matches.
+		picked = undefined;
+		picked = resolveCell(loadTable(services), cell());
+		const { task, split, seed, scene } = cell();
 		const rldxClient = sessionRpc(flag("rldx", ""));
 		vla = rldxClient;
 		const endpoint = pi.getFlag("env") as string | undefined;
-		const services = flag("services", SERVICES);
 		const cuda = pi.getFlag("cuda-device") as string | undefined;
 		[env] = await Promise.all([
 			endpoint
@@ -1191,6 +1216,7 @@ export default function robocasa(pi: ExtensionAPI) {
 						args: [
 							...["-m", "pi_embodied_services.robots.robocasa.env_server"],
 							...["--task-name", task, "--split", split, "--seed", seed],
+							...(scene === "" ? [] : ["--scene", scene]),
 							...(cuda ? ["--cuda-device", cuda] : []),
 						],
 						cwd: services,
@@ -1202,13 +1228,20 @@ export default function robocasa(pi: ExtensionAPI) {
 							ROBOT_PLATFORM: "ROBOCASA",
 							RLDX_RESET_SEED: "",
 						},
-						log: (port) => join(flag("log-dir", tmpdir()), `robocasa-env-${task}-${split}-s${seed}-${port}.log`),
+						log: (port) => join(flag("log-dir", tmpdir()), `robocasa-env-${tag()}-${port}.log`),
 					}),
 			rldxClient.ready().then(() => rldxClient.call("session.register", {}, 30_000)),
 		]);
 		const meta = await env.call<Record<string, unknown>>("env.get_env_meta", {}, 30_000);
-		if (meta.task_name !== task || meta.split !== split || Number(meta.seed) !== Number(seed))
-			throw new Error(`env server runs ${JSON.stringify(meta)}, not ${task}/${split}/s${seed}`);
+		const sceneOf = (m: Record<string, unknown>) =>
+			m.scene === null || m.scene === undefined ? "" : String(m.scene);
+		if (
+			meta.task_name !== task ||
+			meta.split !== split ||
+			Number(meta.seed) !== Number(seed) ||
+			sceneOf(meta) !== scene
+		)
+			throw new Error(`env server runs ${JSON.stringify(meta)}, not ${tag()} (seed ${seed})`);
 		// The env resets on client connect and again in the primitives; a seed's scene is the second one.
 		await env.call("env.reset", {}, 120_000);
 		obs = await env.call<Raw>("env.reset", {}, 120_000);

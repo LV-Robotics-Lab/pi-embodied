@@ -112,6 +112,7 @@ def test_franka_primitives_run_through_the_limited_facade_methods():
         "env.get_robot_state",
         "env.get_observation",
         "env.get_camera_meta",
+        "env.preview_reach",
         "env.move_delta",
         "env.rotate_delta",
         "env.set_gripper",

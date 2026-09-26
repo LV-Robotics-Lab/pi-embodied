@@ -18,8 +18,17 @@ without its onboarding extension. A robot extension replaces the coding tools, s
 robot only in that directory. Settings cannot hold flags; the task and mode go on the command line.
 
 Modes: tools (default), units (`--units=true`), fine-tuned (`src/finetuned` extension,
-`--model finetuned/<adapter>`, served by `services/pi_embodied_services/finetuned/serve.sh`),
-flash (`--model flash/replay`, LIBERO only).
+`--model finetuned/<adapter>`), flash (`--model flash/replay`, LIBERO only).
+
+Fine-tuned mode needs two more steps after the install: `FT_ADAPTER=<adapter> services/setup.sh
+finetuned` (default `qwen3_5_2b_sim`) fetches the released adapter and its base model with
+`finetuned/download.py` (pinned, verified), and `services/pi_embodied_services/finetuned/serve.sh`
+(`MODEL`, `LORA`, `VLLM_VENV` as setup.sh prints them) serves them on the vLLM endpoint the launch's
+`--ft-endpoint` expects (default http://127.0.0.1:8010/v1). Start it before the episodes and leave it
+running. LIBERO's adapters are the user's own (`--model finetuned/local --ft-model <served adapter>`).
+
+The user confirms the plan once in `/embodied-setup`; pi does not gate each tool call, so ask before
+sudo, anything touching real hardware, or a download the plan does not list.
 
 ## 2. Install
 
@@ -55,7 +64,9 @@ cd <experiment dir> && source <venv>/pi-embodied.env
 pi <task flags> [--units=true] --dashboard=true
 ```
 
-The dashboard URL is shown at startup. Boolean flags take the next word: write `--flag=true`.
+The first pi in the experiment directory asks whether to trust the project: its `.pi/settings.json`
+loads the robot extension, so the user answers yes (`/trust` saves it); declined, pi starts without
+the robot. The dashboard URL is shown at startup. Boolean flags take the next word: write `--flag=true`.
 Without the experiment settings: `pi -e packages/embodied/src/<robot> ...`.
 
 ## 5. Evaluate
@@ -71,6 +82,8 @@ flags). Rerunning retries only invalid episodes. Use `eval-parallel.sh` next to 
 ## Common failures
 
 - `[robot] unavailable: ...` at start: the env server did not come up; run the preflight.
+- No robot (no `/robot-task`, the coding tools are back) in the experiment directory: project trust
+  was declined; start pi there again and accept, or `/trust`.
 - Import errors in the preflight: wrong venv. Each robot family has its own venv; the extras conflict
   (Torch/Transformers pins).
 - RTX 5090 / sm_120: install `torch==2.7.1 torchvision==0.22.1` from the cu128 index before the extra;

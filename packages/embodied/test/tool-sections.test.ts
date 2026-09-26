@@ -8,13 +8,16 @@ import dualFranka from "../src/dual_franka/index.ts";
 import franka from "../src/franka/index.ts";
 import libero from "../src/libero/index.ts";
 import maniskill from "../src/maniskill/index.ts";
+import metaworld from "../src/metaworld/index.ts";
 import piperDual from "../src/piper/dual.ts";
 import piper from "../src/piper/index.ts";
 import robocasa from "../src/robocasa/index.ts";
 import robolab from "../src/robolab/index.ts";
+import robosuite from "../src/robosuite/index.ts";
 import { defineRobot, toolSections } from "../src/robot.ts";
 import robotwin from "../src/robotwin/index.ts";
 import ur5e from "../src/ur5e/index.ts";
+import { VLA_ADAPTERS } from "../src/vla-adapters.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
@@ -22,7 +25,7 @@ type Handler = (event: any, ctx: any) => unknown;
  * A stub pi that records registered tools and, like pi, activates only registered tools that
  * --exclude-tools did not remove.
  */
-function fakePi(exclude: string[] = []) {
+function fakePi(exclude: string[] = [], preset: Record<string, string> = {}) {
 	const handlers = new Map<string, Handler[]>();
 	const flags: Record<string, unknown> = {};
 	const tools: string[] = [];
@@ -30,7 +33,7 @@ function fakePi(exclude: string[] = []) {
 	const pi = {
 		on: (name: string, fn: Handler) => handlers.set(name, [...(handlers.get(name) ?? []), fn]),
 		registerFlag: (name: string, o: { default?: unknown }) => {
-			flags[name] = o.default;
+			flags[name] = preset[name] ?? o.default;
 		},
 		getFlag: (name: string) => flags[name],
 		registerTool: (t: { name: string }) => tools.push(t.name),
@@ -68,11 +71,19 @@ const mentions = (text: string, tool: string) =>
 
 /** Every robot prompt template, the extension that registers its tools, and the
  * tools always on (the rest can be excluded without the prompt naming them). */
-const ROBOTS: { robot: string; files: string[]; load: (pi: ExtensionAPI) => unknown; core?: string[] }[] = [
+const ROBOTS: {
+	robot: string;
+	files: string[];
+	load: (pi: ExtensionAPI) => unknown;
+	core?: string[];
+	flags?: Record<string, string>;
+}[] = [
 	{
 		robot: "libero",
 		files: ["libero/SYSTEM.md"],
 		load: libero,
+		// The third-party VLA tools are mounted only with their server flags.
+		flags: Object.fromEntries(VLA_ADAPTERS.map((a) => [a.flag, "http://127.0.0.1:1"])),
 		core: ["view_env_state", "move_to", "release", "finish"],
 	},
 	{
@@ -94,6 +105,18 @@ const ROBOTS: { robot: string; files: string[]; load: (pi: ExtensionAPI) => unkn
 		core: ["view_env_state", "move_delta", "open_gripper", "close_gripper", "finish"],
 	},
 	{ robot: "maniskill", files: ["maniskill/SYSTEM.md"], load: maniskill },
+	{
+		robot: "robosuite",
+		files: ["robosuite/SYSTEM.md"],
+		load: robosuite,
+		core: ["view_env_state", "move_to", "move_delta", "finish"],
+	},
+	{
+		robot: "metaworld",
+		files: ["metaworld/SYSTEM.md"],
+		load: metaworld,
+		core: ["view_env_state", "move_delta", "finish"],
+	},
 	{ robot: "robolab", files: ["robolab/SYSTEM.md"], load: robolab, core: ["finish"] },
 	{ robot: "dual_franka", files: ["dual_franka/SYSTEM.md"], load: dualFranka },
 	{ robot: "piper", files: ["piper/SYSTEM.md"], load: piper },
@@ -129,9 +152,9 @@ test("an unpaired or crossed tool marker throws instead of leaking into the prom
 	assert.throws(() => toolSections("[tool:x]a[tool:x]b[/tool:x]c[/tool:x]", ["x"]), /nested in itself/);
 });
 
-for (const { robot, files, load, core } of ROBOTS) {
+for (const { robot, files, load, core, flags } of ROBOTS) {
 	test(`${robot}: every tool marker names a tool the robot registers`, async () => {
-		const { pi, tools } = fakePi();
+		const { pi, tools } = fakePi([], flags);
 		await load(pi);
 		for (const file of files) {
 			const text = read(file);
@@ -142,7 +165,7 @@ for (const { robot, files, load, core } of ROBOTS) {
 	});
 	if (!core) continue;
 	test(`${robot}: excluding a tool leaves no mention of it in the prompt`, async () => {
-		const { pi, tools } = fakePi();
+		const { pi, tools } = fakePi([], flags);
 		await load(pi);
 		const text = files.map(read).join("\n");
 		const plain = text.replace(/\[\/?tool:[\w|]+\]/g, "");

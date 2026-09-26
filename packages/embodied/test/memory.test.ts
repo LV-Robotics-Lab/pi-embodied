@@ -69,6 +69,36 @@ test("merge publishes drafts, merges evidence, archives conflicts and task pairs
 	assert.ok(existsSync(join(root, "_internal", "conflicts", "lift-first__from_goal_t1_s0.md")));
 });
 
+test("a LIBERO-plus cell publishes its own suite note; the plain name is refused either way", async () => {
+	const root = mkdtempSync(join(tmpdir(), "memory-"));
+	const run = mkdtempSync(join(tmpdir(), "run-"));
+	const suite = (cell: string, family: string) => {
+		const inbox = join(root, "_internal", "inbox", cell);
+		mkdirSync(inbox, { recursive: true });
+		writeFileSync(
+			join(inbox, `suite_${cell}_draft.md`),
+			leaf(
+				`scope: suite\nsuite: ${family}\nregime: task\ntask_id: 2\ntask_language: put the bowl on the plate\nconfidence: single-shot\nevidence:\n  cells: [${cell}]`,
+				"\n## Applicable pattern\n",
+			),
+		);
+	};
+	suite("10_task_plus_t2_s0", "libero10");
+	const plain = await mergeMemory(root, "10_task_plus_t2_s0", run, false);
+	assert.equal(plain.suite, 0);
+	assert.match(plain.skipped[0], /suite 'libero10' must end with _plus for cell 10_task_plus_t2_s0/);
+	suite("10_task_plus_t2_s0", "libero10_plus");
+	assert.equal((await mergeMemory(root, "10_task_plus_t2_s0", run, false)).suite, 1);
+	assert.ok(existsSync(join(root, "suite", "suite_libero10_plus_task_t2.md")));
+	assert.ok(!existsSync(join(root, "suite", "suite_libero10_task_t2.md")));
+	suite("10_task_t2_s0", "libero10_plus");
+	const pro = await mergeMemory(root, "10_task_t2_s0", run, false);
+	assert.match(pro.skipped[0], /suite 'libero10_plus' must not carry _plus for cell 10_task_t2_s0/);
+	suite("10_task_t2_s0", "libero10");
+	assert.equal((await mergeMemory(root, "10_task_t2_s0", run, false)).suite, 1);
+	assert.deepEqual(validateMemory(root), []);
+});
+
 test("guard enforces the memory boundary", () => {
 	const g = {
 		root: "/m/libero",

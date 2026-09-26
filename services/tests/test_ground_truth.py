@@ -114,6 +114,22 @@ def test_libero_reads_obj_body_id_in_the_worker():
     assert worker.calls == 3
 
 
+def test_libero_worker_failure_comes_back_as_an_error_not_a_dead_worker():
+    """The worker loop has no try/except: an exception in ``poses()`` would kill the worker,
+    so it answers ``{"error": ...}`` and the facade raises it."""
+    # No obj_body_id yet (before the first reset).
+    domain = SimpleNamespace(sim=_sim({"a": 1}))
+    env = libero._exposing_poses(lambda: SimpleNamespace(env=domain))()
+    assert env.ground_truth_poses() == {
+        "error": "AttributeError: 'types.SimpleNamespace' object has no attribute 'obj_body_id'"
+    }
+    facade = object.__new__(libero.LiberoEnvFacade)
+    facade._env = SimpleNamespace(env=SimpleNamespace(workers=[_Worker(env)]))
+    facade._env_idx = 0
+    with pytest.raises(RuntimeError, match="failed in the worker: AttributeError"):
+        facade.ground_truth_poses()
+
+
 def test_libero_registers_the_method():
     facade = libero.LiberoEnvFacade(SimpleNamespace(), meta={})
     assert facade._rpc["env.ground_truth_poses"] == facade.ground_truth_poses

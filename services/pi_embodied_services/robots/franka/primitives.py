@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from pi_embodied_services.components.code_api import Param, Primitive
 
 #: The single-arm primitives (``code.api``, ../../components/code_api.py), shared by the RLinf and
@@ -40,6 +42,17 @@ FRANKA_PRIMITIVES = (
         tiers=("low",),
     ),
     Primitive(
+        "preview_reach",
+        "env.preview_reach",
+        "IK reach check of a base-frame TCP pose from the current joints, nothing moves (--ik): {status: reachable | unreachable | unknown, q, position_err, orientation_err, message}.",
+        {
+            "pos": Param("vec3", "base-frame [x, y, z] in m"),
+            "quat_xyzw": Param(
+                "array", "orientation (default: the current one)", False
+            ),
+        },
+    ),
+    Primitive(
         "move_delta",
         "env.move_delta",
         "Translate the TCP by a base-frame delta in metres; refused beyond the per-call limit or outside the workspace.",
@@ -61,6 +74,62 @@ FRANKA_PRIMITIVES = (
         mutating=True,
     ),
 )
+
+_CAMERA = Param("string", "'wrist' (default) or 'third_person'", required=False)
+_ID = Param(
+    "string", "a detection id from segment (e.g. 'd3') of the current observation"
+)
+
+#: Served only when the env server was started with --sam3 (utils/perception.py).
+SEGMENT_PRIMITIVES = (
+    Primitive(
+        "segment",
+        "env.segment",
+        "SAM3 masks on the current observation, each with a short id; all=True returns every "
+        "candidate instead of the best. Ids die with the next observation.",
+        {
+            "camera": _CAMERA,
+            "text_prompt": Param("string", "what to segment", required=False),
+            "point": Param("array", "[row, col] positive point", required=False),
+            "min_score": Param("number", "default 0.2", required=False),
+            "all": Param("boolean", "every mask, not only the best", required=False),
+        },
+    ),
+    Primitive(
+        "select_detection",
+        "env.select_detection",
+        "Make one detection id the selected mask of the current observation.",
+        {"id": _ID},
+    ),
+    Primitive(
+        "reject_detection",
+        "env.reject_detection",
+        "Rule one detection id out; it stays listed as rejected.",
+        {"id": _ID},
+    ),
+)
+
+#: Served only when the env server was started with --unidepth.
+ENHANCE_DEPTH_PRIMITIVES = (
+    Primitive(
+        "enhance_depth",
+        "env.enhance_depth",
+        "Fill the holes of a camera's depth with a UniDepth estimate scaled to the sensor "
+        "(or supply depth where the camera has none); later segments use the filled depth.",
+        {"camera": _CAMERA},
+    ),
+)
+
+
+def franka_primitives(perception: Any | None) -> tuple[Primitive, ...]:
+    """The single-arm registry plus the perception primitives the server actually serves."""
+    caps = perception.capabilities() if perception is not None else {}
+    return (
+        FRANKA_PRIMITIVES
+        + (SEGMENT_PRIMITIVES if caps.get("segment") else ())
+        + (ENHANCE_DEPTH_PRIMITIVES if caps.get("enhance_depth") else ())
+    )
+
 
 _ARM = Param("string", "'left' or 'right'")
 

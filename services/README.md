@@ -115,11 +115,19 @@ Every dataset pi-embodied exports is LeRobot v3.0 with the same feature names:
 `observation.images.<camera>`, `observation.state`, `action` (their dimensions named in
 `meta/info.json`), plus `action_source` (VLA or scripted) for Flywheel data and `actor`,
 `dagger`, `action_repeat` for GUMI runs. One dataset holds one robot's action space.
+RoboTwin episodes also export in joint space (`--space joint`) in XPolicyLab's LeRobot layout
+(its `scripts/transform_lerobot_v30_format.py`): `observation.state` the measured joints and
+`action` the commanded joint targets, both `left_joint_0..6, right_joint_0..6` (6 joints and the
+gripper per arm), channel-first `cam_high` / `cam_left_wrist` / `cam_right_wrist` video,
+`robot_type` `unified_robot`, no `action_source`.
 
 ```bash
 # Flywheel (LIBERO, RoboCasa, RoboTwin; pi's /flywheel-export runs the same)
 python -m pi_embodied_services.flywheel.cli export-lerobot --data-root ~/.pi/embodied/datacollection \
   --robot robocasa --select target/PnPCounterToCab
+# RoboTwin for XPolicyLab's training scripts (datasets/lerobot-joint/robotwin/<select>/<id>)
+python -m pi_embodied_services.flywheel.cli export-lerobot --data-root ~/.pi/embodied/datacollection \
+  --robot robotwin --select demo_randomized/beat_block_hammer --space joint
 # GUMI teleop / DAgger runs of one task
 python -m pi_embodied_services.flywheel.cli export-gumi <gumi-record>/<MMDD>/task_<id> --output-root runs/lerobot
 # A LeRobot v2.1 dataset exported before (lerobot 0.3) converts in place

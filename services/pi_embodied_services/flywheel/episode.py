@@ -228,6 +228,10 @@ def validate_episode(path: Path | str, *, spec: dict[str, Any]) -> dict[str, Any
     with np.load(root / "transitions.npz", allow_pickle=False) as data:
         count = int(metadata["step_count"])
         for key, field in spec["arrays"].items():
+            if key not in data.files:
+                raise ValueError(
+                    f"{root} has no {key} (recorded before its recorder wrote it)"
+                )
             array = data[key]
             length = count if key == "actions" else count + 1
             # An image size the spec leaves open (None) is the episode's own: [H, W, 3].

@@ -340,7 +340,8 @@ class RoboTwinEnvFacade(BaseEnvFacade):
         return self._env.plan_arm_path(0, arm, target_pose)
 
     def policy_frame(self) -> dict[str, Any]:
-        """What the VLA reads now: head and wrist RGB and the eef16 state (the Flywheel's observation)."""
+        """What the VLA reads now: head and wrist RGB and the eef16 state, plus the joint state
+        ``qpos`` (measured) and ``qpos_target`` (commanded), each 14 (the Flywheel's observation)."""
         return self._env.policy_frame(0)
 
     def ground_truth_poses(self, names=None) -> dict:

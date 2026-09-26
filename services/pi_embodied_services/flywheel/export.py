@@ -26,6 +26,13 @@ Every robot's dataset has the same shape of features, whatever its embodiment:
 - ``task``: the episode's task language (LeRobot's own column).
 
 Their lengths and meanings are the robot's: one dataset holds one embodiment and action space.
+
+A spec may derive its state and action from other recorded arrays (``spec["columns"]``), and may
+ask for XPolicyLab's layout (``spec["layout"] == "xpolicylab"``, e.g. RoboTwin's joint space): the
+features of XPolicyLab's scripts/transform_lerobot_v30_format.py exactly, so its training scripts
+read the dataset as one of their own. There the state and action come first, their motor names in
+one nested list, the cameras are channel-first ``(3, H, W)`` mp4 at CRF 18, and there is no
+``action_source``.
 """
 
 from __future__ import annotations
@@ -45,9 +52,33 @@ from pi_embodied_services.flywheel.episode import validate_episode
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 
 
+#: XPolicyLab's video quality (its DatasetConfig.video_crf; LeRobot's own default is 30).
+XPOLICYLAB_CRF = 18
+
+
+def _xpolicylab(spec: dict[str, Any]) -> bool:
+    return spec.get("layout") == "xpolicylab"
+
+
 def features(spec: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """The LeRobot features of a robot's dataset."""
     arrays = spec["arrays"]
+    if _xpolicylab(spec):
+        out = {
+            name: {"dtype": "float32", "shape": (len(names),), "names": [list(names)]}
+            for name, names in (
+                ("observation.state", spec["state_names"]),
+                ("action", spec["action_names"]),
+            )
+        }
+        for key, camera in spec["cameras"].items():
+            height, width, channels = arrays[key]["shape"]
+            out[f"observation.images.{camera}"] = {
+                "dtype": "video",
+                "shape": (channels, height, width),
+                "names": ["channels", "height", "width"],
+            }
+        return out
     out: dict[str, dict[str, Any]] = {
         f"observation.images.{camera}": {
             "dtype": "image",
@@ -68,18 +99,30 @@ def features(spec: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return out
 
 
+def columns(data: Any, spec: dict[str, Any]) -> tuple[Any, Any]:
+    """An episode's state (one per observation) and action (one per step) columns: the recorded
+    ``states`` and ``actions``, or the ones the spec derives from its other arrays."""
+    if "columns" in spec:
+        return spec["columns"](data)
+    return data["states"], data["actions"]
+
+
 def frame(data: Any, index: int, spec: dict[str, Any], task: str) -> dict[str, Any]:
     """Frame ``index`` of an episode's transitions: the observation before action ``index``."""
-    return {
+    states, actions = columns(data, spec)
+    out = {
         **{
             f"observation.images.{camera}": data[key][index]
             for key, camera in spec["cameras"].items()
         },
-        "observation.state": data["states"][index].astype(np.float32),
-        "action": data["actions"][index].astype(np.float32),
+        "observation.state": states[index].astype(np.float32),
+        "action": actions[index].astype(np.float32),
         "action_source": np.array([data["action_source"][index]], dtype=np.int64),
         "task": task,
     }
+    if _xpolicylab(spec):
+        del out["action_source"]
+    return out
 
 
 def _successful_episodes(
@@ -147,6 +190,8 @@ def export_lerobot(
     parent.mkdir(parents=True, exist_ok=True)
 
     feats = features(spec)
+    # XPolicyLab's datasets are video only.
+    videos = videos or _xpolicylab(spec)
     if videos:
         for f in feats.values():
             if f["dtype"] == "image":
@@ -160,7 +205,11 @@ def export_lerobot(
         features=feats,
         use_videos=videos,
         image_writer_threads=2,
+        # XPolicyLab encodes while it adds frames, to set its CRF (configure_video_encoding).
+        streaming_encoding=_xpolicylab(spec),
     )
+    if _xpolicylab(spec):
+        dataset._streaming_encoder.crf = XPOLICYLAB_CRF
     frame_count = 0
     source_ids = []
     tasks = set()
@@ -168,7 +217,9 @@ def export_lerobot(
         count = metadata["training_step_count"]
         task = metadata["task_language"]
         tasks.add(task)
-        with np.load(path / "transitions.npz", allow_pickle=False) as data:
+        with np.load(path / "transitions.npz", allow_pickle=False) as npz:
+            # One read of each array, not one per frame.
+            data = {key: npz[key] for key in npz.files}
             for index in range(count):
                 dataset.add_frame(frame(data, index, spec, task))
         dataset.save_episode()

@@ -26,11 +26,20 @@ from typing import Any
 ROBOTS = ("libero", "robocasa", "robotwin")
 
 
-def spec(robot: str) -> dict[str, Any]:
-    """The data rules of ``robot``."""
+def spec(robot: str, space: str | None = None) -> dict[str, Any]:
+    """The data rules of ``robot``; ``space`` picks one of its action spaces (``SPACES``), else
+    its default ``SPEC``."""
     if robot not in ROBOTS:
         raise ValueError(f"no Flywheel spec for {robot!r}; have {', '.join(ROBOTS)}")
-    return importlib.import_module(f"pi_embodied_services.robots.{robot}.flywheel").SPEC
+    module = importlib.import_module(f"pi_embodied_services.robots.{robot}.flywheel")
+    if space is None:
+        return module.SPEC
+    spaces = getattr(module, "SPACES", {})
+    if space not in spaces:
+        raise ValueError(
+            f"{robot} has no {space!r} space; have {', '.join(spaces) or 'only its default'}"
+        )
+    return spaces[space]
 
 
 def select(data_root: Path | str, robot: str, selection: str) -> list[Path]:

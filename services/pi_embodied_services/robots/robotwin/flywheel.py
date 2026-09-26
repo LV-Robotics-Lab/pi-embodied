@@ -14,7 +14,12 @@
 
 """RoboTwin's Flywheel data rules: what the LingBot VLA reads and emits, the eef16 layout (the TS
 recorder's FLYWHEEL in packages/embodied/src/robotwin). A scripted qpos step is recorded as the
-eef16 pose it reached, so every action of an episode is in the one policy action space."""
+eef16 pose it reached, so every action of an episode is in the one policy action space.
+
+Every observation also records the joint state (``joint_states``: measured, ``joint_targets``:
+commanded, both ``[left joints6, left gripper, right joints6, right gripper]``), from which
+``SPACES["joint"]`` exports the same episodes in XPolicyLab's LeRobot layout
+(XPolicyLab scripts/transform_lerobot_v30_format.py)."""
 
 from __future__ import annotations
 
@@ -54,3 +59,33 @@ SPEC = {
     #: What one dataset shares: every episode of one task in one task config.
     "group": ("task_config", "task_name"),
 }
+
+#: XPolicyLab's aloha_agilex dimensions (utils/robot/_robot_info.json: arm_dim [6, 6], ee_dim
+#: [1, 1]) under its motor names: ``left_joint_0..6`` then ``right_joint_0..6``.
+_MOTORS = [f"{arm}_joint_{i}" for arm in ("left", "right") for i in range(7)]
+
+
+def joint_columns(transitions: Any) -> tuple[Any, Any]:
+    """XPolicyLab's state and action: the measured joints before action ``i`` and the joint
+    targets action ``i`` commanded, the drive targets read after it (a qpos step's own command;
+    an eef step's IK solution)."""
+    return transitions["joint_states"], transitions["joint_targets"][1:]
+
+
+JOINT_SPEC = {
+    **SPEC,
+    "arrays": {
+        **SPEC["arrays"],
+        "joint_states": {"shape": (14,), "dtype": "float32"},
+        "joint_targets": {"shape": (14,), "dtype": "float32"},
+    },
+    # XPolicyLab's converter names every dataset's robot so, since it merges robots.
+    "robot_type": "unified_robot",
+    "state_names": _MOTORS,
+    "action_names": _MOTORS,
+    "columns": joint_columns,
+    "layout": "xpolicylab",
+}
+
+#: The action spaces the episodes export to (``--space``); ``SPEC`` is the default.
+SPACES = {"eef": SPEC, "joint": JOINT_SPEC}

@@ -19,6 +19,7 @@ installed: the flywheel extra's own environment)."""
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -29,28 +30,39 @@ from pi_embodied_services.flywheel.export import features
 from pi_embodied_services.flywheel.specs import ROBOTS, select, spec
 
 
-def obs(s: dict, step: int) -> dict:
+def obs(s: dict, step: int, image: tuple = (6, 8, 3)) -> dict:
     """An observation of ``s``'s arrays: images filled with ``step``, the state counting up."""
     out = {}
     for key, field in s["arrays"].items():
         if key == "actions":
             continue
-        shape = field["shape"] or (6, 8, 3)
+        shape = field["shape"] or image
+        # Joint targets apart from the measured joints.
+        offset = step + (100 if key == "joint_targets" else 0)
         out[key] = (
             np.full(shape, step, np.uint8)
             if key in s["image_fields"]
-            else np.arange(shape[0], dtype=np.float32) + step
+            else np.arange(shape[0], dtype=np.float32) + offset
         )
     return out
 
 
-def record(root, robot: str, path: list[str], metadata: dict, steps: int, solved: bool):
-    s = spec(robot)
+def record(
+    root,
+    robot: str,
+    path: list[str],
+    metadata: dict,
+    steps: int,
+    solved: bool,
+    space: str | None = None,
+    image: tuple = (6, 8, 3),
+):
+    s = spec(robot, space)
     writer = EpisodeWriter(
         root / "raw" / robot / "/".join(path),
         metadata={**metadata, "robot": robot},
         spec=s,
-        initial_observation=obs(s, 0),
+        initial_observation=obs(s, 0, image),
     )
     width = s["arrays"]["actions"]["shape"][0]
     writer.begin_primitive("vla")
@@ -58,7 +70,7 @@ def record(root, robot: str, path: list[str], metadata: dict, steps: int, solved
     for i in range(steps):
         writer.add_transition(
             np.full(width, i, np.float32),
-            obs(s, i + 1),
+            obs(s, i + 1, image),
             0.0,
             solved and i == steps - 2,
             False,
@@ -246,3 +258,160 @@ def test_gumi_runs_export_as_lerobot_v3_with_one_hot_units(tmp_path, capsys):
     # Failed runs join only on request.
     assert cli.main([*argv, "--dataset-id", "g2", "--include-failed"]) == 0
     assert json.loads(capsys.readouterr().out)["episode_count"] == 2
+
+
+ROBOTWIN_META = {
+    "task_config": "demo_randomized",
+    "task_name": "beat_block_hammer",
+    "task_language": "beat the block",
+}
+ROBOTWIN_PATH = ["demo_randomized", "beat_block_hammer"]
+
+
+def xpolicylab_features(height: int, width: int) -> dict:
+    """XPolicyLab d6332bf scripts/transform_lerobot_v30_format.py ``create_empty_dataset`` for
+    aloha_agilex (arm_dim [6, 6], ee_dim [1, 1]; ``_build_motor_names_from_dims``), as info.json
+    stores it."""
+    motors = [f"{arm}_joint_{i}" for arm in ("left", "right") for i in range(7)]
+    vector = {"dtype": "float32", "shape": [14], "names": [motors]}
+    image = {
+        "dtype": "video",
+        "shape": [3, height, width],
+        "names": ["channels", "height", "width"],
+    }
+    return {
+        "observation.state": vector,
+        "action": vector,
+        **{
+            f"observation.images.{cam}": image
+            for cam in ("cam_high", "cam_left_wrist", "cam_right_wrist")
+        },
+    }
+
+
+def test_robotwin_spaces_share_the_raw_episode_and_refuse_unknown_ones():
+    eef, joint = spec("robotwin"), spec("robotwin", "joint")
+    assert spec("robotwin", "eef") is eef
+    # The joint space reads the same episode: its arrays are the eef16 ones and the joint state.
+    assert set(joint["arrays"]) - set(eef["arrays"]) == {
+        "joint_states",
+        "joint_targets",
+    }
+    with pytest.raises(ValueError, match="no 'cartesian' space"):
+        spec("robotwin", "cartesian")
+    with pytest.raises(ValueError, match="no 'joint' space"):
+        spec("libero", "joint")
+
+
+def test_joint_state_is_measured_and_action_the_next_commanded_target():
+    joint = spec("robotwin", "joint")
+    data = {
+        "joint_states": np.arange(3 * 14, dtype=np.float32).reshape(3, 14),
+        "joint_targets": -np.arange(3 * 14, dtype=np.float32).reshape(3, 14),
+    }
+    states, actions = joint["columns"](data)
+    # Two steps: states before each; actions the targets read after each.
+    assert states.shape == (3, 14) and actions.shape == (2, 14)
+    assert (actions == data["joint_targets"][1:]).all()
+
+
+def test_an_episode_without_joint_state_is_refused_by_the_joint_space(tmp_path):
+    path = record(
+        tmp_path,
+        "robotwin",
+        [*ROBOTWIN_PATH, "seed_000"],
+        {**ROBOTWIN_META, "seed": 0},
+        3,
+        True,
+    )
+    validate_episode(path, spec=spec("robotwin"))
+    with pytest.raises(ValueError, match="has no joint_states"):
+        validate_episode(path, spec=spec("robotwin", "joint"))
+
+
+def test_robotwin_joint_space_exports_xpolicylab_lerobot(tmp_path, capsys):
+    lerobot = pytest.importorskip("lerobot.datasets.lerobot_dataset")
+    for seed in (0, 1):
+        record(
+            tmp_path,
+            "robotwin",
+            [*ROBOTWIN_PATH, f"seed_{seed:03d}"],
+            {**ROBOTWIN_META, "seed": seed},
+            steps=3,
+            solved=True,
+            space="joint",
+            # RoboTwin's camera size; the video encoder refuses tiny frames.
+            image=(240, 320, 3),
+        )
+    argv = ["export-lerobot", "--data-root", str(tmp_path), "--robot", "robotwin"]
+    select_ = "demo_randomized/beat_block_hammer"
+    assert (
+        cli.main([*argv, "--select", select_, "--space", "joint", "--dataset-id", "j"])
+        == 0
+    )
+    out = json.loads(capsys.readouterr().out)
+    root = tmp_path / "datasets/lerobot-joint/robotwin" / select_ / "j"
+    assert out["dataset_path"] == str(root)
+    assert out["repo_id"].startswith("pi-embodied/robotwin-joint-")
+    assert (out["episode_count"], out["frame_count"]) == (2, 4)
+    info = json.loads((root / "meta/info.json").read_text())
+    assert (info["robot_type"], info["fps"]) == ("unified_robot", 25)
+    ours = {
+        k: {f: v[f] for f in ("dtype", "shape", "names")}
+        for k, v in info["features"].items()
+        if k not in ("timestamp", "frame_index", "episode_index", "index", "task_index")
+    }
+    assert list(ours) == list(xpolicylab_features(240, 320))
+    assert ours == xpolicylab_features(240, 320)
+    ds = lerobot.LeRobotDataset(out["repo_id"], root=root)
+    for index in (0, 1):
+        item = ds[index]
+        step = index  # frame ``index`` is the observation of step ``index``
+        # The measured joints before step ``index``, the targets read after it.
+        assert item["observation.state"].tolist() == [
+            float(i + step) for i in range(14)
+        ]
+        assert item["action"].tolist() == [float(i + step + 101) for i in range(14)]
+        assert tuple(item["observation.images.cam_high"].shape) == (3, 240, 320)
+        assert "action_source" not in item
+        assert item["task"] == "beat the block"
+
+
+def test_joint_state_does_not_change_the_eef16_export(tmp_path, capsys):
+    """The eef16 export of an episode recorded with the joint state is the one of the same
+    episode without it: every file byte-for-byte, but for the parquet tables' random HF datasets
+    fingerprint (two exports of one episode differ there too), whose rows and schema must match."""
+    pytest.importorskip("lerobot.datasets.lerobot_dataset")
+    import pyarrow.parquet as pq
+
+    roots = []
+    for space in (None, "joint"):
+        data_root = tmp_path / (space or "eef")
+        record(
+            data_root,
+            "robotwin",
+            [*ROBOTWIN_PATH, "seed_000"],
+            {**ROBOTWIN_META, "seed": 0},
+            steps=3,
+            solved=True,
+            space=space,
+        )
+        argv = ["export-lerobot", "--data-root", str(data_root), "--robot", "robotwin"]
+        assert (
+            cli.main([*argv, "--select", "demo_randomized", "--dataset-id", "e"]) == 0
+        )
+        roots.append(Path(json.loads(capsys.readouterr().out)["dataset_path"]))
+    files = [
+        sorted(p.relative_to(r) for p in r.rglob("*") if p.is_file()) for r in roots
+    ]
+    assert files[0] == files[1]
+    for rel in files[0]:
+        a, b = (r / rel for r in roots)
+        if rel.name == "flywheel.json":  # names the source episode
+            continue
+        if rel.suffix == ".parquet":
+            ta, tb = pq.read_table(a), pq.read_table(b)
+            assert ta.schema.remove_metadata() == tb.schema.remove_metadata(), rel
+            assert ta.to_pylist() == tb.to_pylist(), rel
+        else:
+            assert a.read_bytes() == b.read_bytes(), rel

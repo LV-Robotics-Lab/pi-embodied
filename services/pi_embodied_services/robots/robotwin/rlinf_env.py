@@ -162,7 +162,7 @@ class RoboTwinAgentEnv(RoboTwinEnv):
         ``should_stop`` is polled before each native action; when it returns
         true the chunk ends early and ``info["cancelled"]`` is set.
         ``return_policy_frames`` adds, per executed action, what the VLA reads (the Flywheel
-        recorder's observation): the three camera images and the eef16 state.
+        recorder's observation): the three camera images, the eef16 state and the joint state.
         """
         array = _validate_actions(actions, action_type=action_type)
         sub_env = self._sub_env(env_id)
@@ -358,10 +358,23 @@ class RoboTwinAgentEnv(RoboTwinEnv):
 
     def _policy_frame(self, sub_env: Any) -> dict[str, Any]:
         """What the VLA reads now: the head and wrist RGB and the eef16 state
-        ``[left pose7, left gripper, right pose7, right gripper]``; the caller holds ``sub_env.lock``."""
+        ``[left pose7, left gripper, right pose7, right gripper]``, and the joint-space state in
+        XPolicyLab's order ``[left joints6, left gripper, right joints6, right gripper]``: ``qpos``
+        the measured joints, ``qpos_target`` the commanded drive targets (``qpos_target14``); the
+        gripper of both is the commanded gripper value, as in the eef16 state. The caller holds
+        ``sub_env.lock``."""
         native = sub_env.task.get_obs()["observation"]
         robot = sub_env.task.robot
         return {
+            "qpos": np.asarray(
+                robot.get_left_arm_real_jointState()
+                + robot.get_right_arm_real_jointState(),
+                dtype=np.float64,
+            ),
+            "qpos_target": np.asarray(
+                robot.get_left_arm_jointState() + robot.get_right_arm_jointState(),
+                dtype=np.float64,
+            ),
             "head": native["head_camera"]["rgb"],
             "left_wrist": native["left_camera"]["rgb"],
             "right_wrist": native["right_camera"]["rgb"],

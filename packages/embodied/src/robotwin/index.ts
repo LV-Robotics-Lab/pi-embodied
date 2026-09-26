@@ -33,18 +33,32 @@ const EXPLORE = read("./explore.md");
 const VIEWS = ["head", "left_wrist", "right_wrist"] as const;
 type View = (typeof VIEWS)[number];
 type Arm = "left" | "right";
-/** What LingBot reads and emits, eef16 (services robots/robotwin/flywheel.py); the camera sizes are the config's. */
+/**
+ * What LingBot reads and emits, eef16 (services robots/robotwin/flywheel.py); the camera sizes are the
+ * config's. The joint state rides along for the joint-space (XPolicyLab) export: `joint_states` the
+ * measured joints, `joint_targets` the commanded ones, both [left joints6, left gripper, right joints6,
+ * right gripper].
+ */
 const FLYWHEEL: FlywheelSpec = {
 	robot: "robotwin",
 	images: { head_images: null, left_wrist_images: null, right_wrist_images: null },
 	state: 16,
 	action: 16,
+	vectors: { joint_states: 14, joint_targets: 14 },
 };
 /** The server's policy frame (env.policy_frame, chunk_step's policy_frames). */
-type PolicyFrame = { head: NdArray; left_wrist: NdArray; right_wrist: NdArray; state: NdArray };
+type PolicyFrame = {
+	head: NdArray;
+	left_wrist: NdArray;
+	right_wrist: NdArray;
+	state: NdArray;
+	qpos: NdArray;
+	qpos_target: NdArray;
+};
 const flyObs = (f: PolicyFrame): FlywheelObs => ({
 	images: { head_images: u8(f.head), left_wrist_images: u8(f.left_wrist), right_wrist_images: u8(f.right_wrist) },
 	state: f.state.toArray(),
+	vectors: { joint_states: f.qpos.toArray(), joint_targets: f.qpos_target.toArray() },
 });
 /**
  * How the action units look (--units): RoboTwin's world frame, in which the robot faces +y with its

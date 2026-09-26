@@ -34,6 +34,7 @@ def main(argv: list[str] | None = None) -> int:
     validate = commands.add_parser("validate", help="validate one raw episode")
     validate.add_argument("episode", type=Path)
     validate.add_argument("--robot", choices=ROBOTS, default="libero")
+    validate.add_argument("--space", help="one of the robot's action spaces (SPACES)")
 
     export = commands.add_parser(
         "export-lerobot", help="export successful episodes to LeRobot v3.0"
@@ -50,11 +51,17 @@ def main(argv: list[str] | None = None) -> int:
         required=True,
         help="path below raw/<robot>/ whose episodes make the dataset, e.g. libero_10/task_02",
     )
+    export.add_argument(
+        "--space",
+        help="one of the robot's action spaces (its flywheel.py SPACES), e.g. robotwin's joint "
+        "(XPolicyLab's LeRobot layout); default the robot's policy space",
+    )
     export.add_argument("--dataset-id")
     export.add_argument(
         "--output-root",
         type=Path,
-        help="parent directory for the exported dataset (default <data-root>/datasets/lerobot/<robot>/<select>)",
+        help="parent directory for the exported dataset (default <data-root>/datasets/lerobot/<robot>/<select>, "
+        "lerobot-<space>/ for a --space)",
     )
     export.add_argument(
         "--videos",
@@ -93,7 +100,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0
-    rules = spec(args.robot)
+    rules = spec(args.robot, args.space)
     if args.command == "validate":
         from pi_embodied_services.flywheel.episode import validate_episode
 
@@ -102,12 +109,13 @@ def main(argv: list[str] | None = None) -> int:
         from pi_embodied_services.flywheel.export import export_lerobot
 
         root = args.data_root.expanduser().resolve()
+        space = f"-{args.space}" if args.space else ""
         result = export_lerobot(
             select(root, args.robot, args.select),
             spec=rules,
-            repo_id_prefix=f"pi-embodied/{args.robot}-{re.sub(r'[^A-Za-z0-9_.-]+', '-', args.select)}",
+            repo_id_prefix=f"pi-embodied/{args.robot}{space}-{re.sub(r'[^A-Za-z0-9_.-]+', '-', args.select)}",
             output_root=args.output_root
-            or root / "datasets" / "lerobot" / args.robot / args.select,
+            or root / "datasets" / f"lerobot{space}" / args.robot / args.select,
             dataset_id=args.dataset_id,
             videos=args.videos,
         )

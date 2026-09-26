@@ -250,13 +250,19 @@ def test_robolab_lists_objects_and_articulations_in_the_eef_frame(monkeypatch, x
 
 
 def test_robotwin_policy_frame_is_what_lingbot_reads(robotwin_env):
-    """The Flywheel observation: the three cameras LingBot reads and the eef16 state."""
+    """The Flywheel observation: the three cameras LingBot reads and the eef16 state, and the
+    joint state in XPolicyLab's order (measured ``qpos``, commanded ``qpos_target``)."""
     rgb = {k: np.full((2, 3, 3), i, np.uint8) for i, k in enumerate(("head", "l", "r"))}
     robot = SimpleNamespace(
         get_left_ee_pose=lambda: [0.1, 0.2, 0.3, 1.0, 0.0, 0.0, 0.0],
         get_right_ee_pose=lambda: [0.4, 0.5, 0.6, 1.0, 0.0, 0.0, 0.0],
         get_left_gripper_val=lambda: 1.0,
         get_right_gripper_val=lambda: 0.0,
+        # RoboTwin's joint lists end with the gripper value.
+        get_left_arm_real_jointState=lambda: [0.0, 1, 2, 3, 4, 5, 1.0],
+        get_right_arm_real_jointState=lambda: [6.0, 7, 8, 9, 10, 11, 0.0],
+        get_left_arm_jointState=lambda: [0.5, 1, 2, 3, 4, 5, 1.0],
+        get_right_arm_jointState=lambda: [6.5, 7, 8, 9, 10, 11, 0.0],
     )
     native = {
         "head_camera": {"rgb": rgb["head"]},
@@ -271,4 +277,9 @@ def test_robotwin_policy_frame_is_what_lingbot_reads(robotwin_env):
     assert frame["state"].tolist() == [
         *(0.1, 0.2, 0.3, 1.0, 0.0, 0.0, 0.0, 1.0),
         *(0.4, 0.5, 0.6, 1.0, 0.0, 0.0, 0.0, 0.0),
+    ]
+    assert frame["qpos"].tolist() == [0, 1, 2, 3, 4, 5, 1, 6, 7, 8, 9, 10, 11, 0]
+    assert frame["qpos_target"].tolist() == [
+        *(0.5, 1, 2, 3, 4, 5, 1),
+        *(6.5, 7, 8, 9, 10, 11, 0),
     ]

@@ -93,6 +93,10 @@ ROBOT_MODE_NAMES = {
 EMPTY_WIDTH_FRACTION = 0.13
 
 
+#: The async operation id is 7 bits (``async_op_id`` in ur_rtde's rtde_control.script).
+ASYNC_OP_IDS = 128
+
+
 def async_phase(
     before: tuple[int | None, bool], now: tuple[int | None, bool], seen_running: bool
 ) -> str:
@@ -106,13 +110,25 @@ def async_phase(
     is what tells them apart: ``pending`` while it is the old one, then ``running``
     or ``done``. Without an id (ur_rtde older than getAsyncOperationProgressEx: only
     ``progress >= 0``) the operation counts as done only after it was seen running.
+
+    The id is a sequence number the script echoes: it adds one per async operation
+    (mod 128) and restarts at 0 whenever the script is (re-)uploaded. So a finished
+    operation is ours only when its id is the one after ``before``; an idle register
+    with any other id is a restarted script's (``before`` was read from the previous
+    script, a re-upload after a protective stop or a reconnect), and the wait goes on
+    from that value (``rebase``) instead of taking it for our finished move. A running
+    operation is ours whatever its id: only one command is in flight.
     """
     id0, _ = before
     id1, run1 = now
     if id0 is not None and id1 is not None:
         if id1 == id0:
             return "pending"
-        return "running" if run1 else "done"
+        if run1:
+            return "running"
+        if seen_running or id1 == (id0 + 1) % ASYNC_OP_IDS:
+            return "done"
+        return "rebase"
     if run1:
         return "running"
     return "done" if seen_running else "pending"
@@ -491,7 +507,13 @@ class UR5eController:
                 stop()
                 out["cancelled"] = True
                 return out
-            phase = async_phase(before, self.arm.async_status(), out["started"])
+            now = self.arm.async_status()
+            phase = async_phase(before, now, out["started"])
+            if phase == "rebase":
+                # The register restarted under us (a re-uploaded control script):
+                # wait for the operation after the new value.
+                before = now
+                out["register_rebased"] = out.get("register_rebased", 0) + 1
             if phase == "done":
                 out["started"] = True
                 return out
@@ -531,6 +553,9 @@ class UR5eController:
             )
         if run.get("timed_out"):
             result["timed_out"] = True
+        if run.get("register_rebased"):
+            # The async register restarted while waiting (a re-uploaded script).
+            result["async_register_rebased"] = run["register_rebased"]
         if run.get("interrupted"):
             result["ok"] = False
             result["interrupted"] = run["interrupted"]

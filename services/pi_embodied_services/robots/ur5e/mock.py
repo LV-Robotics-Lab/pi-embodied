@@ -56,7 +56,11 @@ class MockUrArm:
     "running" (the script is paused), and ``script_stop_after`` polls stops the control
     script the same way (an unreachable target: the controller's IK fails and the
     program halts); ``ensure_control`` re-uploads a stopped script unless
-    ``reupload_fails``.
+    ``reupload_fails``. A re-uploaded script restarts its operation ids at 0, and the
+    register still shows the previous script's last operation (finished) for
+    ``reupload_stale_polls`` reads, as an RTDE output does until the new script's
+    first write reaches the receive side (``RtdeArm`` waits that out; the mock does
+    not, so the controller's own check is what is tested).
     """
 
     def __init__(
@@ -72,6 +76,7 @@ class MockUrArm:
         protective_stop_after: int | None = None,
         script_stop_after: int | None = None,
         stale_polls: int = 0,
+        reupload_stale_polls: int = 0,
         accept_moves: bool = True,
         reupload_fails: bool = False,
         home_pose: Any = (0.45, 0.0, 0.40, *DOWN),
@@ -109,6 +114,9 @@ class MockUrArm:
         self.running = False
         self._stale_left = 0
         self._stale_view = (0, False)
+        self.reupload_stale_polls = int(reupload_stale_polls)
+        self._reupload_left = 0
+        self._reupload_view = (0, False)
 
     def tcp_pose(self) -> np.ndarray:
         return self.pose.copy()
@@ -139,7 +147,12 @@ class MockUrArm:
         self.reuploads += 1
         self.program_running = True
         self.goal = self.joint_goal = None
+        # The new script's ids start over; the register lags behind it.
+        self._reupload_view = (self.op_id, False)
+        self._reupload_left = self.reupload_stale_polls
+        self.op_id = 0
         self.running = False
+        self._stale_left = 0
         return "the RTDE control script had stopped and was re-uploaded"
 
     def forward_kinematics(self, q: Any) -> np.ndarray:
@@ -229,6 +242,9 @@ class MockUrArm:
         if self.script_stop_after is not None and self.polls > self.script_stop_after:
             self.program_running = False
         self._advance()
+        if self._reupload_left > 0:
+            self._reupload_left -= 1
+            return self._reupload_view
         if self._stale_left > 0:
             self._stale_left -= 1
             return self._stale_view

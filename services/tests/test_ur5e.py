@@ -58,6 +58,9 @@ from pi_embodied_services.robots.ur5e.env_server import (
     load_config,
     main,
 )
+from pi_embodied_services.robots.ur5e.hardware import (
+    RtdeArm,
+)
 from pi_embodied_services.robots.ur5e.mock import DOWN, MockRobotiq, MockUrArm
 
 ARM = "2023300001"
@@ -1406,3 +1409,119 @@ def test_old_sample_dirs_with_the_prefixed_distortion_model_load(tmp_path):
     intr = calibrate.load_intrinsics(sdir / "intrinsics.json")
     assert intr["distortion_model"] == "inverse_brown_conrady"
     assert intr["coeffs"][0] == 0.1
+
+
+# -- start detection across a re-uploaded control script (未上机验证) --------------
+
+
+def test_async_phase_takes_only_the_next_id_as_a_finished_operation():
+    # The script echoes a sequence number: +1 per async operation, 0 after an upload.
+    assert async_phase((5, False), (6, False), False) == "done"
+    assert async_phase((127, False), (0, False), False) == "done"  # wraps
+    # An idle register with any other id is a restarted script's reset, not our move.
+    assert async_phase((5, False), (0, False), False) == "rebase"
+    assert async_phase((5, False), (3, False), False) == "rebase"
+    # Running is ours whatever the id; once seen running, idle means finished.
+    assert async_phase((5, False), (1, True), False) == "running"
+    assert async_phase((5, False), (1, False), True) == "done"
+
+
+def test_a_move_after_a_reupload_is_not_finished_when_sent():
+    # Three moves (operation id 3), then the script halts (an unreachable target).
+    arm = MockUrArm((0.5, 0.0, 0.3, *DOWN), step_m=0.002)
+    c = UR5eController(arm, None, limits_from_config(cfg()), sleep=lambda s: None)
+    for dx in (0.004, -0.004, 0.004):
+        assert c.move_delta([dx, 0.0, 0.0])["ok"]
+    assert arm.op_id == 3
+    arm.program_running = False
+    # The next move re-uploads the script: its ids restart at 0, while the register
+    # still shows the old script's operation 3 when the move reads its baseline, then
+    # the new script's reset (0, idle) before the move thread runs.
+    arm.reupload_stale_polls, arm.stale_polls = 1, 3
+    before_reads = arm.polls
+    r = c.move_delta([0.02, 0.0, 0.0])
+    assert arm.reuploads == 1 and r["control_script_reuploaded"] is True
+    # Pre-fix, "id changed and idle" ended the wait on the first read after moveL.
+    stale_before, reset = (3, False), (0, False)
+    assert reset[0] != stale_before[0] and not reset[1]
+    assert async_phase(stale_before, reset, False) == "rebase"
+    assert r["ok"] and r["final_error_m"] < 1e-9, r
+    assert r["async_register_rebased"] == 1
+    assert arm.polls - before_reads > 10, "waited for the whole 2 cm at 2 mm a poll"
+    assert c.target is not None
+
+
+class _Status:
+    def __init__(self, op: int, running: bool) -> None:
+        self.op, self.running = op, running
+
+    def operationId(self) -> int:  # noqa: N802 - ur_rtde's name
+        return self.op
+
+    def isAsyncOperationRunning(self) -> bool:  # noqa: N802
+        return self.running
+
+
+class _FakeControl:
+    """The RTDEControlInterface calls RtdeArm makes, with ur_rtde's behaviour."""
+
+    def __init__(self, registers, *, running=True) -> None:
+        self.registers = list(registers)
+        self.running = running
+        self.reuploads = 0
+
+    def getAsyncOperationProgressEx(self):  # noqa: N802
+        op, running = (
+            self.registers.pop(0) if len(self.registers) > 1 else self.registers[0]
+        )
+        return _Status(op, running)
+
+    connected = True
+
+    def isConnected(self) -> bool:  # noqa: N802
+        return self.connected
+
+    def reconnect(self) -> bool:
+        """ur_rtde reconnect(): uploads the script again when it does not run."""
+        self.connected = True
+        if not self.running:
+            self.reuploads += 1
+            self.running = True
+        return True
+
+    def isProgramRunning(self) -> bool:  # noqa: N802
+        return self.running
+
+    def reuploadScript(self) -> bool:  # noqa: N802
+        self.reuploads += 1
+        self.running = True
+        return True
+
+
+def _rtde_arm(ctrl) -> RtdeArm:
+    arm = RtdeArm.__new__(RtdeArm)
+    arm.ip, arm.dashboard_port, arm._recv, arm._ctrl = "127.0.0.1", 29999, None, ctrl
+    return arm
+
+
+def test_a_reupload_waits_for_the_new_scripts_register():
+    # The old script's last operation was 127: the new script's reset (0) is its
+    # sequence successor, so only waiting for the reset tells them apart.
+    ctrl = _FakeControl([(127, False), (127, False), (0, False)], running=False)
+    arm = _rtde_arm(ctrl)
+    note = arm.ensure_control()
+    assert "re-uploaded" in note and ctrl.reuploads == 1
+    assert ctrl.registers == [(0, False)], "read until the register reset"
+    # A dropped connection whose script also stopped: reconnect() re-uploads it, and
+    # the register is awaited the same way (the receive side says it had stopped).
+    ctrl = _FakeControl([(4, False), (0, False)], running=False)
+    ctrl.connected = False
+    arm = _rtde_arm(ctrl)
+    arm._recv = type("Recv", (), {"isProgramRunning": lambda self: False})()
+    assert "reconnected" in arm.ensure_control() and ctrl.reuploads == 1
+    assert ctrl.registers == [(0, False)]
+    # A register that never resets is logged and left to the controller's rule.
+    ctrl = _FakeControl([(9, False)])
+    t0 = time.monotonic()
+    _rtde_arm(ctrl)._await_fresh_register(timeout_s=0.05)
+    assert time.monotonic() - t0 < 1.0

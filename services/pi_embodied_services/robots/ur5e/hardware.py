@@ -16,7 +16,8 @@
 # connection) and real/robots/robotiq.py (the URCap socket register protocol).
 # Modified by pi-embodied: motions are started asynchronously so the controller can
 # poll ``stop`` and call stopL/stopJ (and waits for the async operation to start,
-# then end, by its operation id); a stopped control script is re-uploaded; forward
+# then end, by its operation id); a stopped control script is re-uploaded and its
+# async register awaited until it resets; forward
 # kinematics with the active TCP checks the reset target; the arm's serial number is
 # read for the calibration binding; the gripper client is read/write with
 # non-blocking go_to.
@@ -70,7 +71,38 @@ class RtdeArm:
             from rtde_control import RTDEControlInterface
 
             self._ctrl = RTDEControlInterface(self.ip)
+            # Connecting uploads a fresh script (replacing one a previous process left).
+            self._await_fresh_register()
         return self._ctrl
+
+    def _await_fresh_register(self, timeout_s: float = 2.0) -> None:
+        """After a control script was (re-)uploaded, wait until the async status
+        register shows the new script's reset (operation id 0, idle) before any
+        motion reads it as its baseline. The register is an RTDE output, so right
+        after the upload it can still hold the previous script's last operation
+        (say id 5, finished); a move issued then saw its id change on the reset and
+        was judged finished as it was sent. The controller (``control.async_phase``)
+        also refuses an idle id that is not the next one; this closes the case the
+        sequence rule cannot tell apart (the previous script's id was 127, the
+        reset's 0 is its successor). Older ur_rtde without the operation id has
+        nothing to wait for. A register that never resets is logged, not fatal: the
+        controller's rule still applies."""
+        ex = getattr(self._ctrl, "getAsyncOperationProgressEx", None)
+        if ex is None:
+            return
+        deadline = time.monotonic() + timeout_s
+        while True:
+            status = ex()
+            if int(status.operationId()) == 0 and not status.isAsyncOperationRunning():
+                return
+            if time.monotonic() > deadline:
+                logger.warning(
+                    "async status register did not reset after the script upload "
+                    "(operation id %s)",
+                    int(status.operationId()),
+                )
+                return
+            time.sleep(0.01)
 
     # -- state -------------------------------------------------------------
 
@@ -114,6 +146,13 @@ class RtdeArm:
 
     # -- control script -----------------------------------------------------
 
+    def _program_running(self) -> bool:
+        """Whether a control script runs, from the receive interface (unknown: False)."""
+        try:
+            return bool(self._recv.isProgramRunning())
+        except Exception:
+            return False
+
     def ensure_control(self, timeout_s: float = 5.0) -> str | None:
         """Make sure the RTDE control script runs before a motion: reconnect a
         dropped control interface, re-upload a script that stopped (an unreachable
@@ -126,8 +165,14 @@ class RtdeArm:
         ctrl = self._ctrl
         note = None
         if not ctrl.isConnected():
+            # reconnect() uploads the script again when it no longer runs (read on the
+            # separate receive interface, which stays connected); then its register
+            # restarts too.
+            reuploads = not self._program_running()
             ctrl.reconnect()
             note = "the RTDE control interface had disconnected and was reconnected"
+            if reuploads:
+                self._await_fresh_register()
         if ctrl.isProgramRunning():
             return note
         if not ctrl.reuploadScript():
@@ -139,6 +184,7 @@ class RtdeArm:
                     f"the re-uploaded control script did not start within {timeout_s} s"
                 )
             time.sleep(0.01)
+        self._await_fresh_register()
         logger.warning("RTDE control script had stopped; re-uploaded")
         return "the RTDE control script had stopped and was re-uploaded"
 

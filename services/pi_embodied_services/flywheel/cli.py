@@ -89,22 +89,25 @@ def main(argv: list[str] | None = None) -> int:
 
     planner = commands.add_parser(
         "export-planner",
-        help="export eval runs' planner sessions as SFT data (LLaMA-Factory ShareGPT or OpenAI/VeRL)",
+        help="export eval runs' planner sessions: SFT trajectories (LLaMA-Factory ShareGPT, OpenAI/VeRL) "
+        "or VeRL RL task prompts (verl-rl)",
     )
     planner.add_argument(
         "runs", type=Path, nargs="+", help="eval output dirs (searched recursively)"
     )
     planner.add_argument("--output", type=Path, required=True)
-    planner.add_argument("--format", choices=("sharegpt", "openai"), default="sharegpt")
+    planner.add_argument(
+        "--format", choices=("sharegpt", "openai", "verl-rl"), default="sharegpt"
+    )
     planner.add_argument(
         "--include-failures",
         action="store_true",
-        help="also export environment-judged failures (reward 0)",
+        help="SFT: also export environment-judged failures (reward 0); verl-rl always takes both",
     )
     planner.add_argument(
         "--keep-images",
         type=int,
-        help="keep only the newest N images (the robot's --keep-images); default all",
+        help="SFT: keep only the newest N images (the robot's --keep-images); default all",
     )
     planner.add_argument(
         "--name", default="pi_embodied_planner", help="dataset_info.json entry name"

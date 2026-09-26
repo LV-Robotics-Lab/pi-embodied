@@ -20,11 +20,19 @@ import base64
 import json
 from pathlib import Path
 
+import pytest
+
 from pi_embodied_services.flywheel import cli
-from pi_embodied_services.flywheel.planner_export import export_planner
+from pi_embodied_services.flywheel.planner_export import (
+    FORMATS,
+    compute_score,
+    export_planner,
+    placeholders,
+)
 
 PNG_A = b"\x89PNG\r\n\x1a\nAAAA"
 PNG_B = b"\x89PNG\r\n\x1a\nBBBB"
+PNG_C = b"\x89PNG\r\n\x1a\nCCCC"
 TOOLS = [
     {
         "name": "move_to",
@@ -72,8 +80,15 @@ def write_session(
     result_json: dict | None = None,
     forced_prompt: bool = True,
     fork: bool = False,
+    prompt_image: bool = False,
+    literal: bool = False,
+    finish_image: bool = False,
+    cut: bool = False,
 ) -> Path:
-    """A pi session like an eval episode's: header, task, system message, a user prompt, turns."""
+    """A pi session like an eval episode's: header, task, system message, a user prompt, turns.
+    ``prompt_image``: the user prompt carries an image; ``literal``: a tool result's text holds a
+    literal ``<image>``; ``finish_image``: the finish result carries a frame; ``cut``: the budget
+    ended the episode on a tool result with a frame, before any finish."""
     episode.mkdir(parents=True, exist_ok=True)
     entries: list[dict] = [
         {"type": "session", "version": 3, "id": "s", "cwd": "/"},
@@ -116,7 +131,11 @@ def write_session(
     add(
         {
             "type": "message",
-            "message": {"role": "user", "content": [text("Solve the task.")]},
+            "message": {
+                "role": "user",
+                "content": [text("Solve the task.")]
+                + ([image(PNG_C)] if prompt_image else []),
+            },
         }
     )
     # An errored reply (pi retried it): not part of the data.
@@ -130,7 +149,12 @@ def write_session(
     add(
         {
             "type": "message",
-            "message": result("c1", "move_to", text("moved"), image(PNG_A)),
+            "message": result(
+                "c1",
+                "move_to",
+                text("moved <image> tag" if literal else "moved"),
+                image(PNG_A),
+            ),
         }
     )
     if fork:
@@ -165,13 +189,28 @@ def write_session(
         }
     )
     add({"type": "message", "message": result("c3", "move_to", text("ok3"))})
-    add(
-        {
-            "type": "message",
-            "message": assistant([call("c4", "finish", status="success")]),
-        }
-    )
-    add({"type": "message", "message": result("c4", "finish", text("success"))})
+    if cut:
+        add({"type": "message", "message": assistant([call("c5", "move_to", x=5)])})
+        add(
+            {
+                "type": "message",
+                "message": result("c5", "move_to", text("budget"), image(PNG_C)),
+            }
+        )
+    else:
+        add(
+            {
+                "type": "message",
+                "message": assistant([call("c4", "finish", status="success")]),
+            }
+        )
+        extra = [image(PNG_C)] if finish_image else []
+        add(
+            {
+                "type": "message",
+                "message": result("c4", "finish", text("success"), *extra),
+            }
+        )
     if outcome is not None:
         add(
             {
@@ -287,7 +326,7 @@ def test_a_claimed_success_the_environment_denies_earns_nothing(tmp_path: Path) 
     assert rows(tmp_path / "all")[0]["reward"] == 0.0
 
 
-def test_openai_format_for_verl(tmp_path: Path) -> None:
+def test_openai_sft_format(tmp_path: Path) -> None:
     runs = tmp_path / "runs"
     write_session(runs / "ep", outcome={"success": True}, forced_prompt=False)
     out = tmp_path / "out"
@@ -320,12 +359,109 @@ def test_openai_format_for_verl(tmp_path: Path) -> None:
         "content": "moved\n<image>",
     }
     assert row["tools"][0] == {"type": "function", "function": TOOLS[0]}
-    assert row["prompt"] == msgs[:2]
-    assert row["reward_model"] == {
-        "style": "env_success",
-        "ground_truth": {"success": True},
+    assert [Path(i["image"]).read_bytes() for i in row["images"]] == [PNG_A, PNG_B]
+    assert all(Path(i["image"]).is_absolute() for i in row["images"])
+    assert row["reward"] == 1.0 and "prompt" not in row and "reward_model" not in row
+
+
+def test_verl_rl_rows_are_task_prompts_scored_by_the_new_rollout(
+    tmp_path: Path,
+) -> None:
+    runs = tmp_path / "runs"
+    write_session(runs / "ok", outcome={"success": True}, prompt_image=True)
+    write_session(runs / "fail", outcome={"success": False})
+    write_session(runs / "broken", outcome={"success": True, "env_error": True})
+    out = tmp_path / "out"
+    summary = export_planner([runs], out, fmt="verl-rl")
+    assert (summary["episodes"], summary["successes"], summary["failures"]) == (2, 1, 1)
+    assert summary["skipped"] == {"env_error": 1}
+    by_id = {r["id"].split("-")[0]: r for r in rows(out)}
+    ok, fail = by_id["ok"], by_id["fail"]
+    assert ok["prompt"] == [
+        {"role": "system", "content": "You drive the toy arm."},
+        {"role": "user", "content": "Solve the task.\n<image>"},
+    ], "the system prompt and the first user turn, not the trajectory"
+    assert [Path(i["image"]).read_bytes() for i in ok["images"]] == [PNG_C], (
+        "only the prompt's own image"
+    )
+    assert fail["prompt"][1] == {"role": "user", "content": "Solve the task."}
+    assert fail["images"] == []
+    env = {"robot": "toy", "task": "1"}
+    for r in (ok, fail):
+        assert r["reward_model"] == {
+            "style": "env_success",
+            "ground_truth": {"task": env},
+        }
+        assert r["agent_name"] == "tool_agent" and r["data_source"] == "pi_embodied/toy"
+        assert r["extra_info"]["task"] == env
+        assert r["extra_info"]["tools_kwargs"]["move_to"] == {
+            "create_kwargs": {"task": env}
+        }
+        assert "reward" not in r and "success" not in r
+    assert ok["extra_info"]["source"]["success"] is True
+    assert fail["extra_info"]["source"]["success"] is False
+    # The reward hook scores the rollout's own environment verdict, never the recorded one.
+    gt, info = ok["reward_model"]["ground_truth"], ok["extra_info"]
+    score = lambda result: compute_score(  # noqa: E731
+        ok["data_source"], "any text", gt, {**info, "rollout_result": result}
+    )
+    assert score({"robot": "toy", "task": 1, "success": False}) == 0.0
+    assert score({"robot": "toy", "task": 1, "success": True}) == 1.0
+    assert score({"robot": "toy", "terminated": True}) == 1.0
+    assert score({"robot": "toy", "success": True, "planner_error": "503"}) == 0.0
+    with pytest.raises(ValueError, match="rollout_result"):
+        compute_score(ok["data_source"], "I succeeded", gt, info)
+    with pytest.raises(ValueError, match="task='2'"):
+        score({"robot": "toy", "task": "2", "success": True})
+
+
+def test_every_row_has_one_placeholder_per_image(tmp_path: Path) -> None:
+    """Loaders (LLaMA-Factory's mm plugin, VeRL) refuse a row whose counts differ."""
+    runs = tmp_path / "runs"
+    variants = {
+        "plain": {},
+        "prompt_image": {"prompt_image": True},
+        "literal": {"literal": True},
+        "finish_image": {"finish_image": True},
+        "cut": {"cut": True},
+        "all": {"prompt_image": True, "literal": True, "finish_image": True},
     }
-    assert row["data_source"] == "pi_embodied/toy" and row["reward"] == 1.0
+    for name, kw in variants.items():
+        write_session(runs / name, outcome={"success": name != "cut"}, **kw)
+    cases = [(fmt, keep) for fmt in FORMATS for keep in (None, 0, 1, 2, 5)]
+    for fmt, keep in cases:
+        out = tmp_path / f"{fmt}-{keep}"
+        export_planner([runs], out, fmt=fmt, include_failures=True, keep_images=keep)
+        got = rows(out)
+        assert len(got) == len(variants), (fmt, keep)
+        for row in got:
+            content = {"sharegpt": "conversations", "openai": "messages"}.get(
+                fmt, "prompt"
+            )
+            n = placeholders(row[content]) + placeholders(row.get("system", ""))
+            assert n == len(row["images"]), (fmt, keep, row["id"])
+            # In order: the images are the kept turns' frames, newest last.
+            paths = [i if isinstance(i, str) else i["image"] for i in row["images"]]
+            assert all((out / p).is_file() for p in paths)
+            assert len(set(paths)) == len(paths)
+    # The dropped trailing frames are not written or listed; the literal tag is defused.
+    [cut] = [r for r in rows(tmp_path / "sharegpt-None") if r["id"].startswith("cut")]
+    assert [(tmp_path / "sharegpt-None" / p).read_bytes() for p in cut["images"]] == [
+        PNG_A,
+        PNG_B,
+    ]
+    [lit] = [
+        r for r in rows(tmp_path / "sharegpt-None") if r["id"].startswith("literal")
+    ]
+    assert lit["conversations"][2]["value"].startswith(
+        "moved &lt;image&gt; tag\n<image>"
+    )
+    [fin] = [
+        r for r in rows(tmp_path / "openai-None") if r["id"].startswith("finish_image")
+    ]
+    assert len(fin["images"]) == 2, (
+        "the finish result's frame goes with the dropped result"
+    )
 
 
 def test_keep_images_stubs_the_older_frames(tmp_path: Path) -> None:

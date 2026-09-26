@@ -528,7 +528,13 @@ def test_plan_place_after_the_grasp_uses_the_held_pose_and_refuses_an_empty_grip
         None,
         "retreat",
     ]
-    assert planner.held() is None, "claiming the place releases the held grasp"
+    assert planner.held()["grasp_id"] == gid, (
+        "a claimed place still holds until it opens"
+    )
+    holding["now"] = True
+    assert planner.release_held() == {"released": False, "held": gid}
+    assert planner.release_held(opened=True)["released"] is True
+    assert planner.held() is None
     with pytest.raises(G.GraspError, match="stale"):
         planner.plan_place(region, gid)
     # An empty gripper is refused (and forgotten).

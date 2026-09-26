@@ -611,6 +611,7 @@ class GraspPlanner:
 
             rpc["env.reset"] = reset_and_forget
         rpc["env.claim_waypoints"] = self.claim_waypoints
+        rpc["env.release_held"] = self.release_held
         rpc["env.plan_grasp"] = self.plan_grasp
         rpc["env.next_grasp"] = self.next_grasp
         rpc["env.resolve_grasp"] = self.resolve_grasp
@@ -1175,7 +1176,8 @@ class GraspPlanner:
         on the id: the evidence chain ends at this claim, one observation, one candidate.
 
         A claimed grasp is remembered as the arm's held grasp (``plan_place`` accepts its id
-        after the grasp, from the new observation); a claimed place forgets it.
+        after the grasp, from the new observation); ``release_held`` forgets it once the
+        place's executor opened the hand.
 
         Returns:
             dict with ``id``, ``kind``, ``observation``, ``waypoints`` (name -> world
@@ -1237,7 +1239,8 @@ class GraspPlanner:
                 {"gripper": -1},
                 {"to": "retreat", "gripper": -1},
             ]
-            self._held.pop(arm, None)
+            # The held record stays until the executor has opened the hand (release_held): a
+            # place that stalls on the way still holds the object and may plan again.
         return {
             "id": grasp_id,
             "kind": item["kind"],
@@ -1256,6 +1259,23 @@ class GraspPlanner:
             "lift_m": offsets["lift"] if item["kind"] == "grasp" else None,
             "expired_ids": self._expired(),
         }
+
+    def release_held(self, arm: str | None = None, opened: bool = False) -> dict:
+        """Forget ``arm``'s held grasp once the hand let go: the executor's open step
+        completed (``opened``) or ``holding(arm)`` confirms the fingers hold nothing. A hand
+        that still holds (or cannot be checked and was not opened) keeps the record.
+
+        Returns:
+            dict with ``released`` (bool) and ``held`` (the grasp id kept, or None).
+        """
+        record = self._held.get(arm)
+        if record is None:
+            return {"released": False, "held": None}
+        empty = self._holding(arm) is False if self._holding is not None else False
+        if opened or empty:
+            self._held.pop(arm, None)
+            return {"released": True, "held": None}
+        return {"released": False, "held": record["grasp_id"]}
 
     def held(self, arm: str | None = None) -> dict[str, Any] | None:
         """The grasp claimed for ``arm`` and not yet placed (None when there is none)."""

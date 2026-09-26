@@ -1116,6 +1116,11 @@ class LiberoEnvFacade(BaseEnvFacade):
                 legs.append(
                     {"gripper": int(grip), "gripper_width": out["gripper_width"]}
                 )
+                if grip < 0:
+                    # The hand opened: the held grasp ends once the fingers hold nothing.
+                    self._grasp.release_held(
+                        claim.get("arm"), opened=not self._holding()
+                    )
             else:
                 target = waypoints[leg["to"]]
                 steps, cancelled = self._servo_pose(

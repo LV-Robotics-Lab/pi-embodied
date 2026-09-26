@@ -182,6 +182,21 @@ test("a claimed grasp runs leg by leg with the claim's orientation and stops at 
 	assert.equal(stalled.stalled, "grasp");
 	assert.match(stalled.error ?? "", /stalled 0.08 m short of grasp/);
 	assert.equal(log.length, 2, "nothing after the stalled leg");
+	// A place's open step asks the env server to end the held grasp; a grasp's close does not.
+	const released: string[] = [];
+	const place: Claim = {
+		...claim,
+		waypoints: { pre_place: [0, 0, 0.3], place: [0, 0, 0.2], retreat: [0, 0, 0.3] },
+		steps: [
+			{ to: "pre_place", gripper: 1 },
+			{ to: "place", gripper: 1 },
+			{ gripper: -1 },
+			{ to: "retreat", gripper: -1 },
+		],
+	};
+	await runClaim(place, { ...io(), released: async () => released.push("place") });
+	await runClaim(claim, { ...io(), released: async () => released.push("grasp") });
+	assert.deepEqual(released, ["place"]);
 	const ended = await runClaim(claim, { ...io(), ended: () => true });
 	assert.deepEqual(ended, { legs: [], steps_used: 0 });
 });

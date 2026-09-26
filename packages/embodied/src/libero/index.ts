@@ -169,6 +169,8 @@ export async function runClaim(
 		actuate: (g: number) => Promise<number>;
 		width: () => number;
 		ended: () => boolean;
+		/** After the hand opened: the env server ends the held grasp once the fingers hold nothing. */
+		released?: () => Promise<unknown>;
 	},
 ): Promise<{ legs: Record<string, unknown>[]; steps_used: number; stalled?: string; error?: string }> {
 	const legs: Record<string, unknown>[] = [];
@@ -178,6 +180,7 @@ export async function runClaim(
 		if (leg.to === undefined) {
 			steps += await io.actuate(leg.gripper);
 			legs.push({ gripper: leg.gripper, gripper_width: round(io.width()) });
+			if (leg.gripper < 0) await io.released?.();
 			continue;
 		}
 		const r = await io.servo(c.waypoints[leg.to], c.eef_pitch, c.eef_yaw, leg.gripper);
@@ -738,6 +741,7 @@ export default function libero(pi: ExtensionAPI) {
 				actuate,
 				width: gripper,
 				ended: () => terminated || truncated,
+				released: () => call(env, "env.release_held", {}),
 			});
 			return { name, id, ...run, final_eef_pos: eef().map((v) => round(v)), gripper_width: round(gripper()) };
 		} catch (err) {

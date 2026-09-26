@@ -211,6 +211,8 @@ test("motion classification over every robot's tools", () => {
 	assert.deepEqual(motion, [
 		"act",
 		"close_gripper",
+		"execute_grasp",
+		"execute_place",
 		"grasp_object",
 		"lingbot_act",
 		"move_base",

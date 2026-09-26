@@ -54,7 +54,11 @@ Per run: a wall-clock timeout (a stop is issued to the robot the moment it passe
 inside a running primitive, whose outbound RPCs are bounded by what is left of it, and the
 child is killed), a primitive-call budget, arguments with NaN or infinity refused, an
 accumulated translation cap (the units' ``maxMoveM`` idea), a temporary working directory,
-and stdout, stderr, the traceback and ``RESULT`` each capped at 8 KB. A ``stop`` that
+and stdout, stderr (``sys.stderr`` and the child's fd 2, drained through one pipe) the traceback
+and ``RESULT`` each capped at 8 KB. A primitive runs on a worker thread; one still running
+:data:`ABANDON_GRACE_S` after the deadline (it ignores stop) is abandoned: the program is
+killed, the run returns, and since Python cannot interrupt a thread :attr:`CodeRunner.wedged`
+names it until it returns (the facade refuses business calls meanwhile). A ``stop`` that
 arrives while a run executes kills the child (:meth:`CodeRunner.abort`, from the facade's
 ``_on_stop``).
 
@@ -102,6 +106,9 @@ DEFAULT_TIMEOUT_S = 60.0
 DEFAULT_MAX_CALLS = 50
 #: stdout, stderr, the traceback and the encoded RESULT of a run are each cut here.
 OUTPUT_CAP = 8 * 1024
+#: A primitive still running this long after the run's deadline (it ignores stop) is
+#: abandoned: the program is killed and the run returns; see :meth:`CodeRunner.wedged`.
+ABANDON_GRACE_S = 10.0
 #: A pipe message (either direction) above this ends the run.
 MAX_MESSAGE = 64 << 20
 #: Files the program writes are cut here (RLIMIT_FSIZE).
@@ -129,6 +136,10 @@ WIRE_DTYPES = frozenset(
 
 class CodeLimitError(RuntimeError):
     """A primitive call refused by the run's budget (raised inside the child)."""
+
+
+class _Abandoned(Exception):
+    """A primitive outlived the run's deadline by :data:`ABANDON_GRACE_S` (internal)."""
 
 
 class CodeIsolationError(RuntimeError):
@@ -769,6 +780,39 @@ def kill_tree(pid: int | None, uid: int | None) -> None:
 # The child
 
 
+class _CappedReader:
+    """Drain a pipe on a thread, keeping its first :data:`OUTPUT_CAP` bytes and counting the
+    rest (read and discarded, so the writer never blocks on a full pipe)."""
+
+    def __init__(self, stream) -> None:
+        self._stream = stream
+        self._kept = bytearray()
+        self._dropped = 0
+        self._thread = threading.Thread(
+            target=self._drain, daemon=True, name="run_code-stderr"
+        )
+        self._thread.start()
+
+    def _drain(self) -> None:
+        with contextlib.suppress(OSError, ValueError):
+            while True:
+                chunk = self._stream.read1(65536)
+                if not chunk:
+                    return
+                room = OUTPUT_CAP - len(self._kept)
+                self._kept += chunk[: max(0, room)]
+                self._dropped += max(0, len(chunk) - max(0, room))
+
+    def text(self, wait_s: float = 2.0) -> str:
+        self._thread.join(wait_s)
+        with contextlib.suppress(OSError, ValueError):
+            self._stream.close()
+        out = bytes(self._kept).decode("utf-8", "replace")
+        if self._dropped:
+            out += f"\n[truncated {self._dropped} bytes]"
+        return out
+
+
 def _mapped_bytes() -> int:
     """The process's virtual size (Linux: VmSize; 0 elsewhere)."""
     try:
@@ -1017,8 +1061,14 @@ class CodeRunner:
         on_timeout: Callable[[], None] | None = None,
         begin: Callable[[], None] | None = None,
         finish: Callable[[], dict] | None = None,
+        primitive_thread: bool = True,
     ) -> None:
         self._primitives = {p.name: p for p in primitives}
+        # Primitives run on a worker thread so the run's deadline can abandon one that never
+        # returns. A server whose backend needs every call on one thread (MainThreadServeMixin)
+        # passes False: its primitives run on the calling thread and cannot be abandoned.
+        self._primitive_thread = primitive_thread
+        self._abandoned: list[threading.Thread] = []
         self._stop_requested = stop_requested
         self._on_timeout = on_timeout
         self._begin = begin
@@ -1036,6 +1086,19 @@ class CodeRunner:
     def active(self) -> bool:
         """Whether a run is executing (its program may be calling the server)."""
         return self._active
+
+    @property
+    def wedged(self) -> str | None:
+        """The primitive an earlier run abandoned while it still runs on its server thread,
+        else None. Python cannot interrupt a thread, so the server must not run another call
+        until it returns (it may still touch the env): the facade refuses business calls."""
+        with self._lock:
+            self._abandoned = [t for t in self._abandoned if t.is_alive()]
+            return (
+                self._abandoned[0].name.removeprefix("run_code:")
+                if self._abandoned
+                else None
+            )
 
     def primitives(self, tier: str, privileged: bool = False) -> list[Primitive]:
         """The tier's primitives; the registry's ``privileged`` tier (or ``privileged=True``) adds
@@ -1095,6 +1158,12 @@ class CodeRunner:
         refusal = code_isolation_error()
         if refusal is not None:
             raise CodeIsolationError(refusal)
+        stuck = self.wedged
+        if stuck is not None:
+            raise RuntimeError(
+                f"run_code refused: primitive {stuck} of an earlier run never returned and still "
+                "runs on its server thread; restart the env server"
+            )
         allowed = self.primitives(tier, privileged)
         names = [p.name for p in allowed]
         helper_names = list(HELPERS) if helpers else []
@@ -1129,6 +1198,7 @@ class CodeRunner:
             self._active = True
             self._uid = uid
         proc: subprocess.Popen | None = None
+        fd_err: _CappedReader | None = None
         outcome = _Outcome("died", "it did not start")
         try:
             fd = child_conn.fileno()
@@ -1144,8 +1214,12 @@ class CodeRunner:
                 cwd=cwd,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
+                # fd 2 (os.write, C extensions, a crash before the program's own capture) goes
+                # through the same 8 KB cap as its sys.stderr, never to the server's stderr.
+                stderr=subprocess.PIPE,
                 start_new_session=True,
             )
+            fd_err = _CappedReader(proc.stderr)
             with self._lock:
                 self._proc = proc
             child_conn.close()
@@ -1168,10 +1242,14 @@ class CodeRunner:
             child_conn.close()
             shutil.rmtree(cwd, ignore_errors=True)
         done = state.done or {}
+        err_text = done.get("stderr", "")
+        extra = fd_err.text() if fd_err is not None else ""
+        if extra:
+            err_text = f"{err_text}\n{extra}" if err_text else extra
         result: dict[str, Any] = {
             "status": "ran",
             "stdout": _cap(done.get("stdout", "")),
-            "stderr": _cap(done.get("stderr", "")),
+            "stderr": _cap(err_text),
             "traceback": done.get("traceback"),
             "error": None,
             "result": done.get("result"),
@@ -1183,7 +1261,18 @@ class CodeRunner:
         }
         if state.limit:
             result["limit"] = state.limit
-        if outcome.kind == "timeout":
+        if outcome.kind == "abandoned":
+            result["status"] = "timeout"
+            result["abandoned"] = outcome.reason
+            result["stop_issued"] = True
+            result["error"] = (
+                f"primitive {outcome.reason} did not return {ABANDON_GRACE_S:g} s after the "
+                f"run's {timeout_s:g} s timeout (it ignores stop): the program was killed and the "
+                "primitive's server thread abandoned; this server refuses further calls until it "
+                "returns (restart it)"
+            )
+            self._issue_stop(state)
+        elif outcome.kind == "timeout":
             result["status"] = "timeout"
             result["error"] = (
                 f"the program ran past its {timeout_s:g} s timeout and was killed"
@@ -1267,6 +1356,8 @@ class CodeRunner:
                 reply = self._call(by_name, name, args, kwargs, state)
             except RecursionError:
                 return _malformed("arguments nested too deeply")
+            if state.abandoned is not None:
+                return _Outcome("abandoned", state.abandoned)
             # The timeout's stop may have aborted this run too: it is still a timeout.
             if state.stop_issued or time.monotonic() >= deadline:
                 return _Outcome("timeout")
@@ -1282,6 +1373,50 @@ class CodeRunner:
                 conn.send_bytes(data)
             except (BrokenPipeError, OSError):
                 return self._gone(proc)
+
+    def _invoke(self, prim: Primitive, args, kwargs, state: _Run):
+        """Run one primitive under the run's deadline. On a worker thread (the default), wait
+        at most until :data:`ABANDON_GRACE_S` past the deadline (or past an abort); a primitive
+        still running then is abandoned (:class:`_Abandoned`): Python cannot interrupt a thread,
+        so it is left running and :attr:`wedged` reports it."""
+
+        def work():
+            with call_deadline(state.deadline):
+                return prim.fn(*args, **kwargs)
+
+        if not self._primitive_thread:
+            return work()
+        box: dict[str, Any] = {}
+
+        def target():
+            try:
+                box["out"] = work()
+            except BaseException as exc:  # handed to the waiting thread
+                box["exc"] = exc
+
+        th = threading.Thread(target=target, daemon=True, name=f"run_code:{prim.name}")
+        th.start()
+        limit = state.deadline + ABANDON_GRACE_S
+        aborted_at: float | None = None
+        while True:
+            th.join(0.05)
+            if not th.is_alive():
+                break
+            now = time.monotonic()
+            if self._abort.is_set() and aborted_at is None:
+                aborted_at = now
+            if now >= limit or (
+                aborted_at is not None and now >= aborted_at + ABANDON_GRACE_S
+            ):
+                with self._lock:
+                    self._abandoned.append(th)
+                raise _Abandoned(prim.name)
+        if "exc" in box:
+            exc = box["exc"]
+            if isinstance(exc, Exception):
+                raise exc
+            raise RuntimeError(f"{prim.name} ended with {type(exc).__name__}")
+        return box.get("out")
 
     def _call(
         self, by_name: dict[str, Primitive], name: str, args, kwargs, state: _Run
@@ -1352,8 +1487,15 @@ class CodeRunner:
         timer.daemon = True
         timer.start()
         try:
-            with call_deadline(state.deadline):
-                out = prim.fn(*args, **kwargs)
+            out = self._invoke(prim, args, kwargs, state)
+        except _Abandoned:
+            entry["ms"] = int((time.monotonic() - t0) * 1000)
+            entry["error"] = entry["abandoned"] = (
+                f"{name} did not return {ABANDON_GRACE_S:g} s after the run's deadline (it "
+                "ignores stop); its server thread was abandoned"
+            )
+            state.abandoned = name
+            return ("error", entry["error"])
         except Exception as exc:
             entry["ms"] = int((time.monotonic() - t0) * 1000)
             entry["error"] = f"{type(exc).__name__}: {exc}"[:2000]
@@ -1384,6 +1526,7 @@ class _Run:
         self.log: list[dict] = []
         self.done: dict | None = None
         self.stop_issued = False
+        self.abandoned: str | None = None
 
 
 __all__ = [
@@ -1404,6 +1547,7 @@ __all__ = [
     "describe_helpers",
     "encode",
     "jsonable",
+    "ABANDON_GRACE_S",
     "ALLOW_UNISOLATED_ENV",
     "child_env",
     "code_isolation_error",

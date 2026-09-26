@@ -227,7 +227,8 @@ class RpcFacade:
             )
         if method != "shutdown" and self._exclusive_call_active():
             raise RuntimeError(
-                f"{method}: refused: a run_code program is running on this server"
+                f"{method}: refused: a run_code program is running on this server "
+                "(or a primitive it left running)"
             )
 
     # ---- dispatch ----------------------------------------------------------

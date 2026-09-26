@@ -380,7 +380,8 @@ class LiberoEnvFacade(BaseEnvFacade):
 
     def _exclusive_call_active(self) -> bool:
         # While a program runs, only its own primitives (called in-process) touch the env.
-        return self._code.active
+        # ... and while a primitive an earlier run abandoned still runs (it may touch the env).
+        return self._code.active or self._code.wedged is not None
 
     # ---- grasp planning views ----
 

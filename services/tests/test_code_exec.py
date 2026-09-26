@@ -743,3 +743,71 @@ def test_the_child_runs_single_threaded_blas_and_the_server_env_is_untouched(
     assert out["result"] == ["1", "1", "1"]
     assert os.environ["OMP_NUM_THREADS"] == "8"
     assert "OPENBLAS_NUM_THREADS" not in os.environ
+
+
+def test_fd_level_stderr_is_capped_and_never_reaches_the_servers_stderr(capfd):
+    out = runner(Toy()).run(
+        "import os, sys\n"
+        "sys.stderr.write('py-level\\n')\n"
+        "os.write(2, b'X' * 200000)\n"
+        "RESULT = 1\n"
+    )
+    assert out["status"] == "ran", out
+    assert "py-level" in out["stderr"]
+    assert "X" * 100 in out["stderr"] and "[truncated" in out["stderr"]
+    assert len(out["stderr"].encode()) < 2 * code_exec.OUTPUT_CAP + 200
+    assert "XXXXXXXXXX" not in capfd.readouterr().err, (
+        "nothing went to the server's stderr"
+    )
+
+
+def test_a_child_crash_before_its_own_capture_is_reported_in_stderr():
+    out = runner(Toy()).run("import os\nos.write(2, b'boom-on-fd2')\nos._exit(3)\n")
+    assert out["status"] == "error" and "boom-on-fd2" in out["stderr"], out
+
+
+def test_a_primitive_that_ignores_stop_is_abandoned_at_the_deadline(monkeypatch):
+    monkeypatch.setattr(code_exec, "ABANDON_GRACE_S", 0.5)
+    release = threading.Event()
+
+    def spin():
+        # An internal loop that never polls stop (the #13 case).
+        while not release.is_set():
+            time.sleep(0.01)
+        return {}
+
+    stopped = []
+    r = CodeRunner(
+        [Primitive("spin", spin, ("high",)), Primitive("look", Toy().look, ("high",))],
+        on_timeout=lambda: stopped.append(1),
+    )
+    t0 = time.monotonic()
+    out = r.run("spin()\nRESULT = 'never'\n", timeout_s=4)
+    assert time.monotonic() - t0 < 12, "the run returned at deadline + grace"
+    assert out["status"] == "timeout" and out["abandoned"] == "spin", out
+    assert "abandoned" in out["error"] and "restart" in out["error"]
+    assert out["calls"][0]["abandoned"] and out["stop_issued"] and stopped
+    assert r.wedged == "spin"
+    with pytest.raises(RuntimeError, match="never returned"):
+        r.run("look()\n")
+    release.set()
+    for _ in range(100):
+        if r.wedged is None:
+            break
+        time.sleep(0.02)
+    assert r.wedged is None, "the thread returned: the server may run calls again"
+    assert r.run("RESULT = 2\n")["result"] == 2
+
+
+def test_primitives_can_stay_on_the_calling_thread():
+    seen = []
+    r = CodeRunner(
+        [
+            Primitive(
+                "where", lambda: seen.append(threading.get_ident()) or {}, ("high",)
+            )
+        ],
+        primitive_thread=False,
+    )
+    assert r.run("where()\n")["status"] == "ran"
+    assert seen == [threading.get_ident()]

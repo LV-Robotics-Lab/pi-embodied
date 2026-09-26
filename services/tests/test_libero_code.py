@@ -773,3 +773,19 @@ def test_without_ik_move_to_is_unchecked():
     f = facade()
     assert f._reach is None
     assert f.move_to([0.0, 0.0, 0.6])["final_dist_m"] < 0.012
+
+
+def test_business_calls_are_refused_while_a_primitive_is_abandoned():
+    import threading
+
+    f = facade()
+    release = threading.Event()
+    stuck = threading.Thread(target=release.wait, name="run_code:move_to", daemon=True)
+    stuck.start()
+    f._code._abandoned.append(stuck)
+    assert f._code.wedged == "move_to"
+    with pytest.raises(RuntimeError, match="left running"):
+        f._serve_dispatch("env.get_state", (), {}, token=f._rpc_token)
+    release.set()
+    stuck.join(2)
+    assert f._serve_dispatch("env.get_state", (), {}, token=f._rpc_token)["eef_pos"]

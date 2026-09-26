@@ -221,7 +221,15 @@ are killed. Past `timeout_s` the child is killed, `status` is `timeout` and the 
 itself a `stop` (`stop_issued`); every outbound RPC a primitive makes (SAM3, the grasp planners,
 IK) has its timeout cut to what is left of the run, and a raw `chunk_step` runs at most 64
 actions and `render_camera` at most 1024 px per side, so no primitive outlives the timeout by
-more than one env step or one render. Past `max_calls` calls or
+more than one env step or one render. A primitive that ignores stop anyway (an internal loop
+that never returns) is abandoned 10 s after the deadline: the program is killed and `code.run`
+returns `status: "timeout"`, `abandoned: <primitive>` and an error saying so. Python cannot
+interrupt a thread, so the primitive keeps running on its server thread; until it returns the
+server refuses every business call (including `code.run`) with `refused: a run_code program is
+running on this server (or a primitive it left running)` -- restart the server. The program's
+stderr at the file-descriptor level (`os.write(2, ...)`, C extensions, a crash before its own
+capture) goes through the same 8 KB cap as `sys.stderr` and into `stderr`, never to the server's
+own stderr. Past `max_calls` calls or
 `max_move_m` metres of commanded translation (estimated per call before it runs: `move_to`'s
 distance to the target, `move_delta`'s norm, a raw `step`'s clipped translation) the call is
 refused: the program gets a `CodeLimitError` and the result carries `limit`. A call with a NaN or

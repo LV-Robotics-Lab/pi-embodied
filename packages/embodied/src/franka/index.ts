@@ -26,8 +26,9 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { type Static, type TSchema, Type } from "typebox";
 import { ikArgs, registerIkFlag } from "../ik.ts";
 import { encodePng } from "../png.ts";
+import { eulerXyz, geometryArgs, geometryTools, planRotation, splitImages } from "../primitives/geometry.ts";
 import { graspActive, graspArgs, graspTools, registerGraspFlags } from "../primitives/grasp.ts";
-import { type MotionRig, moveDelta, rotateDelta, setGripper } from "../primitives/motion.ts";
+import { checkRotate, type MotionRig, moveDelta, rotateDelta, setGripper } from "../primitives/motion.ts";
 import { viewCameraMeta, viewEnvState } from "../primitives/perception.ts";
 import { type Step as BaseStep, getStep, outcome, type StepsIO, stepParam, type ToolDef } from "../primitives/steps.ts";
 import { MAX_WAYPOINTS, waypointsTool } from "../primitives/waypoints.ts";
@@ -1292,6 +1293,47 @@ export default function franka(pi: ExtensionAPI) {
 			},
 		};
 	}
+	// --geometry (../primitives/geometry.ts): the env server plans over its calibrated cameras; move_grip
+	// runs the target through the bounded rotate_delta (about the TCP) then move_delta, under this arm's
+	// per-call limits, workspace and operator gate, and records a step.
+	const geometry = geometryTools(
+		pi,
+		{
+			call: (method, kwargs, timeoutMs) => call(method, kwargs, timeoutMs ?? 120_000),
+			cameras: ["third_person", "wrist"],
+			execute: (plan, signal) =>
+				outcome(io, "move_grip", { target: plan.target, gripper: plan.gripper }, async () => {
+					check(signal);
+					const delta = plan.motion ? plan.delta_mm.map((v) => v / 1000) : [0, 0, 0];
+					const rpy = plan.motion ? eulerXyz(planRotation(plan)) : [0, 0, 0];
+					checkMove(delta, maxMove(), setup?.task.constraints);
+					checkWorkspace(delta);
+					checkRotate(rpy, maxRotate());
+					const out: Json = { name: "move_grip", target: plan.target };
+					if (plan.preview_id) out.preview_id = plan.preview_id;
+					if (plan.rotation_deg > 0.05)
+						out.rotate = await motion("env.rotate_delta", { delta_rpy: NdArray.f32(rpy) }, signal);
+					if (Math.hypot(...delta) > 1e-4)
+						out.move = await motion("env.move_delta", { delta_xyz: NdArray.f32(delta) }, signal);
+					const target = plan.motion
+						? {
+								target_xyz: plan.target.grip_xyz_m,
+								target_approach: plan.target.approach_world,
+								target_jaw: plan.target.jaw_world,
+								tol_m: 0.01,
+							}
+						: {};
+					const { rest } = splitImages(await call("env.grip_state", target));
+					const status = plan.motion ? rest.motion_status : "not_requested";
+					if (plan.gripper) {
+						if (status === "not_reached") out.gripper_skipped = "the motion did not reach its target";
+						else out.gripper = await motion("env.set_gripper", { open: plan.gripper === "open" }, signal);
+					}
+					return { ...out, ...rest, motion_status: status };
+				}),
+		},
+		(d) => robot.tool(d.name, d.description, d.parameters, d.run),
+	);
 
 	// ---- lifecycle
 
@@ -1322,6 +1364,7 @@ export default function franka(pi: ExtensionAPI) {
 							...(flag("robot-sam3") ? ["--sam3", flag("robot-sam3")] : []),
 							...(flag("robot-unidepth") ? ["--unidepth", flag("robot-unidepth")] : []),
 							...graspArgs(pi),
+							...geometryArgs(pi),
 						],
 						cwd: r.root,
 						env: servicesEnv(r),
@@ -1358,6 +1401,7 @@ export default function franka(pi: ExtensionAPI) {
 			),
 			...graspActive(pi),
 			...extras.flatMap((on) => on()),
+			...geometry(),
 		];
 	}
 }

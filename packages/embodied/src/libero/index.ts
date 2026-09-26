@@ -38,6 +38,7 @@ import {
 	type PerceptionCaps,
 	registerDetectionFlags,
 } from "../primitives/detections.ts";
+import { geometryArgs, geometryTools, runGripPlan } from "../primitives/geometry.ts";
 import {
 	DETECTIONS_EXPIRED_ENTRY,
 	graspActive,
@@ -1602,6 +1603,43 @@ export default function libero(pi: ExtensionAPI) {
 	}))
 		mountGraspTool(robot.tool, d);
 
+	// --geometry: view_points, mark_point, move_grip (../primitives/geometry.ts). The env server resolves
+	// move_grip's target; its motion steps here, like every tool's, so the video, the recorder and the
+	// success latch see it.
+	const geometry = geometryTools(
+		pi,
+		{
+			call: (method, kwargs, timeoutMs) => call(env, method, kwargs, timeoutMs),
+			cameras: ["agentview", "wrist"],
+			refuse: () =>
+				terminated || truncated
+					? `Episode already ended (terminated=${terminated}, truncated=${truncated}).`
+					: undefined,
+			execute: async (plan) => {
+				const { result, pngs } = await runGripPlan(
+					plan,
+					{
+						pose: async () => ({ pos: eef(), quat: await quat() }),
+						step,
+						// Hold the fingers as they are: closed (on something or nothing) unless fully open.
+						hold: () => (gripper() < 0.07 ? 1 : -1),
+						actuate,
+						ended: () => terminated || truncated,
+					},
+					(method, kwargs) => call(env, method, kwargs),
+				);
+				const shown = await observe(result);
+				const extra = pngs.map((png) => ({
+					type: "image" as const,
+					data: png.toString("base64"),
+					mimeType: "image/png",
+				}));
+				return { ...shown, content: [...shown.content, ...extra] };
+			},
+		},
+		(d) => robot.tool(d.name, d.description, d.parameters, d.run),
+	);
+
 	// A planned grasp or place runs as one tool from one resolution of its id (executePlanned).
 	tool(
 		"execute_grasp",
@@ -1823,6 +1861,7 @@ export default function libero(pi: ExtensionAPI) {
 					...graspArgs(pi),
 					// --sam3 goes to the server already (above).
 					...detectionArgs(pi, ""),
+					...geometryArgs(pi),
 				],
 				cwd: services,
 				env: {
@@ -1848,6 +1887,7 @@ export default function libero(pi: ExtensionAPI) {
 			...grasp,
 			...(grasp.length ? ["execute_grasp", "execute_place"] : []),
 			...detectionActive(pi, perception),
+			...geometry(),
 			...adapters.keys(),
 			...extra,
 		];

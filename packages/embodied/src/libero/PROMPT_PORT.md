@@ -47,7 +47,7 @@ With every tool active, the rendered text is RPent's. `[tool:!x]` fallbacks only
 | `STEP_PERCEPTION_PASS` :433 | `#. RUN THE MANDATORY PRE-TASK PERCEPTION PASS` (`[part:step-perception]`) | none |
 | `STEP_EXECUTE` :442 | `#. EXECUTE …` (`[part:step-execute]`) | "log" → `result`; adds the 0.30 m xy rule from `move_to`'s description |
 | `STEP_PRIMITIVES` :452 | `#. ALLOWED PRIMITIVES` | "`reset` is FORBIDDEN" → "Resetting is FORBIDDEN"; INFRA NOTE verbatim in a `pi0_doubled` block; SAM3 `segment` aid in `[part:aids]` (it runs on the image of `step`, returns `segment_artifact`/`overlay_artifact` as in RPent) |
-| — | `[part:aids]`: `preview_reach`, planned grasps | pi additions (`--ik`, `--graspnet` …), only when their tools are active; the text is the compact prompt's |
+| — | `[part:aids]`: `preview_reach`, planned grasps, geometry (`view_points`, `mark_point`, `move_grip`) | pi additions (`--ik`, `--graspnet` …, `--geometry`), only when their tools are active; the grasp text is the compact prompt's, the geometry text summarizes OpenETA's openeta-for-codex tools |
 | `STEP_RECOVERY` :489 | `#. RECOVERY` | none |
 | `STEP_FINISH` :496 | `#. WHEN top-level terminated …` | "write audit" names the `write` tool and the memory files read (compact memory text) |
 | `KEY_HYPERPARAMETERS` :507 | `# KEY HYPERPARAMETERS` | none |

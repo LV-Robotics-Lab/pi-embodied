@@ -54,6 +54,12 @@ from pi_embodied_services.components.env_facade_base import BaseEnvFacade
 from pi_embodied_services.robots.robosuite import tasks
 from pi_embodied_services.robots.robosuite.primitives import ROBOSUITE_PRIMITIVES
 from pi_embodied_services.utils import ground_truth, reach
+from pi_embodied_services.utils.geometry import (
+    GripGeometry,
+    jaw_frame,
+    mujoco_grip_state,
+    quat_to_matrix,
+)
 from pi_embodied_services.utils.grasp import (
     GraspPlanner,
     add_grasp_arguments,
@@ -188,6 +194,7 @@ class RobosuiteEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         sam3: str | None = None,
         ik_reach: reach.ReachPreview | None = None,
         grasp: dict | None = None,
+        geometry: bool = False,
     ):
         import robosuite as suite
         from robosuite.controllers import load_composite_controller_config
@@ -242,6 +249,13 @@ class RobosuiteEnvFacade(MainThreadServeMixin, BaseEnvFacade):
             wrist_camera="wrist",
             **(grasp or {}),
         )
+        # --geometry (one-arm tasks): point-cloud views, marked points and grip-site targets
+        # (utils/geometry.py); pi executes a target through env.move_to with its quat_xyzw.
+        if geometry and len(t.arms) != 1:
+            raise ValueError(
+                f"--geometry needs a one-arm task; {task} has {len(t.arms)}"
+            )
+        self._geometry = self._geometry_kit() if geometry else None
         # The video frames of the motion call in progress.
         self._motion_frames: list[np.ndarray] = []
         # Its recorded control steps (``record=True``), else None.
@@ -263,6 +277,7 @@ class RobosuiteEnvFacade(MainThreadServeMixin, BaseEnvFacade):
             "capabilities": {
                 "segment": bool(sam3),
                 "reach": ik_reach is not None,
+                "geometry": geometry,
                 **(self._grasp.capabilities() if self._grasp else {}),
             },
         }
@@ -301,10 +316,67 @@ class RobosuiteEnvFacade(MainThreadServeMixin, BaseEnvFacade):
             }
         )
         grasp = getattr(self, "_grasp", None)
+        geometry = getattr(self, "_geometry", None)
+        if geometry is not None:
+            geometry.install(self)
         if grasp is not None:
             grasp.install(self, mutating=GraspPlanner.MUTATING + ("env.move_to",))
         register_code_api(
-            self, ROBOSUITE_PRIMITIVES + (grasp.primitives() if grasp else ())
+            self,
+            ROBOSUITE_PRIMITIVES
+            + (grasp.primitives() if grasp else ())
+            + (geometry.primitives() if geometry else ()),
+        )
+
+    # ---- grip-site geometry (--geometry, utils/geometry.py) ----
+
+    def _grip_mech(self) -> dict:
+        out = mujoco_grip_state(self._sim)
+        if isinstance(out.get("error"), str):
+            raise RuntimeError(f"grip geometry: {out['error']}")
+        return out
+
+    def _geometry_kit(self) -> GripGeometry:
+        """robot0's grip site: the tool frame is its ``eef_quat`` frame, turned once onto the
+        MuJoCo grip site and its finger pads (jaw +X, approach +Z)."""
+        jaw: dict[str, np.ndarray] = {}
+
+        def frame() -> np.ndarray:
+            mech = self._grip_mech()
+            jaw["J"] = jaw_frame(mech["pads_local"])
+            hand = quat_to_matrix(self._eef(0)[1])
+            return hand.T @ np.asarray(mech["site_xmat"], dtype=np.float64) @ jaw["J"]
+
+        def pads() -> np.ndarray:
+            p = np.asarray(self._grip_mech()["pads_local"], dtype=np.float64)
+            return p @ jaw.get("J", jaw_frame(p))
+
+        def envelope() -> np.ndarray:
+            ws = self._workspace()
+            b = ws["box"]
+            return np.array(
+                [
+                    [b[0], b[1]],
+                    [b[2], b[3]],
+                    [ws["table_z"] - 0.05, ws["z_ceiling"]],
+                ]
+            )
+
+        gripper = self._task.gripper
+        return GripGeometry(
+            self._view,
+            cameras=["agentview", "wrist"],
+            tool_pose=lambda: self._eef(0),
+            # Every control step (and a reset, which forgets the marks) changes the scene.
+            state_digest=lambda: self._steps,
+            frame=frame,
+            pads=pads if gripper else None,
+            contacts=lambda: self._grip_mech()["contacts"],
+            width=(lambda: self._robot_state()["robot0_gripper_width"])
+            if gripper
+            else None,
+            empty_width=0.004 if gripper else None,
+            envelope=envelope,
         )
 
     # ---- frames and limits ----
@@ -1091,6 +1163,11 @@ def main():
     reach.add_ik_argument(p)
     add_grasp_arguments(p)
     p.add_argument(
+        "--geometry",
+        action="store_true",
+        help="serve the geometric toolset (one-arm tasks): point-cloud views, marked points, grip-site targets",
+    )
+    p.add_argument(
         "--cuda-device",
         type=int,
         default=None,
@@ -1121,6 +1198,7 @@ def main():
         sam3=args.sam3,
         ik_reach=reach.reach_from_args(args, IK_ROBOT),
         grasp=urls_from_args(args),
+        geometry=args.geometry,
     )
     # --sam3 / --unidepth: env.detect, env.select_detection, env.reject_detection, env.enhance_depth,
     # on the views the grasp planner and code mode read (its own env.segment stays).

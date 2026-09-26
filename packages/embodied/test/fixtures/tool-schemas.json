@@ -5373,6 +5373,270 @@
 					}
 				}
 			}
+		],
+		"geometry_agentview_wrist": [
+			{
+				"name": "view_points",
+				"description": "The scene as orthographic point-cloud views of the fused RGB-D cameras: pointcloud_top (right +x, up +y, seen from above), pointcloud_front (right +x, up +z, seen from -y), pointcloud_side (right +y, up +z, seen from +x), each with a 5 cm grid labelled in world metres; also the camera images (agentview, wrist) at the size mark_point uses. The grip site (magenta ring) and solved points are drawn. Every pixel of an orthographic view is two world coordinates, drawn point or empty space. Views expire when the robot moves.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"views": {
+							"type": "array",
+							"items": {
+								"type": "string",
+								"enum": [
+									"pointcloud_top",
+									"pointcloud_front",
+									"pointcloud_side",
+									"agentview",
+									"wrist"
+								]
+							},
+							"maxItems": 5,
+							"description": "Default the three pointcloud views"
+						}
+					}
+				}
+			},
+			{
+				"name": "mark_point",
+				"description": "Measure one world point by clicking a pixel (x = column, y = row, zero-based) of an image view_points or a move_grip preview returned for the current state. A camera image (agentview, wrist) gives the first visible surface at that pixel. An orthographic view (pointcloud_*, or a preview's preview_*) fixes its two axes and returns the complementary views with a cyan line where the point can be: click the same feature there with the same point_id to fix the third axis (the shared axis must agree within 15 mm). Two views define any point, on a surface or in free space. A solved point keeps its world xyz for the episode; move_grip takes it as point_id. It is geometry, not a grasp.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"point_id",
+						"view",
+						"x",
+						"y"
+					],
+					"properties": {
+						"point_id": {
+							"type": "string",
+							"description": "The point's name, e.g. P1; reuse it for the second click"
+						},
+						"view": {
+							"type": "string",
+							"description": "A view name from the images' result: pointcloud_top, pointcloud_front, pointcloud_side, agentview, wrist, or preview_top/front/side"
+						},
+						"x": {
+							"type": "integer",
+							"minimum": 0,
+							"description": "Pixel column"
+						},
+						"y": {
+							"type": "integer",
+							"minimum": 0,
+							"description": "Pixel row"
+						}
+					}
+				}
+			},
+			{
+				"name": "move_grip",
+				"description": "Move the grip site (the point between the finger pads) and orient it, then open or close. Position: at most one of xyz (world m), point_id (a solved mark_point) or delta_mm (delta_frame world = [dX,dY,dZ], grip_site = [dJAW,dLAT,dAPP] along the gripper's current axes); omitted keeps the position. Orientation: approach is the world direction the gripper points along (its +Z; [0,0,-1] = straight down), jaw the world direction the fingers close along (its +X; either sign); give either or both, omitted parts keep the current orientation. preview=true only draws the target (zoomed preview_top/front/side views, markable, and the camera). A close is always previewed first: the result's preview_id, executed unchanged by move_grip({execute_preview_id}) alone while the gripper has not moved; any change needs a new preview. The preview is geometry: it does not predict contact. After a motion: motion_status reached or not_reached (then the gripper is skipped), grip_xyz_m, remaining_delta_mm, rotation_error_deg, gripper_width (closed_on_nothing: no grasp), and in simulation the robot's contacts (cyan on the camera image).",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"xyz": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 3,
+							"maxItems": 3,
+							"description": "Grip-site position, world m"
+						},
+						"point_id": {
+							"type": "string",
+							"description": "A solved mark_point id as the position"
+						},
+						"delta_mm": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 3,
+							"maxItems": 3,
+							"description": "Grip-site displacement, mm (in delta_frame)"
+						},
+						"delta_frame": {
+							"type": "string",
+							"enum": [
+								"world",
+								"grip_site"
+							],
+							"description": "Default world"
+						},
+						"approach": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 3,
+							"maxItems": 3,
+							"description": "World direction of the gripper's approach axis (+Z)"
+						},
+						"jaw": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 3,
+							"maxItems": 3,
+							"description": "World direction of the jaw (closing) axis (+X)"
+						},
+						"gripper": {
+							"type": "string",
+							"enum": [
+								"open",
+								"close"
+							],
+							"description": "After the motion"
+						},
+						"preview": {
+							"type": "boolean",
+							"description": "Draw the target without moving"
+						},
+						"execute_preview_id": {
+							"type": "string",
+							"description": "Execute a frozen close preview; give it alone"
+						}
+					}
+				}
+			}
+		],
+		"geometry_third_person_wrist": [
+			{
+				"name": "view_points",
+				"description": "The scene as orthographic point-cloud views of the fused RGB-D cameras: pointcloud_top (right +x, up +y, seen from above), pointcloud_front (right +x, up +z, seen from -y), pointcloud_side (right +y, up +z, seen from +x), each with a 5 cm grid labelled in world metres; also the camera images (third_person, wrist) at the size mark_point uses. The grip site (magenta ring) and solved points are drawn. Every pixel of an orthographic view is two world coordinates, drawn point or empty space. Views expire when the robot moves.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"views": {
+							"type": "array",
+							"items": {
+								"type": "string",
+								"enum": [
+									"pointcloud_top",
+									"pointcloud_front",
+									"pointcloud_side",
+									"third_person",
+									"wrist"
+								]
+							},
+							"maxItems": 5,
+							"description": "Default the three pointcloud views"
+						}
+					}
+				}
+			},
+			{
+				"name": "mark_point",
+				"description": "Measure one world point by clicking a pixel (x = column, y = row, zero-based) of an image view_points or a move_grip preview returned for the current state. A camera image (third_person, wrist) gives the first visible surface at that pixel. An orthographic view (pointcloud_*, or a preview's preview_*) fixes its two axes and returns the complementary views with a cyan line where the point can be: click the same feature there with the same point_id to fix the third axis (the shared axis must agree within 15 mm). Two views define any point, on a surface or in free space. A solved point keeps its world xyz for the episode; move_grip takes it as point_id. It is geometry, not a grasp.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"point_id",
+						"view",
+						"x",
+						"y"
+					],
+					"properties": {
+						"point_id": {
+							"type": "string",
+							"description": "The point's name, e.g. P1; reuse it for the second click"
+						},
+						"view": {
+							"type": "string",
+							"description": "A view name from the images' result: pointcloud_top, pointcloud_front, pointcloud_side, third_person, wrist, or preview_top/front/side"
+						},
+						"x": {
+							"type": "integer",
+							"minimum": 0,
+							"description": "Pixel column"
+						},
+						"y": {
+							"type": "integer",
+							"minimum": 0,
+							"description": "Pixel row"
+						}
+					}
+				}
+			},
+			{
+				"name": "move_grip",
+				"description": "Move the grip site (the point between the finger pads) and orient it, then open or close. Position: at most one of xyz (world m), point_id (a solved mark_point) or delta_mm (delta_frame world = [dX,dY,dZ], grip_site = [dJAW,dLAT,dAPP] along the gripper's current axes); omitted keeps the position. Orientation: approach is the world direction the gripper points along (its +Z; [0,0,-1] = straight down), jaw the world direction the fingers close along (its +X; either sign); give either or both, omitted parts keep the current orientation. preview=true only draws the target (zoomed preview_top/front/side views, markable, and the camera). A close is always previewed first: the result's preview_id, executed unchanged by move_grip({execute_preview_id}) alone while the gripper has not moved; any change needs a new preview. The preview is geometry: it does not predict contact. After a motion: motion_status reached or not_reached (then the gripper is skipped), grip_xyz_m, remaining_delta_mm, rotation_error_deg, gripper_width (closed_on_nothing: no grasp), and in simulation the robot's contacts (cyan on the camera image).",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"xyz": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 3,
+							"maxItems": 3,
+							"description": "Grip-site position, world m"
+						},
+						"point_id": {
+							"type": "string",
+							"description": "A solved mark_point id as the position"
+						},
+						"delta_mm": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 3,
+							"maxItems": 3,
+							"description": "Grip-site displacement, mm (in delta_frame)"
+						},
+						"delta_frame": {
+							"type": "string",
+							"enum": [
+								"world",
+								"grip_site"
+							],
+							"description": "Default world"
+						},
+						"approach": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 3,
+							"maxItems": 3,
+							"description": "World direction of the gripper's approach axis (+Z)"
+						},
+						"jaw": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 3,
+							"maxItems": 3,
+							"description": "World direction of the jaw (closing) axis (+X)"
+						},
+						"gripper": {
+							"type": "string",
+							"enum": [
+								"open",
+								"close"
+							],
+							"description": "After the motion"
+						},
+						"preview": {
+							"type": "boolean",
+							"description": "Draw the target without moving"
+						},
+						"execute_preview_id": {
+							"type": "string",
+							"description": "Execute a frozen close preview; give it alone"
+						}
+					}
+				}
+			}
 		]
 	}
 }

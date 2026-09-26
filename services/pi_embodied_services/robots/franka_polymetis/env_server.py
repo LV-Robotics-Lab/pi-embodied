@@ -293,8 +293,11 @@ class FrankaPolymetisFacade(MainThreadServeMixin, BaseEnvFacade):
         perception: Perception | None = None,
         grasp: dict | None = None,
         ik_reach: reach.ReachPreview | None = None,
+        geometry: bool = False,
     ) -> None:
         self._perception = perception
+        # --geometry: the RLinf backend's geometric toolset (franka/grasp_views.franka_geometry).
+        self._geometry_on = geometry
         # --contact-graspnet/--graspgenx/--anygrasp/--graspnet1b/--anyplace: env.plan_grasp, env.plan_place and the
         # grasp/placement ids over the wrist and external cameras, as on the RLinf backend.
         self._grasp_urls = grasp
@@ -368,6 +371,12 @@ class FrankaPolymetisFacade(MainThreadServeMixin, BaseEnvFacade):
             self._perception.epoch.set_digest(self._state_digest)
             self._perception.install(self)
         primitives = franka_primitives(self._perception)
+        if self._geometry_on:
+            from pi_embodied_services.robots.franka.grasp_views import franka_geometry
+
+            kit = franka_geometry(self, state_digest=self._state_digest)
+            kit.install(self)
+            primitives = (*primitives, *kit.primitives())
         grasp = self._grasp_planner()
         if grasp is not None:
             grasp.install(self)
@@ -670,6 +679,11 @@ def main(argv: list[str] | None = None) -> int:
     add_grasp_arguments(parser)
     reach.add_ik_argument(parser)
     hardware_lock.add_lock_arguments(parser)
+    parser.add_argument(
+        "--geometry",
+        action="store_true",
+        help="serve the geometric toolset: point-cloud views, marked points, grip-site targets",
+    )
     args = parser.parse_args(argv)
     # The grasp planner reads perception.calibration from the robot config in this process.
     set_robot_config_path(args.robot_config or DEFAULT_CONFIG)
@@ -713,6 +727,7 @@ def main(argv: list[str] | None = None) -> int:
             ),
             grasp=urls_from_args(args),
             ik_reach=reach.reach_from_args(args, "panda"),
+            geometry=args.geometry,
         )
     except Exception:
         for cam in cameras.values():

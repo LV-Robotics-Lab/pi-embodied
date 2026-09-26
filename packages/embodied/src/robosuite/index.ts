@@ -27,6 +27,7 @@ import { ikArgs, type Reach, registerIkFlag } from "../ik.ts";
 import { MOLMO, SAM3 } from "../model-services.ts";
 import { decodePngChannel, encodePng } from "../png.ts";
 import { detectionActive, detectionArgs, detectionTools, registerDetectionFlags } from "../primitives/detections.ts";
+import { geometryArgs, geometryTools, SERVO, splitImages } from "../primitives/geometry.ts";
 import { graspActive, graspArgs, graspTools, mountGraspTool, registerGraspFlags } from "../primitives/grasp.ts";
 import { pointActive, pointTool, registerPointFlags } from "../primitives/pointing.ts";
 import { attach, defineRobot, type Json, median, plain, rgbOf, SERVICES, toolResult } from "../robot.ts";
@@ -498,6 +499,66 @@ export default function robosuite(pi: ExtensionAPI) {
 		},
 	);
 
+	// --geometry (one-arm tasks): view_points, mark_point, move_grip (../primitives/geometry.ts). The env
+	// server resolves move_grip's target; its move_to (per-call cap, workspace box, z floor) servos the
+	// TCP to the target's position and quat_xyzw.
+	const geometry = geometryTools(
+		pi,
+		{
+			call: (method, kwargs, timeoutMs) =>
+				call<Record<string, unknown>>(method, kwargs, [], robot.signal, timeoutMs),
+			cameras: ["agentview", "wrist"],
+			execute: async (plan, signal) => {
+				const out: Record<string, unknown> = { name: "move_grip", target: plan.target };
+				if (plan.preview_id) out.preview_id = plan.preview_id;
+				let status = "not_requested";
+				if (plan.motion) {
+					checkMove(plan.target.grip_xyz_m, num(obs.robot0_eef_pos));
+					const info = motion(
+						await call<Motion>(
+							"env.move_to",
+							{
+								arm: null,
+								quat_xyzw: plan.target.tool_quat_xyzw,
+								tol_m: SERVO.tolM,
+								tol_rad: SERVO.tolRad,
+								max_steps: SERVO.maxSteps,
+							},
+							[plan.target.grip_xyz_m],
+							signal,
+						),
+					);
+					status = info.ok ? "reached" : "not_reached";
+					out.steps_used = info.steps_used;
+				}
+				if (plan.gripper) {
+					if (status === "not_reached") out.gripper_skipped = "the motion did not reach its target";
+					else {
+						motion(await call<Motion>("env.set_gripper", { arm: null }, [plan.gripper], signal));
+						out.gripper = plan.gripper;
+					}
+				}
+				const target = plan.motion
+					? {
+							target_xyz: plan.target.grip_xyz_m,
+							target_approach: plan.target.approach_world,
+							target_jaw: plan.target.jaw_world,
+						}
+					: {};
+				const { rest, pngs } = splitImages(await call<Record<string, unknown>>("env.grip_state", target));
+				delete rest.motion_status;
+				const shown = observe({ ...out, motion_status: status, ...rest });
+				const extra = pngs.map((png) => ({
+					type: "image" as const,
+					data: png.toString("base64"),
+					mimeType: "image/png",
+				}));
+				return { ...shown, content: [...shown.content, ...extra] };
+			},
+		},
+		(d) => robot.tool(d.name, d.description, d.parameters, d.run),
+	);
+
 	/** Refuse a translation larger than --max-move before asking the server (which checks its own cap too). */
 	function checkMove(target: number[], from: number[]) {
 		const cap = Number(flag("max-move", String(MAX_MOVE_M)));
@@ -797,6 +858,8 @@ export default function robosuite(pi: ExtensionAPI) {
 			throw new Error(
 				`${task} has ${arms(task).length} arm(s) but pi was started for ${loadedTask}; restart with --task ${task}`,
 			);
+		if (TWO_ARM.includes(task as Task) && pi.getFlag("geometry") === true)
+			throw new Error(`--geometry needs a one-arm task; ${task} has two arms`);
 		sam3 = new RpcClient(flag("sam3", ""));
 		const endpoint = pi.getFlag("env") as string | undefined;
 		if (endpoint) env = await attach(endpoint);
@@ -815,6 +878,7 @@ export default function robosuite(pi: ExtensionAPI) {
 					...graspArgs(pi),
 					// The server takes --sam3 for its own segment already.
 					...detectionArgs(pi, ""),
+					...(TWO_ARM.includes(task as Task) ? [] : geometryArgs(pi)),
 				],
 				cwd: services,
 				env: { ...process.env, PYTHONPATH: services, MUJOCO_GL: "egl" },
@@ -844,6 +908,7 @@ export default function robosuite(pi: ExtensionAPI) {
 			...pointActive(pi),
 			// Grasping needs fingers: Wipe's sponge has none.
 			...(hasGripper(task) ? graspActive(pi) : []),
+			...(TWO_ARM.includes(task as Task) ? [] : geometry()),
 			"finish",
 		];
 	}

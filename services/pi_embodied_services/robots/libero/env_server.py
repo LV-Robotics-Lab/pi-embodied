@@ -37,6 +37,13 @@ from pi_embodied_services.utils.code_exec import (
     describe_helpers,
     registry_primitives,
 )
+from pi_embodied_services.utils.geometry import (
+    GripGeometry,
+    jaw_frame,
+    mujoco_grip_state,
+    quat_to_matrix,
+    rotvec_of,
+)
 from pi_embodied_services.utils.grasp import (
     GraspPlanner,
     add_grasp_arguments,
@@ -223,9 +230,20 @@ def _exposing_poses(env_fn):
             except Exception as e:  # noqa: BLE001
                 return {"error": f"{type(e).__name__}: {e}"}
 
+        def grip_geometry():
+            # The grip site, the finger pads and the robot's contacts (utils/geometry.py, --geometry).
+            try:
+                rob = env
+                while hasattr(rob, "env"):
+                    rob = rob.env
+                return mujoco_grip_state(rob.sim)
+            except Exception as e:  # noqa: BLE001
+                return {"error": f"{type(e).__name__}: {e}"}
+
         env.ground_truth_poses = poses
         env.robot_base_pose = robot_base_pose
         env.collision_world = collision_world
+        env.grip_geometry = grip_geometry
         return env
 
     return fn
@@ -286,6 +304,7 @@ class LiberoEnvFacade(BaseEnvFacade):
     _grasp: "GraspPlanner | None" = None
     _motion: "motion.MotionPlanner | None" = None
     _plan: dict | None = None
+    _geometry: GripGeometry | None = None
 
     def __init__(
         self,
@@ -296,6 +315,7 @@ class LiberoEnvFacade(BaseEnvFacade):
         grasp: dict | None = None,
         ik_reach: reach.ReachPreview | None = None,
         ik_motion: motion.MotionPlanner | None = None,
+        geometry: bool = False,
     ):
         self._env = env
         self._env_idx = 0
@@ -337,6 +357,24 @@ class LiberoEnvFacade(BaseEnvFacade):
             holding=lambda arm: self._holding(),
             **(grasp or {}),
         )
+        # --geometry: point-cloud views, marked points and grip-site targets (utils/geometry.py)
+        # over the same 512x512 agentview / wrist frames; None without it.
+        self._grip_mech_frame: np.ndarray | None = None
+        if geometry:
+            self._geometry = GripGeometry(
+                self._view,
+                cameras=list(GRASP_CAMERAS),
+                tool_pose=lambda: (self._eef(), self._quat_xyzw()),
+                state_digest=self._state_digest,
+                frame=self._grip_frame,
+                pads=self._grip_pads,
+                contacts=lambda: self._grip_mech()["contacts"],
+                width=self._gripper_width,
+                empty_width=0.004,
+                envelope=self._workspace_envelope,
+                move=self._move_grip,
+                gripper=lambda close: self.set_gripper(close),
+            )
         super().__init__()
 
     def _register_rpc(self) -> None:
@@ -379,6 +417,10 @@ class LiberoEnvFacade(BaseEnvFacade):
         primitives = libero_primitives(
             sam3=bool(self._sam3_url), grasp=self._grasp is not None
         )
+        if self._geometry is not None:
+            # Before the grasp planner, which wraps env.move_grip with its id invalidation.
+            self._geometry.install(self)
+            primitives = (*primitives, *self._geometry.primitives())
         if self._grasp is not None:
             # Wrapped with the id invalidation like every motion (GraspPlanner.MUTATING).
             self._rpc["env.execute_grasp"] = self.execute_grasp
@@ -648,6 +690,8 @@ class LiberoEnvFacade(BaseEnvFacade):
         if method == "env.move_delta":
             d = np.asarray(kwargs["dxyz"], dtype=np.float64).reshape(3)
             return float(np.linalg.norm(d))
+        if method == "env.move_grip":
+            return self._geometry.planned_distance(kwargs)
         if method in ("env.execute_grasp", "env.execute_place"):
             # The claimed path's legs: to the pre-pose, the standoff down, then the lift up
             # (a grasp) or the standoff back (a place).
@@ -1309,6 +1353,84 @@ class LiberoEnvFacade(BaseEnvFacade):
         )
         return self._execute_claim(claim, max_steps, "execute_place")
 
+    # ---- grip-site geometry (--geometry, utils/geometry.py) ----
+
+    def _grip_mech(self) -> dict:
+        """The worker's grip site, finger pads and robot contacts (``mujoco_grip_state``)."""
+        worker = self._env.env.workers[self._env_idx]
+        out = worker.env_call("grip_geometry", target="self")
+        if isinstance(out.get("error"), str):
+            raise RuntimeError(f"grip geometry failed in the worker: {out['error']}")
+        return out
+
+    def _grip_frame(self) -> np.ndarray:
+        """The fixed rotation from ``robot0_eef_quat``'s frame to the grip frame (jaw +X,
+        approach +Z): LIBERO's eef quaternion is the hand body's, not the grip site's (OpenETA
+        ``sim/unified_env.py``), so it is measured once against the site and its pads."""
+        mech = self._grip_mech()
+        hand = quat_to_matrix(self._quat_xyzw())
+        site = np.asarray(mech["site_xmat"], dtype=np.float64)
+        self._grip_mech_frame = jaw_frame(mech["pads_local"])
+        return hand.T @ site @ self._grip_mech_frame
+
+    def _grip_pads(self) -> np.ndarray:
+        """The finger pads' inner faces in the grip frame."""
+        pads = np.asarray(self._grip_mech()["pads_local"], dtype=np.float64)
+        if self._grip_mech_frame is None:
+            self._grip_mech_frame = jaw_frame(pads)
+        return pads @ self._grip_mech_frame
+
+    def _workspace_envelope(self) -> np.ndarray | None:
+        """The box the point-cloud views are cut from: in front of and around the robot base
+        (its reach), so walls and the floor far away do not set the views' scale."""
+        try:
+            worker = self._env.env.workers[self._env_idx]
+            base = worker.env_call("robot_base_pose", target="self")
+            pos = np.asarray(base["pos"], dtype=np.float64).reshape(3)
+            R = quat_to_matrix(base["quat_xyzw"])
+        except Exception:  # noqa: BLE001  the default envelope around the grip site
+            return None
+        lo, hi = np.array([-0.25, -0.8, -0.3]), np.array([1.1, 0.8, 1.1])
+        corners = np.array(
+            [
+                [a, b, c]
+                for a in (lo[0], hi[0])
+                for b in (lo[1], hi[1])
+                for c in (lo[2], hi[2])
+            ]
+        )
+        world = corners @ R.T + pos
+        return np.stack([world.min(axis=0), world.max(axis=0)], axis=1)
+
+    def _move_grip(
+        self, position, tool_R, tol_m: float, tol_rad: float, max_steps: int
+    ) -> dict:
+        """Servo the grip site to ``position`` and the eef frame to ``tool_R`` together (OSC
+        deltas: world-frame translation and rotation vector), holding the gripper command."""
+        target = np.asarray(position, dtype=np.float64).reshape(3)
+        goal = np.asarray(tool_R, dtype=np.float64)
+        steps = 0
+        cancelled = False
+        while steps < max_steps and self._live():
+            if self.stop_requested():
+                cancelled = True
+                break
+            diff = target - self._eef()
+            err = rotvec_of(goal @ quat_to_matrix(self._quat_xyzw()).T)
+            angle = float(np.linalg.norm(err))
+            if np.linalg.norm(diff) < tol_m and angle < tol_rad:
+                break
+            rot = err * (min(angle, 0.08) / angle) if angle > 1e-9 else np.zeros(3)
+            self._act(
+                [
+                    *self._servo_action(diff, 0.025, 0.05),
+                    *[float(np.clip(r / 0.1, -1, 1)) for r in rot],
+                    self._grip,
+                ]
+            )
+            steps += 1
+        return {"steps_used": steps, **({"cancelled": True} if cancelled else {})}
+
     # ---- reach preview (--ik, utils/reach.py) ----
 
     def _require_reachable(self, target: np.ndarray, action: str) -> None:
@@ -1438,6 +1560,11 @@ def main():
     )
     add_grasp_arguments(p)
     p.add_argument(
+        "--geometry",
+        action="store_true",
+        help="serve the geometric toolset: point-cloud views, marked points, grip-site targets",
+    )
+    p.add_argument(
         "--parent-watch",
         action="store_true",
         help="watch parent process via stdin pipe and exit when it dies",
@@ -1498,6 +1625,7 @@ def main():
         ik_motion=motion.planner_from_args(args, "panda_libero"),
         sam3=args.sam3,
         grasp=urls_from_args(args),
+        geometry=args.geometry,
     )
     # --sam3 / --unidepth: env.detect, env.select_detection, env.reject_detection, env.enhance_depth,
     # on the views the grasp planner and code mode read (its own env.segment stays).

@@ -10,6 +10,7 @@ import libero from "../src/libero/index.ts";
 import maniskill from "../src/maniskill/index.ts";
 import piperDual from "../src/piper/dual.ts";
 import piper from "../src/piper/index.ts";
+import { geometryDefs } from "../src/primitives/geometry.ts";
 import robocasa from "../src/robocasa/index.ts";
 import robolab from "../src/robolab/index.ts";
 import robotwin from "../src/robotwin/index.ts";
@@ -22,6 +23,16 @@ import { units } from "../src/units/index.ts";
  * change: UPDATE_TOOL_SCHEMAS=1 node --test --experimental-strip-types test/tool-schemas.test.ts
  */
 const FIXTURE = fileURLToPath(new URL("./fixtures/tool-schemas.json", import.meta.url));
+/**
+ * --geometry's tools (../src/primitives/geometry.ts), which the robots mount at start, not at load:
+ * their schemas with a robot's cameras (LIBERO and robosuite: agentview, wrist; Franka: third_person, wrist).
+ */
+const geometryOf = (cameras: string[]) => (pi: ExtensionAPI) => {
+	const rig = { cameras, call: async () => ({}), execute: async () => ({ content: [], details: {} }) };
+	for (const d of geometryDefs(rig))
+		pi.registerTool({ name: d.name, description: d.description, parameters: d.parameters } as never);
+};
+
 const ROBOTS: Record<string, (pi: ExtensionAPI) => unknown> = {
 	behavior,
 	dual_franka: dualFranka,
@@ -47,6 +58,8 @@ const ROBOTS: Record<string, (pi: ExtensionAPI) => unknown> = {
 					execute: async () => ({ content: [], details: {} }),
 				} as never),
 		),
+	geometry_agentview_wrist: geometryOf(["agentview", "wrist"]),
+	geometry_third_person_wrist: geometryOf(["third_person", "wrist"]),
 };
 type Tool = { name: string; description: string; parameters: unknown };
 

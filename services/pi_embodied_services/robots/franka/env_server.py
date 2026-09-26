@@ -93,8 +93,12 @@ class FrankaEnvFacade(BaseEnvFacade):
         grasp: dict | None = None,
         ik_reach: reach.ReachPreview | None = None,
         ik_motion: motion.MotionPlanner | None = None,
+        geometry: bool = False,
     ) -> None:
         self._backend = backend
+        # --geometry: env.point_views, env.mark_point, env.grip_target, env.grip_state
+        # (utils/geometry.py via grasp_views.franka_geometry); the client executes the targets.
+        self._geometry_on = geometry
         self._perception = perception
         # --contact-graspnet/--graspgenx/--anygrasp/--graspnet1b/--anyplace: env.plan_grasp, env.plan_place and
         # the grasp/placement ids over this server's cameras (utils/grasp.py).
@@ -139,6 +143,12 @@ class FrankaEnvFacade(BaseEnvFacade):
         primitives = self._PRIMITIVES
         if primitives is FRANKA_PRIMITIVES:
             primitives = franka_primitives(self._perception)
+        if getattr(self, "_geometry_on", False):
+            from pi_embodied_services.robots.franka.grasp_views import franka_geometry
+
+            kit = franka_geometry(self._backend, state_digest=self._state_digest)
+            kit.install(self)
+            primitives = (*primitives, *kit.primitives())
         grasp = self._grasp_planner()
         if grasp is not None:
             grasp.install(self)
@@ -849,10 +859,17 @@ def main(
     add_grasp_arguments(parser)
     reach.add_ik_argument(parser)
     hardware_lock.add_lock_arguments(parser)
+    parser.add_argument(
+        "--geometry",
+        action="store_true",
+        help="serve the geometric toolset: point-cloud views, marked points, grip-site targets",
+    )
     args = parser.parse_args(argv)
     # This process's planner and perception layout read the calibration and projection views
     # from the robot config too (not only the Ray worker): the user's --robot-config.
     set_robot_config_path(args.robot_config)
+    if args.geometry and facade_class is not FrankaEnvFacade:
+        parser.error("--geometry is only supported by the single-arm franka env server")
 
     runtime = load_runtime_config(
         args.robot_config,
@@ -886,6 +903,7 @@ def main(
         urls_from_args(args),
         ik_reach=reach.reach_from_args(args, "panda"),
         ik_motion=motion.planner_from_args(args, "panda"),
+        **({"geometry": True} if args.geometry else {}),
     )
     try:
         facade.serve(

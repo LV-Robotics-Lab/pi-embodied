@@ -140,6 +140,23 @@ primitive names the `env.*` method that runs it, so a primitive call is the tool
 same limits; the digest names the API version an episode ran with (pi records it as
 `code_api_digest`). A server without a registry answers `unknown RPC method: 'code.api'`.
 
+`--geometry` (libero-env, robosuite-env on one-arm tasks, franka-env, franka-polymetis-env;
+`utils/geometry.py`, OpenETA's `openeta-for-codex` geometric tools) adds the methods below and
+their `code.api` primitives (high tier). The grip frame is the robot's tool frame (LIBERO's and
+robosuite's `eef_quat`, the Franka TCP) turned by a fixed rotation: +X the jaw (closing) axis,
++Z the approach; in simulation it is measured once from the MuJoCo grip site and its finger pads,
+on the Franka the jaw is the TCP's Y (not measured on the robot). Point ids and pending clicks
+are dropped by `env.reset`; an orthographic view and a pending half-click expire when the state
+digest changes (the robot moved).
+
+| method | args | result |
+|---|---|---|
+| `env.point_views` | kw `views=null` (up to 5 of `pointcloud_top`, `pointcloud_front`, `pointcloud_side` and the server's cameras; null = the three) | `{"views": [{view, width, height, right, up, seen_from, <axis>_range_m, m_per_px} or {view, width, height, camera: true}], "images": [PNG base64], "grip_xyz_m", "approach_world", "jaw_world", "marks": {id: xyz}}`: the cameras' depth fused into one world cloud (cut to the robot's envelope), drawn orthographically: top = right +x / up +y from above, front = right +x / up +z from -y, side = right +y / up +z from +x; pixel (x, y) is `h0 + x * m`, `v1 - y * m` |
+| `env.mark_point` | `point_id`, `view`, `x` (column), `y` (row) | a camera pixel: `{"status": "solved", "xyz_m", ...}` (its depth, or the median within 3 px); an orthographic pixel: `{"status": "pending", "fixed_m", "needs": [views]}` until a complementary view's click (`solved`; the shared axis within 15 mm, else `inconsistent`); `images` show the result |
+| `env.grip_target` | kw `xyz` \| `point_id` \| `delta_mm` (+ `delta_frame` `world` \| `grip_site` = [JAW, LAT, APP]), `approach`, `jaw` (world directions; the jaw's sign nearer the current frame), `gripper` `open` \| `close`, `preview`, `execute_preview_id` (alone) | `{"status": "execute" \| "preview", "motion", "gripper", "target": {grip_xyz_m, approach_world, jaw_world, tool_quat_xyzw}, "current", "delta_mm", "rotation_deg"}`; a preview adds zoomed `preview_top/front/side` views (markable) and the first camera with the target, its hand, axes and finger pads (open hollow, closed filled, the closing corridor); a `close` is always previewed first and frozen under `preview_id`, executed by `execute_preview_id` only while the grip site stays within 2 mm / 1 deg of where it was previewed |
+| `env.grip_state` | kw `target_xyz`, `target_approach`, `target_jaw`, `tol_m=0.005`, `tol_rad=0.05` | `{"grip_xyz_m", "approach_world", "jaw_world", "gripper_width", "closed_on_nothing", "remaining_delta_mm", "remaining_distance_mm", "rotation_error_deg", "motion_status": "reached" \| "not_reached", "contacts": [{xyz_m, robot_geom, other_geom}]}` (simulation: the robot touching the world, at most 6), and `images` (the first camera with the contacts) when there are any |
+| `env.move_grip` | `env.grip_target`'s kw, `max_steps=200` | libero-env only (code mode): `grip_target`, the servo of position and orientation together, the gripper only when `motion_status` is `reached`, then `grip_state`'s fields; a preview answers `motion_status: "previewed"` |
+
 ### libero-env (`robots/libero/env_server.py`)
 
 | method | args | result |

@@ -20,8 +20,8 @@ fixed in the base frame (its easy_handeye ``external`` transform); the ``wrist``
 on the TCP (``T_base_tcp @ T_tcp_camera``, with the TCP read from the robot state at the same
 time as the frames). The dual arm's registered projection views are fixed in ``right_base``.
 
-``franka_grasp_planner`` is the single arm's planner (the RLinf and Polymetis servers share
-it); ``dual_perception_layout`` makes the dual arm's ``env.segment`` masks live on the same
+``franka_grasp_planner`` is the single arm's planner and ``franka_geometry`` its geometric
+toolset (``utils/geometry.py``; the RLinf and Polymetis servers share both); ``dual_perception_layout`` makes the dual arm's ``env.segment`` masks live on the same
 camera names as its planner's views, so a segment mask id is a valid ``mask_id``.
 """
 
@@ -179,6 +179,49 @@ def dual_perception_layout(
     return cameras, intrinsics
 
 
+#: The grip frame (jaw +X, approach +Z) in the TCP frame: the Franka hand's fingers slide along
+#: its Y, so the jaw axis is the TCP's Y (a quarter turn about Z). Not measured on the robot.
+FRANKA_GRIP_FRAME = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+
+
+def franka_geometry(backend: Any, *, state_digest: Callable[[], Any]) -> Any:
+    """The single Franka's geometric toolset (``--geometry``) over the third-person and wrist
+    cameras and the TCP (``raw_base_state.tcp_pose``, xyzw). It only plans: the pi client
+    executes a planned target through the bounded ``move_delta`` / ``rotate_delta``, so there is
+    no ``env.move_grip`` and a real arm reports no contacts."""
+    from pi_embodied_services.robots.franka import perception as franka_perception
+    from pi_embodied_services.utils.geometry import GripGeometry
+
+    cache: dict[str, Any] = {}
+
+    def calibration() -> dict[str, Any]:
+        if "bundle" not in cache:
+            cache["bundle"] = franka_perception.load_calibration_bundle()
+        return cache["bundle"]
+
+    def base_state() -> dict[str, Any]:
+        return backend.get_robot_state()["raw_base_state"]
+
+    def tool_pose():
+        tcp = np.asarray(base_state()["tcp_pose"], dtype=float)
+        return tcp[:3], tcp[3:7]
+
+    def width() -> float | None:
+        g = base_state().get("gripper_position")
+        return None if g is None else float(np.asarray(g, dtype=float).reshape(-1)[0])
+
+    return GripGeometry(
+        franka_view(backend, calibration),
+        cameras=["third_person", "wrist"],
+        tool_pose=tool_pose,
+        state_digest=state_digest,
+        frame=lambda: FRANKA_GRIP_FRAME,
+        width=width,
+        # Show-Harness plugins/recovery: a closed Franka gripper at or below 1 mm holds nothing.
+        empty_width=0.001,
+    )
+
+
 def franka_grasp_planner(
     backend: Any,
     perception: Any | None,
@@ -224,9 +267,11 @@ def franka_grasp_planner(
 
 
 __all__ = [
+    "FRANKA_GRIP_FRAME",
     "color_intrinsics_K",
     "dual_franka_view",
     "dual_perception_layout",
+    "franka_geometry",
     "franka_grasp_planner",
     "franka_view",
 ]

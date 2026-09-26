@@ -133,6 +133,7 @@ MOTION_METHODS = (
     "env.recover_joint_posture",
     "env.execute_grasp",
     "env.execute_place",
+    "env.move_grip",
     "code.run",
 )
 

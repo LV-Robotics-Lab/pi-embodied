@@ -11,6 +11,7 @@ import maniskill from "../src/maniskill/index.ts";
 import metaworld from "../src/metaworld/index.ts";
 import piperDual from "../src/piper/dual.ts";
 import piper from "../src/piper/index.ts";
+import { GEOMETRY_TOOLS } from "../src/primitives/geometry.ts";
 import robocasa from "../src/robocasa/index.ts";
 import robodojo from "../src/robodojo/index.ts";
 import robolab from "../src/robolab/index.ts";
@@ -79,6 +80,8 @@ const ROBOTS: {
 	load: (pi: ExtensionAPI) => unknown;
 	core?: string[];
 	flags?: Record<string, string>;
+	/** Tools the robot mounts only at session start (with a flag), which the prompt may mark. */
+	mounted?: readonly string[];
 }[] = [
 	{
 		robot: "libero",
@@ -93,6 +96,8 @@ const ROBOTS: {
 		load: libero,
 		// The third-party VLA tools are mounted only with their server flags.
 		flags: Object.fromEntries(VLA_ADAPTERS.map((a) => [a.flag, "http://127.0.0.1:1"])),
+		// Mounted at session start with --geometry.
+		mounted: GEOMETRY_TOOLS,
 		// The exploration prompts (explore.md) are rendered only while exploring, when `reset` is always active.
 		core: ["view_env_state", "move_to", "release", "finish", "reset"],
 	},
@@ -163,10 +168,11 @@ test("an unpaired or crossed tool marker throws instead of leaking into the prom
 	assert.throws(() => toolSections("[tool:x]a[tool:x]b[/tool:x]c[/tool:x]", ["x"]), /nested in itself/);
 });
 
-for (const { robot, files, load, core, flags } of ROBOTS) {
+for (const { robot, files, load, core, flags, mounted = [] } of ROBOTS) {
 	test(`${robot}: every tool marker names a tool the robot registers`, async () => {
 		const { pi, tools } = fakePi([], flags);
 		await load(pi);
+		tools.push(...mounted);
 		for (const file of files) {
 			const text = read(file);
 			const unknown = markers(text).filter((n) => !tools.includes(n));
@@ -178,6 +184,7 @@ for (const { robot, files, load, core, flags } of ROBOTS) {
 	test(`${robot}: excluding a tool leaves no mention of it in the prompt`, async () => {
 		const { pi, tools } = fakePi([], flags);
 		await load(pi);
+		tools.push(...mounted);
 		const text = files.map(read).join("\n");
 		const plain = text.replace(/\[\/?tool:[\w|!]+\]/g, "");
 		const optional = tools.filter((n) => !core.includes(n));

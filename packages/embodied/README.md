@@ -328,3 +328,61 @@ Features ported from OpenETA beyond the core harness; each is off by default and
 | One server per arm | always, real robots | `utils/hardware_lock.py` flock per arm (`--lock-id`, `--lock-dir`, `$PI_EMBODIED_LOCK_DIR`) | Franka (RLinf, Polymetis), dual Franka, Piper, UR5e |
 
 The flags that change what the agent can do are recorded in the result row as `extras`.
+
+
+## Deliberately dropped
+
+What the four source repositories have that pi-embodied does not port, and why. Work still planned
+is tracked in the migration specs, not here.
+
+RPent (eecf206):
+
+- Its planner loop, CLI / TUI and session layer (`rpent/planner`, `rpent/cli`, `rpent/session`): the
+  agent loop, models, sessions and modes are pi's; a robot is a `defineRobot` extension.
+- The dashboard's own session and state store: the dashboard follows pi's events and rebuilds its
+  state from the session branch, so resume and fork show the right history.
+- The pickle-framed socket RPC: only JSON `POST /call` is served (unpickling a request frame is
+  remote code execution for anyone who can reach the port).
+
+CaP-X (53e9966):
+
+- GRPO / VeRL training (`third_party/verl`, `verl_agent_reward`): training stays outside the
+  repository; pi-embodied exports sessions in a format VeRL and RLinf read, with the environment's
+  success as the reward, never "the program ran without error = 0.1".
+- Its LLM client and model proxies: pi-ai providers and pi's model registry serve the planner and
+  the side VLMs.
+- FastAPI / msgpack model serving: every Python service speaks `POST /call` with `healthz` / `stop`.
+- In-process `exec` with the env in the program's globals: `run_code` runs in a sandboxed
+  subprocess that holds no env object and reaches the robot only through the primitive registry.
+- The joint-position controller and joint-space IK primitives (`solve_ik`, `move_to_joints`):
+  Robosuite runs OSC_POSE, so a Cartesian target is the primitive.
+- Ground truth in ordinary observations (`cube_poses` / `nut_poses`, TwoArmHandover's instance
+  segmentation): object poses leave the server only through `ground_truth_poses` under `--privileged`.
+- `pick_up_radio_reward` as BEHAVIOR success (BDDL's `success` decides; CaP-X's judgement is a
+  reference field) and `move_hand(ignore_all_obstacles=True)` (the R1Pro planner keeps its obstacles).
+
+Show-Harness (137d571):
+
+- Its runners and VLM client (`core/runners`, `core/vlm`): the planner is the model; MvTokenRunner
+  is the `finetuned/<adapter>` provider, and the verifier and video_ref calls go through pi's model
+  registry.
+- `prompt_v5.txt` of the v5 LIBERO adapters: it sits in a gated HF dataset and is not vendored
+  (`--ft-prompt-file`).
+
+OpenETA (7d4a0a1):
+
+- Its Python agent runtime (sessions, resume, compaction, skills, TUI), XML decision parsing, the
+  MCP layer and the Codex plugin packaging: pi core, pi's native tool calls and pi extensions
+  replace them.
+- The environment shells copied from RLinf (CALVIN, RoboVerse, Isaac Lab, Polaris, Habitat,
+  EmbodiChain, FrankaSim): empty shells; connect them from RLinf directly when needed. RoboTwin and
+  RoboLab are native here.
+- D4RL (locomotion, not manipulation) and the tactile branch (Isaac Sim 5.1 + TacEx, a separate
+  research direction).
+- Its tool-contract maturity reviews and grasp-policy / calibration promotion workflows: OpenETA's
+  own project governance.
+- Its UR5e safety layer (a 0.6 m / 180 deg per-move check, collision checking ignored, rpy passed as
+  a rotation vector): replaced by the Franka / Piper standard (operator gate, workspace box, Z floor,
+  refuse-not-clamp limits, `stopL` on stop). Its hand-eye calibration writing back unreviewed:
+  the solver writes an arm-bound `.new.yaml` that a human applies in a separate step.
+- Genesis's grasp-and-distance hold counter: `cube_pick` succeeds on an 8 cm lift held 5 steps.

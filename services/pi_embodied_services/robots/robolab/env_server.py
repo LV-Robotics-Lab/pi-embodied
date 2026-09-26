@@ -32,6 +32,13 @@ the task's own termination predicate.
 Isaac Sim starts in ``__init__`` (tens of seconds, minutes on a cold shader cache), before the
 server binds, so healthz answers only once the task is loaded. Every call runs on the main
 thread (the Kit app is not thread-safe).
+
+Code mode (``code.run``, utils/code_exec.py ``CodeRunMixin``): a program calls the registry's
+primitives in a sandboxed subprocess, so the server requires its RPC token and refuses other
+business calls while a program runs. What a program receives drops the images (a motion's and a
+raw step's frames go to the run's video) and the subtask judgement (the evaluator's, like
+``success`` in Show-Harness); the run reports its control steps, success and the episode flags,
+the new observation and its video (``_finish_run``).
 """
 
 from __future__ import annotations
@@ -52,6 +59,7 @@ from pi_embodied_services.components.env_facade_base import BaseEnvFacade
 from pi_embodied_services.robots.robolab import sim
 from pi_embodied_services.robots.robolab.primitives import ROBOLAB_PRIMITIVES
 from pi_embodied_services.utils import ground_truth
+from pi_embodied_services.utils.code_exec import CodeRunMixin
 from pi_embodied_services.utils.perception import (
     add_perception_arguments,
     install_perception,
@@ -82,9 +90,13 @@ OPEN, CLOSE = 0.0, 1.0
 #: The wrist camera's raw frame has the fingertips entering from the left; 270 deg CCW puts them
 #: at the top (configs/robot_robolab.yaml wrist_rotation_degrees, measured for the Panda hand).
 WRIST_ROT90 = 3
+#: Code mode: video frames one run hands back (halved, every other one kept, when full), and the
+#: most raw actions one ``chunk_step`` runs.
+CODE_MAX_FRAMES = 128
+CODE_MAX_CHUNK = 64
 
 
-class RobolabEnvFacade(MainThreadServeMixin, BaseEnvFacade):
+class RobolabEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
     """One RoboLab task env (``num_envs=1``) plus the Show-Harness relative-IK controller."""
 
     SERVICE_NAME = "robolab-env"
@@ -105,6 +117,9 @@ class RobolabEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         self._quat_home: np.ndarray | None = None
         self._steps = 0
         self._terminated = self._truncated = False
+        # Code mode: the control steps before the run, and the run's video frames.
+        self._run_start = 0
+        self._run_frames: list[np.ndarray] = []
 
     def _register_rpc(self) -> None:
         super()._register_rpc()
@@ -112,7 +127,114 @@ class RobolabEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         self._rpc["env.rotate_delta"] = self.rotate_delta
         self._rpc["env.state"] = self.state
         self._rpc["env.ground_truth_poses"] = self.ground_truth_poses
-        register_code_api(self, ROBOLAB_PRIMITIVES)
+        api = register_code_api(self, ROBOLAB_PRIMITIVES)
+        self._install_code_run(
+            api,
+            move_m=self._code_move_m,
+            check=self._code_check,
+            reply=self._code_reply,
+            begin=self._begin_run,
+            finish=self._finish_run,
+        )
+
+    # ---- code mode (run_code) ----
+
+    def _begin_run(self) -> None:
+        self._run_start = self._steps
+        self._run_frames = []
+
+    def _finish_run(self) -> dict:
+        """The run's effect for pi: control steps taken, success and the episode flags, the new
+        observation (the tools' ``Obs``) and the run's video frames."""
+        state = self._state()
+        return {
+            "steps": self._steps - self._run_start,
+            "success": bool(state["success"]),
+            "terminated": bool(self._terminated),
+            "truncated": bool(self._truncated),
+            "obs": self._pack(),
+            "frames": list(self._run_frames),
+        }
+
+    def _keep_frames(self, frames) -> None:
+        for f in frames:
+            if len(self._run_frames) >= CODE_MAX_FRAMES:
+                self._run_frames = self._run_frames[::2]
+            self._run_frames.append(f)
+
+    @staticmethod
+    def _program_state(obs: dict) -> dict:
+        """An observation as a program receives it: the state without the images and without
+        RoboLab's subtask judgement (the evaluator's, never the planner's)."""
+        return {
+            k: v
+            for k, v in obs.items()
+            if k not in ("agentview", "wrist", "frames", "subtask")
+        }
+
+    def _code_reply(self, method: str, out: Any) -> Any:
+        """What a program receives: a motion's report and state without images (its frames, or
+        its last front image, go to the run's video); a raw step's state, not its images."""
+        if method in ("env.move_delta", "env.rotate_delta"):
+            self._keep_frames(out.get("frames") or [out["agentview"]])
+            return self._program_state(out)
+        if method == "env.state":
+            return self._program_state(out)
+        if method == "env.step":
+            obs, rew, term, trunc, info = out
+            self._keep_frames([obs["agentview"]])
+            return {
+                "state": self._program_state(obs),
+                "reward": rew,
+                "terminated": term,
+                "truncated": trunc,
+                "success": bool(info.get("success", False)),
+            }
+        if method == "env.chunk_step":
+            obs, term, trunc, info = out
+            frames = obs if isinstance(obs, list) else [obs]
+            self._keep_frames([o["agentview"] for o in frames])
+            return {
+                "obs": (
+                    [self._program_state(o) for o in obs]
+                    if isinstance(obs, list)
+                    else self._program_state(obs)
+                ),
+                "terminated": term,
+                "truncated": trunc,
+                "info": {
+                    k: v for k, v in info.items() if k in ("success", "cancelled")
+                },
+            }
+        return out
+
+    def _code_move_m(self, method: str, kwargs: dict) -> float:
+        """How far a program's call may move the hand (the run's translation cap): a move's
+        commanded norm; a raw action's commanded displacement, its translation slots times the
+        arm action's scale per step (RoboLab's relative IK achieves about 28% of it, so this is
+        an upper bound; no clip applies to a raw action)."""
+        if method == "env.move_delta":
+            d = np.asarray(kwargs["delta_xyz"], dtype=np.float64).reshape(3)
+            return float(np.linalg.norm(d))
+        if method in ("env.step", "env.chunk_step"):
+            key = "action" if method == "env.step" else "actions"
+            a = np.asarray(kwargs[key], dtype=np.float64).reshape(-1, 7)
+            return float(np.linalg.norm(a[:, :3], axis=1).sum() * self._h.ik_scale)
+        # rotate_delta holds the position (sub-millimetre drift measured).
+        return 0.0
+
+    def _code_check(self, method: str, kwargs: dict) -> None:
+        """Refuse a raw call the run's wall clock could not bound or the episode no longer takes."""
+        if method not in ("env.step", "env.chunk_step"):
+            return
+        if self._terminated or self._truncated:
+            raise ValueError("the episode is over")
+        if method == "env.chunk_step":
+            n = len(np.asarray(kwargs["actions"], dtype=np.float64).reshape(-1, 7))
+            if n > CODE_MAX_CHUNK:
+                raise ValueError(
+                    f"chunk_step runs at most {CODE_MAX_CHUNK} actions per call, got {n}"
+                )
 
     # ---- helpers ----
 

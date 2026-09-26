@@ -2,6 +2,7 @@
  * RoboTwin robot for pi.
  *
  *   pi -e packages/embodied/src/robotwin --task-name beat_block_hammer --seed 100000
+ *   pi -e packages/embodied/src/robotwin --task-name beat_block_hammer --seed 100000 --code=true --code-api=low   (run_code)
  *
  * Starts one RoboTwin env server per session (the RLinf RoboTwin facade) and
  * attaches to a running LingBot-VLA WebSocket server (see serve.sh). Tools follow
@@ -465,6 +466,27 @@ export default function robotwin(pi: ExtensionAPI) {
 		task: ["task-name", "task-config", "seed"],
 		// The env server's primitive registry (code.api), recorded per episode.
 		codeApi: () => env,
+		// Code mode (../code): the env server runs the program against that registry; the result carries the
+		// native actions, the latest robot state and status (Info, null when nothing stepped) and the run's
+		// head frames. It becomes a new recorded state, as the motion tools' results do.
+		code: {
+			rpc: () => env,
+			instruction: () => language,
+			refuse: () =>
+				success() || exhausted()
+					? `Episode is terminal (eval_success=${success()}, budget_exhausted=${exhausted()}); call finish.`
+					: // The Flywheel records the tools' actions; a program's would be missing from the episode.
+						robot.fly?.recording
+						? "run_code is off while --collect-flywheel-data records the episode"
+						: undefined,
+			observe: async (r) => {
+				for (const f of (r.frames as NdArray[] | undefined) ?? []) robot.video.frame(u8(f));
+				if (r.info) info = r.info as Info;
+				const steps = Number(r.steps) || 0;
+				nativeActions += steps;
+				return present(await capture({ action: "run_code" }, { status: r.status, native_actions: steps }));
+			},
+		},
 		keepImages: 6,
 		imageStub: "[older camera frame omitted; view_env_state(step) re-reads it]",
 		budget: { turns: 100, seconds: 4800 },

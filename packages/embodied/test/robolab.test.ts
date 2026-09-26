@@ -14,6 +14,7 @@ function stubPi(values: Record<string, unknown> = {}) {
 	const handlers = new Map<string, Handler[]>();
 	const flags: Record<string, unknown> = {};
 	const tools = new Map<string, any>();
+	const entries: { type: string; data: any }[] = [];
 	let active: string[] = [];
 	const pi = {
 		on: (name: string, fn: Handler) => handlers.set(name, [...(handlers.get(name) ?? []), fn]),
@@ -28,7 +29,7 @@ function stubPi(values: Record<string, unknown> = {}) {
 			active = names;
 		},
 		getActiveTools: () => active,
-		appendEntry: () => {},
+		appendEntry: (type: string, data: any) => entries.push({ type, data }),
 		events: { emit: () => {}, on: () => () => {} },
 	} as unknown as ExtensionAPI;
 	const ctx = {
@@ -36,8 +37,10 @@ function stubPi(values: Record<string, unknown> = {}) {
 		cwd: tmpdir(),
 		ui: { notify: () => {} },
 		shutdown: () => {},
+		abort: () => {},
 		sessionManager: {
 			getBranch: () => [],
+			getEntries: () => [],
 			getSessionDir: () => tmpdir(),
 			getSessionFile: () => undefined,
 			getSessionId: () => "sess",
@@ -50,7 +53,7 @@ function stubPi(values: Record<string, unknown> = {}) {
 	}
 	const run = async (name: string, params: unknown) =>
 		(await tools.get(name).execute("id", params, undefined, undefined, ctx)) as any;
-	return { pi, flags, tools, emit, run, active: () => active };
+	return { pi, flags, tools, entries, emit, run, active: () => active };
 }
 
 /**
@@ -99,12 +102,33 @@ async function fakeEnv(solvedAfter = Infinity) {
 				control_hz: 15,
 			};
 			let result: unknown = { status: "ok" };
-			if (method === "code.api") result = { tier: null, primitives: [], digest: "d" };
+			if (method === "code.api") result = { tier: kwargs.tier ?? null, primitives: [], digest: "d" };
 			else if (method === "env.get_env_meta") result = meta;
 			else if (method === "env.reset") result = [obs(), {}];
 			else if (method === "env.move_delta") {
 				moved++;
 				result = { ...obs(), commanded_m: args[0], moved_m: args[0], decisions: 1, control_steps: 8 };
+			} else if (method === "code.run") {
+				// A program that solved the task in 16 control steps (the server's step count is 37 after it).
+				moved = solvedAfter;
+				result = {
+					status: "ran",
+					stdout: "",
+					stderr: "",
+					traceback: null,
+					error: null,
+					result: null,
+					calls: [],
+					n_calls: 2,
+					move_m: 0.1,
+					ms: 5,
+					steps: 16,
+					success: true,
+					terminated: true,
+					truncated: false,
+					obs: { ...obs(), env_steps: 37 },
+					frames: [nd("uint8", [2, 2, 3], Buffer.alloc(12))],
+				};
 			} else if (method === "env.rotate_delta") {
 				moved++;
 				yaw += Number(kwargs.yaw);
@@ -254,4 +278,42 @@ test("string choices in tool schemas are plain string enums (no anyOf of literal
 	assert.doesNotMatch(schema, /anyOf/);
 	assert.match(schema, /"enum":\["open","close"\]/);
 	assert.deepEqual(Object.keys(s.tools.get("rotate_delta").parameters.properties), ["yaw"]);
+});
+
+test("--code=true: run_code runs on the env server and its result becomes the observation and the success", async (t) => {
+	const env = await fakeEnv(1);
+	t.after(env.close);
+	const s = stubPi({ env: env.url, code: "true", "code-api": "low" });
+	robolab(s.pi);
+	await s.emit("session_start");
+	process.exitCode = undefined;
+	assert.deepEqual(s.active(), ["run_code", "finish"]);
+	assert.deepEqual(
+		env.calls.filter((c) => c.method === "code.api").map((c) => c.kwargs.tier),
+		[undefined, "low"],
+		"the episode's registry, then code mode's tier",
+	);
+	await s.emit("agent_start");
+	const r = await s.run("run_code", { code: "move_delta([0, 0, 0.05])" });
+	const run = env.calls.find((c) => c.method === "code.run")!;
+	assert.equal(run.kwargs.tier, "low");
+	assert.equal(run.kwargs.code, "move_delta([0, 0, 0.05])");
+	assert.equal(r.details.status, "ran");
+	assert.equal(r.details.success, true);
+	assert.equal(r.details.step, 37, "the server's step count, absorbed from the run's obs");
+	assert.deepEqual(
+		r.content.map((c: { type: string }) => c.type),
+		["text", "text", "image", "image"],
+	);
+	// As the motion tools: nothing runs once the task is solved.
+	const again = await s.run("run_code", { code: "move_delta([0, 0, 0.05])" });
+	assert.match(again.content[0].text, /already solved/);
+	assert.equal(env.calls.filter((c) => c.method === "code.run").length, 1);
+	await s.run("finish", { status: "success", summary: "banana in bowl" });
+	await s.emit("agent_end", { messages: [] });
+	const result = s.entries.find((e) => e.type === "robot_result")?.data;
+	assert.equal(result.success, true);
+	assert.equal(result.env_steps, 37);
+	assert.equal(result.code, "true");
+	assert.equal(result.code_api, "low");
 });

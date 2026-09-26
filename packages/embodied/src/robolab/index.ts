@@ -3,6 +3,7 @@
  *
  *   pi -e packages/embodied/src/robolab --task BananaInBowlTask --seed 0 --cuda-device 1
  *   pi -e packages/embodied/src/robolab --units --task RubiksCubeTask   (Show-Harness action units)
+ *   pi -e packages/embodied/src/robolab --task BananaInBowlTask --code=true --code-api=low   (run_code, CaP-X's S3)
  *
  * Starts one RoboLab env server per session (services/.../robots/robolab/env_server.py, the
  * venv from robots/robolab/install_isaac61.sh: Isaac Sim 6.1 / Isaac Lab 3.0 with RoboLab patched by
@@ -164,6 +165,24 @@ export default function robolab(pi: ExtensionAPI) {
 		task: ["task", "seed"],
 		// The env server's primitive registry (code.api), recorded per episode.
 		codeApi: () => env,
+		// Code mode (../code): the env server runs the program against that registry; the result carries the
+		// control steps, success, the new observation (the tools' Obs) and the run's video frames.
+		code: {
+			rpc: () => env,
+			instruction: () => meta.instruction,
+			// As the motion tools: nothing runs once the task is solved (the server refuses motions after a time-out).
+			refuse: () =>
+				obs?.success
+					? "the task is already solved; call finish"
+					: obs?.truncated
+						? "the episode timed out; call finish"
+						: undefined,
+			observe: async (r) => {
+				for (const f of (r.frames as NdArray[] | undefined) ?? []) video.frame(f);
+				if (r.obs) obs = r.obs as Obs;
+				return observe({ name: "run_code", status: r.status, control_steps: Number(r.steps) || 0 });
+			},
+		},
 		keepImages: 4,
 		video: true,
 		// Observations carry the front then the wrist image.

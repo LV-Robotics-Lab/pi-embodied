@@ -31,6 +31,7 @@ ROBOLAB_PRIMITIVES = (
         "state",
         "env.state",
         "Hand pose, gripper width and command, success and step count.",
+        example='st = state()\nprint(st["eef_pos"], st["gripper_width"], st["yaw_deg"], st["success"])',
     ),
     Primitive(
         "move_delta",
@@ -44,6 +45,7 @@ ROBOLAB_PRIMITIVES = (
             ),
         },
         mutating=True,
+        example='move_delta([0, 0, 0.1], gripper="open")  # open, then lift 10 cm\nr = move_delta([0.05, 0, -0.1])\nprint(r["moved_m"], r["eef_pos"])',
     ),
     Primitive(
         "rotate_delta",
@@ -56,6 +58,7 @@ ROBOLAB_PRIMITIVES = (
             ),
         },
         mutating=True,
+        example='r = rotate_delta(0.3)  # counter-clockwise seen from above\nprint(r["yaw"], r["yaw_deg"])',
     ),
     Primitive(
         "render_camera",
@@ -63,6 +66,7 @@ ROBOLAB_PRIMITIVES = (
         "The latest frame of a camera.",
         _CAMERA,
         tiers=("low",),
+        example='rgb = render_camera("agentview")  # uint8 [H, W, 3]\nwrist = render_camera("wrist")      # fingertips at the top',
     ),
     Primitive(
         "get_camera_meta",
@@ -70,6 +74,7 @@ ROBOLAB_PRIMITIVES = (
         "The front camera's intrinsics and camera-to-base extrinsic.",
         _CAMERA,
         tiers=("low",),
+        example='meta = get_camera_meta("agentview")\nK, T = meta["intrinsic_K"], meta["extrinsic_cam2world"]',
     ),
     Primitive(
         "step",
@@ -78,6 +83,7 @@ ROBOLAB_PRIMITIVES = (
         {"action": Param("array", "7 floats")},
         mutating=True,
         tiers=("low",),
+        example='r = step([0, 0, 0.02, 0, 0, 0, 0])  # up, gripper open (> 0.5 closes)\nprint(r["state"]["eef_pos"], r["terminated"])',
     ),
     Primitive(
         "chunk_step",
@@ -89,6 +95,7 @@ ROBOLAB_PRIMITIVES = (
         },
         mutating=True,
         tiers=("low",),
+        example='r = chunk_step([[0, 0, -0.02, 0, 0, 0, 0]] * 8)  # 8 steps down\nprint(r["obs"]["eef_pos"], r["terminated"])',
     ),
     GROUND_TRUTH,
 )

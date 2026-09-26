@@ -36,6 +36,12 @@ _ACTION_TYPE = Param(
 ROBOTWIN_PRIMITIVES = (
     TASK_LANGUAGE,
     Primitive(
+        "get_state",
+        "env.policy_frame",
+        "The joint state qpos (measured) and qpos_target (commanded), each 14 [left joints6, left gripper, right joints6, right gripper], and the eef16 state [left pose7 (xyz, wxyz), left gripper, right pose7, right gripper]; grippers 0 closed .. 1 open.",
+        example='st = get_state()\nprint(st["qpos_target"], st["state"][:3])  # left eef xyz',
+    ),
+    Primitive(
         "plan_arm_path",
         "env.plan_arm_path",
         "Plan (not run) one arm's joint path to a world pose [x, y, z, qw, qx, qy, qz] with cuRobo.",
@@ -43,6 +49,7 @@ ROBOTWIN_PRIMITIVES = (
             "arm": Param("string", "'left' or 'right'"),
             "target_pose": Param("array", "7 floats"),
         },
+        example='plan = plan_arm_path("left", [-0.2, -0.05, 0.9, 0, 0.707, 0, 0.707])\nif plan["status"] == "Success":\n    print(plan["position"].shape)  # [waypoints, 6] joint path',
     ),
     Primitive(
         "render_camera",
@@ -53,6 +60,7 @@ ROBOTWIN_PRIMITIVES = (
             "depth": Param("boolean", "also return the depth map", False),
         },
         tiers=("low",),
+        example='rgb = render_camera("head")\nrgb, depth = render_camera("left_wrist", depth=True)  # depth in m, NaN = no hit',
     ),
     Primitive(
         "get_camera_meta",
@@ -60,6 +68,7 @@ ROBOTWIN_PRIMITIVES = (
         "Camera intrinsics and extrinsics.",
         {"camera_name": Param("string", "'head', 'left_wrist' or 'right_wrist'")},
         tiers=("low",),
+        example='meta = get_camera_meta("head")\nK, cam2world = meta["intrinsic_K"], meta["cam2world_gl"]  # OpenGL camera axes',
     ),
     Primitive(
         "step",
@@ -68,6 +77,7 @@ ROBOTWIN_PRIMITIVES = (
         {"action": Param("array", "14 or 16 floats"), "action_type": _ACTION_TYPE},
         mutating=True,
         tiers=("low",),
+        example='q = list(get_state()["qpos_target"])\nq[13] = 0.0  # close the right gripper (0 closed .. 1 open)\nr = step(q)\nprint(r["info"]["robot_state"]["right_gripper"], r["info"]["episode_status"]["eval_success"])',
     ),
     Primitive(
         "chunk_step",
@@ -80,6 +90,7 @@ ROBOTWIN_PRIMITIVES = (
         },
         mutating=True,
         tiers=("low",),
+        example='plan = plan_arm_path("right", [0.2, -0.05, 0.9, 0, 0.707, 0, 0.707])\nq = list(get_state()["qpos_target"])\npath = [q[:7] + list(j) + [q[13]] for j in plan["position"]]  # right arm joints\nr = chunk_step(path[::4])\nprint(r["info"]["executed_actions"], r["info"]["robot_state"]["right_eef_pose"])',
     ),
     GROUND_TRUTH,
 )

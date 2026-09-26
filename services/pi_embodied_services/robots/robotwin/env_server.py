@@ -17,7 +17,15 @@
 # polls the stop flag between native actions; deterministic torch and cuRobo
 # L-BFGS, global RNGs reseeded on reset.
 
-"""RPC server owning one RLinf RoboTwin environment."""
+"""RPC server owning one RLinf RoboTwin environment.
+
+Code mode (``code.run``, utils/code_exec.py ``CodeRunMixin``): a program calls the registry's
+primitives in a sandboxed subprocess, so the server requires its RPC token and refuses other
+business calls while a program runs. A raw step's reply to the program carries the robot state
+and the episode status, not the camera observation (its head frames go to the run's video); the
+run reports its native actions, the latest robot state and status (pi's ``Info``) and its video
+(``_finish_run``).
+"""
 
 from __future__ import annotations
 
@@ -41,10 +49,20 @@ from pi_embodied_services.components.code_api import register_code_api
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
 from pi_embodied_services.robots.robotwin.primitives import ROBOTWIN_PRIMITIVES
 from pi_embodied_services.utils import ground_truth
+from pi_embodied_services.utils.code_exec import CodeRunMixin
 from pi_embodied_services.utils.logging import get_logger
 from pi_embodied_services.utils.serialization import to_numpy_tree
 
 logger = get_logger("robotwin_env_server")
+
+#: Code mode: video frames one run hands back (halved, every other one kept, when full), and the
+#: most native actions one ``chunk_step`` runs.
+CODE_MAX_FRAMES = 128
+CODE_MAX_CHUNK = 64
+#: Code mode's translation estimate of a qpos action: metres the gripper may move per radian of
+#: any one arm joint. An upper bound: the aloha-agilex arms (Piper) reach about 0.63 m, and no
+#: joint is farther than that from the gripper.
+JOINT_REACH_M = 0.7
 
 
 @lru_cache(maxsize=None)
@@ -169,7 +187,7 @@ from pi_embodied_services.utils.perception import (
 )
 
 
-class RoboTwinEnvFacade(BaseEnvFacade):
+class RoboTwinEnvFacade(CodeRunMixin, BaseEnvFacade):
     """Expose common and typed RoboTwin environment RPC contracts."""
 
     SERVICE_NAME = "robotwin-env"
@@ -177,6 +195,12 @@ class RoboTwinEnvFacade(BaseEnvFacade):
     def __init__(self, env: Any, *, metadata: dict[str, Any]):
         self._env = env
         self._metadata = dict(metadata)
+        # Code mode: the run's native actions, its latest robot state and status, the joint
+        # target and eef16 state its next action starts from, and its video frames.
+        self._run_steps = 0
+        self._run_info: dict[str, Any] | None = None
+        self._run_ref: tuple[np.ndarray, np.ndarray] | None = None
+        self._run_frames: list[np.ndarray] = []
         super().__init__()
 
     def _strip_single_env_value(self, value: Any, name: str) -> Any:
@@ -227,7 +251,146 @@ class RoboTwinEnvFacade(BaseEnvFacade):
         self._rpc["env.plan_arm_path"] = self.plan_arm_path
         self._rpc["env.ground_truth_poses"] = self.ground_truth_poses
         self._rpc["env.policy_frame"] = self.policy_frame
-        register_code_api(self, ROBOTWIN_PRIMITIVES)
+        api = register_code_api(self, ROBOTWIN_PRIMITIVES)
+        self._install_code_run(
+            api,
+            move_m=self._code_move_m,
+            check=self._code_check,
+            reply=self._code_reply,
+            begin=self._begin_run,
+            finish=self._finish_run,
+        )
+
+    # ---- code mode (run_code) ----
+
+    def _begin_run(self) -> None:
+        self._run_steps = 0
+        self._run_info = None
+        self._run_ref = None
+        self._run_frames = []
+
+    def _finish_run(self) -> dict[str, Any]:
+        """The run's effect for pi: native actions executed, the latest robot state and episode
+        status (pi's ``Info``, None when the program stepped nothing), success and whether the
+        action budget is spent, and the run's video frames."""
+        status = (self._run_info or {}).get("episode_status")
+        limit = status and status.get("step_lim")
+        return {
+            "steps": self._run_steps,
+            "info": self._run_info,
+            "success": bool(status["eval_success"]) if status else None,
+            "budget_exhausted": (
+                bool(limit is not None and status["take_action_cnt"] >= limit)
+                if status
+                else None
+            ),
+            "frames": list(self._run_frames),
+        }
+
+    def _keep_frames(self, frames) -> None:
+        for f in frames:
+            if f is None:
+                continue
+            if len(self._run_frames) >= CODE_MAX_FRAMES:
+                self._run_frames = self._run_frames[::2]
+            self._run_frames.append(f)
+
+    def _absorb_step_info(self, info: dict[str, Any]) -> dict[str, Any]:
+        """Keep a step's robot state and status for the run's finish and the next action's
+        estimate; returns what the program receives of the info."""
+        self._run_steps += int(info.get("executed_actions", 0))
+        state = info.get("robot_state")
+        if state is not None:
+            self._run_info = {
+                "robot_state": state,
+                "episode_status": info.get("episode_status"),
+            }
+            self._run_ref = (
+                np.asarray(state["qpos_target14"], dtype=np.float64).reshape(14),
+                np.concatenate(
+                    [
+                        np.asarray(state["left_eef_pose"], dtype=np.float64),
+                        [float(state["left_gripper"])],
+                        np.asarray(state["right_eef_pose"], dtype=np.float64),
+                        [float(state["right_gripper"])],
+                    ]
+                ),
+            )
+        return {
+            k: info[k]
+            for k in (
+                "action_type",
+                "requested_actions",
+                "executed_actions",
+                "robot_state",
+                "episode_status",
+                "cancelled",
+            )
+            if k in info
+        }
+
+    def _code_reply(self, method: str, out: Any) -> Any:
+        """What a program receives: the policy frame's joint and eef16 state without its images
+        (``get_state``; the program renders what it needs); a raw step's reward, flags, robot state
+        and status, without the camera observation (its head frames go to the run's video)."""
+        out = to_numpy_tree(out)
+        if method == "env.policy_frame":
+            return {k: out[k] for k in ("qpos", "qpos_target", "state")}
+        if method not in ("env.step", "env.chunk_step"):
+            return out
+        obs, reward, terminated, truncated, info = out
+        if isinstance(obs, dict) and "frames" in obs:
+            self._keep_frames(obs["frames"])
+        elif isinstance(obs, dict):
+            self._keep_frames([obs.get("main_images")])
+        return {
+            "reward": reward,
+            "terminated": terminated,
+            "truncated": truncated,
+            "info": self._absorb_step_info(info),
+        }
+
+    def _code_ref(self) -> tuple[np.ndarray, np.ndarray]:
+        """The joint target (qpos14) and eef16 state the program's next action starts from."""
+        if self._run_ref is None:
+            frame = to_numpy_tree(self._env.policy_frame(0))
+            self._run_ref = (
+                np.asarray(frame["qpos_target"], dtype=np.float64).reshape(14),
+                np.asarray(frame["state"], dtype=np.float64).reshape(16),
+            )
+        return self._run_ref
+
+    def _code_move_m(self, method: str, kwargs: dict) -> float:
+        """How far a program's raw actions may move the grippers (the run's translation cap),
+        from the state they start at: a qpos action's arm-joint changes times ``JOINT_REACH_M``
+        (an upper bound), an ee action's change of the two eef positions."""
+        if method not in ("env.step", "env.chunk_step"):
+            return 0.0
+        ee = kwargs.get("action_type") == "ee"
+        key = "action" if method == "env.step" else "actions"
+        rows = np.asarray(kwargs[key], dtype=np.float64).reshape(-1, 16 if ee else 14)
+        qpos, eef = self._code_ref()
+        prev, total = (eef if ee else qpos), 0.0
+        for row in rows:
+            d = row - prev
+            if ee:
+                total += float(np.linalg.norm(d[0:3]) + np.linalg.norm(d[8:11]))
+            else:
+                total += JOINT_REACH_M * float(np.abs(np.r_[d[0:6], d[7:13]]).sum())
+            prev = row
+        return total
+
+    def _code_check(self, method: str, kwargs: dict) -> None:
+        """Refuse a program's chunk longer than ``CODE_MAX_CHUNK``: a chunk polls the stop only
+        between native actions (an ``ee`` one plans and runs a whole cuRobo path), and its
+        frames and estimate must stay bounded."""
+        if method == "env.chunk_step":
+            n = len(np.asarray(kwargs["actions"], dtype=np.float64).reshape(-1))
+            dim = 16 if kwargs.get("action_type") == "ee" else 14
+            if n > CODE_MAX_CHUNK * dim:
+                raise ValueError(
+                    f"chunk_step runs at most {CODE_MAX_CHUNK} actions per call, got {n // dim}"
+                )
 
     def get_env_meta(self) -> dict[str, Any]:
         """Return immutable identity for endpoint compatibility checks."""

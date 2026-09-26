@@ -27,11 +27,16 @@ anything is commanded; so is a target outside the workspace box, below
 ``z_floor_m`` or tilting the tool past ``max_tilt_rad``, and any motion while the
 robot is protective/emergency stopped or while a camera cannot deliver frames (the
 agent would act blind). A moveL/moveJ the controller rejects raises; one that ends
-in a protective stop is reported (``protective_stopped: true``). A running motion
-polls ``stop`` and is brought to rest with stopL/stopJ (``cancelled: true``); a
-stop, timeout, driver error or missed target clears the setpoint, so the next
-command starts from the measured pose. Observations are fresh frames (the capture
-queue is drained first) and refuse frames older than ``cameras.max_frame_age_s``.
+in a safety stop is reported at once (``protective_stopped`` / ``safety_stopped``,
+``interrupted: safety_stop``), as is one whose control script stopped (an
+unreachable target: ``interrupted: control_script_stopped``; the next command
+re-uploads the script). A running motion polls ``stop`` and is brought to rest with
+stopL/stopJ (``cancelled: true``); a stop, timeout, driver error or missed target
+clears the setpoint, so the next command starts from the measured pose. The reset's
+begin pose and joint path are checked with the controller's forward kinematics
+before the arm moves. Observations are fresh frames (the capture queue is drained
+first) and refuse frames older than ``cameras.max_frame_age_s``, dated by the
+device's own timestamp where the source has one (``frame_time_source``).
 The config (limits, begin pose, every camera's hand-eye calibration) is bound to
 one arm: ``calibration.arm_id`` must equal the controller's serial number, and each
 calibration YAML must name the same arm.
@@ -68,6 +73,7 @@ from pi_embodied_services.components.code_api import register_code_api
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
 from pi_embodied_services.robots.ur5e.calibrate import load_calibration_yaml
 from pi_embodied_services.robots.ur5e.control import (
+    EMPTY_WIDTH_FRACTION,
     UR5eController,
     UR5eLimits,
     pose7_of,
@@ -103,6 +109,7 @@ _GRIPPER_KEYS = {
     "close_threshold_m": "close_threshold_m",
     "empty_width_m": "empty_width_m",
     "ack_timeout_s": "gripper_ack_timeout_s",
+    "settle_polls": "gripper_settle_polls",
 }
 #: ``cameras:`` keys besides ``devices`` (per-device defaults and read policy).
 _CAMERA_KEYS = (
@@ -142,8 +149,26 @@ def limits_from_config(cfg: dict[str, Any]) -> UR5eLimits:
         key: _tuple(value)
         for key, value in _section(cfg, "limits", _LIMIT_KEYS).items()
     }
-    for key, value in _section(cfg, "gripper", _GRIPPER_KEYS).items():
+    gripper = _section(cfg, "gripper", _GRIPPER_KEYS)
+    for key, value in gripper.items():
         kwargs[_GRIPPER_KEYS[key]] = value
+    stroke = float(kwargs.get("gripper_stroke_m", UR5eLimits.gripper_stroke_m))
+    if "empty_width_m" not in gripper:
+        # Scaled to the gripper: a Robotiq closed on nothing reads ~9 mm on a 2F-85.
+        kwargs["empty_width_m"] = round(EMPTY_WIDTH_FRACTION * stroke, 4)
+    elif (
+        gripper["empty_width_m"] is not None
+        and float(gripper["empty_width_m"]) < 0.11 * stroke
+    ):
+        logger.warning(
+            "gripper.empty_width_m %.4f m is below what a Robotiq %.3f m gripper reads "
+            "when it closes on nothing (~%.4f m): empty grasps will not be detected; "
+            "remove the key to use %.4f m",
+            float(gripper["empty_width_m"]),
+            stroke,
+            0.106 * stroke,
+            EMPTY_WIDTH_FRACTION * stroke,
+        )
     joints = (cfg.get("calibration") or {}).get("begin_joints")
     if joints is not None:
         kwargs["begin_joints"] = _tuple(joints)
@@ -452,6 +477,7 @@ class UR5eEnvFacade(BaseEnvFacade):
                 "accel_mps2": lim.accel_mps2,
                 "empty_width_m": lim.empty_width_m,
                 "gripper_stroke_m": lim.gripper_stroke_m,
+                "reset_lift_m": lim.reset_lift_m,
             },
             "capabilities": self.capabilities(),
             "tasks": self._cfg.get("tasks") or {},
@@ -500,13 +526,17 @@ class UR5eEnvFacade(BaseEnvFacade):
     def get_observation(self) -> dict[str, Any]:
         """Fresh frames per camera: ``images[name]`` uint8 [H,W,3]; ``depths[name]``
         float32 [H,W] m for cameras with depth; ``timestamps[name]`` wall clock;
-        ``frame_age_s[name]`` seconds between the capture and this call. Every
+        ``frame_age_s[name]`` seconds between the capture and this call, measured
+        from the clock ``frame_time_source[name]`` names (``device`` / ``backend`` /
+        ``stream_pts`` / ``host``, see components/cameras/base.py; ``host`` is the
+        dequeue time and cannot see a frame that waited in a queue). Every
         camera is read before a failure is raised, so one dead camera marks only
         itself unhealthy."""
         images: dict[str, np.ndarray] = {}
         depths: dict[str, np.ndarray] = {}
         stamps: dict[str, float] = {}
         ages: dict[str, float] = {}
+        sources: dict[str, str] = {}
         errors: dict[str, str] = {}
         for name in self._cameras:
             try:
@@ -519,6 +549,7 @@ class UR5eEnvFacade(BaseEnvFacade):
                 depths[name] = np.asarray(f.depth, dtype=np.float32)
             stamps[name] = float(f.timestamp_s)
             ages[name] = f.age_s(self._clock())
+            sources[name] = str(getattr(f, "time_source", "host"))
         if errors:
             raise RuntimeError(
                 "camera read failed: "
@@ -530,6 +561,7 @@ class UR5eEnvFacade(BaseEnvFacade):
             "depths": depths,
             "timestamps": stamps,
             "frame_age_s": ages,
+            "frame_time_source": sources,
             "max_frame_age_s": self.max_frame_age_s,
         }
 

@@ -40,8 +40,10 @@ from pi_embodied_services.robots.ur5e.calibrate import (
     write_calibration_yaml,
 )
 from pi_embodied_services.robots.ur5e.control import (
+    EMPTY_WIDTH_FRACTION,
     UR5eController,
     UR5eLimits,
+    async_phase,
     pose7_of,
     pose_rotvec,
     tool_tilt,
@@ -508,13 +510,59 @@ def test_reset_lift_is_clamped_to_the_box_ceiling_and_a_blocked_lift_stops_the_r
     assert r["lift"]["protective_stopped"] is True and arm.joint_moves == []
 
 
-def test_reset_fails_when_the_begin_pose_leaves_the_workspace():
+def test_reset_refuses_a_begin_pose_outside_the_workspace_before_moving():
+    # Forward kinematics puts the begin pose's TCP at x = 0.9 (the box ends at 0.75):
+    # refused before the gripper, the lift or the moveJ is commanded.
+    arm = MockUrArm(
+        (0.5, 0.0, 0.3, *DOWN), joints=(0.0,) * 6, home_pose=(0.9, 0.0, 0.4, *DOWN)
+    )
+    grip = MockRobotiq(position=255)
+    f = facade(arm, grip)
+    with pytest.raises(
+        ValueError, match="outside the workspace.*nothing was commanded"
+    ):
+        call(f, "env.reset")
+    assert arm.moves == [] and arm.joint_moves == [] and grip.commands == []
+    np.testing.assert_allclose(arm.fk_queries[0], CFG["calibration"]["begin_joints"])
+    # Joints the controller's safety configuration rejects are refused the same way.
+    arm = MockUrArm((0.5, 0.0, 0.3, *DOWN), joints_within_limits=False)
+    with pytest.raises(ValueError, match="safety limits.*nothing was commanded"):
+        call(facade(arm), "env.reset")
+    assert arm.moves == [] and arm.joint_moves == []
+    # Forward kinematics said inside (the arm is already at the begin joints) but the
+    # measured TCP ends outside: still reported, not trusted.
     arm = MockUrArm((0.5, 0.0, 0.3, *DOWN), home_pose=(0.9, 0.0, 0.4, *DOWN))
-    f = facade(arm)
-    r = call(f, "env.reset")
+    r = call(facade(arm), "env.reset")
     assert r["move"]["ok"] and r["ok"] is False
     assert r["info"]["begin_pose_outside_workspace"] is True
     assert "outside the workspace" in r["info"]["note"]
+
+
+def test_reset_refuses_a_joint_path_that_dips_below_the_floor():
+    begin = np.asarray(CFG["calibration"]["begin_joints"])
+    q0 = np.zeros(6)
+
+    def fk(q):
+        # TCP z sags 35 cm in the middle of the joint path (a swing through the table).
+        s = float(np.clip(np.linalg.norm(q - q0) / np.linalg.norm(begin - q0), 0, 1))
+        return (0.45, 0.0, 0.40 - 0.35 * math.sin(math.pi * s), *DOWN)
+
+    arm = MockUrArm((0.45, 0.0, 0.40, *DOWN), joints=q0, fk=fk)
+    f = facade(arm)
+    r = call(f, "env.reset")
+    assert r["ok"] is False and r["move"]["path_outside_workspace"] is True
+    assert arm.joint_moves == [], "the moveJ was never commanded"
+    assert r["info"]["begin_path_outside_workspace"] is True
+    assert "leaves the workspace" in r["info"]["note"]
+    # A path that stays in the box runs.
+    arm = MockUrArm(
+        (0.45, 0.0, 0.40, *DOWN),
+        joints=q0,
+        fk=lambda q: (0.45, 0.0, 0.40 - 0.01 * float(np.max(np.abs(q))), *DOWN),
+    )
+    r = call(facade(arm), "env.reset")
+    assert r["ok"] and len(arm.joint_moves) == 1
+    assert len(arm.fk_queries) >= f.controller.limits.reset_path_samples
 
 
 def test_reset_releases_a_held_object_and_says_so():
@@ -1167,3 +1215,194 @@ def test_board_detection_round_trips_a_rendered_checkerboard():
     inv = {**intr, "distortion_model": "inverse_brown_conrady", "coeffs": coeffs}
     und = undistort_pixels(np.array([[100.0, 80.0], [500.0, 400.0]]), inv)
     assert not np.allclose(und, [[100.0, 80.0], [500.0, 400.0]])
+
+
+# -- async motion start, interruption, control script ----------------------------------
+
+
+def _ticking_clock(step: float = 0.1):
+    clock = {"t": 0.0}
+
+    def tick():
+        clock["t"] += step
+        return clock["t"]
+
+    return clock, tick
+
+
+def test_async_phase_waits_for_the_new_operation_id():
+    # getAsyncOperationProgressEx: id changes when the move thread starts.
+    assert async_phase((4, False), (4, False), False) == "pending"
+    assert async_phase((4, False), (5, True), False) == "running"
+    assert async_phase((4, False), (5, False), False) == "done"  # a short op
+    assert async_phase((127, False), (0, True), False) == "running"  # id wraps
+    # Legacy getAsyncOperationProgress (no id): done only after it was seen running.
+    assert async_phase((None, False), (None, False), False) == "pending"
+    assert async_phase((None, False), (None, True), False) == "running"
+    assert async_phase((None, False), (None, False), True) == "done"
+
+
+def test_a_stale_async_register_does_not_end_the_move_early():
+    # ur_rtde returns from moveL(async) before the script's move thread ran; the
+    # register still shows the previous (finished) operation. The pre-fix poll
+    # (progress >= 0) read that as "done" while the arm was moving.
+    probe = MockUrArm((0.5, 0.0, 0.3, *DOWN), stale_polls=3)
+    before = probe.async_status()
+    probe.move_l((0.55, 0.0, 0.3, *DOWN), 0.25, 0.5)
+    assert probe.busy() is False and probe.running, (
+        "the stale read the old code trusted"
+    )
+    assert async_phase(before, probe.async_status(), False) == "pending"
+
+    arm = MockUrArm((0.5, 0.0, 0.3, *DOWN), stale_polls=3)
+    f = facade(arm)
+    r = call(f, "env.move_delta", [0.05, 0.0, 0.0])
+    assert r["ok"] and r["final_error_m"] < 1e-9 and not arm.running
+    assert f.controller.target is not None
+    # A stop requested while the register is still stale reaches the moving arm.
+    arm = MockUrArm((0.5, 0.0, 0.3, *DOWN), stale_polls=3, step_m=0.001)
+    f = facade(arm)
+    call(f, "env.move_delta", [0.0, 0.0, 0.0])
+    polls = arm.polls
+    f.controller._stop = lambda: arm.polls >= polls + 2
+    r = call(f, "env.move_delta", [0.05, 0.0, 0.0])
+    assert r["cancelled"] is True and arm.stops == ["stopL"] and not arm.running
+    assert f.controller.target is None
+
+
+def test_a_move_that_never_starts_is_stopped_and_reported():
+    clock, tick = _ticking_clock()
+    arm = MockUrArm((0.5, 0.0, 0.3, *DOWN), stale_polls=10**6, step_m=0.0)
+    c = UR5eController(
+        arm, None, limits_from_config(cfg()), sleep=lambda s: None, clock=tick
+    )
+    r = c.move_delta([0.01, 0.0, 0.0])
+    assert r["ok"] is False and r["not_started"] is True and "timed_out" not in r
+    assert arm.stops == ["stopL"] and c.target is None
+    assert clock["t"] < 2.0, "gave up after start_timeout_s, not move_timeout_s"
+
+
+def test_a_protective_stop_mid_move_ends_the_wait_at_once():
+    # The script is paused: the async register keeps reading "running". The pre-fix
+    # loop spun until move_timeout_s and reported timed_out.
+    clock, tick = _ticking_clock()
+    arm = MockUrArm((0.5, 0.0, 0.3, *DOWN), protective_stop_after=3)
+    c = UR5eController(
+        arm, None, limits_from_config(cfg()), sleep=lambda s: None, clock=tick
+    )
+    r = c.move_delta([0.05, 0.0, 0.0])
+    assert r["ok"] is False and r["interrupted"] == "safety_stop"
+    assert r["protective_stopped"] is True and "timed_out" not in r
+    assert "protective stopped" in r["note"] and clock["t"] < 2.0
+    assert arm.running, "the register still read running: the flag did not end it"
+
+
+def test_a_stopped_control_script_is_reported_and_reuploaded_on_the_next_command():
+    clock, tick = _ticking_clock()
+    # An unreachable target: the controller's IK fails and the script halts
+    # (moveL(async) had already returned True).
+    arm = MockUrArm((0.5, 0.0, 0.3, *DOWN), script_stop_after=2)
+    c = UR5eController(
+        arm, None, limits_from_config(cfg()), sleep=lambda s: None, clock=tick
+    )
+    r = c.move_delta([0.05, 0.0, 0.0])
+    assert r["ok"] is False and r["interrupted"] == "control_script_stopped"
+    assert "timed_out" not in r and "unreachable" in r["note"] and clock["t"] < 2.0
+    assert c.target is None
+    # The next command re-uploads the script instead of needing a server restart.
+    arm.script_stop_after = None
+    r = c.move_delta([0.01, 0.0, 0.0])
+    assert r["ok"] and r["control_script_reuploaded"] is True and arm.reuploads == 1
+    # When the script cannot come back (remote control off), the command is refused.
+    arm.program_running, arm.reupload_fails = False, True
+    moves = len(arm.moves)
+    with pytest.raises(RuntimeError, match="could not be re-uploaded.*nothing was"):
+        c.move_delta([0.01, 0.0, 0.0])
+    assert len(arm.moves) == moves
+
+
+def test_other_safety_modes_refuse_motion_too():
+    arm = MockUrArm((0.5, 0.0, 0.3, *DOWN))
+    f = facade(arm)
+
+    def status(robot_mode, safety_mode):
+        return lambda: {
+            "robot_mode": robot_mode,
+            "safety_mode": safety_mode,
+            "protective_stopped": False,
+            "emergency_stopped": False,
+            "program_running": True,
+        }
+
+    arm.status = status(7, 5)  # a safeguard stop, no protective flag
+    with pytest.raises(RuntimeError, match=r"safety mode 5 \(safeguard stop\)"):
+        call(f, "env.move_delta", [0.01, 0.0, 0.0])
+    arm.status = status(5, 1)  # powered but idle, brakes engaged
+    with pytest.raises(RuntimeError, match=r"robot mode 5 \(idle"):
+        call(f, "env.move_delta", [0.01, 0.0, 0.0])
+    assert arm.moves == []
+
+
+# -- gripper settle and empty-grasp threshold ------------------------------------------
+
+
+def test_gripper_waits_for_the_position_to_settle_when_obj_lags():
+    # POS moves while OBJ still shows the previous motion's 3: the pre-fix check
+    # settled mid-motion and reported a half-closed width without the grasp.
+    grip = MockRobotiq(object_pos=150, moving_polls=6, obj_lag=True)
+    f = facade(gripper=grip)
+    r = call(f, "env.set_gripper", open=False)
+    assert r["ok"] and r["object_detected"] and grip._pending is None
+    assert r["gripper_width_m"] == pytest.approx(0.085 * (1 - 150 / 255))
+    # An OBJ that disagrees with the command (contact-while-closing during an open)
+    # is not taken as settled either.
+    grip = MockRobotiq(position=150, object_pos=150, moving_polls=4, obj_lag=True)
+    grip.obj = 2
+    f = facade(gripper=grip)
+    r = call(f, "env.set_gripper", open=True)
+    assert r["ok"] and grip.pos == 0 and r["gripper_width_m"] == pytest.approx(0.085)
+
+
+def test_empty_grasp_threshold_follows_the_2f85_closed_width():
+    # A real 2F-85 closed on nothing stops at POS ~228 (9 mm), above the old 5 mm.
+    assert limits_from_config(cfg()).empty_width_m == pytest.approx(0.011, abs=2e-4)
+    assert EMPTY_WIDTH_FRACTION * 0.085 > 0.085 * (1 - 227 / 255)
+    grip = MockRobotiq(closed_pos=228)
+    f = facade(gripper=grip)
+    r = call(f, "env.set_gripper", open=False)
+    assert r["grasp_empty"] is True and r["ok"] is False and grip.pos == 0
+    # A thin object (6 mm) still grasps: contact was reported.
+    thin = MockRobotiq(object_pos=int(255 * (1 - 0.006 / 0.085)))
+    r = call(facade(gripper=thin), "env.set_gripper", open=False)
+    assert r["ok"] and r["object_detected"] and not r.get("grasp_empty")
+    # Scaled to the stroke (2F-140), explicit values win, null disables.
+    big = limits_from_config(cfg(gripper={"poll_s": 0.0, "stroke_m": 0.14}))
+    assert big.empty_width_m == pytest.approx(round(0.13 * 0.14, 4))
+    explicit = limits_from_config(cfg(gripper={"empty_width_m": 0.02}))
+    assert explicit.empty_width_m == 0.02
+    off = limits_from_config(cfg(gripper={"empty_width_m": None}))
+    assert off.empty_width_m is None
+    with pytest.raises(ValueError, match="empty_width_m must be in"):
+        limits_from_config(cfg(gripper={"empty_width_m": 0.08}))
+
+
+def test_old_sample_dirs_with_the_prefixed_distortion_model_load(tmp_path):
+    sdir = tmp_path / "samples"
+    sdir.mkdir()
+    (sdir / "intrinsics.json").write_text(
+        json.dumps(
+            {
+                "width": 640,
+                "height": 480,
+                "fx": 615.0,
+                "fy": 615.0,
+                "ppx": 320.0,
+                "ppy": 240.0,
+                "distortion_model": "distortion.inverse_brown_conrady",
+                "coeffs": [0.1, -0.2, 0.001, 0.001, 0.05],
+            }
+        )
+    )
+    intr = calibrate.load_intrinsics(sdir / "intrinsics.json")
+    assert intr["distortion_model"] == "inverse_brown_conrady"
+    assert intr["coeffs"][0] == 0.1

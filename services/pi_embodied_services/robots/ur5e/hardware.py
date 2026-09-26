@@ -15,8 +15,11 @@
 # After OpenETA real/robots/ur5e.py (ur_rtde receive/control split, lazy control
 # connection) and real/robots/robotiq.py (the URCap socket register protocol).
 # Modified by pi-embodied: motions are started asynchronously so the controller can
-# poll ``stop`` and call stopL/stopJ; the arm's serial number is read for the
-# calibration binding; the gripper client is read/write with non-blocking go_to.
+# poll ``stop`` and call stopL/stopJ (and waits for the async operation to start,
+# then end, by its operation id); a stopped control script is re-uploaded; forward
+# kinematics with the active TCP checks the reset target; the arm's serial number is
+# read for the calibration binding; the gripper client is read/write with
+# non-blocking go_to.
 
 """Hardware handles: the UR5e over ur_rtde and a Robotiq gripper over the URCap socket.
 
@@ -109,7 +112,54 @@ class RtdeArm:
             logger.warning("dashboard serial number unavailable: %s", exc)
             return None
 
-    # -- motion (asynchronous: returns at once, poll ``busy``) ------------------
+    # -- control script -----------------------------------------------------
+
+    def ensure_control(self, timeout_s: float = 5.0) -> str | None:
+        """Make sure the RTDE control script runs before a motion: reconnect a
+        dropped control interface, re-upload a script that stopped (an unreachable
+        target stops it: the controller's IK fails; so does stopping the program on
+        the pendant). Returns a note when something was done, None when all was
+        well; raises when the script cannot be brought back (remote control off)."""
+        if self._ctrl is None:
+            self._control()
+            return None
+        ctrl = self._ctrl
+        note = None
+        if not ctrl.isConnected():
+            ctrl.reconnect()
+            note = "the RTDE control interface had disconnected and was reconnected"
+        if ctrl.isProgramRunning():
+            return note
+        if not ctrl.reuploadScript():
+            raise RuntimeError("reuploadScript() failed")
+        deadline = time.monotonic() + timeout_s
+        while not ctrl.isProgramRunning():
+            if time.monotonic() > deadline:
+                raise RuntimeError(
+                    f"the re-uploaded control script did not start within {timeout_s} s"
+                )
+            time.sleep(0.01)
+        logger.warning("RTDE control script had stopped; re-uploaded")
+        return "the RTDE control script had stopped and was re-uploaded"
+
+    # -- kinematics (the controller's model, with the active TCP offset) ---------
+
+    def forward_kinematics(self, q: Any) -> np.ndarray:
+        """TCP pose ``[x, y, z, rx, ry, rz]`` at joints ``q``. ``getForwardKinematics``
+        with its default (zero) offset returns the tool flange; the active TCP offset
+        (``getTCPOffset``, the pendant's TCP) is passed so the pose is the TCP's."""
+        ctrl = self._control()
+        tcp = [float(v) for v in ctrl.getTCPOffset()]
+        return np.asarray(
+            ctrl.getForwardKinematics([float(v) for v in q], tcp), dtype=np.float64
+        )
+
+    def joints_within_safety_limits(self, q: Any) -> bool:
+        """``isJointsWithinSafetyLimits``: the controller's joint limits."""
+        ctrl = self._control()
+        return bool(ctrl.isJointsWithinSafetyLimits([float(v) for v in q]))
+
+    # -- motion (asynchronous: returns at once, poll ``async_status``) ----------
 
     def move_l(self, pose: Any, speed: float, accel: float) -> bool:
         """Start a moveL; False when the controller rejected it (unreachable pose,
@@ -128,9 +178,21 @@ class RtdeArm:
             )
         )
 
-    def busy(self) -> bool:
-        """Whether an asynchronous motion is still running."""
-        return int(self._control().getAsyncOperationProgress()) >= 0
+    def async_status(self) -> tuple[int | None, bool]:
+        """``(operation id, running)`` of the async status register.
+
+        ur_rtde 1.6.5 ``getAsyncOperationProgressEx``: the control script bumps the
+        operation id (bits 24-30) when an async operation's thread starts and sets
+        the running bit (15) until it ends. moveL/moveJ(async) return before that
+        thread ran, so the controller compares ids (``control.async_phase``). Older
+        ur_rtde has only ``getAsyncOperationProgress`` (``>= 0`` while running): the
+        id is None then."""
+        ctrl = self._control()
+        ex = getattr(ctrl, "getAsyncOperationProgressEx", None)
+        if ex is not None:
+            status = ex()
+            return int(status.operationId()), bool(status.isAsyncOperationRunning())
+        return None, int(ctrl.getAsyncOperationProgress()) >= 0
 
     def stop_l(self, decel: float) -> None:
         self._control().stopL(float(decel))

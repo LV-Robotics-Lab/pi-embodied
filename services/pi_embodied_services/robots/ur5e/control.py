@@ -22,6 +22,10 @@
 # motion runs (stopL / stopJ bring the arm to rest, GTO 0 stops the gripper), a
 # setpoint that is cleared after a stop or a failure, a reset that lifts clear
 # before the joint move, and a gripper that reports jammed fingers and empty grasps.
+# An async moveL/moveJ is awaited the way ur_rtde's examples do it (wait for the
+# operation to start, then for it to end), a protective stop or a halted control
+# script ends the wait at once, and the reset's joint move is checked with the
+# controller's forward kinematics before it is commanded.
 # OpenETA's move_to_pose passed ``rpy`` straight into moveL as a rotation vector when
 # no ``rotvec`` was given (ur5e.py:177); ``pose_rotvec`` converts.
 
@@ -49,6 +53,69 @@ from scipy.spatial.transform import Rotation
 #: Deceleration passed to stopL / stopJ (ur_rtde's defaults).
 STOP_DECEL_L = 10.0
 STOP_DECEL_J = 2.0
+#: RTDE ``safety_mode`` values in which the arm may move (1 NORMAL, 2 REDUCED); the
+#: others are stops (3 PROTECTIVE_STOP, 5 SAFEGUARD_STOP, 6/7 emergency stops, ...).
+MOVABLE_SAFETY_MODES = (1, 2)
+SAFETY_MODE_NAMES = {
+    1: "normal",
+    2: "reduced",
+    3: "protective stop",
+    4: "recovery",
+    5: "safeguard stop",
+    6: "system emergency stop",
+    7: "robot emergency stop",
+    8: "violation",
+    9: "fault",
+    10: "validate joint id",
+    11: "undefined",
+    12: "automatic mode safeguard stop",
+    13: "three-position enabling stop",
+}
+#: RTDE ``robot_mode`` in which motion is possible (7 RUNNING: powered, brakes off).
+ROBOT_MODE_RUNNING = 7
+ROBOT_MODE_NAMES = {
+    -1: "no controller",
+    0: "disconnected",
+    1: "confirm safety",
+    2: "booting",
+    3: "power off",
+    4: "power on",
+    5: "idle (brakes engaged)",
+    6: "backdrive",
+    7: "running",
+    8: "updating firmware",
+}
+#: A Robotiq 2F-85 closed on nothing stops at POS ~227..230 of 255, which the linear
+#: width map reads as 8.5..9.3 mm; 13 % of the stroke (11 mm on a 2F-85, 18 mm on a
+#: 2F-140) sits above that with margin. The default ``gripper.empty_width_m`` is this
+#: fraction of ``gripper.stroke_m``. A thin object still grasps: the gripper reports
+#: contact (OBJ 2), and an empty grasp also requires that no contact was reported.
+EMPTY_WIDTH_FRACTION = 0.13
+
+
+def async_phase(
+    before: tuple[int | None, bool], now: tuple[int | None, bool], seen_running: bool
+) -> str:
+    """Where an async moveL/moveJ issued after ``before`` is, from the async status
+    register ``now`` (``(operation id, running)``, :meth:`RtdeArm.async_status`).
+
+    ur_rtde 1.6.5: moveL/moveJ(async=True) returns once the control script has
+    *spawned* its move thread; the thread writes "started" (a new operation id with
+    the running bit) only when it first runs, so right after the call the register
+    still shows the previous operation, which reads as "finished". The operation id
+    is what tells them apart: ``pending`` while it is the old one, then ``running``
+    or ``done``. Without an id (ur_rtde older than getAsyncOperationProgressEx: only
+    ``progress >= 0``) the operation counts as done only after it was seen running.
+    """
+    id0, _ = before
+    id1, run1 = now
+    if id0 is not None and id1 is not None:
+        if id1 == id0:
+            return "pending"
+        return "running" if run1 else "done"
+    if run1:
+        return "running"
+    return "done" if seen_running else "pending"
 
 
 def pose_rotvec(rotvec: Any = None, rpy: Any = None) -> np.ndarray:
@@ -99,6 +166,7 @@ class UR5eLimits:
     joint_speed_radps: float = 0.25
     joint_accel_radps2: float = 0.5
     poll_s: float = 0.02
+    start_timeout_s: float = 1.0
     move_timeout_s: float = 15.0
     reset_timeout_s: float = 30.0
     move_tolerance_m: float = 0.005
@@ -107,15 +175,17 @@ class UR5eLimits:
     divergence_resync_m: float = 0.01
     divergence_resync_rad: float = 0.05
     reset_lift_m: float = 0.05
+    reset_path_samples: int = 10
     gripper_stroke_m: float = 0.085
     gripper_speed: int = 255
     gripper_force: int = 100
     gripper_timeout_s: float = 5.0
     gripper_ack_timeout_s: float = 0.5
     gripper_poll_s: float = 0.05
+    gripper_settle_polls: int = 2
     gripper_motion_eps_m: float = 0.003
     close_threshold_m: float = 0.075
-    empty_width_m: float | None = 0.005
+    empty_width_m: float | None = round(EMPTY_WIDTH_FRACTION * 0.085, 4)
     begin_joints: tuple[float, ...] | None = None
 
     def validate(self) -> None:
@@ -157,10 +227,20 @@ class UR5eLimits:
         bound("joint_speed_radps", 1e-3, 1.0)
         bound("joint_accel_radps2", 1e-2, 2.0)
         bound("poll_s", 0.0, 0.5)
+        bound("start_timeout_s", 0.05, 10.0)
+        bound("reset_path_samples", 1, 100)
+        bound("gripper_settle_polls", 1, 20)
         bound("divergence_resync_rad", 1e-3, math.pi)
         bound("reset_lift_m", 0.0, 0.2)
         bound("gripper_stroke_m", 0.01, 0.3)
         bound("gripper_ack_timeout_s", 0.0, 5.0)
+        if self.empty_width_m is not None and not (
+            0.0 <= self.empty_width_m < self.close_threshold_m
+        ):
+            raise ValueError(
+                "empty_width_m must be in [0, close_threshold_m) (null disables the "
+                f"empty-grasp reopen), got {self.empty_width_m}"
+            )
         if self.max_tilt_rad is not None:
             bound("max_tilt_rad", 0.0, math.pi)
         if self.begin_joints is not None and np.asarray(self.begin_joints).shape != (
@@ -198,6 +278,7 @@ class UR5eController:
         self.target: np.ndarray | None = None
         self.commanded_open: bool | None = None
         self.commands = 0
+        self._control_note: str | None = None
 
     # -- state -------------------------------------------------------------
 
@@ -308,20 +389,34 @@ class UR5eController:
 
     # -- motion ------------------------------------------------------------
 
-    def safety_stopped(self) -> str | None:
-        """Why the robot cannot move right now (``protective_stopped`` or
-        ``emergency_stopped``, with the safety mode), or None."""
-        status = self.arm.status()
+    @staticmethod
+    def _safety_reason(status: dict[str, Any]) -> str | None:
         for key in ("emergency_stopped", "protective_stopped"):
             if status.get(key):
                 return (
                     f"{key.replace('_', ' ')} (safety mode {status.get('safety_mode')})"
                 )
+        mode = status.get("safety_mode")
+        if mode is not None and int(mode) not in MOVABLE_SAFETY_MODES:
+            name = SAFETY_MODE_NAMES.get(int(mode), "unknown")
+            return f"in safety mode {int(mode)} ({name})"
+        robot_mode = status.get("robot_mode")
+        if robot_mode is not None and int(robot_mode) != ROBOT_MODE_RUNNING:
+            name = ROBOT_MODE_NAMES.get(int(robot_mode), "unknown")
+            return f"in robot mode {int(robot_mode)} ({name}), not running"
         return None
+
+    def safety_stopped(self) -> str | None:
+        """Why the robot cannot move right now (``protective_stopped``,
+        ``emergency_stopped``, a safety mode other than normal/reduced, or a robot
+        mode other than running), or None."""
+        return self._safety_reason(self.arm.status())
 
     def _require_movable(self, what: str) -> None:
         """Refuse ``what`` before anything is commanded while the robot is stopped by
-        its safety system; the setpoint is cleared (the arm may have been moved)."""
+        its safety system; the setpoint is cleared (the arm may have been moved).
+        A control script that stopped (an unreachable target, a program stopped on
+        the pendant) is re-uploaded here, so no server restart is needed."""
         reason = self.safety_stopped()
         if reason is not None:
             self.target = None
@@ -330,6 +425,21 @@ class UR5eController:
                 "pendant (unlock protective stop / release the e-stop) and re-enable "
                 "remote control; nothing was commanded"
             )
+        ensure = getattr(self.arm, "ensure_control", None)
+        if ensure is None:
+            return
+        try:
+            note = ensure()
+        except Exception as exc:
+            self.target = None
+            raise RuntimeError(
+                f"{what} refused: the RTDE control script is not running and could not "
+                f"be re-uploaded ({exc}). Check that the pendant is in Remote Control "
+                "and no other program runs; nothing was commanded"
+            ) from exc
+        if note:
+            self.target = None
+            self._control_note = str(note)
 
     def _rejected(self, what: str) -> RuntimeError:
         """The controller returned False from moveL/moveJ: the command never ran."""
@@ -342,13 +452,109 @@ class UR5eController:
             "control script is not running); the setpoint was cleared"
         )
 
+    def _halted(self) -> dict[str, Any] | None:
+        """What ended a running motion from the robot side, or None: a safety stop
+        (protective, safeguard, emergency; the arm is held by the safety system) or
+        the control script no longer running (the controller rejected the target,
+        e.g. no inverse kinematics solution, or the program was stopped)."""
+        status = self.arm.status()
+        reason = self._safety_reason(status)
+        if reason is not None:
+            return {
+                "interrupted": "safety_stop",
+                "reason": reason,
+                "protective_stopped": bool(status.get("protective_stopped")),
+            }
+        if status.get("program_running") is False:
+            return {
+                "interrupted": "control_script_stopped",
+                "reason": "the RTDE control script stopped",
+                "protective_stopped": False,
+            }
+        return None
+
+    def _await_motion(
+        self,
+        before: tuple[int | None, bool],
+        stop: Callable[[], None],
+        timeout_s: float,
+    ) -> dict[str, Any]:
+        """Wait for the async motion issued after the register read ``before``:
+        first for it to start (``start_timeout_s``), then for it to end. ``stop``
+        (stopL/stopJ) runs on a stop request, a timeout, an interruption, or a
+        motion that never started. Returns the outcome flags and ``polls``."""
+        lim = self.limits
+        t0 = self._clock()
+        out: dict[str, Any] = {"polls": 0, "started": False}
+        while True:
+            if self._stop():
+                stop()
+                out["cancelled"] = True
+                return out
+            phase = async_phase(before, self.arm.async_status(), out["started"])
+            if phase == "done":
+                out["started"] = True
+                return out
+            if phase == "running":
+                out["started"] = True
+            halted = self._halted()
+            if halted is not None:
+                try:
+                    stop()
+                except Exception:
+                    pass  # a stopped script or a safety stop refuses stopL/stopJ
+                out.update(halted)
+                return out
+            elapsed = self._clock() - t0
+            if not out["started"] and elapsed > lim.start_timeout_s:
+                stop()
+                out["not_started"] = True
+                return out
+            if elapsed > timeout_s:
+                stop()
+                out["timed_out"] = True
+                return out
+            out["polls"] += 1
+            self._sleep(lim.poll_s)
+
+    def _report(self, result: dict[str, Any], run: dict[str, Any], what: str) -> None:
+        """Outcome flags of ``_await_motion`` into a motion result (not ok unless the
+        motion ran to its end)."""
+        if run.get("cancelled"):
+            result["cancelled"] = True
+        if run.get("not_started"):
+            result["ok"] = False
+            result["not_started"] = True
+            result["note"] = (
+                f"{what} was accepted but the controller never reported it running "
+                f"within {self.limits.start_timeout_s} s; it was stopped"
+            )
+        if run.get("timed_out"):
+            result["timed_out"] = True
+        if run.get("interrupted"):
+            result["ok"] = False
+            result["interrupted"] = run["interrupted"]
+            if run["interrupted"] == "control_script_stopped":
+                result["note"] = (
+                    f"{what} ended because the RTDE control script stopped: the "
+                    "controller could not execute the target (unreachable / no inverse "
+                    "kinematics solution) or the program was stopped on the pendant. "
+                    "The next command re-uploads the script; the setpoint was cleared"
+                )
+        if self._control_note:
+            result["control_script_reuploaded"] = True
+            result["control_note"] = self._control_note
+            self._control_note = None
+
     def _after_motion(self, result: dict[str, Any], what: str) -> None:
         """A safety stop during the motion makes the result not ok and says so."""
         reason = self.safety_stopped()
         if reason is not None:
             self.target = None
             result["ok"] = False
-            result["protective_stopped"] = True
+            result["protective_stopped"] = "protective" in reason
+            result["safety_stopped"] = True
+            result.pop("timed_out", None)
             result["note"] = (
                 f"{what} ended with the robot {reason}: it hit something or left the "
                 "safety limits. Clear the stop on the teach pendant before the next "
@@ -359,26 +565,15 @@ class UR5eController:
         """Start a moveL to ``target`` and wait for it; stop it on ``stop`` or timeout."""
         lim = self.limits
         self._require_movable("the move")
+        before = self.arm.async_status()
         if not self.arm.move_l(target, lim.speed_mps, lim.accel_mps2):
             raise self._rejected("moveL")
         self.commands += 1
         t0 = self._clock()
-        cancelled = timed_out = False
-        polls = 0
         try:
-            while True:
-                if self._stop():
-                    self.arm.stop_l(STOP_DECEL_L)
-                    cancelled = True
-                    break
-                if not self.arm.busy():
-                    break
-                if self._clock() - t0 > timeout_s:
-                    self.arm.stop_l(STOP_DECEL_L)
-                    timed_out = True
-                    break
-                polls += 1
-                self._sleep(lim.poll_s)
+            run = self._await_motion(
+                before, lambda: self.arm.stop_l(STOP_DECEL_L), timeout_s
+            )
         except Exception as exc:
             self.target = None
             try:
@@ -392,8 +587,10 @@ class UR5eController:
         pos_err = float(np.linalg.norm(target[:3] - final[:3]))
         rot_err = rotation_gap(target[3:], final[3:])
         ok = (
-            not cancelled
-            and not timed_out
+            not run.get("cancelled")
+            and not run.get("timed_out")
+            and not run.get("not_started")
+            and not run.get("interrupted")
             and pos_err <= lim.move_tolerance_m
             and rot_err <= lim.rotate_tolerance_rad
         )
@@ -407,14 +604,12 @@ class UR5eController:
             "final_tcp_pose": pose7_of(final),
             "final_error_m": pos_err,
             "final_error_rad": rot_err,
-            "steps_used": polls,
+            "steps_used": run["polls"],
             "elapsed_s": float(self._clock() - t0),
             "states": None,
         }
-        if cancelled:
-            result["cancelled"] = True
-        if timed_out:
-            result["timed_out"] = True
+        self._report(result, run, "the move")
+        if run.get("timed_out"):
             result["note"] = (
                 f"moveL did not finish within {timeout_s} s and was stopped"
             )
@@ -497,17 +692,23 @@ class UR5eController:
         cancelled). A stop sends the gripper a stop.
 
         ``OBJ`` lags: right after the command it still reads the previous motion's
-        value (3 = at position), which the old check took for "settled" and then
-        reported unmoved fingers as jammed. The status counts as fresh only once the
-        gripper echoes the request (``PRE``) and either reports motion (``OBJ`` 0),
-        the position changed, or the position equals the request. Fingers that show
-        none of that within ``gripper_ack_timeout_s`` are taken as settled where they
-        are (so a real jam is still reported).
+        value (3 = at position), and it can keep that value for a while after the
+        fingers started moving (``POS`` already changes). The status counts as fresh
+        once the gripper echoes the request (``PRE``) and either reports motion
+        (``OBJ`` 0), the position changed, or the position equals the request. The
+        fingers are settled only when, on top of that, ``POS`` read the same value
+        ``gripper_settle_polls`` times in a row (they stopped) and ``OBJ`` agrees
+        with the command's direction (contact while opening, 1, only on an open;
+        contact while closing, 2, only on a close). Fingers that show no fresh
+        status within ``gripper_ack_timeout_s`` are taken as settled where they are
+        (so a real jam is still reported).
         """
         lim = self.limits
         t0 = self._clock()
         pos0 = int(self.gripper.position())
         fresh = False
+        last_pos: int | None = None
+        same = 0
         while True:
             if self._stop():
                 try:
@@ -519,9 +720,21 @@ class UR5eController:
             if int(self.gripper.requested_position()) == int(requested):
                 obj = int(self.gripper.object_status())
                 pos = int(self.gripper.position())
+                same = same + 1 if pos == last_pos else 1
+                last_pos = pos
                 if obj == 0 or pos != pos0 or pos == int(requested):
                     fresh = True
-                if fresh and obj != 0:
+                consistent = (
+                    obj == 3
+                    or (obj == 1 and requested < pos0)
+                    or (obj == 2 and requested > pos0)
+                )
+                if (
+                    fresh
+                    and obj != 0
+                    and consistent
+                    and same >= lim.gripper_settle_polls
+                ):
                     return True, False
                 if not fresh and elapsed > lim.gripper_ack_timeout_s:
                     return True, False
@@ -531,9 +744,10 @@ class UR5eController:
 
     def set_gripper(self, *, open: bool) -> dict[str, Any]:
         """Open (position 0) or close (255). A close that ends at or below
-        ``empty_width_m`` with nothing detected caught nothing and is reopened
-        (``grasp_empty``); fingers that did not move toward the command and hold no
-        object are ``gripper_jammed``."""
+        ``empty_width_m`` (default :data:`EMPTY_WIDTH_FRACTION` of the stroke: a
+        2F-85 closed on nothing reads ~9 mm) with no contact reported caught nothing
+        and is reopened (``grasp_empty``); fingers that did not move toward the
+        command and hold no object are ``gripper_jammed``."""
         lim = self.limits
         if self.gripper is None:
             raise ValueError("this UR5e has no gripper configured (robot.gripper.type)")
@@ -600,32 +814,97 @@ class UR5eController:
 
     # -- reset -------------------------------------------------------------
 
-    def move_joints(self, q: Any) -> dict[str, Any]:
-        """moveJ to ``q`` (6 joint angles), stoppable with stopJ; clears the setpoint."""
+    def _fk(self, q: np.ndarray) -> np.ndarray:
+        """The TCP pose at joints ``q`` from the controller's forward kinematics."""
+        pose = np.asarray(self.arm.forward_kinematics(q), dtype=np.float64).reshape(-1)
+        if pose.shape != (6,) or not np.all(np.isfinite(pose)):
+            raise RuntimeError(
+                f"forward kinematics returned an invalid pose {pose.tolist()}"
+            )
+        return pose
+
+    def _box_text(self) -> str:
+        lo, hi = self.limits.workspace_min, self.limits.workspace_max
+        return (
+            f"x {lo[0]}..{hi[0]}, y {lo[1]}..{hi[1]}, z {self.limits.z_floor_m}"
+            f"..{hi[2]} m"
+        )
+
+    def check_joint_target(self, q: np.ndarray, what: str) -> np.ndarray:
+        """Refuse joints ``q`` whose TCP (controller FK with the active TCP offset)
+        is outside the workspace box / below the floor, or that the controller's
+        safety configuration rejects. Returns the TCP pose at ``q``."""
+        within = getattr(self.arm, "joints_within_safety_limits", None)
+        if within is not None and not within(q):
+            raise ValueError(
+                f"{what}: the joints {np.round(q, 4).tolist()} are outside the "
+                "controller's safety limits (joint limits in the safety configuration); "
+                "nothing was commanded"
+            )
+        pose = self._fk(q)
+        if np.any(self._violation(pose[:3]) > 1e-6):
+            raise ValueError(
+                f"{what}: the joints put the TCP at {np.round(pose[:3], 4).tolist()}, "
+                f"outside the workspace ({self._box_text()}); fix calibration."
+                "begin_joints or the box; nothing was commanded"
+            )
+        return pose
+
+    def check_joint_path(self, q0: np.ndarray, q1: np.ndarray) -> str | None:
+        """Why the moveJ from ``q0`` to ``q1`` would take the TCP further outside the
+        workspace than it starts (or below the floor), or None.
+
+        moveJ interpolates all joints linearly with one time scaling, so the path is
+        the straight line in joint space; ``reset_path_samples`` points on it are
+        checked with the controller's forward kinematics. Between samples the TCP
+        can still dip (a swing through the table between two samples); keep the
+        begin pose's path well clear of the floor."""
+        n = int(self.limits.reset_path_samples)
+        start_out = float(self._violation(self._fk(q0)[:3]).sum())
+        for i in range(1, n + 1):
+            s = i / n
+            q = q0 + s * (q1 - q0)
+            p = self._fk(q)
+            out = float(self._violation(p[:3]).sum())
+            if out > start_out + 1e-6:
+                return (
+                    f"the joint path to the begin pose leaves the workspace at "
+                    f"{s:.0%} of the way (TCP {np.round(p[:3], 4).tolist()}; "
+                    f"{self._box_text()})"
+                )
+        return None
+
+    def move_joints(self, q: Any, *, check_path: bool = True) -> dict[str, Any]:
+        """moveJ to ``q`` (6 joint angles), stoppable with stopJ; clears the setpoint.
+        The target (and, with ``check_path``, sampled points of the joint path) are
+        checked against the workspace with forward kinematics before anything
+        moves: a target outside raises ValueError, a path that leaves the box
+        returns a result with ``ok`` False and ``path_outside_workspace``."""
         lim = self.limits
         target = np.asarray(q, dtype=np.float64).reshape(-1)
         if target.shape != (6,) or not np.all(np.isfinite(target)):
             raise ValueError("joints must be 6 finite angles (rad)")
         self._require_movable("the joint move")
+        self.check_joint_target(target, "the joint move")
+        if check_path:
+            blocked = self.check_joint_path(np.asarray(self.arm.joints()), target)
+            if blocked is not None:
+                return {
+                    "ok": False,
+                    "target_joints": target.tolist(),
+                    "final_joints": [float(v) for v in self.arm.joints()],
+                    "path_outside_workspace": True,
+                    "note": f"{blocked}; nothing was commanded",
+                }
         self.target = None
+        before = self.arm.async_status()
         if not self.arm.move_j(target, lim.joint_speed_radps, lim.joint_accel_radps2):
             raise self._rejected("moveJ")
         self.commands += 1
-        t0 = self._clock()
-        cancelled = timed_out = False
         try:
-            while True:
-                if self._stop():
-                    self.arm.stop_j(STOP_DECEL_J)
-                    cancelled = True
-                    break
-                if not self.arm.busy():
-                    break
-                if self._clock() - t0 > lim.reset_timeout_s:
-                    self.arm.stop_j(STOP_DECEL_J)
-                    timed_out = True
-                    break
-                self._sleep(lim.poll_s)
+            run = self._await_motion(
+                before, lambda: self.arm.stop_j(STOP_DECEL_J), lim.reset_timeout_s
+            )
         except Exception as exc:
             try:
                 self.arm.stop_j(STOP_DECEL_J)
@@ -633,7 +912,13 @@ class UR5eController:
                 pass
             raise RuntimeError(f"joint motion aborted: {exc}") from exc
         err = float(np.max(np.abs(np.asarray(self.arm.joints()) - target)))
-        ok = not cancelled and not timed_out and err <= lim.joint_tolerance_rad
+        ok = (
+            not run.get("cancelled")
+            and not run.get("timed_out")
+            and not run.get("not_started")
+            and not run.get("interrupted")
+            and err <= lim.joint_tolerance_rad
+        )
         if ok:
             self.target = self.measured()
         result: dict[str, Any] = {
@@ -643,10 +928,8 @@ class UR5eController:
             "final_error_rad": err,
             "final_tcp_pose": pose7_of(self.measured()),
         }
-        if cancelled:
-            result["cancelled"] = True
-        if timed_out:
-            result["timed_out"] = True
+        self._report(result, run, "the joint move")
+        if run.get("timed_out"):
             result["note"] = (
                 f"moveJ did not finish within {lim.reset_timeout_s} s and was stopped"
             )
@@ -656,10 +939,15 @@ class UR5eController:
     def reset(self) -> dict[str, Any]:
         """Open the gripper, lift ``reset_lift_m`` clear of the workspace, then moveJ
         to ``begin_joints`` (refused when unset); the same sequence as the Franka
-        servers. A held object is released where the arm is (like Franka's reset, so
-        the reset between episodes always runs) and reported as ``released_object``.
-        The result is not ok when the lift or the joint move did not arrive, or when
-        the begin pose leaves the TCP outside the workspace box.
+        servers.
+
+        Before anything moves, the begin pose's TCP (controller forward kinematics)
+        must lie inside the workspace box; after the lift, the joint path to it is
+        sampled the same way (``move_joints``). A held object is released where the
+        arm is, before the lift, and reported as ``released_object``: carrying it
+        through an unchecked joint-space swing could fling it, and the reset between
+        episodes must always run (as Franka's reset). The result is not ok when the
+        lift or the joint move did not arrive.
         """
         lim = self.limits
         if lim.begin_joints is None:
@@ -668,7 +956,12 @@ class UR5eController:
                 "the env server with --read-pose and copy joints_rad; nothing was commanded"
             )
         self._require_movable("the reset")
-        info: dict[str, Any] = {"begin_joints": list(lim.begin_joints)}
+        begin = np.asarray(lim.begin_joints, dtype=np.float64)
+        begin_pose = self.check_joint_target(begin, "the reset")
+        info: dict[str, Any] = {
+            "begin_joints": list(lim.begin_joints),
+            "begin_tcp_pose": pose7_of(begin_pose),
+        }
         out: dict[str, Any] = {
             "ok": False,
             "gripper": None,
@@ -706,20 +999,24 @@ class UR5eController:
                     "note", "the lift before the joint move did not arrive"
                 )
                 return out
-        move = self.move_joints(lim.begin_joints)
+        move = self.move_joints(begin)
         out["move"] = move
         if move.get("cancelled"):
             out["cancelled"] = True
+        if move.get("path_outside_workspace"):
+            info["begin_path_outside_workspace"] = True
+            info["note"] = move["note"]
         ok = bool(move["ok"]) and bool(grip.get("ok", True))
         if move["ok"]:
             final = self.measured()
             if np.any(self._violation(final[:3]) > 1e-6):
-                lo, hi = lim.workspace_min, lim.workspace_max
+                # Forward kinematics said inside; the measured TCP disagrees (a TCP
+                # offset changed on the pendant?). Report it rather than trust it.
                 info["begin_pose_outside_workspace"] = True
                 info["note"] = (
                     f"the begin pose puts the TCP at {np.round(final[:3], 4).tolist()}, "
-                    f"outside the workspace (x {lo[0]}..{hi[0]}, y {lo[1]}..{hi[1]}, z "
-                    f"{lim.z_floor_m}..{hi[2]} m); fix calibration.begin_joints or the box"
+                    f"outside the workspace ({self._box_text()}) although forward "
+                    "kinematics placed it inside; check the TCP offset on the pendant"
                 )
                 ok = False
         out["ok"] = ok

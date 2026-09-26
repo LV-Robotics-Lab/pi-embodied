@@ -18,6 +18,7 @@ import { type Static, type TSchema, Type } from "typebox";
 import { type FlywheelObs, type FlywheelSpec, flywheelSuite } from "../flywheel.ts";
 import { ikArgs, type Reach, reachRefusal, registerIkFlag } from "../ik.ts";
 import { decodePngChannel, encodePng } from "../png.ts";
+import { graspAdvisorTool } from "../primitives/advisor.ts";
 import {
 	DETECTIONS_EXPIRED_ENTRY,
 	graspActive,
@@ -27,6 +28,8 @@ import {
 	mountGraspTool,
 	registerGraspFlags,
 } from "../primitives/grasp.ts";
+import { waypointsTool } from "../primitives/waypoints.ts";
+import { alignWristTool, projectPoints } from "../primitives/wrist.ts";
 import { defineRobot, mark, median, message, SERVICES } from "../robot.ts";
 import { NdArray, RpcClient } from "../rpc.ts";
 import { finishMove, type Move, type UnitsSpec } from "../units/index.ts";
@@ -1218,6 +1221,75 @@ export default function libero(pi: ExtensionAPI) {
 			executePlanned("execute_place", place_id, "placement", { standoff, lift: 0, max_steps }),
 	);
 
+	// OpenETA extras, each registered only with its flag: follow_waypoints (--waypoints), align_wrist
+	// (--align-wrist), suggest_grasp (--grasp-advisor) over ../primitives/{waypoints,wrist,advisor}.ts.
+	const cameraMeta = (c: Camera) =>
+		call<CameraMeta>(env, "env.get_camera_meta", { camera_name: CAMERAS[c], height: 1024, width: 1024 });
+	const extras = [
+		waypointsTool(
+			pi,
+			{
+				current: eef,
+				maxSegment: () => 0.3,
+				maxPath: () => 0.6,
+				segment: async (_from, to, g) => {
+					const dist = () => Math.hypot(...to.map((v, i) => v - eef()[i]));
+					let steps = 0;
+					for (; steps < 80 && !terminated && !truncated && dist() >= 0.012; steps++)
+						await step([...to.map((v, i) => clip(clip(v - eef()[i], -0.025, 0.025) / 0.05, -1, 1)), 0, 0, 0, g]);
+					return {
+						reached: dist() < 0.012,
+						ended: terminated || truncated,
+						final_dist_m: round(dist()),
+						steps_used: steps,
+					};
+				},
+			},
+			(d) => tool(d.name, d.description, d.parameters, (p) => d.run(p, robot.signal)),
+		),
+		alignWristTool(
+			pi,
+			{
+				moveWith: "move_to xyz",
+				gripper: eef,
+				view: async (row, col) => {
+					const map = await worldMap("wrist", 1024);
+					const i = (clip(row, 0, 1023) * 1024 + clip(col, 0, 1023)) * 3;
+					const target = [map.xyz[i], map.xyz[i + 1], map.xyz[i + 2]];
+					if (!target.every(Number.isFinite) || !target.some((v) => Math.abs(v) > 1e-6))
+						throw new Error(`no valid depth at wrist pixel (${row},${col}); pick another pixel`);
+					const meta = await cameraMeta("wrist");
+					const image = { width: 1024, height: 1024, rgb: map.rgb };
+					return { K: meta.intrinsic_K, cam2world: meta.extrinsic_cam2world, target, image };
+				},
+			},
+			(d) =>
+				tool(
+					d.name,
+					d.description,
+					d.parameters,
+					async (p) => {
+						const { _pngs, ...rest } = await d.run(p, robot.signal);
+						return { ...rest, ...(_pngs?.[0] ? { _image: _pngs[0] } : {}) };
+					},
+					false,
+				),
+		),
+	];
+	const advisor = graspAdvisorTool(
+		pi,
+		{
+			image: async (c) => ({ width: 1024, height: 1024, rgb: (await render(c as Camera, 1024, false)).rgb }),
+			project: async (c, points) => {
+				const meta = await cameraMeta(c as Camera);
+				return projectPoints(meta.intrinsic_K, meta.extrinsic_cam2world, points);
+			},
+			stamp: () => envStep,
+			task: () => language,
+		},
+		(d) => mountGraspTool(robot.tool, d),
+	);
+
 	/**
 	 * One action unit (../units): drive the gripper, servo the EEF to its current position plus
 	 * `delta` (holding the gripper command), turn the wrist by `yaw` or an RT_* `rot`, or hold one step (STOP).
@@ -1357,6 +1429,7 @@ export default function libero(pi: ExtensionAPI) {
 		fly.reset(flyObs(obs), flyMeta());
 		const tools = flag("ik", "") ? TOOLS : TOOLS.filter((name) => name !== "preview_reach");
 		const grasp = graspActive(pi);
-		return [...tools, ...grasp, ...(grasp.length ? ["execute_grasp", "execute_place"] : []), ...adapters.keys()];
+		const extra = [...extras.flatMap((on) => on()), ...advisor(grasp.length > 0)];
+		return [...tools, ...grasp, ...(grasp.length ? ["execute_grasp", "execute_place"] : []), ...adapters.keys(), ...extra];
 	}
 }

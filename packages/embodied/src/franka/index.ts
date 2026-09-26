@@ -30,6 +30,8 @@ import { graspActive, graspArgs, graspTools, registerGraspFlags } from "../primi
 import { type MotionRig, moveDelta, rotateDelta, setGripper } from "../primitives/motion.ts";
 import { viewCameraMeta, viewEnvState } from "../primitives/perception.ts";
 import { type Step as BaseStep, getStep, outcome, type StepsIO, stepParam, type ToolDef } from "../primitives/steps.ts";
+import { MAX_WAYPOINTS, waypointsTool } from "../primitives/waypoints.ts";
+import { alignWristTool, compose } from "../primitives/wrist.ts";
 import {
 	apply,
 	attach,
@@ -47,6 +49,7 @@ import {
 	numbers,
 	plain,
 	pose7,
+	type Rgb,
 	rgbOf,
 	round,
 	roundAll,
@@ -1112,6 +1115,52 @@ export default function franka(pi: ExtensionAPI) {
 	mount(setGripper(rig, true, "Open the Franka gripper and wait for the command to settle."));
 	mount(setGripper(rig, false, "Close the Franka gripper and wait for the command to settle."));
 
+	// OpenETA extras, each registered only with its flag: follow_waypoints (--waypoints: every segment
+	// one bounded env.move_delta) and align_wrist (--align-wrist: the wrist camera's hand-eye calibration).
+	const tcpXyz = () => tcpPose(getStep(steps, -1)).slice(0, 3);
+	const extras = [
+		waypointsTool(
+			pi,
+			{
+				check,
+				gripper: false,
+				current: tcpXyz,
+				maxSegment: maxMove,
+				maxPath: () => maxMove() * MAX_WAYPOINTS,
+				constraints: () => setup?.task.constraints,
+				workspace: (target) => checkWorkspace(target.map((v, i) => v - tcpXyz()[i])),
+				segment: async (from, to, _gripper, signal) => {
+					const delta = NdArray.f32(to.map((v, i) => v - from[i]));
+					const r = await motion("env.move_delta", { delta_xyz: delta }, signal);
+					return { reached: !r.error, ...(r.error ? { error: String(r.error) } : {}) };
+				},
+			},
+			(d) => mount(d),
+		),
+		alignWristTool(
+			pi,
+			{
+				moveWith: "move_delta (delta_world)",
+				gripper: tcpXyz,
+				view: async (row, col) => {
+					const s = getStep(steps, -1);
+					const p = projectView(s, "wrist", row, col);
+					if (p.error) throw new Error(p.error);
+					const [key, name] = resolveCamera(s.meta ?? {}, "wrist");
+					const K = (s.meta?.cameras?.[name ?? ""] ?? s.meta?.cameras?.[key])?.intrinsic_K as Mat;
+					let image: Rgb | undefined;
+					try {
+						const shape = JSON.parse(readFileSync(join(s.dir, `${ARTIFACTS.main[0]}.json`), "utf8"));
+						image = { ...shape, rgb: readFileSync(join(s.dir, `${ARTIFACTS.main[0]}.rgb`)) };
+					} catch {}
+					const cam2world = compose(pose7(tcpPose(s)), calibration().wrist.matrix);
+					return { K, cam2world, target: p.point_base as number[], image };
+				},
+			},
+			(d) => mount(d, false),
+		),
+	];
+
 	tool(
 		"vla_grasp",
 		"Run bounded real-world VLA action chunks for a local grasp attempt.",
@@ -1237,6 +1286,7 @@ export default function franka(pi: ExtensionAPI) {
 					(!(name in PERCEPTION_TOOLS) || caps.perception?.[PERCEPTION_TOOLS[name]] === true),
 			),
 			...graspActive(pi),
+			...extras.flatMap((on) => on()),
 		];
 	}
 }

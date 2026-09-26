@@ -21,7 +21,9 @@ import { explore } from "./explore.ts";
 import { fallback } from "./fallback.ts";
 import { type FlashHook, flash } from "./flash/index.ts";
 import { type FlywheelSpec, flywheel } from "./flywheel.ts";
+import { human } from "./human.ts";
 import { type MemoryOptions, memory } from "./memory/index.ts";
+import { objectMemory } from "./objects.ts";
 import { operator } from "./operator.ts";
 import { CODE_API_ENTRY, CODE_API_EVENT, type CodeApi, fetchCodeApi } from "./primitives/registry.ts";
 import { forgetUnresponsive, NdArray, RpcClient, RpcUnavailable } from "./rpc.ts";
@@ -29,6 +31,7 @@ import { type UnitsSpec, units } from "./units/index.ts";
 import { VLM_COST_EVENT } from "./units/vlm.ts";
 import { type VdmSpec, vdm } from "./vdm.ts";
 import { episodeVideo } from "./video.ts";
+import { webTools } from "./web.ts";
 
 export type Json = Record<string, any>;
 export type Mat = number[][];
@@ -294,6 +297,15 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	const fb = fallback(pi);
 	// The `ensemble/<base>` planner (../ensemble.ts), only with `--model ensemble/...` on the command line.
 	const en = ensemble(pi);
+	// The `human/operator` model (../human.ts), only when a human/... model is on the command line.
+	human(pi);
+	// --web-tools keeps the pi packages' web_search / web_fetch active (./web.ts); --object-memory (./objects.ts).
+	const web = webTools(pi);
+	const objs = objectMemory(pi, {
+		robot: name,
+		scene: () => task,
+		step: () => (ready ? spec.status?.().step : undefined),
+	});
 	/** A successful scene reset also restarts the units state (accumulated yaw, gripper, plan). */
 	const resetsUnits =
 		<A extends unknown[], R>(reset: (...args: A) => Promise<R>) =>
@@ -434,7 +446,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 				mode === "pure"
 					? [...(un?.tools() ?? []), ...coded, "finish"]
 					: [...tools, ...(mem?.tools ?? []), ...(mode === "both" ? [...(un?.tools() ?? []), ...coded] : [])];
-			pi.setActiveTools([...new Set([...own, ...op.tools(), ...groundTruth()])]);
+			pi.setActiveTools([...new Set([...own, ...op.tools(), ...groundTruth(), ...web.tools(), ...objs.tools()])]);
 			ready = true;
 		} catch (err) {
 			// Without a robot there is nothing to act on: no tools, and a non-interactive run exits.

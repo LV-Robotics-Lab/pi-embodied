@@ -5,6 +5,9 @@
  *   pi -e packages/embodied/src/robosuite --task Lift --seed 0
  *   pi -e packages/embodied/src/robosuite --task TwoArmLift --seed 3 --units=true
  *   pi -e packages/embodied/src/robosuite --task Stack --seed 0 --privileged    (ground_truth_poses)
+ *   pi -e packages/embodied/src/robosuite --task Lift --seed 0 --code=true --code-api=low   (run_code, CaP-X's S3)
+ *   pi -e packages/embodied/src/robosuite --task Lift --seed 0 --code=true --privileged \
+ *      --code-oracle lift_privileged                          (CaP-X's human oracle, no model: ./oracle)
  *
  * Starts one env server per session (services/.../robots/robosuite/env_server.py, the `robosuite`
  * venv: robosuite 1.5 conflicts with LIBERO's 1.4) and attaches to a running SAM3 server for
@@ -260,6 +263,17 @@ export default function robosuite(pi: ExtensionAPI) {
 		status: () => ({ language, step: envStep, solved: success }),
 		// The env server's primitive registry (code.api, robots/robosuite/primitives.py), recorded per episode.
 		codeApi: () => env,
+		// Code mode (../code): the env server runs the program against that registry; the result
+		// carries the control steps, the latched success, the new observation and the video frames.
+		code: {
+			rpc: () => env,
+			instruction: () => language,
+			observe: async (r) => {
+				for (const f of (r.frames as NdArray[] | undefined) ?? []) video.frame(f);
+				if (r.obs) absorb(r.obs as Obs);
+				return observe({ name: "run_code", status: r.status, env_steps: Number(r.steps) || 0 });
+			},
+		},
 		units: {
 			vectors: VECTORS,
 			stepM: STEP_M,

@@ -32,11 +32,7 @@ from pi_embodied_services.components.code_api import register_code_api
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
 from pi_embodied_services.robots.libero.primitives import libero_primitives
 from pi_embodied_services.utils import collision, ground_truth, motion, reach
-from pi_embodied_services.utils.code_exec import (
-    CodeRunner,
-    describe_helpers,
-    registry_primitives,
-)
+from pi_embodied_services.utils.code_exec import CodeRunMixin
 from pi_embodied_services.utils.geometry import (
     GripGeometry,
     jaw_frame,
@@ -286,7 +282,7 @@ def make_env(
 # ---------------------------------------------------------------------------
 
 
-class LiberoEnvFacade(BaseEnvFacade):
+class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
     """Implements :class:`pi_embodied_services.robots.libero.env_client.LiberoEnvClient`
     over :class:`rlinf.envs.libero.libero_env.LiberoEnv`.
 
@@ -296,9 +292,6 @@ class LiberoEnvFacade(BaseEnvFacade):
     """
 
     SERVICE_NAME = "libero-env"
-    #: Code mode: a program could otherwise call this server's port itself (outside its
-    #: budgets, and after its run); pi reads the token from the listening line.
-    REQUIRE_TOKEN = True
     #: Set by __init__; class defaults so the registry can be built on a bare facade (tests).
     _sam3_url: str | None = None
     _grasp: "GraspPlanner | None" = None
@@ -430,32 +423,14 @@ class LiberoEnvFacade(BaseEnvFacade):
         api = register_code_api(self, primitives)
         # Code mode (run_code): a program's calls go through the registry's resolve to the
         # methods above; the runner adds the sandbox, the budgets and the stop handling.
-        self._code = CodeRunner(
-            registry_primitives(
-                api,
-                self._rpc,
-                move_m=self._code_move_m,
-                after=self._frame,
-                check=self._code_check,
-            ),
-            stop_requested=self.stop_requested,
-            # A timed-out program is killed; the robot gets a stop like an abort would send.
-            on_timeout=lambda: self.request_stop(),
+        self._install_code_run(
+            api,
+            move_m=self._code_move_m,
+            after=self._frame,
+            check=self._code_check,
             begin=self._begin_run,
             finish=self._finish_run,
         )
-        self._rpc["code.run"] = self._code.run
-        self._rpc["code.helpers"] = describe_helpers
-        self._readonly_methods.add("code.helpers")
-
-    def _on_stop(self, generation: int) -> None:
-        # A stop while a program runs kills its process; the primitive loops see stop_requested.
-        self._code.abort()
-
-    def _exclusive_call_active(self) -> bool:
-        # While a program runs, only its own primitives (called in-process) touch the env.
-        # ... and while a primitive an earlier run abandoned still runs (it may touch the env).
-        return self._code.active or self._code.wedged is not None
 
     # ---- grasp planning views ----
 

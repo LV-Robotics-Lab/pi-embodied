@@ -16,7 +16,8 @@ import type { RpcClient } from "../rpc.ts";
 export const CODE_API_EVENT = "pi-embodied:code-api";
 export const CODE_API_ENTRY = "code_api";
 
-export type CodeApiTier = "high" | "low" | "privileged";
+/** The registry's tiers, and CaP-X's S4 (`low-noexamples`: the low tier without the usage examples). */
+export type CodeApiTier = "high" | "low" | "privileged" | "low-noexamples";
 
 export type CodeApiParam = { type: string; description: string; required: boolean };
 
@@ -27,6 +28,8 @@ export type CodeApiPrimitive = {
 	params: Record<string, CodeApiParam>;
 	mutating: boolean;
 	tiers: CodeApiTier[];
+	/** A usage example (Python); absent in the S4 tier. */
+	example?: string;
 };
 
 export type CodeApi = { tier: CodeApiTier | null; primitives: CodeApiPrimitive[]; digest: string };

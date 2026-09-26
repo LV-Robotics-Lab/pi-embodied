@@ -27,6 +27,8 @@ what a code-as-policy caller may use and nothing else:
 
 Tiers follow CaP-X's abstraction levels: ``high`` (perception and pose-level motion), ``low``
 (raw observations and small motion primitives) and ``privileged`` (ground truth, simulation only).
+A primitive may carry a usage ``example``; ``code.api`` of :data:`NO_EXAMPLES` (CaP-X's S4, the
+``*_reduced_api_exampleless`` configs) is the low tier with every example dropped.
 """
 
 from __future__ import annotations
@@ -38,6 +40,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 TIERS = ("high", "low", "privileged")
+#: CaP-X's S4: the low tier (S3) without the primitives' usage examples.
+NO_EXAMPLES = "low-noexamples"
 PARAM_TYPES = ("number", "integer", "boolean", "string", "vec3", "array", "object")
 
 
@@ -67,9 +71,11 @@ class Primitive:
     params: Mapping[str, Param] = field(default_factory=dict)
     mutating: bool = False
     tiers: tuple[str, ...] = ("high", "low")
+    #: A short usage example (Python), shown in every tier but :data:`NO_EXAMPLES`.
+    example: str = ""
 
-    def describe(self) -> dict[str, Any]:
-        return {
+    def describe(self, examples: bool = True) -> dict[str, Any]:
+        out = {
             "name": self.name,
             "method": self.method,
             "doc": self.doc,
@@ -77,6 +83,10 @@ class Primitive:
             "mutating": self.mutating,
             "tiers": list(self.tiers),
         }
+        # Only when there is one: a registry without examples keeps its digest.
+        if examples and self.example:
+            out["example"] = self.example
+        return out
 
 
 #: The simulators' ground truth (``env.ground_truth_poses``, utils/ground_truth.py): the privileged tier.
@@ -142,8 +152,13 @@ class CodeApi:
         return [p for p in self._by_name.values() if tier in p.tiers]
 
     def describe(self, tier: str | None = None) -> dict[str, Any]:
-        """The ``code.api`` result: the tier, its primitives and a digest that names this API version."""
-        listed = [p.describe() for p in self.primitives(tier)]
+        """The ``code.api`` result: the tier, its primitives and a digest that names this API
+        version. :data:`NO_EXAMPLES` lists the low tier without the examples."""
+        examples = tier != NO_EXAMPLES
+        listed = [
+            p.describe(examples)
+            for p in self.primitives("low" if tier == NO_EXAMPLES else tier)
+        ]
         blob = json.dumps(listed, sort_keys=True, separators=(",", ":")).encode()
         return {
             "tier": tier,

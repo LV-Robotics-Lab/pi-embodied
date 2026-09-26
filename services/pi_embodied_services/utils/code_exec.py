@@ -65,7 +65,9 @@ arrives while a run executes kills the child (:meth:`CodeRunner.abort`, from the
 An env server that declares its primitive registry (``components/code_api.py``, ``code.api``)
 builds the runner with :func:`registry_primitives`: every call then goes through
 ``CodeApi.resolve`` (the declared name, parameters and tier) to the registered RPC method, and
-``code.api`` stays the registry's. See ``robots/libero/env_server.py``. A server without a
+``code.api`` stays the registry's; :class:`CodeRunMixin` installs ``code.run`` with the token,
+the exclusivity and the stop handling every such server needs (see ``robots/libero/env_server.py``
+and the other simulators' servers). A server without a
 registry may still hand :class:`CodeRunner` bound facade methods as :class:`Primitive` objects and
 serve ``runner.api`` itself.
 """
@@ -201,13 +203,16 @@ def registry_primitives(
     move_m: Callable[[str, dict], float] | None = None,
     after: Callable[[registry.Primitive], None] | None = None,
     check: Callable[[str, dict], None] | None = None,
+    reply: Callable[[str, Any], Any] | None = None,
 ) -> list[Primitive]:
     """The runner's primitives for a server's declared registry: one stub per declared primitive
     whose calls go through ``api.resolve`` (declared name, parameters, tier) to the registered RPC
     method. Positional arguments fill the declared parameters in order. ``move_m(method, kwargs)``
     estimates a call's translation for the run's cap; ``check(method, kwargs)`` raises to refuse a
     call before it runs; ``after(primitive)`` runs after every mutating call (frames for the
-    episode video)."""
+    episode video); ``reply(method, result)`` is what the program receives of the method's result
+    (the facade method is the tools' own; this drops what a program must not see, such as object
+    state in a raw observation, or bulk it need not carry, such as a motion's video frames)."""
     out: list[Primitive] = []
     for p in api.primitives("privileged") + [
         q for q in api.primitives("low") if "high" not in q.tiers
@@ -223,7 +228,7 @@ def registry_primitives(
             Primitive(
                 p.name,
                 _registry_call(
-                    api, rpc, p, "privileged" if privileged else None, after
+                    api, rpc, p, "privileged" if privileged else None, after, reply
                 ),
                 tiers,
                 move_m=(
@@ -262,13 +267,15 @@ def _bind(p: registry.Primitive, args: tuple, kwargs: dict) -> dict:
     return bound
 
 
-def _registry_call(api, rpc, p: registry.Primitive, tier: str | None, after):
+def _registry_call(
+    api, rpc, p: registry.Primitive, tier: str | None, after, reply=None
+):
     def call(*args, **kwargs):
         method, kw = api.resolve(p.name, _bind(p, args, kwargs), tier)
         out = rpc[method](**kw)
         if after is not None and p.mutating:
             after(p)
-        return out
+        return out if reply is None else reply(method, out)
 
     call.__name__ = call.__qualname__ = p.name
     return call
@@ -291,6 +298,9 @@ def _registry_doc(p: registry.Primitive) -> str:
             lines.append(f"    {k} ({kind}): {v.description}".rstrip(": "))
     if p.mutating:
         lines += ["", "Moves the robot."]
+    if p.example:
+        # A Google-style section, which the S4 tier strips (strip_examples).
+        lines += ["", "Example:"] + [f"    {x}" for x in p.example.strip().splitlines()]
     return "\n".join(lines)
 
 
@@ -1529,7 +1539,70 @@ class _Run:
         self.abandoned: str | None = None
 
 
+class CodeRunMixin:
+    """``code.run`` and ``code.helpers`` for an env facade (an :class:`RpcFacade` subclass; mix
+    it in ahead of the facade's bases) that declares its registry with ``register_code_api``.
+
+    It holds what every such server must: the RPC token (a program could otherwise call the
+    server's port itself), the refusal of other business calls while a program runs
+    (``_exclusive_call_active``) and the kill of the program on ``stop`` (``_on_stop``). The
+    facade calls :meth:`_install_code_run` at the end of its ``_register_rpc`` with its hooks
+    (:func:`registry_primitives`, :class:`CodeRunner`); a timed-out program gets the robot a
+    stop like an abort would send.
+    """
+
+    REQUIRE_TOKEN = True
+    _code: CodeRunner | None = None
+
+    def _install_code_run(
+        self,
+        api: registry.CodeApi,
+        *,
+        move_m: Callable[[str, dict], float] | None = None,
+        after: Callable[[registry.Primitive], None] | None = None,
+        check: Callable[[str, dict], None] | None = None,
+        reply: Callable[[str, Any], Any] | None = None,
+        begin: Callable[[], None] | None = None,
+        finish: Callable[[], dict] | None = None,
+    ) -> CodeRunner:
+        from pi_embodied_services.utils.rpc.main_thread_serve import (
+            MainThreadServeMixin,
+        )
+
+        self._code = CodeRunner(
+            registry_primitives(
+                api, self._rpc, move_m=move_m, after=after, check=check, reply=reply
+            ),
+            stop_requested=self.stop_requested,
+            on_timeout=lambda: self.request_stop(),
+            begin=begin,
+            finish=finish,
+            # A server that runs every call on its main thread (the simulators' GL / physics
+            # contexts) runs the primitives there too: no worker thread, no abandonment.
+            primitive_thread=not isinstance(self, MainThreadServeMixin),
+        )
+        self._rpc["code.run"] = self._code.run
+        self._rpc["code.helpers"] = describe_helpers
+        self._readonly_methods.add("code.helpers")
+        return self._code
+
+    def _on_stop(self, generation: int) -> None:
+        super()._on_stop(generation)
+        # A stop while a program runs kills its process; the primitive loops see stop_requested.
+        if self._code is not None:
+            self._code.abort()
+
+    def _exclusive_call_active(self) -> bool:
+        # While a program runs, only its own primitives (called in-process) touch the env,
+        # and while a primitive an earlier run abandoned still runs (it may touch the env).
+        return (
+            self._code is not None
+            and (self._code.active or self._code.wedged is not None)
+        ) or super()._exclusive_call_active()
+
+
 __all__ = [
+    "CodeRunMixin",
     "registry_primitives",
     "DEFAULT_MAX_CALLS",
     "DEFAULT_TIMEOUT_S",

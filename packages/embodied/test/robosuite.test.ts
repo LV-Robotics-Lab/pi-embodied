@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import robosuite, {
@@ -36,6 +39,7 @@ function stubPi(values: Record<string, unknown> = {}) {
 	const handlers = new Map<string, Handler[]>();
 	const flags: Record<string, { default?: unknown; description?: string }> = {};
 	const tools = new Map<string, Tool>();
+	const entries: { type: string; data: any }[] = [];
 	let active: string[] = [];
 	const pi = {
 		on: (name: string, fn: Handler) => handlers.set(name, [...(handlers.get(name) ?? []), fn]),
@@ -52,10 +56,34 @@ function stubPi(values: Record<string, unknown> = {}) {
 			active = names;
 		},
 		getActiveTools: () => active,
-		appendEntry: () => {},
+		appendEntry: (type: string, data: any) => entries.push({ type, data }),
 		events: { emit: () => {}, on: () => () => {} },
 	} as unknown as ExtensionAPI;
-	return { pi, flags, tools, active: () => active };
+	const ctx = {
+		hasUI: false,
+		cwd: tmpdir(),
+		ui: { notify: () => {} },
+		shutdown: () => {},
+		abort: () => {},
+		sessionManager: {
+			getBranch: () => [],
+			getEntries: () => [],
+			getSessionDir: () => tmpdir(),
+			getSessionFile: () => undefined,
+			getSessionId: () => "sess",
+		},
+	};
+	async function emit(name: string, event: Record<string, unknown> = {}) {
+		let result: any;
+		for (const fn of handlers.get(name) ?? []) {
+			const r: any = await fn({ type: name, ...event }, ctx);
+			if (r !== undefined) result = r;
+		}
+		return result;
+	}
+	const run = async (name: string, params: unknown) =>
+		(await tools.get(name)!.execute("id", params, undefined, undefined, ctx)) as any;
+	return { pi, flags, tools, entries, emit, run, active: () => active };
 }
 
 const close = (a: number[], b: number[]) => a.every((x, k) => Math.abs(x - b[k]) < 1e-9);
@@ -434,4 +462,150 @@ test("--point: Molmo on the current images; the pixel's world xyz through the wo
 		cameras: ["agentview", "wrist"],
 	});
 	assert.deepEqual(one.details.world_xyz, [1, 1, 1]);
+});
+
+/** A fake robosuite env server (`--env`): Lift seed 0, and a `code.run` that reports `run`'s fields. */
+async function fakeCodeEnv(run: Record<string, unknown>) {
+	const calls: { method: string; kwargs: Record<string, unknown> }[] = [];
+	const nd = (dtype: string, shape: number[], data: Buffer) => ({
+		__ndarray__: data.toString("base64"),
+		dtype,
+		shape,
+	});
+	const f32 = (v: number[]) => nd("float32", [v.length], Buffer.from(Float32Array.from(v).buffer));
+	const obs = (success: boolean, steps: number) => ({
+		agentview: nd("uint8", [2, 2, 3], Buffer.alloc(12)),
+		wrist: nd("uint8", [2, 2, 3], Buffer.alloc(12)),
+		robot0_eef_pos: f32([0, 0, 1]),
+		robot0_eef_quat: f32([0, 0, 0, 1]),
+		robot0_gripper_width: 0.08,
+		robot0_gripper_command: "open",
+		success,
+		success_step: success ? steps : null,
+		env_steps: steps,
+	});
+	const server = createServer((req, res) => {
+		let body = "";
+		req.on("data", (c) => {
+			body += c;
+		});
+		req.on("end", () => {
+			const { method, kwargs = {} } = JSON.parse(body);
+			calls.push({ method, kwargs });
+			let result: unknown = { ok: true };
+			if (method === "code.api") result = { tier: kwargs.tier ?? null, primitives: [], digest: "d" };
+			else if (method === "env.get_env_meta") result = { task: "Lift", seed: 0, table_z: 0.8 };
+			else if (method === "env.reset") result = [obs(false, 0), {}];
+			else if (method === "env.get_task_language") result = "lift the red cube";
+			else if (method === "code.run")
+				result = {
+					status: "ran",
+					stdout: "",
+					stderr: "",
+					traceback: null,
+					error: null,
+					result: null,
+					calls: [],
+					n_calls: 2,
+					move_m: 0.1,
+					ms: 5,
+					steps: 40,
+					obs: obs(true, 37),
+					frames: [nd("uint8", [2, 2, 3], Buffer.alloc(12))],
+					...run,
+				};
+			res.end(JSON.stringify({ ok: true, result }));
+		});
+	});
+	await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+	const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+	return {
+		url,
+		calls,
+		close: () => {
+			server.closeAllConnections();
+			server.close();
+		},
+	};
+}
+
+test("--code=true: run_code runs on the env server and its result becomes the observation and the success", async (t) => {
+	const env = await fakeCodeEnv({});
+	t.after(env.close);
+	const s = stubPi({ env: env.url, task: "Lift", code: "true", "code-api": "low-noexamples" });
+	robosuite(s.pi);
+	await s.emit("session_start");
+	process.exitCode = undefined;
+	assert.deepEqual(s.active(), ["run_code", "finish"]);
+	assert.deepEqual(
+		env.calls.filter((c) => c.method === "code.api").map((c) => c.kwargs.tier),
+		[undefined, "low-noexamples"],
+		"the episode's registry, then code mode's S4 tier",
+	);
+	await s.emit("agent_start");
+	const r = await s.run("run_code", { code: "move_delta([0, 0, 0.05])" });
+	const run = env.calls.find((c) => c.method === "code.run")!;
+	assert.equal(run.kwargs.tier, "low-noexamples");
+	assert.equal(r.details.status, "ran");
+	assert.equal(r.details.success, true);
+	assert.equal(r.details.step, 37, "the server's step count, absorbed from the run's obs");
+	assert.deepEqual(
+		r.content.map((c: { type: string }) => c.type),
+		["text", "text", "image", "image"],
+	);
+	await s.run("finish", { status: "success", summary: "lifted" });
+	await s.emit("agent_end", { messages: [] });
+	const result = s.entries.find((e) => e.type === "robot_result")?.data;
+	assert.equal(result.success, true);
+	assert.equal(result.success_step, 37);
+	assert.equal(result.code, "true");
+	assert.equal(result.code_api, "low-noexamples");
+});
+
+test("--code-oracle runs the ported CaP-X program once, without the model, and records it", async (t) => {
+	const env = await fakeCodeEnv({});
+	t.after(env.close);
+	const s = stubPi({ env: env.url, task: "Lift", code: "true", privileged: true, "code-oracle": "lift_privileged" });
+	robosuite(s.pi);
+	await s.emit("session_start");
+	process.exitCode = undefined;
+	assert.deepEqual(await s.emit("input", { text: "Solve the task." }), { action: "handled" });
+	const run = env.calls.find((c) => c.method === "code.run")!;
+	assert.equal(run.kwargs.tier, "privileged");
+	assert.match(String(run.kwargs.code), /def goto_pose\(/, "the prelude: CaP-X's API over the registry");
+	assert.match(String(run.kwargs.code), /sample_grasp_pose\("red cube"\)/, "CaP-X's program");
+	// A second prompt does not run it again.
+	assert.deepEqual(await s.emit("input", { text: "again" }), { action: "handled" });
+	assert.equal(env.calls.filter((c) => c.method === "code.run").length, 1);
+	assert.equal(s.entries.find((e) => e.type === "code_oracle")?.data.file, "lift_privileged.py");
+	await s.emit("session_shutdown");
+	const result = s.entries.find((e) => e.type === "robot_result")?.data;
+	assert.equal(result.code_oracle, "lift_privileged.py");
+	assert.match(result.code_oracle_sha256, /^[0-9a-f]{64}$/);
+	assert.equal(result.success, true);
+	assert.equal(result.turns, 0);
+});
+
+test("--code-oracle refuses a tier or task the program was not written for", async (t) => {
+	const env = await fakeCodeEnv({});
+	t.after(env.close);
+	for (const [flags, why] of [
+		[{ task: "Lift", "code-oracle": "lift_privileged" }, /written for the privileged tier/],
+		[{ task: "Stack", privileged: true, "code-oracle": "lift_privileged" }, /written for task Lift/],
+		[{ task: "Lift", privileged: true, "code-oracle": "no_such_oracle" }, /no oracle no_such_oracle/],
+	] as const) {
+		const s = stubPi({ env: env.url, code: "true", ...flags });
+		robosuite(s.pi);
+		const errors: string[] = [];
+		const log = console.error;
+		console.error = (m: string) => errors.push(m);
+		try {
+			await s.emit("session_start");
+		} finally {
+			console.error = log;
+			process.exitCode = undefined;
+		}
+		assert.match(errors.join("\n"), why);
+		assert.deepEqual(s.active(), []);
+	}
 });

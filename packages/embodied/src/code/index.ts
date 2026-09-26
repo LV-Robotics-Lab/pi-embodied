@@ -11,8 +11,9 @@
  * the robot's observation); ../robot.ts mounts this module. `--code=true` hides the robot's own
  * tools: only `run_code` and `finish` remain and the system prompt is ./SYSTEM.md, rendered with the
  * registry's declaration of the episode's tier (`--code-api`: high = CaP-X's S2, perception plus
- * pose-level motion; low = S3, relative moves; `--privileged` runs the registry's privileged tier,
- * high plus the simulator's ground truth = S1). `--code=both` adds `run_code` to the robot's tools
+ * pose-level motion; low = S3, relative moves, with the primitives' usage examples;
+ * low-noexamples = S4, the same primitives without them; `--privileged` runs the registry's
+ * privileged tier, high plus the simulator's ground truth = S1). `--code=both` adds `run_code` to the robot's tools
  * and appends the code section to its prompt. `--units` and `--code` are mutually exclusive.
  *
  * `run_code({code, timeout_s?})` is registered through the robot base's `tool`, so the operator gate,
@@ -29,8 +30,21 @@
  *
  * Real robots refuse code mode unless `--code-real` and `--operator` are both on, and every program
  * is confirmed by the operator (`ui.confirm`) before it runs.
+ *
+ * `--code-oracle <file>` (simulators, with `--code=true`) runs a human-written reference program
+ * instead of asking the model: CaP-X's oracles (`env_configs/human_oracle_code`), ported onto the
+ * registry's primitives in `../<robot>/oracle/` (a bare name resolves there). The first prompt runs
+ * it once through `code.run`, exactly as a `run_code` call would, and nothing is sent to the model;
+ * the result records `code_oracle` (the file) and its sha256. The file's header comments
+ * (`# key: value`) name the tier it needs (`tier:`, checked against --code-api / --privileged), the
+ * task fields it was written for (checked against the episode's) and an optional `prelude:` file in
+ * the same directory that is prepended (the CaP-X API names over the registry's primitives).
  */
 
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -39,8 +53,10 @@ import { type CodeApi, type CodeApiPrimitive, type CodeApiTier, fetchCodeApi } f
 import type { RpcClient } from "../rpc.ts";
 import { latestTurn, type ToolRegistrar } from "../units/index.ts";
 
-/** `--code-api` values; `--privileged` runs the registry's third tier instead. */
-export const TIERS = ["high", "low"] as const;
+/** `--code-api` values (CaP-X's S2, S3, S4); `--privileged` runs the registry's privileged tier (S1) instead. */
+export const TIERS = ["high", "low", "low-noexamples"] as const;
+/** The session entry of an oracle run (`--code-oracle`). */
+export const ORACLE_ENTRY = "code_oracle";
 export type Tier = (typeof TIERS)[number];
 /** A helper as the server's `code.helpers` lists it (services/.../utils/code_exec.py). */
 export type Helper = { name: string; signature: string; doc: string };
@@ -67,6 +83,25 @@ type Json = Record<string, unknown>;
 export const DEFAULT_TIMEOUT_S = 60;
 export const DEFAULT_MAX_CALLS = 50;
 export const DEFAULT_MAX_MOVE_M = 3;
+
+/** A `--code-oracle` program: its file, header fields (`# key: value`) and the code that runs (prelude first). */
+export type Oracle = { name: string; path: string; header: Record<string, string>; code: string; sha256: string };
+
+/** Read an oracle file (a path, or a name in `dir`) with its header and prelude; throws when missing. */
+export function loadOracle(ref: string, dir: string): Oracle {
+	const path = existsSync(ref) ? ref : join(dir, ref.endsWith(".py") ? ref : `${ref}.py`);
+	if (!existsSync(path)) throw new Error(`--code-oracle: no oracle ${ref} (looked in ${dir})`);
+	const text = readFileSync(path, "utf8");
+	const header: Record<string, string> = {};
+	for (const line of text.split("\n")) {
+		if (!line.startsWith("#")) break;
+		const m = /^#\s*([\w-]+):\s*(.*?)\s*$/.exec(line);
+		if (m) header[m[1]] = m[2];
+	}
+	const prelude = header.prelude ? readFileSync(join(dirname(path), header.prelude), "utf8") : "";
+	const code = prelude ? `${prelude}\n${text}` : text;
+	return { name: basename(path), path, header, code, sha256: createHash("sha256").update(code).digest("hex") };
+}
 
 export type CodeSpec = {
 	/** The env server that serves `code.api` / `code.run` (up after the robot's `start`). */
@@ -116,6 +151,17 @@ export function renderPrimitives(primitives: CodeApiPrimitive[]): string {
 				p.doc.trim(),
 				...(args.length ? ["", "Args:", ...args] : []),
 				...(p.mutating ? ["", "Moves the robot."] : []),
+				// The registry sends none in the S4 tier (low-noexamples).
+				...(p.example?.trim()
+					? [
+							"",
+							"Example:",
+							...p.example
+								.trim()
+								.split("\n")
+								.map((l) => `    ${l}`),
+						]
+					: []),
 			];
 			return `def ${p.name}(${params}):\n${indent(body.join("\n"))}`;
 		})
@@ -133,7 +179,16 @@ export function code(
 	spec: CodeSpec,
 	tool: ToolRegistrar,
 	task: () => Record<string, string> = () => ({}),
-	base: { unitsOn: () => boolean; privileged: () => boolean } = { unitsOn: () => false, privileged: () => false },
+	base: {
+		unitsOn: () => boolean;
+		privileged: () => boolean;
+		/** The robot's name: `--code-oracle <name>` resolves in `../<robot>/oracle/`. */
+		robot?: string;
+		/** Whether the robot is up (an oracle runs only then). */
+		ready?: () => boolean;
+		/** An oracle ran instead of the model: the episode ran and is over. */
+		oracleRan?: () => void;
+	} = { unitsOn: () => false, privileged: () => false },
 ) {
 	pi.registerFlag("code", {
 		type: "string",
@@ -143,7 +198,13 @@ export function code(
 	pi.registerFlag("code-api", {
 		type: "string",
 		default: "high",
-		description: `Code mode primitive tier: ${TIERS.join(", ")} (CaP-X's S2, S3; --privileged runs the privileged tier, S1)`,
+		description: `Code mode primitive tier: ${TIERS.join(", ")} (CaP-X's S2, S3, S4; --privileged runs the privileged tier, S1)`,
+	});
+	pi.registerFlag("code-oracle", {
+		type: "string",
+		default: "",
+		description:
+			"Code mode (simulators): run this reference program (a path, or a name in the robot's oracle/ dir) instead of the model",
 	});
 	pi.registerFlag("code-timeout", {
 		type: "string",
@@ -193,6 +254,8 @@ export function code(
 		return Number.isFinite(v) && v > 0 ? v : (spec.maxMoveM ?? DEFAULT_MAX_MOVE_M);
 	};
 	const helpersOn = () => pi.getFlag("code-helpers") === true;
+	const oracleRef = () => String(pi.getFlag("code-oracle") ?? "").trim();
+	const oracleDir = () => fileURLToPath(new URL(`../${base.robot ?? "_"}/oracle/`, import.meta.url));
 	const instruction = () =>
 		spec.instruction?.() ||
 		Object.entries(task())
@@ -319,18 +382,64 @@ export function code(
 		return kept ? { messages: kept } : undefined;
 	});
 
+	/** The oracle this session ran (`--code-oracle`), once it ran. */
+	let oracleRun: Oracle | undefined;
+	pi.on("session_start", () => {
+		oracleRun = undefined;
+	});
+	// --code-oracle: the first prompt runs the reference program once, as run_code would; the model is never asked.
+	pi.on("input", async (_event, ctx) => {
+		if (!oracleRef() || !mode() || !(base.ready?.() ?? false)) return undefined;
+		if (oracleRun) return { action: "handled" as const };
+		const o = loadOracle(oracleRef(), oracleDir());
+		oracleRun = o;
+		const r = await runCode({ code: o.code, timeout_s: timeoutCap() }, undefined, ctx);
+		const details = (r.details ?? {}) as Json;
+		pi.appendEntry(ORACLE_ENTRY, { file: o.name, sha256: o.sha256, header: o.header, run: details.run ?? null });
+		base.oracleRan?.();
+		const summary = `code oracle ${o.name}: ${details.status ?? "error"}`;
+		if (ctx.hasUI) ctx.ui.notify(summary, details.status === "ran" ? "info" : "warning");
+		else
+			console.error(
+				`[code-oracle] ${summary}${details.run ? ` ${JSON.stringify(details.run).slice(0, 2000)}` : ""}`,
+			);
+		return { action: "handled" as const };
+	});
+
+	/** Why --code-oracle cannot run in this episode (mode, robot, file, tier, task), else undefined. */
+	function oracleError(): string | undefined {
+		if (!oracleRef()) return undefined;
+		if (mode() !== "pure") return "--code-oracle runs a program instead of the model: it needs --code=true";
+		if (spec.real) return "--code-oracle is for simulators; a real robot runs no unattended program";
+		let o: Oracle;
+		try {
+			o = loadOracle(oracleRef(), oracleDir());
+		} catch (err) {
+			return err instanceof Error ? err.message : String(err);
+		}
+		const want = o.header.tier;
+		if (want && want !== tier())
+			return `--code-oracle ${o.name} is written for the ${want} tier, this episode runs ${tier()} (${want === "privileged" ? "add --privileged" : `pass --code-api=${want}${base.privileged() ? " without --privileged" : ""}`})`;
+		const fields = task();
+		for (const [k, v] of Object.entries(fields))
+			if (o.header[k] !== undefined && o.header[k] !== v)
+				return `--code-oracle ${o.name} is written for ${k} ${o.header[k]}, this episode runs ${k} ${v}`;
+		return undefined;
+	}
+
 	return {
 		mode,
 		/** Why the robot must not start with these flags, else undefined. */
 		configError: (): string | undefined => {
-			if (!mode()) return undefined;
+			if (!mode())
+				return oracleRef() ? "--code-oracle runs a program instead of the model: it needs --code=true" : undefined;
 			if (base.unitsOn()) return "--code and --units are mutually exclusive: pick one mode";
 			const t = String(pi.getFlag("code-api") ?? "high");
 			if (!(TIERS as readonly string[]).includes(t))
 				return `--code-api must be one of ${TIERS.join(", ")}, got "${t}"`;
 			if (spec.real && !(pi.getFlag("code-real") === true && pi.getFlag("operator") === true))
 				return "code mode on a real robot needs both --code-real and --operator (every program is then confirmed by the operator)";
-			return undefined;
+			return oracleError();
 		},
 		/** After the robot is up: fetch this tier's registry (and the helpers) and register `run_code`; the tools to activate. */
 		start: async (): Promise<string[]> => {
@@ -365,6 +474,14 @@ export function code(
 			return p.replace(/\{\{(\w+)\}\}/g, (match, k: string) => vars[k] ?? match).trim();
 		},
 		/** The robot result's code-mode fields: the mode and the tier the programs ran with. */
-		result: () => (mode() ? { code: mode() === "pure" ? "true" : "both", code_api: tier() } : {}),
+		result: () =>
+			mode()
+				? {
+						code: mode() === "pure" ? "true" : "both",
+						code_api: tier(),
+						// A reference program ran, not the model: never comparable with a planner's run.
+						...(oracleRun ? { code_oracle: oracleRun.name, code_oracle_sha256: oracleRun.sha256 } : {}),
+					}
+				: {},
 	};
 }

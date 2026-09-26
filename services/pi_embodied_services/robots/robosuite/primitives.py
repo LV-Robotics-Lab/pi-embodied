@@ -60,11 +60,13 @@ ROBOSUITE_PRIMITIVES = (
         "get_state",
         "env.get_state",
         "Per arm: <arm>_eef_pos (m, world), <arm>_eef_quat (xyzw), <arm>_joint_pos, <arm>_gripper_width, <arm>_gripper_command; success, env_steps, table_z, home_eef_pos.",
+        example='st = get_state()\nprint(st["robot0_eef_pos"], st["robot0_gripper_width"], st["success"])',
     ),
     Primitive(
         "get_observation",
         "env.get_observation",
         "agentview and wrist, each {rgb uint8[512,512,3], depth float32[512,512] m, intrinsic_K 3x3, extrinsic_cam2world 4x4}, plus get_state's fields.",
+        example='obs = get_observation()\nrgb, depth = obs["agentview"]["rgb"], obs["agentview"]["depth"]\nK = obs["agentview"]["intrinsic_K"]; T = obs["agentview"]["extrinsic_cam2world"]',
     ),
     Primitive(
         "segment",
@@ -76,6 +78,7 @@ ROBOSUITE_PRIMITIVES = (
             "min_score": Param("number", "SAM3 threshold (default 0.2)", False),
         },
         tiers=("high",),
+        example='m = segment("red cube")\nif m["found"]:\n    print(m["world_xyz"], m["score"])',
     ),
     Primitive(
         "back_project",
@@ -87,6 +90,7 @@ ROBOSUITE_PRIMITIVES = (
             **_CAMERA,
         },
         tiers=("high",),
+        example='print(back_project(256, 300)["world_xyz"])',
     ),
     Primitive(
         "preview_reach",
@@ -106,6 +110,7 @@ ROBOSUITE_PRIMITIVES = (
         {"target_xyz": Param("vec3", "world [x, y, z] in m"), **_ARM, **_MOTION},
         mutating=True,
         tiers=("high",),
+        example='move_to([0.05, 0.02, 0.95], gripper="open")\nr = move_to([0.05, 0.02, 0.83])\nprint(r["final_dist_m"])',
     ),
     Primitive(
         "move_delta",
@@ -114,6 +119,7 @@ ROBOSUITE_PRIMITIVES = (
         {"delta_xyz": Param("vec3", "world [dx, dy, dz] in m"), **_ARM, **_MOTION},
         mutating=True,
         tiers=("low",),
+        example="move_delta([0, 0, 0.1])                    # lift 10 cm\nmove_delta([0, 0, 0], rotvec=[0, 0, 0.5])  # turn the wrist 0.5 rad",
     ),
     Primitive(
         "set_gripper",
@@ -127,12 +133,14 @@ ROBOSUITE_PRIMITIVES = (
             ),
         },
         mutating=True,
+        example='r = set_gripper(True)\nprint(r["gripper_width"])  # near 0: closed on nothing',
     ),
     Primitive(
         "raw_obs",
         "env.raw_obs",
         "robosuite's robot*_ observations (joint state, eef pose, gripper); no object poses.",
         tiers=("low",),
+        example='o = raw_obs()\nprint(o["robot0_eef_pos"], o["robot0_gripper_qpos"])',
     ),
     Primitive(
         "render_camera",
@@ -145,6 +153,7 @@ ROBOSUITE_PRIMITIVES = (
             "depth": Param("boolean", "also return the depth map", False),
         },
         tiers=("low",),
+        example='rgb, depth = render_camera("wrist", 256, 256, depth=True)',
     ),
     Primitive(
         "get_camera_meta",
@@ -156,6 +165,7 @@ ROBOSUITE_PRIMITIVES = (
             "width": Param("integer", "pixels (default 512)", False),
         },
         tiers=("low",),
+        example='meta = get_camera_meta("agentview")\nK, T = meta["intrinsic_K"], meta["extrinsic_cam2world"]',
     ),
     Primitive(
         "step",
@@ -164,6 +174,7 @@ ROBOSUITE_PRIMITIVES = (
         {"action": Param("array", "action_dim floats")},
         mutating=True,
         tiers=("low",),
+        example="step([0, 0, 0.5, 0, 0, 0, -1])  # up 2.5 cm, gripper open (one arm)",
     ),
     GROUND_TRUTH,
 )

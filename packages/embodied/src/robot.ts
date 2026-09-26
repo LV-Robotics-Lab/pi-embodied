@@ -446,7 +446,16 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 			})
 		: undefined;
 	const co = spec.code
-		? code(pi, spec.code, tool, () => task, { unitsOn: () => un?.mode() !== undefined, privileged })
+		? code(pi, spec.code, tool, () => task, {
+				unitsOn: () => un?.mode() !== undefined,
+				privileged,
+				robot: name,
+				ready: () => ready && broken === undefined,
+				// --code-oracle ran a reference program instead of the model: the episode ran and is over.
+				oracleRan: () => {
+					ran = ended = true;
+				},
+			})
 		: undefined;
 	const vd = spec.vdm
 		? vdm(
@@ -514,10 +523,12 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 			const xpTools = (await xp?.start()) ?? [];
 			// Pure units or code mode hides the robot's own tools and memory's (Show-Harness's pure mode).
 			const mode = un?.mode() ?? co?.mode();
+			// The units' tools only when units mode is on (a robot mounts units and code mode both).
+			const unitTools = un?.mode() ? un.tools() : [];
 			const own =
 				mode === "pure"
-					? [...(un?.tools() ?? []), ...coded, "finish"]
-					: [...tools, ...(mem?.tools ?? []), ...(mode === "both" ? [...(un?.tools() ?? []), ...coded] : [])];
+					? [...unitTools, ...coded, "finish"]
+					: [...tools, ...(mem?.tools ?? []), ...(mode === "both" ? [...unitTools, ...coded] : [])];
 			pi.setActiveTools([
 				...new Set([...own, ...xpTools, ...op.tools(), ...groundTruth(), ...web.tools(), ...objs.tools()]),
 			]);
@@ -1000,7 +1011,11 @@ export async function servicesJson<T>(r: Services, code: string, args: string[])
 
 /** Attach to a running service and wait for healthz. */
 export async function attach(endpoint: string, readyMs = 300_000): Promise<RpcClient> {
-	const rpc = new RpcClient(endpoint);
+	// A server that requires its RPC token (services/PROTOCOL.md) is attached as `URL#token=HEX`.
+	const [url, fragment] = endpoint.split("#", 2);
+	const rpc = new RpcClient(url);
+	const token = /^token=([0-9a-f]+)$/.exec(fragment ?? "")?.[1];
+	if (token) rpc.token = token;
 	await rpc.ready(readyMs);
 	return rpc;
 }

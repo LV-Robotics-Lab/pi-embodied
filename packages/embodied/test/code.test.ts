@@ -561,3 +561,38 @@ test("after an abort the run's effects are absorbed and the result is clean, wit
 	assert.doesNotMatch(JSON.stringify(r.content), /env\.raw_obs: aborted/);
 	assert.match(r.content[0].text, /"cancelled": true/);
 });
+
+test("S4 (--code-api=low-noexamples): the low tier's examples render as a section, and the S4 tier starts", async () => {
+	assert.equal(
+		renderPrimitives([
+			{
+				name: "m",
+				method: "env.m",
+				doc: "Moves.",
+				params: {},
+				mutating: false,
+				tiers: ["low"],
+				example: "m()\nprint(1)",
+			},
+		]),
+		"def m():\n    Moves.\n\n    Example:\n        m()\n        print(1)",
+	);
+	const s4 = await toyRobot({ code: true, "code-api": "low-noexamples" });
+	assert.deepEqual(s4.active(), ["run_code", "finish"]);
+	assert.deepEqual(s4.env.calls[0], { method: "code.api", kwargs: { tier: "low-noexamples" }, signal: undefined });
+	const r = await result(s4);
+	assert.equal(r.code_api, "low-noexamples");
+});
+
+test("--code-oracle needs pure code mode and a simulator", async () => {
+	for (const [flags, o, why] of [
+		[{ "code-oracle": "x" }, {}, /needs --code=true/],
+		[{ code: "both", "code-oracle": "x" }, {}, /needs --code=true/],
+		[{ code: true, "code-oracle": "x", "code-real": true, operator: true }, { real: true }, /for simulators/],
+		[{ code: true, "code-oracle": "x" }, {}, /no oracle x/],
+	] as const) {
+		const f = await toyRobot(flags, { ...o, hasUI: false });
+		assert.deepEqual(f.active(), [], JSON.stringify(flags));
+		assert.match(String((await result(f)).error), why);
+	}
+});

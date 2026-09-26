@@ -35,6 +35,13 @@ same facade methods for a code-as-policy caller: ``move_to`` / ``move_delta`` / 
 step the same env under the same limits and stop generation as pi's tools; ``segment`` needs
 ``--sam3``, ``preview_reach`` and the reach check before a move need ``--ik``, ``plan_grasp`` and
 friends a grasp server (``--contact-graspnet`` ...; utils/grasp.py).
+
+Code mode (``code.run``, utils/code_exec.py ``CodeRunMixin``): a program calls those primitives
+through the registry's resolve, in a sandboxed subprocess, so the server requires its RPC token
+and refuses other business calls while a program runs. A primitive's reply to the program drops
+the bulk a program does not need (a motion's observation images and video frames, which go to the
+run's video instead); the run reports its control steps, the latched success and the new
+observation (``_finish_run``).
 """
 
 from __future__ import annotations
@@ -54,6 +61,7 @@ from pi_embodied_services.components.env_facade_base import BaseEnvFacade
 from pi_embodied_services.robots.robosuite import tasks
 from pi_embodied_services.robots.robosuite.primitives import ROBOSUITE_PRIMITIVES
 from pi_embodied_services.utils import ground_truth, reach
+from pi_embodied_services.utils.code_exec import CodeRunMixin
 from pi_embodied_services.utils.geometry import (
     GripGeometry,
     jaw_frame,
@@ -93,6 +101,10 @@ RECORD_SIZE = 256
 CODE_RES = 512
 #: The ik service's robot model for the Panda's grip site (components/ik_server.py ROBOTS).
 IK_ROBOT = "panda_libero"
+#: Code mode: video frames one run hands back (halved, every other one kept, when full) and the
+#: largest render a program may ask for.
+CODE_MAX_FRAMES = 128
+CODE_MAX_RENDER = 1024
 
 
 def rotvec_of(rot: np.ndarray) -> np.ndarray:
@@ -176,7 +188,7 @@ def make_restack_class():
     return RestackStack
 
 
-class RobosuiteEnvFacade(MainThreadServeMixin, BaseEnvFacade):
+class RobosuiteEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
     """One robosuite env; every call runs on the main thread (MuJoCo EGL)."""
 
     SERVICE_NAME = "robosuite-env"
@@ -260,6 +272,9 @@ class RobosuiteEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         self._motion_frames: list[np.ndarray] = []
         # Its recorded control steps (``record=True``), else None.
         self._record: list[dict] | None = None
+        # Code mode: the control steps before the run, and the run's video frames.
+        self._run_start = 0
+        self._run_frames: list[np.ndarray] = []
         self._meta: dict[str, Any] = {
             "task": task,
             "seed": self._seed,
@@ -321,12 +336,94 @@ class RobosuiteEnvFacade(MainThreadServeMixin, BaseEnvFacade):
             geometry.install(self)
         if grasp is not None:
             grasp.install(self, mutating=GraspPlanner.MUTATING + ("env.move_to",))
-        register_code_api(
+        api = register_code_api(
             self,
             ROBOSUITE_PRIMITIVES
             + (grasp.primitives() if grasp else ())
             + (geometry.primitives() if geometry else ()),
         )
+        self._install_code_run(
+            api,
+            move_m=self._code_move_m,
+            check=self._code_check,
+            reply=self._code_reply,
+            begin=self._begin_run,
+            finish=self._finish_run,
+        )
+
+    # ---- code mode (run_code) ----
+
+    def _begin_run(self) -> None:
+        self._run_start = self._steps
+        self._run_frames = []
+
+    def _finish_run(self) -> dict:
+        """The run's effect for pi: control steps taken, the latched success, the new
+        observation (the tools' ``obs``) and the run's video frames."""
+        return {
+            "steps": self._steps - self._run_start,
+            "success": self._success_step is not None,
+            "success_step": self._success_step,
+            "obs": self._pack(),
+            "frames": list(self._run_frames),
+        }
+
+    def _keep_frames(self, frames) -> None:
+        for f in frames:
+            if len(self._run_frames) >= CODE_MAX_FRAMES:
+                self._run_frames = self._run_frames[::2]
+            self._run_frames.append(f)
+
+    def _code_reply(self, method: str, out: Any) -> Any:
+        """What a program receives: a motion's info without its frames (they go to the run's
+        video) and without the observation images; a raw step's robot state, not its images."""
+        if method in ("env.move_to", "env.move_delta", "env.set_gripper"):
+            info = dict(out["info"])
+            self._keep_frames(info.pop("frames", []))
+            return info
+        if method == "env.step":
+            self._keep_frames([self._render(self._cameras["agentview"], VIDEO_SIZE)])
+            _obs, rew, success, truncated, state = out
+            return {
+                "reward": rew,
+                "success": success,
+                "truncated": truncated,
+                "state": state,
+            }
+        return out
+
+    def _code_move_m(self, method: str, kwargs: dict) -> float:
+        """How far a program's call may move an arm (the run's translation cap)."""
+        if method == "env.move_to":
+            target = np.asarray(kwargs["target_xyz"], dtype=np.float64).reshape(3)
+            pos, _ = self._eef(self._arm_index(kwargs.get("arm")))
+            return float(np.linalg.norm(target - pos))
+        if method == "env.move_delta":
+            d = np.asarray(kwargs["delta_xyz"], dtype=np.float64).reshape(3)
+            return float(np.linalg.norm(d))
+        if method == "env.step":
+            a = np.asarray(kwargs["action"], dtype=np.float64).reshape(-1)
+            per = ARM_DIM + (1 if self._task.gripper else 0)
+            return float(
+                sum(
+                    np.linalg.norm(np.clip(a[k * per : k * per + 3], -1, 1))
+                    * tasks.OSC_POS_MAX_M
+                    for k in range(len(self._task.arms))
+                )
+            )
+        return 0.0
+
+    def _code_check(self, method: str, kwargs: dict) -> None:
+        """Refuse a program's call that the run's wall clock could not bound."""
+        if method == "env.render_camera":
+            for k in ("height", "width"):
+                if int(kwargs.get(k, 512)) > CODE_MAX_RENDER:
+                    raise ValueError(f"render_camera {k} is at most {CODE_MAX_RENDER}")
+        if method in ("env.move_to", "env.move_delta"):
+            if int(kwargs.get("max_steps", 100)) > 400:
+                raise ValueError("max_steps is at most 400 per call in code mode")
+        if method == "env.set_gripper" and int(kwargs.get("steps", 15)) > 200:
+            raise ValueError("steps is at most 200 per call in code mode")
 
     # ---- grip-site geometry (--geometry, utils/geometry.py) ----
 

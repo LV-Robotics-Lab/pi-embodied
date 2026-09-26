@@ -8,7 +8,8 @@
 # the planner did not fail (`env_error`, `planner_error` and a missing result are invalid),
 # whatever the outcome. Rerunning retries exactly the invalid episodes; valid ones are kept.
 # Each result records the model, thinking level, --max-turns, --time-limit, the units mode
-# (--units, --stateless, --unit-tol), code mode (--code, --code-api) and visual differencing (--vdm,
+# (--units, --stateless, --unit-tol), code mode (--code, --code-api: high, low or low-noexamples = CaP-X's S2-S4,
+# --code-oracle: a reference program run instead of the model, ./oracle) and visual differencing (--vdm,
 # --vdm-model, --vdm-wrist; the model only with --vdm), and the summary covers only the requested
 # cells and refuses to mix configurations.
 # A --privileged run (simulator ground truth) is recorded as such and never shares an out dir with one without.
@@ -29,7 +30,7 @@ vdm=false vdm_model="" vdm_wrist=false
 unit_tol=0.004
 privileged=false
 fallback_model="" fallback_after=2 fallback_retry=0
-code=false code_api=high
+code=false code_api=high code_oracle=""
 libero_prompt=rpent
 args=("$@")
 for ((i = 0; i < ${#args[@]}; i++)); do
@@ -56,6 +57,8 @@ for ((i = 0; i < ${#args[@]}; i++)); do
 	--code-api=*) code_api=${args[i]#*=} ;;
 	--libero-prompt) libero_prompt=${args[i + 1]:-} ;;
 	--libero-prompt=*) libero_prompt=${args[i]#*=} ;;
+	--code-oracle) code_oracle=${args[i + 1]:-} ;;
+	--code-oracle=*) code_oracle=${args[i]#*=} ;;
 	# pi sets a boolean flag to true whatever value it is given (`--stateless=false` runs stateless)
 	# and takes a following word as that value: only the forms that say what pi runs are accepted.
 	--stateless) case ${args[i + 1]:-} in "" | -* | @* | true) stateless=true ;; *)
@@ -126,12 +129,12 @@ backstop=()
 [ "$limit" -gt 0 ] && command -v timeout >/dev/null && backstop=(timeout -k 30 $((limit + 900)))
 mkdir -p "$out"
 case $libero_prompt in rpent | compact) ;; *) echo "--libero-prompt must be rpent or compact, not '$libero_prompt'" >&2 && exit 2 ;; esac
-config=("$model" "$thinking" "$turns" "$limit" "$units" "$stateless" "$vdm" "$vdm_model" "$vdm_wrist" "$privileged" "$anchor" "$unit_tol" "$code" "$code_api" "$fallback_model" "$fallback_after" "$fallback_retry" "$approval" "$max_tool_calls" "$max_tokens" "$libero_prompt")
+config=("$model" "$thinking" "$turns" "$limit" "$units" "$stateless" "$vdm" "$vdm_model" "$vdm_wrist" "$privileged" "$anchor" "$unit_tol" "$code" "$code_api" "$fallback_model" "$fallback_after" "$fallback_retry" "$approval" "$max_tool_calls" "$max_tokens" "$libero_prompt" "$code_oracle")
 
 record() { # <dir> <exit code>: write result.json from the episode's session
 	node --input-type=module -e '
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
-const [dir, code, model, thinking, turns, limit, units, stateless, vdm, vdmModel, vdmWrist, privileged, anchor, unitTol, codeMode, codeApi, fallbackModel, fallbackAfter, fallbackRetry, approval, maxToolCalls, maxTokens, liberoPrompt] = process.argv.slice(1);
+const [dir, code, model, thinking, turns, limit, units, stateless, vdm, vdmModel, vdmWrist, privileged, anchor, unitTol, codeMode, codeApi, fallbackModel, fallbackAfter, fallbackRetry, approval, maxToolCalls, maxTokens, liberoPrompt, codeOracle] = process.argv.slice(1);
 const results = [];
 for (const f of readdirSync(dir).filter((f) => f.endsWith(".jsonl"))) {
 	for (const line of readFileSync(`${dir}/${f}`, "utf8").split("\n")) {
@@ -148,7 +151,7 @@ const result = { ...(last ?? {}), status, exit_code: Number(code), model: model 
 	max_turns: Number(turns), time_limit: Number(limit), units, anchor_image: anchor === "true", approval, max_tool_calls: Number(maxToolCalls), max_tokens: Number(maxTokens), stateless: stateless === "true",
 	vdm: vdm === "true", vdm_model: vdmModel || null, vdm_wrist: vdmWrist === "true",
 	privileged: privileged === "true", unit_tol: Number(unitTol),
-	code: codeMode, code_api: codeMode === "false" ? null : codeApi,
+	code: codeMode, code_api: codeMode === "false" ? null : codeApi, code_oracle: codeMode === "false" ? null : codeOracle || null,
 	fallback_model: fallbackModel || null, fallback_after: fallbackModel ? Number(fallbackAfter) : null, fallback_retry_primary: fallbackModel ? Number(fallbackRetry) : null,
 	libero_prompt: liberoPrompt };
 writeFileSync(`${dir}/result.json`, `${JSON.stringify(result, null, 2)}\n`);
@@ -158,7 +161,7 @@ console.log(JSON.stringify({ status, terminated: result.terminated, claimed: res
 
 valid() { # <dir>: 0 = a valid result of this configuration, 2 = a valid result of another one, 1 = none
 	node -e '
-const [path, model, thinking, turns, limit, units, stateless, vdm, vdmModel, vdmWrist, privileged, anchor, unitTol, codeMode, codeApi, fallbackModel, fallbackAfter, fallbackRetry, approval, maxToolCalls, maxTokens, liberoPrompt] = process.argv.slice(1);
+const [path, model, thinking, turns, limit, units, stateless, vdm, vdmModel, vdmWrist, privileged, anchor, unitTol, codeMode, codeApi, fallbackModel, fallbackAfter, fallbackRetry, approval, maxToolCalls, maxTokens, liberoPrompt, codeOracle] = process.argv.slice(1);
 const r = JSON.parse(require("fs").readFileSync(path, "utf8"));
 if (r.status !== "success" && r.status !== "failure") process.exit(1);
 const same = r.model === (model || null) && r.thinking === (thinking || null) && r.max_turns === Number(turns)
@@ -174,6 +177,8 @@ const same = r.model === (model || null) && r.thinking === (thinking || null) &&
 	&& (r.unit_tol ?? 0.004) === Number(unitTol)
 	// Results written before --code existed ran without it.
 	&& (r.code ?? "false") === codeMode && (r.code_api ?? null) === (codeMode === "false" ? null : codeApi)
+	// Results written before --code-oracle existed ran the model.
+	&& (r.code_oracle ?? null) === (codeMode === "false" ? null : codeOracle || null)
 	// Results written before --fallback-model existed ran without a fallback planner.
 	&& (r.fallback_model ?? null) === (fallbackModel || null) && (r.fallback_after ?? null) === (fallbackModel ? Number(fallbackAfter) : null)
 	&& (r.fallback_retry_primary ?? null) === (fallbackModel ? Number(fallbackRetry) : null)
@@ -213,7 +218,7 @@ const rows = cells.map((c) => {
 	}
 });
 const configs = new Set(rows.filter((r) => r.status === "success" || r.status === "failure")
-	.map((r) => `${r.model}/${r.thinking}/turns=${r.max_turns}/limit=${r.time_limit}/units=${r.units}${r.units_wrist_view === false ? `/no-wrist:${(r.units_plugins ?? []).join("+")}` : ""}${r.stateless ? "/stateless" : ""}${r.anchor_image ? "/anchor" : ""}${(r.approval ?? "standard") !== "standard" ? `/approval=${r.approval}` : ""}${r.max_tool_calls ? `/tool_calls=${r.max_tool_calls}` : ""}${r.max_tokens ? `/tokens=${r.max_tokens}` : ""}/unit_tol=${r.unit_tol ?? 0.004}${r.vdm ? `/vdm=${r.vdm_model ?? "default"}${r.vdm_wrist ? "+wrist" : ""}` : ""}${r.privileged ? "/privileged" : ""}${r.fallback_model ? `/fallback=${r.fallback_model}:${r.fallback_after}:${r.fallback_retry_primary}` : ""}${r.code && r.code !== "false" ? `/code=${r.code}:${r.code_api}` : ""}/prompt=${r.libero_prompt ?? "compact"}`));
+	.map((r) => `${r.model}/${r.thinking}/turns=${r.max_turns}/limit=${r.time_limit}/units=${r.units}${r.units_wrist_view === false ? `/no-wrist:${(r.units_plugins ?? []).join("+")}` : ""}${r.stateless ? "/stateless" : ""}${r.anchor_image ? "/anchor" : ""}${(r.approval ?? "standard") !== "standard" ? `/approval=${r.approval}` : ""}${r.max_tool_calls ? `/tool_calls=${r.max_tool_calls}` : ""}${r.max_tokens ? `/tokens=${r.max_tokens}` : ""}/unit_tol=${r.unit_tol ?? 0.004}${r.vdm ? `/vdm=${r.vdm_model ?? "default"}${r.vdm_wrist ? "+wrist" : ""}` : ""}${r.privileged ? "/privileged" : ""}${r.fallback_model ? `/fallback=${r.fallback_model}:${r.fallback_after}:${r.fallback_retry_primary}` : ""}${r.code && r.code !== "false" ? `/code=${r.code}:${r.code_api}${r.code_oracle ? `:oracle=${r.code_oracle}` : ""}` : ""}/prompt=${r.libero_prompt ?? "compact"}`));
 if (configs.size > 1) {
 	console.log(`refusing to summarize: ${out} mixes configurations ${[...configs].join(", ")}`);
 	process.exit(1);

@@ -1130,3 +1130,26 @@ test("/gumi-replay stops when the arm is blocked (contact, floor) and at the das
 	assert.match(mid.notes.at(-1) as string, /stopped at record 0/);
 	assert.equal(r.g.stop(), false);
 });
+
+test("gumi: an operator's manual robot-tool call counts as an operator step for the agent and the recorder", async () => {
+	const f = fakePi({});
+	const g = gumi(f.pi);
+	const robot = fakeRobot();
+	await f.emit("session_start");
+	f.pi.events.emit(UNITS_EVENT, robot.handle);
+	await g.step({ command: "g" });
+	assert.deepEqual(g.state().closed, { arm: true });
+	// The agent decided on the observation before the manual call: that decision is dropped.
+	await f.emit("context");
+	const obs = result([7, 8], ["agentview_high", "wrist_high"], { robot0_eef_pos: [0, 0, 0.5] });
+	await g.manual('move_to {"xyz":[0,0,0.5]}', obs);
+	assert.equal(g.state().last, 'human move_to {"xyz":[0,0,0.5]}');
+	// The measured gripper (open) replaces the tracked command.
+	assert.deepEqual(g.state().closed, { arm: false });
+	const blocked = (await f.emit("tool_call", { toolName: "act", input: { unit: "MV_UP" } })) as {
+		block?: boolean;
+		reason?: string;
+	};
+	assert.equal(blocked?.block, true);
+	assert.match(String(blocked?.reason), /move_to/);
+});

@@ -49,6 +49,10 @@ function rig(o: { idle?: boolean } = {}) {
 		},
 		getActiveTools: () => active,
 		appendEntry: (customType: string, data: unknown) => branch.push({ type: "custom", customType, data }),
+		sendMessage: (
+			m: { customType: string; content: unknown; display: boolean; details: unknown },
+			options: unknown,
+		) => branch.push({ type: "custom_message", ...m, options }),
 		getThinkingLevel: () => "off",
 		sendUserMessage: (text: unknown, options: any) => {
 			sent.push({ text, options });
@@ -355,8 +359,12 @@ test("a manual call is a session entry on the timeline, and never overlaps an ag
 		const ok = await post(`${url}primitive`, { name: "move", arguments: { dx: 0.01 } });
 		assert.equal(ok.status, 200, ok.text);
 		const entry = r.branch.find((e) => e.customType === MANUAL_ENTRY);
+		// A session message the agent reads (appended at once while it is idle).
+		assert.equal(entry.type, "custom_message");
+		assert.equal(entry.options, undefined);
+		assert.match(entry.content, /^The operator called the robot tool move \{"dx":0.01\} by hand \(ok\)/);
 		assert.deepEqual(
-			{ ...entry.data, ms: 0, timestamp: 0 },
+			{ ...entry.details, ms: 0, timestamp: 0 },
 			{
 				source: "operator",
 				tool: "move",
@@ -378,6 +386,10 @@ test("a manual call is a session entry on the timeline, and never overlaps an ag
 		r.hold();
 		const manual = post(`${url}primitive`, { name: "move", arguments: { dx: 0.02 } });
 		while (!r.trace.length) await new Promise((res) => setTimeout(res, 1));
+		// Nothing may start the agent meanwhile.
+		const refused = await post(`${url}message`, { text: "go on" });
+		assert.equal(refused.status, 409);
+		assert.match(refused.json.error, /manual robot call is running/);
 		const agent = r.tools.get("move").execute("call-1", { dx: 0.03 }, undefined, undefined, r.ctx);
 		await new Promise((res) => setTimeout(res, 20));
 		assert.deepEqual(r.trace, ["start 0.02"]);

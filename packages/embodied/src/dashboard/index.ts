@@ -27,7 +27,9 @@
  *   PRIMITIVES_EVENT: schema check, the robot's and the operator's gates, the same execute), only in
  *   operator mode: the agent is idle or the operator took over (GUMI), and no operator batch runs.
  *   It never overlaps an agent robot call on any robot (../robot.ts runs one robot call at a time),
- *   and each is an `operator_primitive` session entry (source, tool, args, result) on the timeline.
+ *   and each is an `operator_primitive` session message (source, tool, args, result in its details) that
+ *   the agent reads with its next turn and the timeline shows; with GUMI it also counts as an operator step.
+ *   `/message` and `/task` wait while one runs (409).
  * - `POST /llm-check` sends the session's model one real 1-token completion through pi's model
  *   registry (../check.ts llmCheck) and reports its latency or error.
  * - `GET /download/session?format=jsonl|html` is pi's /export of the current session;
@@ -95,7 +97,7 @@ type Step = {
 	ms: number | null;
 	frames: string[];
 };
-/** Session entry of an operator's manual robot-tool call from the dashboard. */
+/** Session message (custom_message, the call in `details`) of an operator's manual robot-tool call from the dashboard. */
 export const MANUAL_ENTRY = "operator_primitive";
 type ManualCall = {
 	source: "operator";
@@ -427,8 +429,8 @@ function createHub(server: Server, url: string, page: string, liveFps: number) {
 			items.push({ id: nextId++, kind: "meta", text: [e.robot, ...task].join(" · ") });
 			for (const entry of nextCtx.sessionManager.getBranch()) {
 				if (entry.type === "message") hub.messageEnd(entry.message);
-				else if (entry.type === "custom" && entry.customType === MANUAL_ENTRY) {
-					const m = entry.data as ManualCall;
+				else if (entry.type === "custom_message" && entry.customType === MANUAL_ENTRY) {
+					const m = entry.details as ManualCall;
 					operatorStep(
 						`operator:${m.tool}`,
 						JSON.stringify(m.args),
@@ -682,6 +684,9 @@ function createHub(server: Server, url: string, page: string, liveFps: number) {
 			}
 			if (!pi || !ctx) return reply(409, { error: "session is switching; retry in a moment" });
 			const usage = `/robot-task ${(episode?.fields ?? []).map((k) => `<${k}>`).join(" ")}`;
+			// A manual robot call holds the robot: nothing new may start the agent until it ends.
+			if ((url.pathname === "/task" || url.pathname === "/message") && manual)
+				return reply(409, { error: "a manual robot call is running; send it when the call ends" });
 			if (url.pathname === "/task") {
 				const values = Array.isArray(body.values) ? body.values.map((v) => String(v).trim()) : [];
 				if (!validTask(values)) return reply(422, { error: `usage: ${usage}` });
@@ -736,7 +741,8 @@ function createHub(server: Server, url: string, page: string, liveFps: number) {
 				}
 				const controller = new AbortController();
 				manual = controller;
-				// The agent's robot calls wait while it runs (../gumi's takeover gate), and the video labels its frames.
+				// The agent's robot calls wait while it runs (../robot.ts runs one robot call at a time; ../gumi's
+				// takeover gate with units), and the video labels its frames.
 				teleop?.takeover.begin();
 				pi.events.emit(NOTE_EVENT, { actor: "human", action: name } satisfies VideoNote);
 				const t0 = Date.now();
@@ -747,6 +753,11 @@ function createHub(server: Server, url: string, page: string, liveFps: number) {
 				} catch (err) {
 					isError = true;
 					result = { content: [{ type: "text", text: (err as Error).message }], details: {} };
+				}
+				const label = `${name} ${JSON.stringify(args)}`;
+				try {
+					// GUMI: the agent's older decision is stale, and the observation and gripper state are this call's.
+					if (!isError) await teleop?.manual(label, result);
 				} finally {
 					manual = undefined;
 					pi.events.emit(NOTE_EVENT, { actor: null } satisfies VideoNote);
@@ -754,8 +765,7 @@ function createHub(server: Server, url: string, page: string, liveFps: number) {
 				}
 				const ms = Date.now() - t0;
 				operatorStep(`operator:${name}`, JSON.stringify(args), args, result, isError, ms);
-				// The session keeps it: who drove the robot, how, and what came back (reload/resume show it again).
-				pi.appendEntry(MANUAL_ENTRY, {
+				const record: ManualCall = {
 					source: "operator",
 					tool: name,
 					args,
@@ -763,7 +773,20 @@ function createHub(server: Server, url: string, page: string, liveFps: number) {
 					result: clip(textOf(result.content), 4000),
 					ms,
 					timestamp: Date.now() / 1000,
-				} satisfies ManualCall);
+				};
+				// A session message the agent reads with its next turn (any robot, units or not): the robot moved
+				// under the operator's hand. Reload and resume rebuild the timeline row from it.
+				// Idle: appended at once; while the agent runs (a GUMI takeover): with its next turn.
+				if (pi && ctx)
+					pi.sendMessage(
+						{
+							customType: MANUAL_ENTRY,
+							content: `The operator called the robot tool ${label} by hand (${isError ? "failed" : "ok"}): ${record.result}`,
+							display: true,
+							details: record,
+						},
+						ctx.isIdle() ? undefined : { deliverAs: "steer" },
+					);
 				return reply(isError ? 422 : 200, {
 					ok: !isError,
 					...(isError ? { error: clip(textOf(result.content), 500) } : {}),

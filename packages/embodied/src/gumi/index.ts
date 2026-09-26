@@ -990,6 +990,23 @@ export function gumi(
 				state: state(),
 			};
 		},
+		/**
+		 * An operator's manual robot-tool call (../dashboard /primitive) moved the robot: a stale agent
+		 * decision is dropped as after a teleop step, its camera result becomes the observation the next
+		 * step is decided on, and the grippers' tracked state follows what the robot measures now.
+		 */
+		async manual(label: string, result: AgentToolResult<unknown>) {
+			takeover.humanStep([label]);
+			const obs = observation(result);
+			if (obs?.images.length && Array.isArray(obs.json?.images)) latest = obs;
+			const measured = await stateNow(latest);
+			for (const a of arms) {
+				const c = measured[a]?.gripper_closed_measured;
+				if (typeof c === "boolean") closed[a] = c;
+			}
+			last = `human ${label}`;
+			publish(`manual ${label}`);
+		},
 		/** start | save (success marked) | discard. */
 		record(action: string, success?: unknown) {
 			if (!recorder) throw fail(409, "recording is off: start pi with --gumi-record <dir>");

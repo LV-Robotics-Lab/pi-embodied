@@ -19,12 +19,12 @@
  * `is_episode_end` judgement, recorded in `robot_result` with RoboDojo's partial-credit `score`.
  */
 
-import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { template } from "../context-version.ts";
 import { recipeFlash } from "../flash/recipe.ts";
 import type { FlywheelObs, FlywheelSpec } from "../flywheel.ts";
 import { encodePng } from "../png.ts";
@@ -32,7 +32,7 @@ import { attach, defineRobot, SERVICES, u8 } from "../robot.ts";
 import type { NdArray, RpcClient } from "../rpc.ts";
 import type { MoveUnit, Vec3 } from "../units/index.ts";
 
-const read = (name: string) => readFileSync(new URL(name, import.meta.url), "utf8");
+const read = (name: string) => template(new URL(name, import.meta.url));
 const SYSTEM = read("./SYSTEM.md");
 const MEMORY = read("./memory.md");
 const EXPLORE = read("./explore.md");

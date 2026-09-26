@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import dashboard from "../src/dashboard/index.ts";
+import dashboard, { MANUAL_ENTRY } from "../src/dashboard/index.ts";
 import { defineRobot } from "../src/robot.ts";
 import { NOTE_EVENT, VIDEO_DIR_EVENT, type VideoNote } from "../src/video.ts";
 
@@ -27,6 +27,12 @@ function rig(o: { idle?: boolean } = {}) {
 	/** pi's steering queue, as the stub's withdrawQueuedMessage sees it. */
 	const queue: string[] = [];
 	const moves: number[] = [];
+	/** Each move's start and end, in order ("start 0.02", "end 0.02"). */
+	const trace: string[] = [];
+	/** Set to hold every move until `release()`. */
+	let hold: Promise<void> | undefined;
+	let release = () => {};
+	const branch: any[] = [];
 	const exports: string[] = [];
 	let active: string[] = [];
 	let idle = o.idle ?? true;
@@ -42,7 +48,7 @@ function rig(o: { idle?: boolean } = {}) {
 			active = names;
 		},
 		getActiveTools: () => active,
-		appendEntry: () => {},
+		appendEntry: (customType: string, data: unknown) => branch.push({ type: "custom", customType, data }),
 		getThinkingLevel: () => "off",
 		sendUserMessage: (text: unknown, options: any) => {
 			sent.push({ text, options });
@@ -67,7 +73,7 @@ function rig(o: { idle?: boolean } = {}) {
 	const ctx = {
 		hasUI: true,
 		ui: { notify: (m: string) => notes.push(m) },
-		sessionManager: { getBranch: () => [], getSessionId: () => "sess-1", getSessionFile: () => undefined },
+		sessionManager: { getBranch: () => branch, getSessionId: () => "sess-1", getSessionFile: () => undefined },
 		isIdle: () => idle,
 		signal: undefined,
 		abort: () => {},
@@ -109,6 +115,9 @@ function rig(o: { idle?: boolean } = {}) {
 		"Move by dx metres",
 		Type.Object({ dx: Type.Number({ minimum: -0.05, maximum: 0.05, description: "metres" }) }),
 		async ({ dx }) => {
+			trace.push(`start ${dx}`);
+			await hold;
+			trace.push(`end ${dx}`);
 			moves.push(dx);
 			return { content: [{ type: "text", text: JSON.stringify({ moved: dx }) }], details: {} };
 		},
@@ -122,6 +131,18 @@ function rig(o: { idle?: boolean } = {}) {
 		pi,
 		emit,
 		tools,
+		trace,
+		branch,
+		ctx,
+		hold: () => {
+			hold = new Promise<void>((r) => {
+				release = r;
+			});
+		},
+		release: () => {
+			hold = undefined;
+			release();
+		},
 		sent,
 		queue,
 		moves,
@@ -322,6 +343,65 @@ test("downloads: the session is pi's /export (JSONL or HTML); the episode videos
 		assert.equal((await call(`${url}download/video/sess-1/notes.txt`)).status, 404);
 		assert.equal((await call(`${url}download/video/sess-1/..%2Fepisode.mp4`)).status, 404);
 		assert.equal((await call(`${url}download/video/other/episode.mp4`)).status, 404);
+	} finally {
+		await r.quit();
+	}
+});
+
+test("a manual call is a session entry on the timeline, and never overlaps an agent robot call", async () => {
+	const r = rig();
+	const url = await r.start();
+	try {
+		const ok = await post(`${url}primitive`, { name: "move", arguments: { dx: 0.01 } });
+		assert.equal(ok.status, 200, ok.text);
+		const entry = r.branch.find((e) => e.customType === MANUAL_ENTRY);
+		assert.deepEqual(
+			{ ...entry.data, ms: 0, timestamp: 0 },
+			{
+				source: "operator",
+				tool: "move",
+				args: { dx: 0.01 },
+				ok: true,
+				result: '{"moved":0.01}',
+				ms: 0,
+				timestamp: 0,
+			},
+		);
+		// A reload / resume rebuilds the timeline from the session, the manual call included.
+		await r.emit("session_start");
+		const rebuilt = (await snapshot(url)).steps.filter((s: any) => s.name === "operator:move");
+		assert.equal(rebuilt.length, 1);
+		assert.deepEqual(rebuilt[0].args, { dx: 0.01 });
+
+		// The operator's call holds the robot: an agent call that arrives meanwhile waits for it.
+		r.trace.length = 0;
+		r.hold();
+		const manual = post(`${url}primitive`, { name: "move", arguments: { dx: 0.02 } });
+		while (!r.trace.length) await new Promise((res) => setTimeout(res, 1));
+		const agent = r.tools.get("move").execute("call-1", { dx: 0.03 }, undefined, undefined, r.ctx);
+		await new Promise((res) => setTimeout(res, 20));
+		assert.deepEqual(r.trace, ["start 0.02"]);
+		r.release();
+		assert.equal((await manual).status, 200);
+		await agent;
+		assert.deepEqual(r.trace, ["start 0.02", "end 0.02", "start 0.03", "end 0.03"]);
+
+		// And the other way round: a manual call waits for the agent's; an abort gives up the wait.
+		r.trace.length = 0;
+		r.hold();
+		const first = r.tools.get("move").execute("call-2", { dx: 0.04 }, undefined, undefined, r.ctx);
+		while (!r.trace.length) await new Promise((res) => setTimeout(res, 1));
+		const late = post(`${url}primitive`, { name: "move", arguments: { dx: 0.05 } });
+		const stop = new AbortController();
+		const waiting = r.tools.get("move").execute("call-3", { dx: 0.01 }, stop.signal, undefined, r.ctx);
+		stop.abort();
+		await assert.rejects(waiting, /aborted while another robot call ran/);
+		await new Promise((res) => setTimeout(res, 20));
+		assert.deepEqual(r.trace, ["start 0.04"]);
+		r.release();
+		await first;
+		assert.equal((await late).status, 200);
+		assert.deepEqual(r.trace, ["start 0.04", "end 0.04", "start 0.05", "end 0.05"]);
 	} finally {
 		await r.quit();
 	}

@@ -26,6 +26,8 @@
  *   `POST /primitive {name, arguments}` runs one through the robot's own tool path (../robot.ts
  *   PRIMITIVES_EVENT: schema check, the robot's and the operator's gates, the same execute), only in
  *   operator mode: the agent is idle or the operator took over (GUMI), and no operator batch runs.
+ *   It never overlaps an agent robot call on any robot (../robot.ts runs one robot call at a time),
+ *   and each is an `operator_primitive` session entry (source, tool, args, result) on the timeline.
  * - `POST /llm-check` sends the session's model one real 1-token completion through pi's model
  *   registry (../check.ts llmCheck) and reports its latency or error.
  * - `GET /download/session?format=jsonl|html` is pi's /export of the current session;
@@ -92,6 +94,17 @@ type Step = {
 	solved: boolean;
 	ms: number | null;
 	frames: string[];
+};
+/** Session entry of an operator's manual robot-tool call from the dashboard. */
+export const MANUAL_ENTRY = "operator_primitive";
+type ManualCall = {
+	source: "operator";
+	tool: string;
+	args: unknown;
+	ok: boolean;
+	result: string;
+	ms: number;
+	timestamp: number;
 };
 /** A message the operator sent while the agent ran: queued in pi until the agent takes it, or withdrawn. */
 type Queued = { id: number; text: string; status: "queued" | "delivered" | "withdrawn" | "dropped" };
@@ -414,7 +427,17 @@ function createHub(server: Server, url: string, page: string, liveFps: number) {
 			items.push({ id: nextId++, kind: "meta", text: [e.robot, ...task].join(" · ") });
 			for (const entry of nextCtx.sessionManager.getBranch()) {
 				if (entry.type === "message") hub.messageEnd(entry.message);
-				else if (entry.type === "custom" && entry.customType === RESULT_ENTRY)
+				else if (entry.type === "custom" && entry.customType === MANUAL_ENTRY) {
+					const m = entry.data as ManualCall;
+					operatorStep(
+						`operator:${m.tool}`,
+						JSON.stringify(m.args),
+						m.args,
+						{ content: [{ type: "text", text: m.result }], details: {} },
+						!m.ok,
+						m.ms,
+					);
+				} else if (entry.type === "custom" && entry.customType === RESULT_ENTRY)
 					items.push({ id: nextId++, kind: "meta", text: `${RESULT_ENTRY} ${JSON.stringify(entry.data)}` });
 			}
 			if (status) applyStatus(status);
@@ -729,7 +752,18 @@ function createHub(server: Server, url: string, page: string, liveFps: number) {
 					pi.events.emit(NOTE_EVENT, { actor: null } satisfies VideoNote);
 					teleop?.takeover.end();
 				}
-				operatorStep(`operator:${name}`, JSON.stringify(args), args, result, isError, Date.now() - t0);
+				const ms = Date.now() - t0;
+				operatorStep(`operator:${name}`, JSON.stringify(args), args, result, isError, ms);
+				// The session keeps it: who drove the robot, how, and what came back (reload/resume show it again).
+				pi.appendEntry(MANUAL_ENTRY, {
+					source: "operator",
+					tool: name,
+					args,
+					ok: !isError,
+					result: clip(textOf(result.content), 4000),
+					ms,
+					timestamp: Date.now() / 1000,
+				} satisfies ManualCall);
 				return reply(isError ? 422 : 200, {
 					ok: !isError,
 					...(isError ? { error: clip(textOf(result.content), 500) } : {}),

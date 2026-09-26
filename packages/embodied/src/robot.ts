@@ -360,6 +360,40 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	const robotTools: string[] = [];
 	const defs = new Map<string, { description: string; parameters: TSchema; call: Call }>();
 	let sessionCtx: ExtensionContext | undefined;
+	/**
+	 * One robot call at a time, the agent's or an operator's manual one (../dashboard): each waits for
+	 * the one before it (an abort gives up the wait), so neither overwrites the other's `signal`.
+	 */
+	let robotQueue: Promise<void> = Promise.resolve();
+	/** Robot calls running or waiting their turn. */
+	let robotCalls = 0;
+	async function exclusive<T>(sig: AbortSignal | undefined, run: () => Promise<T>): Promise<T> {
+		const before = robotQueue;
+		const waits = robotCalls > 0;
+		robotCalls++;
+		let release = () => {};
+		const mine = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		robotQueue = before.then(() => mine);
+		try {
+			// Only a call that has to wait may give up (an abort); with the robot free it runs, and handles its signal itself.
+			if (waits)
+				await new Promise<void>((resolve, reject) => {
+					const abort = () => reject(new Error("aborted while another robot call ran"));
+					if (sig?.aborted) return abort();
+					sig?.addEventListener("abort", abort, { once: true });
+					before.then(() => {
+						sig?.removeEventListener("abort", abort);
+						resolve();
+					});
+				});
+			return await run();
+		} finally {
+			robotCalls--;
+			release();
+		}
+	}
 	/** Register a sequential robot tool; its result terminates the batch when the batch also calls `finish`. */
 	function tool<P extends TSchema>(
 		toolName: string,
@@ -379,6 +413,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 				signal = undefined;
 			}
 		};
+		const locked: Call = (params, sig, ctx) => exclusive(sig, () => call(params, sig, ctx));
 		defs.set(toolName, { description, parameters, call });
 		pi.registerTool({
 			name: toolName,
@@ -386,7 +421,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 			description,
 			parameters,
 			executionMode: "sequential",
-			execute: (_id, params, sig, _onUpdate, ctx) => call(params, sig, ctx),
+			execute: (_id, params, sig, _onUpdate, ctx) => locked(params, sig, ctx),
 		});
 	}
 	// An operator's unit (../gumi) passes the gates an `act` call passes, without counting as a planner turn.
@@ -507,7 +542,13 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 				arguments: args as Json,
 			});
 			const ctx = sessionCtx;
-			return (sig) => def.call(params, sig, ctx);
+			// After waiting its turn the gates are checked again: the episode may have ended meanwhile.
+			return (sig) =>
+				exclusive(sig, () => {
+					const late = refusal(toolName) ?? op.refuse(toolName);
+					if (late) throw new Error(late);
+					return def.call(params, sig, ctx);
+				});
 		},
 	};
 

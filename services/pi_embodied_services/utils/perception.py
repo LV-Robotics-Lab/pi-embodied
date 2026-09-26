@@ -30,7 +30,10 @@ bound to the observation they came from (OpenETA port spec, section 0.2):
 
 :class:`Perception` is installed on a facade after its own ``_register_rpc``: it wraps
 ``env.get_observation`` (a new observation invalidates the ids when the robot state changed
-since they were cut, or always when the facade gave the :class:`Epoch` no state digest) and
+since they were cut, or always when the facade gave the :class:`Epoch` no state digest, and
+when its frames show another scene than the ones the ids were cut from: an object moved by
+hand, a restored table; ``env.segment`` / ``env.enhance_depth`` take a fresh observation
+first, so they never work on a frame older than the call) and
 the motion methods (``MOTION_METHODS``: a move invalidates them too, observed or not), wraps
 ``env.get_env_meta`` (``capabilities.perception`` says what is on), and registers only the
 primitives whose service URL was given. Without ``--sam3`` / ``--unidepth`` nothing changes.
@@ -53,8 +56,10 @@ from pi_embodied_services.utils.detections import (
     Epoch,
     decode_mask_png,
     describe_mask,
+    frame_signature,
     overlay_masks,
     public,
+    scene_changed,
 )
 from pi_embodied_services.utils.logging import get_logger
 
@@ -133,7 +138,11 @@ class Perception:
         self._intrinsics = intrinsics
         self._epoch = epoch if epoch is not None else Epoch()
         self._book = DetectionBook(self._epoch)
+        self._book.bind(self._epoch.observation)
         self._frames: dict[str, tuple[np.ndarray, np.ndarray | None]] = {}
+        self._signatures: dict[str, dict[str, Any]] = {}
+        #: the facade's own env.get_observation (install), for a fresh capture per call
+        self._capture: Callable[[], Any] | None = None
         self._enhanced: dict[str, dict[str, Any]] = {}
 
     @classmethod
@@ -186,6 +195,7 @@ class Perception:
 
         rpc["env.get_observation"] = get_observation
         rpc["env.get_env_meta"] = get_env_meta
+        self._capture = observe
         self._epoch.install(facade, MOTION_METHODS)
         if self._sam3 is not None:
             rpc["env.segment"] = self.segment
@@ -198,13 +208,11 @@ class Perception:
             rpc["env.enhance_depth"] = self.enhance_depth
 
     def observe(self, obs: Any) -> list[str]:
-        """A new observation: cache its frames; invalidate every id when the robot state
-        changed since they were cut (:meth:`Epoch.refresh`). Returns the ids it dropped."""
-        dropped = self._book.ids
-        if not self._epoch.refresh():
-            dropped = []
-        self._frames = {}
-        self._enhanced = {}
+        """A new observation. The ids expire (and its frames replace the cached ones) when the
+        robot state changed since they were cut (:meth:`Epoch.refresh`) or a camera shows
+        another scene (:func:`scene_changed`: an object moved under an unmoved robot); else
+        the cached frames, their ids and any enhanced depth stay. Returns the ids dropped."""
+        frames: dict[str, tuple[np.ndarray, np.ndarray | None]] = {}
         if isinstance(obs, dict):
             for alias, (image_key, depth_key, index) in self._cameras.items():
                 rgb = _pick(obs, image_key, index)
@@ -213,8 +221,29 @@ class Perception:
                 depth = _pick(obs, depth_key, index)
                 if depth is not None and depth.shape != rgb.shape[:2]:
                     depth = None
-                self._frames[alias] = (rgb[..., :3], depth)
-        return dropped
+                frames[alias] = (rgb[..., :3], depth)
+        signatures = {a: frame_signature(rgb, d) for a, (rgb, d) in frames.items()}
+        ids = self._book.ids
+        # Without a state digest the wrapped motions already tick; an observation alone then
+        # expires ids only through its frames.
+        moved = self._epoch.refresh() if self._epoch.has_digest else False
+        # A camera seen for the first time has no ids cut from it: nothing to compare.
+        changed = any(a not in signatures for a in self._signatures) or any(
+            scene_changed(self._signatures[a], s)
+            for a, s in signatures.items()
+            if a in self._signatures
+        )
+        if not (moved or changed):
+            for alias in set(frames) - set(self._frames):
+                self._frames[alias] = frames[alias]
+                self._signatures[alias] = signatures[alias]
+            return []
+        if not moved:
+            self._epoch.tick()
+        self._frames = frames
+        self._signatures = signatures
+        self._enhanced = {}
+        return ids
 
     # -- primitives ------------------------------------------------------------
 
@@ -232,11 +261,14 @@ class Perception:
         return self._epoch
 
     def frame(self, camera: str) -> tuple[np.ndarray, np.ndarray | None]:
-        """The current observation's (rgb, depth) for a camera alias."""
+        """The current observation's (rgb, depth) for a camera alias, after a fresh capture
+        (``observe``: the cached frame stays while the scene is the same)."""
         if camera not in self._cameras:
             raise ValueError(
                 f"unknown camera {camera!r}; use one of {sorted(self._cameras)}"
             )
+        if self._capture is not None:
+            self.observe(self._capture())
         if camera not in self._frames:
             raise ValueError(
                 f"no current frame for camera {camera!r}: take an observation first"

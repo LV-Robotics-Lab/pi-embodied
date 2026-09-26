@@ -685,3 +685,110 @@ def test_the_franka_planners_get_the_perception_sam3_and_its_camera_names(monkey
     )
     # The digest reads both arms' poses.
     assert len(dual._state_digest()) == 3
+
+
+class _Scene:
+    """A view whose table the test can change under an unmoved robot."""
+
+    def __init__(self):
+        self.depth = np.full((H, W), 0.9, dtype=np.float32)
+        self.depth[4:12, 4:12] = 0.8
+        self.rgb = np.full((H, W, 3), 120, np.uint8)
+        self.captures = 0
+
+    def __call__(self, camera):
+        self.captures += 1
+        return {
+            "rgb": self.rgb.copy(),
+            "depth": self.depth.copy(),
+            "intrinsic_K": K,
+            "extrinsic_cam2world": CAM2WORLD,
+        }
+
+
+def _scene_planner(**kw):
+    scene = _Scene()
+    server = FakeServer([_camera_candidate(0.9, 0.0)])
+    planner = G.GraspPlanner(
+        scene,
+        cameras=["agentview"],
+        backends={"contact_graspnet": server},
+        sam3=FakeSam3(_block_mask()),
+        **kw,
+    )
+    return planner, scene
+
+
+def test_an_object_moved_under_a_still_arm_expires_the_plan():
+    """Audit: with ids expiring only on robot motion, the planner kept the first frame while
+    the arm stood still, so a plan survived a person moving the object. Every call captures
+    anew; a changed scene expires the ids, sensor noise does not."""
+    robot = {"tcp_pose": [0.4, 0.0, 0.3, 1.0, 0.0, 0.0, 0.0]}
+    from pi_embodied_services.utils.detections import state_digest
+
+    planner, scene = _scene_planner(state_digest=lambda: state_digest(robot))
+    gid = planner.plan_grasp(object="block")["active"]
+    # Noise (a few colour levels, a millimetre of depth) is the same scene: the id holds.
+    rng = np.random.default_rng(0)
+    scene.rgb = (scene.rgb + rng.integers(-4, 5, scene.rgb.shape)).astype(np.uint8)
+    scene.depth = scene.depth + rng.normal(0, 0.001, scene.depth.shape).astype(
+        np.float32
+    )
+    captures = scene.captures
+    claim = planner.claim_waypoints(gid)
+    assert claim["id"] == gid and scene.captures == captures + 1, "a fresh capture"
+    # Someone slides the block 4 px along the table; the arm never moved.
+    gid = planner.plan_grasp(object="block")["active"]
+    scene.depth[:] = 0.9
+    scene.depth[4:12, 8:16] = 0.8
+    with pytest.raises(G.GraspError, match="stale"):
+        planner.claim_waypoints(gid)
+    again = planner.plan_grasp(object="block")
+    assert gid in again["expired_ids"] and again["active"] != gid
+    assert planner.claim_waypoints(again["active"])["id"] == again["active"]
+
+
+def test_a_reset_expires_every_id_even_when_the_arm_returns_to_the_same_pose():
+    from pi_embodied_services.utils.detections import state_digest
+
+    robot = {"tcp_pose": [0.4, 0.0, 0.3, 1.0, 0.0, 0.0, 0.0]}
+
+    class Facade:
+        _rpc = {"env.reset": lambda: "reset"}
+        _readonly_methods = set()
+
+    planner, scene = _scene_planner(state_digest=lambda: state_digest(robot))
+    f = Facade()
+    planner.install(f)
+    gid = planner.plan_grasp(object="block")["active"]
+    assert f._rpc["env.reset"]() == "reset"
+    with pytest.raises(G.GraspError, match="stale"):
+        planner.resolve_grasp(gid)
+
+
+def test_scene_signatures_ignore_noise_and_catch_a_moved_object():
+    from pi_embodied_services.utils.detections import frame_signature, scene_changed
+
+    rgb = np.full((96, 128, 3), 100, np.uint8)
+    depth = np.full((96, 128), 0.9, np.float32)
+    depth[40:56, 40:56] = 0.8
+    a = frame_signature(rgb, depth)
+    rng = np.random.default_rng(1)
+    noisy = frame_signature(
+        (rgb + rng.integers(-6, 7, rgb.shape)).astype(np.uint8),
+        depth + rng.normal(0, 0.002, depth.shape).astype(np.float32),
+    )
+    assert not scene_changed(a, noisy)
+    moved = depth.copy()
+    moved[40:56, 40:56] = 0.9
+    moved[40:56, 70:86] = 0.8
+    assert scene_changed(a, frame_signature(rgb, moved))
+    recoloured = rgb.copy()
+    recoloured[40:56, 40:56] = 200
+    assert scene_changed(a, frame_signature(recoloured, depth))
+    holes = depth.copy()
+    holes[:, :64] = 0.0
+    assert scene_changed(a, frame_signature(rgb, holes))
+    assert scene_changed(None, a) and scene_changed(
+        a, frame_signature(rgb[:64], depth[:64])
+    )

@@ -59,6 +59,8 @@ from pi_embodied_services.utils.detections import (
     Epoch,
     decode_mask_png,
     describe_mask,
+    frame_signature,
+    scene_changed,
 )
 from pi_embodied_services.utils.logging import get_logger
 
@@ -471,6 +473,7 @@ class Snapshot:
     camera: str
     view: dict[str, Any]
     masks: dict[str, np.ndarray] = field(default_factory=dict)
+    signature: dict[str, Any] | None = None
 
 
 class GraspPlanner:
@@ -530,6 +533,8 @@ class GraspPlanner:
         self._book.bind(self._epoch.observation)
         self._epoch.on_tick(self._on_tick)
         self._snapshots: dict[str, Snapshot] = {}
+        #: cameras captured during the current primitive call (one fresh capture per call)
+        self._captured: set[str] = set()
         self._max = int(max_candidates)
         self._depth_max = float(depth_truncation)
         self._wrist = wrist_camera
@@ -736,18 +741,36 @@ class GraspPlanner:
         self._snapshots = {}
         self._rankings = {}
 
+    def _fresh_call(self) -> None:
+        """A primitive call starts: its first use of each camera captures a new frame."""
+        self._captured = set()
+
     def _snapshot(self, camera: str | None) -> Snapshot:
+        """The camera's frame of the current observation, checked against a fresh capture.
+
+        Every primitive call captures the camera anew (once per call). When the new frame
+        shows the same scene as the cached one (:func:`scene_changed`: noise, not a moved
+        object), the cached snapshot stays, and with it every id cut from it; otherwise the
+        scene changed without the robot (someone moved an object, the table was restored), a
+        new observation starts (every id expires) and the new frame is the snapshot."""
         camera = camera or self._cameras[0]
         if camera not in self._cameras:
             raise GraspError(f"unknown camera {camera!r}; one of {self._cameras}")
         snap = self._snapshots.get(camera)
-        if snap is None:
-            view = self._view(camera)
-            for key in ("rgb", "depth", "intrinsic_K", "extrinsic_cam2world"):
-                if key not in view:
-                    raise GraspError(f"the view of {camera!r} has no {key!r}")
-            snap = Snapshot(self._epoch.observation, camera, view)
-            self._snapshots[camera] = snap
+        if snap is not None and camera in self._captured:
+            return snap
+        view = self._view(camera)
+        for key in ("rgb", "depth", "intrinsic_K", "extrinsic_cam2world"):
+            if key not in view:
+                raise GraspError(f"the view of {camera!r} has no {key!r}")
+        signature = frame_signature(view["rgb"], view["depth"])
+        self._captured.add(camera)
+        if snap is not None and not scene_changed(snap.signature, signature):
+            return snap
+        if snap is not None:
+            self._epoch.tick()  # the scene changed under an unmoved robot
+        snap = Snapshot(self._epoch.observation, camera, view, signature=signature)
+        self._snapshots[camera] = snap
         return snap
 
     def _expired(self) -> list[str]:
@@ -783,6 +806,7 @@ class GraspPlanner:
         Example:
             >>> obj = segment_mask("black bowl"); region = segment_mask("plate")
         """
+        self._fresh_call()
         out = self._segment(object, camera, min_score)
         out["expired_ids"] = self._expired()
         return out
@@ -999,6 +1023,7 @@ class GraspPlanner:
             >>> g = plan_grasp("black bowl"); pose = resolve_grasp(g["active"], standoff=0.1)
         """
         name, client = self._backend(backend)
+        self._fresh_call()
         snap = self._snapshot(camera)
         mask_id, mask = self._mask_for(snap, object, mask_id)
         view = snap.view
@@ -1162,6 +1187,10 @@ class GraspPlanner:
             >>> c = claim_waypoints(plan_grasp("black bowl")["active"])
             >>> move_to(c["waypoints"]["pre_grasp"], gripper=-1)
         """
+        # The scene must still be the one the id was planned on: a fresh capture of its
+        # camera expires it when something moved since (the robot did not).
+        self._fresh_call()
+        self._snapshot(self._grasp_item(grasp_id)["camera"])
         item = self._grasp_item(grasp_id)
         grasp_id = str(grasp_id)
         if item.get("rejected"):
@@ -1287,12 +1316,16 @@ class GraspPlanner:
                 "plan_place needs an AnyPlace server (start the env server with --anyplace)"
             )
         grasp_id = str(grasp_id)
+        self._fresh_call()
         held = next((h for h in self._held.values() if h["grasp_id"] == grasp_id), None)
         live = self._book.known(grasp_id) and grasp_id in self._book.ids
         if held is not None and not live:
             return self._plan_place_held(
                 held, region_mask_id, object_mask_id, max_candidates
             )
+        self._snapshot(
+            self._grasp_item(grasp_id)["camera"]
+        )  # fresh: expires a moved scene
         grasp = self._grasp_item(grasp_id)
         if grasp["kind"] != "grasp":
             raise GraspError(
@@ -1353,9 +1386,9 @@ class GraspPlanner:
             raise GraspError(
                 "plan_place after a grasp needs the EEF pose, which this server does not give"
             )
+        camera = self._mask_item(region_mask_id).get("camera") or held["camera"]
+        snap = self._snapshot(camera)  # fresh: a changed scene expires the region mask
         region = self._mask_item(region_mask_id)
-        camera = region.get("camera") or held["camera"]
-        snap = self._snapshot(camera)
         if object_mask_id is None:
             if not held.get("prompt"):
                 raise GraspError(

@@ -598,3 +598,15 @@ def test_the_executors_are_code_primitives_only_with_a_grasp_server():
     with pytest.raises(ValueError, match="finite"):
         f._rpc["env.execute_grasp"](grasp_id=gid, standoff=float("nan"))
     assert f._rpc["env.resolve_grasp"](gid)["id"] == gid, "refused before moving"
+
+
+def test_a_reset_expires_the_plan_and_a_replan_renders_afresh():
+    """LIBERO's scene only changes through the sim, whose exact state is the digest; a reset
+    always expires the ids (the arm may come back to the same pose)."""
+    f, G = grasp_facade()
+    gid = f._rpc["env.plan_grasp"](object="bowl")["active"]
+    f._rpc["env.reset"]()
+    with pytest.raises(G.GraspError, match="stale"):
+        f._rpc["env.execute_grasp"](grasp_id=gid)
+    gid = f._rpc["env.plan_grasp"](object="bowl")["active"]
+    assert f._rpc["env.resolve_grasp"](gid)["id"] == gid

@@ -284,16 +284,17 @@ def test_segment_all_gives_ids_geometry_and_overlay() -> None:
         "perception": {"segment": True, "enhance_depth": False},
     }
 
-    with pytest.raises(ValueError, match="take an observation first"):
-        server._dispatch("env.segment", (), {"text_prompt": "bowl"})
+    # segment captures a fresh observation itself (never a frame older than the call).
     server._dispatch("env.get_observation", (), {})
+    before = server.observations
     out = server._dispatch(
         "env.segment", (), {"camera": "wrist", "text_prompt": " bowl ", "all": True}
     )
 
+    assert server.observations == before + 1, "a fresh capture per segment"
     assert sam3.calls[0]["text_prompt"] == "bowl" and sam3.calls[0]["all"] is True
     assert out["found"] and out["count"] == 2 and out["ids"] == ["d1", "d2"]
-    assert out["observation"] == 1 and out["invalidated"] == []
+    assert out["observation"] == 0 and out["invalidated"] == []
     first, second = out["detections"]
     assert first["id"] == "d1" and first["score"] == 0.9 and first["rank"] == 0
     assert first["centroid_rc"] == [7, 14] and first["depth_m"] == pytest.approx(0.5)
@@ -311,7 +312,7 @@ def test_segment_all_gives_ids_geometry_and_overlay() -> None:
     out = server._dispatch("env.segment", (), {"text_prompt": "x", "min_score": 0.95})
     assert out == {
         "found": False,
-        "observation": 1,
+        "observation": 0,
         "camera": "wrist",
         "count": 0,
         "detections": [],
@@ -337,13 +338,14 @@ def test_ids_are_invalidated_by_a_new_observation_and_reported_once() -> None:
     rej = server._dispatch("env.reject_detection", (), {"id": ids[1]})
     assert rej["ok"] and rej["rejected"] == [ids[1]] and rej["selected"] == ids[0]
 
-    server._dispatch("env.get_observation", (), {})  # the robot moved
+    server.depth[2:10, 10:18] = 0.35  # someone moved the object; the arm did not move
+    server._dispatch("env.get_observation", (), {})
     stale = server._dispatch("env.select_detection", (), {"id": ids[0]})
     assert stale["ok"] is False
-    assert "belongs to observation 1" in stale["error"]
+    assert "belongs to observation 0" in stale["error"]
     assert stale["invalidated"] == ids, "reported on the first perception call after"
     assert (
-        stale["ids"] == [] and stale["selected"] is None and stale["observation"] == 2
+        stale["ids"] == [] and stale["selected"] is None and stale["observation"] == 1
     )
     again = server._dispatch("env.reject_detection", (), {"id": ids[0]})
     assert again["ok"] is False and again["invalidated"] == [], "reported only once"
@@ -352,7 +354,7 @@ def test_ids_are_invalidated_by_a_new_observation_and_reported_once() -> None:
 
     # Fresh ids after re-segmenting; the old ones were never reused.
     fresh = server._dispatch("env.segment", (), {"text_prompt": "bowl", "all": True})
-    assert fresh["ids"] == ["d3", "d4"] and fresh["observation"] == 2
+    assert fresh["ids"] == ["d3", "d4"] and fresh["observation"] == 1
 
 
 def test_enhance_depth_replaces_the_camera_depth_for_later_segments() -> None:
@@ -363,7 +365,7 @@ def test_enhance_depth_replaces_the_camera_depth_for_later_segments() -> None:
     assert before["detections"][1]["depth_m"] is None
 
     out = server._dispatch("env.enhance_depth", (), {"camera": "wrist"})
-    assert out["ok"] and out["observation"] == 1
+    assert out["ok"] and out["observation"] == 0
     assert out["report"]["mode"] == "filled"
     assert out["report"]["scale"] == pytest.approx(2.0)
     assert out["report"]["filled_pixels"] == 36
@@ -452,3 +454,27 @@ def test_perception_reads_per_camera_dict_frames_for_the_dual_arm_views() -> Non
     assert out["detections"][0]["point_camera"] is not None, (
         "K came from the view's meta"
     )
+
+
+def test_a_moved_object_or_a_reset_expires_ids_under_a_still_arm() -> None:
+    """Audit: the digest kept ids while the arm stood still, even after a person moved an
+    object or the scene was reset. The frames now expire them; a reset always does."""
+    from pi_embodied_services.utils.detections import state_digest
+
+    server = Server()
+    pose = {"raw_base_state": {"tcp_pose": [0.4, 0.0, 0.3, 1.0, 0.0, 0.0, 0.0]}}
+    server._rpc["env.reset"] = lambda: {"ok": True}
+    perception = Perception(sam3=FakeSam3(), cameras=FRANKA_CAMERAS)
+    perception.epoch.set_digest(lambda: state_digest(pose))
+    perception.install(server)
+    ids = server._dispatch("env.segment", (), {"text_prompt": "bowl"})["ids"]
+    server._dispatch("env.get_observation", (), {})
+    assert server._dispatch("env.select_detection", (), {"id": ids[0]})["ok"]
+    server.depth[2:10, 10:18] = 0.35  # moved by hand
+    fresh = server._dispatch("env.segment", (), {"text_prompt": "bowl"})
+    assert fresh["invalidated"] == ids and fresh["ids"] != ids
+    kept = server._dispatch("env.select_detection", (), {"id": fresh["ids"][0]})
+    assert kept["ok"], "the new frame's id is current"
+    server._dispatch("env.reset", (), {})  # the arm reads the same pose after the reset
+    after = server._dispatch("env.select_detection", (), {"id": fresh["ids"][0]})
+    assert after["ok"] is False and "stale" in after["error"]

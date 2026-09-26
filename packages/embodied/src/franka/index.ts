@@ -453,8 +453,8 @@ export default function franka(pi: ExtensionAPI) {
 	let liveIds: string[] = [];
 
 	async function observation(): Promise<Json> {
-		// The env server drops the detection ids only when the arm moved since they were cut (its
-		// state digest); the next perception result reports them (noteInvalidated).
+		// The env server drops the detection ids when the arm moved (its state digest), the frames
+		// show another scene, or after a reset; the next perception result reports them (noteInvalidated).
 		const obs = await call("env.get_observation");
 		if (!("states" in obs) && lastStates !== undefined) obs.states = lastStates;
 		remember(obs.states);

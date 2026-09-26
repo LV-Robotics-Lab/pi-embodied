@@ -20,8 +20,11 @@ frame's calibration. An id is valid only while the observation it belongs to is 
 current one. Once the robot moves, every earlier id is invalid, so a stale mask can never
 drive a motion (stage 8's grasp and place primitives accept only ids the book still holds).
 With a state digest (:meth:`Epoch.set_digest`), "moved" means the robot state actually
-changed: a motion call refused before it moved, or a new camera observation of an unmoved
-robot, keeps the ids; without one every motion call and observation expires them.
+changed: a motion call refused before it moved keeps the ids; without one every motion call
+expires them. The scene can change without the robot (a person moves an object, an operator
+restores the table): every plan and segmentation captures a fresh frame and compares it with
+the frame the current ids were cut from (:func:`frame_signature`, :func:`scene_changed`), and
+a reset always starts a new observation.
 
 Ids are never reused within a server process: a stale id names exactly one past mask,
 and the error for it says which observation it belonged to.
@@ -133,6 +136,77 @@ MOTION_METHODS = (
     "code.run",
 )
 
+#: RPC methods after which every id expires, whatever the robot state reads: a reset puts the
+#: scene back (an arm may end where it started while the objects did not).
+RESET_METHODS = ("env.reset",)
+
+#: :func:`frame_signature`'s grid, and what counts as a change of one cell: the mean colour
+#: moved by this many levels (0-255), or the mean depth by this many metres.
+SIGNATURE_GRID = 24
+SIGNATURE_RGB_LEVELS = 24.0
+SIGNATURE_DEPTH_M = 0.03
+
+
+def frame_signature(rgb: Any, depth: Any = None, grid: int = SIGNATURE_GRID) -> dict:
+    """A cheap, noise-tolerant summary of one camera frame: the mean colour and the mean
+    valid depth of each cell of a ``grid`` x ``grid`` partition, and each cell's fraction of
+    valid depth. Compare two with :func:`scene_changed`."""
+    img = np.asarray(rgb, dtype=np.float32)
+    if img.ndim == 2:
+        img = img[..., None]
+    h, w = img.shape[:2]
+    grid = max(1, min(int(grid), h, w))  # every cell at least one pixel
+    rows = np.linspace(0, h, grid + 1).astype(int)
+    cols = np.linspace(0, w, grid + 1).astype(int)
+
+    def cells(a: np.ndarray) -> np.ndarray:
+        # Sum over each cell through cumulative sums (one pass, any image size).
+        c = np.cumsum(np.cumsum(a, axis=0), axis=1)
+        c = np.pad(c, [(1, 0), (1, 0)] + [(0, 0)] * (a.ndim - 2))
+        return (
+            c[rows[1:]][:, cols[1:]]
+            - c[rows[:-1]][:, cols[1:]]
+            - c[rows[1:]][:, cols[:-1]]
+            + c[rows[:-1]][:, cols[:-1]]
+        )
+
+    area = np.outer(np.diff(rows), np.diff(cols)).astype(np.float32)
+    out: dict[str, Any] = {
+        "shape": (h, w),
+        "rgb": cells(img[..., :3]) / area[..., None],
+    }
+    if depth is not None and np.shape(depth) == (h, w):
+        d = np.asarray(depth, dtype=np.float32)
+        valid = (np.isfinite(d) & (d > 0)).astype(np.float32)
+        n = cells(valid)
+        out["valid"] = n / area
+        out["depth"] = cells(np.where(valid > 0, d, 0.0)) / np.maximum(n, 1.0)
+    return out
+
+
+def scene_changed(a: dict | None, b: dict | None) -> bool:
+    """Whether two :func:`frame_signature` s show a different scene: any cell whose colour
+    moved more than ``SIGNATURE_RGB_LEVELS`` or whose depth (valid in both) more than
+    ``SIGNATURE_DEPTH_M``, or whose valid-depth fraction changed by more than a third.
+    Unknown (None) or differently sized frames count as changed."""
+    if a is None or b is None or a["shape"] != b["shape"]:
+        return True
+    if np.abs(a["rgb"] - b["rgb"]).mean(axis=-1).max() > SIGNATURE_RGB_LEVELS:
+        return True
+    if ("depth" in a) != ("depth" in b):
+        return True
+    if "depth" in a:
+        both = (a["valid"] > 0.5) & (b["valid"] > 0.5)
+        if (
+            both.any()
+            and np.abs(a["depth"] - b["depth"])[both].max() > SIGNATURE_DEPTH_M
+        ):
+            return True
+        if np.abs(a["valid"] - b["valid"]).max() > 1 / 3:
+            return True
+    return False
+
+
 #: The robot-state keys :func:`state_digest` reads, wherever they sit in the state tree.
 DIGEST_KEYS = ("tcp_pose", "gripper_position", "gripper_open")
 
@@ -192,6 +266,10 @@ class Epoch:
     def observation(self) -> int:
         return self._observation
 
+    @property
+    def has_digest(self) -> bool:
+        return self._digest is not None
+
     def set_digest(self, digest: Callable[[], Any] | None) -> None:
         self._digest = digest
         self._baseline = None
@@ -236,7 +314,8 @@ class Epoch:
         return f"{prefix}{self._counter}"
 
     def install(self, facade: Any, methods: tuple[str, ...] = MOTION_METHODS) -> None:
-        """Wrap ``facade._rpc[name]`` for each of ``methods`` (those present) with a refresh."""
+        """Wrap ``facade._rpc[name]`` for each of ``methods`` (those present) with a refresh;
+        a reset (``RESET_METHODS``) always ticks."""
         rpc: dict[str, Callable[..., Any]] = facade._rpc
         for name in methods:
             fn = rpc.get(name)
@@ -244,11 +323,19 @@ class Epoch:
                 continue
             self._wrapped.add(name)
 
-            def wrapped(*args: Any, _fn: Callable[..., Any] = fn, **kwargs: Any) -> Any:
+            def wrapped(
+                *args: Any,
+                _fn: Callable[..., Any] = fn,
+                _name: str = name,
+                **kwargs: Any,
+            ) -> Any:
                 try:
                     return _fn(*args, **kwargs)
                 finally:
-                    self.refresh()
+                    if _name in RESET_METHODS:
+                        self.tick()
+                    else:
+                        self.refresh()
 
             rpc[name] = wrapped
 
@@ -368,6 +455,7 @@ def public(item: dict[str, Any]) -> dict[str, Any]:
 
 __all__ = [
     "DIGEST_KEYS",
+    "RESET_METHODS",
     "MOTION_METHODS",
     "PALETTE",
     "DetectionBook",
@@ -376,6 +464,8 @@ __all__ = [
     "decode_mask_png",
     "describe_mask",
     "overlay_masks",
+    "frame_signature",
     "public",
+    "scene_changed",
     "state_digest",
 ]

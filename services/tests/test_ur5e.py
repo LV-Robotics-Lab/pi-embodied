@@ -535,6 +535,14 @@ def test_reset_refuses_a_begin_pose_outside_the_workspace_before_moving():
     with pytest.raises(ValueError, match="safety limits.*nothing was commanded"):
         call(facade(arm), "env.reset")
     assert arm.moves == [] and arm.joint_moves == []
+    # A query that did not run is not an answer: reported as a failed check, not as
+    # joints outside the limits (未上机验证).
+    for failed in (None, RuntimeError("RTDE: command not sent")):
+        arm = MockUrArm((0.5, 0.0, 0.3, *DOWN), joints_within_limits=failed)
+        with pytest.raises(RuntimeError, match="safety.*nothing was commanded") as e:
+            call(facade(arm), "env.reset")
+        assert "outside" not in str(e.value)
+        assert arm.moves == [] and arm.joint_moves == []
     # Forward kinematics said inside (the arm is already at the begin joints) but the
     # measured TCP ends outside: still reported, not trusted.
     arm = MockUrArm((0.5, 0.0, 0.3, *DOWN), home_pose=(0.9, 0.0, 0.4, *DOWN))
@@ -1586,3 +1594,47 @@ def test_forward_kinematics_with_a_zero_tcp_offset_is_the_flange():
     pose = _rtde_arm(ctrl).forward_kinematics(q)
     assert np.allclose(pose, _flange_times([0.0, 0.0, 0.15, 0.0, 0.0, 0.0]))
     assert ctrl.fk_calls[-1][1] == [0.0, 0.0, 0.15, 0.0, 0.0, 0.0]
+
+
+def test_rtde_safety_limit_query_tells_a_failed_command_from_a_no():
+    # ur_rtde returns False both for joints outside the limits and for a command it
+    # could not send (未上机验证).
+    class Ctrl:
+        def __init__(self, answer: bool, running: bool) -> None:
+            self.answer, self.running = answer, running
+
+        def isJointsWithinSafetyLimits(self, q) -> bool:  # noqa: N802
+            return self.answer
+
+        def isProgramRunning(self) -> bool:  # noqa: N802
+            return self.running
+
+    class Recv:
+        def __init__(self, stopped: bool) -> None:
+            self.stopped = stopped
+
+        def getRobotMode(self) -> int:  # noqa: N802
+            return 7
+
+        def getSafetyMode(self) -> int:  # noqa: N802
+            return 3 if self.stopped else 1
+
+        def isProtectiveStopped(self) -> bool:  # noqa: N802
+            return self.stopped
+
+        def isEmergencyStopped(self) -> bool:  # noqa: N802
+            return False
+
+        def isProgramRunning(self) -> bool:  # noqa: N802
+            return True
+
+    def arm(answer: bool, running: bool = True, stopped: bool = False) -> RtdeArm:
+        a = _rtde_arm(Ctrl(answer, running))
+        a._recv = Recv(stopped)
+        return a
+
+    q = [0.0] * 6
+    assert arm(True).joints_within_safety_limits(q) is True
+    assert arm(False).joints_within_safety_limits(q) is False
+    assert arm(False, running=False).joints_within_safety_limits(q) is None
+    assert arm(False, stopped=True).joints_within_safety_limits(q) is None

@@ -860,7 +860,24 @@ class UR5eController:
         is outside the workspace box / below the floor, or that the controller's
         safety configuration rejects. Returns the TCP pose at ``q``."""
         within = getattr(self.arm, "joints_within_safety_limits", None)
-        if within is not None and not within(q):
+        answer: bool | None = True
+        if within is not None:
+            try:
+                answer = within(q)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"{what}: the controller's safety-limit check failed ({exc}); "
+                    "nothing was commanded"
+                ) from exc
+        if answer is None:
+            # The query did not run (the script is not ready, a safety stop): an
+            # unknown answer is not "outside the limits".
+            raise RuntimeError(
+                f"{what}: the controller could not check the joints against its "
+                "safety limits (the control script is not running or the robot is "
+                "stopped); nothing was commanded"
+            )
+        if not answer:
             raise ValueError(
                 f"{what}: the joints {np.round(q, 4).tolist()} are outside the "
                 "controller's safety limits (joint limits in the safety configuration); "

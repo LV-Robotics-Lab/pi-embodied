@@ -81,7 +81,7 @@ class MockUrArm:
         reupload_fails: bool = False,
         home_pose: Any = (0.45, 0.0, 0.40, *DOWN),
         fk: Callable[[np.ndarray], Any] | None = None,
-        joints_within_limits: bool = True,
+        joints_within_limits: bool | None | Exception = True,
         serial: str | None = "2023300001",
     ) -> None:
         require_test_env()
@@ -164,7 +164,13 @@ class MockUrArm:
             return self.pose.copy()
         return self.home_pose.copy()
 
-    def joints_within_safety_limits(self, q: Any) -> bool:
+    def joints_within_safety_limits(self, q: Any) -> bool | None:
+        """``joints_within_limits``: True, False, None (the query failed) or an
+        exception to raise."""
+        if isinstance(self.joints_within_limits, Exception):
+            raise self.joints_within_limits
+        if self.joints_within_limits is None:
+            return None
         return bool(self.joints_within_limits)
 
     def _start(self) -> None:

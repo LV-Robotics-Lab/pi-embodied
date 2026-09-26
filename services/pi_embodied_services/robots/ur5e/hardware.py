@@ -230,10 +230,23 @@ class RtdeArm:
             ctrl.getForwardKinematics([float(v) for v in q], tcp), dtype=np.float64
         )
 
-    def joints_within_safety_limits(self, q: Any) -> bool:
-        """``isJointsWithinSafetyLimits``: the controller's joint limits."""
+    def joints_within_safety_limits(self, q: Any) -> bool | None:
+        """``isJointsWithinSafetyLimits``: the controller's joint limits. None when
+        the query itself failed: ur_rtde returns False as well when the command
+        could not be sent (the control script not running or not ready, a safety
+        stop), so a False is only an answer while the script runs and the robot is
+        not stopped; an exception propagates."""
         ctrl = self._control()
-        return bool(ctrl.isJointsWithinSafetyLimits([float(v) for v in q]))
+        if ctrl.isJointsWithinSafetyLimits([float(v) for v in q]):
+            return True
+        status = self.status()
+        if (
+            not ctrl.isProgramRunning()
+            or status["protective_stopped"]
+            or status["emergency_stopped"]
+        ):
+            return None
+        return False
 
     # -- motion (asynchronous: returns at once, poll ``async_status``) ----------
 

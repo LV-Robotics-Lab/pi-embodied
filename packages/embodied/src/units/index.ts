@@ -11,8 +11,10 @@
  * (Show-Harness's pure mode) and the system prompt is ./SYSTEM.md. `--units=both` adds them to the
  * robot's tools and appends the units section to the robot's prompt. `--stateless` keeps only the
  * first user message and the latest observation turn in context. `act`'s parameters follow the
- * enabled plugins. The episode state (gripper, accumulated yaw, plan, move history) is a
- * `units_state` session entry whenever it changes, rebuilt at session start on resume and fork.
+ * enabled plugins. The episode state (gripper, accumulated yaw, plan, move history) is recorded as a
+ * `units_state` session entry whenever it changes, for analysis. It is not rebuilt: every session
+ * start resets the robot's scene (../robot.ts), so a resumed or forked session is a new episode and
+ * starts from a fresh units state, as ../operator.ts does.
  *
  * Plugins (`--units-plugins`, default the robot's `plugins` or Show-Harness's zero-shot Franka set):
  * - recovery: reopen after a GRASP that closed on nothing.
@@ -564,7 +566,7 @@ export function units(
 	const remember = (u: string) => {
 		recent = [...recent, u].slice(-MEM_LEN);
 	};
-	/** The state a resumed or forked session continues from (not the verifier's images, which the next result renews). */
+	/** The episode state as recorded in `units_state` entries (not the verifier's images). */
 	const snapshot = () =>
 		JSON.stringify({
 			closed: Object.fromEntries(closed),
@@ -584,7 +586,7 @@ export function units(
 			finishVerified,
 		});
 	let saved = snapshot();
-	/** Append the state entry when it changed: the accumulated yaw must survive a resume (the wrist stays turned). */
+	/** Append the state entry when it changed (a record of the episode; a new session starts fresh). */
 	const save = () => {
 		const now = snapshot();
 		if (now === saved) return;
@@ -592,6 +594,8 @@ export function units(
 		pi.appendEntry(STATE_ENTRY, JSON.parse(now));
 	};
 	pi.on("session_start", (_event, ctx) => {
+		// A session start resets the robot's scene: a new episode, so the units state starts fresh
+		// (an earlier `units_state` in the branch belongs to an episode whose scene is gone).
 		reset();
 		demoError = undefined;
 		const branch = ctx.sessionManager.getBranch();
@@ -599,30 +603,6 @@ export function units(
 			branch
 				.filter((e) => e.type === "custom" && e.customType === type)
 				.map((e) => (e.type === "custom" ? (e.data as Record<string, unknown>) : {}));
-		const last = custom(STATE_ENTRY).pop() as Partial<Record<string, unknown>> | undefined;
-		if (last) {
-			const numbers = (o: unknown) =>
-				new Map(
-					Object.entries((o ?? {}) as Record<string, unknown>).filter(([, v]) => typeof v === "number"),
-				) as Map<string, number>;
-			closed = new Map(
-				Object.entries((last.closed ?? {}) as Record<string, unknown>).map(([k, v]) => [k, v === true]),
-			);
-			yaw = numbers(last.yaw);
-			roll = numbers(last.roll);
-			pitch = numbers(last.pitch);
-			recent = Array.isArray(last.recent) ? last.recent.map(String) : [];
-			note = String(last.note ?? "");
-			stages = Array.isArray(last.stages) ? (last.stages as Stage[]) : [];
-			stage = Number(last.stage) || 0;
-			targets = Array.isArray(last.targets) ? (last.targets as Target[]) : [];
-			replans = Number(last.replans) || 0;
-			verdict = String(last.verdict ?? "");
-			holdRefusals = Number(last.holdRefusals) || 0;
-			verifierErrors = Number(last.verifierErrors) || 0;
-			verifierError = String(last.verifierError ?? "");
-			finishVerified = typeof last.finishVerified === "boolean" ? last.finishVerified : undefined;
-		}
 		saved = snapshot();
 		// A brief extracted earlier in this branch is reused (same video and frame count).
 		const brief = custom(VIDEO_REF_ENTRY)

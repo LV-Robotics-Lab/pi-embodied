@@ -906,7 +906,7 @@ test("act's schema follows the plugins the flags enable, with string enums; disa
 	assert.equal(t.moves.length, 0);
 });
 
-test("the units state survives a resume or fork: turned wrist, closed gripper, plan, history", async () => {
+test("the units state is recorded, and a resumed or forked session is a new episode that starts fresh", async () => {
 	const f = await toyRobot({ "units-plugins": "rotation,plan,mem_text,proprioception" }, { yaw: Math.PI / 4 });
 	await f.run("plan", { stages: [{ motion: "LIFT", target: "cube", completion: "cube above the table" }] });
 	await f.run("act", { unit: "ROTATE_CW", n: 2 });
@@ -917,36 +917,17 @@ test("the units state survives a resume or fork: turned wrist, closed gripper, p
 	const count = states.length;
 	await f.run("act", { unit: "STOP" });
 	assert.equal(f.entries.filter((e) => e.customType === STATE_ENTRY).length, count, "unchanged state adds no entry");
-	// Resume: a new process on the same branch.
+	// Resume: a new process on the same branch. The robot reset its scene at session start, so the
+	// wrist is straight, the gripper open and no plan or history carries over.
 	const g = await toyRobot(
 		{ "units-plugins": "rotation,plan,mem_text,proprioception" },
 		{ yaw: Math.PI / 4, branch: [...f.branch] },
 	);
 	const r = head(await g.run("act", { unit: "MV_FWD", target_in_wrist: true }));
-	assert.match(r, /Gripper turned 90 deg from its start heading/, "the model is told the wrist is still turned");
-	assert.deepEqual(
-		g.moves[0].delta.map((v) => Number(v.toFixed(6))),
-		[0, 0.02, 0],
-		"wrist-judged moves still compensate the turn",
-	);
-	assert.match(r, /STAGE 1\/1 \[LIFT\]/);
-	assert.match(r, /commanded CLOSE/);
-	assert.match(r, /newest first: MV_FWD, GRASP, ROTATE_CW, ROTATE_CW/);
-	assert.match(
-		head(await g.run("act", { unit: "MV_UP" })),
-		/MV_UP\(realign\)/,
-		"holding and turned: MV_UP turns back first",
-	);
-	// A scene reset is recorded too, so a later resume starts straight.
-	const h = await toyRobot(
-		{ "units-plugins": "rotation,plan,mem_text", operator: true },
-		{ yaw: Math.PI / 4, branch: [...f.branch], reset: async () => ({ ok: true }) },
-	);
-	await h.run("request_scene_reset", { reason: "retry" });
-	const k = await toyRobot({ "units-plugins": "rotation,plan,mem_text" }, { yaw: Math.PI / 4, branch: [...h.branch] });
-	const fresh = head(await k.run("act", { unit: "MV_FWD", target_in_wrist: true }));
-	assert.doesNotMatch(fresh, /Gripper turned|STAGE/);
-	assert.deepEqual(k.moves[0].delta, [0.02, 0, 0]);
+	assert.doesNotMatch(r, /Gripper turned|STAGE|commanded CLOSE/);
+	assert.match(r, /newest first: MV_FWD$/m);
+	assert.deepEqual(g.moves[0].delta, [0.02, 0, 0], "no compensation for a turn of the previous episode");
+	assert.doesNotMatch(head(await g.run("act", { unit: "MV_UP" })), /realign/);
 });
 
 test("a chaining robot's continuous moves skip the stall check until the chain's last move", async () => {

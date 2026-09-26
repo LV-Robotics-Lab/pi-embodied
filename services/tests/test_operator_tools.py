@@ -199,7 +199,16 @@ def test_franka_capture_z_floor_and_pose(tmp_path, capsys):
     floors = tmp_path / "floors.yaml"
     assert (
         franka_capture.main(
-            ["--env", "u", "z-floor", "--name", "drawer", "--write", str(floors)],
+            [
+                "--env",
+                "u",
+                "--yes",
+                "z-floor",
+                "--name",
+                "drawer",
+                "--write",
+                str(floors),
+            ],
             client,
         )
         == 0
@@ -210,7 +219,12 @@ def test_franka_capture_z_floor_and_pose(tmp_path, capsys):
 
     cfg = tmp_path / "rig.yaml"
     shutil.copy(Path(franka_capture.__file__).parent / "config" / "example.yaml", cfg)
-    assert franka_capture.main(["--env", "u", "pose", "--write", str(cfg)], client) == 0
+    assert (
+        franka_capture.main(
+            ["--env", "u", "--yes", "pose", "--write", str(cfg)], client
+        )
+        == 0
+    )
     pose = out_json(capsys)["reset_ee_pose"]
     assert pose[:3] == [0.6, 0.05, 0.141235] and abs(abs(pose[3]) - np.pi) < 1e-6
     loaded = yaml.safe_load(cfg.read_text())
@@ -234,7 +248,7 @@ def test_piper_capture_writes_that_arms_floor(tmp_path, capsys):
     )
     assert (
         piper_capture.main(
-            ["--env", "u", "--arm", "right", "--write", str(cfg)], client
+            ["--env", "u", "--yes", "--arm", "right", "--write", str(cfg)], client
         )
         == 0
     )
@@ -249,7 +263,7 @@ def test_piper_capture_writes_that_arms_floor(tmp_path, capsys):
     shutil.copy(Path(piper_capture.__file__).parent / "config" / "example.yaml", single)
     assert (
         piper_capture.main(
-            ["--env", "u", "--write", str(single)],
+            ["--env", "u", "--yes", "--write", str(single)],
             FakeClient({"env.get_robot_state": {"eef_pos": [0, 0, 0.1]}}),
         )
         == 0
@@ -439,3 +453,32 @@ def test_dual_franka_server_refuses_moves_outside_each_arms_box():
         {"ee_pose_limit_min": lo, "ee_pose_limit_max": hi}, 1
     ) == (lo, hi)
     assert env_server._arm_limits({}, 0) is None
+
+
+def test_capture_write_shows_old_and_new_asks_and_keeps_a_backup(
+    tmp_path, capsys, monkeypatch
+):
+    cfg = tmp_path / "one.yaml"
+    shutil.copy(Path(piper_capture.__file__).parent / "config" / "example.yaml", cfg)
+    before = cfg.read_text()
+    client = FakeClient({"env.get_robot_state": {"eef_pos": [0, 0, 0.1]}})
+    # No terminal and no --yes: nothing is written.
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    assert piper_capture.main(["--env", "u", "--write", str(cfg)], client) == 1
+    assert "pass --yes" in out_json(capsys)["error"] and cfg.read_text() == before
+    # A terminal: the operator sees old -> new and declines, then accepts.
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "n")
+    assert piper_capture.main(["--env", "u", "--write", str(cfg)], client) == 0
+    out = capsys.readouterr()
+    assert "calibration.z_floor_m: None -> 0.1" in out.err
+    assert (
+        json.loads(out.out.strip())["write"]["written"] is False
+        and cfg.read_text() == before
+    )
+    monkeypatch.setattr("builtins.input", lambda _prompt: "y")
+    assert piper_capture.main(["--env", "u", "--write", str(cfg)], client) == 0
+    write = out_json(capsys)["write"]
+    assert write["written"] is True and write["old"] is None and write["new"] == 0.1
+    assert Path(write["backup"]).read_text() == before
+    assert yaml.safe_load(cfg.read_text())["calibration"]["z_floor_m"] == 0.1

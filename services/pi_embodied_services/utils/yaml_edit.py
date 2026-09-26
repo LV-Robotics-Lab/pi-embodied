@@ -26,6 +26,7 @@ survive; the result is re-parsed and written only when it loads with the new val
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -139,3 +140,39 @@ def write_value(path: str | Path, keys: list[str], value: Any) -> None:
             f"editing {'.'.join(keys)} in {path} did not load back as {value!r}; set it by hand"
         )
     path.write_text(new, encoding="utf-8")
+
+
+def confirm_and_write(
+    path: str | Path, keys: list[str], value: Any, yes: bool = False, ask=None
+) -> dict[str, Any]:
+    """Show the old and new value, ask before writing (unless `yes`), keep the old file as `<path>.bak`.
+
+    Returns {key, old, new, written, backup}; `written` is False when the operator declined.
+    Without a terminal to ask on, only `yes` writes (ValueError otherwise).
+    """
+    path = Path(path)
+    old_text = path.read_text(encoding="utf-8") if path.exists() else None
+    old = get_value(yaml.safe_load(old_text) or {}, keys) if old_text else None
+    key = ".".join(keys)
+    out: dict[str, Any] = {
+        "key": key,
+        "old": old,
+        "new": value,
+        "written": False,
+        "backup": None,
+    }
+    print(f"[capture] {path}: {key}: {old!r} -> {value!r}", file=sys.stderr)
+    if not yes:
+        if not sys.stdin.isatty():
+            raise ValueError(
+                f"not writing {key} to {path} without confirmation: pass --yes"
+            )
+        if (ask or input)("write it? [y/N] ").strip().lower() not in ("y", "yes"):
+            return out
+    if old_text is not None:
+        backup = path.with_name(path.name + ".bak")
+        backup.write_text(old_text, encoding="utf-8")
+        out["backup"] = str(backup)
+    write_value(path, keys, value)
+    out["written"] = True
+    return out

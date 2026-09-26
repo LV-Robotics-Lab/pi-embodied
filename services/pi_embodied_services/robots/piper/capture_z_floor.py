@@ -24,6 +24,9 @@ Rest that arm's closed gripper on the tabletop (hand-guide or jog it), then::
     python -m pi_embodied_services.robots.piper.capture_z_floor --env http://127.0.0.1:18120 [--arm left]
     python -m ... --env ... --arm left --write services/.../robots/piper/config/my_rig.yaml
 
+``--write`` shows the old and the new value and asks first (``--yes`` skips the question; without a
+terminal only ``--yes`` writes); the previous file is kept as ``<file>.bak``.
+
 The value is the arm's measured ``eef_pos[2]`` in its own base frame (the controller's
 floor check compares the same). The env server refuses to start while z_floor_m is null, so a
 first capture can run it with ``limits.enable_z_floor: false``; re-enable it after writing.
@@ -38,7 +41,7 @@ from pathlib import Path
 
 import yaml
 
-from pi_embodied_services.utils.yaml_edit import write_value
+from pi_embodied_services.utils.yaml_edit import confirm_and_write
 
 
 def z_of(state: dict, arm: str | None) -> float:
@@ -81,6 +84,11 @@ def main(argv: list[str] | None = None, client=None) -> int:
         metavar="YAML",
         help="store it as that arm's z_floor_m in this robot config",
     )
+    p.add_argument(
+        "--yes",
+        action="store_true",
+        help="write without asking (after showing old -> new)",
+    )
     args = p.parse_args(argv)
     if client is None:
         from pi_embodied_services.utils.rpc.client_utils import make_rpc_client
@@ -96,8 +104,7 @@ def main(argv: list[str] | None = None, client=None) -> int:
         out: dict = {"arm": args.arm, "z_floor_m": z}
         if args.write:
             keys = config_keys(args.write, args.arm)
-            write_value(args.write, keys, z)
-            out["written"] = f"{args.write}: {'.'.join(keys)}"
+            out["write"] = confirm_and_write(args.write, keys, z, args.yes)
         print(json.dumps(out))
         return 0
     except Exception as exc:  # noqa: BLE001 - one clear line for the operator

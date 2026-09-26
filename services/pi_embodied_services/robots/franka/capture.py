@@ -29,6 +29,9 @@
     python -m ... pose                                         # prints the TCP pose and joints
     python -m ... pose --write robots/franka/config/my_rig.yaml  # sets workspace.reset_ee_pose
 
+``--write`` shows the old and the new value and asks first (``--yes`` skips the question; without a
+terminal only ``--yes`` writes); the previous file is kept as ``<file>.bak``.
+
 The z is ``raw_base_state.tcp_pose[2]``, the value pi's franka robot compares --z-floor with
 (src/franka/index.ts checkWorkspace). ``reset_ee_pose`` is RLinf's reset target: xyz plus
 extrinsic xyz euler angles (rad) of the TCP quaternion.
@@ -44,7 +47,7 @@ from typing import Any
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from pi_embodied_services.utils.yaml_edit import write_value
+from pi_embodied_services.utils.yaml_edit import confirm_and_write
 
 
 def raw_state(client) -> dict[str, Any]:
@@ -78,6 +81,11 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--env",
         required=True,
         help="running Franka env server, e.g. http://127.0.0.1:18100",
+    )
+    p.add_argument(
+        "--yes",
+        action="store_true",
+        help="write without asking (after showing old -> new)",
     )
     sub = p.add_subparsers(dest="what", required=True)
     z = sub.add_parser(
@@ -113,8 +121,9 @@ def main(argv: list[str] | None = None, client=None) -> int:
             z = round(float(pose[2]), 5)
             out: dict[str, Any] = {"z_floor": z, "flag": f"--z-floor={z}"}
             if args.write:
-                write_value(args.write, ["z_floors", args.name], z)
-                out["written"] = f"{args.write}: z_floors.{args.name}"
+                out["write"] = confirm_and_write(
+                    args.write, ["z_floors", args.name], z, args.yes
+                )
             print(json.dumps(out))
             print(
                 "[capture] downward moves below this are refused; the gripper must have rested on the surface.",
@@ -128,10 +137,12 @@ def main(argv: list[str] | None = None, client=None) -> int:
             "joints": [round(float(v), 6) for v in joints],
         }
         if args.write:
-            write_value(
-                args.write, ["workspace", "reset_ee_pose"], out["reset_ee_pose"]
+            out["write"] = confirm_and_write(
+                args.write,
+                ["workspace", "reset_ee_pose"],
+                out["reset_ee_pose"],
+                args.yes,
             )
-            out["written"] = f"{args.write}: workspace.reset_ee_pose"
         print(json.dumps(out))
         return 0
     except Exception as exc:  # noqa: BLE001 - one clear line for the operator

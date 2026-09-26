@@ -24,7 +24,7 @@ import { decodePngChannel, encodePng } from "../png.ts";
 import { detectionActive, detectionArgs, detectionTools, registerDetectionFlags } from "../primitives/detections.ts";
 import { mountGraspTool } from "../primitives/grasp.ts";
 import { pointActive, pointTool, registerPointFlags } from "../primitives/pointing.ts";
-import { attach, defineRobot, type Json, type Mat, median, rgbOf, round, SERVICES } from "../robot.ts";
+import { attach, defineRobot, type Json, type Mat, median, plain, rgbOf, round, SERVICES } from "../robot.ts";
 import { type NdArray, RpcClient } from "../rpc.ts";
 import type { MoveUnit, Vec3 } from "../units/index.ts";
 
@@ -379,7 +379,10 @@ export default function metaworld(pi: ExtensionAPI) {
 			width: size,
 			depth: true,
 		});
-		const meta = await call<CameraMeta>("env.get_camera_meta", { camera_name: camera, height: size, width: size });
+		// The server sends K and the extrinsic as numpy arrays: nested lists here.
+		const meta = plain(
+			await call<CameraMeta>("env.get_camera_meta", { camera_name: camera, height: size, width: size }),
+		) as CameraMeta;
 		const map = {
 			envStep,
 			size,

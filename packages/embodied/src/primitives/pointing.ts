@@ -17,7 +17,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type TSchema, Type } from "typebox";
 import { encodePng } from "../png.ts";
-import { type Json, mark, round } from "../robot.ts";
+import { type Json, mark, message, round } from "../robot.ts";
 import { RpcClient } from "../rpc.ts";
 import type { GraspToolDef } from "./grasp.ts";
 
@@ -79,7 +79,8 @@ export function pointTool(pi: ExtensionAPI, rig: PointRig): GraspToolDef {
 	const hit = async (camera: string, f: Frame, x: number, y: number) => {
 		const row = clip(y, f.height);
 		const col = clip(x, f.width);
-		return { camera, pixel: [row, col], ...((await rig.locate?.(camera, row, col)) ?? {}) };
+		const located = await rig.locate?.(camera, row, col).catch((err: unknown) => ({ locate_error: message(err) }));
+		return { camera, pixel: [row, col], ...(located ?? {}) };
 	};
 	return {
 		name: "point",

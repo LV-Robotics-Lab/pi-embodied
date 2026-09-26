@@ -26,7 +26,7 @@ import { decodePngChannel, encodePng } from "../png.ts";
 import { detectionActive, detectionArgs, detectionTools, registerDetectionFlags } from "../primitives/detections.ts";
 import { graspActive, graspArgs, graspTools, mountGraspTool, registerGraspFlags } from "../primitives/grasp.ts";
 import { pointActive, pointTool, registerPointFlags } from "../primitives/pointing.ts";
-import { attach, defineRobot, type Json, median, rgbOf, SERVICES, toolResult } from "../robot.ts";
+import { attach, defineRobot, type Json, median, plain, rgbOf, SERVICES, toolResult } from "../robot.ts";
 import { NdArray, RpcClient } from "../rpc.ts";
 import { finishMove, type Move, type MoveUnit, type Vec3 } from "../units/index.ts";
 
@@ -455,7 +455,10 @@ export default function robosuite(pi: ExtensionAPI) {
 		const cached = worldMaps.get(key);
 		if (cached?.envStep === envStep) return cached;
 		const { rgb, depth } = await render(camera, size, true);
-		const cam = await call<CameraMeta>("env.get_camera_meta", { camera_name: camera, height: size, width: size });
+		// The server sends K and the extrinsic as numpy arrays: nested lists here.
+		const cam = plain(
+			await call<CameraMeta>("env.get_camera_meta", { camera_name: camera, height: size, width: size }),
+		) as CameraMeta;
 		const raw = (depth as NdArray).toArray();
 		const [[fx, , cx], [, fy, cy]] = cam.intrinsic_K;
 		const e = cam.extrinsic_cam2world;

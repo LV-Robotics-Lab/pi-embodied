@@ -18,6 +18,7 @@ import {
 	checkSimExplore,
 	f32,
 	fakeEnv,
+	nd,
 	perceptionAnswers,
 	rgb,
 	withPerception,
@@ -197,19 +198,15 @@ async function fakeMetaworld(perception = false) {
 		if (c.method === "env.get_task_language") return "reach the goal";
 		if (c.method === "env.render_camera")
 			return [rgb(VIEW_SIZE, VIEW_SIZE), f32(new Array(VIEW_SIZE * VIEW_SIZE).fill(1))];
+		// As the server sends it: numpy arrays (float64), not nested lists.
 		if (c.method === "env.get_camera_meta")
 			return {
-				intrinsic_K: [
-					[1, 0, 0],
-					[0, 1, 0],
-					[0, 0, 1],
-				],
-				extrinsic_cam2world: [
-					[1, 0, 0, 0],
-					[0, 1, 0, 0],
-					[0, 0, 1, 0],
-					[0, 0, 0, 1],
-				],
+				intrinsic_K: nd("float64", [3, 3], Buffer.from(Float64Array.from([1, 0, 0, 0, 1, 0, 0, 0, 1]).buffer)),
+				extrinsic_cam2world: nd(
+					"float64",
+					[4, 4],
+					Buffer.from(Float64Array.from([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]).buffer),
+				),
 			};
 		return undefined;
 	});

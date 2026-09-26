@@ -18,7 +18,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type TSchema, Type } from "typebox";
 import { encodePng } from "../png.ts";
-import { type Json, rgbOf, round } from "../robot.ts";
+import { type Json, message, rgbOf, round } from "../robot.ts";
 import { NdArray } from "../rpc.ts";
 import { DETECTIONS_EXPIRED_ENTRY, type GraspToolDef } from "./grasp.ts";
 
@@ -47,7 +47,7 @@ export type DetectionRig = {
 	 * The robot's frame for a detection of `camera`: e.g. its world xyz through the robot's own
 	 * depth (keys merged into the detection). Unset: pixels, depth and the camera-frame point only.
 	 */
-	locate?: (camera: string, detection: Json) => Promise<Json> | Json;
+	locate?: (camera: string, detection: Json) => Promise<Json>;
 	/** A camera's depth was replaced by the fused estimate: e.g. store it where back_project reads depth. */
 	onDepth?: (camera: string, depth: NdArray) => Promise<Json | undefined> | Json | undefined;
 };
@@ -123,7 +123,7 @@ export function detectionTools(pi: ExtensionAPI, rig: DetectionRig): GraspToolDe
 			centroid_pixel: rest.centroid_rc ?? null,
 			depth_m: rest.depth_m ?? null,
 			point_camera: rest.point_camera ?? null,
-			...(rig.locate ? await rig.locate(cam, d) : {}),
+			...(rig.locate ? await rig.locate(cam, d).catch((err: unknown) => ({ locate_error: message(err) })) : {}),
 		};
 	};
 	const detect: GraspToolDef = {

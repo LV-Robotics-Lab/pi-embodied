@@ -323,7 +323,7 @@ test("workers get their GPU and the EGL device on its PCI bus; only a heavy robo
 	assert.deepEqual([...seen], ["CVD=1 EGL=0 ORDER=PCI_BUS_ID"]);
 	// ManiSkill is a light job: it shares the GPU and never takes LOCK.
 	assert.ok(!existsSync(flocks), "a light robot takes no lock");
-	assert.match(r.stderr, /maniskill is a light job .* LOCK is for robolab and robotwin/);
+	assert.match(r.stderr, /maniskill is a light job .* LOCK is for robolab, behavior and robotwin/);
 	const heavy = s.run(["-j", "2", "--gpus", "1", "robolab", join(s.dir, "heavy"), "BananaInBowlTask", "0-1"], env);
 	assert.equal(heavy.status, 0, heavy.stdout + heavy.stderr);
 	assert.deepEqual(
@@ -348,6 +348,40 @@ test("workers get their GPU and the EGL device on its PCI bus; only a heavy robo
 	const plain = s.run(["maniskill", join(s.dir, "none"), "PickCube-v1", "0"]);
 	assert.equal(plain.status, 0);
 	assert.equal(s.calls().at(-1)?.slice(1).join(" "), "CVD=unset EGL=unset ORDER=unset");
+});
+
+test("robosuite '-' runs the seven CaP-X tasks; genesis and behavior are supported; behavior takes the lock", () => {
+	const s = sandbox();
+	const seven = ["Lift", "Stack", "Restack", "Wipe", "NutAssemblySquare", "TwoArmLift", "TwoArmHandover"];
+	const rs = s.run(["-j", "2", "robosuite", join(s.dir, "rs"), "-", "0-1", "--model", "m/x"]);
+	assert.equal(rs.status, 0, rs.stdout + rs.stderr);
+	assert.deepEqual(Object.keys(cells(join(s.dir, "rs"))).sort(), seven.flatMap((t) => [`${t}_s0`, `${t}_s1`]).sort());
+	assert.match(rs.stdout, /success 7\/14 \(50\.0%\).*invalid 0 /);
+	assert.deepEqual(
+		summary(join(s.dir, "rs")).map((v) => v.cells),
+		[14],
+	);
+	// The cells carry the robot's own configuration keys (eval.sh records --max-move).
+	const rsArgv = readFileSync(join(s.dir, "rs/Lift_s0/argv"), "utf8").split("\n");
+	assert.ok(rsArgv.includes("Lift") && rsArgv.includes("--task"), String(rsArgv));
+	const gs = s.run(["genesis", join(s.dir, "gs"), "-", "0-1"]);
+	assert.equal(gs.status, 0, gs.stdout + gs.stderr);
+	assert.deepEqual(Object.keys(cells(join(s.dir, "gs"))).sort(), ["cube_pick_s0", "cube_pick_s1"]);
+	const b = s.run(["behavior", join(s.dir, "b1k"), "turning_on_radio,picking_up_trash", "0"]);
+	assert.equal(b.status, 0, b.stdout + b.stderr);
+	assert.deepEqual(Object.keys(cells(join(s.dir, "b1k"))).sort(), ["picking_up_trash_s0", "turning_on_radio_s0"]);
+	assert.equal(s.run(["behavior", join(s.dir, "b1k-all"), "-", "0"]).status, 2, "no default task set");
+	// BEHAVIOR (Isaac Sim) is a heavy job: with LOCK set it takes the lock once.
+	const flocks = join(s.dir, "flock.log");
+	s.tool("flock", `printf "%s\\n" "$*" >>"${flocks}"`);
+	const locked = s.run(["-j", "2", "behavior", join(s.dir, "b1k-lock"), "turning_on_radio", "0-1"], {
+		LOCK: join(s.dir, "gpu.lock"),
+	});
+	assert.equal(locked.status, 0, locked.stdout + locked.stderr);
+	assert.deepEqual(readFileSync(flocks, "utf8").trim().split("\n"), ["-n 9"]);
+	const light = s.run(["genesis", join(s.dir, "gs-lock"), "cube_pick", "0"], { LOCK: join(s.dir, "gpu.lock") });
+	assert.match(light.stderr, /genesis is a light job/);
+	assert.equal(readFileSync(flocks, "utf8").trim().split("\n").length, 1, "a light robot takes no lock");
 });
 
 test("--max-api-concurrency and --dashboard-ports reach every pi call", () => {

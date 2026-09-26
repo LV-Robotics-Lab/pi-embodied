@@ -30,8 +30,11 @@ from pathlib import Path
 import pytest
 
 from pi_embodied_services.components.code_api import CodeApi
+from pi_embodied_services.robots.behavior.primitives import BEHAVIOR_PRIMITIVES
+from pi_embodied_services.robots.genesis.primitives import GENESIS_PRIMITIVES
 from pi_embodied_services.robots.libero.primitives import LIBERO_PRIMITIVES
 from pi_embodied_services.robots.maniskill.primitives import MANISKILL_PRIMITIVES
+from pi_embodied_services.robots.metaworld.primitives import METAWORLD_PRIMITIVES
 from pi_embodied_services.robots.piper.primitives import PIPER_PRIMITIVES
 from pi_embodied_services.robots.robocasa.primitives import ROBOCASA_PRIMITIVES
 from pi_embodied_services.robots.robolab.primitives import ROBOLAB_PRIMITIVES
@@ -49,6 +52,9 @@ SERVERS = [
     ("robolab/env_server.py", "RobolabEnvFacade", ROBOLAB_PRIMITIVES),
     ("piper/env_server.py", "PiperEnvFacade", PIPER_PRIMITIVES),
     ("robosuite/env_server.py", "RobosuiteEnvFacade", ROBOSUITE_PRIMITIVES),
+    ("metaworld/env_server.py", "MetaworldEnvFacade", METAWORLD_PRIMITIVES),
+    ("genesis/env_server.py", "GenesisEnvFacade", GENESIS_PRIMITIVES),
+    ("behavior/env_server.py", "BehaviorEnvFacade", BEHAVIOR_PRIMITIVES),
 ]
 
 
@@ -105,6 +111,9 @@ def test_the_sims_add_ground_truth_and_real_robots_do_not(path, cls, primitives)
         ("pi_embodied_services.robots.robolab.env_server", "RobolabEnvFacade"),
         ("pi_embodied_services.robots.piper.env_server", "PiperEnvFacade"),
         ("pi_embodied_services.robots.robosuite.env_server", "RobosuiteEnvFacade"),
+        ("pi_embodied_services.robots.metaworld.env_server", "MetaworldEnvFacade"),
+        ("pi_embodied_services.robots.genesis.env_server", "GenesisEnvFacade"),
+        ("pi_embodied_services.robots.behavior.env_server", "BehaviorEnvFacade"),
     ],
 )
 def test_the_server_serves_code_api(module, cls):

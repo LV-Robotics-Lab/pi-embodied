@@ -40,7 +40,14 @@ export const NO_GRIPPER: readonly Task[] = ["Wipe"];
 export const arms = (task: string): readonly Arm[] => (TWO_ARM.includes(task as Task) ? ARMS : ["robot0"]);
 export const hasGripper = (task: string) => !NO_GRIPPER.includes(task as Task);
 
-/** Base-frame vectors of the MV_* units: robosuite's world frame has +x away from robot0, +y to its left, +z up. */
+/**
+ * World-frame vectors of the MV_* units (robosuite's world frame, +z up), chosen so each unit
+ * matches its look in the task camera (VIEWS): MV_FWD (+x) moves toward the image bottom, MV_RIGHT
+ * (+y) toward the image right. On the one-arm tasks robot0 stands at -x facing +x, so MV_FWD is its
+ * forward and MV_RIGHT its left. On the two-arm "opposed" tasks robosuite turns robot0 by +90 deg
+ * (at -y, facing +y) and robot1 by -90 deg (at +y, facing -y), so for robot0 MV_RIGHT is forward
+ * (toward robot1) and MV_FWD moves sideways to its right; robot1 is the mirror.
+ */
 export const VECTORS: Record<MoveUnit, Vec3> = {
 	MV_FWD: [1, 0, 0],
 	MV_BACK: [-1, 0, 0],
@@ -59,11 +66,15 @@ export const EMPTY_WIDTH_M = 0.004;
 export const IMAGE_SIZE = 512;
 
 /**
- * How the views look (robosuite's robot0_robotview sits behind and above robot0, looking along
- * +x over the table; the two-arm tasks use CaP-X's overhead agentview instead).
+ * How the views look. robosuite's robot0_robotview (the Panda's robot.xml: pos [1.0, 0, 0.4] from
+ * the base, quat [0.653, 0.271, 0.271, 0.653]) stands 1 m in front of robot0, across the table,
+ * looking back at it and down: image up is world -x (+z), image right is world +y. CaP-X's
+ * overhead agentview of the two-arm tasks (tasks.OVERHEAD_CAMERA) has the same orientation from
+ * [1.5, 0, 2.5], so the image axes are the same there; the robots, facing each other along y,
+ * sit at the image left (robot0, -y) and right (robot1, +y).
  */
 export const VIEWS = `Each result shows the task camera, then the wrist view (both 512x512).
-- Task camera (first image): on the one-arm tasks it looks over robot0's shoulder along the table, so MV_FWD moves the gripper toward the image top (away from the robot), MV_BACK toward the bottom, MV_LEFT toward the image left and MV_RIGHT toward the right; on the two-arm tasks it is an overhead view with robot0 at the image bottom and robot1 at the top (the same MV_* directions for robot0).
+- Task camera (first image): a fixed camera beyond the far edge of the table looking back at the robot(s) from above. In every task MV_FWD moves the gripper toward the image BOTTOM (toward the camera, larger), MV_BACK toward the image TOP, MV_LEFT toward the image left and MV_RIGHT toward the image right. On the one-arm tasks robot0's base is at the image top, so MV_BACK goes toward the base and MV_FWD away from it. On the two-arm tasks the robots face each other across the image: robot0 stands at the image LEFT and robot1 at the image RIGHT, so for robot0 MV_RIGHT moves away from its base (toward robot1) and MV_LEFT back toward it, while MV_FWD / MV_BACK move it sideways; for robot1 MV_LEFT moves away from its base and MV_RIGHT back toward it.
 - Wrist view (second image): looks down from the gripper; the fingers are at the image sides and the grasp point is at the centre. Judge fine alignment here, gross layout in the task camera.`;
 
 type Obs = Record<string, unknown> & { agentview: NdArray; wrist: NdArray };
@@ -160,7 +171,7 @@ export default function robosuite(pi: ExtensionAPI) {
 				.replaceAll(
 					"{{arms}}",
 					twoArm()
-						? "Two Panda arms face each other across the table: robot0 and robot1. Every motion tool takes `arm`."
+						? "Two Panda arms face each other across the table along y: robot0 stands at -y facing +y, robot1 at +y facing -y. Every motion tool takes `arm`."
 						: "One Panda arm (robot0).",
 				)
 				.replaceAll("{{max_move}}", flag("max-move", String(MAX_MOVE_M))),
@@ -342,7 +353,7 @@ export default function robosuite(pi: ExtensionAPI) {
 
 	tool(
 		"move_delta",
-		`Translate the TCP by a world-frame [dx, dy, dz] in metres (+x away from robot0, +y to its left, +z up; at most ${MAX_MOVE_M} m per call), holding the orientation. gripper sets the held command first.`,
+		`Translate the TCP by a world-frame [dx, dy, dz] in metres (+z up; in the task camera +x runs toward the image bottom and +y toward the image right: on the one-arm tasks +x is away from robot0 and +y to its left, on the two-arm tasks +y runs from robot0 toward robot1; at most ${MAX_MOVE_M} m per call), holding the orientation. gripper sets the held command first.`,
 		Type.Object({ delta_xyz: xyz, arm, gripper }),
 		async ({ delta_xyz, arm: a, gripper: g }, signal) => {
 			checkMove(delta_xyz, [0, 0, 0]);

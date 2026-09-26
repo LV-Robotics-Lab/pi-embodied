@@ -526,8 +526,9 @@ class RobosuiteEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         """Servo one arm's TCP to a world position, holding its orientation.
 
         Args:
-            target_xyz: [x, y, z] in metres, world frame (+x away from robot0, +y to its left,
-                +z up; the table top is at ``get_state()["table_z"]``).
+            target_xyz: [x, y, z] in metres, world frame (+z up; on the one-arm tasks +x away
+                from robot0 and +y to its left; on the two-arm tasks the robots face each other
+                along y, robot0 at -y facing +y; the table top is at ``get_state()["table_z"]``).
             arm: "robot0" or "robot1" on the two-arm tasks; omit on one arm.
             quat_xyzw: an absolute world orientation to reach as well, or None to keep the
                 current one.
@@ -643,8 +644,8 @@ class RobosuiteEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         """Servo one arm's TCP by a world-frame offset, holding its orientation.
 
         Args:
-            delta_xyz: [dx, dy, dz] in metres (world frame: +x away from robot0, +y to its
-                left, +z up); at most the per-call cap.
+            delta_xyz: [dx, dy, dz] in metres (world frame, as `move_to`); at most the
+                per-call cap.
             arm: "robot0" or "robot1" on the two-arm tasks; omit on one arm.
             The rest as `move_to`.
 
@@ -816,16 +817,18 @@ class RobosuiteEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         objects = self._objects()
         poses = ground_truth.mujoco_body_poses(self._sim, objects)
         e = self._env
-        # The two-arm tasks' grasp points are sites, not bodies.
-        for site, key, body in (
-            ("handle0_site_id", "pot_handle0", "pot"),
-            ("handle1_site_id", "pot_handle1", "pot"),
-            ("hammer_handle_site_id", "hammer_handle", "hammer"),
+        data = self._sim.data
+        # The two-arm tasks' grasp points are not bodies: TwoArmLift's handles are sites
+        # (handle0_site_id / handle1_site_id), TwoArmHandover's handle a geom
+        # (hammer_handle_geom_id); each takes its object's orientation.
+        for attr, key, body, positions in (
+            ("handle0_site_id", "pot_handle0", "pot", data.site_xpos),
+            ("handle1_site_id", "pot_handle1", "pot", data.site_xpos),
+            ("hammer_handle_geom_id", "hammer_handle", "hammer", data.geom_xpos),
         ):
-            if hasattr(e, site) and body in objects:
+            if hasattr(e, attr) and body in objects:
                 poses[key] = ground_truth.pose(
-                    self._sim.data.site_xpos[getattr(e, site)],
-                    self._sim.data.body_xquat[objects[body]],
+                    positions[getattr(e, attr)], data.body_xquat[objects[body]]
                 )
         return ground_truth.respond(poses, names)
 

@@ -51,6 +51,8 @@ class FakeSim:
         self.steps = 0
         self.goals: dict[int, list[bool]] = {}
         self.success_at: int | None = None
+        #: With success_at: the BDDL goal holds only for steps in [success_at, success_until).
+        self.success_until: int | None = None
         self.stop_after: int | None = None
         self.satisfied = [False, False]
         self.radio = Obj("radio_89", [1.0, 0.5, 0.45])
@@ -170,6 +172,8 @@ class FakeSim:
         if self.steps in self.goals:
             self.satisfied = list(self.goals[self.steps])
         solved = self.success_at is not None and self.steps >= self.success_at
+        if self.success_until is not None and self.steps >= self.success_until:
+            solved = False
         return (
             {"robot_r": self.frame},
             0.0,
@@ -433,3 +437,26 @@ def test_success_and_goal_fallbacks_for_older_omnigibson():
     task.success = np.array([True])
     assert sim.success({}, task) is True
     assert sim.quat_yaw([0, 0, np.sin(0.25), np.cos(0.25)]) == pytest.approx(0.5)
+
+
+def test_success_is_latched_at_its_first_step_until_reset():
+    """A goal that holds mid-primitive and is undone by its end (an object set down and knocked
+    off) still counts, as on the other simulators (success_once), until the next reset."""
+    fake = FakeSim()
+    f = fake.facade()
+    f.reset()
+    # Steps 1..3 of the primitive: the goal holds at step 2 only.
+    fake.success_at, fake.success_until = fake.steps + 2, fake.steps + 3
+    r = f.navigate_to_pose(1.0, 0.0, 0.0)
+    assert r["success"] is True and r["q_score"] == 1.0
+    assert f.state()["success"] is True, "latched: the last step's info says False"
+    # The goal never holds again: the latch stays.
+    fake.success_at = None
+    r = f.open_gripper("left")
+    assert r["success"] is True and r["q_score"] == 1.0
+    _obs, _rew, _term, _trunc, info = f.step(np.zeros(4))
+    assert info["success"] is True
+    # A reset starts afresh.
+    obs, _ = f.reset()
+    assert obs["success"] is False and obs["q_score"] == 0.0
+    assert f.state()["success"] is False

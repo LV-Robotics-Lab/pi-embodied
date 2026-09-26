@@ -21,9 +21,10 @@
 
 The motion primitives run OmniGibson's StarterSemanticActionPrimitives (cuRobo plans for the
 holonomic base and the arms) one control step at a time, so ``stop`` interrupts them between
-steps. Success is the BDDL task's ``success`` termination and ``q_score`` BEHAVIOR's
-partial-success metric; both are read from the simulator after every call and go into every
-observation. What the simulator knows and a camera cannot see (the object OmniGibson's
+steps. Success is the BDDL task's ``success`` termination, latched at the first control step
+it holds (a goal reached mid-primitive and undone by its end still counts, as on the other
+simulators), and ``q_score`` BEHAVIOR's partial-success metric (1 once success is latched);
+both go into every observation. What the simulator knows and a camera cannot see (the object OmniGibson's
 grasping holds, the reference "picked" judgement) is reported apart, in ``privileged``, and
 the pi robot shows it to the planner only under ``--privileged``.
 
@@ -112,6 +113,9 @@ class BehaviorEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         self._info: dict | None = None
         self._steps = 0
         self._terminated = self._truncated = False
+        #: BDDL success, latched at the first control step it holds (the other simulators'
+        #: success_once): a goal reached mid-primitive and undone by its end still counts.
+        self._solved = False
         self._initial_goals: list[list[bool]] = []
         self._initial_heights: dict[str, float] = {}
 
@@ -138,6 +142,7 @@ class BehaviorEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         self._steps += 1
         self._terminated |= bool(term)
         self._truncated |= bool(trunc)
+        self._solved = self._solved or sim.success(info, self._task)
 
     def _run(self, actions) -> tuple[int, bool]:
         """Step a primitive's actions until it finishes, a stop arrives or the episode ends."""
@@ -208,7 +213,7 @@ class BehaviorEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         return {"in_hand": held, "picked": picked}
 
     def _state(self) -> dict:
-        solved = sim.success(self._info, self._task)
+        solved = self._solved
         goals = self._goals()
         pos, quat, yaw = sim.base_pose(self._robot)
         eef = {}
@@ -242,6 +247,7 @@ class BehaviorEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         """Load the task instance again; latch the goal predicates and object heights it starts with."""
         self._steps = 0
         self._terminated = self._truncated = False
+        self._solved = False
         self._info = None
         self._obs, info = self._env.reset()
         self._run(self._ctrl._settle_robot())
@@ -257,7 +263,7 @@ class BehaviorEnvFacade(MainThreadServeMixin, BaseEnvFacade):
             0.0,
             self._terminated,
             self._truncated,
-            {"success": sim.success(self._info, self._task)},
+            {"success": self._solved},
         )
 
     def chunk_step(self, actions, *, return_all_frames: bool = False):

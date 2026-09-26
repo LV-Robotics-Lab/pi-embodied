@@ -69,17 +69,21 @@ with `--env` / `--vla` / `--sam3`. Real-arm robots (Franka, dual Franka) stay on
 | RoboTwin | `src/robotwin` | `eval_success` | all below, plus flywheel, recipe Flash (Molmo re-anchoring) |
 | ManiSkill | `src/maniskill` | ManiSkill `success` | all below, plus recipe Flash (Molmo + ray-plane re-anchoring of delta waypoints) |
 | RoboLab | `src/robolab` | RoboLab's task predicate | all below, plus recipe Flash (Molmo + ray-plane re-anchoring of delta waypoints) |
-| BEHAVIOR-1K / R1Pro | `src/behavior` | the BDDL activity's `success` (`q_score` = partial credit) | video, VDM, code.api, `--privileged` |
-| Metaworld | `src/metaworld` | Metaworld `info["success"]` | all below |
-| Genesis | `src/genesis` | the task predicate (cube_pick: an 8 cm lift) | all below |
+| Robosuite | `src/robosuite` | robosuite `_check_success` (Restack adds CaP-X's off-table rule), latched | video, units, VDM, code.api, `--privileged` |
+| Metaworld | `src/metaworld` | Metaworld `info["success"]`, latched | video, units, VDM, code.api, `--privileged` |
+| Genesis | `src/genesis` | the task predicate (cube_pick: an 8 cm lift) | video, units, code.api, `--privileged` |
+| BEHAVIOR-1K / R1Pro | `src/behavior` | the BDDL activity's `success`, latched (`q_score` = partial credit) | video, VDM, code.api, `--privileged` |
 | Franka (real) | `src/franka` | operator verdict (`--operator`) | all below but `--privileged`; explore resets through the operator |
 | Dual Franka (real) | `src/dual_franka` | operator verdict (required) | all below but `--privileged`; explore resets through the operator |
 | Piper / dual Piper (real) | `src/piper` | operator verdict (required) | all below but `--privileged`; explore resets through the operator |
 | UR5e (real) | `src/ur5e` | operator verdict (required) | all below but `--privileged` and memory/explore; bound to one arm (`--arm-id`) |
 
-Every robot mounts memory, explore, video, units (so GUMI and the fine-tuned provider), VDM
-(`--vdm`), the primitive registry (`code.api`) and, in simulation, `--privileged`. ManiSkill,
-RoboLab and the Piper publish no memory corpus: they default to the local one exploration writes.
+"All below" is memory, explore, video, units (so GUMI and the fine-tuned provider), VDM (`--vdm`),
+the primitive registry (`code.api`) and, in simulation, `--privileged`. ManiSkill, RoboLab and the
+Piper publish no memory corpus: they default to the local one exploration writes. Robosuite,
+Metaworld, Genesis and BEHAVIOR mount only what their rows list: none of them has memory or
+explore, Genesis has no VDM, and BEHAVIOR has no units (its motions are cuRobo-planned primitives
+of a mobile two-arm robot, not fixed-frame 2 cm steps).
 
 Shared modules:
 
@@ -112,9 +116,13 @@ Shared modules:
 - `src/code/`: code mode (CaP-X's run_code). `--code=true` hides the robot's tools: the model
   writes Python programs that `run_code` executes on the env server against its primitive registry
   (`code.api`; `--code-api=high|low`, CaP-X's S2/S3; `--privileged` runs the privileged tier, S1),
-  in a spawned subprocess with no env object whose calls the server resolves through the registry,
-  killed at `--code-timeout` (a stop is issued), refused past `--code-max-calls` calls or
-  `--code-max-move` metres; `--code-helpers` injects CaP-X's numpy helpers. `--code=both` adds
+  in a spawned subprocess with no env object whose calls the server resolves through the registry
+  (JSON over the pipe, never pickle; the child starts without the server's secret-looking
+  environment variables, in its own process group, with no new processes or threads allowed;
+  it can still open sockets, so run the server in a container to keep programs off the network),
+  killed at `--code-timeout` (a stop is issued, also inside a running primitive), refused past
+  `--code-max-calls` calls or `--code-max-move` metres; `--code-helpers` injects CaP-X's numpy
+  helpers. `--code=both` adds
   `run_code` to the robot's tools. Mutually exclusive with `--units`; `--stateless` applies. Real
   robots need `--code-real` and `--operator`, and every program is confirmed by the operator.
   LIBERO today (services/PROTOCOL.md, code mode).
@@ -128,7 +136,8 @@ the planner did not fail, and rerun the others. LIBERO and RoboTwin episodes get
 `--time-limit ${TIME_LIMIT:-1800}` s (the episode ends as a failure) and a `timeout` backstop
 900 s later (the episode is invalid and rerun).
 
-`src/eval-parallel.sh` runs a robot's eval.sh matrix on N workers (`-j N --gpus 1`: several workers
+`src/eval-parallel.sh` runs a robot's eval.sh matrix (LIBERO, ManiSkill, Metaworld, Robosuite, Genesis,
+BEHAVIOR, RoboLab, RoboTwin, RoboCasa) on N workers (`-j N --gpus 1`: several workers
 may share a GPU; each gets CUDA_VISIBLE_DEVICES and the EGL device on the same PCI bus), as an A/B
 over `--variant NAME=ARGS` (same cells, one subdirectory each), and reports success rate, Pass@k and
 invalid cells per variant; `--min-success N` fails a regression run, `--max-api-concurrency M` caps
@@ -165,6 +174,19 @@ in a new session. Boolean flags take the next word as their value; write them as
 - Metaworld: the services' `[metaworld]` extra (Python 3.11, metaworld 3.1.1, no assets); the 50 MT50
   Sawyer tasks (`--task reach-v3 --seed 0`), a world-frame `move_delta` plus `gripper`, depth tools
   (`back_project`, `segment` with a SAM3 server), units mode and `--privileged`; `src/metaworld/eval.sh`.
+- Robosuite: the services' `[robosuite]` extra (Python 3.11, robosuite 1.5 in its own venv: LIBERO and
+  RoboCasa pin 1.4 forks); CaP-X's seven tasks (`--task Lift --seed 0`, two-arm tasks take `arm`),
+  closed-loop `move_to` / `move_delta` under `--max-move`, `gripper`, depth tools, units mode and
+  `--privileged`; `src/robosuite/eval.sh`.
+- Genesis: the services' `[genesis]` extra (Python 3.11, Genesis 1.4, a GPU for rendering, no assets);
+  OpenETA's Franka `cube_pick` (`--task cube_pick --seed 0`), a base-frame `move_delta` plus `gripper`,
+  depth tools, units mode and `--privileged`; `src/genesis/eval.sh`.
+- BEHAVIOR-1K: the venv `services/setup.sh behavior` builds (Isaac Sim, OmniGibson and BDDL from a
+  BEHAVIOR-1K checkout, the challenge dataset; see services/pi_embodied_services/robots/behavior/README.md);
+  the 50 2025-challenge activities on the R1Pro (`--task turning_on_radio --seed <instance> --gpu-id N`),
+  OmniGibson's semantic primitives as tools (`navigate_to_pose`, `move_hand`, `grasp_object`, the
+  grippers), `segment` / `point` / `back_project` on three cameras, `--grasping-mode` and
+  `--privileged`; `src/behavior/eval.sh`.
 - Franka / dual Franka: the services' `[franka]` extra, a Ray cluster on the controller nodes,
   hand-eye calibration, and an operator at the emergency stop. Flags use a `--robot-`
   prefix (`--robot-env`, `--robot-vla`, `--robot-sam3`, `--robot-config`).

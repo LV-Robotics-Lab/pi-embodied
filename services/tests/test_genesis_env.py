@@ -112,3 +112,40 @@ def test_task_table_and_limits_are_what_the_robot_describes():
     assert g.STEP_M == 0.02 and g.MAX_MOVE_M == 0.2 and g.EMPTY_WIDTH_M == 0.005
     assert g.CUBE_X[0] >= g.WORKSPACE["min"][0] and g.CUBE_X[1] <= g.WORKSPACE["max"][0]
     assert g.CUBE_Y[0] >= g.WORKSPACE["min"][1] and g.CUBE_Y[1] <= g.WORKSPACE["max"][1]
+
+
+def test_visible_pixels_counts_the_cubes_segmentation_index_not_its_entity_idx():
+    """Genesis's segmentation image holds the renderer's index of each entity (0 background,
+    then 1, 2, ... in registration order: plane, robot, cube), not entity.idx; the visibility
+    check must look the cube up through scene.segmentation_idx_dict."""
+    from types import SimpleNamespace
+
+    seg_dict = {
+        0: -1,
+        1: 0,
+        2: 1,
+        3: 2,
+    }  # plane idx 0 -> 1, robot idx 1 -> 2, cube idx 2 -> 3
+    assert g.segmentation_index(seg_dict, 2) == 3
+    assert g.segmentation_index(seg_dict, 0) == 1
+    assert g.segmentation_index(seg_dict, 7) is None
+    assert g.segmentation_index({0: -1, 1: (2, 0, 0), 2: (2, 0, 1)}, 2) == 1, (
+        "geom level"
+    )
+    seg = np.zeros((8, 8), dtype=np.int32)
+    seg[0:4, :] = 2  # the robot, 32 px
+    seg[6:8, 6:8] = 3  # the cube, 4 px
+    f = object.__new__(g.GenesisEnvFacade)
+    f._cams = {
+        "agentview": SimpleNamespace(render=lambda **kw: (None, None, seg, None))
+    }
+    f._cube = SimpleNamespace(idx=2)
+    f._scene = SimpleNamespace(segmentation_idx_dict=seg_dict)
+    f._meta = {}
+    assert f.visible_pixels() == {"cube": 4}
+    with pytest.raises(RuntimeError, match="not visible"):
+        f.check_visible()
+    assert f._meta["visible_px"] == {"cube": 4}
+    f._cube = SimpleNamespace(idx=9)
+    with pytest.raises(RuntimeError, match="no segmentation index"):
+        f.visible_pixels()

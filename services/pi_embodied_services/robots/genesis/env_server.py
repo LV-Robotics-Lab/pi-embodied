@@ -155,6 +155,20 @@ def lifted(
     return bool(cube_z - half >= lift_m)
 
 
+def segmentation_index(seg_idx_dict: dict, entity_idx: int) -> int | None:
+    """The value Genesis's segmentation image gives an entity: not ``entity.idx`` but the
+    index the renderer assigned when it registered the entity's geoms (``seg_idxc``: 0 is the
+    background, then 1, 2, ... in registration order). ``scene.segmentation_idx_dict`` maps
+    that index to the entity idx at ``segmentation_level="entity"`` (a tuple at the link and
+    geom levels); None when the entity was never rendered."""
+    for idxc, key in seg_idx_dict.items():
+        if isinstance(key, tuple):
+            key = key[0]
+        if key == entity_idx:
+            return int(idxc)
+    return None
+
+
 def letterbox(image: np.ndarray, size: int) -> np.ndarray:
     """Equal-ratio resize into a ``size`` square with centred black bars."""
     from PIL import Image
@@ -426,7 +440,10 @@ class GenesisEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         """Front-camera pixels of each task object (Genesis's entity segmentation)."""
         _rgb, _d, seg, _n = self._cams["agentview"].render(rgb=False, segmentation=True)
         seg = _np(seg)
-        return {"cube": int((seg == self._cube.idx).sum())}
+        idx = segmentation_index(self._scene.segmentation_idx_dict, int(self._cube.idx))
+        if idx is None:
+            raise RuntimeError("the cube has no segmentation index (not rendered)")
+        return {"cube": int((seg == idx).sum())}
 
     def check_visible(self) -> None:
         """Refuse an episode whose front view does not show the task object."""

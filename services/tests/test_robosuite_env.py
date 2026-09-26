@@ -219,3 +219,34 @@ def test_code_api_tiers_follow_capx_and_the_privileged_ground_truth():
     assert method == "env.move_to" and kw["arm"] == "robot0"
     with pytest.raises(ValueError, match="unknown parameter"):
         api.resolve("move_to", {"target_xyz": [0, 0, 1], "joints": [0] * 7})
+
+
+# ---- ground truth ------------------------------------------------------------------------
+
+
+def test_ground_truth_adds_the_two_arm_grasp_points_as_robosuite_defines_them():
+    """TwoArmLift's handles are sites (handle0_site_id / handle1_site_id); TwoArmHandover's
+    handle is a geom (hammer_handle_geom_id, robosuite 1.5), not a site."""
+    sim = FakeSim({3: [0.1, 0.2, 0.85]})
+    sim.data.body_xquat = np.tile([1.0, 0.0, 0.0, 0.0], (4, 1))
+    sim.data.site_xpos = np.array([[9.0, 9.0, 9.0]])
+    sim.data.geom_xpos = np.array([[0.0, 0.0, 0.0], [0.15, 0.2, 0.83]])
+    env = FakeEnv(success=False, sim=sim, action_dim=14)
+    env.hammer_handle_geom_id = 1
+    f = facade("TwoArmHandover", env)
+    f._objects = lambda: {"hammer": 3}
+    poses = f.ground_truth_poses()["poses"]
+    assert sorted(poses) == ["hammer", "hammer_handle"]
+    assert poses["hammer_handle"]["pos"] == [0.15, 0.2, 0.83]
+    assert poses["hammer_handle"]["quat_xyzw"] == [0.0, 0.0, 0.0, 1.0]
+    assert f.ground_truth_poses(["hammer_handle"])["poses"].keys() == {"hammer_handle"}
+    # TwoArmLift: the pot's handle sites.
+    env = FakeEnv(success=False, sim=sim, action_dim=14)
+    env.handle0_site_id, env.handle1_site_id = 0, 0
+    f = facade("TwoArmLift", env)
+    f._objects = lambda: {"pot": 3}
+    assert sorted(f.ground_truth_poses()["poses"]) == [
+        "pot",
+        "pot_handle0",
+        "pot_handle1",
+    ]

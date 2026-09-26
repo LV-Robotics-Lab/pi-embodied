@@ -6,8 +6,9 @@
 #   eval-parallel.sh -j 2 --gpus 1 --variant base= --variant vdm=--vdm=true --min-success 30 \
 #     maniskill runs/ms-vdm PickCube-v1,StackCube-v1 0-9 --model <provider/model> --thinking low
 #
-# <selection> is the robot's eval.sh positional arguments: libero <suite> <tasks> <seeds>, maniskill
-# <env-ids> <seeds>, robolab <tasks> <seeds>, robotwin <tasks|all>, robocasa <splits|all> (TASKS/SEEDS
+# <selection> is the robot's eval.sh positional arguments: libero <suite> <tasks> <seeds>, maniskill /
+# metaworld / robosuite / genesis / behavior <tasks> <seeds> ("-" = eval.sh's default task set, e.g.
+# robosuite's seven), robolab <tasks> <seeds>, robotwin <tasks|all>, robocasa <splits|all> (TASKS/SEEDS
 # narrow it as for eval.sh). The matrix is cut into units, one (task, seed) cell each (a whole task,
 # all its seeds, for RoboTwin, whose eval.sh cannot pick a seed), and every unit runs as its own
 # `<robot>/eval.sh` call, so a cell's directory, result.json, validity and rerun rules are exactly
@@ -47,9 +48,11 @@
 # would serialize the workers (an exclusive flock admits one holder), and a worker waiting on it while
 # its siblings run would deadlock with anything that waits for this run to finish. The flip side: a
 # service this run needs must not be started under the same lock, or this script waits forever.
-# Heavy: robolab (Isaac Sim) and robotwin (cuRobo). Light: libero, maniskill, metaworld and robocasa
-# (an EGL or SAPIEN renderer per episode, the planner off the GPU); they share the GPU with whatever
-# else runs and never take LOCK (it is noted and ignored), so a lock queue of light jobs cannot form.
+# Heavy: robolab and behavior (Isaac Sim) and robotwin (cuRobo). Light: libero, maniskill, metaworld,
+# robosuite, genesis and robocasa (an EGL, SAPIEN or Genesis renderer per episode, the planner off the
+# GPU); they share the GPU with whatever else runs and never take LOCK (it is noted and ignored), so a
+# lock queue of light jobs cannot form. Genesis and BEHAVIOR pick their GPU themselves (--backend /
+# --gpu-id among the pi args), so --gpus only sets the workers' CUDA environment for them.
 # Check the GPU's free memory before starting a light run on a shared GPU.
 #
 # The summary gives, per variant, the success rate over valid cells, Pass@k (the unbiased estimator
@@ -93,9 +96,9 @@ robot=$1 out=$2
 shift 2
 case $robot in
 libero) npos=3 ;;
-maniskill | robolab | metaworld | robosuite) npos=2 ;;
+maniskill | robolab | metaworld | robosuite | genesis | behavior) npos=2 ;;
 robotwin | robocasa) npos=1 ;;
-*) die "unknown robot $robot (libero, maniskill, metaworld, robolab, robotwin, robocasa)" ;;
+*) die "unknown robot $robot (libero, maniskill, metaworld, robosuite, genesis, behavior, robolab, robotwin, robocasa)" ;;
 esac
 [ $# -ge $npos ] || die "$robot takes $npos selection arguments"
 sel=("${@:1:npos}")
@@ -127,10 +130,14 @@ units() { # one line per unit: <task key> TAB <cell dirs> TAB <env assignments o
 	libero) for t in $(expand "$2"); do for s in $(expand "$3"); do
 		printf '%s\t%s\t-\t%s\n' "${1}_t$t" "${1}_t${t}_s$s" "$1 $t $s"
 	done; done ;;
-	maniskill | robolab | metaworld | robosuite)
+	maniskill | robolab | metaworld | robosuite | genesis | behavior)
+		# "-" is each eval.sh's default task set; the cells must be listed here by name.
 		local tasks=$1
 		[ "$robot:$tasks" = maniskill:- ] && tasks=BlockPAP-v1
 		[ "$robot:$tasks" = metaworld:- ] && tasks=reach-v3
+		[ "$robot:$tasks" = robosuite:- ] && tasks=Lift,Stack,Restack,Wipe,NutAssemblySquare,TwoArmLift,TwoArmHandover
+		[ "$robot:$tasks" = genesis:- ] && tasks=cube_pick
+		[ "$robot:$tasks" = behavior:- ] && die "behavior takes explicit task names (its eval.sh has no default set)"
 		for t in ${tasks//,/ }; do for s in $(expand "$2"); do printf '%s\t%s\t-\t%s\n' "$t" "${t}_s$s" "$t $s"; done; done ;;
 	robotwin) node -e '
 const table = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).tasks;
@@ -201,12 +208,12 @@ done
 
 if [ -n "${LOCK:-}" ]; then
 	case $robot in
-	robolab | robotwin)
+	robolab | robotwin | behavior)
 		command -v flock >/dev/null || die "LOCK is set but flock is missing"
 		exec 9>"$LOCK"
 		flock -n 9 || { echo "$(date +%T) waiting for $LOCK" && flock 9; } || die "cannot lock $LOCK"
 		;;
-	*) echo "eval-parallel.sh: $robot is a light job (renderer only, planner off the GPU); LOCK is for robolab and robotwin and is not taken" >&2 ;;
+	*) echo "eval-parallel.sh: $robot is a light job (renderer only, planner off the GPU); LOCK is for robolab, behavior and robotwin and is not taken" >&2 ;;
 	esac
 fi
 
@@ -320,6 +327,9 @@ vdirs.forEach((vdir, v) => {
 			r.stateless ? "stateless" : "", r.anchor_image ? "anchor" : "",
 			r.unit_tol === undefined ? "" : `unit_tol=${r.unit_tol}`,
 			r.vdm ? `vdm=${r.vdm_model ?? "default"}${r.vdm_wrist ? "+wrist" : ""}` : "", r.privileged ? "privileged" : "",
+			r.fallback_model ? `fallback=${r.fallback_model}:${r.fallback_after}:${r.fallback_retry_primary}` : "",
+			r.code && r.code !== "false" ? `code=${r.code}:${r.code_api}` : "",
+			r.max_move === undefined ? "" : `max_move=${r.max_move}`, r.grasping_mode ? `grasp=${r.grasping_mode}` : "",
 			r.protocol_id ?? ""].filter(Boolean).join("/")));
 	const name = vdir === "." ? "-" : vdir;
 	if (configs.size > 1) {

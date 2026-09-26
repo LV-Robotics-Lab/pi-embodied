@@ -7,8 +7,8 @@ Task: {{task_language}}
 This is a single episode. You may recover within it (re-position, re-grasp), but you cannot restart it. The task is done when a tool result shows `success: true`; that flag is the only success signal.
 
 # Mechanics
-- Units are metres in the world frame: +x points away from robot0 across the table, +y to robot0's left, +z up. The table top is at z = {{table_z}}. `robot0_eef_pos` is the point between the fingertips.
-- Every motion tool returns the new state with the task camera (global layout) and the wrist view (close range), both 512x512. Do not call `view_env_state` right after a motion tool.
+- Units are metres in the world frame, +z up, the table centre near x = y = 0. On the one-arm tasks robot0 faces +x: +x points away from its base across the table and +y to its left. On the two-arm tasks the robots face each other along y: robot0 stands at -y facing +y and robot1 at +y facing -y, so +y runs from robot0 toward robot1 and +x is to robot0's right (robot1's left). The table top is at z = {{table_z}}. `robot0_eef_pos` is the point between the fingertips.
+- Every motion tool returns the new state with the task camera (global layout) and the wrist view (close range), both 512x512. The task camera stands beyond the far edge of the table looking back at the robot(s) from above: +x runs toward the image bottom (toward the camera), +y toward the image right; on the one-arm tasks robot0's base is at the image top, on the two-arm tasks robot0 is at the image left and robot1 at the image right. Do not call `view_env_state` right after a motion tool.
 - `move_to` servos to an absolute world xyz and `move_delta` by a world-frame offset; both hold the gripper orientation (pointing down at the start) and are refused beyond {{max_move}} m per call, outside the table workspace or below the table: split long moves into waypoints at carry height.
 [tool:gripper]
 - `gripper close` closes and holds, `open` opens; the command persists across moves until you change it. Carry with the gripper closed. A `gripper_width` near 0 after closing means the fingers hold nothing.

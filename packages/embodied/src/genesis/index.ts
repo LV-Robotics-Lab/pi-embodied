@@ -159,6 +159,8 @@ export default function genesis(pi: ExtensionAPI) {
 		keepImages: 4,
 		video: true,
 		groundTruth: (names) => call("env.ground_truth_poses", { names: names ?? null }),
+		// The env server's primitive registry (code.api, robots/genesis/primitives.py), recorded per episode.
+		codeApi: () => env,
 		start: startEpisode,
 		prompt: () => SYSTEM.replaceAll("{{task_language}}", meta.instruction),
 		result: () => ({

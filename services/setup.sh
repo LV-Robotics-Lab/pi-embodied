@@ -16,6 +16,8 @@
 #   maniskill       [maniskill] py3.11, real2sim rigs (robots/maniskill/fetch_real2sim.sh)
 #   robosuite       [robosuite] py3.11 (robosuite 1.5, CaP-X tasks; its own venv: LIBERO needs 1.4)
 #   metaworld       [metaworld] py3.11 (Metaworld MT50, no assets; MuJoCo renders through EGL)
+#   genesis         [genesis] py3.11 (Genesis 1.4, OpenETA's Franka cube_pick, no assets; wants torch>=2.8,
+#                   on sm_120 install a cu128 torch into the venv first)
 #   robolab         Isaac Sim 6.1 venv + patched RoboLab (robots/robolab/install_isaac61.sh)
 #   behavior        Isaac Sim + OmniGibson/BDDL venv from a BEHAVIOR-1K checkout (robots/behavior/install.sh)
 #   franka          [franka,sam3] py3.11 (real arm; RLinf controller stack and Ray on the box)
@@ -68,6 +70,7 @@ robocasa) extra=robocasa py=3.10 ;;
 robotwin) extra=robotwin py=3.11 ;;
 maniskill) extra=maniskill py=3.11 ;;
 metaworld) extra=metaworld py=3.11 ;;
+genesis) extra=genesis py=3.11 ;;
 robosuite) extra=robosuite py=3.11 ;;
 franka | dual-franka) extra=franka,sam3 py=3.11 ;;
 franka-polymetis) extra=franka-polymetis py=3.10 ;;

@@ -13,6 +13,7 @@ import robosuite, {
 	TASKS,
 	TWO_ARM,
 	VECTORS,
+	VIEWS,
 	YAW_STEP_RAD,
 } from "../src/robosuite/index.ts";
 import { ground, MOVE_UNITS } from "../src/units/index.ts";
@@ -141,4 +142,28 @@ test("SYSTEM.md wraps the optional tools in [tool:...] blocks and carries the fi
 		assert.ok(text.includes(key), key);
 	for (const tool of ["gripper", "segment", "back_project", "view_camera_meta"])
 		assert.ok(text.includes(`[tool:${tool}]`) || text.includes(`[tool:segment|back_project]`), tool);
+});
+
+test("the frame text matches robosuite's cameras and the opposed two-arm layout", () => {
+	// robot0_robotview (the Panda's robot.xml) and CaP-X's overhead agentview share one orientation
+	// (quat [0.653, 0.271, 0.271, 0.653]): they look back at the robot(s) from beyond the far table
+	// edge, so world +x (MV_FWD) runs toward the image bottom and +y (MV_RIGHT) toward the image right.
+	assert.deepEqual(
+		[VECTORS.MV_FWD, VECTORS.MV_RIGHT],
+		[
+			[1, 0, 0],
+			[0, 1, 0],
+		],
+	);
+	assert.match(VIEWS, /MV_FWD moves the gripper toward the image BOTTOM/);
+	assert.match(VIEWS, /MV_BACK toward the image TOP/);
+	assert.match(VIEWS, /robot0's base is at the image top/);
+	// TwoArm "opposed": robosuite turns robot0 by +90 deg (-y, facing +y) and robot1 by -90 deg.
+	assert.match(VIEWS, /robot0 stands at the image LEFT and robot1 at the image RIGHT/);
+	assert.match(VIEWS, /for robot0 MV_RIGHT moves away from its base/);
+	assert.doesNotMatch(VIEWS, /image bottom and robot1 at the top/);
+	const text = readFileSync(new URL("../src/robosuite/SYSTEM.md", import.meta.url), "utf8");
+	assert.match(text, /robot0 stands at -y facing \+y and robot1 at \+y facing -y/);
+	assert.match(text, /\+x runs toward the image bottom/);
+	assert.doesNotMatch(text, /\+x points away from robot0 across the table, \+y to robot0's left/);
 });

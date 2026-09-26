@@ -73,6 +73,16 @@ def _random_viewpoint(
     return rigid(np.stack([x, y, z], axis=1), position)
 
 
+def _numpy_scalar():
+    """``numpy.core.multiarray.scalar`` (numpy 1.x) / ``numpy._core.multiarray.scalar`` (2.x)."""
+    import importlib
+
+    for name in ("numpy._core.multiarray", "numpy.core.multiarray"):
+        with contextlib.suppress(ImportError):
+            return importlib.import_module(name).scalar
+    raise ImportError("numpy multiarray.scalar not found")
+
+
 class ContactGraspNetFacade(GraspServer):
     """``contact_graspnet.plan`` over an external contact_graspnet_pytorch checkout."""
 
@@ -127,9 +137,9 @@ class ContactGraspNetFacade(GraspServer):
             raise RuntimeError("Contact-GraspNet requires a CUDA-capable GPU")
         config = config_utils.load_config(str(self._ckpt), batch_size=1)
         # The checkpoint holds numpy scalars; torch 2.6+ loads weights-only by default.
-        numpy_core = getattr(np, "_core", None) or np.core
+        # numpy 1.26 has a lazy ``np._core`` without ``multiarray`` loaded: import it by name.
         torch.serialization.add_safe_globals(
-            [numpy_core.multiarray.scalar, np.dtype, type(np.dtype(np.float64))]
+            [_numpy_scalar(), np.dtype, type(np.dtype(np.float64))]
         )
         with contextlib.redirect_stdout(sys.stderr):
             estimator = GraspEstimator(config)

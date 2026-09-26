@@ -227,7 +227,7 @@ def test_sharegpt_export_of_a_success(tmp_path: Path) -> None:
     assert turns[0]["value"] == "Solve the task."
     assert (
         turns[1]["value"]
-        == '<think>look first</think>{"name": "move_to", "arguments": {"x": 1}}'
+        == '<think>\nlook first\n</think>\n\n{"name": "move_to", "arguments": {"x": 1}}'
     )
     assert turns[2]["value"] == "moved\n<image>\nthe block moved", (
         "the extension note joins the observation"

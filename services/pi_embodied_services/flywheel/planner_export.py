@@ -42,9 +42,11 @@ Formats (one combined ``planner.jsonl``; ``sharegpt`` also writes ``dataset_info
   the default because LLaMA-Factory loads it directly (``dataset_info.json`` is written next to it,
   so ``dataset_dir`` is the output directory) and it is the format its multimodal tool-calling
   templates train on. A function call is one JSON object (a list for parallel calls); text the
-  assistant wrote alongside calls goes in front as ``<think>...</think>``, the thought LLaMA-Factory's
-  function formatter keeps. Consecutive results merge into one observation, and a trailing
-  observation (the ``finish`` result) is dropped, since turns must alternate and end on the model.
+  assistant wrote alongside calls goes in front as a thought, in the function formatter's default
+  thought words (``<think>``, a newline, the text, a newline, ``</think>`` and a blank line),
+  which templates with bare ``<think>`` / ``</think>`` match too. Consecutive results merge into
+  one observation, and a trailing observation (the ``finish`` result) is dropped, since turns must
+  alternate and end on the model.
 - ``openai``: OpenAI chat ``messages`` (``tool_calls`` with JSON-string arguments, ``tool`` messages
   with ``tool_call_id``) plus ``tools`` and ``images``, which VeRL's multi-turn SFT dataset reads,
   and the VeRL RL columns ``data_source``, ``prompt`` (system + first user message), ``ability``,
@@ -281,7 +283,7 @@ def to_sharegpt(conv: dict[str, Any]) -> list[dict[str, str]]:
                     calls[0] if len(calls) == 1 else calls, ensure_ascii=False
                 )
                 if m["text"]:
-                    value = f"<think>{m['text']}</think>{value}"
+                    value = f"<think>\n{m['text']}\n</think>\n\n{value}"
                 turn = {"from": "function_call", "value": value}
             else:
                 turn = {"from": "gpt", "value": m["text"]}

@@ -63,6 +63,21 @@ unidepth = [
     "torchvision",
     "pillow>=10",
 ]
+graspnet1b = [
+    # GraspNet-1Billion grasp detectors (components/graspnet1b_server.py --model baseline|gsnet):
+    # services/setup.sh graspnet1b then builds their pointnet2 / knn CUDA ops and MinkowskiEngine
+    # (components/graspnet1b_install.sh). On sm_120 install a cu128 torch into the venv first.
+    "torch",
+    "numpy<2",  # MinkowskiEngine 0.5.4
+    "scipy",
+    "pillow>=10",
+    "tqdm",  # imported by graspness_implementation's dataset module (its batch collate)
+    "open3d",  # graspness_implementation's models/resnet.py refuses to import without it
+    "huggingface-hub",
+    "setuptools",
+    "wheel",
+    "ninja",
+]
 flywheel = [
     # LeRobot v3.0 export of Flywheel episodes (/flywheel-export; lerobot 0.4 writes
     # v3.0, Python >= 3.10). Its numpy 2 and huggingface-hub pins break the LIBERO

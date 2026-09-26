@@ -96,7 +96,7 @@ class FrankaEnvFacade(BaseEnvFacade):
     ) -> None:
         self._backend = backend
         self._perception = perception
-        # --contact-graspnet/--graspgenx/--anygrasp/--anyplace: env.plan_grasp, env.plan_place and
+        # --contact-graspnet/--graspgenx/--anygrasp/--graspnet1b/--anyplace: env.plan_grasp, env.plan_place and
         # the grasp/placement ids over this server's cameras (utils/grasp.py).
         self._grasp_urls = grasp
         # --ik: env.preview_reach, and move_delta / rotate_delta refuse a target the ik

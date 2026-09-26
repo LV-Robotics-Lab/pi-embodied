@@ -291,7 +291,7 @@ export default function franka(pi: ExtensionAPI) {
 		default: "0.5",
 		description: "Largest rotate_delta per call, rad (norm of delta_rpy)",
 	});
-	// --contact-graspnet/--graspgenx/--anyplace/--anygrasp: plan_grasp, plan_place, check_attached (../primitives/grasp.ts).
+	// --contact-graspnet/--graspgenx/--anyplace/--anygrasp/--graspnet1b: plan_grasp, plan_place, check_attached (../primitives/grasp.ts).
 	registerGraspFlags(pi);
 	registerIkFlag(pi);
 
@@ -1219,7 +1219,7 @@ export default function franka(pi: ExtensionAPI) {
 	);
 
 	// plan_grasp / plan_place / check_attached (../primitives/grasp.ts): the env server plans over its
-	// calibrated RGB-D cameras; active with --contact-graspnet/--graspgenx/--anyplace/--anygrasp.
+	// calibrated RGB-D cameras; active with --contact-graspnet/--graspgenx/--anyplace/--anygrasp/--graspnet1b.
 	for (const d of graspTools(pi, {
 		call: (method, kwargs, timeoutMs) => call(method, kwargs, timeoutMs ?? 120_000),
 		cameras: ["wrist", "third_person"],

@@ -192,12 +192,10 @@ def franka_grasp_planner(
     segments ``plan_grasp(object=...)`` / ``segment_mask`` text, and its book's mask ids are
     accepted as ``mask_id``."""
     from pi_embodied_services.robots.franka import perception as franka_perception
-    from pi_embodied_services.utils.grasp import GraspPlanner
+    from pi_embodied_services.utils.grasp import GRASP_URL_KEYS, GraspPlanner
 
     urls = dict(urls or {})
-    if not any(
-        urls.get(k) for k in ("contact_graspnet", "graspgenx", "anygrasp", "anyplace")
-    ):
+    if not any(urls.get(k) for k in GRASP_URL_KEYS):
         return None
     cache: dict[str, Any] = {}
 

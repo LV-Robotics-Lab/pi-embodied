@@ -108,6 +108,7 @@ test("the grasp flags are off by default: no env args and no active tool", () =>
 		"attach-vlm-model",
 		"contact-graspnet",
 		"graspgenx",
+		"graspnet1b",
 	]);
 	assert.deepEqual(graspArgs(f.pi), []);
 	assert.deepEqual(graspActive(f.pi), []);
@@ -120,6 +121,13 @@ test("the grasp flags are off by default: no env args and no active tool", () =>
 		"http://127.0.0.1:8123",
 	]);
 	assert.deepEqual(graspActive(g.pi), [...GRASP_TOOLS]);
+});
+
+test("--graspnet1b alone configures a grasp backend", () => {
+	const f = fakePi({ graspnet1b: "http://127.0.0.1:8124" });
+	registerGraspFlags(f.pi);
+	assert.deepEqual(graspArgs(f.pi), ["--graspnet1b", "http://127.0.0.1:8124"]);
+	assert.deepEqual(graspActive(f.pi), [...GRASP_TOOLS]);
 });
 
 test("every robot registers the three grasp tools at load, with the arm parameter only on the dual arm", () => {

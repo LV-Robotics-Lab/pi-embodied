@@ -295,7 +295,7 @@ class FrankaPolymetisFacade(MainThreadServeMixin, BaseEnvFacade):
         ik_reach: reach.ReachPreview | None = None,
     ) -> None:
         self._perception = perception
-        # --contact-graspnet/--graspgenx/--anygrasp/--anyplace: env.plan_grasp, env.plan_place and the
+        # --contact-graspnet/--graspgenx/--anygrasp/--graspnet1b/--anyplace: env.plan_grasp, env.plan_place and the
         # grasp/placement ids over the wrist and external cameras, as on the RLinf backend.
         self._grasp_urls = grasp
         # --ik: env.preview_reach, and move_delta / rotate_delta refuse a target the ik

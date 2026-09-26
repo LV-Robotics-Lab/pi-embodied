@@ -15,10 +15,10 @@
 """Grasp and placement planning an env server composes over its current observation.
 
 The grasp servers (``components/contact_graspnet_server.py``, ``graspgenx_server.py``,
-``anygrasp_server.py``) answer in the **GraspNet grasp frame** in the camera's OpenCV frame:
-origin at the grasp center (between the finger pads), X = approach, Y = closing (the fingers
-slide along it), Z = X x Y. Each server converts its model's native frame itself (the
-``*_candidates`` functions below); the env server only ever sees normalized candidates.
+``anygrasp_server.py``, ``graspnet1b_server.py``) answer in the **GraspNet grasp frame** in the
+camera's OpenCV frame: origin at the grasp center (between the finger pads), X = approach,
+Y = closing (the fingers slide along it), Z = X x Y. Each server converts its model's native frame
+itself (the ``*_candidates`` functions below); the env server only ever sees normalized candidates.
 
 The env server knows what no model server knows: the current camera frames, their intrinsics
 and extrinsics, and the robot's grasp-to-EEF calibration. :class:`GraspPlanner` therefore lives
@@ -68,7 +68,9 @@ logger = get_logger("grasp")
 
 GRASP_FRAME = "graspnet"
 CAMERA_FRAME = "opencv"
-BACKENDS = ("contact_graspnet", "graspgenx", "anygrasp")
+BACKENDS = ("contact_graspnet", "graspgenx", "anygrasp", "graspnet1b")
+#: The env-server grasp URLs (``--contact-graspnet`` ... ``--anyplace``) by key.
+GRASP_URL_KEYS = (*BACKENDS, "anyplace")
 #: Contact-GraspNet's Panda gripper: base frame origin to the finger pads along the approach.
 CONTACT_GRASPNET_GRIPPER_DEPTH = 0.1034
 #: Depth (m) beyond which a pixel is ignored when building the object's point cloud.
@@ -364,8 +366,11 @@ def graspgenx_candidates(
     return out
 
 
-def anygrasp_candidates(grasps: Any) -> list[dict[str, Any]]:
-    """AnyGrasp (graspnetAPI ``GraspGroup``: already the GraspNet frame) -> normalized dicts."""
+def anygrasp_candidates(
+    grasps: Any, source_model: str = "anygrasp"
+) -> list[dict[str, Any]]:
+    """AnyGrasp or a GraspNet-1Billion model (graspnetAPI ``GraspGroup``: already the GraspNet
+    frame) -> normalized dicts."""
     out = []
     for g in grasps:
         out.append(
@@ -375,7 +380,7 @@ def anygrasp_candidates(grasps: Any) -> list[dict[str, Any]]:
                 center=np.asarray(g.translation, dtype=np.float64),
                 width=float(g.width),
                 depth=float(g.depth),
-                source_model="anygrasp",
+                source_model=source_model,
                 extra={"height": float(g.height)},
             )
         )
@@ -594,13 +599,14 @@ class GraspPlanner:
         contact_graspnet: str | None = None,
         graspgenx: str | None = None,
         anygrasp: str | None = None,
+        graspnet1b: str | None = None,
         anyplace: str | None = None,
         sam3: str | None = None,
         **kwargs: Any,
     ) -> GraspPlanner | None:
-        """A planner for the ``--contact-graspnet/--graspgenx/--anygrasp/--anyplace`` URLs, or None when
-        none was given (the env server then changes nothing)."""
-        if not (contact_graspnet or graspgenx or anygrasp or anyplace):
+        """A planner for the ``--contact-graspnet/--graspgenx/--anygrasp/--graspnet1b/--anyplace``
+        URLs, or None when none was given (the env server then changes nothing)."""
+        if not (contact_graspnet or graspgenx or anygrasp or graspnet1b or anyplace):
             return None
         return cls(
             view,
@@ -609,6 +615,7 @@ class GraspPlanner:
                 "contact_graspnet": contact_graspnet,
                 "graspgenx": graspgenx,
                 "anygrasp": anygrasp,
+                "graspnet1b": graspnet1b,
             },
             anyplace=anyplace,
             sam3=sam3,
@@ -678,7 +685,9 @@ class GraspPlanner:
                         "string", "RGB-D camera (default the first configured)", False
                     ),
                     "backend": Param(
-                        "string", "contact_graspnet | graspgenx | anygrasp", False
+                        "string",
+                        "contact_graspnet | graspgenx | anygrasp | graspnet1b",
+                        False,
                     ),
                     **arm,
                     "max_candidates": Param("integer", "default 10", False),
@@ -1014,7 +1023,7 @@ class GraspPlanner:
     def _backend(self, backend: str | None) -> tuple[str, Any]:
         if not self._backends:
             raise GraspError(
-                "no grasp backend: start the env server with --contact-graspnet, --graspgenx or --anygrasp"
+                "no grasp backend: start the env server with --contact-graspnet, --graspgenx, --anygrasp or --graspnet1b"
             )
         if backend is None:
             name = next(n for n in BACKENDS if n in self._backends)
@@ -1086,7 +1095,8 @@ class GraspPlanner:
             object: text prompt of the object to grasp (segmented with SAM3), or
             mask_id: a mask id from ``segment_mask`` / ``segment`` of the current observation.
             camera: the RGB-D camera to plan from (default the first configured).
-            backend: ``contact_graspnet`` | ``graspgenx`` | ``anygrasp`` (default: the first configured).
+            backend: ``contact_graspnet`` | ``graspgenx`` | ``anygrasp`` | ``graspnet1b`` (default: the
+                first configured).
             arm: with two arms, which arm's calibration gives the EEF pose.
             max_candidates: at most this many (default 10).
 
@@ -1678,6 +1688,7 @@ __all__ = [
     "DEFAULT_LIFT_M",
     "DEFAULT_STANDOFF_M",
     "GRASP_FRAME",
+    "GRASP_URL_KEYS",
     "ZX_NATIVE_TO_GRASPNET",
     "GraspError",
     "GraspPlanner",
@@ -1705,11 +1716,13 @@ __all__ = [
 
 
 def add_grasp_arguments(parser: Any) -> None:
-    """``--contact-graspnet/--graspgenx/--anygrasp/--anyplace <url>`` and ``--grasp-to-eef``."""
+    """``--contact-graspnet/--graspgenx/--anygrasp/--graspnet1b/--anyplace <url>`` and
+    ``--grasp-to-eef``."""
     for name, what in (
         ("contact-graspnet", "Contact-GraspNet server URL"),
         ("graspgenx", "GraspGenX server URL"),
         ("anygrasp", "AnyGrasp server URL"),
+        ("graspnet1b", "GraspNet-1Billion server URL (graspnet-baseline or GSNet)"),
         ("anyplace", "AnyPlace server URL"),
     ):
         parser.add_argument(
@@ -1775,6 +1788,7 @@ def urls_from_args(args: Any) -> dict[str, Any]:
         "contact_graspnet": getattr(args, "contact_graspnet", None),
         "graspgenx": getattr(args, "graspgenx", None),
         "anygrasp": getattr(args, "anygrasp", None),
+        "graspnet1b": getattr(args, "graspnet1b", None),
         "anyplace": getattr(args, "anyplace", None),
         "grasp_to_eef": cal,
     }

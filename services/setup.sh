@@ -28,6 +28,9 @@
 #   piper           [piper] system python with --system-site-packages (source ROS Noetic first)
 #   finetuned       Show-Harness adapter + base model (finetuned/download.py; FT_ADAPTER, default qwen3_5_2b_sim)
 #   llamafactory    LLaMA-Factory training venv (finetuned/setup_llamafactory.sh)
+#   graspnet1b      [graspnet1b] py3.11, graspnet-baseline + GSNet with their CUDA ops and MinkowskiEngine
+#                   (components/graspnet1b_install.sh; needs nvcc and libopenblas-dev; on sm_120 install a
+#                   cu128 torch into the venv first)   --weights: GSNet and graspnet-baseline checkpoints
 #
 # Defaults: --venv services/.venv-<target>, --weights-dir $PI_EMBODIED_WEIGHTS (default
 # ~/.cache/pi-embodied), assets under the same directory. Downloads honour HF_ENDPOINT (e.g.
@@ -74,6 +77,7 @@ maniskill) extra=maniskill py=3.11 ;;
 metaworld) extra=metaworld py=3.11 ;;
 genesis) extra=genesis py=3.11 ;;
 robosuite) extra=robosuite py=3.11 ;;
+graspnet1b) extra=graspnet1b py=3.11 ;;
 franka | dual-franka) extra=franka,sam3 py=3.11 ;;
 franka-polymetis) extra=franka-polymetis py=3.10 ;;
 piper) extra=piper py=system ;;
@@ -273,6 +277,13 @@ llamafactory)
 			export_env LINGBOT_MODEL_PATH "$wdir/LingBot-VLA-RoboTwin-EEF-ckpt1500"
 		fi
 		;;
+	graspnet1b)
+		run bash "$SERVICES/pi_embodied_services/components/graspnet1b_install.sh" "$PY" "$wdir/graspnet1b" \
+			$($weights && echo --weights)
+		export_env GRASPNET_BASELINE_ROOT "$wdir/graspnet1b/src/graspnet-baseline"
+		export_env GRASPNESS_ROOT "$wdir/graspnet1b/src/graspness_implementation"
+		export_env GRASPNET1B_PYTHON "$PY"
+		;;
 	maniskill)
 		if $assets; then
 			run env PYTHON="$PY" bash "$SERVICES/pi_embodied_services/robots/maniskill/fetch_real2sim.sh" "$wdir/RLinf-real2sim"
@@ -283,7 +294,7 @@ llamafactory)
 	;;
 esac
 
-case $target in finetuned | llamafactory) ;; *) export_env PI_EMBODIED_PYTHON "$PY" ;; esac
+case $target in finetuned | llamafactory | graspnet1b) ;; *) export_env PI_EMBODIED_PYTHON "$PY" ;; esac
 export_env PI_EMBODIED_SERVICES "$SERVICES"
 note "environment for pi, serve.sh and eval.sh:"
 printf '%s\n' "${ENV_LINES[@]}"
@@ -295,7 +306,7 @@ case $target in
 franka-polymetis) robot=franka ;;
 dual-franka) robot=dual_franka ;;
 libero-pro | libero-plus) robot=libero ;;
-finetuned | llamafactory) robot="" ;;
+finetuned | llamafactory | graspnet1b) robot="" ;;
 *) robot=$target ;;
 esac
 if [ -n "$robot" ] && [ -n "$PKG" ]; then

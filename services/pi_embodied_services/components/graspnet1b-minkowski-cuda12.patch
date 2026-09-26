@@ -1,0 +1,73 @@
+diff --git a/setup.py b/setup.py
+index 452ea57..15cd576 100644
+--- a/setup.py
++++ b/setup.py
+@@ -120,7 +120,6 @@ def _argparse(pattern, argv, is_flag=True, is_list=False):
+ 
+ 
+ run_command("rm", "-rf", "build")
+-run_command("pip", "uninstall", "MinkowskiEngine", "-y")
+ 
+ # For cpu only build
+ CPU_ONLY, argv = _argparse("--cpu_only", argv)
+@@ -179,6 +178,9 @@ if "darwin" in platform:
+     CC_FLAGS += ["-stdlib=libc++", "-std=c++17"]
+ 
+ NVCC_FLAGS += ["--expt-relaxed-constexpr", "--expt-extended-lambda"]
++# CUDA 12.x CUB ships its own nvtx3.hpp, which clashes with the bundled cudf copy.
++CC_FLAGS += ["-DCCCL_DISABLE_NVTX"]
++NVCC_FLAGS += ["-DCCCL_DISABLE_NVTX"]
+ FAST_MATH, argv = _argparse("--fast_math", argv)
+ if FAST_MATH:
+     NVCC_FLAGS.append("--use_fast_math")
+diff --git a/src/3rdparty/concurrent_unordered_map.cuh b/src/3rdparty/concurrent_unordered_map.cuh
+index ed8e1b2..853373c 100644
+--- a/src/3rdparty/concurrent_unordered_map.cuh
++++ b/src/3rdparty/concurrent_unordered_map.cuh
+@@ -26,6 +26,7 @@
+ #include <cudf/utilities/error.hpp>
+ 
+ #include <thrust/pair.h>
++#include <thrust/execution_policy.h>
+ #include <thrust/count.h>
+ 
+ #include <functional>
+diff --git a/src/convolution_kernel.cuh b/src/convolution_kernel.cuh
+index aed7227..182d1b5 100644
+--- a/src/convolution_kernel.cuh
++++ b/src/convolution_kernel.cuh
+@@ -27,6 +27,7 @@
+ 
+ #include <array>
+ #include <vector>
++#include <thrust/execution_policy.h>
+ 
+ #include "gpu.cuh"
+ #include "kernel_map.cuh"
+diff --git a/src/coordinate_map_gpu.cu b/src/coordinate_map_gpu.cu
+index fb7325d..4076ddb 100644
+--- a/src/coordinate_map_gpu.cu
++++ b/src/coordinate_map_gpu.cu
+@@ -36,6 +36,8 @@
+ #include <thrust/iterator/counting_iterator.h>
+ #include <thrust/iterator/transform_iterator.h>
+ #include <thrust/sort.h>
++#include <thrust/unique.h>
++#include <thrust/remove.h>
+ 
+ namespace minkowski {
+ 
+diff --git a/src/spmm.cu b/src/spmm.cu
+index 8891a56..1a62da8 100644
+--- a/src/spmm.cu
++++ b/src/spmm.cu
+@@ -28,6 +28,9 @@
+ #include "math_functions.cuh"
+ 
+ #include <cusparse.h>
++#include <thrust/execution_policy.h>
++#include <thrust/reduce.h>
++#include <thrust/sort.h>
+ 
+ #include <ATen/core/Tensor.h>
+ #include <ATen/cuda/CUDAContext.h>

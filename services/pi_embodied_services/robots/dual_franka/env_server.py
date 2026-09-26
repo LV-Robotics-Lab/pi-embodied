@@ -125,13 +125,14 @@ class DualFrankaEnvFacade(FrankaEnvFacade):
         SAM3 server (``--sam3``) segments ``plan_grasp(object=...)`` and ``plan_place`` text."""
         from pi_embodied_services.robots.dual_franka import perception as p
         from pi_embodied_services.robots.franka.grasp_views import dual_franka_view
-        from pi_embodied_services.utils.grasp import GraspPlanner, GraspToEef
+        from pi_embodied_services.utils.grasp import (
+            GRASP_URL_KEYS,
+            GraspPlanner,
+            GraspToEef,
+        )
 
         urls = self._grasp_urls or {}
-        if not any(
-            urls.get(k)
-            for k in ("contact_graspnet", "graspgenx", "anygrasp", "anyplace")
-        ):
+        if not any(urls.get(k) for k in GRASP_URL_KEYS):
             return None
         bundle = p.load_calibration_bundle()
         views = p._projection_cameras()

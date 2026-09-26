@@ -138,6 +138,14 @@ uv pip install -e "services[xpolicy]"       # pi: --xpolicy-python services/.ven
 cd ~/xpolicy/XPolicyLab/policy/Evo_1 && bash setup_eval_policy_server.sh RoboTwin beat_block_hammer \
   Evo1_RoboTwin2_datascale aloha_agilex joint 0 <gpu> <env> 19101 127.0.0.1   # deploy.yml: dataset_key_suffix: _rand
 # then: pi -e packages/embodied/src/robotwin --xpolicy ws://127.0.0.1:19101 --task-config demo_randomized ...
+
+# GraspNet-1Billion grasp detectors (components/graspnet1b_server.py, pi: --graspnet1b URL):
+# graspnet-baseline (--model baseline, checkpoint-rs.tar / checkpoint-kn.tar) or GSNet (--model
+# gsnet). setup.sh graspnet1b compiles their pointnet2 / knn CUDA ops and MinkowskiEngine against
+# the venv's torch (CUDA_HOME = a matching nvcc; libopenblas-dev), see components/graspnet1b_install.sh.
+services/setup.sh graspnet1b --weights && source services/.venv-graspnet1b/pi-embodied.env
+$GRASPNET1B_PYTHON -m pi_embodied_services.components.graspnet1b_server --model gsnet \
+    --root "$GRASPNESS_ROOT" --checkpoint ~/.cache/pi-embodied/graspnet1b/gsnet/checkp_realsense.tar
 ```
 
 Every dataset pi-embodied exports is LeRobot v3.0 with the same feature names:

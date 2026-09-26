@@ -324,7 +324,7 @@ export default function libero(pi: ExtensionAPI) {
 		default: "0.004",
 		description: "Units mode: an MV_* servo stops within this distance of its target, m",
 	});
-	// --contact-graspnet/--graspgenx/--anyplace/--anygrasp: plan_grasp, plan_place, check_attached (../primitives/grasp.ts).
+	// --contact-graspnet/--graspgenx/--anyplace/--anygrasp/--graspnet1b: plan_grasp, plan_place, check_attached (../primitives/grasp.ts).
 	registerGraspFlags(pi);
 	// --detections / --unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
 	registerDetectionFlags(pi);

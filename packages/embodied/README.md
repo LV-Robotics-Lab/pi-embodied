@@ -67,7 +67,7 @@ with `--env` / `--vla` / `--sam3`. Real-arm robots (Franka, dual Franka) stay on
 | LIBERO / LIBERO-PRO | `src/libero` | LIBERO `terminated` | all below, plus flywheel, operator, Flash (Molmo re-anchoring) |
 | RoboCasa | `src/robocasa` | `env._check_success()` | all below, plus flywheel, recipe Flash (Molmo re-anchoring) |
 | RoboTwin | `src/robotwin` | `eval_success` | all below, plus flywheel, recipe Flash (Molmo re-anchoring) |
-| ManiSkill | `src/maniskill` | ManiSkill `success` | all below, plus recipe Flash (Molmo + ray-plane re-anchoring of delta waypoints) |
+| ManiSkill (`--robot`, below) | `src/maniskill` | ManiSkill `success` | all below, plus recipe Flash (Molmo + ray-plane re-anchoring of delta waypoints) |
 | RoboLab | `src/robolab` | RoboLab's task predicate | all below, plus recipe Flash (Molmo + ray-plane re-anchoring of delta waypoints) |
 | Robosuite | `src/robosuite` | robosuite `_check_success` (Restack adds CaP-X's off-table rule), latched | video, units, VDM, code.api, `--privileged` |
 | Metaworld | `src/metaworld` | Metaworld `info["success"]`, latched | video, units, VDM, code.api, `--privileged` |
@@ -77,6 +77,26 @@ with `--env` / `--vla` / `--sam3`. Real-arm robots (Franka, dual Franka) stay on
 | Dual Franka (real) | `src/dual_franka` | operator verdict (required) | all below but `--privileged`; explore resets through the operator |
 | Piper / dual Piper (real) | `src/piper` | operator verdict (required) | all below but `--privileged`; explore resets through the operator |
 | UR5e (real) | `src/ur5e` | operator verdict (required) | all below but `--privileged` and memory/explore; bound to one arm (`--arm-id`) |
+
+ManiSkill's `--robot` picks the arm (ManiSkill 3.0.1 agents with a parallel gripper that the stock
+table scene places), all in translation-only `pd_ee_delta_pos` with the same MV_* vectors, 2 cm step
+and servo (each measured at 19.7 mm per unit along its axis). The RLinf rigs (BlockPAP-v1 /
+BlockStack-v1) run their own Panda. Results record a non-Panda arm as `maniskill_robot`, and
+`maniskill/eval.sh` keeps each arm in its own out dir.
+
+| `--robot` | ManiSkill uid | Env ids | Gripper | Wrist view |
+| --- | --- | --- | --- | --- |
+| `panda` (default) | `panda_wristcam` | all 12 stock ids and the rigs | mimic, +1 open / -1 close | Show-Harness's centred D415, turned 270 deg |
+| `xarm6_robotiq` | `xarm6_robotiq` | PickCube, StackCube, PullCube, LiftPegUpright, PlaceSphere, StackPyramid, PullCubeTool, PlugCharger | Robotiq 2F-85 in delta mode, +1 close / -1 open | the wristcam variant's camera on `camera_link`, turned 90 deg |
+| `widowxai` | `widowxai` (+ `pd_ee_delta_pos` on its six arm joints) | PickCube | carriages, +1 open / -1 close; 10-step hold | none: the agentview alone |
+
+The other ids are refused per arm: the xArm6 cannot reach PushCube's and PokeCube's goals,
+PegInsertionSide resets a Panda joint vector, PickSingleYCB has no xArm6 layout, and with its
+gripper held pointing down the WidowX AI reaches only ~0.37 m from its base (PickCube's own layout).
+Not offered: `so100` and `koch-v1.1` (joint control only and no TCP link), `fetch` (mobile base),
+`ur_10e` / `widowx250s` (joint control only; the table scene has no placement for them), and the
+`*_wristcam` uids of the xArm6 and WidowX AI (the table scene does not place the former, its arm
+spawns inside the table; PickCube gives the latter the Panda's layout, out of its reach).
 
 "All below" is memory, explore, video, units (so GUMI and the fine-tuned provider), VDM (`--vdm`),
 the primitive registry (`code.api`) and, in simulation, `--privileged`. ManiSkill, RoboLab and the

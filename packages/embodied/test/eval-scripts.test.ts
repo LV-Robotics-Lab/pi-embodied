@@ -340,3 +340,34 @@ for (const [robot, positional, cell, env] of CELLS.filter(([r]) => FALLBACK_ROBO
 		assert.ok(totals && Number(totals[1]) >= 1 && Number(totals[2]) === 2 * Number(totals[1]), same.stdout);
 	});
 }
+
+test("maniskill/eval.sh records --robot as maniskill_robot and never mixes arms in one out dir", () => {
+	const positional = ["PickCube-v1", "0"];
+	const run1 = (args: string[]) => run("maniskill", positional, "PickCube-v1_s0", args);
+	// `robot` names the pi robot ("maniskill"); the arm is its own key, the Panda by default.
+	assert.equal(run1([]).result?.maniskill_robot, "panda");
+	const on = run1(["--robot", "xarm6_robotiq"]);
+	assert.equal(on.result?.maniskill_robot, "xarm6_robotiq");
+	assert.ok(on.argv?.includes("--robot") && on.argv?.includes("xarm6_robotiq"), String(on.argv));
+	assert.equal(run1(["--robot=widowxai"]).result?.maniskill_robot, "widowxai");
+	for (const [first, second] of [
+		[["--robot", "xarm6_robotiq"], []],
+		[[], ["--robot=widowxai"]],
+		[
+			["--robot", "xarm6_robotiq"],
+			["--robot", "widowxai"],
+		],
+	]) {
+		const [a, b] = rerun("maniskill", positional, {}, first, second);
+		assert.equal(a.status, 0, a.stdout + a.stderr);
+		assert.equal(b.status, 1, `${first} then ${second}`);
+		assert.match(b.stderr, /--robot/);
+	}
+	const [, same] = rerun("maniskill", positional, {}, ["--robot", "xarm6_robotiq"], ["--robot=xarm6_robotiq"]);
+	assert.equal(same.status, 0, same.stdout + same.stderr);
+	assert.match(same.stdout, /\/robot=xarm6_robotiq: success 1\/1/);
+	// The Panda keeps its summary key; `--robot panda` is the default run.
+	const [, panda] = rerun("maniskill", positional, {}, [], ["--robot", "panda"]);
+	assert.equal(panda.status, 0, panda.stdout + panda.stderr);
+	assert.doesNotMatch(panda.stdout, /robot=/);
+});

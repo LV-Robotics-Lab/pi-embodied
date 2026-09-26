@@ -19,10 +19,11 @@
 """RPC server wrapping one ManiSkill 3 env in ``pd_ee_delta_pos``.
 
 Action ``[dx, dy, dz, gripper]`` in [-1, 1]: a base-frame position delta normalised by
-the arm's 0.1 m bound, and the Panda mimic gripper (+1 open, -1 close). Observations
-carry the agentview (``base_camera``; ``external_cam`` on the RLinf rigs) and wrist
-(``hand_camera``) RGB, the TCP pose and the gripper opening; ``info`` is flattened to
-plain scalars (``success``, ``is_grasped``, ...). An env id of ./scenes.py (BlockPAP-v1,
+the arm's 0.1 m bound, and the robot's gripper action (the Panda's mimic gripper: +1
+open, -1 close; ``ROBOTS`` maps "open" / "close" for each ``--robot``). Observations
+carry the agentview (``base_camera``; ``external_cam`` on the RLinf rigs) and, on a robot
+with a wrist camera, the wrist (``hand_camera``) RGB, the TCP pose and the gripper
+opening; ``info`` is flattened to plain scalars (``success``, ``is_grasped``, ...). An env id of ./scenes.py (BlockPAP-v1,
 BlockStack-v1) runs that rig with Show-Harness's calibrated cameras, reset and views; the
 other ids (``ENV_IDS``) are stock ManiSkill tabletop tasks on the shared oblique camera.
 """
@@ -30,7 +31,8 @@ other ids (``ENV_IDS``) are stock ManiSkill tabletop tasks on the shared oblique
 from __future__ import annotations
 
 import argparse
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Optional
 
 import numpy as np
 
@@ -95,7 +97,6 @@ SHOW_GOALS = {"PickCube-v1": ["goal_site"], "PickSingleYCB-v1": ["goal_site"]}
 #: Fewest agentview pixels (640x480 sensor) a task actor may show; a 4 cm cube at the far
 #: edge of the workspace covers ~60.
 MIN_VISIBLE_PX = 20
-OPEN = 1.0
 #: Stock Panda arm_pd_ee_delta_pos position bound: action 1.0 = 0.1 m.
 DELTA_BOUND_M = 0.1
 
@@ -195,6 +196,192 @@ AGENTVIEW = {
 }
 
 
+@dataclass(frozen=True)
+class RobotSpec:
+    """One ``--robot``: a ManiSkill agent with a parallel gripper, driven in
+    ``pd_ee_delta_pos`` (base-frame TCP translation, orientation held by the IK).
+
+    ``gripper`` is the (open, close) gripper action held while the command lasts;
+    ``width`` how ``gripper_width`` is measured: ``("qpos",)`` the sum of the last two
+    joint positions (two prismatic fingers), ``("pads", link_a, link_b, offset)`` the
+    distance between two finger links minus their distance when closed on nothing.
+    ``envs`` are the stock env ids its reset, visibility gate and reach were checked on
+    (the rigs fix their own Panda). ``wrist`` is the hand camera: ``mount`` ("centered":
+    the Panda's patched D415 mount; otherwise the agent's own link it is added on, with
+    ``pose`` [p, q wxyz] from ManiSkill's ``*_wristcam`` variant), and the view transform;
+    None: the robot has no camera link, and observations carry the agentview alone.
+    ``ee_joints`` adds a ``pd_ee_delta_pos`` mode (ManiSkill's PDEEPosController on these
+    joints and the agent's TCP link) to an agent that ships joint control only."""
+
+    uid: str
+    name: str
+    gripper: tuple[float, float]
+    width: tuple
+    envs: tuple[str, ...]
+    wrist: Optional[dict]
+    ee_joints: Optional[tuple[str, ...]] = None
+
+    @property
+    def open(self) -> float:
+        return self.gripper[0]
+
+    def gripper_action(self, command: float) -> float:
+        """``command`` > 0 opens, <= 0 closes (the servo's and pi's convention)."""
+        return self.gripper[0] if command > 0 else self.gripper[1]
+
+
+#: The stock env ids every robot's reset was checked on; PickCube-v1 has a per-robot
+#: layout (ManiSkill's PICK_CUBE_CONFIGS: cube size, spawn area, goal height).
+_ALL_STOCK = tuple(INSTRUCTIONS)
+#: ``--robot``: the ManiSkill 3.0.1 agents with a parallel gripper that the stock table
+#: scene places (TableSceneBuilder) and that reach the tasks' objects in
+#: ``pd_ee_delta_pos``. Measured on the box (reset, visibility gate, reach, MV_* probe):
+#: see ``_ALL_STOCK`` for the Panda and ``envs`` for the others.
+ROBOTS: dict[str, RobotSpec] = {
+    # The default: panda_wristcam with Show-Harness's centred wrist mount (``main``).
+    "panda": RobotSpec(
+        uid="panda_wristcam",
+        name="Franka Panda",
+        gripper=(1.0, -1.0),
+        width=("qpos",),
+        envs=_ALL_STOCK,
+        wrist={"mount": "centered", "rotation": 270, "flip": "none"},
+    ),
+    # Robotiq 2F-85 in delta mode: +1 closes by 0.15 rad per control step, -1 opens; held,
+    # the command drives the knuckle to its limit (0.81 closed) or presses the object.
+    # ``eef`` (the TCP) sits between the fingertips. The hand camera is
+    # xarm6_robotiq_wristcam's, added on ``camera_link`` of xarm6_robotiq (the wristcam
+    # uid is not placed by the table scene: its arm spawns inside the table).
+    "xarm6_robotiq": RobotSpec(
+        uid="xarm6_robotiq",
+        name="UFactory xArm6 with a Robotiq 2F-85 gripper",
+        gripper=(-1.0, 1.0),
+        width=("pads", "left_inner_finger_pad", "right_inner_finger_pad", 0.0067),
+        # PushCube / PokeCube put the goal (and PokeCube the cube) beyond its reach (x > 0.1,
+        # 0.62 m from the base); PegInsertionSide resets a Panda's joint vector only;
+        # PickSingleYCB has no xarm6 layout.
+        envs=(
+            "PickCube-v1",
+            "StackCube-v1",
+            "PullCube-v1",
+            "LiftPegUpright-v1",
+            "PlaceSphere-v1",
+            "StackPyramid-v1",
+            "PullCubeTool-v1",
+            "PlugCharger-v1",
+        ),
+        wrist={
+            "mount": "camera_link",
+            "pose": [[0.0, 0.0, -0.05], [0.70710678, 0.0, 0.70710678, 0.0]],
+            # Measured (PickCube / StackCube seed 0, world axes projected through the
+            # camera): raw image left = +x, down = +y; 90 deg CCW gives the Panda's
+            # convention (right = +y, bottom = +x) with the fingertips at the top corners.
+            "rotation": 90,
+            "flip": "none",
+        },
+    ),
+    # Joint control only in ManiSkill: ``ee_joints`` adds pd_ee_delta_pos on its six arm
+    # joints and ``ee_gripper_link``. wxai_base.urdf has no camera link (the D405 is on
+    # widowxai_wristcam's wxai_follower.urdf, which PickCube has no layout for).
+    "widowxai": RobotSpec(
+        uid="widowxai",
+        name="Trossen WidowX AI",
+        gripper=(1.0, -1.0),
+        width=("qpos",),
+        # With the gripper held pointing down its reach ends ~0.37 m from the base (the
+        # wrist pitch hits its limit): only PickCube's own layout (cube at x -0.25, goal up
+        # to 0.2 m) is within it; the other scenes' objects sit at x ~ 0, 0.6 m away.
+        envs=("PickCube-v1",),
+        wrist=None,
+        ee_joints=tuple(f"joint_{i}" for i in range(6)),
+    ),
+}
+
+
+def add_wrist_camera(agent_cls, link: str, pose: list) -> None:
+    """Give ``agent_cls`` a 256 px ``hand_camera`` on its ``link`` (in place, like
+    ``center_wrist_camera``: the table scene only places uids it knows)."""
+    import sapien
+    from mani_skill.sensors.camera import CameraConfig
+
+    agent_cls._sensor_configs = property(
+        lambda self: [
+            CameraConfig(
+                uid="hand_camera",
+                pose=sapien.Pose(p=pose[0], q=pose[1]),
+                width=256,
+                height=256,
+                fov=np.pi / 2,
+                near=0.01,
+                far=100,
+                mount=self.robot.links_map[link],
+            )
+        ]
+    )
+
+
+def add_ee_control(agent_cls, joints: tuple[str, ...]) -> None:
+    """Add ``pd_ee_delta_pos`` to ``agent_cls``: ManiSkill's PDEEPosController (0.1 m
+    bound, the arm's own gains) on ``joints`` and the agent's TCP link, with the
+    gripper controller of its ``pd_joint_pos`` mode. Idempotent."""
+    from mani_skill.agents.controllers import PDEEPosControllerConfig
+
+    base = agent_cls._controller_configs
+    if getattr(base, "_pi_ee", False):
+        return
+
+    def configs(self):
+        cfg = base.fget(self)
+        arm = PDEEPosControllerConfig(
+            joint_names=list(joints),
+            pos_lower=-DELTA_BOUND_M,
+            pos_upper=DELTA_BOUND_M,
+            stiffness=self.arm_stiffness,
+            damping=self.arm_damping,
+            force_limit=self.arm_force_limit,
+            ee_link=self.ee_link_name,
+            urdf_path=self.urdf_path,
+        )
+        rest = {k: v for k, v in cfg["pd_joint_pos"].items() if k != "arm"}
+        return {**cfg, "pd_ee_delta_pos": {"arm": arm, **rest}}
+
+    prop = property(configs)
+    prop.fget._pi_ee = True  # type: ignore[attr-defined]
+    agent_cls._controller_configs = prop
+
+
+def robot_spec(robot: str, env_id: str, rig: bool) -> RobotSpec:
+    """The ``--robot`` spec, refused unless it was checked on ``env_id``; a rig
+    (BlockPAP-v1 / BlockStack-v1) runs its own Panda only."""
+    if robot not in ROBOTS:
+        raise ValueError(f"unknown robot {robot!r}; one of {list(ROBOTS)}")
+    spec = ROBOTS[robot]
+    if rig:
+        if robot != "panda":
+            raise ValueError(
+                f"{env_id} is a real2sim rig with its own Panda; --robot panda only"
+            )
+    elif env_id not in spec.envs:
+        raise ValueError(f"--robot {robot} runs {list(spec.envs)}, not {env_id}")
+    return spec
+
+
+def prepare_robot(spec: RobotSpec, wrist_mount: str) -> None:
+    """Patch the agent class before ``gym.make``: the wrist camera and the EE mode."""
+    from mani_skill.agents.registration import REGISTERED_AGENTS
+
+    cls = REGISTERED_AGENTS[spec.uid].agent_cls
+    if spec.ee_joints:
+        add_ee_control(cls, spec.ee_joints)
+    if spec.wrist is None:
+        return
+    if spec.wrist["mount"] == "centered":
+        if wrist_mount == "centered":
+            center_wrist_camera()
+    else:
+        add_wrist_camera(cls, spec.wrist["mount"], spec.wrist["pose"])
+
+
 class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
     """One ManiSkill env (``num_envs=1``); every call runs on the main thread."""
 
@@ -205,7 +392,7 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         *,
         env_id: str,
         seed: int,
-        robot_uids: str = "panda_wristcam",
+        robot: str = "panda",
         wrist_mount: str = "centered",
         control_mode: str = "pd_ee_delta_pos",
         sim_backend: str = "physx_cpu",
@@ -213,8 +400,8 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         view_size: int = 256,
         max_episode_steps: int = 100_000,
         settle_steps: int = 8,
-        wrist_rotation: int = 270,
-        wrist_flip: str = "none",
+        wrist_rotation: int | None = None,
+        wrist_flip: str | None = None,
         scene: dict | None = None,
     ):
         super().__init__()
@@ -227,6 +414,17 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
             raise ValueError(f"unknown env id {env_id!r}; one of {ENV_IDS}")
         #: An RLinf real2sim rig (./scenes.py) and its options, or None for a stock scene.
         self._rig = scenes.SCENES.get(env_id)
+        #: The --robot (ROBOTS): gripper actions, width, wrist camera.
+        self._robot = robot_spec(robot, env_id, bool(self._rig))
+        wrist = self._robot.wrist or {}
+        if wrist.get("mount") != "centered":
+            # The Panda's --wrist-mount choice; another robot's camera is its own.
+            wrist_mount = wrist.get("mount", "none")
+        if wrist_rotation is None:
+            wrist_rotation = wrist.get("rotation", 0)
+        if wrist_flip is None:
+            wrist_flip = wrist.get("flip", "none")
+        robot_uids = self._robot.uid
         self._scene = None
         self._cameras = CAMERAS
         table_z = 0.0
@@ -251,8 +449,7 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         else:
             if scene:
                 raise ValueError(f"--scene options apply to {list(scenes.SCENES)} only")
-            if wrist_mount == "centered":
-                center_wrist_camera()
+            prepare_robot(self._robot, wrist_mount)
             self._env = gym.make(
                 env_id,
                 num_envs=1,
@@ -261,7 +458,9 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
                 robot_uids=robot_uids,
                 sim_backend=sim_backend,
                 max_episode_steps=int(max_episode_steps),
-                sensor_configs=self._sensor_configs(agentview),
+                sensor_configs=self._sensor_configs(
+                    agentview, wrist=self._robot.wrist is not None
+                ),
             )
         self._seed = int(seed)
         self._settle_steps = int(settle_steps)
@@ -273,6 +472,7 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         self._meta = {
             "env_id": env_id,
             "seed": self._seed,
+            "robot": robot,
             "robot_uids": robot_uids,
             "control_mode": control_mode,
             "sim_backend": sim_backend,
@@ -285,6 +485,11 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
             "scene": self._scene,
             "table_z": table_z,
             "action_space": list(self._env.action_space.shape),
+            "gripper_action": {
+                "open": self._robot.gripper[0],
+                "close": self._robot.gripper[1],
+            },
+            "wrist": self._robot.wrist is not None or bool(self._rig),
         }
 
     def _register_rpc(self) -> None:
@@ -297,10 +502,10 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
     # ---- helpers ----
 
     @staticmethod
-    def _sensor_configs(agentview: str) -> dict:
+    def _sensor_configs(agentview: str, wrist: bool = True) -> dict:
         """The agentview pose (``oblique`` = AGENTVIEW, or the scene's ``stock`` camera)
-        and a 256 px wrist render."""
-        cfg: dict = {"hand_camera": {"width": 256, "height": 256}}
+        and a 256 px wrist render (on a robot with a wrist camera)."""
+        cfg: dict = {"hand_camera": {"width": 256, "height": 256}} if wrist else {}
         if agentview == "oblique":
             from mani_skill.utils import sapien_utils
 
@@ -333,23 +538,36 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
             rgb = _orient(rgb, self._wrist_rotation, self._wrist_flip)
         return _letterbox(rgb, self._view_size) if self._view_size else rgb
 
+    def _gripper_width(self, qpos: np.ndarray) -> float:
+        """The finger opening, m (``RobotSpec.width``); about 0 closed on nothing."""
+        width = self._robot.width
+        if width[0] == "qpos":
+            return float(qpos[-1] + qpos[-2])
+        links = self._agent.robot.links_map
+        a, b = (_np(links[n].pose.p).reshape(-1) for n in width[1:3])
+        return max(0.0, float(np.linalg.norm(a - b)) - width[3])
+
+    @property
+    def _has_wrist(self) -> bool:
+        return self._meta["wrist"]
+
     def _state(self) -> dict:
         tcp = self._agent.tcp.pose
         qpos = _np(self._agent.robot.get_qpos()).reshape(-1)
         return {
             "tcp_pos": _np(tcp.p).reshape(-1).astype(np.float32),
             "tcp_quat_wxyz": _np(tcp.q).reshape(-1).astype(np.float32),
-            "gripper_width": float(qpos[-1] + qpos[-2]),
+            "gripper_width": self._gripper_width(qpos),
             "qpos": qpos.astype(np.float32),
         }
 
     def _pack(self, obs: dict) -> dict:
+        """The agentview, the wrist view (a robot with a wrist camera only) and the state."""
         self._obs = obs
-        return {
-            "agentview": self._rgb(obs, "agentview"),
-            "wrist": self._rgb(obs, "wrist"),
-            **self._state(),
-        }
+        views = {"agentview": self._rgb(obs, "agentview")}
+        if self._has_wrist:
+            views["wrist"] = self._rgb(obs, "wrist")
+        return {**views, **self._state()}
 
     @staticmethod
     def _info(info: dict) -> dict:
@@ -388,7 +606,7 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         """Reset to ``seed`` (default: the launch seed), then hold still with the gripper
         open for ``settle_steps`` (Show-Harness ``reset_maniskill``); an RLinf rig resets
         like its training episodes (``scenes.reset``)."""
-        hold = np.array([0.0, 0.0, 0.0, OPEN], dtype=np.float32)
+        hold = np.array([0.0, 0.0, 0.0, self._robot.open], dtype=np.float32)
         if self._rig:
             from pi_embodied_services.robots.maniskill import scenes
 
@@ -482,7 +700,8 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         min_steps: int = 2,
         max_steps: int = 8,
     ):
-        """Drive the TCP to ``target_xyz`` (world, m) with the gripper command held: each
+        """Drive the TCP to ``target_xyz`` (world, m) with the gripper command held (> 0
+        open, <= 0 close; the robot's gripper action, ``RobotSpec.gripper``): each
         control step commands ``clip(error * gain / 0.1)``, until the error is below
         ``tol_m`` (after ``min_steps``), ``max_steps``, success or ``stop``. The closed-loop
         2 cm execution of Show-Harness's real2sim tokenizer; open-loop steps fall short when
@@ -497,7 +716,10 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
             err = target - self._state()["tcp_pos"]
             if k >= int(min_steps) and np.linalg.norm(err) < tol_m:
                 break
-            a = np.append(np.clip(err * gain / DELTA_BOUND_M, -1, 1), gripper)
+            a = np.append(
+                np.clip(err * gain / DELTA_BOUND_M, -1, 1),
+                self._robot.gripper_action(float(gripper)),
+            )
             obs, _rew, term, trunc, info = self._step(a)
             frames.append(self._pack(obs))
             if term or trunc or info.get("success"):
@@ -534,14 +756,20 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
             names,
         )
 
+    def _camera(self, camera_name: str) -> str:
+        if camera_name == "wrist" and not self._has_wrist:
+            raise ValueError(f"--robot {self._meta['robot']} has no wrist camera")
+        return self._cameras[camera_name]
+
     def render_camera(self, camera_name: str = "agentview", **_: Any):
         """Latest frame of ``agentview`` or ``wrist``, as the model sees it."""
+        self._camera(camera_name)
         return self._rgb(self._obs, camera_name)
 
     def get_camera_meta(self, camera_name: str = "agentview", **_: Any) -> dict:
         """OpenCV intrinsics and camera-to-world extrinsic of a sensor camera (raw sensor
         pixels, before the orientation and letterbox of ``render_camera``)."""
-        param = self._obs["sensor_param"][self._cameras[camera_name]]
+        param = self._obs["sensor_param"][self._camera(camera_name)]
         w2c = np.eye(4)
         w2c[:3] = _np(param["extrinsic_cv"])[0]
         return {
@@ -571,9 +799,17 @@ def main():
     p.add_argument("--port", type=int, default=0)
     p.add_argument("--env-id", choices=ENV_IDS, default="BlockPAP-v1")
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--robot-uids", default="panda_wristcam")
     p.add_argument(
-        "--wrist-mount", choices=["centered", "camera_link"], default="centered"
+        "--robot",
+        choices=list(ROBOTS),
+        default="panda",
+        help="the arm (ROBOTS); the rigs run their own Panda (panda only)",
+    )
+    p.add_argument(
+        "--wrist-mount",
+        choices=["centered", "camera_link"],
+        default="centered",
+        help="the Panda's wrist camera mount; another robot's is its own",
     )
     p.add_argument("--sim-backend", default="physx_cpu")
     p.add_argument("--agentview", choices=["oblique", "stock"], default="oblique")
@@ -588,11 +824,15 @@ def main():
     # Rotating 270 (CCW, no flip) gives the agentview's convention: image right = +y
     # (MV_RIGHT), image bottom = +x (MV_FWD); the fingertips sit at the left edge and the
     # point under the TCP at mid-height, 31-41 % of the width from the left.
-    p.add_argument("--wrist-rotation", type=int, choices=[0, 90, 180, 270], default=270)
+    # Another robot's wrist transform (ROBOTS[...].wrist) was measured the same way; the
+    # default is the robot's.
+    p.add_argument(
+        "--wrist-rotation", type=int, choices=[0, 90, 180, 270], default=None
+    )
     p.add_argument(
         "--wrist-flip",
         choices=["none", "vertical", "horizontal", "both"],
-        default="none",
+        default=None,
     )
     p.add_argument(
         "--scene",
@@ -610,7 +850,7 @@ def main():
     facade = ManiskillEnvFacade(
         env_id=args.env_id,
         seed=args.seed,
-        robot_uids=args.robot_uids,
+        robot=args.robot,
         sim_backend=args.sim_backend,
         agentview=args.agentview,
         view_size=args.view_size,

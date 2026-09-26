@@ -5,6 +5,7 @@
  *   pi -e packages/embodied/src/maniskill --units --scene table_tex=white,cam_t=0302 --seed 3
  *   pi -e packages/embodied/src/maniskill --env-id StackCube-v1 --seed 0   (a stock ManiSkill scene)
  *   pi -e packages/embodied/src/maniskill --env-id PlaceSphere-v1 --seed 0  (one of OpenETA's tasks, ENV_IDS)
+ *   pi -e packages/embodied/src/maniskill --robot xarm6_robotiq --env-id PickCube-v1 --seed 0  (another arm, ROBOTS)
  *
  * BlockPAP-v1 / BlockStack-v1 are RLinf's real2sim replicas of the real Franka rig (services/.../
  * robots/maniskill/scenes.py; fetch_real2sim.sh installs them): their calibrated front RealSense
@@ -13,7 +14,8 @@
  * traj_id, layout wide|none).
  *
  * Starts one ManiSkill env server per session (services/.../robots/maniskill/env_server.py, the
- * `maniskill` venv; rendering needs a GPU). `move_delta` and the units hook `apply` share one
+ * `maniskill` venv; rendering needs a GPU). `--robot` picks the arm (ROBOTS: the Panda by default, an xArm6
+ * with a Robotiq gripper, a WidowX AI without a wrist camera); the rigs run their own Panda. `move_delta` and the units hook `apply` share one
  * motion path: a base-frame delta in metres becomes ~2 cm decisions, each a closed-loop servo of
  * 2-8 control steps to its waypoint (Show-Harness's step calibration and real2sim execution);
  * every result carries the agentview and wrist images and the state; success is ManiSkill's own `success` flag, recorded in `robot_result`.
@@ -67,6 +69,8 @@ export const ENV_IDS = [
 	"PickSingleYCB-v1",
 ] as const;
 export type EnvId = (typeof ENV_IDS)[number];
+/** The RLinf rigs among ENV_IDS: they fix their own robot (a Panda). */
+const RIGS: readonly string[] = ENV_IDS.slice(0, 2);
 
 /** configs/robot_maniskill.yaml `move_vectors`: +x away from the base, -y = MV_LEFT, +z up. */
 export const VECTORS: Record<MoveUnit, Vec3> = {
@@ -111,7 +115,8 @@ export const VIEWS = `Each result shows the third-person view, then the wrist vi
 
 type Obs = {
 	agentview: NdArray;
-	wrist: NdArray;
+	/** Absent on a robot without a wrist camera (ManiskillRobot.setup.wrist_mount "none"). */
+	wrist?: NdArray;
 	tcp_pos: NdArray;
 	tcp_quat_wxyz: NdArray;
 	gripper_width: number;
@@ -152,6 +157,8 @@ type Meta = {
 	table_z?: number;
 	/** The letterbox square the views are sent as (env server --view-size; 0 = raw). */
 	view_size?: number;
+	/** The env server's --robot (absent: a server from before it, a Panda). */
+	robot?: string;
 } & Partial<typeof VIEW_SETUP>;
 /** The raw agentview frame both scene kinds render (env server AGENTVIEW, the rigs' external_cam), letterboxed to view_size. */
 export const AGENTVIEW_PX = { width: 640, height: 480 };
@@ -164,6 +171,138 @@ export const RIG_VIEW_SETUP = {
 	wrist_rotation: 0,
 	wrist_flip: "both",
 };
+
+/** The third-person sentences every stock-scene robot shares (the oblique AGENTVIEW); VIEWS opens with them. */
+const THIRD_PERSON =
+	"- Third-person view: it looks at the robot from in front of the table, slightly from the robot's left side, so the robot base is at the top and the directions above are tilted about 15 degrees; judge the gripper against the target directly.";
+
+/**
+ * The xArm6 + Robotiq 2F-85 (env server ROBOTS["xarm6_robotiq"]): measured on PickCube / StackCube seed 0 with
+ * pi's motion path, each MV_* 4 units from the reset: 19.7 mm per unit along its axis (cos 1.000, the Panda's
+ * 19.7-20.0 mm), so the Panda's vectors, step and gain. The Robotiq closes from 86 mm to 0 in 5 control steps
+ * and opens in 6 (GRIPPER_STEPS); closed on a 4 cm cube it reads ~50 mm (pad links), on nothing 0. Its wrist
+ * camera (xarm6_robotiq_wristcam's, on camera_link) renders +x to the image left and +y down; turned 90 deg
+ * the directions match the agentview's, the fingertips sit at the top corners and the point under the TCP is
+ * horizontally centred, ~41 % down at the table and ~25 % down at the TCP.
+ */
+export const XARM6_VIEWS = `Each result shows the third-person view, then the wrist view (both 256x256, black bars are padding). In BOTH views MV_LEFT / MV_RIGHT move the gripper toward the image left / right, MV_FWD toward the image bottom, MV_BACK toward the image top.
+${THIRD_PERSON}
+- Wrist view: it looks straight down; the two fingertips stay fixed at the top corners, and the point under the gripper is horizontally centred, about 40% down from the top edge at the table's height (higher objects appear nearer the top). A target right of that point needs MV_RIGHT, left of it MV_LEFT, below it MV_FWD, above it MV_BACK; a target on it is under the gripper: MV_DOWN. The camera moves with the gripper, so after MV_RIGHT the scene shifts left.`;
+const XARM6_ROBOTIQ: ManiskillRobot = {
+	arm: "UFactory xArm6 arm with a Robotiq 2F-85 gripper",
+	envs: [
+		"PickCube-v1",
+		"StackCube-v1",
+		"PullCube-v1",
+		"LiftPegUpright-v1",
+		"PlaceSphere-v1",
+		"StackPyramid-v1",
+		"PullCubeTool-v1",
+		"PlugCharger-v1",
+	],
+	vectors: VECTORS,
+	stepM: STEP_M,
+	gain: GAIN,
+	gripperSteps: GRIPPER_STEPS,
+	emptyWidthM: EMPTY_WIDTH_M,
+	setup: { agentview: "oblique", wrist_mount: "camera_link", wrist_rotation: 90, wrist_flip: "none" },
+	views: XARM6_VIEWS,
+	scene: {
+		...SCENE_TEXT.stock,
+		views: "the agentview (third-person, 256x256 with black padding bars: it looks at the robot from in front of the table, turned about 15 degrees toward the robot's left; the robot base is at the top, image right is roughly +y, image bottom roughly +x) and the wrist view (looking straight down: the fingertips are fixed at its top corners and the point under the gripper is horizontally centred, about 40% down from the top at the table's height; image right is +y, image bottom is +x there too)",
+	},
+};
+
+/**
+ * The WidowX AI (env server ROBOTS["widowxai"], pd_ee_delta_pos added on its six arm joints): measured on
+ * PickCube seed 0, each MV_* 19.7 mm per unit along its axis (cos 1.000). Its carriages close from 87 mm
+ * to 4 mm in 6 control steps and under 1 mm only by the 10th, hence 10 hold steps; closed on PickCube's
+ * 3.6 cm cube it reads ~41 mm. wxai_base.urdf has no camera link: observations carry the agentview alone.
+ */
+export const WIDOWXAI_VIEWS = `Each result shows the third-person view (256x256, black bars are padding); this robot has NO wrist camera, so there is no wrist view. MV_LEFT / MV_RIGHT move the gripper toward the image left / right, MV_FWD toward the image bottom, MV_BACK toward the image top.
+${THIRD_PERSON}
+- With no wrist view, leave target_in_wrist out; judge alignment from the gripper's position against the target in the third-person view, and descend in small steps.`;
+const WIDOWXAI: ManiskillRobot = {
+	arm: "Trossen WidowX AI arm",
+	envs: ["PickCube-v1"],
+	vectors: VECTORS,
+	stepM: STEP_M,
+	gain: GAIN,
+	gripperSteps: 10,
+	emptyWidthM: EMPTY_WIDTH_M,
+	setup: { agentview: "oblique", wrist_mount: "none", wrist_rotation: 0, wrist_flip: "none" },
+	views: WIDOWXAI_VIEWS,
+	scene: {
+		table: SCENE_TEXT.stock.table,
+		object: "a 3.6 cm cube's centre is at z = 0.018",
+		views: "the agentview alone (third-person, 256x256 with black padding bars: it looks at the robot from in front of the table, turned about 15 degrees toward the robot's left; the robot base is at the top, image right is roughly +y, image bottom roughly +x). This robot has no wrist camera, so there is no wrist view",
+	},
+};
+
+/** One `--robot`: the env server's ROBOTS row (services/.../maniskill/env_server.py) and what pi needs of it. */
+export type ManiskillRobot = {
+	/** How SYSTEM.md names it: "You control a <arm> in the ManiSkill simulator". */
+	arm: string;
+	/** The stock env ids it runs (reset, visibility gate and reach measured); the rigs run their own Panda only. */
+	envs: readonly EnvId[];
+	/** Base-frame MV_* vectors (measured: each unit moves ~stepM along its axis), metres per unit and the servo gain. */
+	vectors: Record<MoveUnit, Vec3>;
+	stepM: number;
+	gain: number;
+	/** Control steps a gripper toggle holds still; the closed-and-empty gripper width, m. */
+	gripperSteps: number;
+	emptyWidthM: number;
+	/** The env server's camera setup (VIEW_SETUP); `wrist_mount: "none"`: no wrist camera, the agentview alone. */
+	setup: { agentview: string; wrist_mount: string; wrist_rotation: number; wrist_flip: string };
+	/** The units `views` text, and SYSTEM.md's scene sentences (SCENE_TEXT.stock with this robot's views and object). */
+	views: string;
+	scene: { table: string; object: string; views: string };
+};
+
+/** A robot without a wrist camera: SYSTEM.md's "both images" / "wrist image" become the one agentview. */
+const ONE_VIEW = { images: "the image", grasp_view: "image" };
+const TWO_VIEWS = { images: "both images", grasp_view: "wrist image" };
+
+/**
+ * `--robot`: the arms the env server's ROBOTS table drives in pd_ee_delta_pos (ManiSkill 3.0.1 agents with a
+ * parallel gripper that the stock table scene places), measured on the box with the pi motion path (4 units
+ * of each MV_* from the PickCube / StackCube seed 0 reset, a closed-loop servo per 2 cm waypoint). The same
+ * ids in the same order as the server's table; panda is the default and keeps every existing constant.
+ */
+export const ROBOTS = {
+	panda: {
+		arm: "Franka Panda arm",
+		envs: ENV_IDS.slice(2),
+		vectors: VECTORS,
+		stepM: STEP_M,
+		gain: GAIN,
+		gripperSteps: GRIPPER_STEPS,
+		emptyWidthM: EMPTY_WIDTH_M,
+		setup: VIEW_SETUP,
+		views: VIEWS,
+		scene: SCENE_TEXT.stock,
+	},
+	xarm6_robotiq: XARM6_ROBOTIQ,
+	widowxai: WIDOWXAI,
+} satisfies Record<string, ManiskillRobot>;
+export type RobotId = keyof typeof ROBOTS;
+export const ROBOT_IDS = Object.keys(ROBOTS) as RobotId[];
+/** Whether a robot's observations carry a wrist view. */
+export const hasWrist = (r: ManiskillRobot) => r.setup.wrist_mount !== "none";
+
+/**
+ * The robot an episode runs: `--robot` checked against ROBOTS and the env id (a rig runs its own Panda; a stock
+ * scene must be one the robot was measured on). Throws with the choices otherwise.
+ */
+export function robotFor(robot: string, envId: string): ManiskillRobot {
+	if (!Object.hasOwn(ROBOTS, robot)) throw new Error(`unknown --robot ${robot}; one of ${ROBOT_IDS.join(", ")}`);
+	const spec: ManiskillRobot = ROBOTS[robot as RobotId];
+	if (RIGS.includes(envId)) {
+		if (robot !== "panda") throw new Error(`${envId} is a real2sim rig with its own Panda; --robot panda only`);
+	} else if (!spec.envs.includes(envId as EnvId))
+		throw new Error(`--robot ${robot} runs ${spec.envs.join(", ")}, not ${envId}`);
+	return spec;
+}
 
 const round = (v: number, d = 4) => Number(v.toFixed(d));
 
@@ -187,8 +326,8 @@ export function sideBySide(a: NdArray, b: NdArray): NdArray {
  * The waypoints of one base-frame move: one per ~2 cm decision, ceil(|delta| / STEP_M) of them,
  * evenly spaced from `start` (a pure gripper command or STOP is one waypoint at `start`).
  */
-export function waypoints(start: number[], delta: Vec3): number[][] {
-	const n = Math.max(1, Math.ceil(Math.hypot(...delta) / STEP_M - 1e-9));
+export function waypoints(start: number[], delta: Vec3, stepM = STEP_M): number[][] {
+	const n = Math.max(1, Math.ceil(Math.hypot(...delta) / stepM - 1e-9));
 	return Array.from({ length: n }, (_, i) => start.map((p, k) => p + (delta[k] * (i + 1)) / n));
 }
 
@@ -198,14 +337,24 @@ export type Phase = { target: number[]; minSteps: number; maxSteps: number };
  * The servo phases of one call. A gripper change is its own phase first, holding still at `start`
  * for GRIPPER_STEPS until the fingers settle (Show-Harness's GRASP / RELEASE are separate tokens:
  * the fingers never close while the arm travels); then the ~2 cm waypoints of the move. A call
- * that neither moves nor changes the gripper (STOP) holds for one decision.
+ * that neither moves nor changes the gripper (STOP) holds for one decision. `gripperSteps` / `stepM`: the robot's.
  */
-export function phases(start: number[], delta: Vec3, gripperChanged: boolean): Phase[] {
+export function phases(
+	start: number[],
+	delta: Vec3,
+	gripperChanged: boolean,
+	gripperSteps = GRIPPER_STEPS,
+	stepM = STEP_M,
+): Phase[] {
 	const hold = (steps: number): Phase => ({ target: start, minSteps: steps, maxSteps: steps });
-	const out: Phase[] = gripperChanged ? [hold(GRIPPER_STEPS)] : [];
+	const out: Phase[] = gripperChanged ? [hold(gripperSteps)] : [];
 	if (Math.hypot(...delta) > 0)
 		out.push(
-			...waypoints(start, delta).map((target) => ({ target, minSteps: SERVO.minSteps, maxSteps: SERVO.maxSteps })),
+			...waypoints(start, delta, stepM).map((target) => ({
+				target,
+				minSteps: SERVO.minSteps,
+				maxSteps: SERVO.maxSteps,
+			})),
 		);
 	return out.length ? out : [hold(SERVO.minSteps)];
 }
@@ -258,6 +407,11 @@ export default function maniskill(pi: ExtensionAPI) {
 		description:
 			"RLinf rig options key=value,...: table_tex (006 wood | white | black | 001-021), cam_t (og | 0302 | 0303), traj_id (random | 0 | 15 | 25 | 40 | 45), layout (wide | none)",
 	});
+	pi.registerFlag("robot", {
+		type: "string",
+		default: "panda",
+		description: `The arm: ${ROBOT_IDS.join(", ")} (the RLinf rigs run their own Panda)`,
+	});
 	pi.registerFlag("seed", { type: "string", default: "0", description: "Reset seed (the object layout)" });
 	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
 	pi.registerFlag("probe-axes", {
@@ -291,13 +445,18 @@ export default function maniskill(pi: ExtensionAPI) {
 	let tableZ = 0;
 	/** The views' letterbox square (meta.view_size), for Flash's pixel -> raw pixel mapping. */
 	let viewSize = 256;
-	const text = () => SCENE_TEXT[rig ? "rig" : "stock"];
+	/** The --robot of this episode (ROBOTS), fixed at start. */
+	let robotId: RobotId = "panda";
+	const arm = (): ManiskillRobot => ROBOTS[robotId];
+	const text = () => (rig ? SCENE_TEXT.rig : arm().scene);
+	const wrist = () => rig || hasWrist(arm());
 	/** The --probe-axes vectors (undefined: VECTORS) and their calibration record. */
 	let vectors: Record<MoveUnit, Vec3> | undefined;
 	let calibration: Record<string, unknown> | undefined;
 
+	// Another arm's memory is its own cell: `maniskill_<robot>_<env-id>...` (the Panda keeps `maniskill_<env-id>...`).
 	const tag = (seed: string) =>
-		`maniskill_${tagPart(robot.task["env-id"])}${robot.task.scene ? `_${tagPart(robot.task.scene)}` : ""}_s${seed}`;
+		`maniskill_${robotId === "panda" ? "" : `${robotId}_`}${tagPart(robot.task["env-id"])}${robot.task.scene ? `_${tagPart(robot.task.scene)}` : ""}_s${seed}`;
 	const robot = defineRobot(pi, {
 		name: "maniskill",
 		task: ["env-id", "seed", "scene"],
@@ -305,8 +464,11 @@ export default function maniskill(pi: ExtensionAPI) {
 		codeApi: () => env,
 		keepImages: 4,
 		video: true,
-		// Observations carry the agentview then the wrist image.
-		vdm: { views: 2, wrist: 1 },
+		// Observations carry the agentview then the wrist image (the agentview alone on a robot without one).
+		vdm: () => {
+			const r = ROBOTS[String(pi.getFlag("robot") ?? "panda") as RobotId];
+			return r && !hasWrist(r) ? { views: 1 } : { views: 2, wrist: 1 };
+		},
 		groundTruth: (names) => call("env.ground_truth_poses", { names: names ?? null }),
 		// No corpus is published for ManiSkill: memory is what exploration writes locally.
 		memory: {
@@ -347,7 +509,8 @@ export default function maniskill(pi: ExtensionAPI) {
 				return observe({ ...result, reset: true });
 			},
 			prompt: () =>
-				EXPLORE.replaceAll("{{env_id}}", robot.task["env-id"])
+				EXPLORE.replaceAll("study both images", wrist() ? "study both images" : "study the image")
+					.replaceAll("{{env_id}}", robot.task["env-id"])
 					.replaceAll("{{seed}}", robot.task.seed)
 					.replaceAll("{{scene}}", robot.task.scene || "stock"),
 			rewrite: [
@@ -360,6 +523,9 @@ export default function maniskill(pi: ExtensionAPI) {
 		start: startEpisode,
 		prompt: () =>
 			SYSTEM.replaceAll("{{task_language}}", language)
+				.replaceAll("{{arm}}", rig ? ROBOTS.panda.arm : arm().arm)
+				.replaceAll("{{images}}", (wrist() ? TWO_VIEWS : ONE_VIEW).images)
+				.replaceAll("{{grasp_view}}", (wrist() ? TWO_VIEWS : ONE_VIEW).grasp_view)
 				.replaceAll("{{table}}", text().table)
 				.replaceAll("{{object}}", text().object)
 				.replaceAll("{{views}}", text().views)
@@ -368,6 +534,8 @@ export default function maniskill(pi: ExtensionAPI) {
 			env_id: robot.task["env-id"],
 			seed: Number(robot.task.seed),
 			...(robot.task.scene ? { scene: robot.task.scene } : {}),
+			// Another arm than the Panda (--robot); `robot` itself names this pi robot, "maniskill".
+			...(robotId !== "panda" ? { maniskill_robot: robotId } : {}),
 			...(calibration ? { calibration } : {}),
 			success,
 			ever_grasped: everGrasped,
@@ -388,14 +556,18 @@ export default function maniskill(pi: ExtensionAPI) {
 		},
 		units: {
 			get vectors() {
-				return vectors ?? VECTORS;
+				return vectors ?? arm().vectors;
 			},
-			stepM: STEP_M,
+			get stepM() {
+				return arm().stepM;
+			},
 			instruction: () => language,
 			get views() {
-				return rig ? RIG_VIEWS : VIEWS;
+				return rig ? RIG_VIEWS : arm().views;
 			},
-			emptyWidthM: EMPTY_WIDTH_M,
+			get emptyWidthM() {
+				return arm().emptyWidthM;
+			},
 			apply: async (m, signal) => {
 				if (m.yaw) throw new Error("this robot has no yaw (pd_ee_delta_pos holds the orientation)");
 				return observe(await move(m.delta, m.gripper, signal));
@@ -433,15 +605,16 @@ export default function maniskill(pi: ExtensionAPI) {
 		if (grip) gripper = grip === "open" ? 1 : -1;
 		const start = obs.tcp_pos.toArray();
 		let steps = 0;
-		for (const { target, minSteps, maxSteps } of phases(start, delta, gripper !== before)) {
+		const r = arm();
+		for (const { target, minSteps, maxSteps } of phases(start, delta, gripper !== before, r.gripperSteps, r.stepM)) {
 			if (success) break;
 			const [frames, i] = await call<ServoReturn>(
 				"env.servo",
-				{ gain: GAIN, tol_m: SERVO.tolM, min_steps: minSteps, max_steps: maxSteps },
+				{ gain: r.gain, tol_m: SERVO.tolM, min_steps: minSteps, max_steps: maxSteps },
 				[target, gripper],
 				signal,
 			);
-			for (const f of frames) video.frame(sideBySide(f.agentview, f.wrist));
+			for (const f of frames) video.frame(f.wrist ? sideBySide(f.agentview, f.wrist) : f.agentview);
 			steps += frames.length;
 			envStep += frames.length;
 			absorb(frames[frames.length - 1], i);
@@ -456,9 +629,10 @@ export default function maniskill(pi: ExtensionAPI) {
 		};
 	}
 
-	/** The motion result with the new state, then the agentview and wrist images. */
+	/** The motion result with the new state, then the agentview and (a robot with one) the wrist image. */
 	function observe(result: Record<string, unknown>) {
-		const images = [obs.agentview, obs.wrist].map((a) => encodePng(a.data, a.shape[1], a.shape[0]));
+		const views = obs.wrist ? [obs.agentview, obs.wrist] : [obs.agentview];
+		const images = views.map((a) => encodePng(a.data, a.shape[1], a.shape[0]));
 		const details = {
 			result,
 			step: envStep,
@@ -473,7 +647,7 @@ export default function maniskill(pi: ExtensionAPI) {
 			},
 			images: [
 				`agentview ${obs.agentview.shape[1]}x${obs.agentview.shape[0]}`,
-				`wrist ${obs.wrist.shape[1]}x${obs.wrist.shape[0]}`,
+				...(obs.wrist ? [`wrist ${obs.wrist.shape[1]}x${obs.wrist.shape[0]}`] : []),
 			],
 		};
 		return {
@@ -509,24 +683,31 @@ export default function maniskill(pi: ExtensionAPI) {
 	/** Show-Harness probe_move_axes: each unit PROBE_UNITS times from a fresh reset, no video. */
 	async function probeAxes(ctx: ExtensionContext) {
 		const probes: Probe[] = [];
+		const r = arm();
 		for (const unit of MOVE_UNITS) {
 			const [o] = await env.call<[Obs, Info]>("env.reset", {}, 300_000);
 			const start = o.tcp_pos.toArray();
 			let end = start;
-			const delta = VECTORS[unit].map((x) => x * STEP_M * PROBE_UNITS) as Vec3;
-			for (const target of waypoints(start, delta)) {
+			const delta = r.vectors[unit].map((x) => x * r.stepM * PROBE_UNITS) as Vec3;
+			for (const target of waypoints(start, delta, r.stepM)) {
 				const [frames] = await call<ServoReturn>(
 					"env.servo",
-					{ gain: GAIN, tol_m: SERVO.tolM, min_steps: SERVO.minSteps, max_steps: SERVO.maxSteps },
+					{ gain: r.gain, tol_m: SERVO.tolM, min_steps: SERVO.minSteps, max_steps: SERVO.maxSteps },
 					[target, 1],
 				);
 				end = frames[frames.length - 1].tcp_pos.toArray();
 			}
 			probes.push({ unit, n: PROBE_UNITS, moved: end.map((v, k) => v - start[k]) as Vec3 });
 		}
-		const c = calibrate(VECTORS, STEP_M, probes);
+		const c = calibrate(r.vectors, r.stepM, probes);
 		vectors = c.vectors;
-		calibration = { env_id: robot.task["env-id"], seed: Number(robot.task.seed), step_m: STEP_M, units: c.units };
+		calibration = {
+			env_id: robot.task["env-id"],
+			seed: Number(robot.task.seed),
+			...(robotId !== "panda" ? { robot: robotId } : {}),
+			step_m: r.stepM,
+			units: c.units,
+		};
 		const file = ctx.sessionManager.getSessionFile();
 		if (file) writeFileSync(join(dirname(file), "calibration.json"), `${JSON.stringify(calibration, null, 2)}\n`);
 	}
@@ -537,6 +718,9 @@ export default function maniskill(pi: ExtensionAPI) {
 			throw new Error(`unknown --env-id ${envId}; one of ${ENV_IDS.join(", ")}`);
 		const seed = robot.task.seed;
 		const scene = robot.task.scene ?? "";
+		const wanted = flag("robot", "panda");
+		robotFor(wanted, envId);
+		robotId = wanted as RobotId;
 		const endpoint = pi.getFlag("env") as string | undefined;
 		if (endpoint) env = await attach(endpoint);
 		else {
@@ -551,6 +735,7 @@ export default function maniskill(pi: ExtensionAPI) {
 					"--seed",
 					seed,
 					...(scene ? ["--scene", scene] : []),
+					...(robotId !== "panda" ? ["--robot", robotId] : []),
 				],
 				cwd: services,
 				env: { ...process.env, PYTHONPATH: services },
@@ -561,10 +746,12 @@ export default function maniskill(pi: ExtensionAPI) {
 		const meta = await env.call<Meta>("env.get_env_meta");
 		if (meta.env_id !== envId || meta.seed !== Number(seed))
 			throw new Error(`env server runs ${meta.env_id} seed ${meta.seed}, not ${envId} seed ${seed}`);
+		if ((meta.robot ?? "panda") !== robotId)
+			throw new Error(`env server runs --robot ${meta.robot ?? "panda"}, not ${robotId}`);
 		rig = Boolean(meta.scene);
 		tableZ = meta.table_z ?? 0;
 		viewSize = meta.view_size ?? 256;
-		const want = rig ? RIG_VIEW_SETUP : VIEW_SETUP;
+		const want = rig ? RIG_VIEW_SETUP : arm().setup;
 		const setup = Object.entries(want).filter(([k, v]) => meta[k as keyof typeof VIEW_SETUP] !== v);
 		if (setup.length)
 			throw new Error(

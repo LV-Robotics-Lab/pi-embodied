@@ -4,14 +4,16 @@
 #   eval.sh runs/ms - 0-9 --model <provider/model> --thinking low --scene table_tex=white
 #   eval.sh runs/ms PickCube-v1,StackCube-v1 0-9 --model <provider/model> --thinking low
 #   eval.sh runs/ms-units PickCube-v1 0-4,10-14 --units=true --model <provider/model> --thinking low
+#   eval.sh runs/ms-xarm PickCube-v1,StackCube-v1 0-9 --robot xarm6_robotiq --model <provider/model>
 #
 # Each episode runs in <out>/<env-id>_s<seed>/ and ends with a result.json taken from the session's
 # `robot_result` entry. An episode is valid when the environment produced a result and the planner
 # did not fail (`env_error`, `planner_error` and a missing result are invalid), whatever the
 # outcome. Rerunning retries exactly the invalid episodes; valid ones are kept. Each result records
 # the model, thinking level, --max-turns, --time-limit, the units mode (--units, --stateless) and
-# visual differencing (--vdm, --vdm-model, --vdm-wrist), and the summary covers only the requested
-# cells and refuses to mix configurations.
+# visual differencing (--vdm, --vdm-model, --vdm-wrist) and the arm (--robot, default panda; recorded as
+# `maniskill_robot`, since `robot` names the pi robot), and the summary covers only the requested cells and
+# refuses to mix configurations.
 # A --privileged run (simulator ground truth) is recorded as such and never shares an out dir with one without.
 # The fallback planner (--fallback-model, --fallback-after, --fallback-retry-primary; src/fallback.ts) is part of the
 # configuration too, and the summary totals the turns each planner model planned (planner_models).
@@ -26,6 +28,7 @@ model="" thinking="" turns=0 limit=${TIME_LIMIT:-1800} limited="" units=false st
 anchor=false
 vdm=false vdm_model="" vdm_wrist=false
 privileged=false
+robot=panda
 fallback_model="" fallback_after=2 fallback_retry=0
 args=("$@")
 for ((i = 0; i < ${#args[@]}; i++)); do
@@ -68,6 +71,8 @@ for ((i = 0; i < ${#args[@]}; i++)); do
 		echo "${args[i]}: pi ignores a boolean flag's value and would turn it on; omit it to leave it off" >&2
 		exit 2
 		;;
+	--robot) robot=${args[i + 1]:-panda} ;;
+	--robot=*) robot=${args[i]#*=} ;;
 	--fallback-model) fallback_model=${args[i + 1]:-} ;;
 	--fallback-model=*) fallback_model=${args[i]#*=} ;;
 	--fallback-after) fallback_after=${args[i + 1]:-2} ;;
@@ -94,12 +99,12 @@ done
 backstop=()
 [ "$limit" -gt 0 ] && command -v timeout >/dev/null && backstop=(timeout -k 30 $((limit + 900)))
 mkdir -p "$out"
-config=("$model" "$thinking" "$turns" "$limit" "$units" "$stateless" "$privileged" "$anchor" "$vdm" "$vdm_model" "$vdm_wrist" "$fallback_model" "$fallback_after" "$fallback_retry")
+config=("$model" "$thinking" "$turns" "$limit" "$units" "$stateless" "$privileged" "$anchor" "$vdm" "$vdm_model" "$vdm_wrist" "$fallback_model" "$fallback_after" "$fallback_retry" "$robot")
 
 record() { # <dir> <exit code>: write result.json from the episode's session
 	node --input-type=module -e '
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
-const [dir, code, model, thinking, turns, limit, units, stateless, privileged, anchor, vdm, vdmModel, vdmWrist, fallbackModel, fallbackAfter, fallbackRetry] = process.argv.slice(1);
+const [dir, code, model, thinking, turns, limit, units, stateless, privileged, anchor, vdm, vdmModel, vdmWrist, fallbackModel, fallbackAfter, fallbackRetry, robot] = process.argv.slice(1);
 const results = [];
 for (const f of readdirSync(dir).filter((f) => f.endsWith(".jsonl"))) {
 	for (const line of readFileSync(`${dir}/${f}`, "utf8").split("\n")) {
@@ -115,7 +120,7 @@ const status = Number(code) === 124 ? "timeout" : results.length > 1 ? "duplicat
 const result = { ...(last ?? {}), status, exit_code: Number(code), model: model || null, thinking: thinking || null,
 	max_turns: Number(turns), time_limit: Number(limit), units, anchor_image: anchor === "true",
 	vdm: vdm === "true", vdm_model: vdmModel || null, vdm_wrist: vdmWrist === "true", stateless: stateless === "true",
-	privileged: privileged === "true",
+	privileged: privileged === "true", maniskill_robot: robot,
 	fallback_model: fallbackModel || null, fallback_after: fallbackModel ? Number(fallbackAfter) : null, fallback_retry_primary: fallbackModel ? Number(fallbackRetry) : null };
 writeFileSync(`${dir}/result.json`, `${JSON.stringify(result, null, 2)}\n`);
 console.log(JSON.stringify({ status, success: result.success, claimed: result.claimed, env_steps: result.env_steps }));
@@ -124,12 +129,14 @@ console.log(JSON.stringify({ status, success: result.success, claimed: result.cl
 
 valid() { # <dir>: 0 = a valid result of this configuration, 2 = a valid result of another one, 1 = none
 	node -e '
-const [path, model, thinking, turns, limit, units, stateless, privileged, anchor, vdm, vdmModel, vdmWrist, fallbackModel, fallbackAfter, fallbackRetry] = process.argv.slice(1);
+const [path, model, thinking, turns, limit, units, stateless, privileged, anchor, vdm, vdmModel, vdmWrist, fallbackModel, fallbackAfter, fallbackRetry, robot] = process.argv.slice(1);
 const r = JSON.parse(require("fs").readFileSync(path, "utf8"));
 if (r.status !== "success" && r.status !== "failure") process.exit(1);
 const same = r.model === (model || null) && r.thinking === (thinking || null) && r.max_turns === Number(turns)
 	&& r.time_limit === Number(limit) && r.units === units && r.stateless === (stateless === "true")
 	&& (r.privileged ?? false) === (privileged === "true")
+	// Results written before --robot existed ran the Panda.
+	&& (r.maniskill_robot ?? "panda") === robot
 	// Results written before --anchor-image existed ran without it.
 	&& (r.anchor_image ?? false) === (anchor === "true")
 	// Results written before --vdm existed ran without it.
@@ -150,7 +157,7 @@ for env in ${envs//,/ }; do
 		valid "$dir"
 		case $? in
 		0) continue ;;
-		2) echo "$dir holds a result of another model, thinking level, --max-turns, --time-limit, units mode, vdm, fallback, --privileged or --anchor-image; use another out dir" >&2 && exit 1 ;;
+		2) echo "$dir holds a result of another model, thinking level, --max-turns, --time-limit, units mode, vdm, fallback, --robot, --privileged or --anchor-image; use another out dir" >&2 && exit 1 ;;
 		esac
 		rm -rf "$dir" && mkdir -p "$dir"
 		echo "== $env seed $seed"
@@ -172,7 +179,7 @@ const rows = cells.map((c) => {
 	}
 });
 const configs = new Set(rows.filter((r) => r.status === "success" || r.status === "failure")
-	.map((r) => `${r.model}/${r.thinking}/turns=${r.max_turns}/limit=${r.time_limit}/units=${r.units}${r.stateless ? "/stateless" : ""}${r.anchor_image ? "/anchor" : ""}${r.vdm ? `/vdm=${r.vdm_model ?? "default"}${r.vdm_wrist ? "+wrist" : ""}` : ""}${r.privileged ? "/privileged" : ""}${r.fallback_model ? `/fallback=${r.fallback_model}:${r.fallback_after}:${r.fallback_retry_primary}` : ""}`));
+	.map((r) => `${r.model}/${r.thinking}/turns=${r.max_turns}/limit=${r.time_limit}/units=${r.units}${r.stateless ? "/stateless" : ""}${r.anchor_image ? "/anchor" : ""}${r.vdm ? `/vdm=${r.vdm_model ?? "default"}${r.vdm_wrist ? "+wrist" : ""}` : ""}${r.privileged ? "/privileged" : ""}${(r.maniskill_robot ?? "panda") !== "panda" ? `/robot=${r.maniskill_robot}` : ""}${r.fallback_model ? `/fallback=${r.fallback_model}:${r.fallback_after}:${r.fallback_retry_primary}` : ""}`));
 if (configs.size > 1) {
 	console.log(`refusing to summarize: ${out} mixes configurations ${[...configs].join(", ")}`);
 	process.exit(1);

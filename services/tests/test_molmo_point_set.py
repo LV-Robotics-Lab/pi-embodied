@@ -51,7 +51,16 @@ class FakeTensor:
 
 
 class FakeTorch:
+    bfloat16 = "bfloat16"
+
+    def __init__(self):
+        self.autocasts = []
+
     def inference_mode(self):
+        return contextlib.nullcontext()
+
+    def autocast(self, device, dtype=None):
+        self.autocasts.append((device, dtype))
         return contextlib.nullcontext()
 
     class cuda:
@@ -135,6 +144,8 @@ def test_point_set_tags_points_with_their_image_index() -> None:
             "query": " Point to the bowl in Image 2. ",
         },
     )
+    # Generation runs under bf16 autocast (OpenETA's molmopoint_core._run_inference).
+    assert facade._torch.autocasts == [("cuda", "bfloat16")]
     assert out["points"] == [
         {"id": "point_000", "image_index": 0, "pixel_x": 10.0, "pixel_y": 20.0},
         {"id": "point_001", "image_index": 1, "pixel_x": 5.5, "pixel_y": 6.5},

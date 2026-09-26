@@ -235,7 +235,13 @@ class MolmoFacade(RpcFacade):
             key: value.to(self._model.device) if hasattr(value, "to") else value
             for key, value in inputs.items()
         }
-        with self._lock, self._torch.inference_mode():
+        # bf16 autocast as OpenETA's molmopoint_core._run_inference: the processor hands back
+        # float32 pixel inputs and the bf16 vision projection refuses them otherwise.
+        with (
+            self._lock,
+            self._torch.inference_mode(),
+            self._torch.autocast("cuda", dtype=self._torch.bfloat16),
+        ):
             generated = self._model.generate(
                 **inputs,
                 logits_processor=self._model.build_logit_processor_from_inputs(inputs),

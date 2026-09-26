@@ -38,7 +38,7 @@ from pi_embodied_services.robots.franka.runtime_config import (
     load_runtime_config,
     set_robot_config_path,
 )
-from pi_embodied_services.utils import hardware_lock, reach
+from pi_embodied_services.utils import hardware_lock, motion, reach
 from pi_embodied_services.utils.detections import state_digest
 from pi_embodied_services.utils.grasp import (
     GraspPlanner,
@@ -92,6 +92,7 @@ class FrankaEnvFacade(BaseEnvFacade):
         perception: Perception | None = None,
         grasp: dict | None = None,
         ik_reach: reach.ReachPreview | None = None,
+        ik_motion: motion.MotionPlanner | None = None,
     ) -> None:
         self._backend = backend
         self._perception = perception
@@ -101,6 +102,12 @@ class FrankaEnvFacade(BaseEnvFacade):
         # --ik: env.preview_reach, and move_delta / rotate_delta refuse a target the ik
         # service cannot reach from the current joints (utils/reach.py).
         self._reach = ik_reach
+        # --ik: move_delta / rotate_delta plan a collision-free path to their end pose
+        # (refused when none exists) and follow it segment by segment, checking the arm
+        # against the scene (PI_EMBODIED_IK_WORLD) and, on the dual rig, the other arm
+        # before each segment (utils/motion.py).
+        self._motion = ik_motion
+        self._world = motion.static_world() if ik_motion is not None else []
         super().__init__()
 
     def _register_rpc(self) -> None:
@@ -108,8 +115,11 @@ class FrankaEnvFacade(BaseEnvFacade):
             handler = getattr(self._backend, name)
             if name in self._STOPPABLE:
                 handler = self._stoppable(handler)
-            if self._reach is not None and name in ("move_delta", "rotate_delta"):
-                handler = self._reach_checked(handler, name)
+            if name in ("move_delta", "rotate_delta"):
+                if self._motion is not None:
+                    handler = self._planned(name)
+                elif self._reach is not None:
+                    handler = self._reach_checked(handler, name)
             self._rpc[f"env.{name}"] = handler
         self._rpc["env.preview_reach"] = self.preview_reach
         self._readonly_methods.update(
@@ -179,20 +189,43 @@ class FrankaEnvFacade(BaseEnvFacade):
         if request_stop is not None:
             request_stop(generation)
 
-    # ---- reach preview (--ik) ----
+    # ---- reach preview and collision-free motion (--ik) ----
+
+    #: Whether motion primitives take an ``arm`` first (the dual rig).
+    _ARMED = False
 
     def _tcp_state(self) -> tuple[Any, Any]:
         """(tcp_pose xyz+xyzw in the base frame, arm joints) from the robot state."""
         state = to_numpy_tree(self._backend.get_robot_state())["raw_base_state"]
         return state["tcp_pose"], state["arm_joint_position"]
 
-    def preview_reach(self, pos, quat_xyzw=None) -> dict[str, Any]:
-        """Whether the TCP can reach a base-frame pose from the current joints (IK only, the
-        arm does not move); ``quat_xyzw`` None keeps the current orientation."""
+    def _arm_frame(self, arm: str | None) -> dict[str, Any]:
+        """The moving arm in the motion primitives' frame: joints ``q``, ``tcp`` (xyz +
+        xyzw), ``base_pose`` (the arm's base in that frame; None = it is the base frame)
+        and ``robots`` (other arms as ik ``robot`` obstacles in the arm's base frame)."""
+        if arm is not None:
+            raise ValueError("the single-arm franka server takes no arm")
+        tcp, q = self._tcp_state()
+        return {
+            "q": np.asarray(q, dtype=float),
+            "tcp": np.asarray(tcp, dtype=float),
+            "base_pose": None,
+            "robots": [],
+        }
+
+    def preview_reach(self, pos, quat_xyzw=None, arm=None) -> dict[str, Any]:
+        """Whether the TCP can reach a pose (the motion primitives' frame) from the current
+        joints (IK only, the arm does not move); ``quat_xyzw`` None keeps the current
+        orientation."""
         if self._reach is None:
             return reach.no_service()
-        tcp, q = self._tcp_state()
-        return self._reach.preview(q, pos, tcp[3:] if quat_xyzw is None else quat_xyzw)
+        frame = self._arm_frame(arm)
+        return self._reach.preview(
+            frame["q"],
+            pos,
+            frame["tcp"][3:] if quat_xyzw is None else quat_xyzw,
+            base_pose=frame["base_pose"],
+        )
 
     def _reach_checked(
         self, handler: Callable[..., Any], name: str
@@ -211,6 +244,93 @@ class FrankaEnvFacade(BaseEnvFacade):
             )
             reach.require_reachable(self._reach.preview(q, pos, quat), f"env.{name}")
             return handler(*args, **kwargs)
+
+        return call
+
+    def _planned(self, name: str) -> Callable[..., Any]:
+        """move_delta / rotate_delta along a collision-free path (utils/motion.py): planned
+        to the end pose from the current joints, refused when no path exists, then followed
+        waypoint by waypoint with the backend's own move_delta / rotate_delta (each within
+        its per-call limits), the arm checked before each segment; predicted contact stops
+        the motion (``stopped: "contact"``)."""
+        key = "delta_xyz" if name == "move_delta" else "delta_rpy"
+
+        def move(*args: Any) -> Any:
+            return self._stoppable(self._backend.move_delta)(*args)
+
+        def rotate(*args: Any) -> Any:
+            return self._stoppable(self._backend.rotate_delta)(*args)
+
+        def call(*args: Any, **kwargs: Any) -> Any:
+            args = list(args)
+            arm = None
+            if self._ARMED:
+                arm = kwargs.pop("arm", None)
+                if arm is None and args:
+                    arm = args.pop(0)
+            delta = kwargs.pop(key, None)
+            if delta is None and args:
+                delta = args.pop(0)
+            if delta is None or args or kwargs:
+                raise ValueError(
+                    f"env.{name} takes {'arm, ' if self._ARMED else ''}{key}"
+                )
+            lead = [arm] if self._ARMED else []
+            frame = self._arm_frame(arm)
+            pos, quat = reach.delta_target(
+                frame["tcp"],
+                delta_xyz=delta if name == "move_delta" else None,
+                delta_rpy=delta if name == "rotate_delta" else None,
+            )
+            plan = motion.require_planned(
+                self._motion.plan(
+                    frame["q"],
+                    frame["tcp"][:3],
+                    pos,
+                    quat,
+                    self._world,
+                    base_pose=frame["base_pose"],
+                    robots=frame["robots"],
+                ),
+                f"env.{name}",
+            )
+            if plan["status"] != "planned":
+                return (move if name == "move_delta" else rotate)(*lead, delta)
+
+            def check(i: int) -> dict[str, Any]:
+                now = self._arm_frame(arm)
+                return self._motion.check(
+                    [now["q"], plan["q_path"][i]],
+                    self._world,
+                    base_pose=now["base_pose"],
+                    left_out=plan["left_out"],
+                    robots=now["robots"],
+                )
+
+            followed = motion.follow_waypoints(
+                plan["waypoints"],
+                tcp_pose=lambda: self._arm_frame(arm)["tcp"],
+                move=lambda d: move(*lead, d),
+                rotate=lambda r: rotate(*lead, r),
+                check=check,
+            )
+            results = followed["results"]
+            out = dict(results[-1]) if results else {}
+            out["ok"] = followed["stopped"] is None and all(
+                bool(r.get("ok", True)) for r in results
+            )
+            out["planned"] = {
+                "segments": len(plan["waypoints"]),
+                "segments_done": followed["segments"],
+                "path_m": plan["path_m"],
+                "backend": plan["backend"],
+            }
+            if followed["stopped"] == "cancelled":
+                out["cancelled"] = True
+            if followed["stopped"] == "contact":
+                out["stopped"] = "contact"
+                out["contact"] = followed["check"]["message"]
+            return out
 
         return call
 
@@ -730,8 +850,6 @@ def main(
     # This process's planner and perception layout read the calibration and projection views
     # from the robot config too (not only the Ray worker): the user's --robot-config.
     set_robot_config_path(args.robot_config)
-    if args.ik and facade_class is not FrankaEnvFacade:
-        parser.error("--ik is only supported by the single-arm franka env server")
 
     runtime = load_runtime_config(
         args.robot_config,
@@ -764,6 +882,7 @@ def main(
         perception,
         urls_from_args(args),
         ik_reach=reach.reach_from_args(args, "panda"),
+        ik_motion=motion.planner_from_args(args, "panda"),
     )
     try:
         facade.serve(

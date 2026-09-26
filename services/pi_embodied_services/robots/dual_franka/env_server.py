@@ -36,7 +36,9 @@ from pi_embodied_services.robots.franka.env_server import (
 )
 from pi_embodied_services.robots.franka.primitives import DUAL_FRANKA_PRIMITIVES
 from pi_embodied_services.utils.config import get_repo_root, get_rlinf_repo_path
+from pi_embodied_services.utils.reach import pose_matrix
 from pi_embodied_services.utils.serialization import to_numpy_tree
+from pi_embodied_services.utils.transforms import invert_transform
 
 # Resolve the RLinf checkout before the deferred ``import rlinf`` executes.
 SERVICES_ROOT = get_repo_root()
@@ -63,6 +65,48 @@ class DualFrankaEnvFacade(FrankaEnvFacade):
 
     _METHODS = (*FrankaEnvFacade._METHODS, "recover_joint_posture")
     _PRIMITIVES = DUAL_FRANKA_PRIMITIVES
+    _ARMED = True
+
+    def _arm_frame(self, arm: str | None) -> dict[str, Any]:
+        """One arm in the rig's frame (``right_base``): its joints, TCP, base pose (from its
+        reported TCP in both frames), and the other arm as an ik ``robot`` obstacle in this
+        arm's base frame, so a planned move is checked arm against arm (cuRobo spheres)."""
+        name = str(arm or "right").strip().lower()
+        if name not in _ARM_INDEX:
+            raise ValueError("arm must be 'left' or 'right'")
+        state = to_numpy_tree(self._backend.get_robot_state())
+
+        def arm_state(side: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+            a = state[f"{side}_arm"]
+            tcp = np.asarray(a["tcp_pose"], dtype=float)
+            raw = np.asarray(a.get("raw_tcp_pose", tcp), dtype=float)
+            world_from_base = pose_matrix(tcp[:3], tcp[3:7]) @ invert_transform(
+                pose_matrix(raw[:3], raw[3:7])
+            )
+            return (
+                np.asarray(a["arm_joint_position"], dtype=float),
+                tcp,
+                world_from_base,
+            )
+
+        q, tcp, world_from_base = arm_state(name)
+        other = "left" if name == "right" else "right"
+        q_other, _, world_from_other = arm_state(other)
+        other_in_base = invert_transform(world_from_base) @ world_from_other
+        return {
+            "q": q,
+            "tcp": tcp,
+            "base_pose": _pose_of(world_from_base),
+            "robots": [
+                {
+                    "type": "robot",
+                    "name": f"{other}_arm",
+                    "robot": "panda",
+                    "q": q_other.tolist(),
+                    "base_pose": _pose_of(other_in_base),
+                }
+            ],
+        }
 
     @classmethod
     def perception_layout(cls, backend: Any):
@@ -148,6 +192,15 @@ def _arm_limits(override: Any, arm_idx: int) -> tuple[list[float], list[float]] 
     if lo and not isinstance(lo[0], (int, float)):
         lo, hi = list(lo[arm_idx]), list(hi[arm_idx])
     return [float(v) for v in lo[:3]], [float(v) for v in hi[:3]]
+
+
+def _pose_of(matrix: np.ndarray) -> dict[str, list[float]]:
+    from scipy.spatial.transform import Rotation
+
+    return {
+        "pos": [float(v) for v in matrix[:3, 3]],
+        "quat_xyzw": [float(v) for v in Rotation.from_matrix(matrix[:3, :3]).as_quat()],
+    }
 
 
 def _batch_raw_obs(raw_obs: dict[str, Any]) -> dict[str, Any]:

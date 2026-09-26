@@ -330,6 +330,7 @@ vdirs.forEach((vdir, v) => {
 			r.fallback_model ? `fallback=${r.fallback_model}:${r.fallback_after}:${r.fallback_retry_primary}` : "",
 			r.code && r.code !== "false" ? `code=${r.code}:${r.code_api}` : "",
 			r.max_move === undefined ? "" : `max_move=${r.max_move}`, r.grasping_mode ? `grasp=${r.grasping_mode}` : "",
+			(r.maniskill_robot ?? "panda") !== "panda" ? `robot=${r.maniskill_robot}` : "",
 			r.protocol_id ?? ""].filter(Boolean).join("/")));
 	const name = vdir === "." ? "-" : vdir;
 	if (configs.size > 1) {

@@ -212,6 +212,28 @@ test("variants run the same seeds into their own dirs; success, Pass@k and --min
 	assert.match(k2.stdout, /pass@2 83\.3% \(2\/2 tasks\)/);
 });
 
+test("the summary label names a ManiSkill --robot other than the Panda, and variants of two arms stay apart", () => {
+	const s = sandbox();
+	const out = join(s.dir, "out");
+	const r = s.run([
+		"--variant",
+		"xarm=--robot xarm6_robotiq",
+		"--variant",
+		"panda=",
+		"maniskill",
+		out,
+		"PickCube-v1",
+		"0-1",
+		"--model",
+		"m/x",
+	]);
+	assert.equal(r.status, 0, r.stdout + r.stderr);
+	const [xarm, panda] = summary(out) as { variant: string; config: string }[];
+	assert.match(xarm.config, /\/robot=xarm6_robotiq$/);
+	assert.doesNotMatch(panda.config, /robot=/);
+	assert.match(r.stdout, /xarm: .*robot=xarm6_robotiq: success/);
+});
+
 test("a rerun fills only the invalid cells; infrastructure failures are counted apart", () => {
 	const s = sandbox();
 	const out = join(s.dir, "out");

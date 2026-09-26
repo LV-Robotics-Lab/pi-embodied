@@ -220,6 +220,10 @@ test("a session resets the cell's layout and activates the per-arm tools", async
 	assert.equal(r.details.score, 0.15);
 	assert.equal("score" in details, false);
 	await assert.rejects(s.run("move_delta", { arm: "left", delta_xyz: [0, 0.6, 0] }), /limit is 0.5 m per call/);
+	// move_to checks the same limit against the gripper's current position, before calling the server.
+	const before = env.motion().length;
+	await assert.rejects(s.run("move_to", { arm: "right", xyz: [0.3, 0.5, 0.95] }), /0\.5 m per call/);
+	assert.equal(env.motion().length, before);
 	assert.equal(MAX_MOVE_M, 0.5);
 });
 

@@ -414,11 +414,24 @@ export default function robodojo(pi: ExtensionAPI) {
 			quat_wxyz: Type.Optional(Type.Array(Type.Number(), { minItems: 4, maxItems: 4 })),
 			gripper: gripperParam,
 		}),
-		async ({ arm, xyz, quat_wxyz, gripper }, signal) =>
-			over() ??
-			observe(
-				await motion("env.move_to", { arm, xyz, quat_wxyz: quat_wxyz ?? null, gripper: gripper ?? null }, signal),
-			),
+		async ({ arm, xyz, quat_wxyz, gripper }, signal) => {
+			const at = obs.arms[arm].eef_pos.toArray();
+			const dist = Math.hypot(...xyz.map((v, i) => v - at[i]));
+			if (!(dist <= MAX_MOVE_M))
+				throw new Error(
+					`the target is ${round(dist)} m from the ${arm} gripper (eef_xyz); the limit is ${MAX_MOVE_M} m per call. Move in steps.`,
+				);
+			return (
+				over() ??
+				observe(
+					await motion(
+						"env.move_to",
+						{ arm, xyz, quat_wxyz: quat_wxyz ?? null, gripper: gripper ?? null },
+						signal,
+					),
+				)
+			);
+		},
 	);
 
 	robot.tool(

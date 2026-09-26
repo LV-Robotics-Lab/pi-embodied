@@ -16,6 +16,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { type Static, type TSchema, Type } from "typebox";
 import { robotCheck } from "./check.ts";
 import { type CodeSpec, code } from "./code/index.ts";
+import { ensemble } from "./ensemble.ts";
 import { explore } from "./explore.ts";
 import { fallback } from "./fallback.ts";
 import { type FlashHook, flash } from "./flash/index.ts";
@@ -75,6 +76,8 @@ export function toolSections(prompt: string, active: readonly string[]): string 
 export const TASK_ENTRY = "robot_task";
 /** Session entry with the episode's outcome: `{ robot, ..., claimed, summary, env_error }`. */
 export const RESULT_ENTRY = "robot_result";
+/** Session entry with the system prompt the robot forced on the planner: `{ text }`, written when it changes. */
+export const SYSTEM_PROMPT_ENTRY = "robot_system_prompt";
 /** `pi.events` channel on which the robot publishes its `RobotStatus` (read by the dashboard). */
 export const STATUS_EVENT = "pi-embodied:robot";
 export type RobotStatus = {
@@ -289,6 +292,8 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	if (spec.flash) flash(pi, spec.flash);
 	// The `fallback/<primary>` planner (../fallback.ts), only when `--fallback-model` is on the command line.
 	const fb = fallback(pi);
+	// The `ensemble/<base>` planner (../ensemble.ts), only with `--model ensemble/...` on the command line.
+	const en = ensemble(pi);
 	/** A successful scene reset also restarts the units state (accumulated yaw, gripper, plan). */
 	const resetsUnits =
 		<A extends unknown[], R>(reset: (...args: A) => Promise<R>) =>
@@ -481,6 +486,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		publish();
 	}
 
+	let recordedPrompt: string | undefined;
 	pi.on("before_agent_start", (_event, ctx) => {
 		if (started === undefined) {
 			started = Date.now();
@@ -506,7 +512,12 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		const own = spec.prompt?.();
 		const systemPrompt =
 			mode === "pure" ? mod?.prompt() : mode === "both" ? `${own ?? ""}\n\n${mod?.prompt()}`.trim() : own;
-		return systemPrompt === undefined ? undefined : { systemPrompt: toolSections(systemPrompt, pi.getActiveTools()) };
+		if (systemPrompt === undefined) return undefined;
+		const text = toolSections(systemPrompt, pi.getActiveTools());
+		// pi sends a forced prompt without recording it; the entry keeps what the planner saw (planner_export.py).
+		if (text !== recordedPrompt) pi.appendEntry(SYSTEM_PROMPT_ENTRY, { text });
+		recordedPrompt = text;
+		return { systemPrompt: text };
 	});
 	pi.on("message_end", (event) => {
 		const m = event.message;
@@ -596,6 +607,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 						...vd?.result(),
 						// With --fallback-model: the turns each planner model planned (../fallback.ts).
 						...fb?.result(),
+						...en?.result(),
 						// Which primitive API (code.api) the episode ran with.
 						...(api ? { code_api_digest: api.digest, code_api_tier: api.tier } : {}),
 						claimed: claimed?.status ?? null,

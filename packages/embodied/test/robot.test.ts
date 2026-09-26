@@ -5,7 +5,14 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { defineRobot, RESULT_ENTRY, type RobotSpec, STATUS_EVENT, TASK_ENTRY } from "../src/robot.ts";
+import {
+	defineRobot,
+	RESULT_ENTRY,
+	type RobotSpec,
+	STATUS_EVENT,
+	SYSTEM_PROMPT_ENTRY,
+	TASK_ENTRY,
+} from "../src/robot.ts";
 import { RpcUnavailable } from "../src/rpc.ts";
 import { UNITS_EVENT, type UnitsHandle, type UnitsSpec } from "../src/units/index.ts";
 
@@ -353,4 +360,21 @@ test("an operator's unit passes the gates a tool call passes; every robot tool i
 	await k.emit("session_start");
 	await k.tools.get("finish").execute("1", { status: "success", summary: "ok" });
 	assert.equal(unitsHandle(k).refuse(), "The episode is finished.");
+});
+
+test("the forced system prompt is recorded once per change (pi sends it without recording it)", async (t) => {
+	const f = fakePi();
+	t.after(f.restore);
+	let prompt = "Move the block.";
+	toy(f.pi, async () => ["move", "finish"], { prompt: () => prompt });
+	await f.emit("session_start");
+	const first = await f.emit("before_agent_start");
+	await f.emit("before_agent_start");
+	prompt = "Move the block carefully.";
+	await f.emit("before_agent_start");
+	assert.deepEqual(first, { systemPrompt: "Move the block." });
+	assert.deepEqual(
+		f.entries.filter((e) => e.type === SYSTEM_PROMPT_ENTRY).map((e) => e.data),
+		[{ text: "Move the block." }, { text: "Move the block carefully." }],
+	);
 });

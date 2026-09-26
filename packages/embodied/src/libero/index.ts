@@ -140,6 +140,57 @@ function rotation([x, y, z, w]: number[]): number[][] {
 	];
 }
 /** World yaw of an xyzw quaternion: the right-hand angle about base +z (unitStep's `move.yaw` servo). */
+/** A claimed grasp or place path (`env.claim_waypoints`, services utils/grasp.py). */
+export type Claim = {
+	id: string;
+	waypoints: Record<string, number[]>;
+	steps: { to?: string; gripper: number }[];
+	eef_yaw: number;
+	eef_pitch: number;
+};
+
+/**
+ * Run a claimed path leg by leg: servo to each waypoint with the claim's pitch and yaw, or drive the
+ * gripper in place. Stops at the episode's end or at the first leg that ends more than 3 cm short
+ * (`stalled`, with the `error` the model reads).
+ */
+export async function runClaim(
+	c: Claim,
+	io: {
+		servo: (
+			target: number[],
+			pitch: number,
+			yaw: number,
+			g: number,
+		) => Promise<{ steps: number; final_dist_m: number }>;
+		actuate: (g: number) => Promise<number>;
+		width: () => number;
+		ended: () => boolean;
+	},
+): Promise<{ legs: Record<string, unknown>[]; steps_used: number; stalled?: string; error?: string }> {
+	const legs: Record<string, unknown>[] = [];
+	let steps = 0;
+	for (const leg of c.steps) {
+		if (io.ended()) break;
+		if (leg.to === undefined) {
+			steps += await io.actuate(leg.gripper);
+			legs.push({ gripper: leg.gripper, gripper_width: round(io.width()) });
+			continue;
+		}
+		const r = await io.servo(c.waypoints[leg.to], c.eef_pitch, c.eef_yaw, leg.gripper);
+		steps += r.steps;
+		legs.push({ to: leg.to, final_dist_m: r.final_dist_m });
+		if (r.final_dist_m > 0.03)
+			return {
+				legs,
+				steps_used: steps,
+				stalled: leg.to,
+				error: `stalled ${r.final_dist_m} m short of ${leg.to}: unreachable or blocked; plan again from the new observation`,
+			};
+	}
+	return { legs, steps_used: steps };
+}
+
 export const yawOf = (q: number[]) => {
 	const r = rotation(q);
 	return Math.atan2(r[1][0], r[0][0]);
@@ -598,30 +649,97 @@ export default function libero(pi: ExtensionAPI) {
 	const num = (description: string) => Type.Optional(Type.Number({ description }));
 	const int = (description: string) => Type.Optional(Type.Integer({ description }));
 	const camera = Type.Optional(StringEnum(["agentview", "wrist"] as const, { description: "Default agentview" }));
-	const graspId = Type.Optional(
-		Type.String({ description: "A grasp (g1) or place (p1) id from plan_grasp / plan_place instead of xyz" }),
-	);
+	/** Servo xyz, pitch and yaw together each step (move_pose's rule); stops within tol / ori_tol or at max_steps. */
+	async function servoPose(
+		target: number[],
+		pitch: number | undefined,
+		yaw: number | undefined,
+		g: number,
+		{
+			step_clip = 0.02,
+			pitch_step = 0.08,
+			yaw_step = 0.08,
+			tol = 0.012,
+			ori_tol = 0.05,
+			action_scale = 0.05,
+			max_steps = 150,
+		} = {},
+	) {
+		let steps = 0;
+		for (; steps < max_steps && !terminated && !truncated; steps++) {
+			const q = await quat();
+			const diff = target.map((v: number, i: number) => v - eef()[i]);
+			const pErr = pitch === undefined ? 0 : wrap(pitch - pitchOf(q));
+			const yErr = yaw === undefined ? 0 : wrap(yaw - yawOf(q));
+			if (Math.hypot(...diff) < tol && Math.abs(pErr) < ori_tol && Math.abs(yErr) < ori_tol) break;
+			await step([
+				...diff.map((d: number) => clip(clip(d, -step_clip, step_clip) / action_scale, -1, 1)),
+				clip(clip(pErr, -pitch_step, pitch_step) / 0.1, -1, 1),
+				0,
+				clip(clip(yErr, -yaw_step, yaw_step) / 0.1, -1, 1),
+				g,
+			]);
+		}
+		return { steps, final_dist_m: round(Math.hypot(...target.map((v: number, i: number) => v - eef()[i]))) };
+	}
+
+	/** Drive the gripper until the fingers stop (on an object, or fully open / closed), at most 15 steps. */
+	async function actuate(g: number) {
+		let steps = 0;
+		for (let prev = Number.NaN; steps < 15 && !terminated && !truncated; ) {
+			await step([0, 0, 0, 0, 0, 0, g]);
+			steps++;
+			if (steps > 3 && Math.abs(gripper() - prev) < 5e-4) break;
+			prev = gripper();
+		}
+		return steps;
+	}
 
 	/**
-	 * The EEF pose of a planned grasp or place id (../primitives/grasp.ts): the env server refuses an
-	 * id from an earlier observation (the robot moved since), which is recorded as `detections_expired`.
+	 * Execute a planned grasp or place id (../primitives/grasp.ts) from one resolution: the env server
+	 * resolves the candidate's whole path at once (`env.claim_waypoints`: pre-grasp, grasp, lift, or
+	 * pre-place, place, retreat) and the legs run on those coordinates, since their own steps expire the
+	 * id. A stale id is refused unmoved and recorded as `detections_expired`; with --ik an unreachable
+	 * waypoint is refused before the claim.
 	 */
-	async function resolveGrasp(
-		id: string | undefined,
-		standoff: number,
-	): Promise<{ error?: string; eef_position?: number[]; eef_yaw?: number; eef_pitch?: number }> {
-		if (!id) return {};
+	async function executePlanned(
+		name: string,
+		id: string,
+		kind: "grasp" | "placement",
+		kwargs: Record<string, number>,
+	) {
 		try {
-			const r = await call<Record<string, unknown>>(env, "env.resolve_grasp", { grasp_id: id, standoff });
-			return {
-				eef_position: r.eef_position as number[],
-				eef_yaw: r.eef_yaw as number,
-				eef_pitch: r.eef_pitch as number,
-			};
+			const resolved = await call<{ kind: string }>(env, "env.resolve_grasp", { grasp_id: id });
+			if (resolved.kind !== kind)
+				return {
+					name,
+					error: `${id} is a ${resolved.kind} id; use ${kind === "grasp" ? "execute_place" : "execute_grasp"}`,
+				};
+			if (flag("ik", "")) {
+				for (const standoff of [kwargs.standoff, 0]) {
+					const pose = await call<{ eef_position: number[] }>(env, "env.resolve_grasp", {
+						grasp_id: id,
+						standoff,
+					});
+					const refusal = reachRefusal(await call<Reach>(env, "env.preview_reach", { pos: pose.eef_position }));
+					if (refusal) return { name, id, refused: refusal, steps_used: 0 };
+				}
+			}
+			const c = await call<Claim>(env, "env.claim_waypoints", {
+				grasp_id: id,
+				standoff: kwargs.standoff,
+				lift: kwargs.lift,
+			});
+			const run = await runClaim(c, {
+				servo: (target, pitch, yaw, g) => servoPose(target, pitch, yaw, g, { max_steps: kwargs.max_steps }),
+				actuate,
+				width: gripper,
+				ended: () => terminated || truncated,
+			});
+			return { name, id, ...run, final_eef_pos: eef().map((v) => round(v)), gripper_width: round(gripper()) };
 		} catch (err) {
-			if (isStale(err))
-				pi.appendEntry(DETECTIONS_EXPIRED_ENTRY, { tool: "resolve_grasp", ids: [id], error: message(err) });
-			return { error: message(err) };
+			if (isStale(err)) pi.appendEntry(DETECTIONS_EXPIRED_ENTRY, { tool: name, ids: [id], error: message(err) });
+			return { name, error: message(err) };
 		}
 	}
 
@@ -634,11 +752,9 @@ export default function libero(pi: ExtensionAPI) {
 
 	tool(
 		"move_to",
-		"Scripted EEF servo to a world xyz, or to a planned grasp (grasp_id from plan_grasp / plan_place, valid for the current observation only; standoff backs off along its approach); holds orientation, or turns to the grasp's yaw. gripper -1 = open, +1 = close (hold +1 while carrying). Never move more than 0.30 m in xy in one call; split long moves.",
+		"Scripted EEF servo to a world xyz; holds orientation. gripper -1 = open, +1 = close (hold +1 while carrying). Never move more than 0.30 m in xy in one call; split long moves.",
 		Type.Object({
-			xyz: Type.Optional(xyz),
-			grasp_id: graspId,
-			standoff: num("With grasp_id: metres to stop short of the grasp along its approach (0.1 = pre-grasp)"),
+			xyz,
 			gripper: num("-1 open (default), +1 close"),
 			tol: num("Position tolerance, m (default 0.012)"),
 			step_clip: num("Per-step xyz cap, m (default 0.025)"),
@@ -648,9 +764,7 @@ export default function libero(pi: ExtensionAPI) {
 			yaw_step_clip: num("Per-step yaw clip, rad (default 0.10)"),
 		}),
 		async ({
-			xyz: given,
-			grasp_id,
-			standoff = 0,
+			xyz: target,
 			gripper: g = -1,
 			tol = 0.012,
 			step_clip = 0.025,
@@ -659,11 +773,6 @@ export default function libero(pi: ExtensionAPI) {
 			target_yaw,
 			yaw_step_clip = 0.1,
 		}) => {
-			const planned = await resolveGrasp(grasp_id, standoff);
-			if (planned.error) return { name: "move_to", ...planned };
-			const target = planned.eef_position ?? given;
-			if (!target) return { name: "move_to", error: "give xyz or grasp_id" };
-			target_yaw ??= planned.eef_yaw;
 			if (flag("ik", "")) {
 				// --ik: the env server solves IK from the current joints; an unreachable target is refused unmoved.
 				const refusal = reachRefusal(await call<Reach>(env, "env.preview_reach", { pos: target }));
@@ -877,11 +986,9 @@ export default function libero(pi: ExtensionAPI) {
 
 	tool(
 		"move_pose",
-		"Servo xyz and pitch/yaw together each step, to a world xyz or to a planned grasp (grasp_id, standoff as in move_to; its pitch and yaw become the targets). Use when move_to stalls on deep or low reaches (cabinet fronts, microwave). gripper defaults to -1 (open): pass +1 while holding.",
+		"Servo xyz and pitch/yaw together each step. Use when move_to stalls on deep or low reaches (cabinet fronts, microwave). gripper defaults to -1 (open): pass +1 while holding.",
 		Type.Object({
-			xyz: Type.Optional(xyz),
-			grasp_id: graspId,
-			standoff: num("With grasp_id: metres to stop short of the grasp along its approach"),
+			xyz,
 			target_pitch: num("rad"),
 			target_yaw: num("rad"),
 			gripper: num("Default -1"),
@@ -894,9 +1001,7 @@ export default function libero(pi: ExtensionAPI) {
 			max_steps: int("Default 150"),
 		}),
 		async ({
-			xyz: given,
-			grasp_id,
-			standoff = 0,
+			xyz: target,
 			target_pitch,
 			target_yaw,
 			gripper: g = -1,
@@ -908,33 +1013,21 @@ export default function libero(pi: ExtensionAPI) {
 			action_scale = 0.05,
 			max_steps = 150,
 		}) => {
-			const planned = await resolveGrasp(grasp_id, standoff);
-			if (planned.error) return { name: "move_pose", ...planned };
-			const target = planned.eef_position ?? given;
-			if (!target) return { name: "move_pose", error: "give xyz or grasp_id" };
-			target_yaw ??= planned.eef_yaw;
-			target_pitch ??= planned.eef_pitch;
-			let steps = 0;
-			for (; steps < max_steps && !terminated && !truncated; steps++) {
-				const q = await quat();
-				const diff = target.map((v: number, i: number) => v - eef()[i]);
-				const pErr = target_pitch === undefined ? 0 : wrap(target_pitch - pitchOf(q));
-				const yErr = target_yaw === undefined ? 0 : wrap(target_yaw - yawOf(q));
-				if (Math.hypot(...diff) < tol && Math.abs(pErr) < ori_tol && Math.abs(yErr) < ori_tol) break;
-				await step([
-					...diff.map((d: number) => clip(clip(d, -step_clip, step_clip) / action_scale, -1, 1)),
-					clip(clip(pErr, -pitch_step, pitch_step) / 0.1, -1, 1),
-					0,
-					clip(clip(yErr, -yaw_step, yaw_step) / 0.1, -1, 1),
-					g,
-				]);
-			}
+			const r = await servoPose(target, target_pitch, target_yaw, g, {
+				step_clip,
+				pitch_step,
+				yaw_step,
+				tol,
+				ori_tol,
+				action_scale,
+				max_steps,
+			});
 			return {
 				name: "move_pose",
 				final_eef_pos: eef().map((v) => round(v)),
-				final_dist_m: round(Math.hypot(...target.map((v: number, i: number) => v - eef()[i]))),
+				final_dist_m: r.final_dist_m,
 				final_pitch: round(pitchOf(await quat())),
-				steps_used: steps,
+				steps_used: r.steps,
 			};
 		},
 	);
@@ -1099,6 +1192,32 @@ export default function libero(pi: ExtensionAPI) {
 	}))
 		mountGraspTool(robot.tool, d);
 
+	// A planned grasp or place runs as one tool from one resolution of its id (executePlanned).
+	tool(
+		"execute_grasp",
+		"Execute one planned grasp (a g id of the current observation, from plan_grasp) in one call: open to the pre-grasp standoff back along its approach, descend to it with its pitch and yaw, close, lift straight up. Returns each leg's final_dist_m and gripper_width (0.01-0.05 holding, near 0 missed); error and stalled when a leg stopped short. The id is spent either way; afterwards plan_place with this grasp_id plans from the held object.",
+		Type.Object({
+			grasp_id: Type.String({ description: "A g id from plan_grasp" }),
+			standoff: num("Pre-grasp distance along the approach, m (default 0.10)"),
+			lift: num("Lift after closing, m (default 0.10)"),
+			max_steps: int("Step budget per leg (default 150)"),
+		}),
+		async ({ grasp_id, standoff = 0.1, lift = 0.1, max_steps = 150 }) =>
+			executePlanned("execute_grasp", grasp_id, "grasp", { standoff, lift, max_steps }),
+	);
+
+	tool(
+		"execute_place",
+		"Execute one planned place (a p id of the current observation, from plan_place) in one call: carry closed to the pre-place standoff, descend to the place pose, open, retreat to the pre-place. Returns each leg's final_dist_m; error and stalled when a leg stopped short.",
+		Type.Object({
+			place_id: Type.String({ description: "A p id from plan_place" }),
+			standoff: num("Pre-place distance along the approach, m (default 0.10)"),
+			max_steps: int("Step budget per leg (default 150)"),
+		}),
+		async ({ place_id, standoff = 0.1, max_steps = 150 }) =>
+			executePlanned("execute_place", place_id, "placement", { standoff, lift: 0, max_steps }),
+	);
+
 	/**
 	 * One action unit (../units): drive the gripper, servo the EEF to its current position plus
 	 * `delta` (holding the gripper command), turn the wrist by `yaw` or an RT_* `rot`, or hold one step (STOP).
@@ -1237,6 +1356,7 @@ export default function libero(pi: ExtensionAPI) {
 		language = await call<string>(env, "env.get_task_language");
 		fly.reset(flyObs(obs), flyMeta());
 		const tools = flag("ik", "") ? TOOLS : TOOLS.filter((name) => name !== "preview_reach");
-		return [...tools, ...graspActive(pi), ...adapters.keys()];
+		const grasp = graspActive(pi);
+		return [...tools, ...grasp, ...(grasp.length ? ["execute_grasp", "execute_place"] : []), ...adapters.keys()];
 	}
 }

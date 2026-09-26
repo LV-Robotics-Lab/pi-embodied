@@ -8,6 +8,7 @@ import libero from "../src/libero/index.ts";
 import { toolSections } from "../src/robot.ts";
 import { RpcClient } from "../src/rpc.ts";
 import {
+	baseSuite,
 	PICK_PARAMETERS,
 	pickTracker,
 	suiteMismatch,
@@ -95,7 +96,24 @@ test("a checkpoint fine-tuned on another suite is refused; libero_all and unknow
 		suiteMismatch(oft, "libero_10")!,
 		/moojink\/x@r is the libero_spatial fine-tune, but this episode is libero_10/,
 	);
-	assert.match(suiteMismatch(oft, "libero_10")!, /--suite libero_10/);
+	assert.match(suiteMismatch(oft, "libero_10")!, /--suite libero_10\b/);
+	assert.match(suiteMismatch(oft, "libero_10")!, /--suite libero_all/, "OFT's all-suite fine-tune");
+	// LIBERO-Pro / plus suites are judged by their base suite.
+	const vla = { service: "openvla", model: "openvla/x", revision: "r", suite: "libero_10" };
+	for (const pro of ["libero_10_task", "libero_10_swap", "libero_10_lan", "libero_10_object", "libero_10_temp"])
+		assert.equal(suiteMismatch(vla, pro), undefined, pro);
+	assert.equal(suiteMismatch({ ...vla, suite: "libero_goal" }, "libero_goal_swap"), undefined);
+	assert.equal(suiteMismatch({ ...vla, suite: "libero_object" }, "libero_object_object"), undefined);
+	assert.equal(baseSuite("libero_spatial_with_mug"), "libero_spatial");
+	assert.equal(baseSuite("libero_100"), "libero_100", "not libero_10");
+	const wrong = suiteMismatch(vla, "libero_goal_task")!;
+	assert.match(wrong, /this episode is libero_goal_task \(base suite libero_goal\)/);
+	assert.match(wrong, /--suite libero_goal\b/, "the flag names a suite the server accepts");
+	assert.doesNotMatch(wrong, /--suite libero_goal_task/);
+	assert.doesNotMatch(wrong, /libero_all/, "OpenVLA has no all-suite fine-tune");
+	const none = suiteMismatch(vla, "libero_90")!;
+	assert.match(none, /no published fine-tune covers libero_90/);
+	assert.doesNotMatch(none, /--suite/);
 	assert.equal(suiteMismatch({ ...oft, suite: "libero_all" }, "libero_goal"), undefined);
 	assert.equal(suiteMismatch({ ...oft, suite: null }, "libero_goal"), undefined, "a custom --model-path");
 	assert.equal(suiteMismatch({ service: "pi05" }, "libero_goal"), undefined, "Pi0.5 has no vla.info");

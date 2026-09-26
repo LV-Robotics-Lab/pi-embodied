@@ -5,7 +5,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import dualFranka from "../src/dual_franka/index.ts";
 import franka from "../src/franka/index.ts";
-import libero from "../src/libero/index.ts";
+import libero, { type Claim, runClaim } from "../src/libero/index.ts";
 import {
 	attachedPrompt,
 	CHECK_ATTACHED_ENTRY,
@@ -126,14 +126,64 @@ test("every robot registers the three grasp tools at load, with the arm paramete
 		assert.ok("object" in f.tools.get("check_attached").parameters.properties);
 		assert.ok("graspnet" in f.flags && "anyplace" in f.flags, `${name} registers the flags`);
 	}
-	// LIBERO's motion primitives take a planned id in place of xyz.
+	// LIBERO executes a planned id in one tool (one resolution); its free motions take xyz only.
 	const l = fakePi();
 	libero(l.pi);
 	for (const tool of ["move_to", "move_pose"]) {
 		const props = l.tools.get(tool).parameters.properties;
-		assert.ok("grasp_id" in props && "standoff" in props, `${tool} takes grasp_id`);
-		assert.ok(!l.tools.get(tool).parameters.required?.includes("xyz"), `${tool}: xyz is optional`);
+		assert.ok(!("grasp_id" in props) && !("standoff" in props), `${tool} takes no grasp_id`);
+		assert.ok(l.tools.get(tool).parameters.required?.includes("xyz"), `${tool}: xyz is required`);
 	}
+	assert.deepEqual(l.tools.get("execute_grasp").parameters.required, ["grasp_id"]);
+	assert.deepEqual(l.tools.get("execute_place").parameters.required, ["place_id"]);
+});
+
+test("a claimed grasp runs leg by leg with the claim's orientation and stops at a stalled leg", async () => {
+	const claim: Claim = {
+		id: "g2",
+		waypoints: { pre_grasp: [0, 0, 0.3], grasp: [0, 0, 0.2], lift: [0, 0, 0.3] },
+		steps: [
+			{ to: "pre_grasp", gripper: -1 },
+			{ to: "grasp", gripper: -1 },
+			{ gripper: 1 },
+			{ to: "lift", gripper: 1 },
+		],
+		eef_yaw: 1.5,
+		eef_pitch: 0.2,
+	};
+	const log: string[] = [];
+	let width = 0.08;
+	const io = (stallAt?: string) => ({
+		servo: async (target: number[], pitch: number, yaw: number, g: number) => {
+			log.push(`servo ${target.join(",")} p${pitch} y${yaw} g${g}`);
+			const stalled = claim.waypoints[stallAt ?? ""] === target;
+			return { steps: 5, final_dist_m: stalled ? 0.08 : 0.004 };
+		},
+		actuate: async (g: number) => {
+			log.push(`grip ${g}`);
+			width = g > 0 ? 0.02 : 0.08;
+			return 4;
+		},
+		width: () => width,
+		ended: () => false,
+	});
+	const ok = await runClaim(claim, io());
+	assert.deepEqual(log, [
+		"servo 0,0,0.3 p0.2 y1.5 g-1",
+		"servo 0,0,0.2 p0.2 y1.5 g-1",
+		"grip 1",
+		"servo 0,0,0.3 p0.2 y1.5 g1",
+	]);
+	assert.equal(ok.steps_used, 19);
+	assert.deepEqual(ok.legs[2], { gripper: 1, gripper_width: 0.02 });
+	assert.equal(ok.error, undefined);
+	log.length = 0;
+	const stalled = await runClaim(claim, io("grasp"));
+	assert.equal(stalled.stalled, "grasp");
+	assert.match(stalled.error ?? "", /stalled 0.08 m short of grasp/);
+	assert.equal(log.length, 2, "nothing after the stalled leg");
+	const ended = await runClaim(claim, { ...io(), ended: () => true });
+	assert.deepEqual(ended, { legs: [], steps_used: 0 });
 });
 
 test("plan_grasp relays the env call, records expired ids and a stale refusal", async () => {

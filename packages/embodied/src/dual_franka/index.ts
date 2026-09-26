@@ -665,6 +665,8 @@ export default function dualFranka(pi: ExtensionAPI) {
 						args: [
 							...["-m", "pi_embodied_services.robots.dual_franka.env_server"],
 							...["--task-description", setup.task.instruction, ...(config ? ["--robot-config", config] : [])],
+							// SAM3 on the env server too: plan_grasp / plan_place segment their object and region text there.
+							...(flag("robot-sam3") ? ["--sam3", flag("robot-sam3")] : []),
 							...graspArgs(pi),
 						],
 						cwd: r.root,

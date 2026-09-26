@@ -100,12 +100,31 @@ export async function vlaInfo(client: RpcClient): Promise<VlaInfo> {
 export const vlaIdentity = (info: VlaInfo) =>
 	`${info.service} ${info.model ?? ""}${info.revision ? `@${info.revision}` : ""}`.trim();
 
+/** The LIBERO suites the published OpenVLA / OpenVLA-OFT fine-tunes were trained on (their servers' `--suite`). */
+const FINE_TUNED_SUITES = ["libero_spatial", "libero_object", "libero_goal", "libero_10"] as const;
+
+/**
+ * The LIBERO suite whose fine-tune applies to an episode suite: a LIBERO-Pro perturbation
+ * (`libero_10_task`, `libero_goal_swap`, `libero_object_lan`, `libero_spatial_object`, ...) or a
+ * LIBERO-plus variant keeps its base suite's scenes and tasks, so the base decides. Unknown names
+ * pass through.
+ */
+export function baseSuite(suite: string): string {
+	const m = /^libero_(spatial|object|goal|10|90)(?:_|$)/.exec(suite);
+	return m ? `libero_${m[1]}` : suite;
+}
+
 /**
  * Why a VLA fine-tuned on one LIBERO suite must not run on `suite`: the adapters report the
  * checkpoint's suite (`libero_all` covers every suite; a custom checkpoint reports none and is
- * trusted). Undefined when the checkpoint fits.
+ * trusted), compared with the episode's base suite. Undefined when the checkpoint fits.
  */
 export function suiteMismatch(info: VlaInfo, suite: string): string | undefined {
-	if (!info.suite || info.suite === "libero_all" || info.suite === suite) return undefined;
-	return `${vlaIdentity(info)} is the ${info.suite} fine-tune, but this episode is ${suite}: start its server with --suite ${suite} (or --model-path) before using its grasp tool.`;
+	const base = baseSuite(suite);
+	if (!info.suite || info.suite === "libero_all" || info.suite === base) return undefined;
+	const episode = base === suite ? suite : `${suite} (base suite ${base})`;
+	const fix = (FINE_TUNED_SUITES as readonly string[]).includes(base)
+		? `restart its server with --suite ${base}${info.service === "openvla-oft" ? " or --suite libero_all" : ""}, or --model-path a checkpoint fine-tuned on ${base},`
+		: `no published fine-tune covers ${base}; restart its server with --model-path a checkpoint fine-tuned on it`;
+	return `${vlaIdentity(info)} is the ${info.suite} fine-tune, but this episode is ${episode}: ${fix} before using its grasp tool.`;
 }

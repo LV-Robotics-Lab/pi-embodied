@@ -448,12 +448,9 @@ export default function franka(pi: ExtensionAPI) {
 	let liveIds: string[] = [];
 
 	async function observation(): Promise<Json> {
+		// The env server drops the detection ids only when the arm moved since they were cut (its
+		// state digest); the next perception result reports them (noteInvalidated).
 		const obs = await call("env.get_observation");
-		// A new observation: the env server drops every detection id; record that they died here.
-		if (liveIds.length) {
-			pi.appendEntry(DETECTIONS_ENTRY, { invalidated: liveIds, step: steps.length, reason: "new observation" });
-			liveIds = [];
-		}
 		if (!("states" in obs) && lastStates !== undefined) obs.states = lastStates;
 		remember(obs.states);
 		return obs;

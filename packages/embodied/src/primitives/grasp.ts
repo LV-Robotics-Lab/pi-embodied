@@ -7,15 +7,19 @@
  * The robot registers the flags (`registerGraspFlags`) and passes them to its env server
  * (`graspArgs`), which composes SAM3, the grasp servers and its own camera calibration and hands
  * out short ids: `d3` a mask, `g1` a grasp, `p2` a place pose, each bound to the observation it
- * was planned from. The tools only carry ids and the world-frame poses the server resolved; the
- * robot's motion primitives take a `grasp_id` and refuse one from an earlier observation (the
- * server answers "is stale"), which this module records as a `detections_expired` session entry,
- * as it does the `expired_ids` every plan result lists. Without any backend flag `graspActive`
- * names no tool and the env server is started without the primitives.
+ * was planned from. The tools only carry ids and the world-frame poses the server resolved. An id
+ * expires when the robot state changes, so a robot executes a planned grasp or place from one
+ * resolution of its id (`env.claim_waypoints`: the whole pre-grasp / grasp / lift path at once;
+ * LIBERO's `execute_grasp` / `execute_place`), and the server remembers the executed grasp so
+ * `plan_place` can be asked after it, from the held object. A stale id is refused (the server
+ * answers "is stale"), which this module records as a `detections_expired` session entry, as it
+ * does the `expired_ids` every plan result lists. Without any backend flag `graspActive` names no
+ * tool and the env server is started without the primitives.
  *
  * Greedy Grasp Candidate Policy (OpenETA): a plan's `active` candidate is tried first; only a
- * structured, candidate-specific failure (unreachable, collision, the fingers closed on nothing)
- * advances to the next rank through `plan_grasp({next_after: id, reason})`, without re-planning.
+ * structured, candidate-specific failure that leaves the ids current (refused unmoved:
+ * unreachable) advances to the next rank through `plan_grasp({next_after: id, reason})`, without
+ * re-planning; a failure after the robot moved needs a new plan.
  *
  * `check_attached` keeps the VLM call on this side (`../units/vlm.ts` askVlm, cost on
  * VLM_COST_EVENT): the env server only supplies the frames (`env.attachment_frames`: the wrist
@@ -140,7 +144,7 @@ export function graspTools(pi: ExtensionAPI, rig: GraspRig): GraspToolDef[] {
 	const planGrasp: GraspToolDef = {
 		name: "plan_grasp",
 		description:
-			"Predict grasps for one object from the current RGB-D observation, ranked best first, in the world frame. Give the object as text (segmented with SAM3) or a mask_id of this observation. Each candidate has a short id (g3) valid until the robot moves; motion tools take grasp_id. Try `active` first; after a structured failure (unreachable, collision, empty grasp) call again with next_after=<that id> to get the next rank without re-planning.",
+			"Predict grasps for one object from the current RGB-D observation, ranked best first, in the world frame. Give the object as text (segmented with SAM3) or a mask_id of this observation. Each candidate has a short id (g3) and its EEF pose, valid until the robot moves; execute_grasp (where the robot has it) runs one from a single resolution of its id. Try `active` first; when it is refused before the robot moves (unreachable), call again with next_after=<that id> to get the next rank without re-planning; after a failed motion, plan again.",
 		parameters: Type.Object({
 			object: Type.Optional(Type.String({ description: "Object to grasp (SAM3 text prompt), e.g. 'black bowl'" })),
 			mask_id: Type.Optional(
@@ -185,13 +189,13 @@ export function graspTools(pi: ExtensionAPI, rig: GraspRig): GraspToolDef[] {
 	const planPlace: GraspToolDef = {
 		name: "plan_place",
 		description:
-			"Where to hold the grasped object so it comes to rest on a placement region (AnyPlace). Give the region as text (segmented now) or as a mask id, and the grasp id the object is held with; the object is the mask that grasp was planned on (or object_mask_id). Region and grasp must come from the same observation (plan before moving, or re-segment after). Returns place poses with ids (p1) that motion tools take like grasp ids.",
+			"Where to hold the grasped object so it comes to rest on a placement region (AnyPlace). Give the region as text (segmented now) or as a mask id, and the grasp id: after executing the grasp, that grasp's id (the held object is segmented again from its prompt, or object_mask_id, and the gripper's actual pose is used; refused when the fingers hold nothing); before it, a current g id with region and object from the same observation. Returns place poses with ids (p1); execute_place (where the robot has it) runs one.",
 		parameters: Type.Object({
 			region: Type.Optional(
 				Type.String({ description: "The surface it goes onto / into (SAM3 text), or region_mask_id" }),
 			),
 			region_mask_id: Type.Optional(Type.String()),
-			grasp_id: Type.String({ description: "The grasp (g id) the object is held with" }),
+			grasp_id: Type.String({ description: "The executed grasp (g id) the object is held with, or a current one" }),
 			object_mask_id: Type.Optional(
 				Type.String({ description: "The object's mask id; default the mask the grasp was planned on" }),
 			),

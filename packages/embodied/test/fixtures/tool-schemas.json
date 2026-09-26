@@ -749,7 +749,7 @@
 			},
 			{
 				"name": "plan_grasp",
-				"description": "Predict grasps for one object from the current RGB-D observation, ranked best first, in the world frame. Give the object as text (segmented with SAM3) or a mask_id of this observation. Each candidate has a short id (g3) valid until the robot moves; motion tools take grasp_id. Try `active` first; after a structured failure (unreachable, collision, empty grasp) call again with next_after=<that id> to get the next rank without re-planning.",
+				"description": "Predict grasps for one object from the current RGB-D observation, ranked best first, in the world frame. Give the object as text (segmented with SAM3) or a mask_id of this observation. Each candidate has a short id (g3) and its EEF pose, valid until the robot moves; execute_grasp (where the robot has it) runs one from a single resolution of its id. Try `active` first; when it is refused before the robot moves (unreachable), call again with next_after=<that id> to get the next rank without re-planning; after a failed motion, plan again.",
 				"parameters": {
 					"type": "object",
 					"required": [
@@ -798,7 +798,7 @@
 			},
 			{
 				"name": "plan_place",
-				"description": "Where to hold the grasped object so it comes to rest on a placement region (AnyPlace). Give the region as text (segmented now) or as a mask id, and the grasp id the object is held with; the object is the mask that grasp was planned on (or object_mask_id). Region and grasp must come from the same observation (plan before moving, or re-segment after). Returns place poses with ids (p1) that motion tools take like grasp ids.",
+				"description": "Where to hold the grasped object so it comes to rest on a placement region (AnyPlace). Give the region as text (segmented now) or as a mask id, and the grasp id: after executing the grasp, that grasp's id (the held object is segmented again from its prompt, or object_mask_id, and the gripper's actual pose is used; refused when the fingers hold nothing); before it, a current g id with region and object from the same observation. Returns place poses with ids (p1); execute_place (where the robot has it) runs one.",
 				"parameters": {
 					"type": "object",
 					"required": [
@@ -814,7 +814,7 @@
 						},
 						"grasp_id": {
 							"type": "string",
-							"description": "The grasp (g id) the object is held with"
+							"description": "The executed grasp (g id) the object is held with, or a current one"
 						},
 						"object_mask_id": {
 							"type": "string",
@@ -1315,7 +1315,7 @@
 			},
 			{
 				"name": "plan_grasp",
-				"description": "Predict grasps for one object from the current RGB-D observation, ranked best first, in the world frame. Give the object as text (segmented with SAM3) or a mask_id of this observation. Each candidate has a short id (g3) valid until the robot moves; motion tools take grasp_id. Try `active` first; after a structured failure (unreachable, collision, empty grasp) call again with next_after=<that id> to get the next rank without re-planning.",
+				"description": "Predict grasps for one object from the current RGB-D observation, ranked best first, in the world frame. Give the object as text (segmented with SAM3) or a mask_id of this observation. Each candidate has a short id (g3) and its EEF pose, valid until the robot moves; execute_grasp (where the robot has it) runs one from a single resolution of its id. Try `active` first; when it is refused before the robot moves (unreachable), call again with next_after=<that id> to get the next rank without re-planning; after a failed motion, plan again.",
 				"parameters": {
 					"type": "object",
 					"properties": {
@@ -1357,7 +1357,7 @@
 			},
 			{
 				"name": "plan_place",
-				"description": "Where to hold the grasped object so it comes to rest on a placement region (AnyPlace). Give the region as text (segmented now) or as a mask id, and the grasp id the object is held with; the object is the mask that grasp was planned on (or object_mask_id). Region and grasp must come from the same observation (plan before moving, or re-segment after). Returns place poses with ids (p1) that motion tools take like grasp ids.",
+				"description": "Where to hold the grasped object so it comes to rest on a placement region (AnyPlace). Give the region as text (segmented now) or as a mask id, and the grasp id: after executing the grasp, that grasp's id (the held object is segmented again from its prompt, or object_mask_id, and the gripper's actual pose is used; refused when the fingers hold nothing); before it, a current g id with region and object from the same observation. Returns place poses with ids (p1); execute_place (where the robot has it) runs one.",
 				"parameters": {
 					"type": "object",
 					"required": [
@@ -1373,7 +1373,7 @@
 						},
 						"grasp_id": {
 							"type": "string",
-							"description": "The grasp (g id) the object is held with"
+							"description": "The executed grasp (g id) the object is held with, or a current one"
 						},
 						"object_mask_id": {
 							"type": "string",
@@ -1644,9 +1644,12 @@
 			},
 			{
 				"name": "move_to",
-				"description": "Scripted EEF servo to a world xyz, or to a planned grasp (grasp_id from plan_grasp / plan_place, valid for the current observation only; standoff backs off along its approach); holds orientation, or turns to the grasp's yaw. gripper -1 = open, +1 = close (hold +1 while carrying). Never move more than 0.30 m in xy in one call; split long moves.",
+				"description": "Scripted EEF servo to a world xyz; holds orientation. gripper -1 = open, +1 = close (hold +1 while carrying). Never move more than 0.30 m in xy in one call; split long moves.",
 				"parameters": {
 					"type": "object",
+					"required": [
+						"xyz"
+					],
 					"properties": {
 						"xyz": {
 							"type": "array",
@@ -1656,14 +1659,6 @@
 							"minItems": 3,
 							"maxItems": 3,
 							"description": "World-frame [x, y, z] in meters"
-						},
-						"grasp_id": {
-							"type": "string",
-							"description": "A grasp (g1) or place (p1) id from plan_grasp / plan_place instead of xyz"
-						},
-						"standoff": {
-							"type": "number",
-							"description": "With grasp_id: metres to stop short of the grasp along its approach (0.1 = pre-grasp)"
 						},
 						"gripper": {
 							"type": "number",
@@ -1879,9 +1874,12 @@
 			},
 			{
 				"name": "move_pose",
-				"description": "Servo xyz and pitch/yaw together each step, to a world xyz or to a planned grasp (grasp_id, standoff as in move_to; its pitch and yaw become the targets). Use when move_to stalls on deep or low reaches (cabinet fronts, microwave). gripper defaults to -1 (open): pass +1 while holding.",
+				"description": "Servo xyz and pitch/yaw together each step. Use when move_to stalls on deep or low reaches (cabinet fronts, microwave). gripper defaults to -1 (open): pass +1 while holding.",
 				"parameters": {
 					"type": "object",
+					"required": [
+						"xyz"
+					],
 					"properties": {
 						"xyz": {
 							"type": "array",
@@ -1891,14 +1889,6 @@
 							"minItems": 3,
 							"maxItems": 3,
 							"description": "World-frame [x, y, z] in meters"
-						},
-						"grasp_id": {
-							"type": "string",
-							"description": "A grasp (g1) or place (p1) id from plan_grasp / plan_place instead of xyz"
-						},
-						"standoff": {
-							"type": "number",
-							"description": "With grasp_id: metres to stop short of the grasp along its approach"
 						},
 						"target_pitch": {
 							"type": "number",
@@ -2058,7 +2048,7 @@
 			},
 			{
 				"name": "plan_grasp",
-				"description": "Predict grasps for one object from the current RGB-D observation, ranked best first, in the world frame. Give the object as text (segmented with SAM3) or a mask_id of this observation. Each candidate has a short id (g3) valid until the robot moves; motion tools take grasp_id. Try `active` first; after a structured failure (unreachable, collision, empty grasp) call again with next_after=<that id> to get the next rank without re-planning.",
+				"description": "Predict grasps for one object from the current RGB-D observation, ranked best first, in the world frame. Give the object as text (segmented with SAM3) or a mask_id of this observation. Each candidate has a short id (g3) and its EEF pose, valid until the robot moves; execute_grasp (where the robot has it) runs one from a single resolution of its id. Try `active` first; when it is refused before the robot moves (unreachable), call again with next_after=<that id> to get the next rank without re-planning; after a failed motion, plan again.",
 				"parameters": {
 					"type": "object",
 					"properties": {
@@ -2100,7 +2090,7 @@
 			},
 			{
 				"name": "plan_place",
-				"description": "Where to hold the grasped object so it comes to rest on a placement region (AnyPlace). Give the region as text (segmented now) or as a mask id, and the grasp id the object is held with; the object is the mask that grasp was planned on (or object_mask_id). Region and grasp must come from the same observation (plan before moving, or re-segment after). Returns place poses with ids (p1) that motion tools take like grasp ids.",
+				"description": "Where to hold the grasped object so it comes to rest on a placement region (AnyPlace). Give the region as text (segmented now) or as a mask id, and the grasp id: after executing the grasp, that grasp's id (the held object is segmented again from its prompt, or object_mask_id, and the gripper's actual pose is used; refused when the fingers hold nothing); before it, a current g id with region and object from the same observation. Returns place poses with ids (p1); execute_place (where the robot has it) runs one.",
 				"parameters": {
 					"type": "object",
 					"required": [
@@ -2116,7 +2106,7 @@
 						},
 						"grasp_id": {
 							"type": "string",
-							"description": "The grasp (g id) the object is held with"
+							"description": "The executed grasp (g id) the object is held with, or a current one"
 						},
 						"object_mask_id": {
 							"type": "string",
@@ -2145,6 +2135,58 @@
 						"object": {
 							"type": "string",
 							"description": "The object that should be in the gripper"
+						}
+					}
+				}
+			},
+			{
+				"name": "execute_grasp",
+				"description": "Execute one planned grasp (a g id of the current observation, from plan_grasp) in one call: open to the pre-grasp standoff back along its approach, descend to it with its pitch and yaw, close, lift straight up. Returns each leg's final_dist_m and gripper_width (0.01-0.05 holding, near 0 missed); error and stalled when a leg stopped short. The id is spent either way; afterwards plan_place with this grasp_id plans from the held object.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"grasp_id"
+					],
+					"properties": {
+						"grasp_id": {
+							"type": "string",
+							"description": "A g id from plan_grasp"
+						},
+						"standoff": {
+							"type": "number",
+							"description": "Pre-grasp distance along the approach, m (default 0.10)"
+						},
+						"lift": {
+							"type": "number",
+							"description": "Lift after closing, m (default 0.10)"
+						},
+						"max_steps": {
+							"type": "integer",
+							"description": "Step budget per leg (default 150)"
+						}
+					}
+				}
+			},
+			{
+				"name": "execute_place",
+				"description": "Execute one planned place (a p id of the current observation, from plan_place) in one call: carry closed to the pre-place standoff, descend to the place pose, open, retreat to the pre-place. Returns each leg's final_dist_m; error and stalled when a leg stopped short.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"place_id"
+					],
+					"properties": {
+						"place_id": {
+							"type": "string",
+							"description": "A p id from plan_place"
+						},
+						"standoff": {
+							"type": "number",
+							"description": "Pre-place distance along the approach, m (default 0.10)"
+						},
+						"max_steps": {
+							"type": "integer",
+							"description": "Step budget per leg (default 150)"
 						}
 					}
 				}

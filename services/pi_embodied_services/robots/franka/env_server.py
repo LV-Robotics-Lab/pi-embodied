@@ -30,6 +30,7 @@ import numpy as np
 
 from pi_embodied_services.components.code_api import register_code_api
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
+from pi_embodied_services.robots.franka.code_mode import FrankaCodeMode
 from pi_embodied_services.robots.franka.primitives import (
     FRANKA_PRIMITIVES,
     franka_primitives,
@@ -39,6 +40,7 @@ from pi_embodied_services.robots.franka.runtime_config import (
     set_robot_config_path,
 )
 from pi_embodied_services.utils import hardware_lock, motion, reach
+from pi_embodied_services.utils.code_real import add_code_argument
 from pi_embodied_services.utils.detections import state_digest
 from pi_embodied_services.utils.grasp import (
     GraspPlanner,
@@ -56,8 +58,12 @@ from pi_embodied_services.utils.serialization import to_numpy_tree
 logger = get_logger("franka_env_server")
 
 
-class FrankaEnvFacade(BaseEnvFacade):
-    """Expose the single-Franka ``env.*`` protocol from a Ray-backed worker."""
+class FrankaEnvFacade(FrankaCodeMode, BaseEnvFacade):
+    """Expose the single-Franka ``env.*`` protocol from a Ray-backed worker.
+
+    Code mode (``code.run``, code_mode.py): a program's motions run through the same stoppable,
+    reach-checked handlers as pi's tools, under pi's per-call limits (``env.set_code_limits``).
+    """
 
     SERVICE_NAME = "franka-env"
 
@@ -94,11 +100,14 @@ class FrankaEnvFacade(BaseEnvFacade):
         ik_reach: reach.ReachPreview | None = None,
         ik_motion: motion.MotionPlanner | None = None,
         geometry: bool = False,
+        code: bool = False,
     ) -> None:
         self._backend = backend
         # --geometry: env.point_views, env.mark_point, env.grip_target, env.grip_state
         # (utils/geometry.py via grasp_views.franka_geometry); the client executes the targets.
         self._geometry_on = geometry
+        # --code: code.run over the registry, behind the RPC token (code_mode.py).
+        self._enable_code(code)
         self._perception = perception
         # --contact-graspnet/--graspgenx/--anygrasp/--graspnet1b/--anyplace: env.plan_grasp, env.plan_place and
         # the grasp/placement ids over this server's cameras (utils/grasp.py).
@@ -153,7 +162,7 @@ class FrankaEnvFacade(BaseEnvFacade):
         if grasp is not None:
             grasp.install(self)
             primitives = (*primitives, *grasp.primitives())
-        register_code_api(self, primitives)
+        self._install_real_code_run(register_code_api(self, primitives))
 
     def _state_digest(self) -> tuple:
         """The arm's TCP pose and gripper, rounded (``utils/detections.state_digest``)."""
@@ -195,6 +204,8 @@ class FrankaEnvFacade(BaseEnvFacade):
         return call
 
     def _on_stop(self, generation: int) -> None:
+        # The running program first (code mode), then the worker's servo loops.
+        super()._on_stop(generation)
         request_stop = getattr(self._backend, "request_stop", None)
         if request_stop is not None:
             request_stop(generation)
@@ -859,6 +870,7 @@ def main(
     add_grasp_arguments(parser)
     reach.add_ik_argument(parser)
     hardware_lock.add_lock_arguments(parser)
+    add_code_argument(parser)
     parser.add_argument(
         "--geometry",
         action="store_true",
@@ -904,6 +916,7 @@ def main(
         ik_reach=reach.reach_from_args(args, "panda"),
         ik_motion=motion.planner_from_args(args, "panda"),
         **({"geometry": True} if args.geometry else {}),
+        code=args.code,
     )
     try:
         facade.serve(

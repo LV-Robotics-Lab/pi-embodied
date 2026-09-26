@@ -72,6 +72,7 @@ import yaml
 
 from pi_embodied_services.components.code_api import register_code_api
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
+from pi_embodied_services.robots.franka.code_mode import FrankaCodeMode
 from pi_embodied_services.robots.franka.primitives import franka_primitives
 from pi_embodied_services.robots.franka.runtime_config import set_robot_config_path
 from pi_embodied_services.robots.franka_polymetis.control import (
@@ -80,6 +81,7 @@ from pi_embodied_services.robots.franka_polymetis.control import (
     flange_to_tcp,
 )
 from pi_embodied_services.utils import hardware_lock, reach
+from pi_embodied_services.utils.code_real import add_code_argument
 from pi_embodied_services.utils.daemon import watch_parent_death
 from pi_embodied_services.utils.detections import state_digest
 from pi_embodied_services.utils.grasp import add_grasp_arguments, urls_from_args
@@ -276,8 +278,13 @@ def letterbox_intrinsics(raw: dict[str, Any], geo: dict[str, Any] | None) -> lis
 # ---------------------------------------------------------------------------
 
 
-class FrankaPolymetisFacade(MainThreadServeMixin, BaseEnvFacade):
-    """The single-Franka ``env.*`` protocol on a Polymetis NUC."""
+class FrankaPolymetisFacade(FrankaCodeMode, MainThreadServeMixin, BaseEnvFacade):
+    """The single-Franka ``env.*`` protocol on a Polymetis NUC.
+
+    Code mode (``code.run``, ../franka/code_mode.py): a program's motions run through the same
+    facade methods as pi's tools (the controller's per-call caps, workspace and floor, the reach
+    check, the stop polled between servo ticks), under pi's per-call limits too.
+    """
 
     SERVICE_NAME = "franka-polymetis-env"
 
@@ -294,10 +301,13 @@ class FrankaPolymetisFacade(MainThreadServeMixin, BaseEnvFacade):
         grasp: dict | None = None,
         ik_reach: reach.ReachPreview | None = None,
         geometry: bool = False,
+        code: bool = False,
     ) -> None:
         self._perception = perception
         # --geometry: the RLinf backend's geometric toolset (franka/grasp_views.franka_geometry).
         self._geometry_on = geometry
+        # --code: code.run over the registry, behind the RPC token (../franka/code_mode.py).
+        self._enable_code(code)
         # --contact-graspnet/--graspgenx/--anygrasp/--graspnet1b/--anyplace: env.plan_grasp, env.plan_place and the
         # grasp/placement ids over the wrist and external cameras, as on the RLinf backend.
         self._grasp_urls = grasp
@@ -381,7 +391,7 @@ class FrankaPolymetisFacade(MainThreadServeMixin, BaseEnvFacade):
         if grasp is not None:
             grasp.install(self)
             primitives = (*primitives, *grasp.primitives())
-        register_code_api(self, primitives)
+        self._install_real_code_run(register_code_api(self, primitives))
 
     def _state_digest(self) -> tuple:
         """The arm's TCP pose and gripper, rounded (``utils/detections.state_digest``)."""
@@ -684,6 +694,7 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="serve the geometric toolset: point-cloud views, marked points, grip-site targets",
     )
+    add_code_argument(parser)
     args = parser.parse_args(argv)
     # The grasp planner reads perception.calibration from the robot config in this process.
     set_robot_config_path(args.robot_config or DEFAULT_CONFIG)
@@ -728,6 +739,7 @@ def main(argv: list[str] | None = None) -> int:
             grasp=urls_from_args(args),
             ik_reach=reach.reach_from_args(args, "panda"),
             geometry=args.geometry,
+            code=args.code,
         )
     except Exception:
         for cam in cameras.values():

@@ -108,6 +108,18 @@ class DualFrankaEnvFacade(FrankaEnvFacade):
             ],
         }
 
+    def _video_frame(self, obs: dict) -> None:
+        """Code mode: pi picks the video camera from the policy's inline cameras, so a run
+        records no frame per motion (pi's state step after the run has one)."""
+        return None
+
+    def _code_tcp(self, arm: str | None) -> np.ndarray:
+        """The arm's TCP in right_base, the frame pi's --workspace-xy / --z-floor are in."""
+        if arm not in ("left", "right"):
+            raise ValueError("arm must be 'left' or 'right'")
+        state = self._rpc["env.get_robot_state"]()
+        return np.asarray(state[f"{arm}_arm"]["tcp_pose"], dtype=np.float64)[:3]
+
     @classmethod
     def perception_layout(cls, backend: Any):
         """``env.segment`` over the registered projection views, under the planner's camera

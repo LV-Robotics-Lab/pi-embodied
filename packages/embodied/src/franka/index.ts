@@ -3,6 +3,8 @@
  *
  *   pi -e packages/embodied/src/franka --task 1 --robot-config my_franka.yaml --robot-vla http://VLA_HOST:PORT
  *   pi -e packages/embodied/src/franka --robot-backend polymetis --robot-config my_polymetis.yaml
+ *   pi -e packages/embodied/src/franka --task 1 --z-floor 0.14 --operator --code=true --code-real
+ *      (run_code: the env server runs with --code; every program is confirmed by the operator)
  *
  * Starts an env server for --robot-backend: rlinf (default; pi_embodied_services.robots.franka.env_server,
  * Ray must already run on the controller node) or polymetis (robots.franka_polymetis.env_server,
@@ -120,6 +122,8 @@ const PERCEPTION_TOOLS: Record<string, keyof NonNullable<Caps["perception"]>> = 
 	reject_detection: "segment",
 	enhance_depth: "enhance_depth",
 };
+const SUCCESS_REFUSAL =
+	"motion refused: the operator judged this attempt a success. Write the audit and memory drafts, then call finish.";
 const BACKENDS: Record<string, string> = {
 	rlinf: "pi_embodied_services.robots.franka.env_server",
 	polymetis: "pi_embodied_services.robots.franka_polymetis.env_server",
@@ -354,6 +358,23 @@ export default function franka(pi: ExtensionAPI) {
 		},
 		// The env server's primitive registry (services robots/franka/primitives.py), both backends.
 		codeApi: () => env,
+		// Code mode (../code) on the real arm: --code-real and --operator, every program confirmed. The
+		// server (started with --code) runs it through the tools' own env methods under pi's per-call
+		// limits (code.set_limits at start); the run becomes a recorded state step like a tool's motion.
+		code: {
+			real: true,
+			rpc: () => env as RpcClient,
+			instruction: () => setup?.task.instruction ?? "",
+			refuse: () => (exploring() && judgedSuccess() ? SUCCESS_REFUSAL : undefined),
+			observe: async (r) => {
+				remember(r.states);
+				for (const f of (r.frames as NdArray[] | undefined) ?? []) robot.video.frame(frameOf(f));
+				const { output, pngs } = view(
+					await dumpState({ action: "run_code" }, { status: r.status, motions: r.motions ?? 0 }, null),
+				);
+				return toolResult(output, pngs);
+			},
+		},
 		start: startRobot,
 		stop: () => {
 			env = vla = undefined;
@@ -424,11 +445,10 @@ export default function franka(pi: ExtensionAPI) {
 	const check = (signal?: AbortSignal) => {
 		op.check();
 		if (signal?.aborted) throw new Error("tool operation interrupted");
-		if (exploring() && judgedSuccess())
-			throw new Error(
-				"motion refused: the operator judged this attempt a success. Write the audit and memory drafts, then call finish.",
-			);
+		if (exploring() && judgedSuccess()) throw new Error(SUCCESS_REFUSAL);
 	};
+	/** Code mode is on (--code): the env server serves code.run and takes pi's per-call limits. */
+	const coding = () => (pi.getFlag("code") ?? "false") !== "false";
 
 	/** The operator's scene reset (after the operator confirmed the scene): the env's reset, then a fresh step. */
 	async function resetRobot(): Promise<Json> {
@@ -1365,6 +1385,7 @@ export default function franka(pi: ExtensionAPI) {
 							...(flag("robot-unidepth") ? ["--unidepth", flag("robot-unidepth")] : []),
 							...graspArgs(pi),
 							...geometryArgs(pi),
+							...(coding() ? ["--code"] : []),
 						],
 						cwd: r.root,
 						env: servicesEnv(r),
@@ -1386,6 +1407,22 @@ export default function franka(pi: ExtensionAPI) {
 			"The arm will move to its configured reset pose. Clear the workspace and keep the emergency stop in reach.",
 		);
 		if (!go) throw new Error("operator declined the reset; the Franka tools stay disabled");
+		if (coding()) {
+			// A program's motions pass none of the tools' checks here: the server applies them.
+			const { box, floor } = workspaceLimits(flag("workspace-xy"), flag("z-floor"));
+			await envRpc
+				.call("code.set_limits", {
+					max_move_m: moveLimit(maxMove(), setup.task.constraints),
+					max_rotate_rad: maxRotate(),
+					z_floor_m: floor,
+					workspace_xy: box ?? null,
+				})
+				.catch((err) => {
+					throw new Error(
+						`code mode needs an env server started with --code (--robot-env URL#token=HEX): ${message(err)}`,
+					);
+				});
+		}
 		const reset = await envRpc.call<Json>("env.reset", {}, 180_000);
 		env = envRpc;
 		vla = vlaRpc;

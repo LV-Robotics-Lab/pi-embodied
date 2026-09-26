@@ -4,6 +4,8 @@
  *   dual_franka/serve.sh                      # dual-Franka Pi0.5 VLA (+ SAM3) servers
  *   pi -e packages/embodied/src/dual_franka --operator --task 3 --robot-config my_rig.yaml \
  *     --robot-vla http://127.0.0.1:18210 --robot-sam3 http://127.0.0.1:18310
+ *   pi -e packages/embodied/src/dual_franka --operator --task 3 --z-floor 0.02 --code=true --code-real
+ *     (run_code: the env server runs with --code; every program is confirmed by the operator)
  *
  * Starts the RLinf-backed env server (pi_embodied_services.robots.dual_franka.env_server; the
  * two-node Ray cluster must already run) or attaches to one with --robot-env. The server
@@ -39,6 +41,7 @@ import {
 	type Grid,
 	gridOf,
 	type Json,
+	message,
 	moveLimit,
 	plain,
 	type Rgb,
@@ -73,6 +76,8 @@ const MOTION = [
 	"vla_handoff",
 	"vla_left_place",
 ];
+const SUCCESS_REFUSAL =
+	"motion refused: the operator judged this attempt a success. Write the audit and memory drafts, then call finish.";
 const TOOLS = [
 	"describe_dual_franka_setup",
 	"view_env_state",
@@ -209,6 +214,23 @@ export default function dualFranka(pi: ExtensionAPI) {
 		},
 		// The env server's primitive registry (services robots/franka/primitives.py, the dual-arm set).
 		codeApi: () => env,
+		// Code mode (../code) on the real arms: --code-real and --operator, every program confirmed. The
+		// server (started with --code) runs it through the tools' own env methods under pi's per-call
+		// limits (code.set_limits at start; recover_joint_posture is refused there); the run becomes a
+		// recorded state step, whose frame is the episode video's (the server records none per motion).
+		code: {
+			real: true,
+			rpc: () => env as RpcClient,
+			instruction: () => setup?.task.instruction ?? "",
+			refuse: () => (exploring() && judgedSuccess() ? SUCCESS_REFUSAL : undefined),
+			observe: async (r) => {
+				remember(r.states);
+				const { output, pngs } = view(
+					await dumpState({ action: "run_code" }, { status: r.status, motions: r.motions ?? 0 }, null),
+				);
+				return toolResult(output, pngs);
+			},
+		},
 		start: startRobot,
 		stop: () => {
 			env = vla = sam3 = undefined;
@@ -276,11 +298,10 @@ export default function dualFranka(pi: ExtensionAPI) {
 	const check = (signal?: AbortSignal) => {
 		op.check();
 		if (signal?.aborted) throw new Error("tool operation interrupted");
-		if (exploring() && judgedSuccess())
-			throw new Error(
-				"motion refused: the operator judged this attempt a success. Write the audit and memory drafts, then call finish.",
-			);
+		if (exploring() && judgedSuccess()) throw new Error(SUCCESS_REFUSAL);
 	};
+	/** Code mode is on (--code): the env server serves code.run and takes pi's per-call limits. */
+	const coding = () => (pi.getFlag("code") ?? "false") !== "false";
 
 	/** The operator's request_scene_reset (after the operator confirmed the scene): RLinf's reset, then a fresh step. */
 	async function resetRobot(): Promise<Json> {
@@ -669,6 +690,7 @@ export default function dualFranka(pi: ExtensionAPI) {
 							// SAM3 on the env server too: plan_grasp / plan_place segment their object and region text there.
 							...(flag("robot-sam3") ? ["--sam3", flag("robot-sam3")] : []),
 							...graspArgs(pi),
+							...(coding() ? ["--code"] : []),
 						],
 						cwd: r.root,
 						env: servicesEnv(r),
@@ -683,6 +705,22 @@ export default function dualFranka(pi: ExtensionAPI) {
 			`${exploring() ? `Exploration attempt 1: restore the tabletop to the task's initial layout (${setup.task.setup}). ` : ""}RLinf's reset opens both grippers and moves both arms to the configured reset posture. Remove held objects, clear the workspace and keep both emergency stops in reach.`,
 		);
 		if (!go) throw new Error("operator declined the reset; the dual-Franka tools stay disabled");
+		if (coding()) {
+			// A program's motions pass none of the tools' checks here: the server applies them.
+			const { box, floor } = workspaceLimits(flag("workspace-xy"), flag("z-floor"));
+			await envRpc
+				.call("code.set_limits", {
+					max_move_m: moveLimit(Number(flag("max-move", "0.1")), setup.task.constraints),
+					max_rotate_rad: maxRotate(),
+					z_floor_m: floor,
+					workspace_xy: box ?? null,
+				})
+				.catch((err) => {
+					throw new Error(
+						`code mode needs an env server started with --code (--robot-env URL#token=HEX): ${message(err)}`,
+					);
+				});
+		}
 		await envRpc.call("env.reset", {}, 180_000);
 		env = envRpc;
 		vla = vlaRpc;

@@ -28,18 +28,21 @@ FRANKA_PRIMITIVES = (
         "get_robot_state",
         "env.get_robot_state",
         "The arm's state: TCP pose, joints and gripper width (m).",
+        example='st = get_robot_state()["raw_base_state"]\nprint(st["tcp_pose"][:3], st["gripper_position"])',
     ),
     Primitive(
         "get_observation",
         "env.get_observation",
         "Live RGB-D frames: main_images/main_depths (wrist) and extra_view_* (the other cameras).",
         tiers=("low",),
+        example='obs = get_observation()\nwrist, depth = obs["main_images"], obs["main_depths"]  # HxWx3 uint8, HxW m\nscene = obs["extra_view_images"][0]',
     ),
     Primitive(
         "get_camera_meta",
         "env.get_camera_meta",
         "Camera intrinsics, extrinsics and depth conventions.",
         tiers=("low",),
+        example='meta = get_camera_meta()\nfor name, cam in meta["cameras"].items():\n    print(name, cam["intrinsic_K"])',
     ),
     Primitive(
         "preview_reach",
@@ -58,6 +61,7 @@ FRANKA_PRIMITIVES = (
         "Translate the TCP by a base-frame delta in metres; refused beyond the per-call limit or outside the workspace.",
         {"delta_xyz": Param("vec3", "base-frame [dx, dy, dz] in m")},
         mutating=True,
+        example='r = move_delta([0, 0, -0.03])  # 3 cm down; each call stays within the per-call limit\nprint(r["ok"], r["final_tcp_pose"][:3])',
     ),
     Primitive(
         "rotate_delta",
@@ -65,6 +69,7 @@ FRANKA_PRIMITIVES = (
         "Rotate the TCP by a base-frame roll/pitch/yaw delta in radians; refused beyond the per-call limit.",
         {"delta_rpy": Param("vec3", "base-frame [droll, dpitch, dyaw] in rad")},
         mutating=True,
+        example="rotate_delta([0, 0, 0.2])  # yaw 0.2 rad",
     ),
     Primitive(
         "set_gripper",
@@ -72,6 +77,7 @@ FRANKA_PRIMITIVES = (
         "Open (open=True) or close the gripper and wait for it to settle.",
         {"open": Param("boolean", "True opens, False closes")},
         mutating=True,
+        example='r = set_gripper(False)  # close\nprint(r["ok"])',
     ),
 )
 
@@ -139,18 +145,21 @@ DUAL_FRANKA_PRIMITIVES = (
         "get_robot_state",
         "env.get_robot_state",
         "Both arms' state: TCP poses, joints and gripper widths.",
+        example='st = get_robot_state()\nprint(st["left_arm"]["tcp_pose"][:3], st["right_arm"]["tcp_pose"][:3])',
     ),
     Primitive(
         "get_observation",
         "env.get_observation",
         "Live RGB-D frames of the rig's cameras.",
         tiers=("low",),
+        example='obs = get_observation()\nprint(sorted(k for k in obs if k.endswith("_images")))',
     ),
     Primitive(
         "get_camera_meta",
         "env.get_camera_meta",
         "Camera intrinsics, serials and projection metadata.",
         tiers=("low",),
+        example='meta = get_camera_meta()\nprint(meta["observation_camera_map"])',
     ),
     Primitive(
         "move_delta",
@@ -158,6 +167,7 @@ DUAL_FRANKA_PRIMITIVES = (
         "Translate one arm's TCP by a world-frame delta in metres; refused beyond the per-call limit.",
         {"arm": _ARM, "delta_xyz": Param("vec3", "world-frame [dx, dy, dz] in m")},
         mutating=True,
+        example='move_delta("left", [0, 0, 0.03])  # the left TCP 3 cm up (right_base frame)',
     ),
     Primitive(
         "rotate_delta",
@@ -168,6 +178,7 @@ DUAL_FRANKA_PRIMITIVES = (
             "delta_rpy": Param("vec3", "world-frame [droll, dpitch, dyaw] in rad"),
         },
         mutating=True,
+        example='rotate_delta("right", [0, 0, -0.2])',
     ),
     Primitive(
         "set_gripper",
@@ -175,6 +186,7 @@ DUAL_FRANKA_PRIMITIVES = (
         "Open (open=True) or close one arm's gripper and wait for it to settle.",
         {"arm": _ARM, "open": Param("boolean", "True opens, False closes")},
         mutating=True,
+        example='set_gripper("right", True)  # open',
     ),
     Primitive(
         "recover_joint_posture",

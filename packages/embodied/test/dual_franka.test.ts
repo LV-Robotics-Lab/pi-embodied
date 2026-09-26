@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -24,6 +26,7 @@ function fakePi(flagValues: Record<string, unknown> = {}) {
 	const branch: unknown[] = [];
 	const dialogs: { prompt: string; options: string[] }[] = [];
 	const answers: string[] = [];
+	const confirms: boolean[] = [];
 	let active: string[] = [];
 	const pi = {
 		on: (name: string, fn: Handler) => handlers.set(name, [...(handlers.get(name) ?? []), fn]),
@@ -48,6 +51,7 @@ function fakePi(flagValues: Record<string, unknown> = {}) {
 			notify: () => {},
 			setWidget: () => {},
 			input: async () => "",
+			confirm: async () => confirms.shift() ?? true,
 			select: async (prompt: string, options: string[]) => {
 				dialogs.push({ prompt, options });
 				return answers.shift();
@@ -246,4 +250,104 @@ test("dual Franka has a wrist view only when an inline camera is a wrist camera 
 	assert.equal(inlineWrist({ agent_observation: { inline_cameras: ["d455", "left_wrist"] } }), true);
 	assert.equal(inlineWrist({ agent_observation: { inline_cameras: ["d455", "base"] } }), false);
 	assert.equal(inlineWrist({ agent_observation: { inline_cameras: [] } }), false);
+});
+
+/** A fake dual-Franka env server (`--robot-env`) whose `code.run` made one motion. */
+async function fakeDualEnv() {
+	const calls: { method: string; kwargs: Record<string, any> }[] = [];
+	const nd = (shape: number[]) => ({
+		__ndarray__: Buffer.alloc(shape.reduce((a, b) => a * b, 1)).toString("base64"),
+		dtype: "uint8",
+		shape,
+	});
+	const server = createServer((req, res) => {
+		let body = "";
+		req.on("data", (c) => {
+			body += c;
+		});
+		req.on("end", () => {
+			const { method, kwargs = {} } = JSON.parse(body);
+			calls.push({ method, kwargs });
+			let result: unknown = { ok: true };
+			if (method === "env.get_env_meta") result = { ok: true };
+			else if (method === "env.reset") result = { ok: true, states: [1] };
+			else if (method === "env.get_observation") result = { states: [1], d455_images: nd([2, 2, 3]) };
+			else if (method === "env.get_robot_state")
+				result = {
+					left_arm: { tcp_pose: [0.5, 0.3, 0.3, 1, 0, 0, 0] },
+					right_arm: { tcp_pose: [0.5, -0.3, 0.3, 1, 0, 0, 0] },
+				};
+			else if (method === "env.get_camera_meta") result = null;
+			else if (method === "code.api") result = { tier: kwargs.tier ?? null, primitives: [], digest: "d" };
+			else if (method === "code.run")
+				result = {
+					status: "ran",
+					stdout: "",
+					stderr: "",
+					traceback: null,
+					error: null,
+					result: null,
+					calls: [],
+					n_calls: 1,
+					move_m: 0.03,
+					ms: 5,
+					motions: 1,
+					states: [2],
+					frames: [],
+				};
+			res.end(JSON.stringify({ ok: true, result }));
+		});
+	});
+	await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+	return {
+		url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+		calls,
+		close: () => {
+			server.closeAllConnections();
+			server.close();
+		},
+	};
+}
+
+test("dual_franka --code: pi's limits reach the server, the program is confirmed and the run is a state step", async (t) => {
+	const env = await fakeDualEnv();
+	t.after(env.close);
+	const dir = mkdtempSync(join(tmpdir(), "dual-py-"));
+	const py = join(dir, "python");
+	const setup = {
+		task: {
+			name: "handover",
+			instruction: "hand the cup over",
+			success_criteria: "cup in the right gripper",
+			constraints: [],
+			setup: "cup on the left",
+			vla_instruction: null,
+		},
+	};
+	writeFileSync(py, `#!/usr/bin/env bash\necho '${JSON.stringify(setup)}'\n`);
+	chmodSync(py, 0o755);
+	const f = fakePi({
+		operator: true,
+		code: "true",
+		"code-real": true,
+		task: "3",
+		"z-floor": "0.02",
+		"robot-env": env.url,
+		python: py,
+		out: dir,
+	});
+	dualFranka(f.pi);
+	await f.emit("session_start");
+	assert.ok(f.active().includes("run_code"), f.active().join(","));
+	assert.deepEqual(env.calls.find((c) => c.method === "code.set_limits")?.kwargs, {
+		max_move_m: 0.1,
+		max_rotate_rad: 0.5,
+		z_floor_m: 0.02,
+		workspace_xy: [0.1, 1.15, -0.85, 0.85],
+	});
+	await f.emit("agent_start");
+	const r = await f.run("run_code", { code: "move_delta('left', [0, 0, 0.03])" });
+	assert.equal(r.details.status, "ran");
+	assert.equal(env.calls.filter((c) => c.method === "code.run").length, 1);
+	assert.match(r.content.map((c: any) => c.text ?? "").join("\n"), /"action": "run_code"/);
 });

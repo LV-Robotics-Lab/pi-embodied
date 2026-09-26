@@ -50,7 +50,7 @@ Every service except the LingBot-VLA launcher speaks the same JSON-over-HTTP RPC
 | `shutdown` | - | `{"ok": true}`; the process exits after answering |
 
 Service names: `libero-env`, `robocasa-env`, `rldx-vla`, `robotwin-env`, `robolab-env`, `franka-env`,
-`dual-franka-env`, `franka-polymetis-env`, `pi05-vla`, `sam3`, `molmo`.
+`dual-franka-env`, `franka-polymetis-env`, `ur5e-env`, `pi05-vla`, `sam3`, `molmo`.
 
 ### `stop` semantics
 
@@ -74,6 +74,7 @@ client's queued calls.
 | robolab-env | queued calls; `env.move_delta` / `env.rotate_delta` before each control step; `env.chunk_step` before each action | the Isaac Lab `env.step` in progress (one control step of 8 physics substeps), `env.reset` |
 | franka-env | queued calls; `env.move_delta` / `env.rotate_delta` / `env.set_gripper` before each servo step; `env.chunk_step` after each action | the servo step in progress (one RLinf `env.step`: one Cartesian target plus the pacing sleep, and up to 0.6 s when it toggles the gripper); `env.reset` (RLinf go-to-rest / joint reset) |
 | franka-polymetis-env | queued calls; `env.move_delta` / `env.rotate_delta` before each servo tick (setpoint advance <= `servo_step_m` / `servo_step_rad`) and during settle; `env.set_gripper` between width polls; `env.reset` between lift ticks and joint-stream ticks (`reset.method: joint_stream`) | the ZeroRPC call in flight (one setpoint); a gripper command already sent; `env.reset` with `reset.method: move_to_joint_positions` (blocking on the NUC) |
+| ur5e-env | queued calls; `env.move_delta` / `env.move_pose` / `env.rotate_delta` between polls of the running moveL (`limits.poll_s`, default 20 ms), which is then brought to rest with ur_rtde `stopL`; `env.set_gripper` between Robotiq register polls; `env.reset` between polls of the moveJ (`stopJ`) | the deceleration itself (stopL at 10 m/s^2, stopJ at 2 rad/s^2); a Robotiq command already sent (the fingers finish it). After a stop the setpoint is cleared: the next command starts from the measured pose |
 | dual-franka-env | as franka-env; `env.recover_joint_posture` skips its return-to-start moves and reports `cancelled: true, ok: false` | as franka-env; in `recover_joint_posture` the two-arm joint reset and the gripper re-commands that restore the pre-recovery gripper state |
 | pi05-vla, rldx-vla, sam3, molmo | queued calls | a running inference |
 | LingBot-VLA (RoboTwin) | nothing (WebSocket server, no `/call`) | - |
@@ -240,6 +241,38 @@ Both franka servers' `env.get_env_meta` carry `backend` and `capabilities`: `{"b
 "has_vla", "cameras" (observation key -> camera), "has_depth", "workspace" {min, max} | null,
 "z_floor_m", "table_z_m", "max_move_m", "max_rotate_rad" (per-call limits the server
 refuses beyond; null = none), "servo_step_m", "servo_step_rad", "empty_grasp_reopen_m"}`.
+
+### ur5e-env (`robots/ur5e/env_server.py`)
+
+One UR5e over ur_rtde (moveL / moveJ at `limits.speed_mps` 0.25 and `accel_mps2` 0.5 by default),
+a Robotiq 2F gripper over the URCap socket (port 63352), and cameras through the shared
+`components/cameras` layer (RealSense D400 / L515, webcam, RTSP; `--cameras name=type:source,...`
+overrides the config's devices). Poses are the UR base frame; `tcp_pose` is `[x, y, z, qx, qy, qz,
+qw]`, `tcp_pose_rotvec` the UR `[x, y, z, rx, ry, rz]`. The config is bound to one arm:
+`calibration.arm_id` must equal the controller's serial number (`--print-identity`), and each
+camera's hand-eye YAML (written by `robots/ur5e/calibrate.py`, applied by a human) must name the
+same arm and, when recorded, the same camera serial. `code.api` serves the primitives of
+`robots/ur5e/primitives.py` (the motion and state methods below; no privileged tier).
+
+Refusals (error, nothing commanded): a translation beyond `limits.max_move_m`, a turn beyond
+`max_rotate_rad`, a target outside the workspace box or below `z_floor_m` (a move from outside
+back toward the box is allowed), a tool tilt past `max_tilt_rad`, `env.reset` without
+`calibration.begin_joints`, `env.set_gripper` without a gripper. A motion that is stopped, times
+out (`move_timeout_s`, stopL), raises in the driver (stopL, `RuntimeError`) or ends farther than
+`move_tolerance_m` / `rotate_tolerance_rad` from its target reports `ok: false` and clears the
+setpoint (`raw_base_state.setpoint_pose` is null) so the next command starts from the measured pose.
+
+| method | args | result |
+|---|---|---|
+| `env.get_env_meta` | - | `{"ok", "robot": "ur5e", "backend": "ur_rtde", "arm_id", "config_path", "cameras", "main_camera", "gripper", "has_begin_pose", "limits", "capabilities" (the franka layout plus `camera_depth` {name: bool} and `arm_id`), "tasks"}` |
+| `env.reset` | - | `{"ok", "gripper", "move" {ok, target_joints, final_joints, final_error_rad, final_tcp_pose}, "info", "robot_state", "states": null[, "cancelled"]}` (opens the gripper, moveJ to `begin_joints`) |
+| `env.get_robot_state` | - | `{"raw_base_state" {tcp_pose, tcp_pose_rotvec, tool_tilt_rad, joints, joint_speeds, setpoint_pose, gripper_position [width_m], gripper_open, gripper_grasped, gripper_commanded_open, gripper {...}, z_floor_m, robot_status}, "backend", "arm_id"}` |
+| `env.get_observation` | - | `{"images" {name: uint8[H,W,3]}, "depths" {name: float32[H,W] m, cameras with depth only}, "timestamps" {name: s}}` |
+| `env.get_camera_meta` | - | `{"cameras" {name: {role, mount, has_depth, intrinsic_K 3x3 or null, raw_color_intrinsics, output_resolution, extrinsic {frame "tcp" or "base", matrix 4x4 (camera -> that frame), path, arm_id} or null, camera_type, ...}}, "observation_camera_map", "arm_id", ...}` |
+| `env.move_delta` | `delta_xyz` float[3] (m, base frame) | `{"ok", "requested_delta_xyz_base", "start_tcp_pose", "target_tcp_pose", "final_tcp_pose", "final_error_m", "final_error_rad", "steps_used", "elapsed_s", "states": null[, "cancelled", "timed_out", "note"]}` |
+| `env.move_pose` | `xyz` float[3], kw `rotvec` float[3] or `rpy` float[3] (extrinsic xyz, rad; converted to a rotation vector) or neither (orientation held) | as `env.move_delta` plus `requested_pose_rotvec`; refused beyond `max_move_m` / `max_rotate_rad` from the current setpoint |
+| `env.rotate_delta` | `delta_rpy` float[3] (rad, about the base axes) | as `env.move_delta` with `requested_delta_rpy_base` |
+| `env.set_gripper` | kw `open` bool | `{"ok", "target_gripper_open", "object_detected", "steps_used", "gripper_width_m", "robot_state", "states": null[, "gripper_jammed", "grasp_empty", "note", "cancelled"]}`; a close ending at or below `gripper.empty_width_m` with nothing detected reopens (`grasp_empty`); fingers that did not move toward the command and hold nothing are `gripper_jammed` |
 
 ### dual-franka-env (`robots/dual_franka/env_server.py`)
 

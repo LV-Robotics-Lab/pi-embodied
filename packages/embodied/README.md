@@ -72,6 +72,7 @@ with `--env` / `--vla` / `--sam3`. Real-arm robots (Franka, dual Franka) stay on
 | Franka (real) | `src/franka` | operator verdict (`--operator`) | all below but `--privileged`; explore resets through the operator |
 | Dual Franka (real) | `src/dual_franka` | operator verdict (required) | all below but `--privileged`; explore resets through the operator |
 | Piper / dual Piper (real) | `src/piper` | operator verdict (required) | all below but `--privileged`; explore resets through the operator |
+| UR5e (real) | `src/ur5e` | operator verdict (required) | all below but `--privileged` and memory/explore; bound to one arm (`--arm-id`) |
 
 Every robot mounts memory, explore, video, units (so GUMI and the fine-tuned provider), VDM
 (`--vdm`), the primitive registry (`code.api`) and, in simulation, `--privileged`. ManiSkill,
@@ -152,6 +153,12 @@ in a new session. Boolean flags take the next word as their value; write them as
 - Franka / dual Franka: the services' `[franka]` extra, a Ray cluster on the controller nodes,
   hand-eye calibration, and an operator at the emergency stop. Flags use a `--robot-`
   prefix (`--robot-env`, `--robot-vla`, `--robot-sam3`, `--robot-config`).
+- UR5e: the services' `[ur5e]` extra (ur_rtde, the shared `components/cameras` layer: RealSense
+  D400 / L515 with `[realsense-l515]`, webcams, RTSP; `--robot-cameras name=type:source,...`), a
+  Robotiq gripper over the URCap socket, `--operator` and `--arm-id <controller serial>` (the config,
+  its limits and its camera calibrations are bound to that arm; `env_server --print-identity`), and
+  the hand-eye tool `robots/ur5e/calibrate.py` (`capture`, `solve` -> `<calibration>.new.yaml`,
+  `apply --yes` after a human reviewed the residuals).
 
 An abort (Esc, `/abort`, a session switch) stops a robot between RPC calls and asks the server to
 `stop` its running call; what each server can interrupt mid-call is listed in

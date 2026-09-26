@@ -34,6 +34,8 @@ from typing import Any
 
 import numpy as np
 
+from pi_embodied_services.components.cameras.base import Frame
+
 MOCK_ENV = "PI_EMBODIED_MOCK_ROBOT"
 
 
@@ -165,7 +167,7 @@ class MockRGBD:
             "coeffs": [0.0] * 5,
         }
 
-    def read(self) -> tuple[np.ndarray, np.ndarray]:
+    def read(self) -> Frame:
         rows = np.linspace(0, 255, self.height, dtype=np.float32)[:, None]
         cols = np.linspace(0, 255, self.width, dtype=np.float32)[None, :]
         rgb = np.stack(
@@ -177,7 +179,7 @@ class MockRGBD:
             axis=-1,
         ).astype(np.uint8)
         depth = np.full((self.height, self.width), self.depth_m, dtype=np.float32)
-        return rgb, depth
+        return Frame(rgb=rgb, depth=depth, timestamp_s=0.0)
 
     def close(self) -> None:
         self.closed = True

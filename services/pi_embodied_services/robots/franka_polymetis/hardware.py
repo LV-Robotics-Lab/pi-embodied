@@ -12,23 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# Adapted from Show-Harness core/franka/franka_interface.py (FrankaInterface) and
-# core/franka/camera_utils.py (RealSenseCamera, hardware_reset_device).
-# Modified by pi-embodied: the camera streams RGB plus depth aligned to color and
-# reports its color intrinsics and depth scale (back_project needs both); frames are
-# delivered in RGB order (rgb8 stream, no OpenCV); prints go to the logger; the
-# ZeroRPC client takes an explicit call timeout; the measured gripper state (width,
-# grasp and moving flags) is read with get_gripper_state.
+# Adapted from Show-Harness core/franka/franka_interface.py (FrankaInterface).
+# Modified by pi-embodied: prints go to the logger; the ZeroRPC client takes an
+# explicit call timeout; the measured gripper state (width, grasp and moving flags) is
+# read with get_gripper_state. The RealSense driver lives in the shared camera layer
+# (components/cameras/realsense.py).
 
-"""Hardware handles: the NUC's Polymetis ``franka_server`` and RealSense RGB-D cameras.
+"""Hardware handle: the NUC's Polymetis ``franka_server``.
 
-Both import their drivers lazily (``zerorpc``, ``pyrealsense2``) so the env server and
-its tests import without them.
+``zerorpc`` is imported lazily so the env server and its tests import without it.
 """
 
 from __future__ import annotations
 
-import time
 from typing import Any
 
 import numpy as np
@@ -127,153 +123,3 @@ class PolymetisRobot:
             self.server.close()
         except Exception:
             pass
-
-
-def _hardware_reset(serial: str | None, settle_s: float = 5.0, timeout_s: float = 20.0):
-    """Power-cycle a RealSense over USB and wait for it to re-enumerate (best effort)."""
-    import pyrealsense2 as rs
-
-    try:
-        for dev in rs.context().query_devices():
-            if serial is None or dev.get_info(rs.camera_info.serial_number) == serial:
-                logger.warning("hardware_reset on RealSense %s", serial or "default")
-                dev.hardware_reset()
-                break
-        else:
-            return
-    except Exception as exc:
-        logger.warning("RealSense hardware_reset failed: %s", exc)
-        return
-    time.sleep(settle_s)
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        try:
-            serials = {
-                d.get_info(rs.camera_info.serial_number)
-                for d in rs.context().query_devices()
-            }
-        except Exception:
-            serials = set()
-        if serial is None or serial in serials:
-            return
-        time.sleep(1.0)
-
-
-class RealSenseRGBD:
-    """One RealSense (D435 external / D405 wrist): RGB plus depth aligned to color."""
-
-    def __init__(
-        self,
-        serial: str,
-        *,
-        width: int = 640,
-        height: int = 480,
-        fps: int = 30,
-        read_timeout_ms: int = 3000,
-        read_retries: int = 2,
-        start_retries: int = 3,
-        warmup_frames: int = 3,
-    ) -> None:
-        import pyrealsense2 as rs
-
-        self._rs = rs
-        self.serial = str(serial)
-        self.width, self.height, self.fps = int(width), int(height), int(fps)
-        self.read_timeout_ms = int(read_timeout_ms)
-        self.read_retries = max(1, int(read_retries))
-        self.warmup_frames = int(warmup_frames)
-        self.pipeline: Any = None
-        self.profile: Any = None
-        self.align = rs.align(rs.stream.color)
-        for attempt in range(1, start_retries + 1):
-            try:
-                self._start()
-                return
-            except Exception as exc:
-                logger.warning(
-                    "RealSense %s start attempt %d/%d failed: %s",
-                    self.serial,
-                    attempt,
-                    start_retries,
-                    exc,
-                )
-                self._stop()
-                if attempt == start_retries:
-                    raise RuntimeError(
-                        f"RealSense {self.serial} did not start; check the USB 3 "
-                        "cable/port and `rs-enumerate-devices | grep Serial`"
-                    ) from exc
-                _hardware_reset(self.serial)
-
-    def _start(self) -> None:
-        rs = self._rs
-        self.pipeline = rs.pipeline()
-        config = rs.config()
-        config.enable_device(self.serial)
-        config.enable_stream(
-            rs.stream.color, self.width, self.height, rs.format.rgb8, self.fps
-        )
-        config.enable_stream(
-            rs.stream.depth, self.width, self.height, rs.format.z16, self.fps
-        )
-        self.profile = self.pipeline.start(config)
-        self.depth_scale = float(
-            self.profile.get_device().first_depth_sensor().get_depth_scale()
-        )
-        for _ in range(self.warmup_frames):
-            self.pipeline.wait_for_frames(timeout_ms=self.read_timeout_ms)
-
-    def _stop(self) -> None:
-        if self.pipeline is not None:
-            try:
-                self.pipeline.stop()
-            except Exception:
-                pass
-        self.pipeline = None
-
-    def intrinsics(self) -> dict[str, Any]:
-        """Color-stream intrinsics (the depth is aligned to it)."""
-        rs = self._rs
-        i = (
-            self.profile.get_stream(rs.stream.color)
-            .as_video_stream_profile()
-            .get_intrinsics()
-        )
-        return {
-            "width": int(i.width),
-            "height": int(i.height),
-            "fx": float(i.fx),
-            "fy": float(i.fy),
-            "ppx": float(i.ppx),
-            "ppy": float(i.ppy),
-            "distortion_model": str(i.model),
-            "coeffs": [float(c) for c in i.coeffs],
-        }
-
-    def _read_once(self) -> tuple[np.ndarray, np.ndarray]:
-        frames = self.pipeline.wait_for_frames(timeout_ms=self.read_timeout_ms)
-        frames = self.align.process(frames)
-        color, depth = frames.get_color_frame(), frames.get_depth_frame()
-        if not color or not depth:
-            raise RuntimeError("incomplete RealSense frameset")
-        rgb = np.asanyarray(color.get_data()).copy()
-        depth_m = np.asanyarray(depth.get_data()).astype(np.float32) * self.depth_scale
-        return rgb, depth_m
-
-    def read(self) -> tuple[np.ndarray, np.ndarray]:
-        """(rgb uint8 [H,W,3], depth float32 [H,W] in metres, 0 = no return)."""
-        error: Exception | None = None
-        for _ in range(self.read_retries):
-            try:
-                return self._read_once()
-            except Exception as exc:
-                error = exc
-                time.sleep(0.05)
-        logger.warning("RealSense %s read failed (%s); restarting", self.serial, error)
-        self._stop()
-        time.sleep(0.2)
-        self._start()
-        return self._read_once()
-
-    def close(self) -> None:
-        self._stop()

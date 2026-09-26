@@ -1,0 +1,97 @@
+# One Universal Robots UR5e over ur_rtde with a Robotiq 2F gripper (URCap socket) and
+# cameras read through the shared components/cameras layer.
+#
+# The server refuses to start until limits.z_floor_m, the workspace box and
+# calibration.arm_id are set (the arm's serial number must match it), and refuses
+# reset until calibration.begin_joints is set. Copy this file, calibrate on the
+# hardware and pass it with --robot-config. Read live values without moving the arm:
+#   python -m pi_embodied_services.robots.ur5e.env_server --robot-config my_ur5e.yaml --read-pose
+#   python -m pi_embodied_services.robots.ur5e.env_server --robot-config my_ur5e.yaml --print-identity
+# Poses and limits are in the UR base frame, for the TCP the controller reports
+# (set the TCP offset on the teach pendant: Installation > General > TCP).
+
+robot:
+  ip: "192.168.1.10"        # UR controller (RTDE 30004, dashboard 29999, URCap 63352)
+  dashboard_port: 29999
+  # What calibration.arm_id is checked against at start (a mismatch refuses to start):
+  # serial = the controller's serial number from the dashboard, or none (unbound; not
+  # recommended: every limit below belongs to one arm and its mounting).
+  identity: serial
+  gripper:
+    type: robotiq            # robotiq | none
+    port: 63352
+
+cameras:
+  width: 640                 # defaults for every device
+  height: 480
+  fps: 30
+  read_timeout_s: 5.0        # RTSP: how long a read waits for a new frame
+  devices:
+    # type: realsense (D400 / L515; serial from `rs-enumerate-devices | grep Serial`,
+    #   empty = the first device; an L515 needs pyrealsense2 2.54.1 = the services'
+    #   realsense-l515 extra, and depth_width/height/fps at one of its depth formats),
+    #   webcam (device: index or /dev/videoN; RGB only) or rtsp (url; RGB only).
+    # mount: wrist (moves with the TCP; calibration = T_tcp_cam, eye_in_hand) or fixed
+    #   (calibration = T_base_cam, eye_to_hand). calibration: the hand-eye YAML written
+    #   by robots/ur5e/calibrate.py (bound to calibration.arm_id below).
+    # intrinsics: {fx, fy, ppx, ppy} for RGB-only sources (back_project needs them).
+    wrist:
+      type: realsense
+      serial: ""
+      main: true
+      mount: wrist
+      calibration: ~/.pi/embodied/calibration/ur5e_wrist.yaml
+    front:
+      type: webcam
+      device: 0
+      mount: fixed
+      intrinsics: null
+      calibration: ~/.pi/embodied/calibration/ur5e_front.yaml
+
+calibration:                 # !! CAPTURE ON HARDWARE !!
+  # The arm this config and its camera calibrations belong to: --print-identity.
+  arm_id: null
+  # 6 joint angles (rad) of the begin pose: jog there, --read-pose, copy joints_rad.
+  # A common UR5e table pose is [1.5708, -1.5708, 1.5708, -1.5708, -1.5708, 0.0]
+  # (example only); verify the path from your workspace to it is clear.
+  begin_joints: null
+
+limits:                      # !! CAPTURE ON HARDWARE !!
+  # Rest the closed gripper on the table and copy tcp_z_m from --read-pose.
+  z_floor_m: null
+  # TCP box [x, y, z] in the base frame (m); moves that end outside are refused
+  # (a move from outside back toward the box is allowed).
+  workspace_min: null
+  workspace_max: null
+  max_move_m: 0.08           # largest move_delta / move_pose translation per call
+  max_rotate_rad: 0.2        # largest rotate_delta / move_pose turn per call
+  max_tilt_rad: 0.5          # largest tool tilt from pointing straight down; null = off
+  speed_mps: 0.25            # moveL speed and acceleration (OpenETA's defaults)
+  accel_mps2: 0.5
+  joint_speed_radps: 0.25    # moveJ (reset) speed and acceleration
+  joint_accel_radps2: 0.5
+  poll_s: 0.02               # stop is checked this often while a motion runs
+  move_timeout_s: 15.0       # a moveL still running after this is stopped (stopL)
+  reset_timeout_s: 30.0
+  move_tolerance_m: 0.005    # final error for ok: true
+  rotate_tolerance_rad: 0.02
+  joint_tolerance_rad: 0.02
+  divergence_resync_m: 0.01  # measured vs setpoint gap that re-anchors the setpoint
+
+gripper:                     # Robotiq 2F-85: 0.085 m stroke (2F-140: 0.14)
+  stroke_m: 0.085
+  speed: 255                 # SPE / FOR registers, 0..255
+  force: 100
+  timeout_s: 5.0
+  poll_s: 0.05
+  motion_eps_m: 0.003        # fingers that moved less than this "did not move" (jammed)
+  close_threshold_m: 0.075   # below this width the gripper counts as closed
+  empty_width_m: 0.005       # a close ending at/below this caught nothing -> reopen; null disables
+
+tasks:                       # --task <name>
+  block_bowl:
+    instruction: "Pick up the block and place it in the bowl"
+    success_criteria: "The block rests in the bowl and the gripper is open."
+  smoke:
+    instruction: "Move the gripper 2 cm up, then back down, without touching anything"
+    success_criteria: "The arm is back where it started."

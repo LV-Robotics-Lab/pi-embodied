@@ -14,6 +14,7 @@ import robocasa from "../src/robocasa/index.ts";
 import robolab from "../src/robolab/index.ts";
 import { defineRobot, toolSections } from "../src/robot.ts";
 import robotwin from "../src/robotwin/index.ts";
+import ur5e from "../src/ur5e/index.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
@@ -97,6 +98,12 @@ const ROBOTS: { robot: string; files: string[]; load: (pi: ExtensionAPI) => unkn
 	{ robot: "dual_franka", files: ["dual_franka/SYSTEM.md"], load: dualFranka },
 	{ robot: "piper", files: ["piper/SYSTEM.md"], load: piper },
 	{ robot: "piper dual", files: ["piper/SYSTEM_DUAL.md"], load: piperDual },
+	{
+		robot: "ur5e",
+		files: ["ur5e/SYSTEM.md"],
+		load: ur5e,
+		core: ["view_env_state", "move_delta", "gripper", "finish"],
+	},
 ];
 
 test("tool blocks: lines and inline spans, any-of names, nesting, adjacent blocks", () => {

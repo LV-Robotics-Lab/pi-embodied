@@ -104,11 +104,30 @@ piper = [
 # script (see README), so this extra only marks the robot.
 robolab = []
 franka-polymetis = [
-    # Franka on a Polymetis NUC (Show-Harness's stack); no RLinf, no VLA.
+    # Franka on a Polymetis NUC (Show-Harness's stack); no RLinf, no VLA. Cameras
+    # through the shared components/cameras layer (the cameras extra).
+    "pi-embodied-services[cameras]",
     "zerorpc",
-    "pyrealsense2",
     "omegaconf",
-    "opencv-python-headless",
+]
+# The shared camera layer (components/cameras): RealSense D400 through pyrealsense2,
+# webcams and RTSP streams through OpenCV, checkerboard detection for calibrate.py.
+cameras = [
+    "pyrealsense2",
+    "opencv-python-headless>=4.8,<5",  # 5.x drops calibrateHandEye from the bindings
+]
+# An Intel L515 in the rig: pyrealsense2 2.54.1 is the last release that supports it
+# (later ones dropped the L515), so this extra pins it; install it instead of, not
+# next to, a newer pyrealsense2. D400 cameras work with either.
+realsense-l515 = [
+    "pi-embodied-services[cameras]",
+    "pyrealsense2==2.54.1.5216",
+]
+ur5e = [
+    # Universal Robots UR5e over RTDE (ur_rtde's Python bindings: rtde_control,
+    # rtde_receive, dashboard_client) with a Robotiq gripper (URCap socket, stdlib).
+    "pi-embodied-services[cameras]",
+    "ur-rtde>=1.5",
 ]
 robocasa = [
     "pi-embodied-services[rlinf]",
@@ -137,6 +156,7 @@ include = ["pi_embodied_services*"]
 "pi_embodied_services.robots.franka_polymetis" = ["config/*.yaml"]
 "pi_embodied_services.robots.dual_franka" = ["config/*.yaml"]
 "pi_embodied_services.robots.piper" = ["config/*.yaml"]
+"pi_embodied_services.robots.ur5e" = ["config/*.yaml"]
 "pi_embodied_services.robots.robolab" = ["assets/*.usda", "assets/Props/*.usd"]
 
 [tool.uv]

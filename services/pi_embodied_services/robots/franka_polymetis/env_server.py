@@ -40,7 +40,8 @@ Deploying (the NUC side is not part of Show-Harness either):
    server exposing the same methods works.
 3. On the workstation (cameras plugged in here): install the services with the
    ``franka-polymetis`` dependencies (``zerorpc``, ``pyrealsense2``, ``omegaconf``;
-   ``opencv-python-headless`` optional), copy ``config/example.yaml``, fill in the
+   ``opencv-python-headless`` optional; the cameras are read through the shared
+   ``components/cameras`` layer, ``realsense-l515`` for an L515), copy ``config/example.yaml``, fill in the
    NUC IP, camera serials (``rs-enumerate-devices | grep Serial``), the Z floor, the
    workspace box, the begin joints (``--read-pose`` prints the live values without
    moving the arm) and the easy_handeye calibration paths, then
@@ -427,7 +428,7 @@ class FrankaPolymetisFacade(MainThreadServeMixin, BaseEnvFacade):
             return {}
 
         def emit(name: str) -> tuple[np.ndarray, np.ndarray]:
-            rgb, depth = frames[name]
+            rgb, depth = frames[name].rgb, frames[name].depth
             geo = self._geo[name]
             if geo is None:
                 return np.ascontiguousarray(rgb), depth.astype(np.float32)
@@ -489,10 +490,8 @@ class FrankaPolymetisFacade(MainThreadServeMixin, BaseEnvFacade):
 
 def build(cfg: dict[str, Any]) -> tuple[Any, dict[str, Any]]:
     """Connect the NUC and the RealSense cameras named in ``cfg``."""
-    from pi_embodied_services.robots.franka_polymetis.hardware import (
-        PolymetisRobot,
-        RealSenseRGBD,
-    )
+    from pi_embodied_services.components.cameras.realsense import RealSenseRGBD
+    from pi_embodied_services.robots.franka_polymetis.hardware import PolymetisRobot
 
     rc = cfg.get("robot") or {}
     if not rc.get("nuc_ip"):

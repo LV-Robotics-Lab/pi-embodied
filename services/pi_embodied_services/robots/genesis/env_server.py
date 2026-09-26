@@ -38,7 +38,7 @@ import numpy as np
 from pi_embodied_services.components.code_api import register_code_api
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
 from pi_embodied_services.robots.genesis.primitives import GENESIS_PRIMITIVES
-from pi_embodied_services.utils import ground_truth
+from pi_embodied_services.utils import ground_truth, reach
 from pi_embodied_services.utils.grasp import add_grasp_arguments, install_grasp_planner
 from pi_embodied_services.utils.logging import get_logger
 from pi_embodied_services.utils.perception import (
@@ -559,6 +559,14 @@ class GenesisEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         commanded_m, moved_m, decisions, control_steps[, frames, cancelled]."""
         start = self._tcp()
         target = check_target(start, delta_xyz)
+        if (
+            getattr(self, "_reach", None) is not None
+            and np.linalg.norm(target - start) > 0
+        ):
+            # --ik: a target the ik service cannot reach is refused before anything moves.
+            reach.require_reachable(
+                self._rpc["env.preview_reach"](target.tolist()), "move_delta"
+            )
         if gripper not in (None, "open", "close"):
             raise ValueError(
                 f"gripper must be 'open', 'close' or null, not {gripper!r}"
@@ -709,6 +717,7 @@ def main():
         help="watch parent process via stdin pipe and exit when it dies",
     )
     add_perception_arguments(p, sam3=True)
+    reach.add_ik_argument(p)
     add_grasp_arguments(p)
     args = p.parse_args()
 
@@ -721,6 +730,15 @@ def main():
         view_size=args.view_size,
     )
     # --sam3 / --unidepth: env.detect, env.select_detection, env.reject_detection, env.enhance_depth.
+    # --ik: env.preview_reach (the Panda stands at the world origin, so targets are base-frame) and
+    # move_delta refuses a target the ik service cannot reach.
+    facade._reach = reach.reach_from_args(args, "panda")
+    reach.install_preview_reach(
+        facade,
+        facade._reach,
+        joints=lambda: facade._qpos()[: len(MOTOR_DOFS)],
+        eef_quat_xyzw=lambda: _xyzw(facade._hand_pose()[1]),
+    )
     view = render_view(facade)
     perception = install_perception(
         facade, args, cameras=["agentview", "wrist"], view=view

@@ -295,6 +295,33 @@ class ReachPreview:
         return out
 
 
+def install_preview_reach(
+    facade: Any,
+    reach: "ReachPreview | None",
+    *,
+    joints: Any,
+    eef_quat_xyzw: Any,
+    base_pose: Any = None,
+) -> None:
+    """Serve ``env.preview_reach(pos, quat_xyzw=None)`` on ``facade`` (read-only): ``joints()`` is
+    the arm's joint vector, ``eef_quat_xyzw()`` the orientation kept by default and ``base_pose()``
+    the robot base's world pose (``{"pos", "quat_xyzw"}``; None when targets are base-frame).
+    Without ``reach`` (no ``--ik``) it answers :func:`no_service`."""
+
+    def preview_reach(pos, quat_xyzw=None) -> dict[str, Any]:
+        if reach is None:
+            return no_service()
+        return reach.preview(
+            joints(),
+            pos,
+            eef_quat_xyzw() if quat_xyzw is None else quat_xyzw,
+            base_pose=base_pose() if base_pose is not None else None,
+        )
+
+    facade._rpc["env.preview_reach"] = preview_reach
+    facade._readonly_methods.add("env.preview_reach")
+
+
 def require_reachable(preview: dict[str, Any], action: str) -> dict[str, Any]:
     """Refuse ``action`` (raise ``ValueError``) when the preview says unreachable.
 

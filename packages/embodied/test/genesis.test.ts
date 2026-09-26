@@ -266,3 +266,24 @@ test("--graspnet: plan_grasp and execute_grasp, the claimed path run as move_del
 	process.exitCode = undefined;
 	assert.ok(!off.active().includes("execute_grasp") && !off.active().includes("plan_grasp"));
 });
+
+test("--ik: preview_reach asks env.preview_reach and nothing moves; without --ik it is inactive", async (t) => {
+	const env = await fakeGenesis();
+	t.after(env.close);
+	const s = simPi({ env: env.url, ik: "http://127.0.0.1:1" });
+	genesis(s.pi);
+	await s.emit("session_start");
+	process.exitCode = undefined;
+	assert.ok(s.active().includes("preview_reach"));
+	await s.run("preview_reach", { xyz: [0.5, 0, 0.1] });
+	assert.deepEqual(env.calls.find((c) => c.method === "env.preview_reach")?.kwargs, {
+		pos: [0.5, 0, 0.1],
+		quat_xyzw: null,
+	});
+	assert.ok(!env.calls.some((c) => c.method === "env.move_delta"));
+	const off = simPi({ env: env.url });
+	genesis(off.pi);
+	await off.emit("session_start");
+	process.exitCode = undefined;
+	assert.ok(!off.active().includes("preview_reach"));
+});

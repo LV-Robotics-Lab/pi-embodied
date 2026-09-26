@@ -25,6 +25,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { template } from "../context-version.ts";
+import { ikArgs, previewReachTool, type Reach, registerIkFlag } from "../ik.ts";
 import { decodePngChannel, encodePng } from "../png.ts";
 import { detectionActive, detectionArgs, detectionTools, registerDetectionFlags } from "../primitives/detections.ts";
 import { graspActive, graspArgs, graspTools, mountGraspTool, registerGraspFlags } from "../primitives/grasp.ts";
@@ -146,6 +147,8 @@ export default function genesis(pi: ExtensionAPI) {
 	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
 	pi.registerFlag("sam3", { type: "string", default: "http://127.0.0.1:18300", description: "SAM3 server (segment)" });
 	// --detections / --unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
+	// --ik: preview_reach over the env server's IK check (../ik.ts).
+	registerIkFlag(pi);
 	registerDetectionFlags(pi);
 	// --graspnet & co: plan_grasp and friends, and execute_grasp / execute_place (../primitives/grasp-chain.ts).
 	registerGraspFlags(pi);
@@ -448,6 +451,14 @@ export default function genesis(pi: ExtensionAPI) {
 		}),
 	);
 
+	mountGraspTool(
+		robot.tool,
+		previewReachTool(
+			(kwargs) => env.call<Reach>("env.preview_reach", kwargs, 60_000, [], robot.signal),
+			"base-frame",
+		),
+	);
+
 	// SAM3 masks with ids and UniDepth over the env server's perception (active with --detections / --unidepth).
 	for (const d of detectionTools(pi, {
 		call: (method, kwargs, timeoutMs) => env.call<Json>(method, kwargs, timeoutMs ?? 120_000, [], robot.signal),
@@ -499,6 +510,7 @@ export default function genesis(pi: ExtensionAPI) {
 				args: [
 					...["-m", "pi_embodied_services.robots.genesis.env_server"],
 					...["--task", task, "--seed", seed, "--backend", flag("backend", "gpu")],
+					...ikArgs(pi.getFlag("ik")),
 					...detectionArgs(pi, flag("sam3", "")),
 					...graspArgs(pi),
 					// The planner segments its object text with SAM3; --detections passes it already.
@@ -523,6 +535,7 @@ export default function genesis(pi: ExtensionAPI) {
 		return [
 			...["view_env_state", "view_camera_meta", "segment", "back_project", "move_delta", "gripper", "finish"],
 			...detectionActive(pi, meta.capabilities?.perception),
+			...(String(pi.getFlag("ik") ?? "").trim() ? ["preview_reach"] : []),
 			...graspActive(pi),
 			...(graspActive(pi).length ? ["execute_grasp", "execute_place"] : []),
 			...pointActive(pi),

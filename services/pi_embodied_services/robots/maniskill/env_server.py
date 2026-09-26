@@ -41,7 +41,7 @@ import numpy as np
 from pi_embodied_services.components.code_api import register_code_api
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
 from pi_embodied_services.robots.maniskill.primitives import MANISKILL_PRIMITIVES
-from pi_embodied_services.utils import ground_truth
+from pi_embodied_services.utils import ground_truth, reach
 from pi_embodied_services.utils.logging import get_logger
 from pi_embodied_services.utils.perception import (
     add_perception_arguments,
@@ -218,6 +218,12 @@ def _letterbox(image: np.ndarray, size: int) -> np.ndarray:
     y0, x0 = (size - nh) // 2, (size - nw) // 2
     out[y0 : y0 + nh, x0 : x0 + nw] = resized
     return out
+
+
+#: ik_server's model of each arm (``--robot``) and its arm joint count; an arm without one
+#: answers env.preview_reach with "unknown".
+IK_MODELS = {"panda": "panda", "xarm6_robotiq": "xarm6"}
+IK_JOINTS = {"panda": 7, "xarm6": 6}
 
 
 def _place_depth(depth: np.ndarray, nh: int, nw: int, size: int) -> np.ndarray:
@@ -1239,6 +1245,7 @@ def main():
         help="watch parent process via stdin pipe and exit when it dies",
     )
     add_perception_arguments(p, sam3=True)
+    reach.add_ik_argument(p)
     args = p.parse_args()
 
     facade = ManiskillEnvFacade(
@@ -1253,6 +1260,27 @@ def main():
         wrist_rotation=args.wrist_rotation,
         wrist_flip=args.wrist_flip,
         scene=dict(kv.split("=", 1) for kv in args.scene.split(",") if kv) or None,
+    )
+    # --ik: env.preview_reach through the ik service's model of the arm (ik_server ROBOTS; the other
+    # arms answer "unknown").
+    ik_model = IK_MODELS.get(facade._meta["robot"])
+
+    def _wxyz_to_xyzw(q) -> list[float]:
+        q = np.asarray(q, dtype=np.float64).reshape(-1)
+        return [float(q[1]), float(q[2]), float(q[3]), float(q[0])]
+
+    def _base() -> dict:
+        pose = facade._agent.robot.pose
+        return {"pos": _np(pose.p).reshape(-1), "quat_xyzw": _wxyz_to_xyzw(_np(pose.q))}
+
+    reach.install_preview_reach(
+        facade,
+        reach.reach_from_args(args, ik_model) if ik_model else None,
+        joints=lambda: _np(facade._agent.robot.get_qpos()).reshape(-1)[
+            : IK_JOINTS[ik_model]
+        ],
+        eef_quat_xyzw=lambda: _wxyz_to_xyzw(facade._state()["tcp_quat_wxyz"]),
+        base_pose=_base,
     )
     # --sam3 / --unidepth: env.detect, env.select_detection, env.reject_detection, env.enhance_depth
     # (no rendered depth here: enhance_depth supplies it). The views are letterboxed: no K.

@@ -88,6 +88,9 @@ Metaworld and Genesis take the grasp flags too (`--graspnet` & co): `plan_grasp`
 `check_attached` over their env server's planner, and `execute_grasp` / `execute_place`, which run a
 planned id's claimed path as bounded `move_delta` legs (`src/primitives/grasp-chain.ts`; a candidate
 more than 20 deg from straight down is refused, the grippers cannot turn).
+ManiSkill (the Panda and the xArm6) and Genesis take `--ik <url>` too: `preview_reach` over the env
+server's `env.preview_reach` (the ik service gained an `xarm6` model); Genesis's `move_delta` then
+refuses an unreachable target before it moves.
 `--point` adds Molmo's `point` on the same robots (BEHAVIOR has it by default) over `--molmo`: one
 camera through `molmo.ground`, several at once through MolmoPoint's `molmo.ground_set`, each point
 with its camera and, where the robot has depth, its world point (`src/primitives/pointing.ts`).

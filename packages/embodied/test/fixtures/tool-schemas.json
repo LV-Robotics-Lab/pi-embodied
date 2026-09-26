@@ -2798,6 +2798,34 @@
 				}
 			},
 			{
+				"name": "preview_reach",
+				"description": "Whether the arm could reach a world-frame xyz from its current joints (IK only; nothing moves), keeping its orientation unless quat_xyzw is given. status unreachable means a move there would fail or be refused; unknown means the check could not run.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"xyz"
+					],
+					"properties": {
+						"xyz": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 3,
+							"maxItems": 3
+						},
+						"quat_xyzw": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 4,
+							"maxItems": 4
+						}
+					}
+				}
+			},
+			{
 				"name": "detect",
 				"description": "SAM3 masks on a camera's current image, each with a short id (d3) drawn on the returned overlay in rank order (red, blue, green, yellow, ...). Give exactly one of a text prompt or a positive point [row, col]. all=true returns every candidate instead of only the best; then choose one with select_detection or rule one out with reject_detection. Ids die with the observation: detect again after any motion.",
 				"parameters": {

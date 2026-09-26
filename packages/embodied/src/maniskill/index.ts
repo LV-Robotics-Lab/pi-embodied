@@ -35,6 +35,7 @@ import { Type } from "typebox";
 import { template } from "../context-version.ts";
 import { anchorPlane, type CameraMeta, pixelOnPlane, unletterbox } from "../flash/plane.ts";
 import { recipeFlash } from "../flash/recipe.ts";
+import { ikArgs, previewReachTool, type Reach, registerIkFlag } from "../ik.ts";
 import { encodePng } from "../png.ts";
 import { detectionActive, detectionArgs, detectionTools, registerDetectionFlags } from "../primitives/detections.ts";
 import { mountGraspTool } from "../primitives/grasp.ts";
@@ -549,6 +550,8 @@ export default function maniskill(pi: ExtensionAPI) {
 	pi.registerFlag("seed", { type: "string", default: "0", description: "Reset seed (the object layout)" });
 	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
 	// --detections / --unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
+	// --ik: preview_reach over the env server's IK check (../ik.ts; the Panda and the xArm6).
+	registerIkFlag(pi);
 	registerDetectionFlags(pi, { sam3: true });
 	// --point: Molmo's point over --molmo (../primitives/pointing.ts).
 	registerPointFlags(pi);
@@ -949,6 +952,14 @@ export default function maniskill(pi: ExtensionAPI) {
 		}),
 	);
 
+	mountGraspTool(
+		robot.tool,
+		previewReachTool(
+			(kwargs) => env.call<Reach>("env.preview_reach", kwargs, 60_000, [], robot.signal),
+			"world-frame",
+		),
+	);
+
 	// SAM3 masks with ids and UniDepth over the env server's perception (active with --detections / --unidepth).
 	for (const d of detectionTools(pi, {
 		call: (method, kwargs, timeoutMs) =>
@@ -981,6 +992,7 @@ export default function maniskill(pi: ExtensionAPI) {
 					seed,
 					...(scene ? ["--scene", scene] : []),
 					...(robotId !== "panda" ? ["--robot", robotId] : []),
+					...ikArgs(pi.getFlag("ik")),
 					...detectionArgs(pi, flag("sam3", "")),
 				],
 				cwd: services,
@@ -1015,6 +1027,7 @@ export default function maniskill(pi: ExtensionAPI) {
 			"view_env_state",
 			"move_delta",
 			"finish",
+			...(String(pi.getFlag("ik") ?? "").trim() ? ["preview_reach"] : []),
 			...detectionActive(pi, meta.capabilities?.perception),
 			...pointActive(pi),
 		];

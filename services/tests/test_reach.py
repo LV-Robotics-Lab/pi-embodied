@@ -276,3 +276,45 @@ def test_franka_move_delta_is_checked_against_its_end_pose():
         == "unknown"
     )
     assert plain._dispatch("env.move_delta", ([0.5, 0.0, 0.0],), {}) == {"ok": True}
+
+
+def test_install_preview_reach_serves_the_check_and_answers_unknown_without_ik():
+    """utils/reach.install_preview_reach (ManiSkill, Genesis): the joints, the kept orientation and
+    the base pose come from the robot; without --ik the answer is unknown."""
+    from types import SimpleNamespace
+
+    facade = SimpleNamespace(_rpc={}, _readonly_methods=set())
+    reach.install_preview_reach(
+        facade, None, joints=lambda: [0.0] * 7, eef_quat_xyzw=lambda: DOWN
+    )
+    assert facade._rpc["env.preview_reach"]([0.3, 0, 0.3])["status"] == "unknown"
+    assert "env.preview_reach" in facade._readonly_methods
+    ik = FakeIk()
+    reach.install_preview_reach(
+        facade,
+        preview(ik),
+        joints=lambda: [0.2] * 7,
+        eef_quat_xyzw=lambda: DOWN,
+        base_pose=lambda: {"pos": [-0.6, 0.0, 0.0], "quat_xyzw": [0, 0, 0, 1]},
+    )
+    near = facade._rpc["env.preview_reach"]([0.0, 0.0, 0.3])
+    assert near["status"] == "reachable" and near["target"]["frame"] == "world"
+    # 0.6 m in front of a base at x = -0.6: the solve is in the base frame.
+    assert np.allclose(ik.calls[-1]["target_pose"]["pos"], [0.6, 0.0, 0.3])
+    assert ik.calls[-1]["seed_q"] == [0.2] * 7
+    far = facade._rpc["env.preview_reach"]([0.4, 0.0, 0.3])
+    assert far["status"] == "unreachable"
+
+
+def test_the_ik_service_knows_the_maniskill_xarm6():
+    from pi_embodied_services.components.ik_server import ROBOTS
+
+    m = ROBOTS["xarm6"]
+    assert m.description == "xarm6_description" and m.ee_link == "link6"
+    assert m.tool_offset_xyz == (0.0, 0.0, 0.15) and len(m.arm_joints) == 6
+    from pi_embodied_services.robots.maniskill import env_server as ms
+
+    assert ms.IK_MODELS == {"panda": "panda", "xarm6_robotiq": "xarm6"}
+    assert all(
+        ms.IK_JOINTS[v] == len(ROBOTS[v].arm_joints) for v in ms.IK_MODELS.values()
+    )

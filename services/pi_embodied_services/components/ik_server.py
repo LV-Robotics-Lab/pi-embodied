@@ -154,6 +154,17 @@ ROBOTS: dict[str, RobotModel] = {
         curobo_config="ur5e.yml",
         note="UR5e without a tool: the TCP is tool0 (the flange).",
     ),
+    "xarm6": RobotModel(
+        name="xarm6",
+        description="xarm6_description",
+        ee_link="link6",
+        arm_joints=tuple(f"joint{i}" for i in range(1, 7)),
+        tool_offset_xyz=(0.0, 0.0, 0.15),
+        home_q=(0.0, 0.228, -1.21, 0.0, 1.047, 0.0),
+        curobo_config="xarm6.yml",
+        note="UFactory xArm6 with ManiSkill's Robotiq 2F-85 (xarm6_robotiq): the TCP is its "
+        "`eef` link, 0.15 m along link6's +z (measured in ManiSkill 3.0.1).",
+    ),
     "piper": RobotModel(
         name="piper",
         description="piper_description",

@@ -62,6 +62,13 @@ GR00T_CHECKPOINTS: dict[str, tuple[str, str]] = {
     "n1.6-base": ("nvidia/GR00T-N1.6-3B", "d0814e7ecb19202e7c8468b46098b0b7ef3a6d61"),
     "n1.7-base": ("nvidia/GR00T-N1.7-3B", "2fc962b973bccdd5d8ce4f67cc63b264d6886495"),
 }
+#: The LIBERO suite each pinned checkpoint was fine-tuned on (``vla.info``'s ``suite``); the bases
+#: have none.
+GR00T_CHECKPOINT_SUITES: dict[str, str | None] = {
+    "n1.6-libero-spatial": "libero_spatial",
+    "n1.6-base": None,
+    "n1.7-base": None,
+}
 EMBODIMENT = "libero_panda"
 VIDEO_KEYS = ("image", "wrist_image")
 STATE_KEYS = ("x", "y", "z", "roll", "pitch", "yaw", "gripper")
@@ -111,11 +118,17 @@ class Gr00tFacade(ChunkVLAFacade):
     uses_wrist = True
 
     def __init__(
-        self, *, policy: Policy, model: str, revision: str | None, horizon: int
+        self,
+        *,
+        policy: Policy,
+        model: str,
+        revision: str | None,
+        horizon: int,
+        suite: str | None = None,
     ):
         self._policy = policy
         self.horizon = horizon
-        super().__init__(model=model, revision=revision)
+        super().__init__(model=model, revision=revision, suite=suite)
 
     def _act(self, frame: Frame) -> np.ndarray:
         # The libero_panda fine-tune emits the gripper in [0, 1] (dataset open = 1); RLinf maps
@@ -160,12 +173,21 @@ def main() -> None:
         help="commit hash (default: the pin for --checkpoint)",
     )
     p.add_argument("--embodiment", default=EMBODIMENT, help="GR00T embodiment tag")
+    p.add_argument(
+        "--suite",
+        default=None,
+        help="LIBERO suite the checkpoint was fine-tuned on, reported by vla.info so the robot can "
+        "refuse another suite's episode (default: the pinned checkpoint's; unknown for --model-path)",
+    )
     args = p.parse_args()
     apply_cuda_device(args.cuda_device)
 
     repo, pin = GR00T_CHECKPOINTS[args.checkpoint]
     model = args.model_path or repo
     revision = args.revision or (pin if model == repo else None)
+    suite = args.suite or (
+        GR00T_CHECKPOINT_SUITES[args.checkpoint] if model == repo else None
+    )
     t0 = time.time()
     path = snapshot(model, revision)
     logger.info(
@@ -176,7 +198,9 @@ def main() -> None:
     )
     policy, horizon = load_policy(path, args.embodiment)
     logger.info("model ready in %.1fs (horizon=%d)", time.time() - t0, horizon)
-    Gr00tFacade(policy=policy, model=model, revision=revision, horizon=horizon).serve(
+    Gr00tFacade(
+        policy=policy, model=model, revision=revision, horizon=horizon, suite=suite
+    ).serve(
         transport=args.transport,
         host=args.host,
         port=args.port,

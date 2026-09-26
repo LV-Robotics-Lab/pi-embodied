@@ -200,7 +200,7 @@ python -m pi_embodied_services.components.openvla_server --port 18600        # [
 OPENVLA_OFT_CHECKPOINT_PATH=/ckpt/openvla-7b-oft-finetuned-libero-spatial \
 python -m pi_embodied_services.components.openvla_oft_server --port 18700    # [--no-center-crop] [--repo <openvla-oft clone>]
 GR00T_CHECKPOINT_PATH=/ckpt/RLinf-Gr00t-N1.6-SFT-Spatial \
-python -m pi_embodied_services.components.gr00t_server --port 18800          # [--embodiment libero_panda]
+python -m pi_embodied_services.components.gr00t_server --port 18800          # [--embodiment libero_panda] [--suite libero_spatial for a local copy]
 
 # SAM3 (shared)
 SAM3_CHECKPOINT_PATH=/ckpt/sam3/sam3.pt python -m pi_embodied_services.components.sam3_server --port 18300

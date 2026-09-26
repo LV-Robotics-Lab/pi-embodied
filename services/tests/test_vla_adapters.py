@@ -219,6 +219,17 @@ def test_openvla_reports_the_published_checkpoints_suite():
         policy=Sampler(8), model="m", revision="r", suite="libero_all"
     )
     assert call(oft, "vla.info")["suite"] == "libero_all"
+    gr00t = Gr00tFacade(
+        policy=Sampler(16), model="m", revision="r", horizon=16, suite="libero_spatial"
+    )
+    assert call(gr00t, "vla.info")["suite"] == "libero_spatial"
+    from pi_embodied_services.components.gr00t_server import (
+        GR00T_CHECKPOINT_SUITES,
+        GR00T_CHECKPOINTS,
+    )
+
+    assert set(GR00T_CHECKPOINT_SUITES) == set(GR00T_CHECKPOINTS)
+    assert GR00T_CHECKPOINT_SUITES["n1.6-libero-spatial"] == "libero_spatial"
     custom = OpenVLAOFTFacade(policy=Sampler(8), model="m", revision="r")
     assert call(custom, "vla.info")["suite"] is None, (
         "a custom checkpoint's suite is unknown"

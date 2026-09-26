@@ -95,7 +95,7 @@ test("the pick heuristics: descend, lift with a partly closed gripper", () => {
 	assert.equal(empty.update(0.25, 0.0), false);
 });
 
-test("a checkpoint fine-tuned on another suite is refused; libero_all and unknown suites are trusted", () => {
+test("a checkpoint fine-tuned on another suite is refused; libero_all (not libero_90) and unknown suites are trusted", () => {
 	const oft = { service: "openvla-oft", model: "moojink/x", revision: "r", suite: "libero_spatial" };
 	assert.equal(suiteMismatch(oft, "libero_spatial"), undefined);
 	assert.match(
@@ -121,6 +121,14 @@ test("a checkpoint fine-tuned on another suite is refused; libero_all and unknow
 	assert.match(none, /no published fine-tune covers libero_90/);
 	assert.doesNotMatch(none, /--suite/);
 	assert.equal(suiteMismatch({ ...oft, suite: "libero_all" }, "libero_goal"), undefined);
+	assert.equal(suiteMismatch({ ...oft, suite: "libero_all" }, "libero_10_swap"), undefined);
+	const all90 = suiteMismatch({ ...oft, suite: "libero_all" }, "libero_90")!;
+	assert.match(all90, /is the libero_all fine-tune, but this episode is libero_90/, "libero_all is the four suites");
+	assert.match(all90, /no published fine-tune covers libero_90/);
+	assert.match(
+		suiteMismatch({ service: "gr00t", model: "RLinf/x", suite: "libero_spatial" }, "libero_goal")!,
+		/gr00t RLinf\/x is the libero_spatial fine-tune/,
+	);
 	assert.equal(suiteMismatch({ ...oft, suite: null }, "libero_goal"), undefined, "a custom --model-path");
 	assert.equal(suiteMismatch({ service: "pi05" }, "libero_goal"), undefined, "Pi0.5 has no vla.info");
 	assert.equal(vlaIdentity(oft), "openvla-oft moojink/x@r");

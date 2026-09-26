@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import {
+	ENV_CALLS,
 	formatTable,
 	llmCheck,
 	parseFlags,
@@ -16,6 +17,7 @@ import {
 	probeEndpoint,
 	type RobotCheckSpec,
 	runChecks,
+	SPECS,
 } from "../src/check.ts";
 
 /** A services-style RPC server answering healthz with `ok`. */
@@ -141,6 +143,38 @@ test("portRow reports a port in use", async () => {
 	}
 	assert.equal((await portRow(port)).status, "PASS");
 	assert.equal((await portRow(0)).status, "SKIP");
+});
+
+test("the env check asks an env server by its served method name, env.get_env_meta", async () => {
+	// Like the services' RPC server: healthz is built in, the facade's methods are under `env.`.
+	const server = createHttpServer((req, res) => {
+		let body = "";
+		req.on("data", (c) => {
+			body += c;
+		});
+		req.on("end", () => {
+			const { method } = JSON.parse(body) as { method: string };
+			const known = method === "healthz" || method === "env.get_env_meta";
+			res.writeHead(known ? 200 : 404, { "Content-Type": "application/json" });
+			res.end(
+				JSON.stringify(known ? { ok: true, result: { method } } : { ok: false, error: `unknown method ${method}` }),
+			);
+		});
+	});
+	await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+	const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+	try {
+		for (const robot of ["franka", "dual_franka", "piper"])
+			assert.deepEqual(SPECS[robot].endpoints?.find((e) => e.flag === "robot-env")?.calls, ENV_CALLS);
+		const ok = await probeEndpoint(url, 3000, ENV_CALLS);
+		assert.equal(ok.ok, true, ok.detail);
+		assert.match(ok.detail, /env\.get_env_meta ok/);
+		const bare = await probeEndpoint(url, 3000, ["get_env_meta"]);
+		assert.equal(bare.ok, false);
+	} finally {
+		server.closeAllConnections();
+		server.close();
+	}
 });
 
 test("probeEndpoint sends an env server a real read-only request after healthz", async () => {

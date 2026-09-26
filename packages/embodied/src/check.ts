@@ -9,7 +9,7 @@
  * module and simulator packages the way the env server will), the checkpoint / asset paths the
  * services read from the environment, GPU visibility (nvidia-smi and CUDA_VISIBLE_DEVICES), the model
  * servers the robot attaches to (the services' RPC `healthz`, then a real read-only request where the
- * server has one: an env server's `get_env_meta`; a ws:// server by TCP connect; no VLA server offers
+ * server has one: an env server's `env.get_env_meta`; a ws:// server by TCP connect; no VLA server offers
  * a dry-run act, so a VLA gets healthz only), the planner (a real 1-token completion: in pi through
  * its model registry, `llmCheck`; standalone to an OpenAI-compatible provider of ~/.pi/agent/models.json
  * whose key resolves, else `<baseUrl>/models`) and whether the dashboard port is free. Flags take the robot's own names and fall back to the same
@@ -47,11 +47,11 @@ type PathSpec = {
 };
 /**
  * A server the robot attaches to: `flag` (and its default) names the endpoint. `calls`: read-only
- * methods sent after healthz, each a real request the robot makes too (an env server's `get_env_meta`).
+ * methods sent after healthz, each a real request the robot makes too (an env server's `env.get_env_meta`).
  */
 type EndpointSpec = { flag: string; default?: string; why: string; toolsOnly?: boolean; calls?: string[] };
-/** What a running env server is asked beyond healthz. */
-const ENV_CALLS = ["get_env_meta"];
+/** What a running env server is asked beyond healthz: its facade methods are served under `env.` (as the robots call them). */
+export const ENV_CALLS = ["env.get_env_meta"];
 
 export type RobotCheckSpec = {
 	/** The flag naming the services Python, and the environment variables it defaults to. */
@@ -384,7 +384,7 @@ async function rpcCall(
 
 /**
  * A services RPC server's healthz (`POST <url>/call {"method":"healthz"}`), then each of `calls` (read-only
- * methods, e.g. an env server's `get_env_meta`); or a TCP connect for ws:// servers.
+ * methods, e.g. an env server's `env.get_env_meta`); or a TCP connect for ws:// servers.
  */
 export async function probeEndpoint(
 	endpoint: string,

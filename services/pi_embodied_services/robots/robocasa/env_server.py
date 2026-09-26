@@ -15,7 +15,15 @@
 # Modified by pi-embodied: import paths rewritten; healthz service name; HTTP is
 # the only --transport.
 
-"""RoboCasa env server — hosts the raw robosuite env in a subprocess, exposes basic calls via RPC."""
+"""RoboCasa env server — hosts the raw robosuite env in a subprocess, exposes basic calls via RPC.
+
+Code mode (``code.run``, utils/code_exec.py ``CodeRunMixin``): a program calls the registry's
+primitives (primitives.py) through its resolve, in a sandboxed subprocess, so the server requires
+its RPC token and refuses other business calls while a program runs. A program's ``step`` receives
+the robot's own observations only (the kitchen's object observations are privileged: they stay
+out, as does the reward's info), and every step it takes adds an agentview frame to the run's
+video; the run reports its env steps, the success and the new robot observation (``_finish_run``).
+"""
 
 import argparse
 import inspect
@@ -30,6 +38,7 @@ from pi_embodied_services.components.env_facade_base import BaseEnvFacade
 from pi_embodied_services.robots.robocasa import tasks
 from pi_embodied_services.robots.robocasa.primitives import ROBOCASA_PRIMITIVES
 from pi_embodied_services.utils import ground_truth
+from pi_embodied_services.utils.code_exec import CodeRunMixin
 from pi_embodied_services.utils.logging import get_logger
 from pi_embodied_services.utils.perception import (
     add_perception_arguments,
@@ -46,6 +55,30 @@ DEFAULT_CAMS = [
     "robot0_agentview_right",
     "robot0_eye_in_hand",
 ]
+
+#: Code mode: the camera of the run's video (the agentview pi's tools show), its frame size, the
+#: frames one run hands back (halved, every other one kept, when full) and the largest render a
+#: program may ask for.
+CODE_VIDEO_CAMERA = "robot0_agentview_left"
+CODE_VIDEO_SIZE = 256
+CODE_MAX_FRAMES = 128
+CODE_MAX_RENDER = 1024
+#: The PandaOmron controllers' travel per env step at a full (1.0) action
+#: (robosuite default_pandaomron.json, control_freq 20): the arm's OSC_POSE moves at most 0.05 m,
+#: the torso's JOINT_POSITION 0.05 m, the base's JOINT_VELOCITY 0.5 m/s for 1/20 s per axis.
+ARM_M_PER_STEP = 0.05
+TORSO_M_PER_STEP = 0.05
+BASE_M_PER_STEP = 0.5 / 20
+
+
+def robot_obs(obs) -> dict:
+    """The robot's own observations of a robosuite obs dict (``robot0_*``, no camera images):
+    the kitchen's object observations (``obj_*``, ``<object>_pos`` ...) are privileged."""
+    return {
+        k: v
+        for k, v in obs.items()
+        if k.startswith("robot0_") and not k.endswith(("_image", "_depth"))
+    }
 
 
 def _split_kwargs(split):
@@ -81,7 +114,7 @@ def _split_kwargs(split):
     raise ValueError('split must be {None,"all","pretrain","target"}')
 
 
-class RoboCasaEnvFacade(MainThreadServeMixin, BaseEnvFacade):
+class RoboCasaEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
     """Wraps the raw robosuite env and exposes ONLY basic calls via RPC.
 
     Mixes in :class:`MainThreadServeMixin` so every env op runs on a single
@@ -111,6 +144,12 @@ class RoboCasaEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         self.camera_h, self.camera_w = camera_h, camera_w
         self.use_camera_obs = use_camera_obs
         self.env = None
+        # Code mode: the env steps (all of them, and before the run), the run's last robot
+        # observation and its video frames.
+        self._steps = 0
+        self._run_start = 0
+        self._run_obs: dict | None = None
+        self._run_frames: list[np.ndarray] = []
         self._make(task_name, split, seed, scene)
 
     def _make(self, task_name, split, seed, scene):
@@ -185,7 +224,82 @@ class RoboCasaEnvFacade(MainThreadServeMixin, BaseEnvFacade):
                 "env.get_task_progress",
             ]
         )
-        register_code_api(self, ROBOCASA_PRIMITIVES)
+        api = register_code_api(self, ROBOCASA_PRIMITIVES)
+        self._install_code_run(
+            api,
+            move_m=self._code_move_m,
+            check=self._code_check,
+            reply=self._code_reply,
+            begin=self._begin_run,
+            finish=self._finish_run,
+        )
+
+    # ---- code mode (run_code) ----
+
+    def _begin_run(self) -> None:
+        self._run_start = self._steps
+        self._run_obs = None
+        self._run_frames = []
+
+    def _finish_run(self) -> dict:
+        """The run's effect for pi: env steps taken, the success, the robot's observation after
+        its last step (the ``robot0_*`` arrays pi's ``obs`` reads; None when it took none) and
+        the run's video frames (top-down agentview)."""
+        return {
+            "steps": self._steps - self._run_start,
+            "success": self.check_success(),
+            "obs": self._run_obs,
+            "frames": list(self._run_frames),
+        }
+
+    def _keep_frame(self, frame) -> None:
+        if len(self._run_frames) >= CODE_MAX_FRAMES:
+            self._run_frames = self._run_frames[::2]
+        self._run_frames.append(frame)
+
+    def _code_reply(self, method: str, out):
+        """What a program receives of a ``step``: the robot's observations, the reward and done
+        (no object observations, no info); the step's agentview goes to the run's video."""
+        if method != "env.step":
+            return out
+        obs, reward, done, _info = out
+        self._run_obs = robot_obs(obs)
+        rgb = self.render_camera(
+            CODE_VIDEO_CAMERA, CODE_VIDEO_SIZE, CODE_VIDEO_SIZE, False
+        )
+        # robosuite renders bottom-up; the video is top-down like pi's own frames.
+        self._keep_frame(np.ascontiguousarray(np.asarray(rgb)[::-1]))
+        return {"obs": self._run_obs, "reward": float(reward), "done": bool(done)}
+
+    def _code_move_m(self, method: str, kwargs: dict) -> float:
+        """How far one ``step`` may move the gripper (the run's translation cap): the arm's OSC
+        travel, the torso's and the base's (drive and turn), each at the action's clipped size."""
+        if method != "env.step":
+            return 0.0
+        a = np.clip(
+            np.asarray(kwargs["flat_action"], dtype=np.float64).reshape(-1), -1, 1
+        )
+        if a.shape[0] < 11:
+            return float(np.linalg.norm(a[:3])) * ARM_M_PER_STEP
+        return float(
+            np.linalg.norm(a[:3]) * ARM_M_PER_STEP
+            + np.linalg.norm(a[7:9]) * BASE_M_PER_STEP
+            # the base's yaw (0.5 rad/s) swings the gripper, within a metre of it, as far
+            + abs(a[9]) * BASE_M_PER_STEP
+            + abs(a[10]) * TORSO_M_PER_STEP
+        )
+
+    def _code_check(self, method: str, kwargs: dict) -> None:
+        """Refuse a program's call that the run's wall clock could not bound."""
+        if method in (
+            "env.render_camera",
+            "env.get_camera_meta",
+            "env.get_camera_transform",
+        ):
+            for k in ("height", "width"):
+                v = kwargs.get(k)
+                if v is not None and int(v) > CODE_MAX_RENDER:
+                    raise ValueError(f"{k} is at most {CODE_MAX_RENDER} in code mode")
 
     def get_env_meta(self):
         return self._meta
@@ -236,6 +350,7 @@ class RoboCasaEnvFacade(MainThreadServeMixin, BaseEnvFacade):
             f"action dim {a.shape[0]} != env.action_dim {self.env.action_dim}"
         )
         obs, reward, done, info = self.env.step(a)
+        self._steps += 1
         return obs, reward, done, info
 
     def check_success(self):

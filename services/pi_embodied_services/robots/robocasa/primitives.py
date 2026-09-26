@@ -65,6 +65,7 @@ ROBOCASA_PRIMITIVES = (
             "depth": Param("boolean", "also return the depth map"),
         },
         tiers=("low",),
+        example='rgb, depth = render_camera("robot0_agentview_left", 256, 256, True)\nrgb = rgb[::-1]  # robosuite renders bottom-up',
     ),
     Primitive(
         "get_camera_meta",
@@ -72,6 +73,7 @@ ROBOCASA_PRIMITIVES = (
         "Camera intrinsics and extrinsics.",
         _CAMERA,
         tiers=("low",),
+        example='meta = get_camera_meta("robot0_agentview_left", 256, 256)\nK, T = meta["intrinsic"], meta["extrinsic_cam2world"]',
     ),
     Primitive(
         "get_camera_transform",
@@ -79,6 +81,7 @@ ROBOCASA_PRIMITIVES = (
         "The camera's world-to-pixel transform.",
         _CAMERA,
         tiers=("low",),
+        example='T = np.asarray(get_camera_transform("robot0_agentview_left", 256, 256))\nxyz = T @ [col * z, row * z, z, 1]  # a depth pixel to world',
     ),
     Primitive(
         "step",
@@ -87,6 +90,7 @@ ROBOCASA_PRIMITIVES = (
         {"flat_action": Param("array", "12 floats")},
         mutating=True,
         tiers=("low",),
+        example='r = step([0, 0, 0.5, 0, 0, 0, -1, 0, 0, 0, 0, -1])  # arm up 2.5 cm, gripper open\nprint(r["obs"]["robot0_eef_pos"], r["done"])',
     ),
     GROUND_TRUTH,
 )

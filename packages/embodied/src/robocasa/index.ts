@@ -2,6 +2,8 @@
  * RoboCasa365 robot for pi.
  *
  *   pi -e packages/embodied/src/robocasa --task-name OpenDrawer --split target --seed 1
+ *   pi -e packages/embodied/src/robocasa --task-name OpenDrawer --split target --seed 1 --code=true --code-api=low
+ *      (run_code over the env server's registry; its low tier drives the 12-D `step`)
  *
  * Starts one RoboCasa env server per session (PandaOmron mobile manipulator) and attaches
  * to a running RLDX-1 VLA server (see serve.sh) under a private RPC session, which holds
@@ -284,6 +286,26 @@ export default function robocasa(pi: ExtensionAPI) {
 		task: ["task-name", "split", "seed", "scene"],
 		// The env server's primitive registry (code.api), recorded per episode.
 		codeApi: () => env,
+		// Code mode (../code): the env server runs the program against that registry; the result
+		// carries the env steps, the success, the robot's observation after its last step and the
+		// run's agentview frames. The run becomes a new numbered state, like a tool's action.
+		code: {
+			rpc: () => env,
+			instruction: () => language,
+			observe: async (r) => {
+				for (const f of (r.frames as NdArray[] | undefined) ?? []) robot.video.frame(f);
+				const steps = Number(r.steps) || 0;
+				if (r.obs) obs = { ...obs, ...(r.obs as Raw) };
+				if (steps > 0) {
+					envSteps += steps;
+					// The program stepped the env: RLDX's frame history and the arm servo's
+					// calibration (the base may have turned) no longer hold.
+					vlaDesync = true;
+					posJac = undefined;
+				}
+				return view(await capture({ action: "run_code" }, { status: r.status, env_steps: steps }, null));
+			},
+		},
 		keepImages: 6,
 		budget: { turns: 0, seconds: 0 },
 		// Observations carry the agentview, navview and wrist images.

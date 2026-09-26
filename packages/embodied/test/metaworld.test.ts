@@ -2,9 +2,17 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import metaworld, { backProject, EMPTY_WIDTH_M, STEP_M, TASKS, VECTORS, VIEW_SETUP } from "../src/metaworld/index.ts";
+import metaworld, {
+	backProject,
+	EMPTY_WIDTH_M,
+	STEP_M,
+	TASKS,
+	VECTORS,
+	VIEW_SETUP,
+	VIEW_SIZE,
+} from "../src/metaworld/index.ts";
 import { ground, MOVE_UNITS } from "../src/units/index.ts";
-import { checkSimExplore, f32, fakeEnv, rgb } from "./sim-stub.ts";
+import { checkDetections, checkSimExplore, f32, fakeEnv, perceptionAnswers, rgb, withPerception } from "./sim-stub.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
@@ -154,7 +162,8 @@ test("back_project: a metric depth map goes through OpenCV intrinsics and the ca
 	assert.deepEqual([...backProject([2, 2, 2, 2], 2, k, moved).slice(9, 12)], [0.5, 0, 3]);
 });
 
-test("memory and exploration: reset restarts the seeded layout, the cell is metaworld_<task>_s<seed>", async (t) => {
+/** A fake Metaworld env server running reach-v3 seed 0, with the perception primitives when `perception`. */
+async function fakeMetaworld(perception = false) {
 	const obs = () => ({
 		agentview: rgb(),
 		wrist: rgb(),
@@ -162,19 +171,43 @@ test("memory and exploration: reset restarts the seeded layout, the cell is meta
 		gripper_width: 0.09,
 		obs: f32([0]),
 	});
-	const env = await fakeEnv((c) => {
-		if (c.method === "env.get_env_meta")
-			return {
+	return fakeEnv((c) => {
+		const p = perception ? perceptionAnswers(c) : undefined;
+		if (p !== undefined) return p;
+		if (c.method === "env.get_env_meta") {
+			const meta = {
 				task: "reach-v3",
 				seed: 0,
 				metaworld: "3.1.1",
 				workspace: { min: [0, 0, 0], max: [1, 1, 1] },
 				...VIEW_SETUP,
 			};
+			return perception ? withPerception(meta) : meta;
+		}
 		if (c.method === "env.reset") return [obs(), {}];
 		if (c.method === "env.get_task_language") return "reach the goal";
+		if (c.method === "env.render_camera")
+			return [rgb(VIEW_SIZE, VIEW_SIZE), f32(new Array(VIEW_SIZE * VIEW_SIZE).fill(1))];
+		if (c.method === "env.get_camera_meta")
+			return {
+				intrinsic_K: [
+					[1, 0, 0],
+					[0, 1, 0],
+					[0, 0, 1],
+				],
+				extrinsic_cam2world: [
+					[1, 0, 0, 0],
+					[0, 1, 0, 0],
+					[0, 0, 1, 0],
+					[0, 0, 0, 1],
+				],
+			};
 		return undefined;
 	});
+}
+
+test("memory and exploration: reset restarts the seeded layout, the cell is metaworld_<task>_s<seed>", async (t) => {
+	const env = await fakeMetaworld();
 	t.after(env.close);
 	await checkSimExplore({
 		load: metaworld,
@@ -183,4 +216,17 @@ test("memory and exploration: reset restarts the seeded layout, the cell is meta
 		resets: () => env.calls.filter((c) => c.method === "env.reset").length,
 		observe: "view_env_state",
 	});
+});
+
+test("--detections / --unidepth: the env server's perception primitives; detect locates the centroid through the world map", async (t) => {
+	const env = await fakeMetaworld(true);
+	t.after(env.close);
+	const s = await checkDetections({
+		load: metaworld,
+		values: { env: env.url, task: "reach-v3" },
+		calls: env.calls,
+		camera: "wrist",
+	});
+	const r = await s.run("detect", { prompt: "puck" });
+	assert.deepEqual(r.details.detections[0].centroid_world_xyz, [1, 1, 1]);
 });

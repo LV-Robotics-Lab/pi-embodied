@@ -26,7 +26,9 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { template } from "../context-version.ts";
 import { decodePngChannel, encodePng } from "../png.ts";
-import { attach, defineRobot, median, SERVICES } from "../robot.ts";
+import { detectionActive, detectionArgs, detectionTools, registerDetectionFlags } from "../primitives/detections.ts";
+import { mountGraspTool } from "../primitives/grasp.ts";
+import { attach, defineRobot, type Json, median, SERVICES } from "../robot.ts";
 import { type NdArray, RpcClient } from "../rpc.ts";
 import type { MoveUnit, Vec3 } from "../units/index.ts";
 
@@ -95,6 +97,7 @@ type Meta = {
 	z_floor_m: number;
 	max_move_m: number;
 	lift_m: number;
+	capabilities?: { perception?: { segment?: boolean; enhance_depth?: boolean } };
 };
 type CameraMeta = { intrinsic_K: number[][]; extrinsic_cam2world: number[][]; width: number; height: number };
 
@@ -140,6 +143,8 @@ export default function genesis(pi: ExtensionAPI) {
 	});
 	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
 	pi.registerFlag("sam3", { type: "string", default: "http://127.0.0.1:18300", description: "SAM3 server (segment)" });
+	// --detections / --unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
+	registerDetectionFlags(pi);
 	pi.registerFlag("services", {
 		type: "string",
 		default: process.env.PI_EMBODIED_SERVICES ?? SERVICES,
@@ -420,6 +425,20 @@ export default function genesis(pi: ExtensionAPI) {
 		},
 	);
 
+	// SAM3 masks with ids and UniDepth over the env server's perception (active with --detections / --unidepth).
+	for (const d of detectionTools(pi, {
+		call: (method, kwargs, timeoutMs) => env.call<Json>(method, kwargs, timeoutMs ?? 120_000, [], robot.signal),
+		cameras: CAMERAS,
+		// The server renders the images shown: the centroid's world xyz through the simulator's depth.
+		locate: async (c, d) => {
+			const rc = d.centroid_rc as number[] | null;
+			if (!rc) return {};
+			const [p] = await call<(number[] | null)[]>("env.back_project", { camera_name: c, pixels: [rc] });
+			return p ? { centroid_world_xyz: p } : {};
+		},
+	}))
+		mountGraspTool(robot.tool, d);
+
 	async function startEpisode() {
 		const { task, seed } = robot.task;
 		if (!(TASKS as readonly string[]).includes(task))
@@ -433,6 +452,7 @@ export default function genesis(pi: ExtensionAPI) {
 				args: [
 					...["-m", "pi_embodied_services.robots.genesis.env_server"],
 					...["--task", task, "--seed", seed, "--backend", flag("backend", "gpu")],
+					...detectionArgs(pi, flag("sam3", "")),
 				],
 				cwd: services,
 				env: { ...process.env, PYTHONPATH: services },
@@ -448,6 +468,9 @@ export default function genesis(pi: ExtensionAPI) {
 		everGrasped = false;
 		const [o] = await env.call<[Obs, unknown]>("env.reset", {}, 300_000);
 		absorb(o);
-		return ["view_env_state", "view_camera_meta", "segment", "back_project", "move_delta", "gripper", "finish"];
+		return [
+			...["view_env_state", "view_camera_meta", "segment", "back_project", "move_delta", "gripper", "finish"],
+			...detectionActive(pi, meta.capabilities?.perception),
+		];
 	}
 }

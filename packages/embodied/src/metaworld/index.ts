@@ -21,7 +21,9 @@ import { Type } from "typebox";
 import { template } from "../context-version.ts";
 import { sideBySide } from "../maniskill/index.ts";
 import { decodePngChannel, encodePng } from "../png.ts";
-import { attach, defineRobot, type Mat, median, round, SERVICES } from "../robot.ts";
+import { detectionActive, detectionArgs, detectionTools, registerDetectionFlags } from "../primitives/detections.ts";
+import { mountGraspTool } from "../primitives/grasp.ts";
+import { attach, defineRobot, type Json, type Mat, median, round, SERVICES } from "../robot.ts";
 import { type NdArray, RpcClient } from "../rpc.ts";
 import type { MoveUnit, Vec3 } from "../units/index.ts";
 
@@ -142,9 +144,13 @@ type MoveResult = {
 	info: Info;
 	cancelled?: boolean;
 };
-type Meta = { task: string; seed: number; metaworld: string; workspace?: { min: number[]; max: number[] } } & Partial<
-	typeof VIEW_SETUP
->;
+type Meta = {
+	task: string;
+	seed: number;
+	metaworld: string;
+	workspace?: { min: number[]; max: number[] };
+	capabilities?: { perception?: { segment?: boolean; enhance_depth?: boolean } };
+} & Partial<typeof VIEW_SETUP>;
 type CameraMeta = { intrinsic_K: Mat; extrinsic_cam2world: Mat; height: number; width: number };
 type WorldMap = { envStep: number; size: number; rgb: Buffer; xyz: Float32Array };
 type Camera = "agentview" | "wrist";
@@ -182,6 +188,8 @@ export default function metaworld(pi: ExtensionAPI) {
 	pi.registerFlag("seed", { type: "string", default: "0", description: "Reset seed (the object layout)" });
 	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
 	pi.registerFlag("sam3", { type: "string", default: "http://127.0.0.1:18300", description: "SAM3 server (segment)" });
+	// --detections / --unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
+	registerDetectionFlags(pi);
 	pi.registerFlag("services", {
 		type: "string",
 		default: process.env.PI_EMBODIED_SERVICES ?? SERVICES,
@@ -538,6 +546,22 @@ export default function metaworld(pi: ExtensionAPI) {
 		},
 	);
 
+	// SAM3 masks with ids and UniDepth over the env server's perception (active with --detections / --unidepth).
+	for (const d of detectionTools(pi, {
+		call: (method, kwargs, timeoutMs) => env.call<Json>(method, kwargs, timeoutMs ?? 120_000, [], robot.signal),
+		cameras: CAMERAS,
+		// The server renders the images shown (VIEW_SIZE): the centroid's world xyz through this step's world map.
+		locate: async (c, d) => {
+			const [row, col] = (d.centroid_rc as number[] | null) ?? [];
+			if (row === undefined) return {};
+			const map = await worldMap(c as Camera, VIEW_SIZE);
+			const i = (row * VIEW_SIZE + col) * 3;
+			const p = [map.xyz[i], map.xyz[i + 1], map.xyz[i + 2]];
+			return valid(p) ? { centroid_world_xyz: p.map((v) => round(v, 4)) } : {};
+		},
+	}))
+		mountGraspTool(robot.tool, d);
+
 	const xyz = Type.Array(Type.Number(), { minItems: 3, maxItems: 3 });
 	robot.tool(
 		"move_delta",
@@ -573,7 +597,10 @@ export default function metaworld(pi: ExtensionAPI) {
 			const services = flag("services", SERVICES);
 			env = await robot.serve({
 				python: flag("python", "python"),
-				args: ["-m", "pi_embodied_services.robots.metaworld.env_server", "--task", task, "--seed", seed],
+				args: [
+					...["-m", "pi_embodied_services.robots.metaworld.env_server", "--task", task, "--seed", seed],
+					...detectionArgs(pi, flag("sam3", "")),
+				],
 				cwd: services,
 				// EGL unless the caller picks MUJOCO_GL=osmesa (CPU rendering).
 				env: { ...process.env, PYTHONPATH: services, MUJOCO_GL: process.env.MUJOCO_GL ?? "egl" },
@@ -597,6 +624,9 @@ export default function metaworld(pi: ExtensionAPI) {
 		absorb(o, i);
 		workspace = (await env.call<Meta>("env.get_env_meta")).workspace;
 		language = await env.call<string>("env.get_task_language");
-		return ["view_env_state", "view_camera_meta", "segment", "back_project", "move_delta", "gripper", "finish"];
+		return [
+			...["view_env_state", "view_camera_meta", "segment", "back_project", "move_delta", "gripper", "finish"],
+			...detectionActive(pi, meta.capabilities?.perception),
+		];
 	}
 }

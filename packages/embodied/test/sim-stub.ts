@@ -153,3 +153,83 @@ export async function fakeEnv(answer: (c: Call) => unknown) {
 	};
 	return { url, calls, close };
 }
+
+/** Answers for the env server's perception primitives: SAM3 ids and UniDepth (merge into a fake server's answers). */
+export function perceptionAnswers(c: Call): unknown {
+	if (c.method === "env.detect")
+		return {
+			found: true,
+			observation: 1,
+			ids: ["d1"],
+			invalidated: [],
+			detections: [
+				{
+					id: "d1",
+					score: 0.9,
+					box: [0, 0, 1, 1],
+					area_px: 4,
+					centroid_rc: [1, 1],
+					depth_m: 0.5,
+					mask_png_base64: "x",
+				},
+			],
+		};
+	if (c.method === "env.select_detection")
+		return {
+			ok: true,
+			ids: ["d1"],
+			selected: "d1",
+			rejected: [],
+			detection: { id: "d1", camera: c.kwargs.camera, centroid_rc: [1, 1] },
+		};
+	if (c.method === "env.reject_detection") return { ok: true, ids: ["d1"], selected: null, rejected: ["d1"] };
+	if (c.method === "env.enhance_depth")
+		return { ok: true, observation: 1, report: { mode: "mono_only" }, estimate: {} };
+	return undefined;
+}
+
+/** The env server's meta with its perception capabilities. */
+export const withPerception = (meta: Record<string, unknown>) => ({
+	...meta,
+	capabilities: { ...((meta.capabilities as object) ?? {}), perception: { segment: true, enhance_depth: true } },
+});
+
+/**
+ * --detections / --unidepth on a simulated robot whose fake env server reports perception: the four tools
+ * are active only with the flags, detect reaches env.detect on `camera` and the prompt describes them.
+ */
+export async function checkDetections(o: {
+	load: (pi: ExtensionAPI) => unknown;
+	values: Record<string, unknown>;
+	calls: Call[];
+	camera: string;
+}) {
+	const off = stubPi(o.values);
+	o.load(off.pi);
+	await off.emit("session_start");
+	process.exitCode = undefined;
+	assert.ok(off.active().includes("finish"), "the robot started");
+	assert.ok(!off.active().some((t) => ["detect", "select_detection", "enhance_depth"].includes(t)), "off by default");
+	const s = stubPi({ ...o.values, detections: true, unidepth: "http://127.0.0.1:1" });
+	o.load(s.pi);
+	await s.emit("session_start");
+	process.exitCode = undefined;
+	for (const name of ["detect", "select_detection", "reject_detection", "enhance_depth"])
+		assert.ok(s.active().includes(name), name);
+	const r = await s.run("detect", { prompt: "cube", camera: o.camera });
+	assert.deepEqual(o.calls.filter((c) => c.method === "env.detect").at(-1)?.kwargs, {
+		camera: o.camera,
+		text_prompt: "cube",
+		min_score: 0.2,
+		all: false,
+	});
+	assert.deepEqual(r.details.ids, ["d1"]);
+	assert.equal(r.details.detections[0].mask_png_base64, undefined);
+	assert.equal((await s.run("select_detection", { id: "d1" })).details.selected, "d1");
+	assert.deepEqual((await s.run("reject_detection", { id: "d1" })).details.rejected, ["d1"]);
+	assert.equal((await s.run("enhance_depth", { camera: o.camera })).details.report.mode, "mono_only");
+	s.pi.setActiveTools(s.active());
+	const prompt = (await s.emit("before_agent_start", { systemPrompt: "" }))?.systemPrompt as string | undefined;
+	if (prompt !== undefined) assert.match(prompt, /`detect` gives SAM3 masks[\s\S]*`enhance_depth` fuses/);
+	return s;
+}

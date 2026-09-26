@@ -13,6 +13,13 @@ This is a single episode. You may recover within it (re-position, re-grasp), but
 [tool:segment]- `segment` finds an object by name (or by a point) and returns its pixel centroid and its median xyz.[/tool:segment]
 [tool:view_camera_meta]- `view_camera_meta` gives the camera's intrinsics and camera-to-world extrinsic if you need to project yourself.[/tool:view_camera_meta]
 
+[tool:detect]
+- `detect` gives SAM3 masks with ids (`d3`) on a camera's current image, drawn on an overlay, each with its `centroid_pixel` and `depth_m` (`centroid_world_xyz` where the depth has it); `all: true` returns every candidate. Ids expire at the next motion.[tool:select_detection] `select_detection` names the target.[/tool:select_detection][tool:reject_detection] `reject_detection` rules one out.[/tool:reject_detection]
+[/tool:detect]
+[tool:enhance_depth]
+- `enhance_depth` fuses a UniDepth estimate into a camera's depth (or supplies depth where it has none) until the next motion.[tool:detect] `detect` then measures through it.[/tool:detect]
+[/tool:enhance_depth]
+
 {{memory}}
 
 # Rules

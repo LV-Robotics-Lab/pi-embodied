@@ -303,3 +303,96 @@ test("memory and exploration: reset restarts the seeded scene, the cell is robos
 		observe: "view_env_state",
 	});
 });
+
+test("--detections activates detect / select_detection / reject_detection over env.detect; --unidepth adds enhance_depth", async (t) => {
+	const env = await fakeRobosuite("Lift", (c) => {
+		if (c.method === "env.get_env_meta")
+			return {
+				task: "Lift",
+				seed: 0,
+				arms: ["robot0"],
+				gripper: true,
+				language: "lift",
+				box: [],
+				z_floor: 0.8,
+				table_z: 0.8,
+				max_move_m: 0.3,
+				capabilities: { perception: { segment: true, enhance_depth: true } },
+			};
+		if (c.method === "env.detect")
+			return {
+				found: true,
+				observation: 3,
+				ids: ["d1"],
+				invalidated: ["d0"],
+				detections: [
+					{
+						id: "d1",
+						score: 0.91234,
+						box: [1, 2, 3, 4],
+						area_px: 40,
+						centroid_rc: [0, 1],
+						depth_m: 0.5,
+						mask_png_base64: "x",
+					},
+				],
+				overlay: rgb(),
+			};
+		if (c.method === "env.select_detection")
+			return { ok: false, error: "d1 is stale", ids: [], selected: null, rejected: [] };
+		if (c.method === "env.enhance_depth")
+			return { ok: true, observation: 3, report: { mode: "filled" }, estimate: {}, depth: f32([1]) };
+		if (c.method === "env.render_camera") return [rgb(512, 512), f32(new Array(512 * 512).fill(1))];
+		if (c.method === "env.get_camera_meta")
+			return {
+				intrinsic_K: [
+					[1, 0, 0],
+					[0, 1, 0],
+					[0, 0, 1],
+				],
+				extrinsic_cam2world: [
+					[1, 0, 0, 0],
+					[0, 1, 0, 0],
+					[0, 0, 1, 0],
+					[0, 0, 0, 1],
+				],
+			};
+		return undefined;
+	});
+	t.after(env.close);
+	const off = simPi({ env: env.url, task: "Lift" });
+	robosuite(off.pi);
+	await off.emit("session_start");
+	process.exitCode = undefined;
+	assert.ok(!off.active().includes("detect") && !off.active().includes("enhance_depth"), "off by default");
+
+	const s = simPi({ env: env.url, task: "Lift", detections: true, unidepth: "http://127.0.0.1:1" });
+	robosuite(s.pi);
+	await s.emit("session_start");
+	process.exitCode = undefined;
+	for (const name of ["detect", "select_detection", "reject_detection", "enhance_depth"])
+		assert.ok(s.active().includes(name), name);
+	const r = await s.run("detect", { prompt: "red cube", camera: "wrist", all: true });
+	assert.deepEqual(env.calls.find((c) => c.method === "env.detect")!.kwargs, {
+		camera: "wrist",
+		text_prompt: "red cube",
+		min_score: 0.2,
+		all: true,
+	});
+	assert.equal(r.details.detections[0].score, 0.912);
+	assert.deepEqual(r.details.detections[0].centroid_pixel, [0, 1]);
+	assert.deepEqual(r.details.detections[0].centroid_world_xyz, [1, 0, 1]);
+	assert.equal(r.details.detections[0].mask_png_base64, undefined);
+	assert.equal(r.content.filter((c: { type: string }) => c.type === "image").length, 1, "the overlay");
+	assert.deepEqual(s.entries.filter((e) => e.type === "detections_expired").at(-1)?.data.ids, ["d0"]);
+	const stale = await s.run("select_detection", { id: "d1" });
+	assert.equal(stale.details.error, "d1 is stale");
+	assert.equal(s.entries.filter((e) => e.type === "detections_expired").at(-1)?.data.error, "d1 is stale");
+	const d = await s.run("enhance_depth", {});
+	assert.deepEqual(env.calls.find((c) => c.method === "env.enhance_depth")!.kwargs, { camera: "agentview" });
+	assert.equal(d.details.report.mode, "filled");
+	assert.match(
+		(await s.emit("before_agent_start")).systemPrompt as string,
+		/`detect` gives SAM3 masks[\s\S]*`enhance_depth` fuses/,
+	);
+});

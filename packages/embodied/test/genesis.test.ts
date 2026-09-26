@@ -3,7 +3,16 @@ import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import genesis, { CAMERAS, maskPixels, medianPoint, STEP_M, TASKS, VECTORS } from "../src/genesis/index.ts";
 import { ground, MOVE_UNITS } from "../src/units/index.ts";
-import { checkSimExplore, f32, fakeEnv, rgb, stubPi as simPi } from "./sim-stub.ts";
+import {
+	checkDetections,
+	checkSimExplore,
+	f32,
+	fakeEnv,
+	perceptionAnswers,
+	rgb,
+	stubPi as simPi,
+	withPerception,
+} from "./sim-stub.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
@@ -87,7 +96,7 @@ test("segment subsamples the mask evenly and takes the median of the back-projec
 });
 
 /** A fake Genesis env server running cube_pick at seed 0. */
-async function fakeGenesis() {
+async function fakeGenesis(perception = false) {
 	const obs = () => ({
 		agentview: rgb(),
 		wrist: rgb(),
@@ -102,8 +111,11 @@ async function fakeGenesis() {
 		env_steps: 0,
 	});
 	return fakeEnv((c) => {
+		const p = perception ? perceptionAnswers(c) : undefined;
+		if (p !== undefined) return p;
+		if (c.method === "env.back_project") return [[0.4, 0, 0.02]];
 		if (c.method === "env.get_env_meta")
-			return {
+			return (perception ? withPerception : (m: Record<string, unknown>) => m)({
 				task: "cube_pick",
 				seed: 0,
 				instruction: "pick up the cube",
@@ -111,7 +123,7 @@ async function fakeGenesis() {
 				z_floor_m: 0,
 				max_move_m: 0.2,
 				lift_m: 0.08,
-			};
+			});
 		if (c.method === "env.reset") return [obs(), {}];
 		if (c.method === "env.move_delta")
 			return { ...obs(), commanded_m: [0, 0, 0], moved_m: [0, 0, 0], decisions: 1, control_steps: 1 };
@@ -147,4 +159,16 @@ test("VDM is mounted over the two images every observation carries (front, then 
 		["text", "image", "image"],
 	);
 	assert.deepEqual(r.details.images, ["front 2x2", "wrist 2x2"]);
+});
+
+test("--detections / --unidepth: the env server's perception primitives; detect locates the centroid through the depth", async (t) => {
+	const env = await fakeGenesis(true);
+	t.after(env.close);
+	const s = await checkDetections({ load: genesis, values: { env: env.url }, calls: env.calls, camera: "wrist" });
+	const r = await s.run("detect", { prompt: "cube" });
+	assert.deepEqual(r.details.detections[0].centroid_world_xyz, [0.4, 0, 0.02]);
+	assert.deepEqual(env.calls.filter((c) => c.method === "env.back_project").at(-1)?.kwargs, {
+		camera_name: "agentview",
+		pixels: [[1, 1]],
+	});
 });

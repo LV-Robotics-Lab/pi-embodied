@@ -23,6 +23,7 @@ import { type Static, type TSchema, Type } from "typebox";
 import { template } from "../context-version.ts";
 import { ikArgs, type Reach, registerIkFlag } from "../ik.ts";
 import { decodePngChannel, encodePng } from "../png.ts";
+import { detectionActive, detectionArgs, detectionTools, registerDetectionFlags } from "../primitives/detections.ts";
 import { graspActive, graspArgs, graspTools, mountGraspTool, registerGraspFlags } from "../primitives/grasp.ts";
 import { attach, defineRobot, type Json, median, SERVICES, toolResult } from "../robot.ts";
 import { NdArray, RpcClient } from "../rpc.ts";
@@ -94,6 +95,7 @@ type Meta = {
 	z_floor: number;
 	table_z: number;
 	max_move_m: number;
+	capabilities?: { perception?: { segment?: boolean; enhance_depth?: boolean } };
 };
 type WorldMap = { envStep: number; size: number; rgb: Buffer; xyz: Float32Array };
 type Camera = "agentview" | "wrist";
@@ -119,6 +121,8 @@ export default function robosuite(pi: ExtensionAPI) {
 	registerIkFlag(pi);
 	// --graspnet / --graspgenx / --anyplace / --anygrasp: plan_grasp, plan_place and check_attached (../primitives/grasp.ts).
 	registerGraspFlags(pi);
+	// --detections / --unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
+	registerDetectionFlags(pi);
 	pi.registerFlag("max-move", {
 		type: "string",
 		default: String(MAX_MOVE_M),
@@ -624,6 +628,22 @@ export default function robosuite(pi: ExtensionAPI) {
 	}))
 		mountGraspTool(robot.tool, d);
 
+	// SAM3 masks with ids and UniDepth over the env server's perception (active with --detections / --unidepth).
+	for (const d of detectionTools(pi, {
+		call: (method, kwargs, timeoutMs) => call<Json>(method, kwargs, [], robot.signal, timeoutMs ?? 120_000),
+		cameras: ["agentview", "wrist"],
+		// The server renders the same 512 px views: the centroid's world xyz through this step's world map.
+		locate: async (camera, d) => {
+			const [row, col] = (d.centroid_rc as number[] | null) ?? [];
+			if (row === undefined) return {};
+			const map = await worldMap(camera as Camera, IMAGE_SIZE);
+			const i = (row * IMAGE_SIZE + col) * 3;
+			const p = [map.xyz[i], map.xyz[i + 1], map.xyz[i + 2]];
+			return valid(p) ? { centroid_world_xyz: p.map((v) => round(v)) } : {};
+		},
+	}))
+		mountGraspTool(robot.tool, d);
+
 	/**
 	 * One action unit (../units): drive the gripper, servo the TCP by `delta` (holding the gripper
 	 * command), turn by `yaw` about world +z or by an RT_* `rot`, or hold one step (STOP).
@@ -698,6 +718,8 @@ export default function robosuite(pi: ExtensionAPI) {
 					...(cuda ? ["--cuda-device", cuda] : []),
 					...ikArgs(pi.getFlag("ik")),
 					...graspArgs(pi),
+					// The server takes --sam3 for its own segment already.
+					...detectionArgs(pi, ""),
 				],
 				cwd: services,
 				env: { ...process.env, PYTHONPATH: services, MUJOCO_GL: "egl" },
@@ -722,6 +744,7 @@ export default function robosuite(pi: ExtensionAPI) {
 			...(hasGripper(task) ? ["gripper"] : []),
 			// The env server serves env.preview_reach only with --ik.
 			...(flag("ik", "") ? ["preview_reach"] : []),
+			...detectionActive(pi, meta.capabilities?.perception),
 			// Grasping needs fingers: Wipe's sponge has none.
 			...(hasGripper(task) ? graspActive(pi) : []),
 			"finish",

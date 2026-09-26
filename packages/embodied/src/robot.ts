@@ -16,6 +16,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { type Static, type TSchema, Type } from "typebox";
 import { robotCheck } from "./check.ts";
 import { explore } from "./explore.ts";
+import { fallback } from "./fallback.ts";
 import { type FlashHook, flash } from "./flash/index.ts";
 import { type FlywheelSpec, flywheel } from "./flywheel.ts";
 import { type MemoryOptions, memory } from "./memory/index.ts";
@@ -270,6 +271,8 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	const video = spec.video ? episodeVideo(pi) : { frame: (_image: NdArray) => {} };
 	const fly = spec.flywheel ? flywheel(pi, spec.flywheel.spec, spec.flywheel.select) : undefined;
 	if (spec.flash) flash(pi, spec.flash);
+	// The `fallback/<primary>` planner (../fallback.ts), only when `--fallback-model` is on the command line.
+	const fb = fallback(pi);
 	/** A successful scene reset also restarts the units state (accumulated yaw, gripper, plan). */
 	const resetsUnits =
 		<A extends unknown[], R>(reset: (...args: A) => Promise<R>) =>
@@ -529,6 +532,8 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 						// The units verifier: whether the success finish was checked, and the call's error.
 						...un?.result(),
 						...vd?.result(),
+						// With --fallback-model: the turns each planner model planned (../fallback.ts).
+						...fb?.result(),
 						// Which primitive API (code.api) the episode ran with.
 						...(api ? { code_api_digest: api.digest, code_api_tier: api.tier } : {}),
 						claimed: claimed?.status ?? null,

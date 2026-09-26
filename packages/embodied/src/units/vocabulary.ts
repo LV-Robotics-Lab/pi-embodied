@@ -64,6 +64,9 @@ export const PLUGINS = [
 	"plan",
 	"point",
 	"mem_text",
+	"coords",
+	"mcq",
+	"action_ablation",
 ] as const;
 export type Plugin = (typeof PLUGINS)[number];
 /**

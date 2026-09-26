@@ -166,7 +166,10 @@ Shared modules:
   variable_step and action_chunk and refuses to start when they are named; `--units-coarse-step` is variable_step's coarse step. A robot
   opts in with `units` in its spec (base-frame unit vectors, step, optional yaw step, `apply`,
   `state`); the moves go through its own safety checks (Franka and dual Franka: `--max-move`,
-  `--workspace-xy`, `--z-floor`).
+  `--workspace-xy`, `--z-floor`). Experimental plugins (Show-Harness `coords`, `mcq`,
+  `action_ablation`; never in `auto`): `coords` states the directions in base-frame axes, `mcq` makes
+  `act` answer with an option letter, `action_ablation` with `--units-ablation bare|letters|letters_blind`
+  runs the paper's action-representation ablation (src/units/experimental.ts).
 - `src/code/`: code mode (CaP-X's run_code). `--code=true` hides the robot's tools: the model
   writes Python programs that `run_code` executes on the env server against its primitive registry
   (`code.api`; `--code-api=high|low`, CaP-X's S2/S3; `--privileged` runs the privileged tier, S1),

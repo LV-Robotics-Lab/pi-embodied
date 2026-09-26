@@ -42,6 +42,10 @@
  * - point: affordance pixels -> world xyz (robots with `point`).
  * - mem_text: "Recent moves, newest first" in every result, with the history rules (no oscillation,
  *   no GRASP in place after an empty one); off, the results carry no move history at all.
+ * - Experimental (never in `auto`; ./experimental.ts): coords (DIRECTION and the attention rules in
+ *   base-frame axis terms, from the robot's unit vectors), mcq (`act`'s `unit` is an option letter),
+ *   action_ablation with --units-ablation bare|letters|letters_blind (the action-representation
+ *   ablation). mcq and a letters ablation both own the answer alphabet and refuse to run together.
  * A robot configuration without a wrist view (the spec's `wrist`, e.g. ManiSkill's --robot widowxai)
  * runs `auto` without variable_step and action_chunk and refuses to start when --units-plugins names
  * them (as --units-rt without an axis), and rotation keeps only its realign: those key on the wrist view. `act` then takes no `target_in_wrist` (one sent anyway is
@@ -75,12 +79,13 @@
  * Licensed under the Apache License, Version 2.0.
  * Modified by pi-embodied: core/action_units.py, interpreters/ (unit -> base-frame motion) and
  * plugins/{recovery,auto_release,proprioception,variable_step,action_chunk,rotation,affordance,
- * subgoal,deepplan,mem_text} ported as pi tools; the final task check and plugins/video_ref in ./vlm.ts.
+ * subgoal,deepplan,mem_text,coords,mcq,action_ablation} ported as pi tools; the final task check and plugins/video_ref in ./vlm.ts.
  */
 
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type TSchema, Type } from "typebox";
+import { ABLATION_MODES, Ablation, type AblationMode, mcqOptions, symbol, unsymbol } from "./experimental.ts";
 import { renderPrompt } from "./prompt.ts";
 import {
 	type Result,
@@ -237,6 +242,11 @@ export function units(
 		description:
 			"plan: the most units one stage runs before the plan advances to the next stage (Show-Harness max_subgoal_steps; 0 = no cap)",
 	});
+	pi.registerFlag("units-ablation", {
+		type: "string",
+		default: "",
+		description: `action_ablation (experimental): the action-representation setting (${ABLATION_MODES.join(", ")})`,
+	});
 	pi.registerFlag("units-coarse-step", {
 		type: "string",
 		default: String(spec.coarseStepM ?? 0.04),
@@ -347,6 +357,14 @@ export function units(
 	let stageSteps = 0;
 	let capped = false;
 	let targets: Target[] = [];
+	/** action_ablation: this session's setting (--units-ablation with the plugin on), else undefined. */
+	const ablationMode = (): AblationMode | undefined => {
+		const m = String(pi.getFlag("units-ablation") ?? "").trim() as AblationMode;
+		return plugin("action_ablation") && ABLATION_MODES.includes(m) ? m : undefined;
+	};
+	let ablation: Ablation | undefined;
+	/** letters_blind: the third-person image of the latest `act` result (the frame before the next action). */
+	let lastFrame: { type: "image"; data: string; mimeType: string } | undefined;
 	/** The verifier's refusals, verdict, errors and view (./verifier.ts updates it in place). */
 	const check = verifierState();
 	/** video_ref: the brief (extracted once per video and frame count) and why it failed. */
@@ -365,6 +383,8 @@ export function units(
 		stageSteps = 0;
 		capped = false;
 		targets = [];
+		lastFrame = undefined;
+		ablation = ablationMode() ? new Ablation(ablationMode() as AblationMode) : undefined;
 		Object.assign(check, verifierState());
 	};
 	/** mem_text: record a unit in the move history (newest last). */
@@ -385,6 +405,7 @@ export function units(
 			stages,
 			stage,
 			...(capped ? { stageCapExceeded: true } : {}),
+			...(ablation ? { ablation: ablation.record() } : {}),
 			targets,
 			replans: check.replans,
 			verdict: check.verdict,
@@ -549,9 +570,20 @@ export function units(
 	}
 
 	/** `act`'s parameters for the enabled plugins (a disabled plugin's parameter is not offered). */
+	/** A unit as the model names it: its mcq letter, its action_ablation symbol, or its name. */
+	const answerOf = (u: string) => {
+		if (plugin("mcq")) return mcqOptions(vocab()).letters[vocab().indexOf(u as Unit)] ?? u;
+		return ablation?.symbolic ? symbol(u) : u;
+	};
+	/** The model's answer back to its unit (mcq letter, symbol), or undefined for an unknown letter. */
+	const unitOf = (a: string) => (plugin("mcq") ? mcqOptions(vocab()).unit(a) : ablation?.symbolic ? unsymbol(a) : a);
 	function actSchema() {
 		const props: Record<string, TSchema> = {
-			unit: StringEnum(vocab(), { description: "The action unit" }),
+			unit: StringEnum(vocab().map(answerOf), {
+				description: plugin("mcq")
+					? `The option letter of the action unit: ${mcqOptions(vocab()).block}`
+					: "The action unit",
+			}),
 			n: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_REPEAT, description: "Repeat count (default 1)" })),
 		};
 		if (wristSignal())
@@ -560,7 +592,7 @@ export function units(
 			);
 		if (plugin("action_chunk"))
 			props.plan = Type.Optional(
-				Type.Array(StringEnum(MOVE_UNITS), {
+				Type.Array(StringEnum(MOVE_UNITS.map((u) => (ablation?.symbolic ? symbol(u) : u))), {
 					maxItems: CHUNK_STEPS,
 					description: `Only with target_in_wrist false: up to ${CHUNK_STEPS} MV_* moves run in order (replaces unit and n)`,
 				}),
@@ -569,12 +601,20 @@ export function units(
 		if (armNames.length === 2)
 			props.other = Type.Optional(
 				StringEnum(
-					vocab().filter((u) => PAIRABLE.has(u) || isRt(u)),
+					vocab()
+						.filter((u) => PAIRABLE.has(u) || isRt(u))
+						.map(answerOf),
 					{
 						description:
 							"Paired step: the OTHER arm's unit, run at the same time as `unit` (STILL = it holds); n repeats the pair",
 					},
 				),
+			);
+		if (ablation?.mode === "letters_blind")
+			props.note = Type.Optional(
+				Type.String({
+					description: "REVIEW record when the last result asked for one: NOTE[ACT_X]: <what it did>",
+				}),
 			);
 		if (spec.viewSelect?.())
 			props.view = Type.Optional(
@@ -589,14 +629,15 @@ export function units(
 	/** (Re-)register `act` when its schema changed: at load from the flag defaults, at session start from the flags. */
 	function registerAct() {
 		const schema = actSchema();
-		if (JSON.stringify(schema) === registered) return;
-		registered = JSON.stringify(schema);
-		tool(
-			"act",
-			`Execute one action unit (${vocab().join(", ")}), repeated n times. MV_* move the gripper ~${Math.round(spec.stepM * 100)} cm${spec.yawStepRad && !rtOn() ? `, ROTATE_* turn it ~${Math.round((spec.yawStepRad * 180) / Math.PI)} deg` : ""}${rtOn() && spec.rt ? `, RT_* turn it ~${Math.round((spec.rt.stepRad * 180) / Math.PI)} deg about a world axis through the fingertips (ROLL about the MV_FWD axis, PITCH about the MV_LEFT-MV_RIGHT axis, YAW about the vertical)` : ""}${gripperOn ? "; GRASP closes, RELEASE opens" : " (this robot has no gripper)"}, STOP holds one step, DONE means the task is complete (call finish). Returns the new images and state.`,
-			schema,
-			(params, signal) => actAndSave(params as ActParams, signal),
-		);
+		const description = actDescription();
+		if (JSON.stringify([schema, description]) === registered) return;
+		registered = JSON.stringify([schema, description]);
+		tool("act", description, schema, (params, signal) => modelAct(params as ActParams, signal));
+	}
+	/** `act`'s description (through the action_ablation funnel). */
+	function actDescription() {
+		const d = `Execute one action unit (${vocab().join(", ")}), repeated n times. MV_* move the gripper ~${Math.round(spec.stepM * 100)} cm${spec.yawStepRad && !rtOn() ? `, ROTATE_* turn it ~${Math.round((spec.yawStepRad * 180) / Math.PI)} deg` : ""}${rtOn() && spec.rt ? `, RT_* turn it ~${Math.round((spec.rt.stepRad * 180) / Math.PI)} deg about a world axis through the fingertips (ROLL about the MV_FWD axis, PITCH about the MV_LEFT-MV_RIGHT axis, YAW about the vertical)` : ""}${gripperOn ? "; GRASP closes, RELEASE opens" : " (this robot has no gripper)"}, STOP holds one step, DONE means the task is complete (call finish). Returns the new images and state.`;
+		return ablation ? ablation.filter(d) : d;
 	}
 	registerAct();
 	pi.on("session_start", registerAct);
@@ -611,7 +652,50 @@ export function units(
 		operator?: boolean;
 		view?: string;
 		retreat?: boolean;
+		note?: string;
 	};
+	/**
+	 * The model's `act`: its answers (mcq letters, action_ablation symbols) back to units, the unit run,
+	 * then its result through the funnel; letters_blind harvests the reviewed symbol's note first and
+	 * asks for the next review with the frame from before the move.
+	 */
+	async function modelAct(params: ActParams, signal: AbortSignal | undefined): Promise<Result> {
+		const answer = (a: string | undefined, what: string) => {
+			if (a === undefined) return undefined;
+			const u = unitOf(a);
+			if (u === undefined) throw new Error(`act: ${what} ${a} is not an option (${mcqOptions(vocab()).block})`);
+			return u;
+		};
+		const harvested = ablation?.harvest(params.note);
+		if (ablation) ablation.review = undefined;
+		const before = lastFrame;
+		const run: ActParams = {
+			...params,
+			unit: answer(params.unit, "unit") as string,
+			...(params.other !== undefined ? { other: answer(params.other, "other") } : {}),
+			...(params.plan ? { plan: params.plan.map(unsymbol) } : {}),
+		};
+		delete run.note;
+		const r = await actAndSave(run, signal);
+		const first = r.content.find((c) => c.type === "image");
+		if (first?.type === "image") lastFrame = first;
+		if (!ablation) return r;
+		const [head, ...rest] = r.content;
+		const lines = [head?.type === "text" ? ablation.filter(head.text) : ""];
+		if (harvested) lines.push(`Recorded in your table: ${harvested}`);
+		const images = [...rest];
+		if (ablation.mode === "letters_blind") {
+			lines.push(ablation.table());
+			const m = /^units: (MV_\w+) x1\n/.exec(head?.type === "text" ? head.text : "");
+			if (m && before && run.other === undefined && !run.plan?.length) {
+				ablation.review = symbol(m[1]);
+				lines.push(ablation.reviewText(ablation.review));
+				images.push(before);
+			}
+			save();
+		}
+		return { ...r, content: [text(lines.join("\n")), ...images] };
+	}
 	/** `act`, then the state entry (the agent's and the operator's units both change the episode state). */
 	async function actAndSave(params: ActParams, signal: AbortSignal | undefined) {
 		try {
@@ -1134,14 +1218,24 @@ export function units(
 		 * Why the robot must not start with these flags, else undefined: --units-rt on a robot that declares
 		 * no RT_* axis would drop ROTATE_* and offer no turn at all.
 		 */
-		configError: () =>
-			rtOn() && !Object.values(spec.rt?.axes ?? {}).some(Boolean)
-				? "--units-rt=true: this robot declares no RT_* axis (units `rt`); it would have no turn units at all. Drop --units-rt to keep ROTATE_CW/CCW."
-				: undefined,
+		configError: () => {
+			if (rtOn() && !Object.values(spec.rt?.axes ?? {}).some(Boolean))
+				return "--units-rt=true: this robot declares no RT_* axis (units `rt`); it would have no turn units at all. Drop --units-rt to keep ROTATE_CW/CCW.";
+			// The experimental plugins fail closed on an incomplete or conflicting setting.
+			const m = String(pi.getFlag("units-ablation") ?? "").trim();
+			if (plugin("action_ablation") && !ABLATION_MODES.includes(m as AblationMode))
+				return `--units-plugins action_ablation needs --units-ablation ${ABLATION_MODES.join("|")}`;
+			if (m && !plugin("action_ablation"))
+				return `--units-ablation ${m} needs the action_ablation plugin in --units-plugins`;
+			if (plugin("mcq") && ablationMode() && ablationMode() !== "bare")
+				return "mcq and action_ablation letters modes both set the answer alphabet: run one of them";
+			return undefined;
+		},
 		/** The robot result's verifier fields: whether the success finish was checked, and the call's latest error. */
 		result: () => ({
 			// What ran: the plugins after the robot's wrist view, and that view (units mode only).
 			...(mode() ? { units_plugins: effective(), units_wrist_view: wristView } : {}),
+			...(ablation ? { units_ablation: ablation.record() } : {}),
 			...(check.finishVerified !== undefined ? { finish_verified: check.finishVerified } : {}),
 			...(check.verifierError ? { verifier_error: check.verifierError } : {}),
 		}),
@@ -1153,8 +1247,8 @@ export function units(
 		/** The units tools: act and the enabled plugins' tools (pure mode adds finish). */
 		tools: () => ["act", ...(plugin("point") ? ["point"] : []), ...(plugin("plan") ? ["plan"] : [])],
 		/** Pure mode: the whole prompt. Both mode: the section appended to the robot's prompt. */
-		prompt: () =>
-			renderPrompt({
+		prompt: () => {
+			const p = renderPrompt({
 				spec,
 				mode: mode(),
 				arms: armNames,
@@ -1169,6 +1263,10 @@ export function units(
 				coarseM: coarse(),
 				highM: high,
 				stageSteps: stageCap(),
-			}),
+				vocabulary: vocab(),
+				ablation: ablation?.mode,
+			});
+			return ablation ? ablation.filter(p) : p;
+		},
 	};
 }

@@ -23,6 +23,9 @@ VIEWS:
 {{views}}
 
 ACTION UNITS (`act` with `unit` and an optional repeat count `n`, default 1):
+[mcq]
+- ANSWER BY LETTER: `act`'s `unit` is the option letter of the unit you choose: {{mcq_options}}.
+[/mcq]
 - MV_FWD, MV_BACK, MV_LEFT, MV_RIGHT, MV_UP, MV_DOWN: move the gripper about {{step_cm}} cm that way (see VIEWS for how each one looks in the images).
 [yaw]
 - ROTATE_CW, ROTATE_CCW: turn the gripper about {{yaw_deg}} degrees. ROTATE_CW turns it counter-clockwise seen from above{{yaw_wrist}}; ROTATE_CCW the opposite.
@@ -92,7 +95,7 @@ GRIPPER:
 
 ATTENTION:
 - DONE only when the task's completion is already visible in the images.
-- Each `act` result starts with a units block: what ran{{mem_note}}{{proprio_note}}. Read it before the next unit; a blocked move did not happen.
+{{coords_remark}}- Each `act` result starts with a units block: what ran{{mem_note}}{{proprio_note}}. Read it before the next unit; a blocked move did not happen.
 [mem_text]
 - If the recent moves show GRASP(empty) (a GRASP that closed on nothing), do not GRASP in place again: first reposition with MV_UP, MV_BACK, MV_DOWN or MV_FWD.
 - Do not undo the newest recent move (MV_LEFT / MV_RIGHT, MV_FWD / MV_BACK) unless the images show it overshot the target. When the recent moves alternate between opposite directions, re-judge the target's position from {{judge_views}} before moving again; do not descend while still off-center.

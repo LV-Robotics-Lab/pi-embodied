@@ -1447,3 +1447,108 @@ test("a paired act step drives both arms at once through applyPair, else one aft
 		],
 	);
 });
+
+test("coords (experimental): DIRECTION and the attention rules in base-frame axis terms", async () => {
+	const f = await toyRobot({ "units-plugins": "coords,mem_text" });
+	const prompt = (await f.emit("before_agent_start")).systemPrompt as string;
+	assert.match(prompt, /DIRECTION:\nUse the robot's right-handed base coordinate system/);
+	assert.match(prompt, /- MV_FWD -> move along \+x\n- MV_BACK -> move along -x\n- MV_LEFT -> move along -y/);
+	assert.match(prompt, /After grasping, MV_UP \(\+z\) clear of the table BEFORE any horizontal move/);
+	assert.doesNotMatch(prompt, /Is the current step about grasping/, "the image-direction rules are replaced");
+	assert.match(prompt, /\nGRIPPER:\n/);
+	const off = (await (await toyRobot({ "units-plugins": "mem_text" })).emit("before_agent_start")).systemPrompt;
+	assert.doesNotMatch(off, /right-handed base coordinate system|move along \+x/);
+});
+
+test("mcq (experimental): act answers with an option letter, mapped back to its unit", async () => {
+	const f = await toyRobot({ "units-plugins": "mcq,mem_text" });
+	const unit = f.tools.get("act").parameters.properties.unit;
+	const letters = (unit.enum ?? unit.anyOf?.map((o: any) => o.const)) as string[];
+	assert.equal(letters[0], "A");
+	assert.ok(!letters.includes("MV_LEFT"));
+	assert.match(unit.description, /A\) MV_FWD {2}B\) MV_BACK {2}C\) MV_LEFT/);
+	const prompt = (await f.emit("before_agent_start")).systemPrompt as string;
+	assert.match(prompt, /ANSWER BY LETTER: `act`'s `unit` is the option letter .*C\) MV_LEFT/);
+	const r = await f.run("act", { unit: "C" });
+	assert.deepEqual(f.moves[0].delta, [0, -0.02, 0]);
+	assert.match(
+		head(r),
+		/^units: MV_LEFT x1\n[\s\S]*Recent moves, newest first: MV_LEFT/,
+		"results keep the unit names",
+	);
+	await assert.rejects(f.run("act", { unit: "Z" }), /Z is not an option/);
+	// mcq and a letters ablation both own the answer alphabet: refused before the robot starts.
+	const both = await toyRobot({ "units-plugins": "mcq,action_ablation", "units-ablation": "letters" });
+	assert.deepEqual(both.active(), []);
+	assert.match(both.notes.join("\n"), /mcq and action_ablation letters modes/);
+});
+
+test("action_ablation (experimental): letters symbolizes the six directions everywhere the model reads", async () => {
+	const f = await toyRobot({
+		"units-plugins": "action_ablation,mem_text,proprioception",
+		"units-ablation": "letters",
+	});
+	const prompt = (await f.emit("before_agent_start")).systemPrompt as string;
+	assert.doesNotMatch(prompt, /\bMV_(?:FWD|BACK|LEFT|RIGHT|UP|DOWN)\b/);
+	assert.match(prompt, /ACT_C \/ ACT_D move toward the image left \/ right/, "letters keeps the explanations");
+	const enumOf = (s: any) => (s.enum ?? s.anyOf?.map((o: any) => o.const)) as string[];
+	const unit = enumOf(f.tools.get("act").parameters.properties.unit);
+	assert.ok(unit.includes("ACT_A") && unit.includes("GRASP") && !unit.includes("MV_FWD"));
+	assert.doesNotMatch(f.tools.get("act").description, /\bMV_FWD\b/);
+	const r = head(await f.run("act", { unit: "ACT_E", n: 2 }));
+	assert.deepEqual(f.moves[0].delta, [0, 0, 0.02]);
+	assert.match(r, /^units: ACT_E x2\n/);
+	assert.match(r, /Recent moves, newest first: ACT_E, ACT_E/);
+	assert.equal(f.entries.filter((e) => e.customType === STATE_ENTRY).at(-1)?.data.ablation.mode, "letters");
+	// A missing or unknown setting fails closed; a setting without the plugin too.
+	for (const flags of [
+		{ "units-plugins": "action_ablation" },
+		{ "units-plugins": "action_ablation", "units-ablation": "shuffled" },
+		{ "units-plugins": "mem_text", "units-ablation": "bare" },
+	]) {
+		const g = await toyRobot(flags);
+		assert.deepEqual(g.active(), [], JSON.stringify(flags));
+	}
+});
+
+test("action_ablation (experimental): bare drops every direction explanation and the pair hints, keeps the names", async () => {
+	const f = await toyRobot({ "units-plugins": "action_ablation,mem_text", "units-ablation": "bare" });
+	const prompt = (await f.emit("before_agent_start")).systemPrompt as string;
+	assert.match(prompt, /No description of what any movement unit does is provided/);
+	assert.doesNotMatch(prompt, /toward the image|move the gripper about|Is the current step about grasping/);
+	assert.doesNotMatch(prompt, /\(MV_LEFT \/ MV_RIGHT, MV_FWD \/ MV_BACK\)/);
+	assert.match(prompt, /- MV_FWD, MV_BACK, MV_LEFT, MV_RIGHT, MV_UP, MV_DOWN: movement units/);
+	await f.run("act", { unit: "MV_LEFT" });
+	assert.deepEqual(f.moves[0].delta, [0, -0.02, 0]);
+});
+
+test("action_ablation (experimental): letters_blind reviews each blind move with its before frame and keeps the model's own table", async () => {
+	const f = await toyRobot(
+		{ "units-plugins": "action_ablation,mem_text,proprioception", "units-ablation": "letters_blind" },
+		{},
+	);
+	const prompt = (await f.emit("before_agent_start")).systemPrompt as string;
+	assert.doesNotMatch(prompt, /\bMV_(?:FWD|BACK|LEFT|RIGHT|UP|DOWN)\b/, "no line names a direction");
+	assert.match(prompt, /WHICH symbol is WHICH direction is NOT told/);
+	assert.doesNotMatch(prompt, /If height >/);
+	// The first act has no before frame: no review.
+	const first = await f.run("act", { unit: "STOP" });
+	assert.doesNotMatch(head(first), /REVIEW/);
+	assert.match(head(first), /ACT_F: \(unknown\)/);
+	const r = await f.run("act", { unit: "ACT_F" });
+	assert.deepEqual(f.moves.at(-1)?.delta, [0, 0, -0.02]);
+	assert.match(head(r), /REVIEW YOUR LAST ACTION: you just executed ACT_F/);
+	assert.doesNotMatch(head(r), /If height >|MV_DOWN/);
+	const images = r.content.filter((c: any) => c.type === "image").map((c: any) => c.data);
+	assert.deepEqual(images, ["m2", "m1"], "the frame from before ACT_F rides last");
+	// Only the reviewed symbol's note is recorded.
+	const next = await f.run("act", {
+		unit: "ACT_E",
+		note: "NOTE[ACT_A]: guess. NOTE[ACT_F]: lowered the gripper. It went down a lot",
+	});
+	assert.match(head(next), /Recorded in your table: ACT_F: lowered the gripper\./);
+	assert.match(head(next), /ACT_A: \(unknown\)/);
+	const rec = f.entries.filter((e) => e.customType === STATE_ENTRY).at(-1)?.data.ablation;
+	assert.deepEqual(rec.note_history, [{ symbol: "ACT_F", note: "lowered the gripper." }]);
+	assert.equal(rec.symbols, undefined, "the blind record never carries the true mapping");
+});

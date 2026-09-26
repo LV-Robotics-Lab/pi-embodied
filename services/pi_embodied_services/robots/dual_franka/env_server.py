@@ -34,6 +34,7 @@ from pi_embodied_services.robots.franka.env_server import (
     _StopPoller,
     main,
 )
+from pi_embodied_services.robots.franka.primitives import DUAL_FRANKA_PRIMITIVES
 from pi_embodied_services.utils.config import get_repo_root, get_rlinf_repo_path
 from pi_embodied_services.utils.serialization import to_numpy_tree
 
@@ -61,6 +62,7 @@ class DualFrankaEnvFacade(FrankaEnvFacade):
     SERVICE_NAME = "dual-franka-env"
 
     _METHODS = (*FrankaEnvFacade._METHODS, "recover_joint_posture")
+    _PRIMITIVES = DUAL_FRANKA_PRIMITIVES
 
 
 def _batch_raw_obs(raw_obs: dict[str, Any]) -> dict[str, Any]:

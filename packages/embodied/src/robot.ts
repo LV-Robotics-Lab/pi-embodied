@@ -20,6 +20,7 @@ import { type FlashHook, flash } from "./flash/index.ts";
 import { flywheel } from "./flywheel.ts";
 import { type MemoryOptions, memory } from "./memory/index.ts";
 import { operator } from "./operator.ts";
+import { CODE_API_ENTRY, CODE_API_EVENT, type CodeApi, fetchCodeApi } from "./primitives/registry.ts";
 import { forgetUnresponsive, NdArray, RpcClient, RpcUnavailable } from "./rpc.ts";
 import { type UnitsSpec, units } from "./units/index.ts";
 import { VLM_COST_EVENT } from "./units/vlm.ts";
@@ -140,6 +141,12 @@ export type RobotSpec = {
 	 * `env.ground_truth_poses`). It registers `--privileged`; real robots leave it unset, so they have no such flag.
 	 */
 	groundTruth?: (names: string[] | undefined) => Promise<unknown>;
+	/**
+	 * The env server whose primitive registry (`code.api`, ./primitives/registry.ts) this robot runs
+	 * on, once `start` connected it. The base fetches the declaration for the episode's tier
+	 * (`privileged` under --privileged), records it and puts its digest in the result.
+	 */
+	codeApi?: () => RpcClient | undefined;
 };
 
 /**
@@ -168,6 +175,8 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	let task: Record<string, string> = {};
 	let ready = false;
 	let failed: string | undefined;
+	/** The episode's primitive registry, when the robot declares `codeApi` and its server serves one. */
+	let api: CodeApi | undefined;
 	/** The robot broke during the episode: its env server exited, or a service stopped answering. */
 	let broken: string | undefined;
 	let ran = false;
@@ -355,7 +364,14 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 			// A flag the robot cannot honour fails closed, before the robot boots.
 			const misconfigured = un?.configError();
 			if (misconfigured) throw new Error(misconfigured);
+			api = undefined;
 			const tools = await spec.start(ctx);
+			const client = spec.codeApi?.();
+			if (client) {
+				api = await fetchCodeApi(client, privileged() ? "privileged" : undefined);
+				if (api) pi.appendEntry(CODE_API_ENTRY, api);
+			}
+			pi.events.emit(CODE_API_EVENT, api);
 			// Pure units mode hides the robot's own tools and memory's (Show-Harness's pure mode).
 			const mode = un?.mode();
 			const own =
@@ -481,6 +497,8 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 						// The units verifier: whether the success finish was checked, and the call's error.
 						...un?.result(),
 						...vd?.result(),
+						// Which primitive API (code.api) the episode ran with.
+						...(api ? { code_api_digest: api.digest, code_api_tier: api.tier } : {}),
 						claimed: claimed?.status ?? null,
 						summary: claimed?.summary ?? null,
 						turns,
@@ -574,6 +592,10 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		},
 		/** Register a sequential robot tool; its result terminates the batch when the batch also calls `finish`. */
 		tool,
+		/** The episode's primitive registry (`codeApi`), once the robot is up; undefined without one. */
+		get codeApi() {
+			return api;
+		},
 		/**
 		 * Start `python ...args --transport http --host 127.0.0.1 --port <free> --parent-watch` (a service
 		 * RPC server; it exits with pi) and wait for healthz. It is stopped at the next start and at shutdown.

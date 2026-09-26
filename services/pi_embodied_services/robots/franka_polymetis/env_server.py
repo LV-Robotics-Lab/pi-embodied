@@ -69,7 +69,9 @@ from typing import Any
 import numpy as np
 import yaml
 
+from pi_embodied_services.components.code_api import register_code_api
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
+from pi_embodied_services.robots.franka.primitives import FRANKA_PRIMITIVES
 from pi_embodied_services.robots.franka_polymetis.control import (
     PolymetisController,
     PolymetisLimits,
@@ -338,6 +340,7 @@ class FrankaPolymetisFacade(MainThreadServeMixin, BaseEnvFacade):
     def _register_rpc(self) -> None:
         for name in METHODS:
             self._rpc[f"env.{name}"] = getattr(self, name)
+        register_code_api(self, FRANKA_PRIMITIVES)
 
     def close(self) -> None:
         for cam in self._cameras.values():

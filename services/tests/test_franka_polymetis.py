@@ -131,7 +131,14 @@ def test_method_list_matches_the_rlinf_server():
 
     assert METHODS == FrankaEnvFacade._METHODS
     f = facade()
-    assert {m for m in f._rpc} == {f"env.{m}" for m in FrankaEnvFacade._METHODS}
+    assert {m for m in f._rpc if m.startswith("env.")} == {
+        f"env.{m}" for m in FrankaEnvFacade._METHODS
+    }
+    # Both backends serve the same primitive registry.
+    assert (
+        "code.api" in f._rpc
+        and FrankaEnvFacade._PRIMITIVES is env_server.FRANKA_PRIMITIVES
+    )
 
 
 def test_capabilities_have_the_same_keys_on_both_backends():
@@ -1148,3 +1155,23 @@ def test_mock_server_over_http_with_parent_watch(tmp_path):
         if proc.poll() is None:
             proc.kill()
             proc.wait()
+
+
+def test_code_api_lists_the_primitives_and_resolves_to_the_facade_methods():
+    f = facade()
+    high = call(f, "code.api", tier="high")
+    assert [p["name"] for p in high["primitives"]] == [
+        "get_robot_state",
+        "move_delta",
+        "rotate_delta",
+        "set_gripper",
+    ]
+    assert len(high["digest"]) == 64
+    low = call(f, "code.api", tier="low")
+    assert "get_observation" in [p["name"] for p in low["primitives"]]
+    assert call(f, "code.api")["primitives"] == low["primitives"]
+    method, kwargs = f.code_api.resolve("move_delta", {"delta_xyz": [0.0, 0.0, 0.01]})
+    assert method == "env.move_delta" and method in f._rpc
+    # A resolved call is the tool's call: the facade's own limits refuse an oversized move.
+    with pytest.raises(ValueError, match="per\\s+call"):
+        call(f, method, delta_xyz=[0.0, 0.0, 1.0])

@@ -107,6 +107,15 @@ wrapper; single-env servers strip the leading env dimension.
 world frame, metres, rounded to 1e-5. The names are the simulator's own object list (per server
 below); an unknown name is an error that lists them.
 
+`code.api` (read-only; franka-env, franka-polymetis-env, dual-franka-env so far): the server's
+primitive registry (`components/code_api.py`), what a code-as-policy caller may use. kw
+`tier=null` (`"high"`, `"low"`, `"privileged"` = high plus ground truth; null = every non-privileged
+primitive) -> `{"tier": str | null, "primitives": [{"name", "method", "doc", "params": {name:
+{"type", "description", "required"}}, "mutating", "tiers"}], "digest": sha256 hex}`. Each
+primitive names the `env.*` method that runs it, so a primitive call is the tool's call, with the
+same limits; the digest names the API version an episode ran with (pi records it as
+`code_api_digest`). A server without a registry answers `unknown RPC method: 'code.api'`.
+
 ### libero-env (`robots/libero/env_server.py`)
 
 | method | args | result |

@@ -266,6 +266,8 @@ export default function franka(pi: ExtensionAPI) {
 			readable: () => [out],
 		},
 		operator: { step: () => steps.length },
+		// The env server's primitive registry (services robots/franka/primitives.py), both backends.
+		codeApi: () => env,
 		start: startRobot,
 		stop: () => {
 			env = vla = undefined;

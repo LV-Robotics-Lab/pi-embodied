@@ -28,7 +28,9 @@ from typing import Any
 
 import numpy as np
 
+from pi_embodied_services.components.code_api import register_code_api
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
+from pi_embodied_services.robots.franka.primitives import FRANKA_PRIMITIVES
 from pi_embodied_services.robots.franka.runtime_config import load_runtime_config
 from pi_embodied_services.utils.logging import get_logger
 from pi_embodied_services.utils.serialization import to_numpy_tree
@@ -54,6 +56,8 @@ class FrankaEnvFacade(BaseEnvFacade):
     )
 
     #: Worker methods with a servo/step loop that polls the stop flag.
+    #: The primitive registry served as ``code.api`` (../franka/primitives.py).
+    _PRIMITIVES = FRANKA_PRIMITIVES
     _STOPPABLE = frozenset(
         {
             "move_delta",
@@ -82,6 +86,7 @@ class FrankaEnvFacade(BaseEnvFacade):
                 "env.get_camera_meta",
             }
         )
+        register_code_api(self, self._PRIMITIVES)
 
     def _stoppable(self, handler: Callable[..., Any]) -> Callable[..., Any]:
         """Tell the worker which stop generation this call runs under, then run it."""

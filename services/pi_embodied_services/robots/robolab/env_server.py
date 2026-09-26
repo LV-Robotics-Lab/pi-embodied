@@ -287,9 +287,12 @@ class RobolabEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         plus ``commanded_yaw``, ``yaw`` (executed, measured off the hand), ``moved_m`` (the position
         drift) and step counts; ``frames`` as in ``move_delta``. Refused once the episode is over.
         """
+        requested = float(yaw)
+        if not math.isfinite(requested):
+            # np.clip passes NaN through, and yaw_quat would poison the hold's reference.
+            raise ValueError(f"yaw must be a finite angle in rad, got {yaw!r}")
         start = sim.rl_tcp(self._env)
         quat_start = sim.rl_ee_quat(self._env)
-        requested = float(yaw)
         commanded = float(np.clip(requested, -MAX_ROTATE_RAD, MAX_ROTATE_RAD))
         report: dict[str, Any] = {
             "requested_yaw": requested,

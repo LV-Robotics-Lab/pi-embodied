@@ -68,7 +68,7 @@ export const EMPTY_WIDTH_M = 0.005;
 export const VIEWS = `Each result shows the front view (a fixed camera in front of the robot, facing it; the robot base is at the top of the image), then the wrist view (it looks straight down from the gripper, rotated so the fingers are at the top of the image).
 - Front view: MV_LEFT / MV_RIGHT move toward the image left / right, MV_FWD toward the image bottom (toward the camera), MV_BACK toward the image top (toward the robot base).
 - Wrist view: MV_LEFT / MV_RIGHT move the gripper toward the image left / right, MV_FWD toward the image bottom, MV_BACK toward the image top; an object centered in the image is under the gripper: MV_DOWN.
-- ROTATE_CW turns the gripper counter-clockwise seen from above (the scene turns clockwise in the wrist view), ROTATE_CCW the opposite; the front view and the MV_* directions stay in the base frame.`;
+- ROTATE_CW turns the gripper counter-clockwise seen from above, so the scene turns clockwise in the wrist view; ROTATE_CCW the opposite. The front view and the MV_* directions stay in the base frame.`;
 
 type Obs = {
 	agentview: NdArray;
@@ -162,11 +162,12 @@ export default function robolab(pi: ExtensionAPI) {
 		// No corpus is published for RoboLab: memory is what exploration writes locally.
 		memory: {
 			cell: () => ({ tag: tag(robot.task.seed), reference: tag("0") }),
-			primitives: ["move_delta", "act"],
+			primitives: ["move_delta", "rotate_delta", "act"],
 			published: false,
 		},
-		// Flash replays a solved episode's plan (../flash/generate.ts --session: move_delta waypoints with their
-		// absolute end positions). Anchors are pointed at by Molmo in the front image (sent raw, 640x480) and met
+		// Flash replays a solved episode's plan (../flash/generate.ts --session --position state.eef_pos
+		// --turn rotate_delta=yaw --heading state.yaw_deg: move_delta waypoints with their absolute end
+		// positions, rotate_delta turns from the heading changes). Anchors are pointed at by Molmo in the front image (sent raw, 640x480) and met
 		// with the plane at their recorded height through the front camera's calibration (env.get_camera_meta:
 		// camera -> base, the frame of eef_pos); anchored waypoints then move with them, as deltas from the live
 		// eef position, in moves of at most MAX_MOVE_M.
@@ -333,6 +334,8 @@ export default function robolab(pi: ExtensionAPI) {
 			result,
 			step: obs.env_steps,
 			success: obs.success,
+			// The solved signal exploration and the memory recipe read (../memory, ../explore.ts), as ../maniskill sets it.
+			terminated: obs.success,
 			truncated: obs.truncated,
 			task_language: meta.instruction,
 			state: {

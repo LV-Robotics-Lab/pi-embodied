@@ -215,6 +215,11 @@ def test_rotate_delta_turns_the_hand_by_the_yaw_and_holds_position_and_tilt(
     assert len(r["frames"]) == r["decisions"]
     # A turn within tolerance costs no step.
     assert f.rotate_delta(0.0)["control_steps"] == 0
+    # A NaN yaw is refused before it reaches the hold's reference (np.clip passes it through).
+    for bad in (float("nan"), float("inf"), "nan"):
+        with pytest.raises(ValueError, match="finite"):
+            f.rotate_delta(bad)
+    assert f.rotate_delta(0.0)["yaw_deg"] == pytest.approx(0.0, abs=1)
 
 
 def test_move_delta_keeps_the_heading_the_turn_left(monkeypatch):

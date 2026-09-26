@@ -360,6 +360,94 @@ test("a session becomes delta waypoints with absolute end positions, gripper cha
 	assert.throws(() => generate({ session, anchors: "x", targets: "a=xyz", destination: dir }), /--name/);
 });
 
+/** A RoboLab session: observe, a units turn, a move, a rotate_delta call, a grasp; the last result solves. */
+function turningSession(): SessionEntry[] {
+	const steps: [string, Record<string, unknown>, number[], number, string, boolean][] = [
+		["view_env_state", {}, [0.4, 0, 0.3], 0, "open", false],
+		["act", { unit: "ROTATE_CW" }, [0.4, 0, 0.3], 8.59, "open", false],
+		["act", { unit: "MV_DOWN" }, [0.4, 0, 0.28], 8.6, "open", false],
+		["rotate_delta", { yaw: -0.3 }, [0.4, 0, 0.28], -8.59, "open", false],
+		["view_env_state", {}, [0.4, 0, 0.28], -8.59, "open", false],
+		["move_delta", { delta_xyz: [0, 0, -0.05], gripper: "close" }, [0.4, 0, 0.23], -8.59, "close", true],
+	];
+	return steps.flatMap(([name, args, pos, yaw, grip, terminated], i): SessionEntry[] => {
+		const id = `t${i}`;
+		const details = { terminated, success: terminated, state: { eef_pos: pos, yaw_deg: yaw, gripper_command: grip } };
+		return [
+			{
+				type: "message",
+				message: { role: "assistant", content: [{ type: "toolCall", id, name, arguments: args }] },
+			} as unknown as SessionEntry,
+			{
+				type: "message",
+				message: { role: "toolResult", toolCallId: id, toolName: name, content: [], details, isError: false },
+			} as unknown as SessionEntry,
+		];
+	});
+}
+
+test("a session's heading changes become the yaw tool's calls, before the waypoint they came with; a plan replays them as recorded", async () => {
+	const eef = (json: Record<string, unknown>) => (json.state as { eef_pos?: number[] } | undefined)?.eef_pos;
+	const targets = parseTargets("move_delta=delta_xyz", eef);
+	const turn = { tool: "rotate_delta", argument: "yaw", heading: pathOf("state.yaw_deg") };
+	const plan = sessionPlan(turningSession(), {
+		targets,
+		motion: ["act"],
+		gripper: pathOf("state.gripper_command"),
+		turn,
+	});
+	assert.deepEqual(plan, [
+		// ROTATE_CW: +8.59 deg = 0.15 rad; the hold's 0.01 deg drift on the next move is no turn.
+		{ action: "rotate_delta", arguments: { yaw: 0.1499 } },
+		{ action: "move_delta", arguments: { delta_xyz: [0, 0, -0.02] }, to: [0.4, 0, 0.28] },
+		{ action: "rotate_delta", arguments: { yaw: -0.3 } },
+		{ action: "move_delta", arguments: { delta_xyz: [0, 0, -0.05], gripper: "close" }, to: [0.4, 0, 0.23] },
+	]);
+	// Without a turn tool the turns are dropped, as before.
+	const flat = sessionPlan(turningSession(), { targets, motion: ["act"], gripper: pathOf("state.gripper_command") });
+	assert.deepEqual(
+		flat.map((e) => e.action),
+		["move_delta", "move_delta"],
+	);
+	// The replay passes a turn through untouched (no target to anchor) between the anchored moves.
+	const f = fakeRobot([0.4, 0, 0.05], { eef_pos: [0.4, 0, 0.3] });
+	const r = await startRecipe(
+		{ name: "cell", anchors: [], plan },
+		f.robot,
+		{ observe: "view_env_state", targets: { move_delta: { delta: "delta_xyz", position: eef, maxStep: 0.3 } } },
+		undefined,
+	);
+	assert.deepEqual(r.rewrite(plan[0]), { name: "rotate_delta", arguments: { yaw: 0.1499 } });
+	assert.deepEqual(r.rewrite(plan[2]), { name: "rotate_delta", arguments: { yaw: -0.3 } });
+	assert.deepEqual(r.rewrite(plan[1]), [{ name: "move_delta", arguments: { delta_xyz: [0, 0, -0.02] } }]);
+	// The CLI: --turn and --heading go together and name the tool's yaw argument.
+	const dir = mkdtempSync(join(tmpdir(), "flash-"));
+	const session = join(dir, "s.jsonl");
+	writeFileSync(
+		session,
+		turningSession()
+			.map((e) => `${JSON.stringify(e)}\n`)
+			.join(""),
+	);
+	writeFileSync(join(dir, "anchors.json"), "[]");
+	const base = {
+		session,
+		anchors: join(dir, "anchors.json"),
+		targets: "move_delta=delta_xyz",
+		position: "state.eef_pos",
+		destination: join(dir, "flash"),
+		name: "cell",
+	};
+	const out = generate({ ...base, turn: "rotate_delta=yaw", heading: "state.yaw_deg" });
+	assert.equal(out.calls, 4);
+	assert.deepEqual(JSON.parse(readFileSync(out.path, "utf8")).plan[0], {
+		action: "rotate_delta",
+		arguments: { yaw: 0.1499 },
+	});
+	assert.throws(() => generate({ ...base, turn: "rotate_delta=yaw" }), /--heading go together/);
+	assert.throws(() => generate({ ...base, turn: "rotate_delta", heading: "state.yaw_deg" }), /bad --turn/);
+});
+
 /** RLinf's calibrated front D435 as ../robolab franka.py states it: camera -> base, OpenCV, 640x480. */
 const FRONT = {
 	intrinsic_K: [

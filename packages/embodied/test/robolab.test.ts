@@ -53,10 +53,14 @@ function stubPi(values: Record<string, unknown> = {}) {
 	return { pi, flags, tools, emit, run, active: () => active };
 }
 
-/** A fake env server (the wire protocol of ../src/rpc.ts) whose hand turns by exactly the yaw it is asked. */
-async function fakeEnv() {
+/**
+ * A fake env server (the wire protocol of ../src/rpc.ts) whose hand turns by exactly the yaw it is asked;
+ * the task is solved from the `solvedAfter`th motion on.
+ */
+async function fakeEnv(solvedAfter = Infinity) {
 	const calls: { method: string; args: unknown[]; kwargs: Record<string, unknown> }[] = [];
 	let yaw = 0;
+	let moved = 0;
 	const nd = (dtype: string, shape: number[], data: Buffer) => ({
 		__ndarray__: data.toString("base64"),
 		dtype,
@@ -72,8 +76,8 @@ async function fakeEnv() {
 		yaw_deg: (yaw * 180) / Math.PI,
 		gripper_width: 0.08,
 		gripper_command: "open",
-		success: false,
-		terminated: false,
+		success: moved >= solvedAfter,
+		terminated: moved >= solvedAfter,
 		truncated: false,
 		env_steps: calls.length,
 	});
@@ -98,9 +102,11 @@ async function fakeEnv() {
 			if (method === "code.api") result = { tier: null, primitives: [], digest: "d" };
 			else if (method === "env.get_env_meta") result = meta;
 			else if (method === "env.reset") result = [obs(), {}];
-			else if (method === "env.move_delta")
+			else if (method === "env.move_delta") {
+				moved++;
 				result = { ...obs(), commanded_m: args[0], moved_m: args[0], decisions: 1, control_steps: 8 };
-			else if (method === "env.rotate_delta") {
+			} else if (method === "env.rotate_delta") {
+				moved++;
 				yaw += Number(kwargs.yaw);
 				result = {
 					...obs(),
@@ -187,6 +193,21 @@ test("units: ROTATE_* run as env.rotate_delta with the grounded yaw, MV_* as env
 	const ok = await s.run("rotate_delta", { yaw: -0.3 });
 	assert.equal(env.motions().at(-1)?.kwargs.yaw, -0.3);
 	assert.match(ok.content[0].text, /"commanded_yaw":-0.3/);
+});
+
+test("tool results carry `terminated` (the solved signal of exploration and the memory recipe) beside `success`", async (t) => {
+	const env = await fakeEnv(2);
+	t.after(env.close);
+	const s = stubPi({ env: env.url });
+	robolab(s.pi);
+	await s.emit("session_start");
+	const details = (r: any) => r.details as { success: boolean; terminated: boolean; state: { yaw_deg: number } };
+	let r = await s.run("move_delta", { delta_xyz: [0.02, 0, 0] });
+	assert.deepEqual([details(r).success, details(r).terminated], [false, false]);
+	r = await s.run("rotate_delta", { yaw: 0.15 });
+	assert.deepEqual([details(r).success, details(r).terminated], [true, true]);
+	assert.equal(details(r).state.yaw_deg, (0.15 * 180) / Math.PI);
+	assert.equal(JSON.parse(r.content[0].text).terminated, true);
 });
 
 test("attaching to a server with another task, phrasing or subtask setting fails closed", async (t) => {

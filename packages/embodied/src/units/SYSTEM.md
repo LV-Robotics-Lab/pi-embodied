@@ -25,7 +25,7 @@ VIEWS:
 ACTION UNITS (`act` with `unit` and an optional repeat count `n`, default 1):
 - MV_FWD, MV_BACK, MV_LEFT, MV_RIGHT, MV_UP, MV_DOWN: move the gripper about {{step_cm}} cm that way (see VIEWS for how each one looks in the images).
 [yaw]
-- ROTATE_CW, ROTATE_CCW: turn the gripper about {{yaw_deg}} degrees clockwise / counter-clockwise as seen in the wrist view.
+- ROTATE_CW, ROTATE_CCW: turn the gripper about {{yaw_deg}} degrees. ROTATE_CW turns it counter-clockwise seen from above, so the scene turns clockwise in the wrist view; ROTATE_CCW the opposite.
 [/yaw]
 [rt]
 - RT_ROLL_LEFT / RT_ROLL_RIGHT, RT_PITCH_FWD / RT_PITCH_BACK, RT_YAW_CW / RT_YAW_CCW: turn the gripper about {{rt_deg}} degrees about a world axis through the fingertips (roll about the MV_FWD axis, pitch about the MV_LEFT-MV_RIGHT axis, yaw about the vertical, clockwise / counter-clockwise seen from above).

@@ -19,6 +19,10 @@
  * JSON) and the gripper command (`--gripper`), so each move becomes a waypoint: the recorded delta,
  * the absolute end position (`to`) and a `gripper` argument where the command changed. The other
  * `--targets` tools are kept as called; everything else (observations, planning tools) is dropped.
+ * A robot with a yaw tool (../robolab's `rotate_delta`, the units' ROTATE_*) also records the heading
+ * (`--heading`, a path to the degrees in the result's JSON): each motion result that turned it becomes
+ * a call of `--turn <tool>=<argument>` with the turn in radians, before that result's waypoint, so the
+ * plan carries the turns a recipe or a delta waypoint cannot.
  */
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -77,11 +81,17 @@ export function parseTargets(spec: string, position?: (json: Json) => number[] |
 	);
 }
 
+/** A yaw tool and where a result's JSON says the heading, deg (the tool takes radians). */
+export type TurnTool = { tool: string; argument: string; heading: (json: Json) => unknown };
+/** Heading changes below this are the hold's drift, not a turn, deg. */
+const TURN_MIN_DEG = 0.5;
+
 /**
  * The plan a solved session recorded: after its last successful `reset`, each result of a motion
  * tool becomes a waypoint of the relative target's tool (the delta from the previous end-effector
- * position, `to` = the new one, `gripper` when the command changed); the absolute-target tools are
- * kept as called. Throws when no result reports the task solved (`terminated` or `success`).
+ * position, `to` = the new one, `gripper` when the command changed), preceded by a `turn` call when
+ * the heading changed; the absolute-target tools are kept as called. Throws when no result reports
+ * the task solved (`terminated` or `success`).
  */
 export function sessionPlan(
 	entries: SessionEntry[],
@@ -90,12 +100,14 @@ export function sessionPlan(
 		/** Tools besides the relative target's whose results are waypoints (the units' `act`). */
 		motion: readonly string[];
 		gripper: (json: Json) => unknown;
+		/** The yaw tool, whose calls are the heading changes of the motion results (and its own). */
+		turn?: TurnTool;
 	},
 ): AnchoredEntry[] {
 	const relative = Object.entries(o.targets).filter((e): e is [string, RelativeTarget] => typeof e[1] !== "string");
 	if (relative.length !== 1) throw new Error("a session plan needs exactly one relative target (its waypoints' tool)");
 	const [tool, where] = relative[0];
-	const motion = new Set([tool, ...o.motion]);
+	const motion = new Set([tool, ...o.motion, ...(o.turn ? [o.turn.tool] : [])]);
 	const calls = toolCalls(entries);
 	const ok = (c: (typeof calls)[number]) => !c.isError && !c.details?.error && !c.details?.result?.error;
 	let start = 0;
@@ -109,9 +121,17 @@ export function sessionPlan(
 	const plan: AnchoredEntry[] = [];
 	let pos: number[] | undefined;
 	let grip: unknown;
+	let heading: number | undefined;
 	for (const c of episode) {
 		const p = where.position(json(c));
 		const g = o.gripper(json(c));
+		const h = o.turn ? o.turn.heading(json(c)) : undefined;
+		if (o.turn && typeof h === "number" && Number.isFinite(h)) {
+			const turned = heading === undefined ? 0 : h - heading;
+			if (motion.has(c.name) && Math.abs(turned) >= TURN_MIN_DEG)
+				plan.push({ action: o.turn.tool, arguments: { [o.turn.argument]: r4((turned * Math.PI) / 180) } });
+			heading = h;
+		}
 		if (motion.has(c.name) && isVec3(p)) {
 			if (pos) {
 				const delta = p.map((v, k) => r4(v - (pos as number[])[k]));
@@ -140,6 +160,8 @@ export function generate(o: {
 	position?: string;
 	gripper?: string;
 	motion?: string;
+	turn?: string;
+	heading?: string;
 	destination: string;
 	name?: string;
 }) {
@@ -161,11 +183,15 @@ export function generate(o: {
 			}
 		: undefined;
 	const targets = parseTargets(o.targets, position);
+	if (Boolean(o.turn) !== Boolean(o.heading)) throw new Error("--turn <tool>=<argument> and --heading go together");
+	const [turnTool, turnArgument] = (o.turn ?? "").split("=");
+	if (o.turn && (!turnTool || !turnArgument)) throw new Error(`bad --turn ${o.turn}: use <tool>=<yaw argument>`);
 	const plan = o.session
 		? sessionPlan(parseSessionEntries(readFileSync(o.session, "utf8")) as SessionEntry[], {
 				targets,
 				motion: (o.motion ?? "act").split(",").filter(Boolean),
 				gripper: pathOf(o.gripper ?? "state.gripper_command"),
+				turn: o.turn ? { tool: turnTool, argument: turnArgument, heading: pathOf(o.heading as string) } : undefined,
 			})
 		: loadProgram(o.recipe as string, name).plan;
 	const anchored = anchorPlan(plan, anchors, targets);
@@ -185,13 +211,15 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
 			position: { type: "string" },
 			gripper: { type: "string" },
 			motion: { type: "string" },
+			turn: { type: "string" },
+			heading: { type: "string" },
 			destination: { type: "string" },
 			name: { type: "string" },
 		},
 	});
 	if ((!values.recipe && !values.session) || !values.anchors || !values.targets || !values.destination) {
 		console.error(
-			"usage: generate.ts (--recipe <cell>_recipe.jsonl | --session <session>.jsonl --name <name> --position <json path> [--gripper <json path>] [--motion act,...]) --anchors anchors.json --targets <tool>=xyz|xy|<delta arg>,... --destination <dir> [--name <name>]",
+			"usage: generate.ts (--recipe <cell>_recipe.jsonl | --session <session>.jsonl --name <name> --position <json path> [--gripper <json path>] [--motion act,...] [--turn <tool>=<yaw arg> --heading <json path, deg>]) --anchors anchors.json --targets <tool>=xyz|xy|<delta arg>,... --destination <dir> [--name <name>]",
 		);
 		process.exit(2);
 	}

@@ -18,6 +18,7 @@ the workspace refusal and the ground-truth names."""
 from __future__ import annotations
 
 import math
+import re
 from types import SimpleNamespace
 
 import numpy as np
@@ -41,6 +42,30 @@ def test_task_table_matches_the_installed_metaworld():
     env_dict = pytest.importorskip("metaworld.env_dict")
     assert list(env_dict.ALL_V3_ENVIRONMENTS) == mw.TASKS
     assert list(env_dict.ML45_V3["test"]) == mw.ML45_TEST
+
+
+def test_target_colours_in_the_instructions_are_the_goal_sites_colours():
+    # The planner finds the target by the colour the instruction names: it must be the colour
+    # the goal site renders in.
+    env_dict = pytest.importorskip("metaworld.env_dict")
+    mujoco = pytest.importorskip("mujoco")
+    checked = 0
+    for task, text in mw.INSTRUCTIONS.items():
+        said = re.search(r"\b(red|green|blue) target\b", text)
+        if said is None:
+            continue
+        model = env_dict.ALL_V3_ENVIRONMENTS[task]().model
+        site = next(
+            i
+            for n in ("mug_goal", "goal")
+            if (i := mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, n)) >= 0
+        )
+        shown = ("red", "green", "blue")[int(np.argmax(model.site_rgba[site][:3]))]
+        assert said.group(1) == shown, (
+            f"{task}: says {said.group(1)} target, the goal site is {shown}"
+        )
+        checked += 1
+    assert checked == 18
 
 
 class _Env:

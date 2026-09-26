@@ -62,7 +62,8 @@ logger = get_logger("env_server")
 METAWORLD_VERSION = "3.1.1"
 
 #: MT50: every Metaworld v3 task and its instruction. The names are Metaworld's
-#: ``ALL_V3_ENVIRONMENTS`` keys; the texts describe what the task's ``success`` checks.
+#: ``ALL_V3_ENVIRONMENTS`` keys; the texts describe what the task's ``success`` checks, and a
+#: target's colour is the colour its ``goal`` site renders in.
 INSTRUCTIONS: dict[str, str] = {
     "assembly-v3": "Pick up the green ring nut and lower it onto the red peg so the peg passes through the ring.",
     "basketball-v3": "Pick up the basketball and drop it through the hoop.",
@@ -75,7 +76,7 @@ INSTRUCTIONS: dict[str, str] = {
     "coffee-button-v3": "Press the button on the front of the coffee machine.",
     "coffee-pull-v3": "Grasp the mug under the coffee machine and pull it to the green target.",
     "coffee-push-v3": "Grasp the mug and push it under the coffee machine, onto the green target.",
-    "dial-turn-v3": "Turn the dial half a turn (180 degrees) to the green target.",
+    "dial-turn-v3": "Turn the dial half a turn (180 degrees) to the red target.",
     "disassemble-v3": "Grasp the green ring nut sitting on the red peg and lift it off the peg.",
     "door-close-v3": "Push the open door closed.",
     "door-lock-v3": "Rotate the lock knob on the door clockwise until it is locked.",
@@ -91,27 +92,27 @@ INSTRUCTIONS: dict[str, str] = {
     "handle-press-v3": "Press the handle down.",
     "handle-pull-side-v3": "Grasp the handle from the side and pull it up.",
     "handle-pull-v3": "Grasp the handle and pull it up.",
-    "lever-pull-v3": "Pull the lever up to the green target.",
-    "peg-insert-side-v3": "Pick up the peg and insert it sideways into the hole in the box.",
-    "pick-place-wall-v3": "Pick up the red puck, carry it around the wall and place it on the green target.",
-    "pick-out-of-hole-v3": "Pick the red puck out of the hole and lift it to the green target.",
-    "reach-v3": "Move the gripper to the green target.",
-    "push-back-v3": "Push the red puck back toward the robot, onto the green target.",
-    "push-v3": "Push the red puck to the green target.",
-    "pick-place-v3": "Pick up the red puck and hold it at the green target.",
+    "lever-pull-v3": "Pull the lever up to the red target.",
+    "pick-place-wall-v3": "Pick up the red puck, carry it around the wall and place it on the blue target.",
+    "pick-out-of-hole-v3": "Pick the red puck out of the hole and lift it to the blue target ball.",
+    "pick-place-v3": "Pick up the red puck and hold it at the blue target ball floating above the table.",
     "plate-slide-v3": "Slide the plate along the table into the cabinet goal.",
     "plate-slide-side-v3": "Slide the plate sideways into the cabinet goal.",
-    "plate-slide-back-v3": "Slide the plate out of the cabinet back to the green target.",
-    "plate-slide-back-side-v3": "Slide the plate sideways out of the cabinet to the green target.",
+    "plate-slide-back-v3": "Slide the plate out of the cabinet back to the red target.",
+    "plate-slide-back-side-v3": "Slide the plate sideways out of the cabinet to the red target.",
+    "peg-insert-side-v3": "Pick up the peg and insert it sideways into the hole in the box.",
     "peg-unplug-side-v3": "Grasp the peg and unplug it sideways from the box.",
     "soccer-v3": "Push the soccer ball into the goal.",
     "stick-push-v3": "Pick up the stick and use it to push the thermos to the green target.",
     "stick-pull-v3": "Pick up the stick and use it to pull the thermos to the green target.",
+    "push-v3": "Push the red puck to the green target.",
     "push-wall-v3": "Push the red puck around the wall to the green target.",
-    "reach-wall-v3": "Move the gripper around the wall to the green target.",
+    "push-back-v3": "Push the red puck back toward the robot, onto the green target.",
+    "reach-v3": "Move the gripper to the red target ball floating above the table (not the red puck on the table).",
+    "reach-wall-v3": "Move the gripper around the wall to the red target ball (not the red puck on the table).",
     "shelf-place-v3": "Pick up the blue block and place it on the shelf at the green target.",
     "sweep-into-v3": "Sweep the block into the hole in the table.",
-    "sweep-v3": "Sweep the block off the table to the green target.",
+    "sweep-v3": "Sweep the block off the table to the blue target.",
     "window-open-v3": "Push the window handle to slide the window open.",
     "window-close-v3": "Push the window handle to slide the window closed.",
 }

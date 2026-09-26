@@ -66,6 +66,9 @@ GRASP_RES = 512
 CODE_CAMERAS = GRASP_CAMERAS
 CODE_RES = GRASP_RES
 CODE_MAX_FRAMES = 32
+#: The longest horizontal move one move_to (or an executor's first leg) makes: a longer one
+#: sweeps low over the scene; split it into waypoints at carry height.
+MAX_XY_MOVE_M = 0.30
 #: A program's raw ``chunk_step`` runs at most this many actions in one call (a chunk is one
 #: worker call that no stop interrupts; the run's wall clock must bound it).
 CODE_MAX_CHUNK = 64
@@ -916,6 +919,7 @@ class LiberoEnvFacade(BaseEnvFacade):
         """
         target = _finite("xyz", xyz).reshape(3)
         tol = float(_finite("tol", tol))
+        self._check_xy(target, "move_to")
         grip = self._grip_value(gripper)
         self._grip = grip
         steps, cancelled = self._servo(target, grip, tol, int(max_steps), 0.025)
@@ -1064,6 +1068,17 @@ class LiberoEnvFacade(BaseEnvFacade):
                 break
         return self._motion_result("set_gripper", n, cancelled, close=bool(close))
 
+    def _check_xy(self, target, what: str) -> None:
+        """Refuse (unmoved) a move longer than ``MAX_XY_MOVE_M`` in xy."""
+        xy = float(
+            np.linalg.norm((np.asarray(target, dtype=np.float64) - self._eef())[:2])
+        )
+        if xy > MAX_XY_MOVE_M + 1e-9:
+            raise ValueError(
+                f"{what} would move {xy:.3f} m in xy, more than {MAX_XY_MOVE_M} m: split it "
+                "into waypoints at carry height"
+            )
+
     # ---- planned grasps (--graspnet/--graspgenx/--anygrasp/--anyplace) ----
 
     def _servo_pose(
@@ -1175,6 +1190,10 @@ class LiberoEnvFacade(BaseEnvFacade):
         """
         if self._grasp.resolve_grasp(str(grasp_id))["kind"] != "grasp":
             raise ValueError(f"{grasp_id} is a place id; use execute_place")
+        pre = self._grasp.resolve_grasp(
+            str(grasp_id), standoff=float(_finite("standoff", standoff))
+        )
+        self._check_xy(pre["eef_position"], "execute_grasp's pre-grasp leg")
         claim = self._grasp.claim_waypoints(
             str(grasp_id),
             float(_finite("standoff", standoff)),
@@ -1204,6 +1223,10 @@ class LiberoEnvFacade(BaseEnvFacade):
         """
         if self._grasp.resolve_grasp(str(place_id))["kind"] != "placement":
             raise ValueError(f"{place_id} is a grasp id; use execute_grasp")
+        pre = self._grasp.resolve_grasp(
+            str(place_id), standoff=float(_finite("standoff", standoff))
+        )
+        self._check_xy(pre["eef_position"], "execute_place's pre-place leg")
         claim = self._grasp.claim_waypoints(
             str(place_id), float(_finite("standoff", standoff)), 0.0
         )

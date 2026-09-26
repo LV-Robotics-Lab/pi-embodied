@@ -324,7 +324,7 @@ def test_a_stop_ends_a_servo_loop_between_steps():
     f = facade()
     f._active_generation = f._stop_generation  # as inside a running call
     f.request_stop()
-    out = f.move_to([0.5, 0, 0.2])
+    out = f.move_to([0.25, 0, 0.2])
     assert out["steps_used"] == 0 and out["cancelled"] is True
 
 
@@ -712,3 +712,16 @@ def test_an_episode_that_ends_mid_leg_is_not_reported_as_a_stall():
     f._servo_pose = ends
     out = f._rpc["env.execute_grasp"](grasp_id=gid)
     assert "stalled" not in out and "error" not in out and out["terminated"] is True
+
+
+def test_a_move_longer_than_0_30_m_in_xy_is_refused_unmoved():
+    f = facade()
+    with pytest.raises(ValueError, match="0.3 m"):
+        f.move_to([0.25, 0.25, 0.2])
+    assert f._eef() == pytest.approx([0.0, 0.0, 0.2])
+    assert f.move_to([0.2, 0.2, 0.3])["final_dist_m"] < 0.012, "0.28 m in xy is allowed"
+    g, G = grasp_facade()
+    gid = g._rpc["env.plan_grasp"](object="bowl")["active"]
+    g.move_to([-0.25, 0.1, 0.3])  # now 0.32 m in xy from the pre-grasp
+    with pytest.raises(ValueError, match="pre-grasp leg"):
+        g.execute_grasp(gid)

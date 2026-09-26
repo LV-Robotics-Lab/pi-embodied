@@ -5,7 +5,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import dualFranka from "../src/dual_franka/index.ts";
 import franka from "../src/franka/index.ts";
-import libero, { type Claim, orientationError, RECIPE_PRIMITIVES, runClaim } from "../src/libero/index.ts";
+import libero, { type Claim, orientationError, RECIPE_PRIMITIVES, runClaim, xyRefusal } from "../src/libero/index.ts";
 import { recipe } from "../src/memory/index.ts";
 import {
 	attachedPrompt,
@@ -380,4 +380,9 @@ test("a solved LIBERO recipe keeps its execute_grasp / execute_place steps", () 
 		{ action: "execute_grasp", grasp_id: "g2" },
 		{ action: "execute_place", place_id: "p5" },
 	]);
+});
+
+test("LIBERO refuses a move longer than 0.30 m in xy", () => {
+	assert.equal(xyRefusal([0, 0, 0.2], [0.2, 0.2, 0.9], "move_to"), undefined);
+	assert.match(xyRefusal([0, 0, 0.2], [0.25, 0.25, 0.2], "move_to") ?? "", /0\.354 m in xy, more than 0\.3 m/);
 });

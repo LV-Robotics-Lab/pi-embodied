@@ -129,6 +129,15 @@ export function latchSuccess(previous: number | undefined, terminated: boolean |
 export const memoryTag = (suite: string, task: string, seed: string, liberoType: string) =>
 	`${suite.replace(/^libero_/, "")}${liberoType === "plus" ? "_plus" : ""}_t${task}_s${seed}`;
 const round = (v: number, d = 4) => Number(v.toFixed(d));
+/** The longest horizontal move one move_to (or an executor's first leg) makes (env_server MAX_XY_MOVE_M). */
+export const MAX_XY_MOVE_M = 0.3;
+/** Why a move from `from` to `to` is refused for its xy length, or undefined. */
+export function xyRefusal(from: number[], to: number[], what: string): string | undefined {
+	const xy = Math.hypot(to[0] - from[0], to[1] - from[1]);
+	return xy > MAX_XY_MOVE_M + 1e-9
+		? `${what} would move ${xy.toFixed(3)} m in xy, more than ${MAX_XY_MOVE_M} m: split it into waypoints at carry height`
+		: undefined;
+}
 const wrap = (a: number) => ((((a + Math.PI) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI)) - Math.PI;
 const clip = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
@@ -754,6 +763,12 @@ export default function libero(pi: ExtensionAPI) {
 					name,
 					error: `${id} is a ${resolved.kind} id; use ${kind === "grasp" ? "execute_place" : "execute_grasp"}`,
 				};
+			const pre = await call<{ eef_position: number[] }>(env, "env.resolve_grasp", {
+				grasp_id: id,
+				standoff: kwargs.standoff,
+			});
+			const far = xyRefusal(eef(), pre.eef_position, `${name}'s first leg`);
+			if (far) return { name, id, refused: far, steps_used: 0 };
 			if (flag("ik", "")) {
 				for (const standoff of [kwargs.standoff, 0]) {
 					const pose = await call<{ eef_position: number[] }>(env, "env.resolve_grasp", {
@@ -813,6 +828,8 @@ export default function libero(pi: ExtensionAPI) {
 			target_yaw,
 			yaw_step_clip = 0.1,
 		}) => {
+			const far = xyRefusal(eef(), target, "move_to");
+			if (far) return { name: "move_to", refused: far, final_eef_pos: eef().map((v) => round(v)), steps_used: 0 };
 			if (flag("ik", "")) {
 				// --ik: the env server solves IK from the current joints; an unreachable target is refused unmoved.
 				const refusal = reachRefusal(await call<Reach>(env, "env.preview_reach", { pos: target }));

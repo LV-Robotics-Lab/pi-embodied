@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -10,12 +10,14 @@ import { anchorPlane, HALF_HEIGHT_M, pixelOnPlane, projectPixel, unletterbox } f
 import {
 	type AnchoredEntry,
 	loadProgram,
+	pngSize,
 	type RecipeProgram,
 	recipeFlash,
 	splitAngle,
 	splitMove,
 	startRecipe,
 } from "../src/flash/recipe.ts";
+import { encodePng } from "../src/png.ts";
 import { NdArray, type RpcClient } from "../src/rpc.ts";
 
 const RECIPE = [
@@ -165,6 +167,93 @@ test("with a fixed camera and a recorded view, an anchor moves by the difference
 	}
 });
 
+test("a split move never exceeds the per-call cap after rounding, and a split turn neither", () => {
+	const where = { delta: "delta_xyz", position: () => undefined, maxStep: 0.2 };
+	const entry: AnchoredEntry = { action: "move_delta", arguments: {} };
+	let seed = 7;
+	const rand = () => {
+		seed = (seed * 16807) % 2147483647;
+		return seed / 2147483647 - 0.5;
+	};
+	// Moves at and just over the cap (and its multiples), in random directions: the ones rounding bit.
+	for (let i = 0; i < 2000; i++) {
+		const dir = [rand(), rand(), rand()];
+		const norm = Math.hypot(...dir);
+		const length = 0.2 * (1 + (i % 4)) * (1 + rand() * 2e-3);
+		const calls = splitMove(
+			entry,
+			where,
+			dir.map((v) => (v / norm) * length),
+		);
+		for (const c of calls) assert.ok(Math.hypot(...(c.arguments.delta_xyz as number[])) <= 0.2, `${length}`);
+	}
+	const turn = { arg: "yaw", maxStep: 0.3 };
+	for (let i = 0; i < 2000; i++) {
+		const yaw = 0.3 * (1 + (i % 5)) * (1 + rand() * 2e-3);
+		for (const c of splitAngle({ action: "rotate_delta", arguments: { yaw } }, turn))
+			assert.ok(Math.abs(c.arguments.yaw as number) <= 0.3, `${yaw}`);
+	}
+});
+
+test("a failed Molmo call or an unreadable recorded view degrades with a warning instead of ending the replay", async () => {
+	const planeOf = async (_r: FlashRobot, [c, r]: [number, number]) => [c / 100, r / 100, 0.8];
+	const options = { observe: "view_env_state", targets: TARGETS, backProject: planeOf, fixedCamera: true };
+	const failing = (which: "live" | "recorded") =>
+		({
+			call: async (_m: string, a: { image_base64: string }) => {
+				if ((a.image_base64 === "IMG") === (which === "live")) throw new Error("molmo.ground: CUDA out of memory");
+				return { point_xy: [30, 20] };
+			},
+		}) as unknown as RpcClient;
+	// The live pointing fails: the anchor stays recorded, the replay goes on.
+	const a = fakeRobot(undefined);
+	const r = await startRecipe({ ...anchored, view: "RECORDED" }, a.robot, options, failing("live"));
+	assert.deepEqual(r.rewrite(anchored.plan[0]), { name: "move_to", arguments: { xyz: [0.51, 0.08, 0.9] } });
+	assert.match(
+		a.notes.join("\n"),
+		/warning: the mug: Molmo failed \(molmo\.ground: CUDA out of memory\); kept at its recorded/,
+	);
+	// The recorded-view pointing fails: the live reading alone.
+	const b = fakeRobot(undefined);
+	const s = await startRecipe({ ...anchored, view: "RECORDED" }, b.robot, options, failing("recorded"));
+	assert.deepEqual(s.rewrite(anchored.plan[0]), { name: "move_to", arguments: { xyz: [0.31, 0.18, 0.9] } });
+	assert.match(
+		b.notes.join("\n"),
+		/warning: the mug not read in the recorded view \(molmo\.ground: CUDA out of memory\)/,
+	);
+	// The plan's view is missing: said once, then the live reading alone.
+	const c = fakeRobot(undefined);
+	const ok = { call: async () => ({ point_xy: [30, 20] }) } as unknown as RpcClient;
+	const t = await startRecipe({ ...anchored, viewError: "recorded view x_view.png is missing" }, c.robot, options, ok);
+	assert.deepEqual(t.rewrite(anchored.plan[0]), { name: "move_to", arguments: { xyz: [0.31, 0.18, 0.9] } });
+	assert.match(
+		c.notes.join("\n"),
+		/warning: recorded view x_view\.png is missing; anchors are re-localized from the live image alone/,
+	);
+});
+
+test("back-projection is told each pointed image's size: the live image's, and the recorded view's as recorded", async () => {
+	const sizes: (number[] | undefined)[] = [];
+	const backProject = async (_r: FlashRobot, _px: [number, number], _a: unknown, size?: [number, number]) => {
+		sizes.push(size);
+		return [0.5, 0.1, 0.8];
+	};
+	const live = encodePng(Buffer.alloc(320 * 320 * 3), 320, 320).toString("base64");
+	const f = fakeRobot(undefined);
+	const robot = { ...f.robot, latest: () => ({ json: {}, images: [live] }) };
+	const molmo = { call: async () => ({ point_xy: [10, 20] }) } as unknown as RpcClient;
+	await startRecipe(
+		{ ...anchored, view: "RECORDED", viewSize: [256, 256] },
+		robot,
+		{ observe: "view_env_state", targets: TARGETS, backProject, fixedCamera: true },
+		molmo,
+	);
+	assert.deepEqual(sizes, [
+		[320, 320],
+		[256, 256],
+	]);
+});
+
 /** A delta-move plan: approach the block (anchored), lift (anchored, same x/y), a free transit. */
 const DELTA_PLAN: RecipeProgram = {
 	name: "cell",
@@ -291,6 +380,10 @@ test("runFlash sends a split move as consecutive calls and stops once the episod
 	assert.equal(out.done, true);
 });
 
+/** A black `width` x `height` PNG, base64. */
+const fakePng = (width: number, height: number) =>
+	encodePng(Buffer.alloc(width * height * 3), width, height).toString("base64");
+
 /** A session of `act` units on ManiSkill: STOP observes, moves, GRASP, lift, the last result solves. */
 function fakeSession(): SessionEntry[] {
 	const steps: [string, Record<string, unknown>, number[], string, boolean][] = [
@@ -323,9 +416,9 @@ function fakeSession(): SessionEntry[] {
 					toolName: name,
 					content:
 						name === "act"
-							? ["agentview", "wrist"].map((v) => ({
+							? [fakePng(256 + i, 256), fakePng(128, 128)].map((data) => ({
 									type: "image",
-									data: Buffer.from(`${v}-${i}`).toString("base64"),
+									data,
 									mimeType: "image/png",
 								}))
 							: [],
@@ -399,9 +492,19 @@ test("a session becomes delta waypoints with absolute end positions, gripper cha
 	assert.equal(JSON.parse(readFileSync(out.path, "utf8")).plan[2].to[2], 0.21);
 	// The opening view (the first result's first image) is written beside the plan and loads with it.
 	assert.equal(out.view, "cell_view.png");
-	assert.equal(readFileSync(join(dir, "flash", "cell_view.png"), "utf8"), "agentview-0");
-	assert.equal(loadProgram(out.path, "cell").view, Buffer.from("agentview-0").toString("base64"));
-	assert.equal(firstView(fakeSession().slice(2)), Buffer.from("agentview-2").toString("base64"));
+	assert.equal(readFileSync(join(dir, "flash", "cell_view.png")).toString("base64"), fakePng(256, 256));
+	// The view's size is stored as recorded and loads with it.
+	assert.deepEqual(JSON.parse(readFileSync(out.path, "utf8")).view_size, [256, 256]);
+	const loaded = loadProgram(out.path, "cell");
+	assert.deepEqual([loaded.view, loaded.viewSize, loaded.viewError], [fakePng(256, 256), [256, 256], undefined]);
+	assert.equal(firstView(fakeSession().slice(2)), fakePng(258, 256));
+	assert.deepEqual(pngSize(fakePng(640, 480)), [640, 480]);
+	assert.equal(pngSize(Buffer.from("not a png").toString("base64")), undefined);
+	// A named view that is gone does not fail the load: the replay is told why and goes without it.
+	rmSync(join(dir, "flash", "cell_view.png"));
+	const bare = loadProgram(out.path, "cell");
+	assert.equal(bare.view, undefined);
+	assert.match(bare.viewError ?? "", /cell_view\.png is missing/);
 	assert.throws(() => generate({ session, anchors: "x", targets: "a=xyz", destination: dir }), /--name/);
 });
 

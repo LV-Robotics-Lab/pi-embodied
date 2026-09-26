@@ -26,7 +26,7 @@
  * split evenly into calls of at most `--max-turn` rad (the tool's per-call cap; the replay splits again,
  * ./recipe.ts `turns`).
  * The episode's opening main-camera image is written beside the plan (`<name>_view.png`, the plan's
- * `view`): a robot with a fixed calibrated camera re-localizes each anchor by pointing at it in both
+ * `view`, its [width, height] the plan's `view_size`): a robot with a fixed calibrated camera re-localizes each anchor by pointing at it in both
  * that image and the live one (./recipe.ts), so the pointer's own bias cancels.
  */
 
@@ -40,6 +40,7 @@ import {
 	type Anchor,
 	type AnchoredEntry,
 	loadProgram,
+	pngSize,
 	type RelativeTarget,
 	splitAngle,
 	type Target,
@@ -252,11 +253,11 @@ export function generate(o: {
 		? firstView(parseSessionEntries(readFileSync(o.session, "utf8")) as SessionEntry[])
 		: undefined;
 	const view = image ? `${name}_view.png` : undefined;
+	// The view's pixel size as recorded: a robot maps its pixels back to the camera's with it.
+	const size = image ? pngSize(image) : undefined;
 	if (image && view) writeFileSync(join(o.destination, view), Buffer.from(image, "base64"));
-	writeFileSync(
-		path,
-		`${JSON.stringify({ name, source, anchors, ...(view ? { view } : {}), plan: anchored }, null, 2)}\n`,
-	);
+	const recorded = view ? { view, ...(size ? { view_size: size } : {}) } : {};
+	writeFileSync(path, `${JSON.stringify({ name, source, anchors, ...recorded, plan: anchored }, null, 2)}\n`);
 	return {
 		path,
 		calls: anchored.length,

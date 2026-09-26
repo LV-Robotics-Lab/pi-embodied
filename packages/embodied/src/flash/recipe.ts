@@ -40,8 +40,26 @@ export type AnchoredEntry = {
 	to?: number[];
 };
 export type Anchor = { phrase: string; xyz: number[] };
-/** `view`: the recorded episode's opening main-camera image (base64 PNG), when the plan names one. */
-export type RecipeProgram = { name: string; plan: AnchoredEntry[]; anchors: Anchor[]; view?: string };
+/**
+ * `view`: the recorded episode's opening main-camera image (base64 PNG), when the plan names one and
+ * it could be read; `viewSize`: that image's [width, height] as recorded (the plan's `view_size`).
+ */
+export type RecipeProgram = {
+	name: string;
+	plan: AnchoredEntry[];
+	anchors: Anchor[];
+	view?: string;
+	viewSize?: [number, number];
+	/** Why a named view is unusable (the replay then re-localizes against the live image alone). */
+	viewError?: string;
+};
+
+/** The [width, height] of a base64 PNG, from its IHDR (undefined when it is not a PNG). */
+export function pngSize(base64: string): [number, number] | undefined {
+	const head = Buffer.from(base64.slice(0, 44), "base64");
+	if (head.length < 24 || head.toString("latin1", 1, 4) !== "PNG") return undefined;
+	return [head.readUInt32BE(16), head.readUInt32BE(20)];
+}
 
 /**
  * A tool that moves by a base-frame delta (`move_delta`). Its plan entries carry the absolute end
@@ -74,7 +92,13 @@ export type RecipeFlashOptions = {
 	 * its camera calibration (`anchor.xyz[2]` is the height the anchor was recorded at). Without it
 	 * (a robot with no back-projection) anchors stay where they were recorded.
 	 */
-	backProject?: (robot: FlashRobot, pixel: [number, number], anchor: Anchor) => Promise<number[] | undefined>;
+	backProject?: (
+		robot: FlashRobot,
+		pixel: [number, number],
+		anchor: Anchor,
+		/** The pointed image's [width, height] (the recorded view's as recorded), when known. */
+		size?: [number, number],
+	) => Promise<number[] | undefined>;
 	/**
 	 * `backProject` depends on the pixel alone (a fixed calibrated camera, no live depth), so a pixel of
 	 * the plan's recorded view back-projects as truly as a live one. Anchors are then re-localized
@@ -102,10 +126,21 @@ const isVec = (v: unknown, n: number): v is number[] =>
 export function loadProgram(path: string, name: string): RecipeProgram {
 	const text = readFileSync(path, "utf8");
 	if (path.endsWith("_plan.json")) {
-		const doc = JSON.parse(text) as { plan?: AnchoredEntry[]; anchors?: Anchor[]; view?: string };
+		const doc = JSON.parse(text) as {
+			plan?: AnchoredEntry[];
+			anchors?: Anchor[];
+			view?: string;
+			view_size?: number[];
+		};
 		if (!Array.isArray(doc.plan) || !doc.plan.length) throw new Error(`${path} has no plan`);
-		const view = doc.view ? readFileSync(join(dirname(path), doc.view)).toString("base64") : undefined;
-		return { name, plan: doc.plan, anchors: doc.anchors ?? [], ...(view ? { view } : {}) };
+		const program: RecipeProgram = { name, plan: doc.plan, anchors: doc.anchors ?? [] };
+		if (!doc.view) return program;
+		const file = join(dirname(path), doc.view);
+		if (!existsSync(file)) return { ...program, viewError: `recorded view ${file} is missing` };
+		const view = readFileSync(file).toString("base64");
+		const size = isVec(doc.view_size, 2) ? ([doc.view_size[0], doc.view_size[1]] as [number, number]) : pngSize(view);
+		if (!size) return { ...program, viewError: `recorded view ${file} is not a PNG` };
+		return { ...program, view, viewSize: size };
 	}
 	const plan = text
 		.split("\n")
@@ -134,8 +169,10 @@ const moved = (args: Json, where: "xyz" | "xy", xy: number[]): Json => {
 
 /** `delta` as the calls of one plan entry: one, or evenly split when it exceeds the tool's per-call limit. */
 export function splitMove(entry: AnchoredEntry, where: RelativeTarget, delta: number[]): FlashCall[] {
-	const n = where.maxStep ? Math.max(1, Math.ceil(Math.hypot(...delta) / where.maxStep - 1e-9)) : 1;
-	const step = delta.map((v) => r4(v / n));
+	let n = where.maxStep ? Math.max(1, Math.ceil(Math.hypot(...delta) / where.maxStep - 1e-9)) : 1;
+	let step = delta.map((v) => r4(v / n));
+	// Rounding to 0.1 mm can push a step at the cap just over it: take one more step instead.
+	while (where.maxStep && Math.hypot(...step) > where.maxStep) step = delta.map((v) => r4(v / ++n));
 	return Array.from({ length: n }, (_, i) => ({
 		name: entry.action,
 		// The other arguments (a gripper command) run once, with the first move.
@@ -153,8 +190,9 @@ export function splitAngle(entry: AnchoredEntry, turn: { arg: string; maxStep: n
 		return [{ name: entry.action, arguments: { ...entry.arguments } }];
 	const yaw = Math.atan2(Math.sin(raw), Math.cos(raw));
 	// Measured at the 0.1 mrad the plan stores: a recorded full-cap turn reads back a hair over it.
-	const n = Math.max(1, Math.ceil(r4(Math.abs(yaw)) / turn.maxStep - 1e-9));
-	const step = r4(yaw / n);
+	let n = Math.max(1, Math.ceil(r4(Math.abs(yaw)) / turn.maxStep - 1e-9));
+	let step = r4(yaw / n);
+	while (Math.abs(step) > turn.maxStep) step = r4(yaw / ++n);
 	return Array.from({ length: n }, (_, i) => ({
 		name: entry.action,
 		arguments: i === 0 ? { ...entry.arguments, [turn.arg]: step } : { [turn.arg]: step },
@@ -181,27 +219,53 @@ export async function startRecipe(
 	if (program.anchors.length || program.plan.some((e) => typeof o.targets[e.action] === "object"))
 		await robot.move({ name: o.observe, arguments: {} });
 	if (program.anchors.length) {
+		const pixel = (p: number[] | undefined) => (p ? p.map((v) => Math.round(v)).join(",") : "-");
+		const at = (p: number[]) => `(${p[0].toFixed(3)},${p[1].toFixed(3)})`;
+		/** Molmo's point, or the error text when the call itself failed (the replay then degrades). */
+		const ask = async (image: string, phrase: string) => {
+			try {
+				return { px: molmo ? await point(molmo, image, phrase) : undefined };
+			} catch (e) {
+				return { failed: e instanceof Error ? e.message : String(e) };
+			}
+		};
+		const differential = o.fixedCamera && molmo;
+		if (differential && program.viewError)
+			robot.note(`warning: ${program.viewError}; anchors are re-localized from the live image alone`);
 		for (const a of program.anchors) {
 			if (!molmo) {
 				live.set(a.phrase, a.xyz);
 				continue;
 			}
 			const image = robot.latest().images[0];
-			const px = image ? await point(molmo, image, a.phrase) : undefined;
-			const seen = px && locator ? await locator(robot, px, a) : undefined;
+			const now = image ? await ask(image, a.phrase) : { failed: "the observation carries no image" };
+			if (now.failed) {
+				// Pointing failed (not "not found"): keep the recorded pose rather than end the replay.
+				live.set(a.phrase, a.xyz);
+				robot.note(`warning: ${a.phrase}: Molmo failed (${now.failed}); kept at its recorded ${at(a.xyz)}`);
+				continue;
+			}
+			const px = now.px;
+			const seen = px && locator ? await locator(robot, px, a, image ? pngSize(image) : undefined) : undefined;
 			// Differential: where the same pointing put the anchor in the recorded view.
-			const was = o.fixedCamera && program.view && seen ? await point(molmo, program.view, a.phrase) : undefined;
-			const then = was && locator ? await locator(robot, was, a) : undefined;
+			let then: number[] | undefined;
+			let was: [number, number] | undefined;
+			if (differential && program.view && seen) {
+				const rec = await ask(program.view, a.phrase);
+				was = rec.px;
+				then = was && locator ? await locator(robot, was, a, program.viewSize) : undefined;
+				if (!then)
+					robot.note(
+						`warning: ${a.phrase} not read in the recorded view (${rec.failed ?? "no point"}); using the live reading alone`,
+					);
+			}
 			const xyz =
 				seen && then ? [a.xyz[0] + seen[0] - then[0], a.xyz[1] + seen[1] - then[1], ...a.xyz.slice(2)] : seen;
 			if (xyz) live.set(a.phrase, xyz);
-			const pixel = (p: number[] | undefined) => (p ? p.map((v) => Math.round(v)).join(",") : "-");
 			robot.note(
 				xyz
-					? `${a.phrase} at (${xyz[0].toFixed(3)},${xyz[1].toFixed(3)}), recorded (${a.xyz[0].toFixed(3)},${a.xyz[1].toFixed(3)}) [pixel ${pixel(px)}${
-							then && seen
-								? `; recorded view pixel ${pixel(was)}, read (${then[0].toFixed(3)},${then[1].toFixed(3)}) then, (${seen[0].toFixed(3)},${seen[1].toFixed(3)}) now`
-								: ""
+					? `${a.phrase} at ${at(xyz)}, recorded ${at(a.xyz)} [pixel ${pixel(px)}${
+							then && seen ? `; recorded view pixel ${pixel(was)}, read ${at(then)} then, ${at(seen)} now` : ""
 						}]`
 					: `${a.phrase} not located`,
 			);

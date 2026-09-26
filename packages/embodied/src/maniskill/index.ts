@@ -494,11 +494,12 @@ export default function maniskill(pi: ExtensionAPI) {
 			},
 			// The agentview is a fixed calibrated camera: anchors re-localize against the plan's recorded view.
 			fixedCamera: true,
-			backProject: async (_fr, pixel, anchor) => {
+			// The pointed image's own square (the recorded view's as recorded), else this server's view_size.
+			backProject: async (_fr, pixel, anchor, size) => {
 				const z = anchorPlane(anchor.xyz, tableZ);
 				if (z === undefined) return undefined;
 				const meta = await call<CameraMeta>("env.get_camera_meta", { camera_name: "agentview" });
-				return pixelOnPlane(meta, unletterbox(pixel, { ...AGENTVIEW_PX, size: viewSize }), z);
+				return pixelOnPlane(meta, unletterbox(pixel, { ...AGENTVIEW_PX, size: size?.[0] ?? viewSize }), z);
 			},
 			over: (latest) => latest.json.success === true,
 			solved: (latest) => latest.json.success === true,

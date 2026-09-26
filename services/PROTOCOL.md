@@ -153,6 +153,8 @@ same limits; the digest names the API version an episode ran with (pi records it
 | `env.get_task_language` | - | str |
 | `env.ground_truth_poses` | kw `names=null` | poses of LIBERO's `obj_body_id` bodies (movable objects and fixtures), read in the env worker |
 | `env.preview_reach` | `pos` float[3] (m, world frame), kw `quat_xyzw=null` (null = the current gripper orientation) | reach preview (below); `status: "unknown"` without `--ik` |
+| `env.plan_motion` | `pos` float[3] (m, world), kw `quat_xyzw=null`, `target_yaw=null` (rad) | `--ik` only: `{"status": "planned" \| "blocked" \| "unknown", "message", "waypoints": [[x, y, z, qx, qy, qz, qw], ...] (world TCP poses, goal last, at most 10), "path_m", "backend", "obstacles", "left_out"}` (collision-free motion, below) |
+| `env.check_motion` | kw `segment=null` (a waypoint index of the last `env.plan_motion`) | `--ik` only: `{"status": "clear" \| "contact" \| "unknown", "min_clearance_m", "nearest", "message"}` for the current joints and the planned ones at `segment` |
 
 `env.preview_reach` (libero-env, franka-env, franka-polymetis-env; `--ik <url>` names the `ik`
 service, robot model `panda_libero` for LIBERO and `panda` for the Frankas) solves IK for the
@@ -161,13 +163,26 @@ TCP target from the current joints without touching the sim or the arm:
 null, "position_err" m, "orientation_err" rad, "message", "target": {"frame": "world" | "base",
 "pos", "quat_xyzw"[, "base_pose"]}, "robot", "backend", "path_checked": false}`. `unknown` means
 the check could not run (no `--ik`, the service is down or errored) and is not approval. With
-`--ik`, the Frankas' `env.move_delta` / `env.rotate_delta` check the end pose after the delta
-first and refuse an `unreachable` one as an error without moving; pi's LIBERO `move_to` tool asks
-`env.preview_reach` itself, and a server-side LIBERO or Robosuite `move_to` should call
+`--ik`, the Frankas' `env.move_delta` / `env.rotate_delta` and LIBERO's `move_to` plan the whole
+path instead (collision-free motion, below), and a server-side Robosuite `move_to` should call
 `utils/reach.py`'s `require_reachable(self.preview_reach(xyz), "move_to")` before stepping. The
 LIBERO server converts the world target into the `robot0_base` frame (read from the worker once
 per reset). `path_checked` is always false: only the end pose is solved, not the path. Each
 robot's `primitives.py` declares `preview_reach` in `code.api` (high and low tiers).
+
+Collision-free motion (`--ik`, `utils/motion.py`): LIBERO's `env.move_to` (and pi's `move_to`
+tool, through `env.plan_motion` / `env.check_motion`) and the Frankas' `env.move_delta` /
+`env.rotate_delta` (single and dual) first plan a path with `ik.plan` from the current joints
+through the server's planning world and raise (`... refused: no collision-free path ...`,
+nothing moves) when none exists; they then servo through the path's TCP waypoints within the
+call's own limits and check the arm with `ik.check` before each segment, stopping on predicted
+contact (`stopped: "contact"` in the result). The planning world is LIBERO's collidable non-robot
+geoms (one box per movable object, oriented boxes per fixture geom), a Franka cell's
+`$PI_EMBODIED_IK_WORLD` JSON obstacle list (base frame; `right_base` on the dual rig), and on the
+dual rig the other arm at its current joints. Obstacles within 4 cm of the start or goal TCP (the
+object being grasped, held or placed on) are left out. The geometry is infrastructure: used with
+or without `--privileged`, never returned (results carry counts, clearances and the nearest
+obstacle's name). An unreachable ik service gives `unknown` and the move runs unplanned.
 
 `env.reset` reseeds the env worker's global numpy and Python RNGs with the episode seed, so every
 reset restores the same state and the same actions give bitwise-identical transitions in any process.
@@ -624,10 +639,16 @@ Same method names; poses are reported in the `right_base` frame. `arm` is `"left
 | unidepth | `depth.estimate` | `rgb` uint8[H,W,3] (or base64 PNG/JPEG), kw `K` 3x3 pinhole intrinsics of that image or null | `{"depth" float32[H,W] metres (0 = none), "confidence"? float32[H,W], "model", "resolution_level", "used_intrinsics", "valid_ratio", "depth_range_m", "inference_s"}` |
 | ik | `ik.robots` | - | `{"backend": "pyroki" \| "curobo", "robots": {name: {"description", "ee_link", "tool_offset_xyz", "arm_joints", "fixed_joints", "home_q", "note", "loaded"[, "lower", "upper"][, "curobo_config", "supported"]}}}` |
 | ik | `ik.solve` | `robot` str, `target_pose` (`{"pos": [x, y, z], "quat_xyzw": [...]}` or flat `[x, y, z, qx, qy, qz, qw]`, TCP in the robot base frame, m), kw `seed_q=null` (arm joints, rad) | `{"robot", "q": [arm joints] \| null, "ok", "error" str \| null, "position_err" m, "orientation_err" rad, "solve_ms"}` plus `seeds_tried` (pyroki) or `self_collision_checked` (curobo); `ok` needs both errors within `--pos-tol` (5 mm) / `--ori-tol` (0.05 rad) and the joints within limits; `q` on failure is the best attempt |
-| ik | `ik.plan` | `robot`, `start_q`, exactly one of kw `goal_pose` / `goal_q`, kw `obstacles=null` (list of `{"type": "box", "position", "extent"[, "quat_xyzw"]}`, `{"type": "sphere", "center", "radius"}`, `{"type": "capsule", "position", "radius", "height"[, "quat_xyzw"]}`, `{"type": "halfspace", "point", "normal"}`, m, base frame), kw `waypoints=20` | `{"robot", "path": [[arm joints], ...] \| null, "ok", "error", "plan_ms", "collision_free": bool \| null (null = no obstacles given)}` plus `max_joint_step_rad`, `min_clearance_m` (pyroki) or `status`, `dt`, `obstacles` (curobo) |
+| ik | `ik.check` | `robot`, exactly one of kw `q` / `path`, kw `obstacles=null` (as `ik.plan`), `margin=0.0` (m) | `{"robot", "backend", "checked", "obstacles", "collision_free", "min_clearance_m" \| null, "clearances", "worst_index", "nearest", "check_ms"}`: PyRoKi's collision capsules or cuRobo's collision spheres against the obstacles |
+| ik | `ik.fk` | `robot`, `q` | `{"robot", "pos", "quat_xyzw"}` (TCP, base frame) |
+| ik | `ik.plan` | `robot`, `start_q`, exactly one of kw `goal_pose` / `goal_q`, kw `obstacles=null` (list of `{"type": "box", "position", "extent"[, "quat_xyzw"]}`, `{"type": "sphere", "center", "radius"}`, `{"type": "capsule", "position", "radius", "height"[, "quat_xyzw"]}`, `{"type": "halfspace", "point", "normal"}`, `{"type": "robot", "robot", "q", "base_pose"}` (another arm, expanded into its cuRobo collision spheres; curobo only), m, base frame), kw `waypoints=20` | `{"robot", "backend", "tcp_path" (TCP poses xyz + xyzw per waypoint, when ok), "path": [[arm joints], ...] \| null, "ok", "error", "plan_ms", "collision_free": bool \| null (null = no obstacles given)}` plus `max_joint_step_rad`, `min_clearance_m` (pyroki) or `status`, `dt`, `obstacles` (curobo) |
 
 `ik` (`components/ik_server.py`) is an internal dependency of the env servers (`env.preview_reach`,
-their motion primitives' reach check, a Robosuite `move_to`), not an agent tool. Robot models:
+their motion primitives' reach check and collision-free moves, a Robosuite `move_to`), not an
+agent tool; `--backend curobo` is the switch for collision-avoiding plans (MotionGen) and the
+dual Franka's arm-arm check (other arms become collision spheres). The Panda's `panda_link0` /
+`panda_link1` stay out of world collision (they never leave the base's footprint, and a LIBERO
+Panda's base sits inside the table's box). Robot models:
 `panda` (TCP = libfranka's O_T_EE, flange + 0.1034 m; the Frankas' `tcp_pose`), `panda_libero`
 (robosuite's `robot0_eef_pos` grip site 0.097 m below `panda_hand`, `robot0_eef_quat`; poses in
 the `robot0_base` frame), `ur5e` (TCP = `tool0`), `piper` (TCP = `gripper_base`). Backends:

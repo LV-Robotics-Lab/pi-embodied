@@ -157,6 +157,8 @@ Pi records the initial prompt and tool set in the transcript's first system mess
 
 `ExtensionContext` provides the working directory, mode, UI, session manager, model runtime, abort signal, context usage, and controls for compaction and shutdown.
 Use `ctx.modelRegistry.streamSimple()` for provider-neutral nested model calls.
+`ctx.hasPendingMessages()` reports queued steering or follow-up messages; `ctx.withdrawQueuedMessage(text)` takes one back out (its text as queued) while the agent has not taken it yet, and returns `false` once it is gone.
+`ctx.exportSession("jsonl" | "html", outputPath)` exports the current branch as `/export` does and resolves to the written path.
 
 Command handlers receive `ExtensionCommandContext`, which adds operations for waiting until idle, reloading, tree navigation, and session replacement.
 These operations are command-only because calling them from lifecycle handlers can deadlock the runtime.

@@ -1725,6 +1725,41 @@ def add_grasp_arguments(parser: Any) -> None:
     )
 
 
+def install_grasp_planner(
+    facade: Any,
+    args: Any,
+    *,
+    view: View,
+    cameras: list[str],
+    eef_pose: Callable[[str | None], tuple[Any, Any] | None],
+    perception: Any | None = None,
+    primitives: tuple[Any, ...] = (),
+    wrist_camera: str | None = None,
+    mutating: tuple[str, ...] = MOTION_METHODS,
+) -> GraspPlanner | None:
+    """Install a planner for parsed :func:`add_grasp_arguments` on a constructed facade
+    (nothing without a grasp or place URL): the primitives, their ids sharing ``perception``'s
+    book and epoch when there is one (``env.detect`` ids are accepted as ``mask_id``), and
+    ``code.api`` re-registered as the robot's ``primitives`` plus the planner's."""
+    planner = GraspPlanner.from_args(
+        view,
+        cameras=cameras,
+        masks=perception.book if perception is not None else None,
+        sam3=getattr(args, "sam3", None)
+        or (perception.sam3 if perception is not None else None),
+        eef_pose=eef_pose,
+        wrist_camera=wrist_camera,
+        **urls_from_args(args),
+    )
+    if planner is None:
+        return None
+    planner.install(facade, mutating=mutating)
+    from pi_embodied_services.components.code_api import register_code_api
+
+    register_code_api(facade, tuple(primitives) + planner.primitives())
+    return planner
+
+
 def urls_from_args(args: Any) -> dict[str, Any]:
     """The ``GraspPlanner.from_args`` keyword arguments held by parsed ``add_grasp_arguments``."""
     import json

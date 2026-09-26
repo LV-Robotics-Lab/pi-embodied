@@ -39,6 +39,7 @@ from pi_embodied_services.components.code_api import register_code_api
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
 from pi_embodied_services.robots.genesis.primitives import GENESIS_PRIMITIVES
 from pi_embodied_services.utils import ground_truth
+from pi_embodied_services.utils.grasp import add_grasp_arguments, install_grasp_planner
 from pi_embodied_services.utils.logging import get_logger
 from pi_embodied_services.utils.perception import (
     add_perception_arguments,
@@ -686,6 +687,11 @@ class GenesisEnvFacade(MainThreadServeMixin, BaseEnvFacade):
             self._gs.destroy()
 
 
+def _xyzw(wxyz) -> np.ndarray:
+    q = np.asarray(wxyz, dtype=np.float64).reshape(4)
+    return np.array([q[1], q[2], q[3], q[0]])
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--transport", choices=["http"], default="http")
@@ -703,6 +709,7 @@ def main():
         help="watch parent process via stdin pipe and exit when it dies",
     )
     add_perception_arguments(p, sam3=True)
+    add_grasp_arguments(p)
     args = p.parse_args()
 
     facade = GenesisEnvFacade(
@@ -714,8 +721,21 @@ def main():
         view_size=args.view_size,
     )
     # --sam3 / --unidepth: env.detect, env.select_detection, env.reject_detection, env.enhance_depth.
-    install_perception(
-        facade, args, cameras=["agentview", "wrist"], view=render_view(facade)
+    view = render_view(facade)
+    perception = install_perception(
+        facade, args, cameras=["agentview", "wrist"], view=view
+    )
+    # --graspnet & co: env.plan_grasp, env.claim_waypoints and friends over the same views
+    # (the hand's quaternion as xyzw); pi's execute_grasp splits the claimed path into move_delta calls.
+    install_grasp_planner(
+        facade,
+        args,
+        view=view,
+        cameras=["agentview", "wrist"],
+        eef_pose=lambda arm: (facade._tcp(), _xyzw(facade._hand_pose()[1])),
+        perception=perception,
+        primitives=GENESIS_PRIMITIVES,
+        wrist_camera="wrist",
     )
     try:
         facade.serve(

@@ -538,7 +538,7 @@ def render_view(
         if flip:
             rgb = np.ascontiguousarray(rgb[::-1])
             depth = None if depth is None else np.ascontiguousarray(depth[::-1])
-        K = None
+        K = T = None
         if intrinsics and not flip:
             try:
                 meta = rpc["env.get_camera_meta"](camera_name=name, **sized)
@@ -550,7 +550,12 @@ def render_view(
                     w is None or int(w) == rgb.shape[1]
                 ):
                     K = meta.get("intrinsic_K")
-        return {"rgb": rgb, "depth": depth, "intrinsic_K": K}
+                    T = meta.get("extrinsic_cam2world")
+        out = {"rgb": rgb, "depth": depth, "intrinsic_K": K}
+        # The camera pose too where the meta has it (the grasp planner's View needs it).
+        if T is not None:
+            out["extrinsic_cam2world"] = np.asarray(T, dtype=np.float64)
+        return out
 
     return view
 

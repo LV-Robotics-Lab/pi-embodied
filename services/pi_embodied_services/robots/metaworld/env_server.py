@@ -45,6 +45,7 @@ from pi_embodied_services.components.code_api import register_code_api
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
 from pi_embodied_services.robots.metaworld.primitives import METAWORLD_PRIMITIVES
 from pi_embodied_services.utils import ground_truth
+from pi_embodied_services.utils.grasp import add_grasp_arguments, install_grasp_planner
 from pi_embodied_services.utils.logging import get_logger
 from pi_embodied_services.utils.perception import (
     add_perception_arguments,
@@ -613,14 +614,28 @@ def main():
         help="watch parent process via stdin pipe and exit when it dies",
     )
     add_perception_arguments(p, sam3=True)
+    add_grasp_arguments(p)
     args = p.parse_args()
 
     facade = MetaworldEnvFacade(
         task=args.task, seed=args.seed, view_size=args.view_size
     )
     # --sam3 / --unidepth: env.detect, env.select_detection, env.reject_detection, env.enhance_depth.
-    install_perception(
-        facade, args, cameras=["agentview", "wrist"], view=render_view(facade)
+    view = render_view(facade)
+    perception = install_perception(
+        facade, args, cameras=["agentview", "wrist"], view=view
+    )
+    # --graspnet & co: env.plan_grasp, env.claim_waypoints and friends over the same views
+    # (the gripper points straight down (xyzw, 180 deg about x)); pi's execute_grasp splits the claimed path into move_delta calls.
+    install_grasp_planner(
+        facade,
+        args,
+        view=view,
+        cameras=["agentview", "wrist"],
+        eef_pose=lambda arm: (facade._tcp(), np.array([1.0, 0.0, 0.0, 0.0])),
+        perception=perception,
+        primitives=METAWORLD_PRIMITIVES,
+        wrist_camera="wrist",
     )
     try:
         facade.serve(

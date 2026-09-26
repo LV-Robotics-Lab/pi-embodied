@@ -501,7 +501,8 @@ class SimServer(RpcFacade):
         self._rpc["env.get_env_meta"] = lambda: {"task": "t", "capabilities": {}}
         self._rpc["env.render_camera"] = self.render_camera
         self._rpc["env.get_camera_meta"] = lambda camera_name, **_: {
-            "intrinsic_K": K.tolist()
+            "intrinsic_K": K.tolist(),
+            "extrinsic_cam2world": np.eye(4),
         }
         self._rpc["env.segment"] = lambda prompt, camera="agentview": {"own": True}
         self._rpc["env.move_delta"] = self.move_delta
@@ -633,3 +634,59 @@ def test_every_env_server_but_the_frankas_installs_perception() -> None:
             continue
         assert "install_perception(" in text, path.parent.name
         assert "add_perception_arguments(" in text, path.parent.name
+
+
+def test_install_grasp_planner_shares_the_perception_ids_and_extends_code_api() -> None:
+    """The simulators' planner (utils/grasp.install_grasp_planner): nothing without a grasp or
+    place URL; with one the planner's primitives join code.api, its views are render_view's
+    (with the camera pose) and env.detect ids live on its epoch."""
+    import argparse
+
+    from pi_embodied_services.components.code_api import Primitive, register_code_api
+    from pi_embodied_services.utils.grasp import (
+        add_grasp_arguments,
+        install_grasp_planner,
+    )
+
+    parser = argparse.ArgumentParser()
+    add_perception_arguments(parser, sam3=True)
+    add_grasp_arguments(parser)
+    server, perception = _sim(sam3=FakeSam3())
+    own = (Primitive("move_delta", "env.move_delta", "move", {}),)
+    register_code_api(server, own)
+    view = render_view(server)
+    assert view("agentview")["extrinsic_cam2world"].shape == (4, 4)
+    off = parser.parse_args([])
+    assert (
+        install_grasp_planner(
+            server, off, view=view, cameras=["agentview"], eef_pose=lambda a: None
+        )
+        is None
+    )
+    assert "env.plan_grasp" not in server._rpc
+    on = parser.parse_args(["--anyplace", "http://anyplace"])
+    planner = install_grasp_planner(
+        server,
+        on,
+        view=view,
+        cameras=["agentview", "wrist"],
+        eef_pose=lambda a: (np.zeros(3), np.array([1.0, 0, 0, 0])),
+        perception=perception,
+        primitives=own,
+    )
+    assert planner is not None
+    for m in (
+        "env.plan_grasp",
+        "env.claim_waypoints",
+        "env.resolve_grasp",
+        "env.plan_place",
+    ):
+        assert m in server._rpc, m
+    names = {p["name"] for p in server._dispatch("code.api", (), {})["primitives"]}
+    assert {"move_delta", "plan_grasp", "claim_waypoints"} <= names
+    ids = server._dispatch(
+        "env.detect", (), {"camera": "agentview", "text_prompt": "bowl"}
+    )["ids"]
+    assert perception.book.epoch is planner._epoch, "one observation clock"
+    server._dispatch("env.move_delta", (0.1,), {})
+    assert server._dispatch("env.select_detection", (), {"id": ids[0]})["ok"] is False

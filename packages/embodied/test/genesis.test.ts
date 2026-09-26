@@ -186,3 +186,83 @@ test("--point: Molmo on the current images; the pixel's world xyz where the robo
 	});
 	assert.deepEqual(one.details.world_xyz, [0.4, 0, 0.02]);
 });
+
+test("--graspnet: plan_grasp and execute_grasp, the claimed path run as move_delta calls of at most 0.2 m", async (t) => {
+	let tcp = [0.4, 0, 0.3];
+	const moves: number[][] = [];
+	const env = await fakeEnv((c) => {
+		const obs = () => ({
+			agentview: rgb(),
+			wrist: rgb(),
+			tcp_pos: f32(tcp),
+			tcp_quat_wxyz: f32([0, 1, 0, 0]),
+			gripper_width: 0.08,
+			gripper_command: "open",
+			qpos: f32([0]),
+			success: false,
+			is_grasped: false,
+			lift_m: 0,
+			env_steps: 0,
+		});
+		if (c.method === "env.get_env_meta")
+			return {
+				task: "cube_pick",
+				seed: 0,
+				instruction: "pick",
+				workspace: {},
+				z_floor_m: 0,
+				max_move_m: 0.2,
+				lift_m: 0.08,
+			};
+		if (c.method === "env.reset") return [obs(), {}];
+		if (c.method === "env.plan_grasp") return { active: "g1", candidates: [{ id: "g1" }], expired_ids: [] };
+		if (c.method === "env.resolve_grasp") return { approach: [0, 0, -1] };
+		if (c.method === "env.claim_waypoints")
+			return {
+				kind: "grasp",
+				waypoints: { pre_grasp: [0.5, 0.1, 0.12], grasp: [0.5, 0.1, 0.02], lift: [0.5, 0.1, 0.12] },
+				steps: [
+					{ to: "pre_grasp", gripper: -1 },
+					{ to: "grasp", gripper: -1 },
+					{ gripper: 1 },
+					{ to: "lift", gripper: 1 },
+				],
+				eef_yaw: 0,
+				expired_ids: [],
+			};
+		if (c.method === "env.move_delta") {
+			const d = c.args[0] as number[];
+			moves.push(d);
+			tcp = tcp.map((v, i) => v + d[i]);
+			return { ...obs(), commanded_m: d, moved_m: d, decisions: 1, control_steps: 1 };
+		}
+		if (c.method === "env.set_gripper") return { ...obs(), control_steps: 5 };
+		return undefined;
+	});
+	t.after(env.close);
+	const s = simPi({ env: env.url, graspnet: "http://127.0.0.1:1" });
+	genesis(s.pi);
+	await s.emit("session_start");
+	process.exitCode = undefined;
+	for (const name of ["plan_grasp", "plan_place", "check_attached", "execute_grasp", "execute_place"])
+		assert.ok(s.active().includes(name), name);
+	assert.equal((await s.run("plan_grasp", { object: "cube" })).details.active, "g1");
+	const r = await s.run("execute_grasp", { grasp_id: "g1" });
+	assert.deepEqual(
+		r.details.result.legs.map((l: any) => l.to ?? l.gripper),
+		["pre_grasp", "grasp", "close", "lift"],
+	);
+	for (const d of moves) assert.ok(Math.hypot(...d) <= 0.2 + 1e-9);
+	assert.deepEqual(
+		env.calls.filter((c) => c.method === "env.set_gripper").map((c) => c.kwargs.open),
+		[false],
+	);
+	assert.ok(Math.abs(tcp[2] - 0.12) < 1e-6);
+	assert.match((await s.emit("before_agent_start")).systemPrompt as string, /`execute_grasp`/);
+
+	const off = simPi({ env: env.url });
+	genesis(off.pi);
+	await off.emit("session_start");
+	process.exitCode = undefined;
+	assert.ok(!off.active().includes("execute_grasp") && !off.active().includes("plan_grasp"));
+});

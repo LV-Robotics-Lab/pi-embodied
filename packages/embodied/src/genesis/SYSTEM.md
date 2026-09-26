@@ -23,6 +23,10 @@ This is a single episode. You may recover within it (re-position, re-grasp), but
 - `enhance_depth` fuses a UniDepth estimate into a camera's depth (or supplies depth where it has none) until the next motion.[tool:detect] `detect` then measures through it.[/tool:detect]
 [/tool:enhance_depth]
 
+[tool:plan_grasp]
+- Planned grasps: `plan_grasp` predicts grasps for an object (text, or a mask id) from the current agentview or wrist RGB-D image, in the world frame, best first, each with a short id (`g1`). Ids die with the next motion, so plan right before acting.[tool:execute_grasp] Run the `active` candidate with `execute_grasp` (it opens, descends from the standoff, closes and lifts in one call); this gripper cannot turn, so a candidate approaching from the side is refused before anything moves: then call `plan_grasp` with `next_after` for the next rank.[/tool:execute_grasp][tool:check_attached] `check_attached` gives an independent visual verdict after the lift.[/tool:check_attached][tool:plan_place] `plan_place` (the destination and the executed grasp's id) gives place ids[tool:execute_place] that `execute_place` runs[/tool:execute_place].[/tool:plan_place]
+[/tool:plan_grasp]
+
 {{memory}}
 
 # Rules

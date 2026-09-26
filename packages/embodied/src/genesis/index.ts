@@ -27,7 +27,8 @@ import { Type } from "typebox";
 import { template } from "../context-version.ts";
 import { decodePngChannel, encodePng } from "../png.ts";
 import { detectionActive, detectionArgs, detectionTools, registerDetectionFlags } from "../primitives/detections.ts";
-import { mountGraspTool } from "../primitives/grasp.ts";
+import { graspActive, graspArgs, graspTools, mountGraspTool, registerGraspFlags } from "../primitives/grasp.ts";
+import { chainTools } from "../primitives/grasp-chain.ts";
 import { pointActive, pointTool, registerPointFlags } from "../primitives/pointing.ts";
 import { attach, defineRobot, type Json, median, rgbOf, SERVICES } from "../robot.ts";
 import { type NdArray, RpcClient } from "../rpc.ts";
@@ -146,6 +147,8 @@ export default function genesis(pi: ExtensionAPI) {
 	pi.registerFlag("sam3", { type: "string", default: "http://127.0.0.1:18300", description: "SAM3 server (segment)" });
 	// --detections / --unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
 	registerDetectionFlags(pi);
+	// --graspnet & co: plan_grasp and friends, and execute_grasp / execute_place (../primitives/grasp-chain.ts).
+	registerGraspFlags(pi);
 	// --point: Molmo's point over its --molmo server (../primitives/pointing.ts).
 	registerPointFlags(pi, { molmo: true });
 	pi.registerFlag("services", {
@@ -459,6 +462,30 @@ export default function genesis(pi: ExtensionAPI) {
 	}))
 		mountGraspTool(robot.tool, d);
 
+	// plan_grasp / plan_place / check_attached over the env server's planner (--graspnet & co), and
+	// execute_grasp / execute_place running a planned id as bounded move_delta legs (../primitives/grasp-chain.ts).
+	for (const d of graspTools(pi, {
+		call: (method, kwargs, timeoutMs) => env.call<Json>(method, kwargs, timeoutMs ?? 120_000, [], robot.signal),
+		cameras: ["agentview", "wrist"],
+		task: () => meta.instruction,
+	}))
+		mountGraspTool(robot.tool, d);
+	for (const d of chainTools({
+		call: (method, kwargs, timeoutMs) => env.call<Json>(method, kwargs, timeoutMs ?? 120_000, [], robot.signal),
+		current: () => obs.tcp_pos.toArray(),
+		maxStep: () => MAX_MOVE_M,
+		move: async (delta, g, signal) => move(delta as Vec3, g, signal),
+		gripper: async (g, signal) => {
+			const r = await call<Gripped>("env.set_gripper", { open: g === "open", return_frames: true }, [], signal);
+			for (const f of r.frames ?? []) video.frame(f);
+			const { frames: _frames, control_steps, grasp_empty, cancelled, ...o } = r;
+			absorb(o);
+			return { control_steps, ...(grasp_empty ? { grasp_empty } : {}), ...(cancelled ? { cancelled } : {}) };
+		},
+		observe: (result) => observe(result) as unknown as Json,
+	}))
+		robot.tool(d.name, d.description, d.parameters, async (p, signal, ctx) => (await d.run(p, signal, ctx)) as never);
+
 	async function startEpisode() {
 		const { task, seed } = robot.task;
 		if (!(TASKS as readonly string[]).includes(task))
@@ -473,6 +500,11 @@ export default function genesis(pi: ExtensionAPI) {
 					...["-m", "pi_embodied_services.robots.genesis.env_server"],
 					...["--task", task, "--seed", seed, "--backend", flag("backend", "gpu")],
 					...detectionArgs(pi, flag("sam3", "")),
+					...graspArgs(pi),
+					// The planner segments its object text with SAM3; --detections passes it already.
+					...(graspArgs(pi).length && pi.getFlag("detections") !== true && flag("sam3", "")
+						? ["--sam3", flag("sam3", "")]
+						: []),
 				],
 				cwd: services,
 				env: { ...process.env, PYTHONPATH: services },
@@ -491,6 +523,8 @@ export default function genesis(pi: ExtensionAPI) {
 		return [
 			...["view_env_state", "view_camera_meta", "segment", "back_project", "move_delta", "gripper", "finish"],
 			...detectionActive(pi, meta.capabilities?.perception),
+			...graspActive(pi),
+			...(graspActive(pi).length ? ["execute_grasp", "execute_place"] : []),
 			...pointActive(pi),
 		];
 	}

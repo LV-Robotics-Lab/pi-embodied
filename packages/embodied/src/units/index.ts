@@ -50,6 +50,10 @@
  *   into an ordered demo brief (arm, grasp part, destination) that the prompt tells the agent to
  *   replicate; the brief is a `units_video_ref` session entry. A failed extraction fails closed.
  *
+ * Files: this one registers the flags and tools and owns the episode state; ./types.ts is the public
+ * contract (UnitsSpec, UnitsHandle, entry names), ./vocabulary.ts the units and pure helpers (ground,
+ * compensate, finishMove, latestTurn), ./prompt.ts renders ./SYSTEM.md, ./verifier.ts the finish check.
+ *
  * Copyright 2026 The Show-Harness Authors (github.com/showlab/Show-Harness @137d571).
  * Licensed under the Apache License, Version 2.0.
  * Modified by pi-embodied: core/action_units.py, interpreters/ (unit -> base-frame motion) and
@@ -57,261 +61,95 @@
  * subgoal,deepplan,mem_text} ported as pi tools; the final task check and plugins/video_ref in ./vlm.ts.
  */
 
-import { readFileSync } from "node:fs";
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import { type ImageContent, StringEnum } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { type Static, type TSchema, Type } from "typebox";
+import { StringEnum } from "@earendil-works/pi-ai";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { type TSchema, Type } from "typebox";
+import { renderPrompt } from "./prompt.ts";
+import {
+	type Result,
+	STATE_ENTRY,
+	type Stage,
+	type Target,
+	type ToolRegistrar,
+	UNITS_EVENT,
+	type UnitsHandle,
+	type UnitsSpec,
+	VIDEO_REF_ENTRY,
+} from "./types.ts";
+import { registerVerifier, verifierState } from "./verifier.ts";
 import {
 	askVlm,
 	type DemoBrief,
 	parseJson,
-	parseVerdict,
-	renderBrief,
 	sampleFrames,
 	VIDEO_REF_FRAMES,
 	VLM_COST_EVENT,
 	validateBrief,
-	verifyPrompt,
 	videoRefPrompt,
 } from "./vlm.ts";
+import {
+	CHUNK_STEPS,
+	compensate,
+	DEFAULT_PLUGINS,
+	finishMove,
+	GUIDE_VIEWS,
+	type GuideView,
+	ground,
+	isMove,
+	isRt,
+	latestTurn,
+	MAX_REPEAT,
+	MOVE_UNITS,
+	type Move,
+	type MoveUnit,
+	PLUGINS,
+	type Plugin,
+	ROTATE_UNITS,
+	RT_TURNS,
+	type RtUnit,
+	type State,
+	UNITS,
+	type Unit,
+	type Vec3,
+} from "./vocabulary.ts";
 
-/** `pi.events` channel on which this module publishes the robot's `UnitsHandle` at every session start. */
-export const UNITS_EVENT = "pi-embodied:units";
-export type UnitsHandle = {
-	/** The agent's unit tool (`act`). */
-	tool: string;
-	/** Arm names on a dual-arm robot (`act`'s `arm`), [] on one arm. */
-	arms: readonly string[];
-	/** Units `act` accepts. */
-	vocabulary: readonly string[];
-	stepM: number;
-	yawStepRad?: number;
-	/** What one `act` call does (grounding, `apply`, recovery / auto_release, the units header), without the model. */
-	/** `operator: true` for a human's unit (GUMI): exactly what was pressed, no recovery/auto_release/variable step/rotation assists. */
-	run: (
-		params: { unit: string; n?: number; arm?: string; operator?: boolean },
-		signal?: AbortSignal,
-	) => Promise<AgentToolResult<unknown>>;
-	/** The robot's proprioception (`eef_xyz`, `gripper_width`, ...), per arm on two arms. */
-	state?: (arm?: string) => Promise<Record<string, unknown>>;
-	/** Every robot tool (`act` and the robot's own): ../gumi holds them all while the operator drives. */
-	tools: () => readonly string[];
-	/** Why an operator's unit may not run now (the gates an `act` call passes), else undefined. */
-	refuse: () => string | undefined;
-	/** view_select is on this session: `act` takes `view` and passes it on as `Move.view`. */
-	viewSelect?: boolean;
-	/** --units-rt is on: the turns are RT_* (those in `vocabulary`) instead of ROTATE_*. */
-	rt?: boolean;
-};
-
-// ---------------------------------------------------------------------------
-// the vocabulary (core/action_units.py)
-
-export const MOVE_UNITS = ["MV_FWD", "MV_BACK", "MV_LEFT", "MV_RIGHT", "MV_UP", "MV_DOWN"] as const;
-export const ROTATE_UNITS = ["ROTATE_CW", "ROTATE_CCW"] as const;
-/**
- * The RT_* units of the aaroncaozj LIBERO adapters (Show-Harness v5 vocabulary): a fixed turn about a
- * base-frame axis through the TCP. Offered with --units-rt on robots that declare the axis (`rt`).
- */
-export const RT_UNITS = [
-	"RT_ROLL_LEFT",
-	"RT_ROLL_RIGHT",
-	"RT_PITCH_FWD",
-	"RT_PITCH_BACK",
-	"RT_YAW_CW",
-	"RT_YAW_CCW",
-] as const;
-/** STOP holds the setpoint for one step; STILL (dual arm) leaves an arm alone; DONE ends the task. */
-export const UNITS = [
-	...MOVE_UNITS,
-	...ROTATE_UNITS,
-	...RT_UNITS,
-	"STOP",
-	"GRASP",
-	"RELEASE",
-	"DONE",
-	"STILL",
-] as const;
-export type MoveUnit = (typeof MOVE_UNITS)[number];
-export type RtUnit = (typeof RT_UNITS)[number];
-export type RtAxis = "roll" | "pitch" | "yaw";
-/** Each RT_* unit's axis and sign: +1 turns about the robot's `rt.axes` vector by the right-hand rule. */
-export const RT_TURNS: Record<RtUnit, { axis: RtAxis; sign: 1 | -1 }> = {
-	RT_ROLL_LEFT: { axis: "roll", sign: 1 },
-	RT_ROLL_RIGHT: { axis: "roll", sign: -1 },
-	RT_PITCH_FWD: { axis: "pitch", sign: 1 },
-	RT_PITCH_BACK: { axis: "pitch", sign: -1 },
-	RT_YAW_CCW: { axis: "yaw", sign: 1 },
-	RT_YAW_CW: { axis: "yaw", sign: -1 },
-};
-export const isRt = (u: string): u is RtUnit => u in RT_TURNS;
-export type Unit = (typeof UNITS)[number];
-export type Vec3 = [number, number, number];
-
-export const PLUGINS = [
-	"recovery",
-	"auto_release",
-	"proprioception",
-	"variable_step",
-	"action_chunk",
-	"rotation",
-	"plan",
-	"point",
-	"mem_text",
-] as const;
-export type Plugin = (typeof PLUGINS)[number];
-/**
- * Show-Harness configs/robot_franka.yaml (zero-shot, mem_text on), plus rotation: here ROTATE_* are offered
- * whenever the robot has a yaw step, and the plugin keeps wrist-judged moves right after a turn.
- * Affordance (point) is off there too.
- */
-export const DEFAULT_PLUGINS: readonly Plugin[] = [
-	"recovery",
-	"auto_release",
-	"proprioception",
-	"variable_step",
-	"action_chunk",
-	"rotation",
-	"plan",
-	"mem_text",
-];
-
-/**
- * One grounded unit: a base-frame translation (m), a yaw about base +z (rad), a gripper command.
- * `continuous`: the same MV_* unit runs next in this act call, so the robot may flow through the join.
- */
-export type Move = {
-	delta: Vec3;
-	yaw: number;
-	gripper: "open" | "close" | null;
-	/** An RT_* turn: a rotation vector (axis x angle, rad) about base-frame axes through the TCP. */
-	rot?: Vec3;
-	arm?: string;
-	continuous?: boolean;
-	/** view_select: the view that guided the move (act's `view`, robots with `viewSelect`). */
-	view?: GuideView;
-	/**
-	 * The verifier's retreat lift before its check. A robot that ends motion at its own success
-	 * signal may still allow it (see finishMove; it cannot change a latched outcome).
-	 */
-	retreat?: boolean;
-};
-/**
- * The finish sequence a robot may still run after its success signal: opening the gripper and
- * lifting straight up (Show-Harness RELEASE -> RETREAT), and the verifier's retreat. It reads only
- * the move, so a replay that skips a refused `finish` runs the same steps.
- */
-export function finishMove(move: Move) {
-	const [dx, dy, dz] = move.delta;
-	if (move.rot?.some(Boolean)) return move.retreat === true;
-	return (
-		move.retreat === true ||
-		(move.gripper !== "close" && !move.yaw && !dx && !dy && (move.gripper === "open" || dz > 0))
-	);
-}
-/** Show-Harness plugins/view_select: WRIST (rule A, the wrist view) or FRONT (rule B, the third-person view). */
-export const GUIDE_VIEWS = ["WRIST", "FRONT"] as const;
-export type GuideView = (typeof GUIDE_VIEWS)[number];
-type Result = AgentToolResult<unknown>;
-export type State = Record<string, unknown>;
-
-export type UnitsSpec = {
-	/** Base-frame unit vector of each MV_* unit (calibrated so each matches its look in VIEWS). */
-	vectors: Record<MoveUnit, Vec3>;
-	/** Metres per MV_* unit (Show-Harness: 0.02). */
-	stepM: number;
-	/** Radians per ROTATE_CW (ROTATE_CCW is the negative); omit on robots without yaw. */
-	yawStepRad?: number;
-	/** Execute one move through the robot's own safety checks; return the new observation (images + state). */
-	apply: (move: Move, signal: AbortSignal | undefined) => Promise<Result>;
-	/**
-	 * Proprioception. The plugins read `eef_xyz` (base frame, m), `gripper_width` (m) and
-	 * `table_z` (m, optional); everything else is shown as-is.
-	 */
-	state?: (arm?: string) => Promise<State>;
-	/** The task text for the prompt (default: the episode's task flags). */
-	instruction?: () => string;
-	/** How the camera images look and which way each MV_* unit moves in them (default: DEFAULT_VIEWS). */
-	views?: string;
-	/** Dual-arm robots: the arm names `act` chooses between. */
-	arms?: readonly string[];
-	/** A closed gripper at or below this width (m) holds nothing (recovery, auto_release). */
-	emptyWidthM?: number;
-	/** Default of --units-plugins. */
-	plugins?: readonly Plugin[];
-	/** variable_step: the coarse step (default 0.04 m) and the "high above the table" gap (default 0.08 m). */
-	coarseStepM?: number;
-	highAboveTableM?: number;
-	/** rotation: +1 rotates wrist-judged moves by +yaw (flip if a post-rotation move goes the wrong way). */
-	yawCompensationSign?: number;
-	/** The robot's largest yaw per command, rad: longer turns are split into commands within it. */
-	maxYawRad?: () => number;
-	/**
-	 * RT_* units (--units-rt): radians per unit, the base-frame unit vector each axis turns about for
-	 * the positive unit (RT_ROLL_LEFT, RT_PITCH_FWD, RT_YAW_CCW; the sign convention lives in the
-	 * vector), and the largest turn per command. A robot omits an axis it cannot turn about; its units
-	 * are then refused.
-	 */
-	rt?: { stepRad: number; axes: Partial<Record<RtAxis, Vec3>>; maxRad?: () => number };
-	/** The robot's largest translation per call, m: one `act` call travels at most this in total. */
-	maxMoveM?: () => number;
-	/**
-	 * The robot flows through `continuous` moves: it returns before the arm settles, so the measured
-	 * position lags the command and the stall check waits for the chain's last move.
-	 */
-	chains?: () => boolean;
-	/**
-	 * view_select (Show-Harness plugins/view_select), read at session start: when true, `act` takes
-	 * `view` (which view guided the move) and passes it on in `Move.view`; the robot picks the move's
-	 * frame from it and explains it in `views`.
-	 */
-	viewSelect?: () => boolean;
-	/** Robots that execute `delta` in another frame: the base-frame translation it becomes from `state` (proprioception). */
-	baseDelta?: (delta: Vec3, state: State | undefined) => Vec3;
-	/** Affordance: mark [row, col] fractions (0..1) in a camera image; the marked PNG and world xyz per point. */
-	point?: {
-		cameras: readonly string[];
-		locate: (
-			camera: string,
-			points: [number, number][],
-			signal: AbortSignal | undefined,
-		) => Promise<{ image?: Buffer; xyz: (number[] | null)[] }>;
-	};
-};
-
-/** The robot base's tool registrar (terminate-with-finish, abort signal, env failure). */
-export type ToolRegistrar = <P extends TSchema>(
-	name: string,
-	description: string,
-	parameters: P,
-	run: (params: Static<P>, signal: AbortSignal | undefined, ctx: ExtensionContext) => Promise<Result>,
-) => void;
-
-type Stage = {
-	motion: string;
-	target: string;
-	affordance?: string;
-	description?: string;
-	completion: string;
-	arm?: string;
-};
-type Target = { label: string; camera: string; point: [number, number]; xyz: number[] | null };
-
-/**
- * Show-Harness's image convention (prompts/controller.txt), which configs/primitives_<robot>.yaml
- * calibrate the unit vectors to: a third-person view facing the robot, then the wrist view.
- */
-export const DEFAULT_VIEWS = `Each result shows the third-person view (it faces the robot), then the wrist view (the gripper fingers stay fixed in it).
-- Third-person view: MV_LEFT / MV_RIGHT move toward the image left / right, MV_FWD toward the image bottom, MV_BACK toward the image top.
-- Wrist view: a target to the fingers' left / right needs MV_LEFT / MV_RIGHT, one near the image bottom and far from the fingers needs MV_FWD, one between the image top and the fingers needs MV_BACK; centered between the fingers: MV_DOWN.`;
+export { DEFAULT_VIEWS } from "./prompt.ts";
+export {
+	STATE_ENTRY,
+	type ToolRegistrar,
+	UNITS_EVENT,
+	type UnitsHandle,
+	type UnitsSpec,
+	VERIFY_ENTRY,
+	VIDEO_REF_ENTRY,
+} from "./types.ts";
+export {
+	compensate,
+	DEFAULT_PLUGINS,
+	finishMove,
+	GUIDE_VIEWS,
+	type GuideView,
+	ground,
+	isRt,
+	latestTurn,
+	MOVE_UNITS,
+	type Move,
+	type MoveUnit,
+	PLUGINS,
+	type Plugin,
+	ROTATE_UNITS,
+	RT_TURNS,
+	RT_UNITS,
+	type RtAxis,
+	type RtUnit,
+	type State,
+	UNITS,
+	type Unit,
+	type Vec3,
+} from "./vocabulary.ts";
 
 /** A MV_* that travelled less than this fraction of the command did not move freely (proprioception). */
 const STALL_RATIO = 0.7;
-/** Largest repeat count per `act` call. */
-const MAX_REPEAT = 10;
-/** action_chunk: the most moves one call may commit (action_chunk_step_num). */
-const CHUNK_STEPS = 3;
 /** rotation: soft guard on the accumulated yaw (Franka joint 7 is about +-166 deg), and "back at neutral". */
 const MAX_YAW = (150 * Math.PI) / 180;
 const NEUTRAL_YAW = (2 * Math.PI) / 180;
@@ -323,95 +161,15 @@ const MAX_YAW_PIECES = 30;
 const MEM_LEN = 5;
 /** mem_text: the history entry of a GRASP that closed on nothing (core/runners/real.py EMPTY_GRASP_LABEL). */
 const EMPTY_GRASP = "GRASP(empty)";
-/**
- * Verifier: the retreat before the check lifts each open gripper this far with MV_UP (Show-Harness
- * judges a "fresh, retreated observation": RETREAT stages lift after RELEASE and finished arms go home,
- * so the gripper no longer occludes the drop point). A closed gripper is left in place.
- */
-const RETREAT_M = 0.1;
-/** Verifier: success claims refused for a still-closed gripper per episode (then the check runs anyway). */
-const MAX_HOLD_REFUSALS = 2;
 /** Plan stages that make a task a placement (Show-Harness subgoal: PLACE -> RELEASE -> RETREAT). */
 const PLACEMENT = ["PLACE", "RELEASE", "RETREAT"];
-/** Verifier: NOT complete verdicts that refuse `finish` per episode (v0.max_replans). */
-const MAX_REPLANS = 1;
-/** Verifier: success claims refused because the check could not run, per episode (then the finish ends unverified). */
-const MAX_VERIFIER_ERRORS = 2;
-/** Session entries of the verifier's checks and the video_ref brief. */
-export const VERIFY_ENTRY = "units_verify";
-export const VIDEO_REF_ENTRY = "units_video_ref";
-/** Session entry of the episode state (gripper, accumulated yaw, plan, history), rebuilt on resume and fork. */
-export const STATE_ENTRY = "units_state";
 const NOTES = {
 	empty_grasp: "Empty close; do not retry on an edge/corner. Recenter body and confirm depth.",
 	lost_grasp: "Grasp lost; return to GRASP, recenter the object body, then confirm depth.",
 };
 
-const TEMPLATE = readFileSync(new URL("./SYSTEM.md", import.meta.url), "utf8").replace(/^<!--[\s\S]*?-->\n/, "");
 const r3 = (v: number) => Number(v.toFixed(3));
 const text = (s: string) => ({ type: "text" as const, text: s });
-const isMove = (u: string): u is MoveUnit => (MOVE_UNITS as readonly string[]).includes(u);
-
-/** Keep every `[name]...[/name]` block when `on`, drop them otherwise. */
-function section(prompt: string, name: string, on: boolean) {
-	const re = new RegExp(`\\[${name}\\]\\n([\\s\\S]*?)\\[/${name}\\]\\n`, "g");
-	return prompt.replace(re, on ? "$1" : "");
-}
-
-/** Ground a unit into a move (the interpreters' job), or undefined for units that do not move. */
-export function ground(
-	spec: Pick<UnitsSpec, "vectors" | "stepM" | "yawStepRad" | "rt">,
-	unit: Unit,
-	stepM = spec.stepM,
-): Move | undefined {
-	if (isMove(unit)) return { delta: spec.vectors[unit].map((x) => x * stepM) as Vec3, yaw: 0, gripper: null };
-	if (isRt(unit)) {
-		const { axis, sign } = RT_TURNS[unit];
-		const rt = spec.rt;
-		const v = rt?.axes[axis];
-		if (!rt || !v) throw new Error(`${unit}: this robot cannot turn its gripper about the ${axis} axis`);
-		return { delta: [0, 0, 0], yaw: 0, gripper: null, rot: v.map((x) => x * sign * rt.stepRad) as Vec3 };
-	}
-	if (unit === "ROTATE_CW" || unit === "ROTATE_CCW") {
-		if (!spec.yawStepRad) throw new Error(`${unit}: this robot has no yaw`);
-		return { delta: [0, 0, 0], yaw: unit === "ROTATE_CW" ? spec.yawStepRad : -spec.yawStepRad, gripper: null };
-	}
-	if (unit === "GRASP" || unit === "RELEASE")
-		return { delta: [0, 0, 0], yaw: 0, gripper: unit === "GRASP" ? "close" : "open" };
-	if (unit === "STOP") return { delta: [0, 0, 0], yaw: 0, gripper: null };
-	return undefined;
-}
-
-/** rotation: a base-frame vector rotated about +z by `yaw` (plugins/rotation compensate_move). */
-export function compensate(delta: Vec3, yaw: number): Vec3 {
-	if (Math.abs(yaw) < 1e-6) return delta;
-	const [c, s] = [Math.cos(yaw), Math.sin(yaw)];
-	return [c * delta[0] - s * delta[1], s * delta[0] + c * delta[1], delta[2]];
-}
-
-/**
- * The paper's no-history context: the first user message (the task) and the latest observation
- * turn, i.e. everything from the last assistant message whose tool results carry an image.
- */
-export function latestTurn<M extends { role: string; content?: unknown }>(messages: M[]): M[] | undefined {
-	const hasImage = (m: M) =>
-		m.role === "toolResult" &&
-		Array.isArray(m.content) &&
-		m.content.some((c: { type?: string }) => c?.type === "image");
-	let last = -1;
-	for (let i = messages.length - 1; i >= 0 && last < 0; i--) {
-		if (!hasImage(messages[i])) continue;
-		for (let j = i - 1; j >= 0; j--)
-			if (messages[j].role === "assistant") {
-				last = j;
-				break;
-			}
-	}
-	const first = messages.findIndex((m) => m.role === "user");
-	if (last < 0 || first < 0 || first >= last) return undefined;
-	const kept = [messages[first], ...messages.slice(last)];
-	return kept.length === messages.length ? undefined : kept;
-}
 
 /** Register the units flags and tools; `mode()`, `tools()` and `prompt()` are read by ../robot.ts. */
 export function units(
@@ -528,18 +286,8 @@ export function units(
 	let stages: Stage[] = [];
 	let stage = 0;
 	let targets: Target[] = [];
-	/** Verifier: refusals so far and the latest refusal's reason (shown until a new plan). */
-	let replans = 0;
-	let verdict = "";
-	/** Success claims refused for holding. */
-	let holdRefusals = 0;
-	/** Success claims refused because the verifier's VLM call failed, and its latest error. */
-	let verifierErrors = 0;
-	let verifierError = "";
-	/** Whether the latest success finish the verifier let through had a verdict (undefined: none checked). */
-	let finishVerified: boolean | undefined;
-	/** The latest camera images a robot tool returned (the verifier's view). */
-	let images: ImageContent[] = [];
+	/** The verifier's refusals, verdict, errors and view (./verifier.ts updates it in place). */
+	const check = verifierState();
 	/** video_ref: the brief (extracted once per video and frame count) and why it failed. */
 	let demo: { key: string; brief: DemoBrief; indices: number[]; model: string } | undefined;
 	let demoError: string | undefined;
@@ -554,13 +302,7 @@ export function units(
 		stages = [];
 		stage = 0;
 		targets = [];
-		replans = 0;
-		verdict = "";
-		holdRefusals = 0;
-		verifierErrors = 0;
-		verifierError = "";
-		finishVerified = undefined;
-		images = [];
+		Object.assign(check, verifierState());
 	};
 	/** mem_text: record a unit in the move history (newest last). */
 	const remember = (u: string) => {
@@ -578,12 +320,12 @@ export function units(
 			stages,
 			stage,
 			targets,
-			replans,
-			verdict,
-			holdRefusals,
-			verifierErrors,
-			verifierError,
-			finishVerified,
+			replans: check.replans,
+			verdict: check.verdict,
+			holdRefusals: check.holdRefusals,
+			verifierErrors: check.verifierErrors,
+			verifierError: check.verifierError,
+			finishVerified: check.finishVerified,
 		});
 	let saved = snapshot();
 	/** Append the state entry when it changed (a record of the episode; a new session starts fresh). */
@@ -695,7 +437,7 @@ export function units(
 				);
 		}
 		if (note) out.push(`Recovery: ${note}`);
-		if (verdict) out.push(`Verifier: the task is NOT complete: ${verdict}`);
+		if (check.verdict) out.push(`Verifier: the task is NOT complete: ${check.verdict}`);
 		if (plugin("mem_text")) out.push(`Recent moves, newest first: ${[...recent].reverse().join(", ") || "none"}`);
 		out.push(`TASK: ${instruction()}`);
 		return text(out.join("\n"));
@@ -1010,7 +752,7 @@ export function units(
 			if (next?.length) stages = [...stages.slice(0, stage), ...next];
 			// A new stage starts with a clean move history (core/runners/real.py); a new plan answers the verifier.
 			if (done || next?.length) recent = [];
-			if (next?.length) verdict = "";
+			if (next?.length) check.verdict = "";
 			save();
 			const lines = stages.map(
 				(s, i) =>
@@ -1020,137 +762,26 @@ export function units(
 		},
 	);
 
-	// The verifier judges the latest camera images: the newest robot tool result that carries any
-	// (`point`'s marked image is not a camera view).
-	pi.on("tool_result", (event) => {
-		if (!mode() || event.toolName === "point" || !Array.isArray(event.content)) return undefined;
-		const shown = event.content.filter((c): c is ImageContent => c.type === "image");
-		if (shown.length) images = shown;
-		return undefined;
-	});
-
-	/**
-	 * Lift every open gripper RETREAT_M with MV_UP through `act` (the robot's apply path and limits),
-	 * one arm after the other; the last result's images become the verifier's view. A refused or
-	 * blocked lift is recorded and the check runs on the images at hand.
-	 */
-	async function retreat(signal: AbortSignal | undefined) {
-		const log: Record<string, unknown>[] = [];
-		for (const arm of armNames.length ? armNames : [undefined]) {
-			const rec: Record<string, unknown> = arm ? { arm } : {};
-			log.push(rec);
-			if (closed.get(arm ?? "")) {
-				rec.skipped = "gripper closed: a held object stays where it is";
-				continue;
-			}
-			const step = plugin("variable_step") ? coarse() : spec.stepM;
-			const n = Math.min(MAX_REPEAT, Math.ceil(RETREAT_M / step - 1e-9));
-			try {
-				const r = await actAndSave({ unit: "MV_UP", n, retreat: true, ...(arm ? { arm } : {}) }, signal);
-				const shown = r.content.filter((c): c is ImageContent => c.type === "image");
-				const said = r.content
-					.filter((c) => c.type === "text")
-					.map((c) => (c as { text: string }).text)
-					.join("\n");
-				// Without new images the robot did not move (it refused the lift).
-				if (shown.length) {
-					images = shown;
-					rec.ran = said.split("\n")[0];
-				} else rec.refused = said.split("\n").at(-1);
-			} catch (err) {
-				rec.refused = err instanceof Error ? err.message : String(err);
-			}
-		}
-		return log;
-	}
-
-	// The final task check (core/runners/dual.py _completion_outcome): a success claim is judged once
-	// more from the images; NOT complete refuses `finish` (with the reason) while the replan budget lasts.
-	pi.on("tool_call", async (event, ctx) => {
-		if (event.toolName !== "finish" || !mode() || !verifying()) return undefined;
-		const status = (event.input as { status?: unknown }).status;
-		if (status !== undefined && status !== "success") return undefined;
-		// Stage discipline (Show-Harness subgoal): a placement is done only after PLACE -> RELEASE ->
-		// RETREAT, so a success claim while still holding is refused (not the verifier's replan).
-		const holding = (armNames.length ? armNames : [""]).filter((a) => closed.get(a));
-		const placement = stages.some((s) => PLACEMENT.includes(s.motion.toUpperCase()));
-		if (placement && holding.length && holdRefusals < MAX_HOLD_REFUSALS) {
-			holdRefusals++;
-			pi.appendEntry(VERIFY_ENTRY, { status, replans, holding: holding.map((a) => a || "arm"), refused: "holding" });
-			save();
-			const which = armNames.length ? ` (${holding.join(", ")} arm)` : "";
-			return {
-				block: true,
-				reason: `finish refused: the gripper${which} is still closed on the object. A placement is complete only after PLACE -> RELEASE -> RETREAT: \`act\` RELEASE, then MV_UP to lift clear, then call \`finish\` again. (This is not the verifier's check.)`,
-			};
-		}
-		const entry: Record<string, unknown> = { status, replans };
-		entry.retreat = await retreat(ctx.signal);
-		entry.cameras = images.length;
-		let refuse = false;
-		let failed = false;
-		if (!images.length) entry.skipped = "no camera images yet";
-		else {
-			const started = Date.now();
-			const ask = () =>
-				askVlm(
-					ctx,
-					String(pi.getFlag("units-vlm-model") ?? ""),
-					pi.getThinkingLevel(),
-					verifyPrompt(instruction(), armNames, images.length),
-					images,
-					ctx.signal,
-				).then((r) => {
-					// The call's cost counts toward the robot's --max-cost budget.
-					pi.events.emit(VLM_COST_EVENT, r.cost);
-					return r;
-				});
-			try {
-				// A failed call (no credits, network) is asked once more; an aborted run is not.
-				const reply = await ask().catch((err) => {
-					if (ctx.signal?.aborted) throw err;
-					entry.retried = err instanceof Error ? err.message : String(err);
-					return ask();
-				});
-				const v = parseVerdict(reply.text);
-				Object.assign(entry, { model: reply.model, complete: v.complete, reason: v.reason, raw: reply.text });
-				if (!v.available) entry.unavailable = true;
-				refuse = !v.complete && replans < MAX_REPLANS;
-			} catch (err) {
-				if (ctx.signal?.aborted) throw err;
-				// Fail closed: an unchecked finish is refused (not the replan) until the error budget is spent.
-				verifierError = err instanceof Error ? err.message : String(err);
-				entry.verifier_error = verifierError;
-				failed = verifierErrors < MAX_VERIFIER_ERRORS;
-				entry.unverified = true;
-			}
-			entry.ms = Date.now() - started;
-		}
-		entry.refused = refuse || failed;
-		pi.appendEntry(VERIFY_ENTRY, entry);
-		if (failed) {
-			verifierErrors++;
-			save();
-			return {
-				block: true,
-				reason: `finish refused: the verifier is unavailable (${verifierError}), so the task could not be checked. Call \`finish\` again to retry the check. (This is not the verifier's NOT complete verdict.)`,
-			};
-		}
-		finishVerified = entry.model !== undefined && entry.unavailable !== true;
-		save();
-		if (!refuse) return undefined;
-		replans++;
-		verdict = String(entry.reason ?? "");
-		// Replan from the live scene: the old plan and move history no longer apply.
-		stages = [];
-		stage = 0;
-		recent = [];
-		note = "";
-		save();
-		return {
-			block: true,
-			reason: `finish refused: the verifier judged the task NOT complete (${verdict}). Replan the remaining work from the live images${plugin("plan") ? " (send new stages with `plan`)" : ""} and continue with \`act\`; call \`finish\` again once the task is visibly complete. This is the only refusal.`,
-		};
+	// The verifier: the latest camera images and the finish check (./verifier.ts).
+	registerVerifier({
+		pi,
+		check,
+		arms: armNames,
+		active: () => mode() !== undefined,
+		verifying,
+		instruction,
+		isClosed: (arm) => closed.get(arm),
+		placement: () => stages.some((s) => PLACEMENT.includes(s.motion.toUpperCase())),
+		liftStep: () => (plugin("variable_step") ? coarse() : spec.stepM),
+		act: actAndSave,
+		replan: () => {
+			stages = [];
+			stage = 0;
+			recent = [];
+			note = "";
+		},
+		planning: () => plugin("plan"),
+		save,
 	});
 
 	// video_ref: extract the demo brief once, before the first prompt that needs it (plugins/video_ref).
@@ -1221,8 +852,8 @@ export function units(
 				: undefined,
 		/** The robot result's verifier fields: whether the success finish was checked, and the call's latest error. */
 		result: () => ({
-			...(finishVerified !== undefined ? { finish_verified: finishVerified } : {}),
-			...(verifierError ? { verifier_error: verifierError } : {}),
+			...(check.finishVerified !== undefined ? { finish_verified: check.finishVerified } : {}),
+			...(check.verifierError ? { verifier_error: check.verifierError } : {}),
 		}),
 		/** A scene reset: the arm is back at its start heading with the gripper open, no plan. */
 		reset: () => {
@@ -1232,39 +863,19 @@ export function units(
 		/** The units tools: act and the enabled plugins' tools (pure mode adds finish). */
 		tools: () => ["act", ...(plugin("point") ? ["point"] : []), ...(plugin("plan") ? ["plan"] : [])],
 		/** Pure mode: the whole prompt. Both mode: the section appended to the robot's prompt. */
-		prompt: () => {
-			const m = mode();
-			let p = section(TEMPLATE, "pure", m === "pure");
-			p = section(p, "both", m === "both");
-			p = section(p, "arms", armNames.length > 0);
-			p = section(p, "yaw", Boolean(spec.yawStepRad) && !rtOn());
-			p = section(p, "rt", rtOn() && Boolean(spec.rt));
-			p = section(p, "wrist", wristSignal());
-			for (const name of PLUGINS)
-				p = section(
-					p,
-					name,
-					plugin(name) && (!["recovery", "auto_release"].includes(name) || spec.emptyWidthM !== undefined),
-				);
-			p = section(p, "stateless", pi.getFlag("stateless") === true);
-			const brief = demo?.key.startsWith(`${pi.getFlag("units-video-ref")}#`) ? demo.brief : undefined;
-			p = section(p, "video_ref", brief !== undefined);
-			const vars: Record<string, string> = {
-				arm: armNames.length ? `with ${armNames.length} arms` : "arm",
+		prompt: () =>
+			renderPrompt({
+				spec,
+				mode: mode(),
+				arms: armNames,
+				rt: rtOn(),
+				wrist: wristSignal(),
+				plugin,
+				stateless: pi.getFlag("stateless") === true,
+				brief: demo?.key.startsWith(`${pi.getFlag("units-video-ref")}#`) ? demo.brief : undefined,
 				task: instruction(),
-				views: (spec.views ?? DEFAULT_VIEWS).trim(),
-				step_cm: (spec.stepM * 100).toFixed(0),
-				coarse_cm: (coarse() * 100).toFixed(0),
-				high_cm: (high * 100).toFixed(0),
-				chunk: String(CHUNK_STEPS),
-				yaw_deg: String(Math.round(((spec.yawStepRad ?? 0) * 180) / Math.PI)),
-				rt_deg: String(Math.round(((spec.rt?.stepRad ?? 0) * 180) / Math.PI)),
-				arms: armNames.join(", "),
-				proprio_note: plugin("proprioception") ? ", the gripper's height and width, blocked moves" : "",
-				mem_note: plugin("mem_text") ? ", the recent moves (newest first)" : "",
-				video_ref: brief ? renderBrief(brief, armNames) : "",
-			};
-			return p.replace(/\{\{(\w+)\}\}/g, (m, k: string) => vars[k] ?? m).trim();
-		},
+				coarseM: coarse(),
+				highM: high,
+			}),
 	};
 }

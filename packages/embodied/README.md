@@ -156,7 +156,10 @@ Shared modules:
   is idle or taken over (`GET /primitives`, `POST /primitive`; the robot's gates apply, one robot call
   at a time, recorded in the session), a real 1-token model check (`POST /llm-check`), and downloads
   (`GET /download/session?format=jsonl|html`, pi's `/export`; `GET /downloads`,
-  `GET /download/video/<session>/<file>.mp4`). `/gumi-replay <run>` replays a GUMI recording as operator steps (asks first).
+  `GET /download/video/<session>/<file>.mp4`). Every request's Host header must name this machine
+  (DNS-rebinding defense; `--dashboard-allowed-hosts` adds names); off loopback (`--dashboard-host`)
+  every request also needs the token in the printed URL (`--dashboard-token`, else a random one).
+  `/gumi-replay <run>` replays a GUMI recording as operator steps (asks first).
 - Operator CLIs in `services/` (hardware, unverified on a rig): `robots.dual_franka.manual_call`
   (one facade call, dry-run by default), `robots.franka.capture` (`z-floor`, `pose`),
   `robots.piper.capture_z_floor`, `robots/piper/ros_launch.sh` (`can`, `arms`, `cameras`), and

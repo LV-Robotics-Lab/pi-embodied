@@ -10,14 +10,14 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import dashboard, { MANUAL_ENTRY } from "../src/dashboard/index.ts";
+import dashboard, { checkAccess, dashboardAccess, MANUAL_ENTRY } from "../src/dashboard/index.ts";
 import { defineRobot } from "../src/robot.ts";
 import { NOTE_EVENT, VIDEO_DIR_EVENT, type VideoNote } from "../src/video.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
 /** A stub pi with a toy robot (one `move` tool) and the dashboard, run like pi's runner. */
-function rig(o: { idle?: boolean } = {}) {
+function rig(o: { idle?: boolean; flags?: Record<string, unknown> } = {}) {
 	const handlers = new Map<string, Handler[]>();
 	const listeners = new Map<string, ((data: unknown) => void)[]>();
 	const flags: Record<string, unknown> = {};
@@ -39,7 +39,7 @@ function rig(o: { idle?: boolean } = {}) {
 	const pi = {
 		on: (name: string, fn: Handler) => handlers.set(name, [...(handlers.get(name) ?? []), fn]),
 		registerFlag: (name: string, f: { default?: unknown }) => {
-			flags[name] = f.default;
+			flags[name] = o.flags && name in o.flags ? o.flags[name] : f.default;
 		},
 		getFlag: (name: string) => flags[name],
 		registerTool: (t: any) => tools.set(t.name, t),
@@ -424,6 +424,51 @@ test("a manual call is a session entry on the timeline, and never overlaps an ag
 		await first;
 		assert.equal((await late).status, 200);
 		assert.deepEqual(r.trace, ["start 0.04", "end 0.04", "start 0.05", "end 0.05"]);
+	} finally {
+		await r.quit();
+	}
+});
+
+test("the dashboard checks the Host header, and off loopback every request needs its token", async () => {
+	const local = dashboardAccess("127.0.0.1", "");
+	const at = (host: string, extra: Record<string, string> = {}, path = "/") =>
+		checkAccess(local, { host, ...extra }, new URL(path, "http://dashboard"));
+	assert.equal(local.token, undefined);
+	assert.deepEqual(at("127.0.0.1:8770"), {});
+	assert.deepEqual(at("localhost:18770"), {});
+	assert.deepEqual(at("[::1]:8770"), {});
+	// A page on another domain rebinding its DNS to 127.0.0.1 still sends its own name.
+	assert.equal(at("evil.example:8770").refused?.[0], 421);
+	assert.equal(at("10.0.0.5:8770").refused?.[0], 421);
+
+	const lan = dashboardAccess("0.0.0.0", "", ["rig.tailnet.ts.net"]);
+	assert.match(String(lan.token), /^[0-9a-f]{32}$/);
+	const t = lan.token as string;
+	const req = (host: string, headers: Record<string, string> = {}, path = "/") =>
+		checkAccess(lan, { host, ...headers }, new URL(path, "http://dashboard"));
+	assert.equal(req("evil.example").refused?.[0], 421);
+	assert.equal(req("10.0.0.5:8770").refused?.[0], 401);
+	assert.equal(req("rig.tailnet.ts.net:8770").refused?.[0], 401);
+	assert.match(
+		String(req("10.0.0.5:8770", {}, `/?token=${t}`).setCookie),
+		new RegExp(`^pi_dashboard_token=${t}; HttpOnly; SameSite=Strict`),
+	);
+	assert.deepEqual(req("10.0.0.5", { cookie: `a=1; pi_dashboard_token=${t}` }), {});
+	assert.deepEqual(req("10.0.0.5", { authorization: `Bearer ${t}` }), {});
+	assert.equal(req("10.0.0.5", { cookie: "pi_dashboard_token=wrong" }).refused?.[0], 401);
+	assert.equal(req("10.0.0.5", {}, "/?token=wrong").refused?.[0], 401);
+
+	// End to end, bound off loopback with a given token: the printed URL carries it.
+	const r = rig({ flags: { "dashboard-host": "0.0.0.0", "dashboard-token": "t0k3n" } });
+	const url = await r.start();
+	try {
+		assert.match(url, /\/\?token=t0k3n$/);
+		const base = `http://127.0.0.1:${new URL(url).port}/`;
+		assert.equal((await call(`${base}primitives`)).status, 401);
+		const first = await call(`${base}primitives?token=t0k3n`);
+		assert.equal(first.status, 200);
+		assert.match(String(first.headers["set-cookie"]), /pi_dashboard_token=t0k3n/);
+		assert.equal((await post(`${base}message`, { text: "x" })).status, 401);
 	} finally {
 		await r.quit();
 	}

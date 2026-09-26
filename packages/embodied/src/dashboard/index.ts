@@ -3,6 +3,13 @@
  *
  *   pi -e packages/embodied/src/libero -e packages/embodied/src/dashboard --dashboard \
  *     [--dashboard-host 0.0.0.0] [--dashboard-port 8765] [--dashboard-language zh-cn]
+ *     [--dashboard-token T] [--dashboard-allowed-hosts name,...]
+ *
+ * Access: every request's Host header must name this machine (loopback names; off loopback also its
+ * hostname, the bound address, IP literals and --dashboard-allowed-hosts), which a DNS-rebinding page
+ * cannot fake. Off loopback every request also needs the token (--dashboard-token, else a random one):
+ * the printed URL carries it as ?token=, which sets an HttpOnly cookie for the page's later requests;
+ * `Authorization: Bearer <token>` works for scripts.
  *
  * One static page served by node:http follows pi's own events over Server-Sent Events:
  * streamed thinking and text, tool calls with their arguments and results, the camera
@@ -41,8 +48,10 @@
  * process-wide object: a promise in a `globalThis` slot, re-attached to each new runtime.
  */
 
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createReadStream, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { isIP } from "node:net";
 import { hostname, tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { inflateSync } from "node:zlib";
@@ -855,12 +864,67 @@ function createHub(server: Server, url: string, page: string, liveFps: number) {
 	return hub;
 }
 
-function startHub(host: string, port: number, language: string, liveFps: number): Promise<Hub> {
+const LOOPBACK = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
+const TOKEN_COOKIE = "pi_dashboard_token";
+
+/** Who may reach the dashboard: the names a Host header may carry, and the token off loopback. */
+export type Access = { loopback: boolean; hosts: Set<string>; token: string | undefined };
+
+/**
+ * The access rules for a dashboard bound to `host`. Every request's Host header must name the machine
+ * (loopback names; off loopback also its hostname, the bound address, any IP literal and
+ * `allowed`): a page on another domain that rebinds its DNS to this address still sends its own
+ * name. Off loopback every request also needs the token (`token`, else a random one).
+ */
+export function dashboardAccess(host: string, token: string, allowed: readonly string[] = []): Access {
+	const loopback = LOOPBACK.has(host);
+	const hosts = new Set<string>(LOOPBACK);
+	if (!loopback) {
+		const name = hostname().toLowerCase();
+		for (const h of [name, name.split(".")[0], host, ...allowed]) if (h) hosts.add(h.toLowerCase());
+	}
+	return { loopback, hosts, token: loopback ? token || undefined : token || randomBytes(16).toString("hex") };
+}
+
+const sameToken = (a: string, b: string) => a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
+
+/**
+ * Why a request is refused ([status, message]), else undefined; `setCookie` when it carried the
+ * token in `?token=` (the printed URL), so the page's later requests carry it as a cookie.
+ */
+export function checkAccess(
+	a: Access,
+	headers: IncomingMessage["headers"],
+	url: URL,
+): { refused?: [number, string]; setCookie?: string } {
+	const raw = String(headers.host ?? "").toLowerCase();
+	const name = raw.startsWith("[") ? raw.slice(0, raw.indexOf("]") + 1) : raw.replace(/:\d+$/, "");
+	const ipLiteral = !a.loopback && (isIP(name) !== 0 || isIP(name.replace(/^\[|\]$/g, "")) !== 0);
+	if (!a.hosts.has(name) && !ipLiteral)
+		return { refused: [421, `unexpected Host header "${raw}" (--dashboard-allowed-hosts adds a name)`] };
+	if (!a.token) return {};
+	const query = url.searchParams.get("token") ?? "";
+	const cookie = /(?:^|;\s*)pi_dashboard_token=([^;]+)/.exec(String(headers.cookie ?? ""))?.[1] ?? "";
+	const bearer = /^Bearer (.+)$/.exec(String(headers.authorization ?? ""))?.[1] ?? "";
+	if (query && sameToken(query, a.token))
+		return { setCookie: `${TOKEN_COOKIE}=${a.token}; HttpOnly; SameSite=Strict; Path=/` };
+	if ((cookie && sameToken(cookie, a.token)) || (bearer && sameToken(bearer, a.token))) return {};
+	return { refused: [401, "this dashboard needs its token: open the URL pi printed (?token=...)"] };
+}
+
+function startHub(host: string, port: number, language: string, liveFps: number, access: Access): Promise<Hub> {
 	const lang = language === "zh-cn" ? "zh-cn" : "en";
 	const page = readFileSync(new URL("./page.html", import.meta.url), "utf8").replace("__LANG__", lang);
 	return new Promise((resolve, reject) => {
 		let hub: Hub | undefined;
 		const server = createServer((req, res) => {
+			const { refused, setCookie } = checkAccess(access, req.headers, new URL(req.url ?? "/", "http://dashboard"));
+			if (refused) {
+				res.writeHead(refused[0], { "Content-Type": "application/json" });
+				res.end(JSON.stringify({ error: refused[1] }));
+				return;
+			}
+			if (setCookie) res.setHeader("Set-Cookie", setCookie);
 			hub?.handle(req, res).catch((err) => {
 				if (!res.headersSent) res.writeHead(500, { "Content-Type": "application/json" });
 				res.end(JSON.stringify({ error: String(err) }));
@@ -870,7 +934,8 @@ function startHub(host: string, port: number, language: string, liveFps: number)
 		server.listen(port, host, () => {
 			const { port: bound } = server.address() as { port: number };
 			const shown = host === "0.0.0.0" || host === "::" ? hostname() : host.includes(":") ? `[${host}]` : host;
-			hub = createHub(server, `http://${shown}:${bound}/`, page, liveFps);
+			const query = access.token ? `?token=${access.token}` : "";
+			hub = createHub(server, `http://${shown}:${bound}/${query}`, page, liveFps);
 			server.unref();
 			resolve(hub);
 		});
@@ -879,7 +944,21 @@ function startHub(host: string, port: number, language: string, liveFps: number)
 
 export default function dashboard(pi: ExtensionAPI) {
 	pi.registerFlag("dashboard", { type: "boolean", default: false, description: "Serve the live dashboard" });
-	pi.registerFlag("dashboard-host", { type: "string", default: "127.0.0.1", description: "Dashboard bind address" });
+	pi.registerFlag("dashboard-host", {
+		type: "string",
+		default: "127.0.0.1",
+		description: "Dashboard bind address (off loopback every request needs the dashboard's token)",
+	});
+	pi.registerFlag("dashboard-token", {
+		type: "string",
+		default: "",
+		description: "Dashboard access token off loopback (default: a random one, in the printed URL)",
+	});
+	pi.registerFlag("dashboard-allowed-hosts", {
+		type: "string",
+		default: "",
+		description: "Extra names the Host header may carry, comma-separated (e.g. a tailnet name)",
+	});
 	pi.registerFlag("dashboard-port", { type: "string", default: "0", description: "Dashboard port (0 = any free)" });
 	pi.registerFlag("dashboard-language", { type: "string", default: "en", description: "Dashboard UI: en | zh-cn" });
 	pi.registerFlag("dashboard-live-fps", {
@@ -928,6 +1007,14 @@ export default function dashboard(pi: ExtensionAPI) {
 			Number(pi.getFlag("dashboard-port")),
 			String(pi.getFlag("dashboard-language")),
 			Math.min(30, Math.max(0.2, Number(pi.getFlag("dashboard-live-fps")) || 5)),
+			dashboardAccess(
+				String(pi.getFlag("dashboard-host")),
+				String(pi.getFlag("dashboard-token") ?? ""),
+				String(pi.getFlag("dashboard-allowed-hosts") ?? "")
+					.split(",")
+					.map((h) => h.trim())
+					.filter(Boolean),
+			),
 		);
 		hub = await slot[HUB];
 		hub.attach(pi, ctx, status, teleop);

@@ -16,8 +16,10 @@
 
 One 7-D action per call from the agentview only (OpenVLA has no wrist camera
 or proprioception): the frame (already rotated 180 degrees by RLinf's LiberoEnv,
-like OpenVLA's LIBERO evaluation does) is JPEG round-tripped and Lanczos-resized to 224 like its ``resize_image``, prompted
-with ``In: What action should the robot take to {task}?\\nOut:`` and decoded
+like OpenVLA's LIBERO evaluation does) is JPEG round-tripped and Lanczos-resized to 224 like its
+``resize_image``, center-cropped to 90% of its area and resized back like its ``crop_and_resize``
+(the published fine-tunes were evaluated with ``center_crop=True``; ``--no-center-crop`` skips
+it), prompted with ``In: What action should the robot take to {task}?\\nOut:`` and decoded
 greedily; the gripper is binarised and inverted as in its LIBERO evaluation.
 
 The checkpoint is a published LIBERO fine-tune, pinned by commit hash in
@@ -40,6 +42,7 @@ from pi_embodied_services.components.vla_adapter_base import (
     Frame,
     add_server_args,
     apply_cuda_device,
+    center_crop_resize,
     libero_gripper,
     resize_jpeg_lanczos,
     snapshot,
@@ -68,6 +71,8 @@ OPENVLA_CHECKPOINTS: dict[str, tuple[str, str]] = {
     ),
 }
 IMAGE_SIZE = 224
+#: OpenVLA's LIBERO evaluation crops the centered 90% of the image area (``center_crop=True``).
+CROP_SCALE = 0.9
 
 Policy = Callable[[np.ndarray, str], np.ndarray]
 
@@ -84,12 +89,23 @@ class OpenVLAFacade(ChunkVLAFacade):
     horizon = 1
     uses_wrist = False
 
-    def __init__(self, *, policy: Policy, model: str, revision: str | None):
+    def __init__(
+        self,
+        *,
+        policy: Policy,
+        model: str,
+        revision: str | None,
+        suite: str | None = None,
+        center_crop: bool = True,
+    ):
         self._policy = policy
-        super().__init__(model=model, revision=revision)
+        self._center_crop = center_crop
+        super().__init__(model=model, revision=revision, suite=suite)
 
     def _act(self, frame: Frame) -> np.ndarray:
         image = resize_jpeg_lanczos(frame.main, IMAGE_SIZE)
+        if self._center_crop:
+            image = center_crop_resize(image, CROP_SCALE)
         return libero_gripper(
             np.asarray(self._policy(image, frame.instruction), np.float32)
         )
@@ -175,6 +191,12 @@ def main() -> None:
         help="norm_stats key for action denormalisation (default: the checkpoint's only key)",
     )
     p.add_argument(
+        "--center-crop",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="the 0.9 center crop of OpenVLA's LIBERO evaluation (the checkpoints were evaluated with it)",
+    )
+    p.add_argument(
         "--attn", default="sdpa", help="attention implementation (sdpa | eager)"
     )
     args = p.parse_args()
@@ -183,12 +205,20 @@ def main() -> None:
     repo, pin = OPENVLA_CHECKPOINTS[args.suite]
     model = args.model_path or repo
     revision = args.revision or (pin if model == repo else None)
+    # A custom checkpoint's suite is unknown: only the published fine-tunes report theirs.
+    suite = args.suite if model == repo else None
     t0 = time.time()
     path = snapshot(model, revision)
     logger.info("loading OpenVLA from %s (revision=%s) ...", path, revision)
     policy, unnorm_key = load_policy(path, args.unnorm_key, args.attn)
     logger.info("model ready in %.1fs (unnorm_key=%s)", time.time() - t0, unnorm_key)
-    OpenVLAFacade(policy=policy, model=model, revision=revision).serve(
+    OpenVLAFacade(
+        policy=policy,
+        model=model,
+        revision=revision,
+        suite=suite,
+        center_crop=args.center_crop,
+    ).serve(
         transport=args.transport,
         host=args.host,
         port=args.port,

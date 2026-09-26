@@ -21,7 +21,11 @@ import pytest
 
 from pi_embodied_services.components.gr00t_server import ACTION_KEYS, Gr00tFacade
 from pi_embodied_services.components.openvla_oft_server import OpenVLAOFTFacade
-from pi_embodied_services.components.openvla_server import OpenVLAFacade, prompt_for
+from pi_embodied_services.components.openvla_server import (
+    CROP_SCALE,
+    OpenVLAFacade,
+    prompt_for,
+)
 from pi_embodied_services.components.vla_adapter_base import (
     center_crop_resize,
     frame_of,
@@ -99,6 +103,7 @@ def test_predict_shape_seed_and_framework_methods(service, make, horizon):
         horizon,
         7,
     )
+    assert info["suite"] is None, "a custom checkpoint's suite is unknown"
     assert call(vla, "vla.reset") == {"ok": True}
 
     a = call(vla, "vla.predict", obs(), {"mode": "eval", "seed": 7})
@@ -181,9 +186,10 @@ def test_resizes():
 # ---- per-model wiring -----------------------------------------------------------------------
 
 
-def test_openvla_sees_a_224_frame_and_the_prompt_is_openvlas():
+def test_openvla_sees_a_224_center_cropped_frame_and_the_prompt_is_openvlas():
     pol = Sampler(1)
-    OpenVLAFacade(policy=pol, model="m", revision=None).predict(obs(), None)
+    o = obs()
+    OpenVLAFacade(policy=pol, model="m", revision=None).predict(o, None)
     image, instruction = pol.seen[-1]
     assert image.shape == (224, 224, 3) and image.dtype == np.uint8
     assert instruction == "Pick up the black bowl"
@@ -191,6 +197,24 @@ def test_openvla_sees_a_224_frame_and_the_prompt_is_openvlas():
         prompt_for(instruction)
         == "In: What action should the robot take to pick up the black bowl?\nOut:"
     )
+    # The LIBERO fine-tunes were evaluated with center_crop=True: the 224 resize, then the 0.9
+    # area center crop resized back (crop_and_resize), in that order.
+    resized = resize_jpeg_lanczos(o["main_images"][0], 224)
+    assert np.array_equal(image, center_crop_resize(resized, CROP_SCALE))
+    assert not np.array_equal(image, resized)
+    plain = Sampler(1)
+    OpenVLAFacade(policy=plain, model="m", revision=None, center_crop=False).predict(
+        o, None
+    )
+    assert np.array_equal(plain.seen[-1][0], resized), (
+        "--no-center-crop: the resize only"
+    )
+
+
+def test_openvla_reports_the_published_checkpoints_suite():
+    vla = OpenVLAFacade(policy=Sampler(1), model="m", revision="r", suite="libero_10")
+    info = call(vla, "vla.info")
+    assert (info["suite"], info["model"], info["revision"]) == ("libero_10", "m", "r")
 
 
 def test_openvla_oft_passes_the_env_frames_state_and_needs_the_wrist():

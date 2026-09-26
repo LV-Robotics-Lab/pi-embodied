@@ -1,10 +1,20 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import libero from "../src/libero/index.ts";
 import { toolSections } from "../src/robot.ts";
-import { PICK_PARAMETERS, pickTracker, VLA_ADAPTERS } from "../src/vla-adapters.ts";
+import { RpcClient } from "../src/rpc.ts";
+import {
+	PICK_PARAMETERS,
+	pickTracker,
+	suiteMismatch,
+	VLA_ADAPTERS,
+	vlaIdentity,
+	vlaInfo,
+} from "../src/vla-adapters.ts";
 
 type Tool = { name: string; description: string; parameters: unknown };
 
@@ -76,4 +86,52 @@ test("the pick heuristics: descend, lift with a partly closed gripper", () => {
 	const empty = pickTracker(0.3, 0.08, { prompt: "x", gripper_open_thresh: 0.01 });
 	empty.update(0.15, 0.0);
 	assert.equal(empty.update(0.25, 0.0), false);
+});
+
+test("a checkpoint fine-tuned on another suite is refused; libero_all and unknown suites are trusted", () => {
+	const oft = { service: "openvla-oft", model: "moojink/x", revision: "r", suite: "libero_spatial" };
+	assert.equal(suiteMismatch(oft, "libero_spatial"), undefined);
+	assert.match(
+		suiteMismatch(oft, "libero_10")!,
+		/moojink\/x@r is the libero_spatial fine-tune, but this episode is libero_10/,
+	);
+	assert.match(suiteMismatch(oft, "libero_10")!, /--suite libero_10/);
+	assert.equal(suiteMismatch({ ...oft, suite: "libero_all" }, "libero_goal"), undefined);
+	assert.equal(suiteMismatch({ ...oft, suite: null }, "libero_goal"), undefined, "a custom --model-path");
+	assert.equal(suiteMismatch({ service: "pi05" }, "libero_goal"), undefined, "Pi0.5 has no vla.info");
+	assert.equal(vlaIdentity(oft), "openvla-oft moojink/x@r");
+	assert.equal(vlaIdentity({ service: "pi05" }), "pi05");
+});
+
+test("vlaInfo reads healthz and vla.info; a server without vla.info is its healthz name alone", async (t) => {
+	const serve = (info: Record<string, unknown> | undefined) => {
+		const server = createServer((req, res) => {
+			let body = "";
+			req.on("data", (c) => {
+				body += c;
+			});
+			req.on("end", () => {
+				const { method } = JSON.parse(body);
+				if (method === "healthz")
+					res.end(JSON.stringify({ ok: true, result: { status: "ok", service: "openvla" } }));
+				else if (method === "vla.info" && info) res.end(JSON.stringify({ ok: true, result: info }));
+				else res.end(JSON.stringify({ ok: false, error: `unknown method ${method}` }));
+			});
+		});
+		return new Promise<string>((r) =>
+			server.listen(0, "127.0.0.1", () => {
+				t.after(() => {
+					server.closeAllConnections();
+					server.close();
+				});
+				r(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
+			}),
+		);
+	};
+	const adapter = await vlaInfo(
+		new RpcClient(await serve({ model: "openvla/x", revision: "abc", suite: "libero_10", horizon: 1 })),
+	);
+	assert.deepEqual(adapter, { service: "openvla", model: "openvla/x", revision: "abc", suite: "libero_10" });
+	const bare = await vlaInfo(new RpcClient(await serve(undefined)));
+	assert.deepEqual(bare, { service: "openvla" });
 });

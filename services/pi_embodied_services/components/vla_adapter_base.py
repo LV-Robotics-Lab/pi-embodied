@@ -100,7 +100,7 @@ def resize_jpeg_lanczos(img: np.ndarray, size: int) -> np.ndarray:
 
 
 def center_crop_resize(img: np.ndarray, crop_scale: float) -> np.ndarray:
-    """OpenVLA-OFT's ``crop_and_resize``: keep the centered ``sqrt(crop_scale)`` fraction of each side,
+    """OpenVLA's (and OpenVLA-OFT's) ``crop_and_resize``: keep the centered ``sqrt(crop_scale)`` fraction of each side,
     then resize back to the input size with bilinear interpolation (its
     ``tf.image.crop_and_resize`` default)."""
     from PIL import Image
@@ -143,16 +143,21 @@ class ChunkVLAFacade(BaseVLAFacade):
 
     - ``vla.predict(obs, options)`` -> float32 [1, horizon, 7]
     - ``vla.reset()`` -> ``{"ok": true}`` (``_reset`` for models with per-episode state)
-    - ``vla.info()`` -> ``{"service", "model", "revision", "horizon", "action_dim", "wrist"}``
+    - ``vla.info()`` -> ``{"service", "model", "revision", "suite", "horizon", "action_dim", "wrist"}``
+
+    ``suite`` is the LIBERO suite the checkpoint was fine-tuned on (a published fine-tune's), or
+    None when unknown (a custom ``--model-path``); the robot refuses a grasp tool whose suite is
+    not the episode's.
     """
 
     horizon: int = 1
     #: Whether the model consumes the wrist camera (info for the robot's prompt and result).
     uses_wrist: bool = False
 
-    def __init__(self, *, model: str, revision: str | None):
+    def __init__(self, *, model: str, revision: str | None, suite: str | None = None):
         self._model_id = model
         self._revision = revision
+        self._suite = suite
         super().__init__()
 
     def _register_rpc(self):
@@ -165,6 +170,7 @@ class ChunkVLAFacade(BaseVLAFacade):
             "service": self.service_name,
             "model": self._model_id,
             "revision": self._revision,
+            "suite": self._suite,
             "horizon": self.horizon,
             "action_dim": ACTION_DIM,
             "wrist": self.uses_wrist,

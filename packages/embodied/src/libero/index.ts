@@ -35,8 +35,10 @@ import {
 	type PickParams,
 	pickDescription,
 	pickTracker,
+	suiteMismatch,
 	VLA_ADAPTERS,
 	vlaIdentity,
+	vlaInfo,
 } from "../vla-adapters.ts";
 import { vlaSeeds } from "../vla-seed.ts";
 import { liberoFlash } from "./flash.ts";
@@ -413,10 +415,17 @@ export default function libero(pi: ExtensionAPI) {
 
 	/**
 	 * One VLA forward pass (Pi0.5 by default, or a mounted adapter) with `prompt` as the instruction,
-	 * executed as one action chunk; returns its seed. The first call of a tool records which VLA answered.
+	 * executed as one action chunk; returns its seed. The first call of a tool records which VLA answered,
+	 * and refuses an adapter whose checkpoint is another suite's fine-tune (it stays unrecorded, so
+	 * every call refuses until the right server is up).
 	 */
 	async function vlaChunk(prompt: string, client = vla, toolName = "pi0") {
-		if (!(toolName in vlaUsed)) vlaUsed[toolName] = await vlaIdentity(client).catch(() => "unknown");
+		if (!(toolName in vlaUsed)) {
+			const info = await vlaInfo(client).catch(() => undefined);
+			const why = info && suiteMismatch(info, robot.task.suite);
+			if (why) throw new Error(why);
+			vlaUsed[toolName] = info ? vlaIdentity(info) : "unknown";
+		}
 		const wire = {
 			main_images: obs.main_images.batched(),
 			wrist_images: obs.wrist_images ? obs.wrist_images.batched() : null,

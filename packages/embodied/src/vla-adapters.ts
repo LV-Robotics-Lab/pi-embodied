@@ -77,18 +77,35 @@ export function pickTracker(startZ: number, startGrip: number, p: PickParams) {
 	};
 }
 
+/** What a VLA server says of itself: its healthz name and, for the adapters, `vla.info`. */
+export type VlaInfo = { service: string; model?: string; revision?: string | null; suite?: string | null };
+
 /**
- * Which VLA answered on `client`, for the episode's `robot_result`: the server's healthz name and,
- * for the adapters, `model@revision` from `vla.info`. Pi0.5 and RLDX have no `vla.info`; that error is
- * the identity (the healthz name alone).
+ * Which VLA answers on `client`: the server's healthz name and, for the adapters, `vla.info`
+ * (`model`, `revision`, the LIBERO `suite` of a published fine-tune). Pi0.5 and RLDX have no
+ * `vla.info`; that error leaves the healthz name alone.
  */
-export async function vlaIdentity(client: RpcClient): Promise<string> {
+export async function vlaInfo(client: RpcClient): Promise<VlaInfo> {
 	const health = await client.call<{ service?: string }>("healthz", {}, 10_000);
 	const service = health.service ?? "unknown";
 	try {
-		const info = await client.call<{ model?: string; revision?: string | null }>("vla.info", {}, 10_000);
-		return `${service} ${info.model ?? ""}${info.revision ? `@${info.revision}` : ""}`.trim();
+		const info = await client.call<Omit<VlaInfo, "service">>("vla.info", {}, 10_000);
+		return { service, model: info.model, revision: info.revision, suite: info.suite };
 	} catch {
-		return service;
+		return { service };
 	}
+}
+
+/** `info` for the episode's `robot_result`: the healthz name and `model@revision`. */
+export const vlaIdentity = (info: VlaInfo) =>
+	`${info.service} ${info.model ?? ""}${info.revision ? `@${info.revision}` : ""}`.trim();
+
+/**
+ * Why a VLA fine-tuned on one LIBERO suite must not run on `suite`: the adapters report the
+ * checkpoint's suite (`libero_all` covers every suite; a custom checkpoint reports none and is
+ * trusted). Undefined when the checkpoint fits.
+ */
+export function suiteMismatch(info: VlaInfo, suite: string): string | undefined {
+	if (!info.suite || info.suite === "libero_all" || info.suite === suite) return undefined;
+	return `${vlaIdentity(info)} is the ${info.suite} fine-tune, but this episode is ${suite}: start its server with --suite ${suite} (or --model-path) before using its grasp tool.`;
 }

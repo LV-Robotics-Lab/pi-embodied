@@ -16,7 +16,9 @@
 
 A camera yields :class:`Frame` objects: an RGB image, the metric depth aligned to it
 when the sensor has depth (``None`` otherwise), the wall-clock capture time and a
-monotonic capture time (``monotonic_s``) so a reader can tell how old a frame is.
+monotonic capture time (``monotonic_s``) so a reader can tell how old a frame is, and
+which clock those came from (``time_source``: the device's frame timestamp where the
+source has one, else the time the frame was dequeued; see :data:`TIME_SOURCES`).
 ``read`` returns the next frame the driver hands out, which for a buffered source
 may predate the call; ``read_fresh`` returns a frame captured after the call started.
 Its ``intrinsics()`` are the colour intrinsics in the RealSense layout (``fx, fy, ppx,
@@ -28,6 +30,7 @@ YAML's ``cameras.devices.<name>`` or a ``name=type:source`` flag) and opened wit
 
 from __future__ import annotations
 
+import math
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -59,16 +62,37 @@ DEVICE_KEYS = frozenset(
 )
 
 
+#: Where a frame's capture time comes from (``Frame.time_source``):
+#:
+#: ``device``      the sensor's own frame timestamp mapped to the host clock (RealSense
+#:                 ``global_time``: the device clock at the frame, translated by
+#:                 librealsense to host time); closest to the exposure.
+#: ``backend``     when the host driver received the frame, before any queue
+#:                 (RealSense ``system_time``; a V4L2 buffer timestamp, which the
+#:                 kernel takes at the start of the frame on ``CLOCK_MONOTONIC``).
+#: ``stream_pts``  an RTSP frame's presentation time, mapped to the host clock by the
+#:                 smallest arrival-minus-PTS offset seen since the stream opened (so
+#:                 frames that sat in a buffer show their extra delay; the network and
+#:                 decode latency of the least-delayed frame is not included).
+#: ``host``        when the driver handed the frame to us (the dequeue time); a frame
+#:                 that waited in a queue looks fresh. The fallback when the source
+#:                 reports none of the above.
+TIME_SOURCES = ("device", "backend", "stream_pts", "host")
+
+
 @dataclass(frozen=True)
 class Frame:
     """One capture: ``rgb`` uint8 [H, W, 3]; ``depth`` float32 [H, W] metres aligned to
-    ``rgb`` (0 = no return) or None for an RGB-only source; ``timestamp_s`` wall clock;
-    ``monotonic_s`` the capture time on ``time.monotonic`` (defaults to construction)."""
+    ``rgb`` (0 = no return) or None for an RGB-only source; ``timestamp_s`` wall clock
+    and ``monotonic_s`` (on ``time.monotonic``) of the capture, both from
+    ``time_source`` (see :data:`TIME_SOURCES`; ``monotonic_s`` defaults to
+    construction)."""
 
     rgb: np.ndarray
     depth: np.ndarray | None
     timestamp_s: float
     monotonic_s: float = field(default_factory=time.monotonic)
+    time_source: str = "host"
 
     @property
     def has_depth(self) -> bool:
@@ -77,6 +101,27 @@ class Frame:
     def age_s(self, now: float | None = None) -> float:
         """Seconds since the capture (``now`` on ``time.monotonic``)."""
         return float((time.monotonic() if now is None else now) - self.monotonic_s)
+
+
+def capture_times(
+    source_wall_s: float | None,
+    source: str,
+    *,
+    now_wall: float | None = None,
+    now_mono: float | None = None,
+    max_age_s: float = 60.0,
+) -> tuple[float, float, str]:
+    """``(timestamp_s, monotonic_s, time_source)`` of a capture whose source reported
+    the wall-clock time ``source_wall_s``; a missing, non-finite, future (beyond 50 ms
+    of clock jitter) or implausibly old (> ``max_age_s``) value falls back to now and
+    ``host``."""
+    wall = time.time() if now_wall is None else now_wall
+    mono = time.monotonic() if now_mono is None else now_mono
+    if source_wall_s is not None and math.isfinite(source_wall_s):
+        age = wall - float(source_wall_s)
+        if -0.05 <= age <= max_age_s:
+            return float(source_wall_s), mono - max(0.0, age), source
+    return wall, mono, "host"
 
 
 class Camera(ABC):
@@ -120,6 +165,21 @@ DISTORTION_MODELS = (
     "modified_brown_conrady",
     "inverse_brown_conrady",
 )
+#: Iterations of librealsense's inverse (``rs2_deproject_pixel_to_point``, v2.54.1
+#: src/rs.cpp: "10 iterations determined empirically").
+RS_DEPROJECT_ITERATIONS = 10
+
+
+def normalize_distortion_model(model: Any) -> str:
+    """The librealsense model name without the ``distortion.`` prefix.
+
+    ``str(rs.distortion.inverse_brown_conrady)`` is ``"distortion.inverse_brown_conrady"``;
+    calibration sample directories written before the name was normalized (and the
+    Franka driver's intrinsics) store that spelling, so it is accepted here."""
+    name = "none" if model is None else str(model).strip()
+    if name.startswith("distortion."):
+        name = name[len("distortion.") :]
+    return name or "none"
 
 
 def _distort(xy: np.ndarray, coeffs: np.ndarray, modified: bool) -> np.ndarray:
@@ -138,20 +198,47 @@ def _distort(xy: np.ndarray, coeffs: np.ndarray, modified: bool) -> np.ndarray:
     return np.stack([xd, yd], axis=1)
 
 
+def _rs_inverse_brown_conrady(xy: np.ndarray, coeffs: np.ndarray) -> np.ndarray:
+    """librealsense v2.54.1 ``rs2_deproject_pixel_to_point`` for
+    ``RS2_DISTORTION_INVERSE_BROWN_CONRADY``, line for line (src/rs.cpp): a fixed
+    point iteration that inverts the forward model ``rs2_project_point_to_pixel``
+    applies to this model (radial, then tangential on the radially distorted point).
+
+    librealsense 2.20 applied the polynomial once to the distorted point (the
+    coefficients were taken to undistort directly); for a D4xx colour stream that is
+    several pixels off near the image edge.
+    """
+    k1, k2, p1, p2, k3 = (float(c) for c in coeffs[:5])
+    xo, yo = xy[:, 0].copy(), xy[:, 1].copy()
+    x, y = xo.copy(), yo.copy()
+    for _ in range(RS_DEPROJECT_ITERATIONS):
+        r2 = x * x + y * y
+        icdist = 1.0 / (1.0 + ((k3 * r2 + k2) * r2 + k1) * r2)
+        xq = x / icdist
+        yq = y / icdist
+        delta_x = 2.0 * p1 * xq * yq + p2 * (r2 + 2.0 * xq * xq)
+        delta_y = 2.0 * p2 * xq * yq + p1 * (r2 + 2.0 * yq * yq)
+        x = (xo - delta_x) * icdist
+        y = (yo - delta_y) * icdist
+    return np.stack([x, y], axis=1)
+
+
 def undistort_normalized(
     xy: np.ndarray, model: str, coeffs: Any, iterations: int = 20
 ) -> np.ndarray:
     """Undistorted normalized image points of distorted ones ``[N, 2]`` under
     ``model``.
 
-    ``inverse_brown_conrady`` (RealSense colour streams) stores coefficients that
-    *undistort*: the polynomial is applied once to the distorted point. The forward
-    models (``brown_conrady``, ``modified_brown_conrady``) are inverted by fixed-point
-    iteration. Those coefficients must never be handed to ``cv2.solvePnP`` as-is when
-    the model is the inverse one, which is why callers undistort the points here and
-    solve with zero distortion.
+    ``inverse_brown_conrady`` (RealSense colour streams) is undistorted exactly as
+    librealsense 2.54.1 deprojects it (:func:`_rs_inverse_brown_conrady`, ten
+    fixed-point iterations), so a pinhole solve on the result agrees with the SDK's
+    own ``rs2_deproject_pixel_to_point``. The forward models (``brown_conrady``,
+    ``modified_brown_conrady``) are inverted by fixed-point iteration. Coefficients of
+    the inverse model must never be handed to ``cv2.solvePnP`` as-is, which is why
+    callers undistort the points here and solve with zero distortion.
     """
     pts = np.asarray(xy, dtype=np.float64).reshape(-1, 2)
+    model = normalize_distortion_model(model)
     if model not in DISTORTION_MODELS:
         raise ValueError(
             f"distortion model {model!r} is not supported (one of {DISTORTION_MODELS}); "
@@ -169,7 +256,7 @@ def undistort_normalized(
     if model == "none" or not np.any(c):
         return pts.copy()
     if model == "inverse_brown_conrady":
-        return _distort(pts, c, modified=False)
+        return _rs_inverse_brown_conrady(pts, c)
     modified = model == "modified_brown_conrady"
     und = pts.copy()
     for _ in range(iterations):
@@ -216,7 +303,7 @@ def intrinsics_from_config(
         raise ValueError("intrinsics.coeffs is [k1, k2, p1, p2, k3] (at most 5 values)")
     coeffs += [0.0] * (5 - len(coeffs))
     # Coefficients without a model are an OpenCV calibration (forward Brown-Conrady).
-    model = str(
+    model = normalize_distortion_model(
         value.get("distortion_model") or ("brown_conrady" if any(coeffs) else "none")
     )
     if model not in DISTORTION_MODELS:
@@ -345,10 +432,14 @@ def open_camera(
     from pi_embodied_services.components.cameras.webcam import RtspRGB, WebcamRGB
 
     intr = intrinsics_from_config(dev.get("intrinsics"), width, height)
+    timeout_s = float(d.get("read_timeout_s", 5.0))
     if kind == "webcam":
         return WebcamRGB(
-            dev["device"], width=width, height=height, fps=fps, intrinsics=intr
+            dev["device"],
+            width=width,
+            height=height,
+            fps=fps,
+            intrinsics=intr,
+            read_timeout_s=timeout_s,
         )
-    return RtspRGB(
-        str(dev["url"]), intrinsics=intr, timeout_s=float(d.get("read_timeout_s", 5.0))
-    )
+    return RtspRGB(str(dev["url"]), intrinsics=intr, timeout_s=timeout_s)

@@ -35,7 +35,7 @@ from typing import Any
 
 import numpy as np
 
-from pi_embodied_services.components.cameras.base import Camera, Frame
+from pi_embodied_services.components.cameras.base import Camera, Frame, capture_times
 from pi_embodied_services.utils.logging import get_logger
 
 logger = get_logger("cameras.realsense")
@@ -204,9 +204,32 @@ class RealSenseRGBD(Camera):
             "depth_aligned_to_color": self.has_depth,
         }
 
+    def _capture_times(self, color: Any) -> tuple[float, float, str]:
+        """The colour frame's capture time from the device, where librealsense
+        reports it on the host clock.
+
+        ``frame.get_timestamp()`` is in ms, in the frame's timestamp domain:
+        ``global_time`` (the default on D400/L515 with metadata: the device's frame
+        timestamp translated to host time by librealsense) and ``system_time`` (the
+        host time the USB backend received the frame, before the pipeline queue) are
+        wall-clock; ``hardware_clock`` is the device's free-running clock and cannot
+        be compared, so the dequeue time is used then (``host``).
+        """
+        rs = self._rs
+        try:
+            domain = color.get_frame_timestamp_domain()
+            stamp_s = float(color.get_timestamp()) / 1000.0
+        except Exception:
+            return capture_times(None, "host")
+        if domain == rs.timestamp_domain.global_time:
+            return capture_times(stamp_s, "device")
+        if domain == rs.timestamp_domain.system_time:
+            return capture_times(stamp_s, "backend")
+        return capture_times(None, "host")
+
     def _read_once(self) -> Frame:
         frames = self.pipeline.wait_for_frames(timeout_ms=self.read_timeout_ms)
-        captured = time.monotonic()
+        wall, captured, source = self._capture_times(frames.get_color_frame())
         if self.align is not None:
             frames = self.align.process(frames)
         color = frames.get_color_frame()
@@ -222,7 +245,11 @@ class RealSenseRGBD(Camera):
                 np.asanyarray(depth.get_data()).astype(np.float32) * self.depth_scale
             )
         return Frame(
-            rgb=rgb, depth=depth_m, timestamp_s=time.time(), monotonic_s=captured
+            rgb=rgb,
+            depth=depth_m,
+            timestamp_s=wall,
+            monotonic_s=captured,
+            time_source=source,
         )
 
     def read(self) -> Frame:

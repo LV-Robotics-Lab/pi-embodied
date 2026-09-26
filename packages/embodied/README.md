@@ -207,8 +207,8 @@ in a new session. Boolean flags take the next word as their value; write them as
   `--eval-seed` and averages RoboDojo's score. One env per process: RoboDojo's heterogeneous parallel
   simulation (several envs and tasks in one Kit process, up to 10 per GPU in its config) is not used,
   so every episode pays its own Kit start (about 10 s warm, minutes cold) and cuRobo warmup (20-50 s),
-  and holds its own Kit, renderer and cuRobo memory (about 10-12 GB of GPU memory with the three
-  640x480 cameras and depth). Parallelism is episodes as processes (`eval-parallel.sh -j`, which takes
+  and holds its own Kit, renderer and cuRobo memory (8.6 GB of GPU memory measured on stack_bowls
+  with the three 640x480 cameras and depth). Parallelism is episodes as processes (`eval-parallel.sh -j`, which takes
   `LOCK` for RoboDojo like RoboLab): budget that memory per worker. The garment and fluid tasks
   (`fold_clothes*`, `pour_*`) use Isaac Sim's cloth and particle APIs, the riskiest part of the port.
 - Metaworld: the services' `[metaworld]` extra (Python 3.11, metaworld 3.1.1, no assets); the 50 MT50

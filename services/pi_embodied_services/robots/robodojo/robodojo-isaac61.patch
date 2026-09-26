@@ -40,7 +40,7 @@ index 39fbec1..9c973db 100644
              num_tiles_x = self.tiled_resolution[0] // width
              wp.launch(
 diff --git a/env/environment/base_env.py b/env/environment/base_env.py
-index bcde808..5044eda 100644
+index bcde808..7452cea 100644
 --- a/env/environment/base_env.py
 +++ b/env/environment/base_env.py
 @@ -7,7 +7,7 @@ from isaaclab.scene import InteractiveSceneCfg
@@ -95,8 +95,8 @@ index bcde808..5044eda 100644
 +    "enable_shadows": "/rtx/shadows/enabled",
 +    "enable_ambient_occlusion": "/rtx/ambientOcclusion/enabled",
 +}
- 
 +
+ 
 +def _apply_render_settings(render_config, frequency_settings):
 +    import carb.settings
 +
@@ -167,6 +167,16 @@ index bcde808..5044eda 100644
  
      def close(self):
          try:
+@@ -209,6 +276,9 @@ class BaseEnv(gym.Env):
+         except Exception as e:
+             print("[restart] timeline stop/set failed:", e)
+ 
++        from utils.sim_view import forget_view
++
++        forget_view()
+         if self.sim is not None:
+             self.sim.close()
+             self.sim = None
 diff --git a/env/environment/isaac/direct_rl_env.py b/env/environment/isaac/direct_rl_env.py
 index 3c13f7a..0d7abae 100644
 --- a/env/environment/isaac/direct_rl_env.py
@@ -454,10 +464,10 @@ index 0000000..a330835
 +    return UsdShade.Material(mtl_prim)
 diff --git a/utils/sim_view.py b/utils/sim_view.py
 new file mode 100644
-index 0000000..14e75c3
+index 0000000..decf87b
 --- /dev/null
 +++ b/utils/sim_view.py
-@@ -0,0 +1,48 @@
+@@ -0,0 +1,62 @@
 +_VIEW = {"stage_id": None, "view": None}
 +
 +
@@ -506,3 +516,17 @@ index 0000000..14e75c3
 +    SimulationManager.set_backend("torch")
 +    _VIEW.update(stage_id=stage_id, view=view)
 +    return view
++
++
++def forget_view():
++    """Drop the torch view when the simulation closes: the next stage gets a fresh one."""
++    from isaacsim.core.simulation_manager import SimulationManager
++
++    view = _VIEW["view"]
++    if view is not None and SimulationManager._physics_sim_view is view:
++        try:
++            view.invalidate()
++        except Exception:
++            pass
++        SimulationManager._physics_sim_view = None
++    _VIEW.update(stage_id=None, view=None)

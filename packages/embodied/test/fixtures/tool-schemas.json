@@ -818,20 +818,13 @@
 			},
 			{
 				"name": "plan_place",
-				"description": "Where to hold the grasped object so it comes to rest on a placement region (AnyPlace). Give the object and the region as text (segmented now) or as mask ids, and the grasp id the object is held with; all three must come from the same observation (plan before moving, or re-segment after). Returns place poses with ids (p1) that motion tools take like grasp ids.",
+				"description": "Where to hold the grasped object so it comes to rest on a placement region (AnyPlace). Give the region as text (segmented now) or as a mask id, and the grasp id the object is held with; the object is the mask that grasp was planned on (or object_mask_id). Region and grasp must come from the same observation (plan before moving, or re-segment after). Returns place poses with ids (p1) that motion tools take like grasp ids.",
 				"parameters": {
 					"type": "object",
 					"required": [
 						"grasp_id"
 					],
 					"properties": {
-						"object": {
-							"type": "string",
-							"description": "The object being placed (SAM3 text), or object_mask_id"
-						},
-						"object_mask_id": {
-							"type": "string"
-						},
 						"region": {
 							"type": "string",
 							"description": "The surface it goes onto / into (SAM3 text), or region_mask_id"
@@ -842,6 +835,10 @@
 						"grasp_id": {
 							"type": "string",
 							"description": "The grasp (g id) the object is held with"
+						},
+						"object_mask_id": {
+							"type": "string",
+							"description": "The object's mask id; default the mask the grasp was planned on"
 						},
 						"camera": {
 							"type": "string",
@@ -1380,20 +1377,13 @@
 			},
 			{
 				"name": "plan_place",
-				"description": "Where to hold the grasped object so it comes to rest on a placement region (AnyPlace). Give the object and the region as text (segmented now) or as mask ids, and the grasp id the object is held with; all three must come from the same observation (plan before moving, or re-segment after). Returns place poses with ids (p1) that motion tools take like grasp ids.",
+				"description": "Where to hold the grasped object so it comes to rest on a placement region (AnyPlace). Give the region as text (segmented now) or as a mask id, and the grasp id the object is held with; the object is the mask that grasp was planned on (or object_mask_id). Region and grasp must come from the same observation (plan before moving, or re-segment after). Returns place poses with ids (p1) that motion tools take like grasp ids.",
 				"parameters": {
 					"type": "object",
 					"required": [
 						"grasp_id"
 					],
 					"properties": {
-						"object": {
-							"type": "string",
-							"description": "The object being placed (SAM3 text), or object_mask_id"
-						},
-						"object_mask_id": {
-							"type": "string"
-						},
 						"region": {
 							"type": "string",
 							"description": "The surface it goes onto / into (SAM3 text), or region_mask_id"
@@ -1404,6 +1394,10 @@
 						"grasp_id": {
 							"type": "string",
 							"description": "The grasp (g id) the object is held with"
+						},
+						"object_mask_id": {
+							"type": "string",
+							"description": "The object's mask id; default the mask the grasp was planned on"
 						},
 						"camera": {
 							"type": "string",
@@ -2126,20 +2120,13 @@
 			},
 			{
 				"name": "plan_place",
-				"description": "Where to hold the grasped object so it comes to rest on a placement region (AnyPlace). Give the object and the region as text (segmented now) or as mask ids, and the grasp id the object is held with; all three must come from the same observation (plan before moving, or re-segment after). Returns place poses with ids (p1) that motion tools take like grasp ids.",
+				"description": "Where to hold the grasped object so it comes to rest on a placement region (AnyPlace). Give the region as text (segmented now) or as a mask id, and the grasp id the object is held with; the object is the mask that grasp was planned on (or object_mask_id). Region and grasp must come from the same observation (plan before moving, or re-segment after). Returns place poses with ids (p1) that motion tools take like grasp ids.",
 				"parameters": {
 					"type": "object",
 					"required": [
 						"grasp_id"
 					],
 					"properties": {
-						"object": {
-							"type": "string",
-							"description": "The object being placed (SAM3 text), or object_mask_id"
-						},
-						"object_mask_id": {
-							"type": "string"
-						},
 						"region": {
 							"type": "string",
 							"description": "The surface it goes onto / into (SAM3 text), or region_mask_id"
@@ -2150,6 +2137,10 @@
 						"grasp_id": {
 							"type": "string",
 							"description": "The grasp (g id) the object is held with"
+						},
+						"object_mask_id": {
+							"type": "string",
+							"description": "The object's mask id; default the mask the grasp was planned on"
 						},
 						"camera": {
 							"type": "string",

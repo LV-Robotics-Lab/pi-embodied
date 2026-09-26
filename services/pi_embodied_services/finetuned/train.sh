@@ -5,21 +5,25 @@
 #     bash train.sh /root/autodl-tmp/runs/gumi/<session>/rollouts [more GUMI record dirs...]
 #   NAME=pick_cube_lerobot \
 #     bash train.sh --from-lerobot <LeRobot v3.0 dataset dir> [more dataset dirs...]
+#   NAME=blockpap_real2sim \
+#     bash train.sh --from-rollouts <dir of rollout_NNN> [more...]
 #
 # 1. packages/embodied/src/finetuned/prepare.ts: every single-arm GUMI run -> <DATA>/rollouts/<task>/rollout_NNN
 #    with the provider's own camera transform applied (training and inference pixels identical).
 #    --from-lerobot: services/pi_embodied_services/finetuned/lerobot_to_rollouts.py writes the same layout
 #    from the unified LeRobot datasets (flywheel CLI export-lerobot / export-gumi; successful episodes,
 #    --prompt $VERSION), the frames through the same transform (finetuned/transform.ts).
-# 2. Show-Harness train/data_preparation/rollouts_to_alpaca.py --version $VERSION (one Alpaca sample per
+#    --from-rollouts: directories already in that layout (one task each: rollout_NNN/ with metadata.json
+#    task_text), as robots/{maniskill,robolab}/real2sim*.py and merge_shards.py write them; linked in.
+# 2. Show-Harness's train/data_preparation/rollouts_to_alpaca.py --version $VERSION (one Alpaca sample per
 #    step, "<image><image>" + the lite prompt, plus a synthesized DONE per episode; prepare_dataset.sh's
 #    loop), then register_dataset.py into LLaMA-Factory's dataset_info.json.
 # 3. A LoRA config from train/configs/$BASE_CONFIG with dataset/output/model swapped in, and
 #    train/scripts/train.sh on GPU $GPU while holding $LOCK (STEP=prepare stops after step 2).
 # Then: LORA=$NAME=<DATA>/saves/<NAME>/<checkpoint> bash serve.sh, and pi --model finetuned/local --ft-model $NAME.
 #
-#   SH=        Show-Harness checkout (github.com/showlab/Show-Harness @137d571; train/ and prompts/ are
-#              what is read), default /root/autodl-tmp/refs/show-harness-137d571
+#   SH=        Show-Harness tree whose train/ and prompts/ are read, default ./showharness (the files of
+#              github.com/showlab/Show-Harness @137d571 this needs, vendored); a full checkout works too
 #   LF_VENV=/root/autodl-tmp/venvs/llamafactory   LF_ROOT=$LF_VENV/LlamaFactory: LLaMA-Factory and its
 #              venv, installed once by ./setup_llamafactory.sh (register_dataset.py writes LF_ROOT/data)
 #   NAME=      dataset / adapter name (required)       DATA=/root/autodl-tmp/data/finetuned/$NAME
@@ -33,7 +37,7 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PI="${PI:-$(cd "$HERE/../../.." && pwd)}"
-SH="${SH:-/root/autodl-tmp/refs/show-harness-137d571}"
+SH="${SH:-$HERE/showharness}"
 export LF_VENV="${LF_VENV:-/root/autodl-tmp/venvs/llamafactory}"
 export LF_ROOT="${LF_ROOT:-$LF_VENV/LlamaFactory}"
 NAME="${NAME:?NAME (dataset/adapter name) is required}"
@@ -44,12 +48,21 @@ MODEL_PATH="${MODEL_PATH:-/root/autodl-tmp/checkpoints/Qwen3.5-2B}"
 GPU="${GPU:-1}"
 LOCK="${LOCK-/root/autodl-tmp/locks/gpu1.lock}"
 PY="${PYTHON:-$(command -v python3 || echo /root/miniconda3/bin/python)}"
-FROM_LEROBOT=0
-[ "${1:-}" = --from-lerobot ] && { FROM_LEROBOT=1; shift; }
-[ $# -gt 0 ] || { echo "usage: NAME=... bash train.sh <gumi record dir>... | --from-lerobot <lerobot dataset dir>..." >&2; exit 2; }
+FROM=gumi
+case "${1:-}" in --from-lerobot) FROM=lerobot; shift ;; --from-rollouts) FROM=rollouts; shift ;; esac
+[ $# -gt 0 ] || { echo "usage: NAME=... bash train.sh <gumi record dir>... | --from-lerobot <lerobot dataset dir>... | --from-rollouts <rollout dir>..." >&2; exit 2; }
 export PATH=/root/autodl-tmp/tools/node/bin:$PATH
 
-if [ "$FROM_LEROBOT" = 1 ]; then
+if [ "$FROM" = rollouts ]; then
+  echo "[1/3] rollouts -> $DATA/rollouts"
+  rm -rf "$DATA/rollouts"
+  mkdir -p "$DATA/rollouts"
+  for d in "$@"; do
+    [ -f "$d/rollout_000/metadata.json" ] || { echo "$d: no rollout_000/metadata.json" >&2; exit 2; }
+    [ -e "$DATA/rollouts/$(basename "$d")" ] && { echo "two rollout dirs named $(basename "$d")" >&2; exit 2; }
+    ln -s "$(cd "$d" && pwd)" "$DATA/rollouts/$(basename "$d")"
+  done
+elif [ "$FROM" = lerobot ]; then
   echo "[1/3] LeRobot -> rollouts ($DATA/rollouts)"
   rm -rf "$DATA/rollouts"
   for ds in "$@"; do

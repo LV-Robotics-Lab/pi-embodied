@@ -1,0 +1,71 @@
+# Copyright 2026 The Show-Harness Authors. Licensed under the Apache License, Version 2.0.
+# Modified by pi-embodied: vendored from github.com/showlab/Show-Harness @137d571 (train/configs/qwen3_5_2b_lora.yaml), otherwise unchanged.
+# mvtoken LoRA template - Qwen3.5-2B (the default post-training backbone in the paper).
+# Copy, fill the three <FILL_ME> (dataset / output_dir / run_name), and it is a new run.
+#   CONFIG=train/configs/qwen3_5_2b_lora.yaml GPU=0 bash train/scripts/train.sh
+#
+
+### model
+model_name_or_path: Qwen/Qwen3.5-2B    # local weights: pass MODEL_PATH=/path/to/weights
+image_max_pixels: 65536    # 256x256, matches the stored rollout resolution
+trust_remote_code: true
+flash_attn: fa2
+
+# Fused CE: skips the [batch x seq x 150k-vocab] logits tensor, where the step time went.
+# Dispatches on top-level model_type: a silent no-op for internvl / gemma4.
+enable_liger_kernel: true
+
+### method
+stage: sft
+do_train: true
+finetuning_type: lora
+freeze_vision_tower: true            # language side only
+freeze_multi_modal_projector: false
+
+disable_gradient_checkpointing: true
+
+### LoRA
+lora_rank: 64
+lora_alpha: 128
+lora_dropout: 0.05
+lora_target: all
+
+### dataset
+# the name used by register_dataset.py (see LF's data/dataset_info.json)
+dataset: <FILL_ME>
+template: qwen3_5_nothink
+cutoff_len: 2048
+overwrite_cache: true      # LF's fingerprint only hashes path strings, so overwritten images go unnoticed
+preprocessing_num_workers: 16
+dataloader_num_workers: 8
+dataloader_persistent_workers: true
+dataloader_prefetch_factor: 4         # requires dataloader_num_workers > 0
+dataloader_pin_memory: true
+
+### output
+output_dir: saves/qwen3.5-2b/robot/<FILL_ME>    # relative -> train.sh pins it under train/
+logging_steps: 2
+save_steps: 200
+plot_loss: true
+overwrite_output_dir: true
+save_only_model: false
+report_to: wandb
+# wandb project/entity come from WANDB_PROJECT / WANDB_ENTITY, passed by train.sh.
+# Upstream has no wandb_entity yaml key, and `project` here is transformers' Trackio
+# field, not the wandb project.
+run_name: qwen3.5-2b-robot-<FILL_ME>
+
+### train
+# eff_bs 32 = steps of samples/32 x epochs. On 2 GPUs use 16 x 1 x 2 to keep it at 32.
+per_device_train_batch_size: 32
+gradient_accumulation_steps: 1
+learning_rate: 1.0e-4
+num_train_epochs: 30.0
+lr_scheduler_type: cosine
+warmup_ratio: 0.1
+bf16: true
+ddp_timeout: 180000000
+
+### distributed
+# One GPU: nothing for ZeRO to shard, so it is pure overhead. Multi-GPU, restore:
+# deepspeed: examples/deepspeed/ds_z2_config.json

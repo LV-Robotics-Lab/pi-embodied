@@ -518,7 +518,11 @@ def follow_track(args, backend, track: dict, writer: RolloutWriter) -> dict:
                     ep.go_z(backend.tcp_pos()[2] + RELEASE_RETREAT_M)
         settled = ep.settle_steps(SETTLE_STEPS)
         if settled is None and _moves(tcp[bounds[-2] :], args.step_m):
-            ep.chase(tcp[-1], tol=0.011)
+            # One corrective round, VERTICAL only: the demo parked above ITS release point,
+            # and chasing that pose in x/y after the follower released elsewhere drags the
+            # open hand sideways over the placed object (the episode then ends on MV_FWD).
+            t = backend.tcp_pos()
+            ep.chase(np.array([t[0], t[1], max(tcp[-1][2], t[2])]), tol=0.011)
             settled = ep.settle_steps(SETTLE_STEPS)
         success = settled is not None
     except EpisodeComplete:
@@ -565,6 +569,9 @@ def follow(args, backend) -> tuple[int, int]:
             continue
         writer = RolloutWriter(out / f"rollout_{kept:03d}")
         result = follow_track(args, backend, track, writer)
+        last = writer.tokens[-1] if writer.tokens else None
+        if result["success"] and last != "MV_UP":  # the oracle's ending rule
+            result = {**result, "success": False, "reason": f"bad_ending:{last}"}
         meta = {
             "source": f"follow_{args.task}",
             "method": "closed_loop_follower",

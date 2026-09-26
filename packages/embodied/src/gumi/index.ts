@@ -1055,15 +1055,15 @@ export function gumi(
 
 	// Show-Harness scripts/trajectory/replay_rollout.py: a recording's units, in order, on this robot.
 	pi.registerCommand("gumi-replay", {
-		description:
-			"Replay a GUMI recording's units on the robot as operator steps (asks first; the dashboard's Interrupt stops it): /gumi-replay <run dir> [--dry-run] [--pause <s>] [--yes]",
+		description: `Replay a GUMI recording's units on the robot as operator steps (asks first; the dashboard's Interrupt stops it): /gumi-replay <run dir> [--dry-run] [--pause <s>, default ${REPLAY_PAUSE_S}] [--yes]`,
 		handler: async (args, c) => {
-			const usage = "Usage: /gumi-replay <run dir> [--dry-run] [--pause <s>] [--yes]";
+			const usage = `Usage: /gumi-replay <run dir> [--dry-run] [--pause <s>, default ${REPLAY_PAUSE_S}] [--yes]`;
 			const words = args.trim().split(/\s+/).filter(Boolean);
 			const dry = words.includes("--dry-run");
 			const yes = words.includes("--yes");
 			const p = words.indexOf("--pause");
-			const pause = p >= 0 ? Number(words[p + 1]) : 0;
+			// Show-Harness replays with 3-5 s between records: time to watch each step and stop the next one.
+			const pause = p >= 0 ? Number(words[p + 1]) : REPLAY_PAUSE_S;
 			const dir = words.find((w, i) => !w.startsWith("--") && (p < 0 || i !== p + 1));
 			if (!dir || !(pause >= 0)) {
 				c.ui.notify(usage, "error");
@@ -1162,6 +1162,9 @@ export function haltReason(result: Pick<AgentToolResult<unknown>, "content" | "d
 	}
 	return undefined;
 }
+
+/** Default seconds between two replayed records (--pause). */
+export const REPLAY_PAUSE_S = 2;
 
 /** One recorded step to replay: the unit per arm, repeated `n` times. */
 export type ReplayStep = { step: Step; n: number };

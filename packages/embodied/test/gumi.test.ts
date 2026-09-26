@@ -19,6 +19,7 @@ import {
 	type Observation,
 	observation,
 	parseSteps,
+	REPLAY_PAUSE_S,
 	Recorder,
 	RIGHT_ALIASES,
 	RIGHT_RT_ALIASES,
@@ -1051,19 +1052,19 @@ test("/gumi-replay asks before anything moves: dry run lists only, a declined co
 	assert.match(dry.notes[0], /2 record\(s\)[\s\S]*0: MV_FWD x2\n1: GRASP/);
 
 	const no = commandCtx({ ui: true, yes: false });
-	await r.replay(r.dir, no.c);
+	await r.replay(`${r.dir} --pause 0`, no.c);
 	assert.deepEqual(r.robot.calls, []);
 	assert.match(no.asked[0], new RegExp(`Replay ${r.dir} on the robot: 2 record\\(s\\), first MV_FWD x2`));
 	assert.match(no.notes.at(-1) as string, /cancelled; nothing moved/);
 
 	// Without a UI: refused unless --yes.
 	const headless = commandCtx({ ui: false });
-	await r.replay(r.dir, headless.c);
+	await r.replay(`${r.dir} --pause 0`, headless.c);
 	assert.deepEqual(r.robot.calls, []);
 	assert.match(headless.notes.at(-1) as string, /refused without a UI: add --yes/);
 
 	const ok = commandCtx({ ui: true, yes: true });
-	await r.replay(r.dir, ok.c);
+	await r.replay(`${r.dir} --pause 0`, ok.c);
 	assert.deepEqual(r.units(), [
 		["MV_FWD", true],
 		["MV_FWD", true],
@@ -1072,7 +1073,7 @@ test("/gumi-replay asks before anything moves: dry run lists only, a declined co
 	assert.match(ok.notes.at(-1) as string, /2 record\(s\) executed/);
 	// The robot's gates stop a replay like any operator step.
 	r.robot.refusal = "The episode is finished.";
-	await r.replay(`${r.dir} --yes`, commandCtx({ ui: false }).c);
+	await r.replay(`${r.dir} --yes --pause 0`, commandCtx({ ui: false }).c);
 	assert.equal(r.robot.calls.length, 3);
 });
 
@@ -1095,7 +1096,7 @@ test("/gumi-replay stops when the arm is blocked (contact, floor) and at the das
 	};
 	r.f.pi.events.emit(UNITS_EVENT, r.robot.handle);
 	const blocked = commandCtx({ ui: false });
-	await r.replay(`${r.dir} --yes`, blocked.c);
+	await r.replay(`${r.dir} --yes --pause 0`, blocked.c);
 	assert.equal(r.robot.calls.length, 2);
 	assert.match(
 		blocked.notes.at(-1) as string,
@@ -1104,11 +1105,12 @@ test("/gumi-replay stops when the arm is blocked (contact, floor) and at the das
 	assert.equal(haltReason({ content: [{ type: "text", text: "ok" }], details: { error: "floor" } }), "floor");
 	assert.equal(haltReason({ content: [{ type: "text", text: "units: MV_UP x1" }], details: {} }), undefined);
 
-	// Interrupt (stop()) between records: nothing after it runs, and the pause ends at once.
+	// Interrupt (stop()) between records: nothing after it runs, and the pause (non-zero by default) ends at once.
+	assert.ok(REPLAY_PAUSE_S > 0);
 	r.robot.handle.run = run;
 	r.robot.calls.length = 0;
 	const stopped = commandCtx({ ui: false });
-	const done = r.replay(`${r.dir} --yes --pause 30`, stopped.c);
+	const done = r.replay(`${r.dir} --yes`, stopped.c);
 	while (r.robot.calls.length < 2) await new Promise((res) => setTimeout(res, 1));
 	await new Promise((res) => setTimeout(res, 5));
 	assert.equal(r.g.stop(), true);
@@ -1120,7 +1122,7 @@ test("/gumi-replay stops when the arm is blocked (contact, floor) and at the das
 	r.robot.calls.length = 0;
 	r.robot.slow(true);
 	const mid = commandCtx({ ui: false });
-	const running = r.replay(`${r.dir} --yes`, mid.c);
+	const running = r.replay(`${r.dir} --yes --pause 0`, mid.c);
 	while (!r.robot.calls.length) await new Promise((res) => setTimeout(res, 1));
 	r.g.stop();
 	await running;

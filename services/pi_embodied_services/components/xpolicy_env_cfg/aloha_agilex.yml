@@ -1,0 +1,6 @@
+# RoboTwin's dual-arm aloha-agilex (pi-embodied's robotwin robot), as RoboTwin's env_cfg/aloha_agilex.yml.
+config:
+  robot: aloha_agilex
+
+observation:
+  collect_freq: 15

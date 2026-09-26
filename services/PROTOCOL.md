@@ -66,7 +66,8 @@ Every service except the LingBot-VLA launcher speaks the same JSON-over-HTTP RPC
 
 Service names: `libero-env`, `robocasa-env`, `maniskill-env`, `metaworld-env`, `genesis-env`, `rldx-vla`,
 `robotwin-env`, `robolab-env`, `robodojo-env`, `behavior-env`, `franka-env`, `dual-franka-env`, `franka-polymetis-env`, `ur5e-env`, `pi05-vla`, `sam3`, `molmo`,
-`unidepth`, `openvla`, `openvla-oft`, `gr00t`, `ik`.
+`unidepth`, `openvla`, `openvla-oft`, `gr00t`, `ik`, `xpolicy-bridge` (`xpolicy.*`, see
+`components/xpolicy_bridge.py`).
 
 ### `stop` semantics
 

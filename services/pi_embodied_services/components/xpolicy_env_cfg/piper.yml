@@ -1,0 +1,6 @@
+# One AgileX Piper arm (pi-embodied's piper robot): single-arm, unprefixed keys.
+config:
+  robot: piper
+
+observation:
+  collect_freq: 25

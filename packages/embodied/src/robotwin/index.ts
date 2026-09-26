@@ -9,7 +9,9 @@
  * the env's curobo planner (`env.plan_arm_path`) and executes qpos waypoints,
  * `lingbot_act` runs eef16 chunks. Every action returns a new numbered state with
  * the head and both wrist images; success is RoboTwin's own `eval_success`,
- * recorded in the session's `robot_result` entry.
+ * recorded in the session's `robot_result` entry. With `--xpolicy <ws url>`, `xpolicy_act` runs an
+ * XPolicyLab policy (../xpolicy.ts, env_cfg aloha_agilex) instead: LingBot then connects only on the
+ * first `lingbot_act`.
  */
 
 import { tmpdir } from "node:os";
@@ -34,6 +36,7 @@ import { attach, defineRobot, median, rgbOf, SERVICES, u8 } from "../robot.ts";
 import { NdArray, type RpcClient } from "../rpc.ts";
 import type { Move } from "../units/index.ts";
 import { vlaSeeds } from "../vla-seed.ts";
+import type { XPolicyAction, XPolicyObs } from "../xpolicy.ts";
 
 const read = (name: string) => template(new URL(name, import.meta.url));
 const SYSTEM = read("./SYSTEM.md");
@@ -465,6 +468,17 @@ export default function robotwin(pi: ExtensionAPI) {
 		budget: { turns: 100, seconds: 4800 },
 		// Observations carry the head, left wrist and right wrist images.
 		vdm: { views: VIEWS.length, wrist: [1, 2] },
+		// XPolicyLab policies (--xpolicy): the observation and case meta of RoboTwin's own XPolicyLab client.
+		xpolicy: {
+			envCfgType: "aloha_agilex",
+			actions: ["joint", "ee"],
+			observe: xpolicyObs,
+			act: xpolicyAct,
+			over: () => success() || exhausted(),
+			caseMeta: () => ({ task_name: cell().task, seed: Number(cell().seed), instruction: language }),
+			trialResult: () => ({ task_name: cell().task, seed: Number(cell().seed), success: success() }),
+			present: async (run) => present(await capture({ action: "xpolicy_act" }, run)),
+		},
 		flywheel: { spec: FLYWHEEL, select: () => `${cell().config}/${cell().task}` },
 		flash: recipeFlash(pi, {
 			// This cell's program, else the task's seed-0 reference (local and HF memory name it differently).
@@ -635,6 +649,79 @@ export default function robotwin(pi: ExtensionAPI) {
 	}
 
 	/** One qpos14 env step per update, each composed from the latest commanded qpos. */
+	/**
+	 * XPolicyLab's observation as RoboTwin's scripts/eval_policy_xpolicylab.py builds it: the three
+	 * cameras (RGB, intrinsic_cv, extrinsic_cv), the joint state as RoboTwin's `joint_action` (the
+	 * commanded joints and gripper values, qpos_target14), the eef and TCP poses ([x, y, z, qw, qx, qy, qz]).
+	 */
+	async function xpolicyObs(): Promise<XPolicyObs> {
+		const vision: XPolicyObs["vision"] = {};
+		const cams = { cam_head: "head", cam_left_wrist: "left_wrist", cam_right_wrist: "right_wrist" } as const;
+		for (const [name, view] of Object.entries(cams)) {
+			const color = await env.call<NdArray>("env.render_camera", { camera_name: view, depth: false }, READ_MS);
+			const meta = await env.call<CameraMeta & { extrinsic_cv: NdArray }>(
+				"env.get_camera_meta",
+				{ camera_name: view },
+				READ_MS,
+			);
+			vision[name] = { color, intrinsic_matrix: meta.intrinsic_K, extrinsics_matrix: meta.extrinsic_cv };
+		}
+		const q = (info.robot_state.qpos_target14 as NdArray).toArray();
+		const tcp = (arm: Arm) => (info.robot_state[`${arm}_tcp_pose`] as NdArray).toArray();
+		return {
+			instruction: language,
+			vision,
+			state: {
+				left_arm_joint_state: q.slice(0, 6),
+				left_ee_joint_state: [q[6]],
+				right_arm_joint_state: q.slice(7, 13),
+				right_ee_joint_state: [q[13]],
+				left_ee_pose: pose("left"),
+				right_ee_pose: pose("right"),
+				left_tcp_pose: tcp("left"),
+				right_tcp_pose: tcp("right"),
+			},
+			info: { frequency: 30 },
+		};
+	}
+
+	/** One XPolicyLab action as one native qpos14 / ee16 step; an arm (or gripper) it leaves out keeps its command. */
+	async function xpolicyAct(a: XPolicyAction) {
+		const [l, r] = [a.arms.left_ ?? {}, a.arms.right_ ?? {}];
+		const q = (info.robot_state.qpos_target14 as NdArray).toArray();
+		const action =
+			a.type === "joint"
+				? [
+						...(l.joints ?? q.slice(0, 6)),
+						...(l.ee ?? [q[6]]),
+						...(r.joints ?? q.slice(7, 13)),
+						...(r.ee ?? [q[13]]),
+					]
+				: [
+						...(l.pose ?? pose("left")),
+						...(l.ee ?? [grip("left")]),
+						...(r.pose ?? pose("right")),
+						...(r.ee ?? [grip("right")]),
+					];
+		const ret = await env.call<StepReturn>(
+			"env.step",
+			{ action_type: a.type === "joint" ? "qpos" : "ee" },
+			MUTATE_MS,
+			[f64(action)],
+			robot.signal,
+		);
+		info = ret[4];
+		const main = (ret[0] as { main_images?: unknown } | null)?.main_images;
+		if (main instanceof NdArray) robot.video.frame(u8(main));
+		const executed = ret[4].executed_actions ?? 0;
+		policyActions += executed;
+		nativeActions += executed;
+		if (fly.recording) {
+			const f = await env.call<PolicyFrame>("env.policy_frame", {}, READ_MS);
+			fly.transition(f.state.toArray(), flyObs(f), success() ? 1 : 0, success(), exhausted());
+		}
+	}
+
 	async function applyQpos(updates: { arm: Arm; arm_qpos?: number[]; gripper?: number }[]) {
 		let executed = 0;
 		for (const u of updates) {
@@ -1178,7 +1265,8 @@ export default function robotwin(pi: ExtensionAPI) {
 		if (status().actual_seed !== Number(seed))
 			throw new Error(`reset used seed ${status().actual_seed}, not ${seed}`);
 		language = reset.instruction ?? (await env.call<string>("env.get_task_language"));
-		await vla();
+		// With --xpolicy the policy is XPolicyLab's; LingBot connects on the first lingbot_act.
+		if (!pi.getFlag("xpolicy")) await vla();
 		await capture(
 			{ action: "reset" },
 			{ success: true, instruction: language, instruction_source: reset.instruction_source ?? null },

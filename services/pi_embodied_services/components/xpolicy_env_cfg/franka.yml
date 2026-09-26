@@ -1,0 +1,7 @@
+# One Franka arm (pi-embodied's franka robot): single-arm, unprefixed keys. RoboTwin's env_cfg/franka.yml
+# names its dual Franka instead; XPolicyLab's own utils/robot/_robot_info.json lists franka as two arms.
+config:
+  robot: franka
+
+observation:
+  collect_freq: 25

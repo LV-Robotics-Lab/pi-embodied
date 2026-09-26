@@ -65,6 +65,7 @@ import {
 } from "../robot.ts";
 import { NdArray, type RpcClient } from "../rpc.ts";
 import type { Move } from "../units/index.ts";
+import { gripperCommand, poseDelta, toWxyz, type XPolicySpec } from "../xpolicy.ts";
 
 const SYSTEM = template(new URL("./SYSTEM.md", import.meta.url));
 const EXPLORE = template(new URL("./explore.md", import.meta.url));
@@ -315,6 +316,8 @@ export default function franka(pi: ExtensionAPI) {
 		video: true,
 		// Observations carry the external camera then the wrist image.
 		vdm: { views: 2, wrist: 1 },
+		// XPolicyLab policies (--xpolicy, env_cfg franka): ee targets run as bounded relative motions.
+		xpolicy: xpolicySpec(),
 		// The evaluation prompt names no memory; exploration writes it. The guard also opens the step artifacts.
 		memory: {
 			cell: () => ({ tag: `franka_t${task()}`, reference: "" }),
@@ -1223,6 +1226,72 @@ export default function franka(pi: ExtensionAPI) {
 		task: () => setup?.task.instruction ?? "",
 	}))
 		tool(d.name, d.description, d.parameters, d.run, false);
+
+	/**
+	 * XPolicyLab (--xpolicy): the external camera as cam_head and the wrist one as cam_wrist, the arm
+	 * joints, the gripper width and the TCP pose. An ee action runs as move_delta then rotate_delta
+	 * toward its target (the same per-call limits, and the target must be inside --workspace-xy /
+	 * --z-floor), then an open/close of the gripper (gripperCommand). No joint actions: the env server
+	 * has no joint-position command.
+	 */
+	function xpolicySpec(): XPolicySpec {
+		let widest = 0;
+		const base = async () => ((await robotState()).raw_base_state ?? {}) as Json;
+		return {
+			envCfgType: "franka",
+			actions: ["ee"],
+			observe: async () => {
+				const obs = await observation();
+				const b = await base();
+				const width = vec(b.gripper_position)[0] ?? 0;
+				widest = Math.max(widest, width);
+				const extra = obs.extra_view_images;
+				const cam = extra instanceof NdArray ? (extra.shape.length === 4 ? sub(extra, 0) : extra) : undefined;
+				return {
+					instruction: setup?.task.instruction ?? "",
+					vision: {
+						...(cam ? { cam_head: { color: cam } } : {}),
+						...(obs.main_images instanceof NdArray ? { cam_wrist: { color: obs.main_images } } : {}),
+					},
+					state: {
+						arm_joint_state: vec(b.arm_joint_position),
+						ee_joint_state: [width],
+						ee_pose: toWxyz(vec(b.tcp_pose)),
+					},
+				};
+			},
+			act: async (a, signal) => {
+				check(signal);
+				const arm = a.arms[""] ?? {};
+				const b = await base();
+				if (arm.pose) {
+					const { box, floor } = workspaceLimits(flag("workspace-xy"), flag("z-floor"));
+					const [x, y, z] = arm.pose;
+					if (z < floor || (box && (x < box[0] || x > box[1] || y < box[2] || y > box[3])))
+						throw new Error(`the policy's target [${roundAll([x, y, z], 3)}] is outside the workspace`);
+					const { delta, rpy } = poseDelta(toWxyz(vec(b.tcp_pose)), arm.pose);
+					if (Math.hypot(...delta) > 1e-4) {
+						checkMove(delta, maxMove(), setup?.task.constraints);
+						await motion("env.move_delta", { delta_xyz: NdArray.f32(delta) }, signal);
+					}
+					if (Math.hypot(...rpy) > 1e-3) {
+						if (!(Math.max(...rpy.map(Math.abs)) <= maxRotate()))
+							throw new Error(
+								`rotation ${roundAll(rpy, 3)} rad exceeds the limit of ${maxRotate()} rad per call`,
+							);
+						await motion("env.rotate_delta", { delta_rpy: NdArray.f32(rpy) }, signal);
+					}
+				}
+				const grip = arm.ee ? gripperCommand(arm.ee[0], widest, b.gripper_open === false) : null;
+				if (grip) await motion("env.set_gripper", { open: grip === "open" }, signal);
+			},
+			over: () => false,
+			present: async (run) => {
+				const { output, pngs } = view(await dumpState({ action: "xpolicy_act" }, run, null));
+				return toolResult(output, pngs);
+			},
+		};
+	}
 
 	// ---- lifecycle
 

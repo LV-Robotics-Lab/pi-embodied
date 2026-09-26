@@ -103,6 +103,16 @@ gr00t = [
     "huggingface-hub",
     "pillow>=10",
 ]
+xpolicy = [
+    # The XPolicyLab bridge (components/xpolicy_bridge.py): XPolicyLab's websocket client's
+    # dependencies (its pyproject at d6332bf); the client itself comes from an XPolicyLab
+    # checkout (--xpolicylab-root). opencv is for --xpolicy-encode-images (encode_image_bit).
+    "websockets>=14.0",
+    "msgpack>=1.0.8",
+    "msgpack-numpy>=0.4.8",
+    "pydantic>=2.5",
+    "opencv-python-headless>=4.8",
+]
 libero = [
     "pi-embodied-services[rlinf,sam3]",
     "rpent-openpi @ git+https://github.com/RLinf/openpi.git@rpent",
@@ -235,6 +245,7 @@ include = ["pi_embodied_services*"]
 "pi_embodied_services.robots.piper" = ["config/*.yaml"]
 "pi_embodied_services.robots.ur5e" = ["config/*.yaml"]
 "pi_embodied_services.robots.robolab" = ["assets/*.usda", "assets/Props/*.usd"]
+"pi_embodied_services.components" = ["xpolicy_env_cfg/*.yml", "xpolicy_env_cfg/robot/*.json"]
 
 [tool.uv]
 prerelease = "allow"

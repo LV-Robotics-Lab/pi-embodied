@@ -34,6 +34,7 @@ import { VLM_COST_EVENT } from "./units/vlm.ts";
 import { type VdmSpec, vdm } from "./vdm.ts";
 import { episodeVideo } from "./video.ts";
 import { webTools } from "./web.ts";
+import { type XPolicySpec, xpolicy } from "./xpolicy.ts";
 
 export type Json = Record<string, any>;
 export type Mat = number[][];
@@ -173,6 +174,11 @@ export type RobotSpec = {
 	 * carries, and the wrist one(s); a function when that depends on the robot's cameras (undefined: none yet).
 	 */
 	vdm?: VdmSpec | (() => VdmSpec | undefined);
+	/**
+	 * Mount the XPolicyLab client (../xpolicy.ts, `--xpolicy <ws url>`): how the robot builds XPolicyLab's
+	 * observation and executes one action of a chunk; it adds `xpolicy_act`.
+	 */
+	xpolicy?: XPolicySpec | (() => XPolicySpec | undefined);
 	/**
 	 * Simulation only (CaP-X's S1 tier): the env call behind `ground_truth_poses` (the server's
 	 * `env.ground_truth_poses`). It registers `--privileged`; real robots leave it unset, so they have no such flag.
@@ -449,6 +455,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 						.join(", "),
 			)
 		: undefined;
+	const xp = spec.xpolicy ? xpolicy(pi, spec.xpolicy, tool, name, () => task) : undefined;
 	let groundTruthRegistered = false;
 	/** `--privileged`: register `ground_truth_poses` at the first start that asks for it (off registers nothing), and name it. */
 	function groundTruth(): string[] {
@@ -473,6 +480,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		const s = server;
 		server = undefined;
 		if (s) await shutdown(s.proc, s.rpc);
+		await xp?.stop();
 		await spec.stop?.();
 	}
 
@@ -495,13 +503,17 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 			pi.events.emit(CODE_API_EVENT, api);
 			// Code mode fetches its tier of the registry once the robot is up and registers run_code.
 			const coded = (await co?.start()) ?? [];
+			// --xpolicy connects the policy server for this episode (fails closed) and adds xpolicy_act.
+			const xpTools = (await xp?.start()) ?? [];
 			// Pure units or code mode hides the robot's own tools and memory's (Show-Harness's pure mode).
 			const mode = un?.mode() ?? co?.mode();
 			const own =
 				mode === "pure"
 					? [...(un?.tools() ?? []), ...coded, "finish"]
 					: [...tools, ...(mem?.tools ?? []), ...(mode === "both" ? [...(un?.tools() ?? []), ...coded] : [])];
-			pi.setActiveTools([...new Set([...own, ...op.tools(), ...groundTruth(), ...web.tools(), ...objs.tools()])]);
+			pi.setActiveTools([
+				...new Set([...own, ...xpTools, ...op.tools(), ...groundTruth(), ...web.tools(), ...objs.tools()]),
+			]);
 			ready = true;
 		} catch (err) {
 			// Without a robot there is nothing to act on: no tools, and a non-interactive run exits.
@@ -735,6 +747,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 						// Code mode (../code): `code` and `code_api`, so evaluations never mix it with tool runs.
 						...co?.result(),
 						...vd?.result(),
+						...xp?.result(),
 						// With --fallback-model: the turns each planner model planned (../fallback.ts).
 						...fb?.result(),
 						...en?.result(),

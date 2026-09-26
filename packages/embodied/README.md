@@ -66,7 +66,7 @@ with `--env` / `--vla` / `--sam3`. Real-arm robots (Franka, dual Franka) stay on
 | --- | --- | --- | --- |
 | LIBERO / LIBERO-PRO | `src/libero` | LIBERO `terminated` | all below, plus flywheel, operator, Flash (Molmo re-anchoring) |
 | RoboCasa | `src/robocasa` | `env._check_success()` | all below, plus flywheel, recipe Flash (Molmo re-anchoring) |
-| RoboTwin | `src/robotwin` | `eval_success` | all below, plus flywheel, recipe Flash (Molmo re-anchoring) |
+| RoboTwin | `src/robotwin` | `eval_success` | all below, plus flywheel, recipe Flash (Molmo re-anchoring), XPolicyLab (`aloha_agilex`, joint and ee) |
 | ManiSkill (`--robot`, below) | `src/maniskill` | ManiSkill `success` | all below, plus recipe Flash (Molmo + ray-plane re-anchoring of delta waypoints) |
 | RoboLab | `src/robolab` | RoboLab's task predicate | all below, plus recipe Flash (Molmo + ray-plane re-anchoring of delta waypoints) |
 | RoboDojo (two ARX X5) | `src/robodojo` | RoboDojo's `is_episode_end` (`score` = partial credit) | all below, plus flywheel (joint space), recipe Flash (Molmo + depth back-projection) |
@@ -74,9 +74,9 @@ with `--env` / `--vla` / `--sam3`. Real-arm robots (Franka, dual Franka) stay on
 | Metaworld | `src/metaworld` | Metaworld `info["success"]`, latched | memory, explore, video, units, VDM, code.api, `--privileged` |
 | Genesis | `src/genesis` | the task predicate (cube_pick: an 8 cm lift) | memory, explore, video, units, VDM, code.api, `--privileged` |
 | BEHAVIOR-1K / R1Pro | `src/behavior` | the BDDL activity's `success`, latched (`q_score` = partial credit) | memory, explore, video, units (on `env.move_hand_delta`), VDM, code.api, `--privileged` |
-| Franka (real) | `src/franka` | operator verdict (`--operator`) | all below but `--privileged`; explore resets through the operator |
+| Franka (real) | `src/franka` | operator verdict (`--operator`) | all below but `--privileged`; explore resets through the operator; XPolicyLab (`franka`, ee) |
 | Dual Franka (real) | `src/dual_franka` | operator verdict (required) | all below but `--privileged`; explore resets through the operator |
-| Piper / dual Piper (real) | `src/piper` | operator verdict (required) | all below but `--privileged`; explore resets through the operator |
+| Piper / dual Piper (real) | `src/piper` | operator verdict (required) | all below but `--privileged`; explore resets through the operator; XPolicyLab on one arm (`piper`, ee) |
 | UR5e (real) | `src/ur5e` | operator verdict (required) | all below but `--privileged`; explore resets through the operator; bound to one arm (`--arm-id`) |
 
 Every robot but the Frankas (whose `segment` does this with `--robot-sam3` / `--robot-unidepth`) takes
@@ -177,6 +177,24 @@ Shared modules:
   `run_code` to the robot's tools. Mutually exclusive with `--units`; `--stateless` applies. Real
   robots need `--code-real` and `--operator`, and every program is confirmed by the operator.
   LIBERO today (services/PROTOCOL.md, code mode).
+- `src/xpolicy.ts`: XPolicyLab policies (github.com/XPolicyLab/XPolicyLab, pinned `d6332bf`).
+  pi-embodied is only the environment client: start the policy server the XPolicyLab way
+  (`policy/<name>/setup_eval_policy_server.sh`) and pass `--xpolicy ws://host:port`
+  (`--xpolicy-action joint|ee`, default joint). The session start connects a new trial (and fails
+  closed) and adds `xpolicy_act {chunks}`: prepare_case + reset before the first chunk and after a
+  scene reset, then per chunk update_obs + get_action and every action, with update_obs between two
+  actions (XPolicyLab's deploy loop), until the episode ends. The protocol (handshake, request ids
+  reused across a reconnect, `ServerRestartedError`, msgpack-numpy) stays in a Python bridge
+  (services `components/xpolicy_bridge.py`, holding XPolicyLab's own `WsModelClient`), started with
+  `--xpolicy-python` and `--xpolicylab <checkout>` or attached with `--xpolicy-bridge`;
+  `--xpolicy-encode-images` sends JPEGs, `--xpolicy-timeout` / `--xpolicy-connect-timeout` are
+  XPolicyLab's request and cold-start budgets. Dimensions come from the services' env_cfg
+  (`components/xpolicy_env_cfg`: `aloha_agilex` two arms, `piper` and `franka` one arm with
+  unprefixed keys). A robot opts in with `xpolicy` in its spec (env_cfg type, action types, how it
+  builds the observation and executes one action). RoboTwin runs joint (qpos14) and ee (ee16)
+  actions natively; Piper and Franka run ee targets as their bounded relative moves (Piper: yaw
+  only) and have no joint command. RLDX (RoboCasa) and LingBot (RoboTwin) keep their own clients
+  for now; new VLAs go through XPolicyLab.
 - `src/dashboard/`: live web dashboard (`--dashboard`) for any robot. Operator tools: withdraw a
   message still in pi's queue (`POST /message/withdraw`), call one robot tool by hand while the agent
   is idle or taken over (`GET /primitives`, `POST /primitive`; the robot's gates apply, one robot call

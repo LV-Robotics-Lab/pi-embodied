@@ -15,7 +15,8 @@ services/
   pyproject.toml            pi-embodied-services, extras per robot
   pi_embodied_services/
     utils/                  config, logging, EGL device mapping, RPC (HTTP only)
-    components/             facade bases, Pi0.5 VLA, SAM3 and Molmo servers
+    components/             facade bases, Pi0.5 VLA, SAM3 and Molmo servers, the XPolicyLab bridge
+                            (xpolicy_bridge.py) and its env_cfg (xpolicy_env_cfg/)
     robots/
       libero/               env_server.py
       robocasa/             env_server.py, vla_server.py (RLDX-1), eval/target50.json
@@ -120,6 +121,21 @@ uv pip install -e "services[openvla]"       # or [openvla-oft] (Python 3.10/3.11
 # GR00T_CHECKPOINTS) and fetched by huggingface_hub at that revision when --model-path is not a
 # directory: set HF_ENDPOINT=https://hf-mirror.com (never a gateway proxy) where huggingface.co is
 # unreachable, or snapshot_download them yourself and pass the directory.
+
+# XPolicyLab policies (pi's --xpolicy; packages/embodied/src/xpolicy.ts). The policy runs the
+# XPolicyLab way, in its own env; pi-embodied only runs the bridge (components/xpolicy_bridge.py),
+# which uses XPolicyLab's own websocket client from a checkout pinned at d6332bf:
+git clone https://github.com/XPolicyLab/XPolicyLab.git ~/xpolicy/XPolicyLab && git -C ~/xpolicy/XPolicyLab checkout d6332bf
+# get_robot_action_dim_info reads <checkout>/../env_cfg: give it pi-embodied's (aloha_agilex, piper, franka)
+ln -s "$PWD/services/pi_embodied_services/components/xpolicy_env_cfg" ~/xpolicy/env_cfg
+uv venv services/.venv-xpolicy --python 3.11 && source services/.venv-xpolicy/bin/activate
+uv pip install -e "services[xpolicy]"       # pi: --xpolicy-python services/.venv-xpolicy/bin/python --xpolicylab ~/xpolicy/XPolicyLab
+# The policy server, per its policy/<name>/README (install.sh, download_checkpoint.sh), e.g. Evo-1 on
+# RoboTwin with the RoboTwin550 weights (sm_120: install the cu128 torch 2.7.1 instead of its 2.5.1 pin;
+# without flash-attn Evo-1 falls back to standard attention):
+cd ~/xpolicy/XPolicyLab/policy/Evo_1 && bash setup_eval_policy_server.sh RoboTwin beat_block_hammer \
+  Evo1_RoboTwin2_datascale aloha_agilex joint 0 <gpu> <env> 19101 127.0.0.1   # deploy.yml: dataset_key_suffix: _rand
+# then: pi -e packages/embodied/src/robotwin --xpolicy ws://127.0.0.1:19101 --task-config demo_randomized ...
 ```
 
 Every dataset pi-embodied exports is LeRobot v3.0 with the same feature names:

@@ -193,6 +193,9 @@ class FrankaEnvFacade(BaseEnvFacade):
 
     #: Whether motion primitives take an ``arm`` first (the dual rig).
     _ARMED = False
+    #: Set by __init__; class defaults so the registry can be built on a bare facade (tests).
+    _reach: reach.ReachPreview | None = None
+    _motion: motion.MotionPlanner | None = None
 
     def _tcp_state(self) -> tuple[Any, Any]:
         """(tcp_pose xyz+xyzw in the base frame, arm joints) from the robot state."""

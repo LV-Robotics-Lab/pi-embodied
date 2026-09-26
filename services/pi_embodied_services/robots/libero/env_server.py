@@ -284,6 +284,8 @@ class LiberoEnvFacade(BaseEnvFacade):
     #: Set by __init__; class defaults so the registry can be built on a bare facade (tests).
     _sam3_url: str | None = None
     _grasp: "GraspPlanner | None" = None
+    _motion: "motion.MotionPlanner | None" = None
+    _plan: dict | None = None
 
     def __init__(
         self,

@@ -48,8 +48,10 @@ Settings cannot carry extension flags, so the task and mode stay on the command 
 Run the eval scripts outside that directory: they load the robot with `-e`, and loading it twice
 fails on duplicate tools.
 
-The package is publishable to npm (`keywords: ["pi-package"]`, host packages as `*` peers,
-`files` = src, skills, README), but it is not published. An npm install has no `services/`:
+The package is publishable to npm on its own (`keywords: ["pi-package"]`, host packages as `*` peers,
+`files` = src, skills, README, `publishConfig.access: public`): `cd packages/embodied && npm publish`.
+It is not part of pi's lockstep release (`scripts/release-packages.mjs` takes only the
+`@earendil-works/*` packages), so its version moves independently. An npm install has no `services/`:
 setup clones this repository for them (`--services` / `PI_EMBODIED_SERVICES` point the robots at it).
 
 Docker images (planned, not built): one image per services venv, since the extras pin conflicting

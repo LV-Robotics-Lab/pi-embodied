@@ -23,7 +23,7 @@ import { execSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { findPackageDirectories } from "./package-workspaces.mjs";
-import { getPublicWorkspacePackages } from "./release-packages.mjs";
+import { getPiReleasePackages } from "./release-packages.mjs";
 
 const RELEASE_TARGET = process.argv[2];
 const BUMP_TYPES = new Set(["major", "minor", "patch"]);
@@ -53,7 +53,7 @@ function getVersion() {
 }
 
 function assertPackagesAreRegisteredWithNpm() {
-	const packageNames = getPublicWorkspacePackages().map((pkg) => pkg.name);
+	const packageNames = getPiReleasePackages().map((pkg) => pkg.name);
 	const unregisteredPackages = [];
 
 	console.log("Checking npm package registration...");
@@ -104,7 +104,7 @@ function shellQuote(value) {
 
 function removeStaleWorkspaceLockEntries() {
 	const workspaceVersions = new Map(
-		getPublicWorkspacePackages().map((pkg) => [pkg.name, pkg.version]),
+		getPiReleasePackages().map((pkg) => [pkg.name, pkg.version]),
 	);
 	const lockPath = "package-lock.json";
 	const lock = JSON.parse(readFileSync(lockPath, "utf8"));

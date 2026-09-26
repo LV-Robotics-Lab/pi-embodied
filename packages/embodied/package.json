@@ -2,7 +2,6 @@
 	"name": "@lv-robotics/pi-embodied",
 	"version": "0.0.1",
 	"license": "Apache-2.0",
-	"private": true,
 	"description": "Robots as pi extensions",
 	"keywords": [
 		"pi-package"
@@ -13,6 +12,9 @@
 		"directory": "packages/embodied"
 	},
 	"type": "module",
+	"publishConfig": {
+		"access": "public"
+	},
 	"files": [
 		"src",
 		"skills",

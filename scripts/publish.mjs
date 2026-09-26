@@ -3,9 +3,9 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { getPublicWorkspacePackages } from "./release-packages.mjs";
+import { getPiReleasePackages } from "./release-packages.mjs";
 
-const packages = getPublicWorkspacePackages();
+const packages = getPiReleasePackages();
 
 const dryRun = process.argv.includes("--dry-run");
 const unknownArgs = process.argv.slice(2).filter((arg) => arg !== "--dry-run");

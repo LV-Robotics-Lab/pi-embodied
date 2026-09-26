@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpath
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { getPublicWorkspacePackages } from "./release-packages.mjs";
+import { getPiReleasePackages } from "./release-packages.mjs";
 
 const codingAgentName = "@earendil-works/pi-coding-agent";
 const developmentPackages = new Set(["pi-client", "pi-protocol", "pi-server"].map((name) => `@earendil-works/${name}`));
@@ -128,7 +128,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
 	if (process.argv.length !== 2) throw new Error("Usage: node scripts/coding-agent-consumer.mjs");
 	const root = mkdtempSync(join(tmpdir(), "pi-package-consumer-"));
 	try {
-		const tarballs = packReleasePackages(getPublicWorkspacePackages(), join(root, "tarballs"));
+		const tarballs = packReleasePackages(getPiReleasePackages(), join(root, "tarballs"));
 		const directory = join(root, "consumer");
 		installCodingAgentConsumer(directory, tarballs);
 		smokeTestCodingAgentConsumer(directory);

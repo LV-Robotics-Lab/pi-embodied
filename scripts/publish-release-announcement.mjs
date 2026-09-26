@@ -5,7 +5,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { getPublicWorkspacePackages } from "./release-packages.mjs";
+import { getPiReleasePackages } from "./release-packages.mjs";
 
 const RELEASES_PREFIX = "releases/v1";
 const INSTALLER_PREFIX = "installer/v1";
@@ -268,7 +268,7 @@ export async function advanceLatestRelease(version, readLatest, writeLatest) {
 
 async function main() {
 	const options = parseArgs(process.argv.slice(2));
-	const packages = getPublicWorkspacePackages();
+	const packages = getPiReleasePackages();
 	for (const pkg of packages) {
 		if (pkg.version !== options.version) {
 			throw new Error(`${pkg.name} is ${pkg.version}; expected ${options.version}`);

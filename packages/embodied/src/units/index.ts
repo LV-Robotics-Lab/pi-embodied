@@ -41,6 +41,8 @@
  * them (as --units-rt without an axis), and rotation keeps only its realign: those key on the wrist view. `act` then takes no `target_in_wrist` (one sent anyway is
  * ignored, and the result says so), the prompt drops its wrist-view text, a notice names the plugins
  * turned off, and the effective plugins are in every `units_state` entry and the robot result.
+ * A robot without a gripper (the spec's `gripper`, e.g. ManiSkill's --robot panda_stick) has no GRASP /
+ * RELEASE units and runs without recovery and auto_release; the prompt drops its gripper text.
  *
  * Side VLM calls (./vlm.ts, `--units-vlm-model`, default the session's model):
  * - `--units-verify=true|false|auto` (auto: on for dual-arm robots, as Show-Harness's dual runner): a `finish`
@@ -175,6 +177,10 @@ const NOTES = {
 
 /** Plugins that key on the wrist view (`target_in_wrist`): off on a robot configuration without one. */
 const WRIST_PLUGINS: readonly Plugin[] = ["variable_step", "action_chunk"];
+/** Plugins that reopen a gripper: off on a robot without one. */
+const GRIPPER_PLUGINS: readonly Plugin[] = ["recovery", "auto_release"];
+/** The gripper units: not units of a robot without a gripper. */
+const GRIPPER_UNITS = ["GRASP", "RELEASE"];
 
 const r3 = (v: number) => Number(v.toFixed(3));
 const text = (s: string) => ({ type: "text" as const, text: s });
@@ -263,7 +269,11 @@ export function units(
 		(listed() ?? spec.plugins ?? DEFAULT_PLUGINS).includes(name) &&
 		(name !== "point" || spec.point !== undefined) &&
 		(name !== "rotation" || Boolean(spec.yawStepRad));
-	const plugin = (name: Plugin) => requested(name) && (wristView || !WRIST_PLUGINS.includes(name));
+	/** The robot has a gripper (spec.gripper), read like the wrist view. */
+	const readGripper = () => (typeof spec.gripper === "function" ? spec.gripper() : spec.gripper) !== false;
+	let gripperOn = readGripper();
+	const plugin = (name: Plugin) =>
+		requested(name) && (wristView || !WRIST_PLUGINS.includes(name)) && (gripperOn || !GRIPPER_PLUGINS.includes(name));
 	/** The plugins that run this session (`units_state`, the robot result). */
 	const effective = () => PLUGINS.filter(plugin);
 	const armNames = spec.arms ?? [];
@@ -295,6 +305,7 @@ export function units(
 				(spec.yawStepRad || !isRotate(u)) &&
 				!rotateRefusal(u) &&
 				(u !== "STILL" || armNames.length) &&
+				(gripperOn || !GRIPPER_UNITS.includes(u)) &&
 				(!isRt(u) || !rtRefusal(u)),
 		);
 
@@ -365,6 +376,7 @@ export function units(
 		// (an earlier `units_state` in the branch belongs to an episode whose scene is gone).
 		reset();
 		wristView = readWrist();
+		gripperOn = readGripper();
 		demoError = undefined;
 		const branch = ctx.sessionManager.getBranch();
 		const custom = (type: string) =>
@@ -504,7 +516,7 @@ export function units(
 		registered = JSON.stringify(schema);
 		tool(
 			"act",
-			`Execute one action unit (${vocab().join(", ")}), repeated n times. MV_* move the gripper ~${Math.round(spec.stepM * 100)} cm${spec.yawStepRad && !rtOn() ? `, ROTATE_* turn it ~${Math.round((spec.yawStepRad * 180) / Math.PI)} deg` : ""}${rtOn() && spec.rt ? `, RT_* turn it ~${Math.round((spec.rt.stepRad * 180) / Math.PI)} deg about a world axis through the fingertips (ROLL about the MV_FWD axis, PITCH about the MV_LEFT-MV_RIGHT axis, YAW about the vertical)` : ""}; GRASP closes, RELEASE opens, STOP holds one step, DONE means the task is complete (call finish). Returns the new images and state.`,
+			`Execute one action unit (${vocab().join(", ")}), repeated n times. MV_* move the gripper ~${Math.round(spec.stepM * 100)} cm${spec.yawStepRad && !rtOn() ? `, ROTATE_* turn it ~${Math.round((spec.yawStepRad * 180) / Math.PI)} deg` : ""}${rtOn() && spec.rt ? `, RT_* turn it ~${Math.round((spec.rt.stepRad * 180) / Math.PI)} deg about a world axis through the fingertips (ROLL about the MV_FWD axis, PITCH about the MV_LEFT-MV_RIGHT axis, YAW about the vertical)` : ""}${gripperOn ? "; GRASP closes, RELEASE opens" : " (this robot has no gripper)"}, STOP holds one step, DONE means the task is complete (call finish). Returns the new images and state.`,
 			schema,
 			(params, signal) => actAndSave(params as ActParams, signal),
 		);
@@ -885,6 +897,7 @@ export function units(
 	 */
 	function started(ctx: Pick<ExtensionContext, "hasUI" | "ui">) {
 		wristView = readWrist();
+		gripperOn = readGripper();
 		saved = snapshot();
 		registerAct();
 		if (wristView || !mode()) return;
@@ -934,6 +947,7 @@ export function units(
 				rt: rtOn(),
 				wrist: wristSignal(),
 				wristView,
+				gripper: gripperOn,
 				plugin,
 				stateless: pi.getFlag("stateless") === true,
 				brief: demo?.key.startsWith(`${pi.getFlag("units-video-ref")}#`) ? demo.brief : undefined,

@@ -81,6 +81,12 @@ export type UnitsSpec = {
 	 * no `target_in_wrist` and the prompt drops its wrist-view text.
 	 */
 	wrist?: boolean | (() => boolean);
+	/**
+	 * Whether the robot has a gripper (default true), a function when the configuration decides it (a
+	 * `--robot` flag). Without one (a stick) GRASP and RELEASE are not units, recovery and auto_release
+	 * are off whatever --units-plugins says, and the prompt drops its gripper text. Read like `wrist`.
+	 */
+	gripper?: boolean | (() => boolean);
 	/** variable_step: the coarse step (default 0.04 m) and the "high above the table" gap (default 0.08 m). */
 	coarseStepM?: number;
 	highAboveTableM?: number;

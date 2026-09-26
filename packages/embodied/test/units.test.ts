@@ -141,6 +141,8 @@ async function toyRobot(
 		reset?: () => Promise<Record<string, unknown>>;
 		/** UnitsSpec.wrist (default: omitted, a wrist view). */
 		wrist?: UnitsSpec["wrist"];
+		/** UnitsSpec.gripper (default: omitted, a gripper). */
+		gripper?: UnitsSpec["gripper"];
 		/** Called by the robot's `start` (a configuration learnt from the server). */
 		onStart?: () => void;
 		/** The run was aborted (ctx.signal). */
@@ -168,6 +170,7 @@ async function toyRobot(
 		...(o.arms ? { arms: o.arms } : {}),
 		...(o.viewSelect !== undefined ? { viewSelect: () => o.viewSelect as boolean } : {}),
 		...(o.wrist !== undefined ? { wrist: o.wrist } : {}),
+		...(o.gripper !== undefined ? { gripper: o.gripper } : {}),
 		apply: async (move) => {
 			if (move.retreat && o.refuseRetreat)
 				return { content: [{ type: "text", text: "Episode already ended." }], details: { terminated: true } };
@@ -1234,6 +1237,27 @@ test("no wrist view: variable_step and action_chunk off, rotation without compen
 	await v.emit("tool_call", { toolName: "finish", input: { status: "success", summary: "" } });
 	const asked = JSON.stringify(v.asked[0]?.content ?? "");
 	assert.match(asked, /third-person: this robot has no wrist view/);
+});
+
+test("no gripper (a stick): no GRASP / RELEASE units, recovery and auto_release off, no gripper text", async () => {
+	const f = await toyRobot({ "units-plugins": ALL_PLUGINS }, { gripper: false, wrist: false });
+	const units = f.tools.get("act").parameters.properties.unit.enum as string[];
+	assert.ok(units.includes("MV_DOWN") && units.includes("DONE"));
+	assert.ok(!units.includes("GRASP") && !units.includes("RELEASE"), "no gripper units");
+	assert.match(f.tools.get("act").description, /\(this robot has no gripper\)/);
+	assert.doesNotMatch(f.tools.get("act").description, /GRASP closes/);
+	const prompt = (await f.emit("before_agent_start")).systemPrompt as string;
+	assert.doesNotMatch(prompt, /\[\/?\w+\]/, "no section markers left");
+	assert.match(prompt, /This robot has NO gripper \(it holds a stick/);
+	assert.doesNotMatch(prompt, /GRIPPER:|- GRASP: close the gripper|reopened automatically/);
+	const state = f.entries.filter((e) => e.customType === STATE_ENTRY).pop()?.data;
+	await f.run("act", { unit: "MV_DOWN" });
+	const after = f.entries.filter((e) => e.customType === STATE_ENTRY).pop()?.data ?? state;
+	assert.ok(!after.plugins.includes("recovery") && !after.plugins.includes("auto_release"));
+	// A gripper robot keeps both units and the GRIPPER rules.
+	const g = await toyRobot({ "units-plugins": ALL_PLUGINS });
+	assert.ok((g.tools.get("act").parameters.properties.unit.enum as string[]).includes("GRASP"));
+	assert.match((await g.emit("before_agent_start")).systemPrompt as string, /GRIPPER:\n- GRASP when/);
 });
 
 test("a wrist robot is unchanged: target_in_wrist, the wrist rules and every requested plugin", async () => {

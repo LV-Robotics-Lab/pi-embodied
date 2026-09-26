@@ -43,6 +43,8 @@ export type PromptContext = {
 	wrist: boolean;
 	/** The robot configuration has a wrist view (UnitsSpec.wrist): its [wrist_view] or [no_wrist_view] text. */
 	wristView: boolean;
+	/** The robot has a gripper (UnitsSpec.gripper): its [gripper] or [no_gripper] text. */
+	gripper: boolean;
 	plugin: (name: Plugin) => boolean;
 	stateless: boolean;
 	/** video_ref: the demo brief of the current --units-video-ref, if extracted. */
@@ -63,6 +65,8 @@ export function renderPrompt(c: PromptContext) {
 	p = section(p, "wrist", c.wrist);
 	p = section(p, "wrist_view", c.wristView);
 	p = section(p, "no_wrist_view", !c.wristView);
+	p = section(p, "gripper", c.gripper);
+	p = section(p, "no_gripper", !c.gripper);
 	for (const name of PLUGINS)
 		p = section(
 			p,

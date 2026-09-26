@@ -31,7 +31,7 @@ import numpy as np
 from pi_embodied_services.components.code_api import register_code_api
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
 from pi_embodied_services.robots.libero.primitives import libero_primitives
-from pi_embodied_services.utils import ground_truth, reach
+from pi_embodied_services.utils import collision, ground_truth, motion, reach
 from pi_embodied_services.utils.code_exec import (
     CodeRunner,
     describe_helpers,
@@ -211,8 +211,21 @@ def _exposing_poses(env_fn):
             except Exception as e:  # noqa: BLE001
                 return {"error": f"{type(e).__name__}: {e}"}
 
+        def collision_world():
+            # The planning world of env.plan_motion / move_to under --ik (utils/motion.py):
+            # every collidable non-robot geom, world frame.
+            try:
+                rob = env
+                while hasattr(rob, "env"):
+                    rob = rob.env
+                base = rob.sim.data.body_xpos[rob.sim.model.body_name2id("robot0_base")]
+                return {"obstacles": collision.mujoco_collision_world(rob.sim, base)}
+            except Exception as e:  # noqa: BLE001
+                return {"error": f"{type(e).__name__}: {e}"}
+
         env.ground_truth_poses = poses
         env.robot_base_pose = robot_base_pose
+        env.collision_world = collision_world
         return env
 
     return fn
@@ -280,6 +293,7 @@ class LiberoEnvFacade(BaseEnvFacade):
         sam3: str | None = None,
         grasp: dict | None = None,
         ik_reach: reach.ReachPreview | None = None,
+        ik_motion: motion.MotionPlanner | None = None,
     ):
         self._env = env
         self._env_idx = 0
@@ -288,6 +302,10 @@ class LiberoEnvFacade(BaseEnvFacade):
         # targets with is read from the worker once per reset.
         self._reach = ik_reach
         self._base_pose: dict | None = None
+        # --ik: env.plan_motion / env.check_motion, and move_to plans a collision-free path
+        # through the scene and checks the arm before each servo segment (utils/motion.py).
+        self._motion = ik_motion
+        self._plan: dict | None = None
         # Identifies what task/seed this server was launched with — the
         # client compares against its own expected values at construction
         # and refuses to talk to a stale or mis-configured server.
@@ -330,6 +348,14 @@ class LiberoEnvFacade(BaseEnvFacade):
                 "env.get_task_language": self.get_task_language,
                 "env.ground_truth_poses": self.ground_truth_poses,
                 "env.preview_reach": self.preview_reach,
+                **(
+                    {
+                        "env.plan_motion": self.plan_motion,
+                        "env.check_motion": self.check_motion,
+                    }
+                    if self._motion is not None
+                    else {}
+                ),
             }
         )
         # Code mode's primitives (primitives.py CODE_PRIMITIVES), registered before the grasp
@@ -928,13 +954,54 @@ class LiberoEnvFacade(BaseEnvFacade):
         self._check_xy(target, "move_to")
         grip = self._grip_value(gripper)
         self._require_reachable(target, "move_to")
+        plan = None
+        if self._motion is not None:
+            plan = motion.require_planned(self.plan_motion(target.tolist()), "move_to")
         self._grip = grip
-        steps, cancelled = self._servo(target, grip, tol, int(max_steps), 0.025)
+        if plan is None or plan["status"] != "planned":
+            steps, cancelled = self._servo(target, grip, tol, int(max_steps), 0.025)
+            return self._motion_result(
+                "move_to",
+                steps,
+                cancelled,
+                final_dist_m=round(float(np.linalg.norm(target - self._eef())), 4),
+            )
+        # A planned move: one servo segment per waypoint within the call's step budget, the
+        # arm checked against the scene before each.
+        steps, cancelled, stopped = 0, False, None
+        waypoints = plan["waypoints"]
+        for i, wp in enumerate(waypoints):
+            verdict = self.check_motion(segment=i)
+            if verdict["status"] == "contact":
+                stopped = verdict
+                break
+            last = i == len(waypoints) - 1
+            n, cancelled = self._servo(
+                np.asarray(wp[:3]),
+                grip,
+                tol if last else max(tol, 0.02),
+                int(max_steps) - steps,
+                0.025,
+            )
+            steps += n
+            if cancelled or steps >= int(max_steps) or not self._live():
+                break
+        extra = {
+            "planned": {
+                "segments": len(waypoints),
+                "path_m": plan["path_m"],
+                "backend": plan["backend"],
+            }
+        }
+        if stopped is not None:
+            extra["stopped"] = "contact"
+            extra["contact"] = stopped["message"]
         return self._motion_result(
             "move_to",
             steps,
             cancelled,
             final_dist_m=round(float(np.linalg.norm(target - self._eef())), 4),
+            **extra,
         )
 
     def move_delta(self, dxyz, gripper=None, max_steps: int = 25) -> dict:
@@ -1258,17 +1325,91 @@ class LiberoEnvFacade(BaseEnvFacade):
         if self._reach is None:
             return reach.no_service()
         raw = to_numpy_tree(self._env.current_raw_obs[self._env_idx])
+        return self._reach.preview(
+            raw["robot0_joint_pos"],
+            pos,
+            raw["robot0_eef_quat"] if quat_xyzw is None else quat_xyzw,
+            base_pose=self._robot_base(),
+        )
+
+    def _robot_base(self) -> dict:
         if self._base_pose is None:
             worker = self._env.env.workers[self._env_idx]
             base = worker.env_call("robot_base_pose", target="self")
             if "error" in base:
                 raise RuntimeError(f"robot base pose unavailable: {base['error']}")
             self._base_pose = base
-        return self._reach.preview(
+        return self._base_pose
+
+    def _scene(self) -> list:
+        """The planning world (utils/motion.py): the scene's collidable geoms, world frame."""
+        worker = self._env.env.workers[self._env_idx]
+        out = worker.env_call("collision_world", target="self")
+        if "error" in out:
+            raise RuntimeError(f"collision world unavailable: {out['error']}")
+        return out["obstacles"]
+
+    # ---- collision-free motion (--ik, utils/motion.py) ----
+
+    def plan_motion(self, pos, quat_xyzw=None, target_yaw=None) -> dict:
+        """Plan a collision-free path of the gripper to a world position from the current
+        joints (the ik service's ``ik.plan`` through the scene); nothing moves. The
+        orientation is kept, or ``quat_xyzw``, or the current one turned to ``target_yaw``
+        (rad, about world z). ``status`` is ``planned`` (``waypoints``: world TCP poses to
+        servo through, the goal last), ``blocked`` (no collision-free path: move_to refuses)
+        or ``unknown`` (no ik service answered). The plan is kept for ``check_motion``."""
+        if self._motion is None:
+            raise RuntimeError("plan_motion needs --ik")
+        raw = self.raw_obs()
+        quat = np.asarray(
+            raw["robot0_eef_quat"] if quat_xyzw is None else quat_xyzw, dtype=np.float64
+        )
+        if target_yaw is not None:
+            from scipy.spatial.transform import Rotation
+
+            turn = Rotation.from_euler("z", float(target_yaw) - self._yaw())
+            quat = (turn * Rotation.from_quat(quat)).as_quat()
+        plan = self._motion.plan(
             raw["robot0_joint_pos"],
-            pos,
-            raw["robot0_eef_quat"] if quat_xyzw is None else quat_xyzw,
-            base_pose=self._base_pose,
+            raw["robot0_eef_pos"],
+            np.asarray(pos, dtype=np.float64).reshape(3),
+            quat,
+            self._scene(),
+            base_pose=self._robot_base(),
+        )
+        self._plan = plan
+        return {
+            k: plan[k]
+            for k in (
+                "status",
+                "message",
+                "waypoints",
+                "path_m",
+                "backend",
+                "obstacles",
+            )
+        } | {"left_out": len(plan["left_out"])}
+
+    def check_motion(self, segment=None) -> dict:
+        """Check the arm against the scene before a servo segment: the current joints, and
+        with ``segment`` the last plan's configuration at that waypoint. ``status`` is
+        ``clear``, ``contact`` (stop: predicted contact) or ``unknown``."""
+        if self._motion is None:
+            raise RuntimeError("check_motion needs --ik")
+        qs = [self.raw_obs()["robot0_joint_pos"]]
+        plan = self._plan or {}
+        if segment is not None:
+            q_path = plan.get("q_path") or []
+            if not 0 <= int(segment) < len(q_path):
+                raise ValueError(
+                    f"segment {segment} is not a waypoint of the last plan_motion"
+                )
+            qs.append(q_path[int(segment)])
+        return self._motion.check(
+            qs,
+            self._scene(),
+            base_pose=self._robot_base(),
+            left_out=plan.get("left_out") or (),
         )
 
 
@@ -1352,6 +1493,7 @@ def main():
             "max_episode_steps": args.max_episode_steps,
         },
         ik_reach=reach.reach_from_args(args, "panda_libero"),
+        ik_motion=motion.planner_from_args(args, "panda_libero"),
         sam3=args.sam3,
         grasp=urls_from_args(args),
     )

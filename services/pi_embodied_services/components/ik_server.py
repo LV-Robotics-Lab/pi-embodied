@@ -31,7 +31,12 @@ their own numpy/torch and must not gain JAX.
 
 Methods (``ik.*``): ``solve`` (one pose -> one joint vector), ``plan`` (a joint path
 from a start configuration to a goal pose or configuration, refusing paths that hit
-the given obstacles) and ``robots`` (the robot models this process knows). Poses are
+the given obstacles; ``tcp_path`` carries the TCP pose of every waypoint), ``check``
+(clearance of configurations to obstacles: the env servers' execution-time check
+before each servo segment) and ``robots`` (the robot models this process knows).
+Obstacles are ``utils/collision.py``'s boxes, spheres, capsules and halfspaces, plus
+``{"type": "robot", "robot", "q", "base_pose"}``: another arm at its joints, expanded
+into its collision spheres (cuRobo backend only; the dual Franka's arm-arm check). Poses are
 TCP poses in the robot's base frame, as ``{"pos": [x, y, z], "quat_xyzw": [...]}`` or
 a flat ``[x, y, z, qx, qy, qz, qw]`` list. The service is an internal dependency of
 the env servers (``env.preview_reach``, the motion primitives' reach check, a
@@ -57,6 +62,7 @@ from typing import Any
 import numpy as np
 from scipy.spatial.transform import Rotation, Slerp
 
+from pi_embodied_services.utils import collision
 from pi_embodied_services.utils.logging import get_logger
 from pi_embodied_services.utils.rpc import RpcFacade
 
@@ -81,6 +87,11 @@ CUROBO_EMPTY_WORLD = {
         "_none": {"dims": [0.01, 0.01, 0.01], "pose": [100.0, 100.0, 100.0, 1, 0, 0, 0]}
     }
 }
+
+
+#: Obstacles cuRobo's planner world holds per primitive type: an env server's scene (up to
+#: utils/collision.MAX_BOXES boxes) plus another arm as spheres (franka.yml: about 60).
+CUROBO_COLLISION_CACHE = {"obb": 160, "sphere": 160, "capsule": 16}
 
 
 # ---------------------------------------------------------------------------
@@ -275,50 +286,9 @@ def _joint_jumps(path: np.ndarray) -> float:
 # ---------------------------------------------------------------------------
 
 
-def parse_obstacle(obstacle: Any) -> dict[str, Any]:
-    """Validate one obstacle: ``box`` (``position``, ``extent``[, ``quat_xyzw``]),
-    ``sphere`` (``center``, ``radius``), ``capsule`` (``position``, ``radius``,
-    ``height``[, ``quat_xyzw``]) or ``halfspace`` (``point``, ``normal``), metres in
-    the robot's base frame."""
-    if not isinstance(obstacle, dict) or "type" not in obstacle:
-        raise ValueError("each obstacle is a dict with a 'type'")
-    kind = str(obstacle["type"])
-    out: dict[str, Any] = {"type": kind, "name": str(obstacle.get("name", ""))}
-
-    def vec(key: str, n: int) -> np.ndarray:
-        if key not in obstacle:
-            raise ValueError(f"{kind} obstacle needs '{key}'")
-        v = np.asarray(obstacle[key], dtype=np.float64).reshape(-1)
-        if v.shape != (n,) or not np.isfinite(v).all():
-            raise ValueError(f"{kind} obstacle '{key}' must be {n} finite numbers")
-        return v
-
-    if kind == "box":
-        out["position"], out["extent"] = vec("position", 3), vec("extent", 3)
-        if (out["extent"] <= 0).any():
-            raise ValueError("box extent must be positive")
-        out["quat_xyzw"] = (
-            vec("quat_xyzw", 4)
-            if "quat_xyzw" in obstacle
-            else np.array([0.0, 0.0, 0.0, 1.0])
-        )
-    elif kind == "sphere":
-        out["center"], out["radius"] = vec("center", 3), float(obstacle["radius"])
-    elif kind == "capsule":
-        out["position"], out["radius"] = vec("position", 3), float(obstacle["radius"])
-        out["height"] = float(obstacle["height"])
-        out["quat_xyzw"] = (
-            vec("quat_xyzw", 4)
-            if "quat_xyzw" in obstacle
-            else np.array([0.0, 0.0, 0.0, 1.0])
-        )
-    elif kind == "halfspace":
-        out["point"], out["normal"] = vec("point", 3), vec("normal", 3)
-    else:
-        raise ValueError(
-            f"unknown obstacle type {kind!r}; box, sphere, capsule or halfspace"
-        )
-    return out
+#: Obstacle parsing, distances and frames live in utils/collision.py (the env servers build
+#: their planning worlds with it); ``robot`` obstacles are expanded by :class:`IkFacade`.
+parse_obstacle = collision.parse_obstacle
 
 
 # ---------------------------------------------------------------------------
@@ -751,21 +721,46 @@ class PyrokiBackend:
             seeds_tried=tried,
         )
 
-    def _path_collisions(
+    def _clearances(
         self, entry: dict[str, Any], path: np.ndarray, geoms: list[Any]
-    ) -> float:
-        """Smallest robot-to-obstacle distance along the path (negative = penetration)."""
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Per configuration: the smallest robot-to-obstacle distance (negative =
+        penetration) and the index of the obstacle it is to."""
         import jax.numpy as jnp
         import pyroki as pk
 
         coll = self._collision(entry)
         full = np.stack([self._full_q(entry, q) for q in path])
         robot_geom = coll.at_config(entry["robot"], jnp.asarray(full))
-        worst = float("inf")
-        for geom in geoms:
+        per = np.full((len(geoms), len(path)), np.inf)
+        for i, geom in enumerate(geoms):
             dist = np.asarray(pk.collision.collide(robot_geom, geom))
-            worst = min(worst, float(dist.min()))
-        return worst
+            per[i] = dist.reshape(len(path), -1).min(axis=1)
+        if not len(geoms):
+            return np.full(len(path), np.inf), np.full(len(path), -1)
+        return per.min(axis=0), per.argmin(axis=0)
+
+    def _path_collisions(
+        self, entry: dict[str, Any], path: np.ndarray, geoms: list[Any]
+    ) -> float:
+        """Smallest robot-to-obstacle distance along the path (negative = penetration)."""
+        return float(self._clearances(entry, path, geoms)[0].min())
+
+    def tcp_poses(self, robot: str, path: Any) -> np.ndarray:
+        """TCP poses (N x 7, xyz + xyzw) of a joint path."""
+        return np.stack(
+            [np.concatenate(self.fk(robot, q)) for q in np.asarray(path, dtype=float)]
+        )
+
+    def check(
+        self, robot: str, path: Any, obstacles: list[dict[str, Any]]
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Per configuration of ``path``: clearance to the parsed obstacles (m) and the
+        index of the nearest one (PyRoKi's collision capsules against the geometry)."""
+        entry = self._load(robot)
+        model: RobotModel = entry["model"]
+        qs = np.stack([_q_vector(q, model, "q") for q in np.asarray(path, dtype=float)])
+        return self._clearances(entry, qs, self._geoms(obstacles))
 
     def plan(
         self,
@@ -849,7 +844,13 @@ class PyrokiBackend:
                     **extra,
                 )
         return plan_result(
-            robot=robot, path=path, ok=True, error=None, started=started, **extra
+            robot=robot,
+            path=path,
+            ok=True,
+            error=None,
+            started=started,
+            tcp_path=self.tcp_poses(robot, path).tolist(),
+            **extra,
         )
 
 
@@ -956,7 +957,7 @@ class CuroboBackend:
             WorldConfig.from_dict(CUROBO_EMPTY_WORLD),
             collision_checker_type=CollisionCheckerType.PRIMITIVE,
             use_cuda_graph=True,
-            collision_cache={"obb": 32, "sphere": 32, "capsule": 8},
+            collision_cache=CUROBO_COLLISION_CACHE,
             position_threshold=self.pos_tol,
             rotation_threshold=self.ori_tol,
             num_ik_seeds=32,
@@ -1050,6 +1051,49 @@ class CuroboBackend:
         if hasattr(value, "detach"):
             value = value.detach().cpu().numpy()
         return np.asarray(value, dtype=np.float64)
+
+    def _state(self, robot: str, path: Any):
+        """cuRobo's kinematic state (TCP link pose, collision spheres) of arm joint rows."""
+        model = self._model(robot)
+        solver = self._solver(robot)
+        rows = [
+            self._full_q(solver, _q_vector(q, model, "q")).tolist()
+            for q in np.asarray(path, dtype=float).reshape(-1, len(model.arm_joints))
+        ]
+        return solver.kinematics.get_state(solver.tensor_args.to_device(rows))
+
+    def robot_spheres(self, robot: str, q: Any) -> np.ndarray:
+        """The robot's collision spheres (N x 4: xyz in its base frame, radius) at ``q``:
+        the spheres cuRobo's own world and self collision checks use (franka.yml)."""
+        spheres = self._to_numpy(self._state(robot, [q]).link_spheres_tensor)
+        return spheres.reshape(-1, 4)
+
+    def tcp_poses(self, robot: str, path: Any) -> np.ndarray:
+        """TCP poses (N x 7, xyz + xyzw) of a joint path."""
+        model = self._model(robot)
+        state = self._state(robot, path)
+        pos = self._to_numpy(state.ee_position).reshape(-1, 3)
+        quat = self._to_numpy(state.ee_quaternion).reshape(-1, 4)[:, [1, 2, 3, 0]]
+        return np.stack(
+            [np.concatenate(link_to_tcp(model, p, q)) for p, q in zip(pos, quat)]
+        )
+
+    def check(
+        self, robot: str, path: Any, obstacles: list[dict[str, Any]]
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Per configuration of ``path``: clearance of cuRobo's collision spheres to the
+        parsed obstacles (m, exact sphere-primitive distances) and the nearest one's index."""
+        n = np.asarray(path, dtype=float).reshape(
+            -1, len(self._model(robot).arm_joints)
+        )
+        spheres = self._to_numpy(self._state(robot, n).link_spheres_tensor)
+        spheres = spheres.reshape(len(n), -1, 4)
+        clear = np.full(len(spheres), np.inf)
+        which = np.full(len(spheres), -1)
+        for i, s in enumerate(spheres):
+            d, j = collision.sphere_clearance(obstacles, s)
+            clear[i], which[i] = d, -1 if j is None else j
+        return clear, which
 
     # -- interface --------------------------------------------------------
 
@@ -1185,6 +1229,7 @@ class CuroboBackend:
             collision_free=True,
             status=status,
             dt=self.interpolation_dt,
+            tcp_path=self.tcp_poses(robot, path).tolist(),
             obstacles=len(parsed),
         )
 
@@ -1205,7 +1250,8 @@ class IkFacade(RpcFacade):
         self._rpc["ik.solve"] = self.solve
         self._rpc["ik.plan"] = self.plan
         self._rpc["ik.robots"] = self.robots
-        self._readonly_methods.update({"ik.solve", "ik.plan", "ik.robots"})
+        self._rpc["ik.check"] = self.check
+        self._readonly_methods.update({"ik.solve", "ik.plan", "ik.robots", "ik.check"})
 
     def robots(self) -> dict[str, Any]:
         return {"backend": self.backend.name, "robots": self.backend.robots()}
@@ -1214,6 +1260,50 @@ class IkFacade(RpcFacade):
         if not isinstance(robot, str) or not robot:
             raise ValueError("robot must be a robot model name (see ik.robots)")
         return self.backend.solve(robot, target_pose, seed_q)
+
+    def _obstacles(self, obstacles: Any) -> list[dict[str, Any]]:
+        """The obstacle list with each ``robot`` obstacle (another arm: ``robot``, ``q`` and
+        ``base_pose``, its base in the planning robot's base frame) expanded into that arm's
+        collision spheres at ``q``. Only a backend with collision spheres (cuRobo) can."""
+        if obstacles is None:
+            return []
+        if not isinstance(obstacles, list):
+            raise ValueError("obstacles must be a list of obstacle dicts")
+        out: list[dict[str, Any]] = []
+        for obs in obstacles:
+            if not (isinstance(obs, dict) and obs.get("type") == "robot"):
+                out.append(obs)
+                continue
+            spheres_of = getattr(self.backend, "robot_spheres", None)
+            if spheres_of is None:
+                raise ValueError(
+                    f"robot obstacles need collision spheres; the {self.backend.name} "
+                    "backend has none (use --backend curobo)"
+                )
+            other = obs.get("robot")
+            if other not in ROBOTS:
+                raise ValueError(f"robot obstacle names an unknown robot {other!r}")
+            base = obs.get("base_pose") or {"pos": [0, 0, 0], "quat_xyzw": [0, 0, 0, 1]}
+            pos, quat = parse_pose(base, "robot obstacle base_pose")
+            matrix = np.eye(4)
+            matrix[:3, :3] = Rotation.from_quat(quat).as_matrix()
+            matrix[:3, 3] = pos
+            name = str(obs.get("name") or other)
+            for i, (x, y, z, r) in enumerate(
+                np.asarray(spheres_of(other, obs.get("q")))
+            ):
+                if r <= 0:
+                    continue
+                center = matrix[:3, :3] @ np.array([x, y, z]) + matrix[:3, 3]
+                out.append(
+                    {
+                        "type": "sphere",
+                        "name": f"{name}/{i}",
+                        "center": center.tolist(),
+                        "radius": float(r),
+                    }
+                )
+        return out
 
     def plan(
         self,
@@ -1224,18 +1314,80 @@ class IkFacade(RpcFacade):
         obstacles: Any = None,
         waypoints: int = 20,
     ) -> dict[str, Any]:
+        """A joint path from ``start_q`` to a TCP ``goal_pose`` or ``goal_q`` clear of the
+        obstacles (``path``, and ``tcp_path``: the TCP pose at each waypoint)."""
         if not isinstance(robot, str) or not robot:
             raise ValueError("robot must be a robot model name (see ik.robots)")
-        if obstacles is not None and not isinstance(obstacles, list):
-            raise ValueError("obstacles must be a list of obstacle dicts")
         return self.backend.plan(
             robot,
             start_q,
             goal_pose=goal_pose,
             goal_q=goal_q,
-            obstacles=obstacles,
+            obstacles=self._obstacles(obstacles) if obstacles is not None else None,
             waypoints=waypoints,
         )
+
+    def check(
+        self,
+        robot: str,
+        q: Any = None,
+        path: Any = None,
+        obstacles: Any = None,
+        margin: float = 0.0,
+    ) -> dict[str, Any]:
+        """Whether configurations are clear of the obstacles, for execution-time checks.
+
+        Args:
+            robot: robot model name.
+            q: one configuration, or
+            path: a list of them.
+            obstacles: as for ``plan`` (``robot`` obstacles included).
+            margin: clearance (m) below which a configuration counts as contact.
+
+        Returns:
+            dict with ``collision_free`` (every configuration keeps ``margin``),
+            ``min_clearance_m`` (None without obstacles), ``clearances`` (per
+            configuration), ``worst_index`` and ``nearest`` (the name of the obstacle the
+            worst configuration is closest to), ``checked`` (configurations).
+        """
+        started = time.perf_counter()
+        if not isinstance(robot, str) or not robot:
+            raise ValueError("robot must be a robot model name (see ik.robots)")
+        if (q is None) == (path is None):
+            raise ValueError("check takes exactly one of q or path")
+        rows = [q] if q is not None else list(path)
+        if not rows:
+            raise ValueError("path must list at least one configuration")
+        parsed = [parse_obstacle(o) for o in self._obstacles(obstacles)]
+        out: dict[str, Any] = {
+            "robot": robot,
+            "backend": self.backend.name,
+            "checked": len(rows),
+            "obstacles": len(parsed),
+        }
+        if not parsed:
+            out.update(
+                collision_free=True,
+                min_clearance_m=None,
+                clearances=[None] * len(rows),
+                worst_index=None,
+                nearest=None,
+            )
+        else:
+            clear, which = self.backend.check(robot, rows, parsed)
+            worst = int(np.argmin(clear))
+            j = int(which[worst])
+            out.update(
+                collision_free=bool(float(clear.min()) > float(margin)),
+                min_clearance_m=float(clear.min()),
+                clearances=[float(c) for c in clear],
+                worst_index=worst,
+                nearest=parsed[j]["name"] or f"{parsed[j]['type']}_{j}"
+                if j >= 0
+                else None,
+            )
+        out["check_ms"] = round((time.perf_counter() - started) * 1000.0, 3)
+        return out
 
     def warmup(self, robots: list[str]) -> None:
         """Load (and, for PyRoKi, compile) the named robots before serving."""

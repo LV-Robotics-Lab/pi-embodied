@@ -42,6 +42,12 @@ that arm succeeds, while the other arm keeps working. A refusal that sent nothin
 too-long step, the yaw budget) does not halt. ``halt_arm`` stops an arm the same way on
 request (e.g. its part of the task is done).
 
+Code mode (``code.run``, utils/code_real.py; only with ``--code``): a program's steps run through
+the same guarded ``step`` as pi's tools (the step and yaw caps, floor, box, the per-arm halt) and
+under pi's tighter ``--max-move`` / ``--max-yaw`` (``code.set_limits``). ``move_joints`` (the
+reset's joint-space move to a calibrated pose, whose travel no per-call cap covers) is refused in
+code mode, and so is ``halt_arm`` on one arm (pi's single-arm tools have none).
+
 Reset: one arm (``arm``), or both only when asked (``both=True``). It opens the
 gripper, so a gripper that holds something (closed wider than ``empty_width_m``) is
 refused unless the caller passes ``release=True`` after the operator confirmed it.
@@ -64,6 +70,11 @@ from pi_embodied_services.components.env_facade_base import BaseEnvFacade
 from pi_embodied_services.robots.piper.controller import PiperController, PiperLimits
 from pi_embodied_services.robots.piper.primitives import PIPER_PRIMITIVES
 from pi_embodied_services.utils import hardware_lock
+from pi_embodied_services.utils.code_real import (
+    RealCodeMode,
+    add_code_argument,
+    vec3,
+)
 from pi_embodied_services.utils.logging import get_logger
 from pi_embodied_services.utils.perception import (
     add_perception_arguments,
@@ -235,13 +246,15 @@ META_LIMITS = (
 )
 
 
-class PiperEnvFacade(BaseEnvFacade):
+class PiperEnvFacade(RealCodeMode, BaseEnvFacade):
     """The ``env.*`` protocol for one Piper arm or both (see the module docstring).
 
     ``robot`` is one arm (single-arm config) or ``{"left": arm, "right": arm}``.
     """
 
     SERVICE_NAME = "piper-env"
+    #: Code mode: pi's per-call limits (its --max-move / --max-yaw, when tighter than the arm's).
+    _CODE_LIMITS = {"max_move_m": True, "max_yaw_rad": True}
 
     def __init__(
         self,
@@ -249,7 +262,10 @@ class PiperEnvFacade(BaseEnvFacade):
         robot: Any,
         cameras: dict[str, Any],
         config_path: str = "",
+        code: bool = False,
     ) -> None:
+        # --code: code.run over the registry, behind the RPC token (utils/code_real.py).
+        self._enable_code(code)
         super().__init__()
         self._cfg = cfg
         self._config_path = config_path
@@ -306,7 +322,50 @@ class PiperEnvFacade(BaseEnvFacade):
             "halt_arm",
         ):
             self._rpc[f"env.{name}"] = getattr(self, name)
-        register_code_api(self, PIPER_PRIMITIVES)
+        self._install_real_code_run(register_code_api(self, PIPER_PRIMITIVES))
+
+    # -- code mode (run_code) ----------------------------------------------
+
+    def _video_frame(self, obs: dict) -> Any:
+        """pi's episode video follows the first camera (front)."""
+        images = obs.get("images") or {}
+        names = [n for n in sorted(images) if n == "front" or n.startswith("wrist")]
+        return images[names[0]] if names else None
+
+    def _code_move_m(self, method: str, kwargs: dict) -> float:
+        """A step's translation (base or heading frame, the same length); a yaw turns the
+        gripper in place, a gripper command moves none."""
+        if method == "env.step":
+            d = kwargs.get("delta_xyz")
+            return float(np.linalg.norm(vec3(d, "delta_xyz"))) if d is not None else 0.0
+        return 0.0
+
+    def _code_check(self, method: str, kwargs: dict) -> None:
+        """Refuse a program's call as pi's tools would, before anything is commanded."""
+        if method == "env.move_joints":
+            raise ValueError(
+                "move_joints is not available in code mode: the joint-space move to a "
+                "calibrated pose is not bounded per call (the operator's reset runs it)"
+            )
+        if method == "env.halt_arm" and not self._dual:
+            raise ValueError(
+                "halt_arm stops one arm of two; this server drives one arm"
+            )
+        if method != "env.step":
+            return
+        d = kwargs.get("delta_xyz")
+        norm = float(np.linalg.norm(vec3(d, "delta_xyz"))) if d is not None else 0.0
+        yaw = float(kwargs.get("yaw") or 0.0)
+        move, turn = self._limit("max_move_m"), self._limit("max_yaw_rad")
+        if not norm <= move:
+            raise ValueError(
+                f"delta_xyz moves {norm:.4f} m; the limit is {move} m per call. Split the "
+                "motion into smaller calls."
+            )
+        if not abs(yaw) <= turn:
+            raise ValueError(
+                f"yaw {yaw:.4f} rad exceeds the limit of {turn} rad per call."
+            )
 
     def close(self) -> None:
         for cam in self._cameras.values():
@@ -701,6 +760,7 @@ def main() -> int:
     )
     hardware_lock.add_lock_arguments(parser)
     add_perception_arguments(parser, sam3=True)
+    add_code_argument(parser)
     args = parser.parse_args()
     if args.print_identity:
         from pi_embodied_services.robots.piper.ros_io import arm_identity
@@ -725,7 +785,11 @@ def main() -> int:
     )
     robot, cameras = build(cfg)
     facade = PiperEnvFacade(
-        cfg, robot, cameras, config_path=str(args.robot_config or DEFAULT_CONFIG)
+        cfg,
+        robot,
+        cameras,
+        config_path=str(args.robot_config or DEFAULT_CONFIG),
+        code=args.code,
     )
     # --sam3 / --unidepth: env.detect, env.select_detection, env.reject_detection and
     # env.enhance_depth (the webcams have no depth: UniDepth supplies it) on get_observation's frames.

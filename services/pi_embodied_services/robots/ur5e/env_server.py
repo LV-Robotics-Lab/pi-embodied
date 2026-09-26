@@ -41,6 +41,11 @@ The config (limits, begin pose, every camera's hand-eye calibration) is bound to
 one arm: ``calibration.arm_id`` must equal the controller's serial number, and each
 calibration YAML must name the same arm.
 
+Code mode (``code.run``, utils/code_real.py; only with ``--code``): a program's motions run through
+these same guarded methods, and pi's tighter ``--max-move`` / ``--max-rotate`` arrive with
+``code.set_limits`` and are applied as pi's tools apply them (``move_pose``: the translation from
+the live TCP).
+
 Deploying: on the UR pendant enable Remote Control and the RTDE/URCap ports; on the
 workstation install the services' ``ur5e`` extra (``ur-rtde``, cameras; add
 ``realsense-l515`` for an L515), copy ``config/example.yaml``, fill in the IP, the
@@ -80,6 +85,11 @@ from pi_embodied_services.robots.ur5e.control import (
 )
 from pi_embodied_services.robots.ur5e.primitives import UR5E_PRIMITIVES
 from pi_embodied_services.utils import hardware_lock
+from pi_embodied_services.utils.code_real import (
+    RealCodeMode,
+    add_code_argument,
+    vec3,
+)
 from pi_embodied_services.utils.daemon import watch_parent_death
 from pi_embodied_services.utils.logging import get_logger
 from pi_embodied_services.utils.perception import (
@@ -262,10 +272,12 @@ def load_config(path: str | Path | None, cameras: str = "") -> dict[str, Any]:
     return cfg
 
 
-class UR5eEnvFacade(BaseEnvFacade):
+class UR5eEnvFacade(RealCodeMode, BaseEnvFacade):
     """The ``env.*`` protocol on one UR5e (see the module docstring)."""
 
     SERVICE_NAME = "ur5e-env"
+    #: Code mode: pi's per-call limits (its --max-move / --max-rotate, when tighter than the arm's).
+    _CODE_LIMITS = {"max_move_m": True, "max_rotate_rad": True}
 
     def __init__(
         self,
@@ -279,7 +291,10 @@ class UR5eEnvFacade(BaseEnvFacade):
         task_description: str = "",
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
+        code: bool = False,
     ) -> None:
+        # --code: code.run over the registry, behind the RPC token (utils/code_real.py).
+        self._enable_code(code)
         super().__init__()
         self._cfg = cfg
         self._config_path = config_path
@@ -412,7 +427,50 @@ class UR5eEnvFacade(BaseEnvFacade):
     def _register_rpc(self) -> None:
         for name in METHODS:
             self._rpc[f"env.{name}"] = getattr(self, name)
-        register_code_api(self, UR5E_PRIMITIVES)
+        self._install_real_code_run(register_code_api(self, UR5E_PRIMITIVES))
+
+    # -- code mode (run_code) ----------------------------------------------
+
+    def _video_frame(self, obs: dict) -> Any:
+        """pi's episode video follows the main camera."""
+        return (obs.get("images") or {}).get(self._main)
+
+    def _code_translation(self, method: str, kwargs: dict) -> float:
+        if method == "env.move_delta":
+            return float(np.linalg.norm(vec3(kwargs["delta_xyz"], "delta_xyz")))
+        if method == "env.move_pose":
+            tcp = np.asarray(self.controller.state()["tcp_pose"][:3], dtype=np.float64)
+            return float(np.linalg.norm(vec3(kwargs["xyz"], "xyz") - tcp))
+        return 0.0
+
+    def _code_move_m(self, method: str, kwargs: dict) -> float:
+        """move_delta's delta, move_pose's distance from the live TCP; a rotation turns the TCP
+        in place, the gripper moves none."""
+        return self._code_translation(method, kwargs)
+
+    def _code_check(self, method: str, kwargs: dict) -> None:
+        """Refuse a program's motion as pi's tools would, before it is commanded (the server's
+        own caps, box, floor and tilt check it again)."""
+        if method in ("env.move_delta", "env.move_pose"):
+            norm, limit = (
+                self._code_translation(method, kwargs),
+                self._limit("max_move_m"),
+            )
+            if not norm <= limit:
+                raise ValueError(
+                    f"the move is {norm:.4f} m; the limit is {limit} m per call. Split the "
+                    "motion into smaller calls."
+                )
+        elif method == "env.rotate_delta":
+            rpy, limit = (
+                vec3(kwargs["delta_rpy"], "delta_rpy"),
+                self._limit("max_rotate_rad"),
+            )
+            if not np.linalg.norm(rpy) <= limit:
+                raise ValueError(
+                    f"the rotation is {np.linalg.norm(rpy):.4f} rad; the limit is {limit} rad "
+                    "per call. Split it into smaller calls."
+                )
 
     def close(self) -> None:
         for cam in self._cameras.values():
@@ -749,6 +807,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     hardware_lock.add_lock_arguments(parser)
     add_perception_arguments(parser, sam3=True)
+    add_code_argument(parser)
     args = parser.parse_args(argv)
     if args.mock:
         from pi_embodied_services.robots.ur5e.mock import MOCK_ENV
@@ -795,6 +854,7 @@ def main(argv: list[str] | None = None) -> int:
             config_path=str(args.robot_config or DEFAULT_CONFIG),
             camera_flag=args.cameras,
             task_description=args.task_description,
+            code=args.code,
         )
         # --sam3 / --unidepth: env.detect, env.select_detection, env.reject_detection and
         # env.enhance_depth (UniDepth fills an RGB-only camera's depth) on get_observation's frames.

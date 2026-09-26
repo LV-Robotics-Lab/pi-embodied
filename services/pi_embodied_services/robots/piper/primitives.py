@@ -27,18 +27,21 @@ PIPER_PRIMITIVES = (
         "env.get_robot_state",
         "One arm's state (TCP pose, gripper width); both arms' without `arm` on two.",
         {"arm": _ARM},
+        example='st = get_robot_state()\nprint(st["eef_pos"], st["gripper_width_m"])',
     ),
     Primitive(
         "get_observation",
         "env.get_observation",
         "The cameras' frames and the robot state.",
         tiers=("low",),
+        example='obs = get_observation()\nfront = obs["images"]["front"]  # HxWx3 uint8\nprint(obs["robot_state"]["eef_pos"])',
     ),
     Primitive(
         "get_camera_meta",
         "env.get_camera_meta",
         "Camera calibration.",
         tiers=("low",),
+        example='print(get_camera_meta()["cameras"])',
     ),
     Primitive(
         "step",
@@ -58,6 +61,7 @@ PIPER_PRIMITIVES = (
             ),
         },
         mutating=True,
+        example='r = step([0.0, 0.0, -0.02])      # 2 cm down (within the per-call limit)\nstep(yaw=0.1, gripper="close")  # turn, then close\nprint(r["ok"])',
     ),
     Primitive(
         "move_joints",
@@ -72,5 +76,6 @@ PIPER_PRIMITIVES = (
         "Stop one arm and refuse its motion until its reset.",
         {"arm": _ARM, "reason": Param("string", "why", False)},
         mutating=True,
+        example='halt_arm(arm="left", reason="its part is done")  # two arms only',
     ),
 )

@@ -24,18 +24,21 @@ UR5E_PRIMITIVES = (
         "get_robot_state",
         "env.get_robot_state",
         "The arm's state: TCP pose (xyz + xyzw and the UR rotation vector), joints, setpoint, gripper width (m).",
+        example='st = get_robot_state()["raw_base_state"]\nprint(st["tcp_pose"][:3], st["gripper_position"])',
     ),
     Primitive(
         "get_observation",
         "env.get_observation",
         "Live frames per camera: images[name] RGB, depths[name] metres for cameras with depth.",
         tiers=("low",),
+        example='obs = get_observation()\nfor name, rgb in obs["images"].items():\n    print(name, rgb.shape, name in obs["depths"])',
     ),
     Primitive(
         "get_camera_meta",
         "env.get_camera_meta",
         "Per camera: intrinsics, depth availability, mount and hand-eye extrinsic (camera -> tcp or base).",
         tiers=("low",),
+        example='meta = get_camera_meta()\nK = meta["cameras"]["wrist"]["intrinsic_K"]',
     ),
     Primitive(
         "move_delta",
@@ -43,6 +46,7 @@ UR5E_PRIMITIVES = (
         "Translate the TCP by a base-frame delta in metres, orientation held; refused beyond the per-call limit or outside the workspace.",
         {"delta_xyz": Param("vec3", "base-frame [dx, dy, dz] in m")},
         mutating=True,
+        example='r = move_delta([0, 0, -0.03])  # 3 cm down, orientation held\nprint(r["ok"], r["final_tcp_pose"][:3])',
     ),
     Primitive(
         "move_pose",
@@ -54,6 +58,7 @@ UR5E_PRIMITIVES = (
             "rpy": Param("vec3", "extrinsic xyz Euler angles (rad)", False),
         },
         mutating=True,
+        example='p = get_robot_state()["raw_base_state"]["tcp_pose"]\nmove_pose([p[0] + 0.03, p[1], p[2]])  # absolute, within the per-call limit',
     ),
     Primitive(
         "rotate_delta",
@@ -61,6 +66,7 @@ UR5E_PRIMITIVES = (
         "Rotate the TCP by a base-frame roll/pitch/yaw delta in radians; refused beyond the per-call limit or the tilt limit.",
         {"delta_rpy": Param("vec3", "base-frame [droll, dpitch, dyaw] in rad")},
         mutating=True,
+        example="rotate_delta([0, 0, 0.1])  # yaw 0.1 rad",
     ),
     Primitive(
         "set_gripper",
@@ -68,5 +74,6 @@ UR5E_PRIMITIVES = (
         "Open (open=True) or close the Robotiq gripper and wait for the fingers to settle; reports grasp_empty and gripper_jammed.",
         {"open": Param("boolean", "True opens, False closes")},
         mutating=True,
+        example='r = set_gripper(False)\nprint(r["grasp_empty"], r["gripper_jammed"])',
     ),
 )

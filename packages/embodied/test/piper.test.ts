@@ -314,6 +314,24 @@ async function mockServer(o: ServerOpts = {}) {
 				return { ok: true, arms: Object.fromEntries(kwargs.steps.map((st: any) => [st.arm, { ok: true }])) };
 			case "env.halt_arm":
 				return { ok: true, arm: kwargs.arm, halted: `halted: ${kwargs.reason}` };
+			case "code.set_limits":
+				return kwargs;
+			case "code.run":
+				return {
+					status: "ran",
+					stdout: "",
+					stderr: "",
+					traceback: null,
+					error: null,
+					result: null,
+					calls: [],
+					n_calls: 1,
+					move_m: 0.02,
+					ms: 5,
+					motions: 1,
+					states: null,
+					frames: [img],
+				};
 			default:
 				throw new Error(`unexpected ${method}`);
 		}
@@ -701,4 +719,51 @@ test("a Piper without a wrist camera: the views, act and the prompt describe the
 	} finally {
 		full.m.close();
 	}
+});
+
+const PIPER_CODE = { code: "true", "code-real": true };
+
+test("piper --code: pi's limits reach the server, every program is confirmed and the run is a state step", async (t) => {
+	const m = await mockServer({ dual: false });
+	t.after(m.close);
+	const f = fakePi({ operator: true, task: "banana_handover", "robot-env": m.url, "max-move": "0.03", ...PIPER_CODE });
+	piper(f.pi);
+	f.confirms.push(true, true, false);
+	const { errors } = await start(f);
+	assert.deepEqual(errors, []);
+	assert.ok(f.active().includes("run_code"), f.active().join(","));
+	assert.deepEqual(m.calls.find((c) => c.method === "code.set_limits")?.kwargs, {
+		max_move_m: 0.03,
+		max_yaw_rad: 0.2,
+	});
+	await f.emit("agent_start");
+	const r = await f.run("run_code", { code: "step([0, 0, -0.02])" });
+	assert.equal(f.dialogs[1], "Run this program on the robot?");
+	assert.equal(r.details.status, "ran");
+	assert.match(r.content.map((c: any) => c.text ?? "").join("\n"), /"action": "run_code"/);
+	// Declined: the program never reaches the server.
+	const no = await f.run("run_code", { code: "step([0, 0, 0.02])" });
+	assert.match(no.content[0].text, /operator declined/);
+	assert.equal(m.calls.filter((c) => c.method === "code.run").length, 1);
+});
+
+test("piper --code needs --code-real and --operator before anything moves", async (t) => {
+	const m = await mockServer({ dual: false });
+	t.after(m.close);
+	const f = fakePi({ operator: true, task: "banana_handover", "robot-env": m.url, code: "true" });
+	piper(f.pi);
+	f.confirms.push(true);
+	await start(f);
+	assert.match(f.notes.join("\n"), /needs both --code-real and --operator/);
+	assert.ok(!f.active().includes("run_code"));
+	assert.equal(m.calls.filter((c) => c.method === "env.reset").length, 0);
+});
+
+test("piper_dual --code: the same code mode on both arms", async (t) => {
+	const { f, m } = await dualStarted(PIPER_CODE, {}, { confirms: [true, true] });
+	t.after(m.close);
+	assert.ok(f.active().includes("run_code"));
+	await f.emit("agent_start");
+	const r = await f.run("run_code", { code: "step([0, 0, 0.01], arm='left')" });
+	assert.equal(r.details.status, "ran");
 });

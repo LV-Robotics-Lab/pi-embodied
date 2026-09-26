@@ -28,6 +28,10 @@
  * the base convention. The robot refuses to start with --view-select when the units module it runs
  * with has no view hook (every move would silently run in the base frame).
  *
+ * Code mode (../code, `--code=true --code-real --operator`): the env server runs with --code and
+ * takes pi's --max-move / --max-yaw (code.set_limits) for a program's steps; every program is
+ * confirmed by the operator and becomes the next state step.
+ *
  * Reset: on two arms the start and the operator's scene reset reset both arms (the operator
  * confirmed it); a gripper that holds an object is opened only after the operator confirms that too.
  */
@@ -86,6 +90,8 @@ const SYSTEM_DUAL = template(new URL("./SYSTEM_DUAL.md", import.meta.url));
 const EXPLORE = template(new URL("./explore.md", import.meta.url));
 /** The motion tools: the recipe of a solved exploration attempt. */
 const MOTION = ["move_delta", "rotate_yaw", "open_gripper", "close_gripper", "act"];
+const SUCCESS_REFUSAL =
+	"motion refused: the operator judged this attempt a success. Write the audit and memory drafts, then call finish.";
 
 /** The dual rig's arms, as the env server names them. */
 export const PIPER_ARMS = ["left", "right"] as const;
@@ -354,6 +360,17 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 		task: ["task"],
 		// The env server's primitive registry (code.api), recorded per episode.
 		codeApi: () => env,
+		// Code mode (../code) on the real arm(s): --code-real and --operator, every program confirmed.
+		code: {
+			real: true,
+			rpc: () => env as RpcClient,
+			instruction: () => task?.instruction ?? "",
+			refuse: () => (successJudged() ? SUCCESS_REFUSAL : undefined),
+			observe: async (r) => {
+				for (const f of (r.frames as NdArray[] | undefined) ?? []) robot.video.frame(frameOf(f));
+				return view(await record({ action: "run_code" }, { status: r.status, motions: r.motions ?? 0 }, null));
+			},
+		},
 		keepImages: 4,
 		video: true,
 		// Observations carry cameras() in order; the front view has to lead to be the main one.
@@ -429,6 +446,10 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 	const robot = defineRobot(pi, spec);
 	const { op } = robot;
 
+	/** Exploration: the operator judged this attempt a success; no more motion. */
+	const successJudged = () => pi.getFlag("explore") === true && (op.result() as Json).operator_verdict === "success";
+	/** Code mode is on (--code): the env server serves code.run and takes pi's per-call limits. */
+	const coding = () => (pi.getFlag("code") ?? "false") !== "false";
 	const maxMove = () => Math.min(Number(flag("max-move", "0.05")), meta?.limits.max_step_m ?? Infinity);
 	const maxYaw = () => Math.min(Number(flag("max-yaw", "0.2")), meta?.limits.max_yaw_rad ?? Infinity);
 	const unitsFrame = (): Frame => meta?.units_frame ?? "base";
@@ -477,10 +498,7 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 		const side = armName(arm);
 		op.check();
 		if (signal?.aborted) throw new Error("tool operation interrupted");
-		if (pi.getFlag("explore") === true && (op.result() as Json).operator_verdict === "success")
-			throw new Error(
-				"motion refused: the operator judged this attempt a success. Write the audit and memory drafts, then call finish.",
-			);
+		if (successJudged()) throw new Error(SUCCESS_REFUSAL);
 		if (delta.length !== 3 || !delta.every(Number.isFinite)) throw new Error("delta must be 3 finite numbers");
 		if (!Number.isFinite(yaw)) throw new Error("yaw must be finite");
 		checkMove(delta, maxMove());
@@ -765,6 +783,7 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 			"pi_embodied_services.robots.piper.env_server",
 			...(config ? ["--robot-config", config] : []),
 			...detectionArgs(pi, flag("sam3", "")),
+			...(coding() ? ["--code"] : []),
 		];
 		// Source the ROS workspaces in a shell that then execs Python; serve appends the transport flags.
 		const sourced = setups.map((f) => `. ${JSON.stringify(f.replace(/^~(?=\/)/, "$HOME"))}`).join(" && ");
@@ -818,6 +837,13 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 		meta = m;
 		ui = ctx.ui;
 		try {
+			// A program's steps pass none of the tools' checks here: the server applies pi's limits.
+			if (coding())
+				await rpc.call("code.set_limits", { max_move_m: maxMove(), max_yaw_rad: maxYaw() }).catch((err) => {
+					throw new Error(
+						`code mode needs an env server started with --code (--robot-env URL#token=HEX): ${message(err)}`,
+					);
+				});
 			await resetArm();
 		} catch (err) {
 			env = meta = undefined;

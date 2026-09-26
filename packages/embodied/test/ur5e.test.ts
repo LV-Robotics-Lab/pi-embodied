@@ -226,6 +226,24 @@ async function mockServer(
 			case "env.move_pose":
 			case "env.rotate_delta":
 				return { ok: true, final_tcp_pose: tcp, states: null };
+			case "code.set_limits":
+				return kwargs;
+			case "code.run":
+				return {
+					status: "ran",
+					stdout: "",
+					stderr: "",
+					traceback: null,
+					error: null,
+					result: null,
+					calls: [],
+					n_calls: 2,
+					move_m: 0.03,
+					ms: 5,
+					motions: 2,
+					states: null,
+					frames: [img, img],
+				};
 			case "env.set_gripper":
 				return kwargs.open
 					? { ok: true, gripper_width_m: 0.085 }
@@ -564,4 +582,29 @@ test("--unidepth: enhance_depth stores the estimate in the latest step, so an RG
 		m.close();
 		m0.close();
 	}
+});
+
+test("ur5e --code: pi's caps reach the server, every program is confirmed and the run is a state step", async (t) => {
+	const { f, m, s } = await started({ code: "true", "code-real": true, "max-move": "0.05" }, {}, [true, true, false]);
+	t.after(m.close);
+	assert.deepEqual(s.errors, []);
+	assert.ok(f.active().includes("run_code"), f.active().join(","));
+	assert.deepEqual(m.calls.find((c) => c.method === "code.set_limits")?.kwargs, {
+		max_move_m: 0.05,
+		max_rotate_rad: 0.2,
+	});
+	await f.emit("agent_start");
+	const r = await f.run("run_code", { code: "move_delta([0, 0, -0.03])" });
+	assert.equal(r.details.status, "ran");
+	assert.match(r.content.map((c: any) => c.text ?? "").join("\n"), /"action": "run_code"/);
+	const no = await f.run("run_code", { code: "move_delta([0, 0, 0.03])" });
+	assert.match(no.content[0].text, /operator declined/);
+	assert.equal(m.calls.filter((c) => c.method === "code.run").length, 1);
+});
+
+test("ur5e --code without --code-real refuses before the arm moves", async (t) => {
+	const { f, m } = await started({ code: "true" });
+	t.after(m.close);
+	assert.match(f.notes.join("\n"), /needs both --code-real and --operator/);
+	assert.ok(!m.methods().includes("env.reset"));
 });

@@ -2,6 +2,8 @@
  * One physical Universal Robots UR5e arm for pi.
  *
  *   pi -e packages/embodied/src/ur5e --operator --arm-id 2023300001 --task block_bowl --robot-config my_ur5e.yaml
+ *   pi -e packages/embodied/src/ur5e --operator --arm-id 2023300001 --task block_bowl --code=true --code-real
+ *      (run_code: the env server runs with --code and takes pi's per-call caps; every program is confirmed)
  *
  * Starts the env server (pi_embodied_services.robots.ur5e.env_server: ur_rtde to the controller, a
  * Robotiq gripper over the URCap socket, RealSense / webcam / RTSP cameras through the services'
@@ -278,6 +280,19 @@ export default function ur5e(pi: ExtensionAPI) {
 		},
 		// The env server's primitive registry (services robots/ur5e/primitives.py).
 		codeApi: () => env,
+		// Code mode (../code) on the real arm: --code-real and --operator, every program confirmed. The
+		// server (started with --code) runs it through the tools' own env methods, under pi's per-call
+		// limits too (code.set_limits at start); the run becomes the next state step.
+		code: {
+			real: true,
+			rpc: () => env as RpcClient,
+			instruction: () => task?.instruction ?? "",
+			observe: async (r) => {
+				for (const f of (r.frames as NdArray[] | undefined) ?? []) robot.video.frame(frameOf(f));
+				const s = await record({ action: "run_code" }, { status: r.status, motions: r.motions ?? 0 }, null);
+				return toolResult({ ...s.blob }, stepImages(s));
+			},
+		},
 		start: startRobot,
 		stop: () => {
 			env = sam3 = meta = task = undefined;
@@ -332,6 +347,8 @@ export default function ur5e(pi: ExtensionAPI) {
 
 	const maxMove = () => Math.min(Number(flag("max-move", "0.08")), meta?.limits.max_move_m ?? Infinity);
 	const maxRotate = () => Math.min(Number(flag("max-rotate", "0.2")), meta?.limits.max_rotate_rad ?? Infinity);
+	/** Code mode is on (--code): the env server serves code.run and takes pi's per-call limits. */
+	const coding = () => (pi.getFlag("code") ?? "false") !== "false";
 
 	function call<T = Json>(method: string, kwargs: Json = {}, timeoutMs = 30_000, signal?: AbortSignal) {
 		if (!env) throw new Error("ur5e is not initialized; see the session start error");
@@ -858,6 +875,7 @@ export default function ur5e(pi: ExtensionAPI) {
 							...(config ? ["--robot-config", config] : []),
 							...(camerasFlag ? ["--cameras", camerasFlag] : []),
 							...detectionArgs(pi, flag("robot-sam3")),
+							...(coding() ? ["--code"] : []),
 						],
 						cwd: r.root,
 						env: servicesEnv(r),
@@ -894,6 +912,13 @@ export default function ur5e(pi: ExtensionAPI) {
 		sam3 = sam;
 		meta = m;
 		try {
+			// A program's motions pass none of the tools' checks here: the server applies pi's limits.
+			if (coding())
+				await rpc.call("code.set_limits", { max_move_m: maxMove(), max_rotate_rad: maxRotate() }).catch((err) => {
+					throw new Error(
+						`code mode needs an env server started with --code (--robot-env URL#token=HEX): ${message(err)}`,
+					);
+				});
 			await resetArm();
 		} catch (err) {
 			env = sam3 = meta = undefined;

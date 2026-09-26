@@ -235,6 +235,11 @@ over `--variant NAME=ARGS` (same cells, one subdirectory each), and reports succ
 invalid cells per variant; `--min-success N` fails a regression run, `--max-api-concurrency M` caps
 model calls across workers. Every cell is its own eval.sh call, so validity and reruns are eval.sh's.
 
+Developer guides: [adding a robot](docs/adding-a-robot.md) and [adding a primitive](docs/adding-a-primitive.md).
+`test/gpu-e2e.test.ts` is the GPU end-to-end suite (real simulators and model servers, no model API;
+skipped unless `PI_EMBODIED_E2E` names a robot and a GPU answers); `test/gpu-e2e.sh` runs it robot by
+robot on a GPU box (docs/adding-a-robot.md, "Testing on a GPU").
+
 ## LIBERO
 
 Needs the repository's Python services (`services/`, package `pi_embodied_services`) installed

@@ -232,6 +232,10 @@ test("keys: --units-rt swaps the rotate keys for RT_* pairs, only for the axes t
 		],
 	);
 	assert.deepEqual([keyMap(DUAL).KeyN, keyMap(DUAL).Digit7], [["right", "ROTATE_CCW"], undefined]);
+	// A robot with no yaw step offers no ROTATE_*: its rotate keys are not bound (the panel shows no CW/CCW).
+	const noYawV3 = keyMap([ARM], undefined, SINGLE);
+	assert.deepEqual([noYawV3.KeyZ, noYawV3.KeyX, noYawV3.KeyW], [undefined, undefined, [ARM, "MV_FWD"]]);
+	assert.deepEqual(keyMap([ARM], undefined, WITH_YAW).KeyZ, [ARM, "ROTATE_CCW"]);
 	assert.deepEqual(parseSteps({ command: "L:3 R:m 7*2" }, DUAL, dualRt, true), [
 		{ left: "RT_PITCH_FWD", right: "RT_YAW_CCW" },
 		{ left: "STILL", right: "RT_ROLL_LEFT" },

@@ -153,7 +153,7 @@ const COPY = {
     helpDual: "left W/S/A/D Q/E, G or L-Shift grasp, R release, L-Ctrl STILL · right I/K/J/L U/O, R-Shift grasp, . release, R-Ctrl STILL · hold to repeat",
     arms: { arm: "arm", left: "left arm", right: "right arm" },
     axes: { rotate: "rotate", roll: "roll", pitch: "pitch", yaw: "yaw" },
-    turns: (rt) => rt ? "turns: RT roll/pitch/yaw (v5, --units-rt)" : "turns: ROTATE (v3)",
+    turns: (rt, any) => rt ? "turns: RT roll/pitch/yaw (v5, --units-rt)" : any ? "turns: ROTATE (v3)" : "turns: none (no yaw on this robot)",
   },
   "zh-cn": {
     monitor: "实时监控", reasoning: "智能体推理与工具调用", expand: "展开工具调用", autoscroll: "自动滚动",
@@ -181,7 +181,7 @@ const COPY = {
     helpDual: "左臂 W/S/A/D Q/E,G 或左 Shift 抓取,R 松开,左 Ctrl 保持 · 右臂 I/K/J/L U/O,右 Shift 抓取,. 松开,右 Ctrl 保持 · 按住连续执行",
     arms: { arm: "机械臂", left: "左臂", right: "右臂" },
     axes: { rotate: "旋转", roll: "横滚", pitch: "俯仰", yaw: "偏航" },
-    turns: (rt) => rt ? "转动:RT 横滚/俯仰/偏航(v5,--units-rt)" : "转动:ROTATE(v3)",
+    turns: (rt, any) => rt ? "转动:RT 横滚/俯仰/偏航(v5,--units-rt)" : any ? "转动:ROTATE(v3)" : "转动:无(此机器人没有偏航)",
   },
 };
 const T = COPY[document.documentElement.lang === "zh-cn" ? "zh-cn" : "en"];
@@ -400,7 +400,7 @@ function renderGumi(g) {
   $("tpTake").textContent = G.mode === "agent" ? T.take : G.mode === "requested" ? T.waiting : T.release;
   $("tpRec").textContent = !G.root ? T.recDisabled : G.recording ? T.recOn(G.recording, G.steps) : T.recOff;
   $("tpRec").className = "badge " + (G.recording ? "rec" : "meta");
-  $("tpTurns").textContent = T.turns(G.rt === true);
+  $("tpTurns").textContent = T.turns(G.rt === true, G.vocabulary.some((u) => u.startsWith("ROTATE_") || u.startsWith("RT_")));
   $("tpStart").disabled = !G.root || !!G.recording;
   $("tpSave").disabled = $("tpDiscard").disabled = !G.recording;
   $("tpCmd").placeholder = dual() ? T.seqPlaceholderDual : T.seqPlaceholder;

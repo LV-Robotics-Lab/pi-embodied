@@ -127,9 +127,14 @@ const RIGHT_RT_KEYS: Record<string, string> = {
 export const RT_KEYS = { single: LEFT_RT_KEYS, dual: { left: LEFT_RT_KEYS, right: RIGHT_RT_KEYS } };
 /**
  * The keys `arms` are driven with: code -> [arm, unit]. `rt` is the vocabulary in RT mode (the RT_*
- * keys of the units in it replace the rotate keys), undefined in v3 mode.
+ * keys of the units in it replace the rotate keys), undefined in v3 mode. `vocabulary` drops the keys of
+ * units the robot does not offer (a robot with no yaw step has no ROTATE_* keys either).
  */
-export function keyMap(arms: readonly string[], rt?: readonly string[]): Record<string, [string, string]> {
+export function keyMap(
+	arms: readonly string[],
+	rt?: readonly string[],
+	vocabulary?: readonly string[],
+): Record<string, [string, string]> {
 	const bound: [string, Record<string, string>][] =
 		arms.length > 1
 			? [
@@ -141,6 +146,7 @@ export function keyMap(arms: readonly string[], rt?: readonly string[]): Record<
 		bound.flatMap(([arm, keys]) =>
 			Object.entries(keys)
 				.filter(([, unit]) => !rt || !isRt(unit) || rt.includes(unit))
+				.filter(([, unit]) => !vocabulary || unit === STILL || vocabulary.includes(unit))
 				.map(([code, unit]): [string, [string, string]] => [code, [arm, unit]]),
 		),
 	);
@@ -731,7 +737,7 @@ export function gumi(
 		message,
 		root: root() ?? null,
 		rt: handle?.rt === true,
-		keys: keyMap(arms, handle?.rt ? handle.vocabulary : undefined),
+		keys: keyMap(arms, handle?.rt ? handle.vocabulary : undefined, handle?.vocabulary),
 	});
 	const publish = (msg?: string) => {
 		if (msg !== undefined) message = msg;

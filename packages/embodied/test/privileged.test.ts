@@ -137,3 +137,20 @@ test("every robot registers --vdm (visual differencing is not tied to the simula
 		assert.ok("vdm" in f.flags && "vdm-wrist" in f.flags, name);
 	}
 });
+
+test("every robot mounts memory and exploration (the real ones reset through the operator)", () => {
+	for (const [name, robot] of [
+		["libero", libero],
+		["robocasa", robocasa],
+		["maniskill", maniskill],
+		["robotwin", robotwin],
+		["robolab", robolab],
+		["franka", franka],
+		["dual_franka", dualFranka],
+		["piper", piper],
+	] as const) {
+		const f = stubPi();
+		robot(f.pi);
+		assert.ok("explore" in f.flags && "memory-profile" in f.flags, name);
+	}
+});

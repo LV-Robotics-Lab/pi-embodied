@@ -1,0 +1,2 @@
+# Memory
+Notes from earlier explored episodes may live in {{memory_dir}}. Before the first robot action, read {{memory_dir}}/MEMORY.md if it exists, then {{memory_dir}}/task_only/{{reference_tag}}.json and {{memory_dir}}/task_only/{{reference_tag}}_recipe.jsonl when present, and at most one to three relevant leaves under suite/ or global/. A missing or empty memory is normal. Use memory for strategy and pitfalls, never as coordinates to replay: fresh images and the current task override it. Read nothing else on disk.

@@ -500,6 +500,26 @@
 				}
 			},
 			{
+				"name": "request_scene_reset",
+				"description": "Ask the operator to restore the scene for another attempt (remove/secure held objects), wait for confirmation, then reset the robot.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"reason"
+					],
+					"properties": {
+						"reason": {
+							"type": "string",
+							"description": "Why the scene needs to be restored"
+						},
+						"expected_scene_state": {
+							"type": "string",
+							"description": "The restored layout, for the operator"
+						}
+					}
+				}
+			},
+			{
 				"name": "act",
 				"description": "Execute one action unit (MV_FWD, MV_BACK, MV_LEFT, MV_RIGHT, MV_UP, MV_DOWN, ROTATE_CW, ROTATE_CCW, STOP, GRASP, RELEASE, DONE), repeated n times. MV_* move the gripper ~2 cm, ROTATE_* turn it ~9 deg; GRASP closes, RELEASE opens, STOP holds one step, DONE means the task is complete (call finish). Returns the new images and state.",
 				"parameters": {
@@ -600,6 +620,22 @@
 						"done": {
 							"type": "boolean",
 							"description": "The current stage's DONE WHEN is visible"
+						}
+					}
+				}
+			},
+			{
+				"name": "reset",
+				"description": "Exploration only. Abandon the current episode and restore the same initial scene. Archive the failed attempt first and state which strategy lever changes in the next attempt.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"reason"
+					],
+					"properties": {
+						"reason": {
+							"type": "string",
+							"description": "Why this episode is unrecoverable and what will change"
 						}
 					}
 				}
@@ -1541,6 +1577,22 @@
 				}
 			},
 			{
+				"name": "reset",
+				"description": "Exploration only. Abandon the current episode and restore the same initial scene. Archive the failed attempt first and state which strategy lever changes in the next attempt.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"reason"
+					],
+					"properties": {
+						"reason": {
+							"type": "string",
+							"description": "Why this episode is unrecoverable and what will change"
+						}
+					}
+				}
+			},
+			{
 				"name": "finish",
 				"description": "End the episode after checking the latest state. Success is ManiSkill's success flag, not this call.",
 				"parameters": {
@@ -1732,6 +1784,22 @@
 						"done": {
 							"type": "boolean",
 							"description": "The current stage's DONE WHEN is visible"
+						}
+					}
+				}
+			},
+			{
+				"name": "reset",
+				"description": "Exploration only. Abandon the current episode and restore the same initial scene. Archive the failed attempt first and state which strategy lever changes in the next attempt.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"reason"
+					],
+					"properties": {
+						"reason": {
+							"type": "string",
+							"description": "Why this episode is unrecoverable and what will change"
 						}
 					}
 				}
@@ -1965,6 +2033,22 @@
 						"done": {
 							"type": "boolean",
 							"description": "The current stage's DONE WHEN is visible"
+						}
+					}
+				}
+			},
+			{
+				"name": "reset",
+				"description": "Exploration only. Abandon the current episode and restore the same initial scene. Archive the failed attempt first and state which strategy lever changes in the next attempt.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"reason"
+					],
+					"properties": {
+						"reason": {
+							"type": "string",
+							"description": "Why this episode is unrecoverable and what will change"
 						}
 					}
 				}
@@ -2695,6 +2779,22 @@
 						"done": {
 							"type": "boolean",
 							"description": "The current stage's DONE WHEN is visible"
+						}
+					}
+				}
+			},
+			{
+				"name": "reset",
+				"description": "Exploration only. Abandon the current episode and restore the same initial scene. Archive the failed attempt first and state which strategy lever changes in the next attempt.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"reason"
+					],
+					"properties": {
+						"reason": {
+							"type": "string",
+							"description": "Why this episode is unrecoverable and what will change"
 						}
 					}
 				}

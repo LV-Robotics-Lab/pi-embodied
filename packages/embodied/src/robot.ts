@@ -124,6 +124,11 @@ export type RobotSpec = {
 		distil?: string;
 		rewrite?: [RegExp, string][];
 		budget?: { sessions: number; attempts: number };
+		/**
+		 * A real robot: `reset` is the operator's scene reset (so request_scene_reset is hidden), and an
+		 * attempt is solved by the operator's success verdict, which is marked `terminated` for exploration.
+		 */
+		operatorJudged?: boolean;
 	};
 	/** Mount the human-in-the-loop operator (../operator.ts). */
 	operator?: { step: () => number; reset?: () => Promise<Json> };
@@ -565,6 +570,21 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 			tools: mem.tools,
 			aborted: () => (op.result() as Json).operator_aborted === true,
 		});
+	const exploring = () => spec.explore !== undefined && pi.getFlag("explore") === true;
+	if (spec.explore?.operatorJudged) {
+		// Exploration's success signal is `terminated` (../explore.ts, the memory recipe); here it is the operator's success verdict.
+		pi.on("tool_result", (event) => {
+			if (!exploring() || event.toolName !== "request_operator_verdict" || event.isError) return undefined;
+			const details = event.details as Json | undefined;
+			if (details?.status !== "success") return undefined;
+			const marked = { ...details, terminated: true };
+			return { details: marked, content: [{ type: "text" as const, text: JSON.stringify(marked) }] };
+		});
+		// In exploration `reset` is the scene reset: it counts attempts and bounds the recipe.
+		pi.on("before_agent_start", () => {
+			if (exploring()) pi.setActiveTools(pi.getActiveTools().filter((t) => t !== "request_scene_reset"));
+		});
+	}
 
 	pi.registerTool({
 		name: "finish",

@@ -34,7 +34,12 @@ import { attach, defineRobot, SERVICES } from "../robot.ts";
 import { NdArray, type RpcClient } from "../rpc.ts";
 import { MOVE_UNITS, type MoveUnit, type Vec3 } from "../units/index.ts";
 
-const SYSTEM = readFileSync(new URL("./SYSTEM.md", import.meta.url), "utf8");
+const read = (name: string) => readFileSync(new URL(name, import.meta.url), "utf8");
+const SYSTEM = read("./SYSTEM.md");
+const MEMORY = read("./memory.md");
+const EXPLORE = read("./explore.md");
+/** A memory cell tag part: the scene options (`table_tex=white`) with the characters a tag may not hold replaced. */
+const tagPart = (s: string) => s.replace(/[^\w.-]+/g, "-");
 
 /** configs/robot_maniskill.yaml `move_vectors`: +x away from the base, -y = MV_LEFT, +z up. */
 export const VECTORS: Record<MoveUnit, Vec3> = {
@@ -255,6 +260,8 @@ export default function maniskill(pi: ExtensionAPI) {
 	let vectors: Record<MoveUnit, Vec3> | undefined;
 	let calibration: Record<string, unknown> | undefined;
 
+	const tag = (seed: string) =>
+		`maniskill_${tagPart(robot.task["env-id"])}${robot.task.scene ? `_${tagPart(robot.task.scene)}` : ""}_s${seed}`;
 	const robot = defineRobot(pi, {
 		name: "maniskill",
 		task: ["env-id", "seed", "scene"],
@@ -265,12 +272,40 @@ export default function maniskill(pi: ExtensionAPI) {
 		// Observations carry the agentview then the wrist image.
 		vdm: { views: 2, wrist: 1 },
 		groundTruth: (names) => call("env.ground_truth_poses", { names: names ?? null }),
+		// No corpus is published for ManiSkill: memory is what exploration writes locally.
+		memory: {
+			cell: () => ({ tag: tag(robot.task.seed), reference: tag("0") }),
+			primitives: ["move_delta", "act"],
+			published: false,
+		},
+		explore: {
+			// The exploration `reset` tool is not a robot.tool, so robot.signal is unset here; use its own signal.
+			reset: async (result, _ctx, signal) => {
+				const [o, i] = await env.call<[Obs, Info]>("env.reset", {}, 300_000, [], signal);
+				success = everGrasped = false;
+				envStep = 0;
+				gripper = 1;
+				absorb(o, i);
+				return observe({ ...result, reset: true });
+			},
+			prompt: () =>
+				EXPLORE.replaceAll("{{env_id}}", robot.task["env-id"])
+					.replaceAll("{{seed}}", robot.task.seed)
+					.replaceAll("{{scene}}", robot.task.scene || "stock"),
+			rewrite: [
+				[
+					/This is a single episode\. You may recover within it \(re-position, re-grasp\), but you cannot restart it\./,
+					"This is an exploration run: `reset` starts a fresh attempt (see Exploration). Within an attempt, recover in place (re-position, re-grasp).",
+				],
+			],
+		},
 		start: startEpisode,
 		prompt: () =>
 			SYSTEM.replaceAll("{{task_language}}", language)
 				.replaceAll("{{table}}", text().table)
 				.replaceAll("{{object}}", text().object)
-				.replaceAll("{{views}}", text().views),
+				.replaceAll("{{views}}", text().views)
+				.replaceAll("{{memory}}", pi.getFlag("explore") === true ? "" : robot.mem!.render(MEMORY).trim()),
 		result: () => ({
 			env_id: robot.task["env-id"],
 			seed: Number(robot.task.seed),

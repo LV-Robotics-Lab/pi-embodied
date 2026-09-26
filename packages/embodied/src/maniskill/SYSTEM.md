@@ -16,3 +16,5 @@ This is a single episode. You may recover within it (re-position, re-grasp), but
 3. Lift a few centimetres and check `is_grasped` and the wrist image before carrying. If the grasp missed, open, re-align and retry.
 4. Place by lowering until the object nearly rests on its support, then open and retreat straight up.
 5. Keep reasoning to one or two sentences before each tool call. When `success` is true, or your best sequence is exhausted, call `finish` with an honest status and a short summary.
+
+{{memory}}

@@ -32,7 +32,10 @@ import { attach, defineRobot, SERVICES } from "../robot.ts";
 import type { NdArray, RpcClient } from "../rpc.ts";
 import type { MoveUnit, Vec3 } from "../units/index.ts";
 
-const SYSTEM = readFileSync(new URL("./SYSTEM.md", import.meta.url), "utf8");
+const read = (name: string) => readFileSync(new URL(name, import.meta.url), "utf8");
+const SYSTEM = read("./SYSTEM.md");
+const MEMORY = read("./memory.md");
+const EXPLORE = read("./explore.md");
 
 /** configs/robot_robolab.yaml `move_vectors`: +x away from the base, -y = MV_LEFT, +z up. */
 export const VECTORS: Record<MoveUnit, Vec3> = {
@@ -126,6 +129,11 @@ export default function robolab(pi: ExtensionAPI) {
 	let obs: Obs;
 	let meta: Meta;
 
+	/** The cell: task, instruction type (when not the default one) and seed. */
+	const tag = (seed: string) => {
+		const type = flag("instruction-type", "default");
+		return `robolab_${robot.task.task}${type === "default" ? "" : `_${type}`}_s${seed}`;
+	};
 	const robot = defineRobot(pi, {
 		name: "robolab",
 		task: ["task", "seed"],
@@ -136,8 +144,35 @@ export default function robolab(pi: ExtensionAPI) {
 		// Observations carry the front then the wrist image.
 		vdm: { views: 2, wrist: 1 },
 		groundTruth: (names) => env.call("env.ground_truth_poses", { names: names ?? null }, 60_000, [], robot.signal),
+		// No corpus is published for RoboLab: memory is what exploration writes locally.
+		memory: {
+			cell: () => ({ tag: tag(robot.task.seed), reference: tag("0") }),
+			primitives: ["move_delta", "act"],
+			published: false,
+		},
+		explore: {
+			// The exploration `reset` tool is not a robot.tool, so robot.signal is unset here; use its own signal.
+			reset: async (result, _ctx, signal) => {
+				[obs] = await env.call<[Obs, unknown]>("env.reset", {}, 300_000, [], signal);
+				return observe({ ...result, reset: true });
+			},
+			prompt: () =>
+				EXPLORE.replaceAll("{{task}}", robot.task.task)
+					.replaceAll("{{seed}}", robot.task.seed)
+					.replaceAll("{{instruction_type}}", flag("instruction-type", "default")),
+			rewrite: [
+				[
+					/This is a single episode with a time limit\. You may recover within it \(re-position, re-grasp\), but you cannot restart it\./,
+					"This is an exploration run with a time limit per attempt: `reset` starts a fresh attempt (see Exploration). Within an attempt, recover in place (re-position, re-grasp).",
+				],
+			],
+		},
 		start: startEpisode,
-		prompt: () => SYSTEM.replaceAll("{{task_language}}", meta.instruction),
+		prompt: () =>
+			SYSTEM.replaceAll("{{task_language}}", meta.instruction).replaceAll(
+				"{{memory}}",
+				pi.getFlag("explore") === true ? "" : robot.mem!.render(MEMORY).trim(),
+			),
 		result: () => ({
 			task: robot.task.task,
 			seed: Number(robot.task.seed),

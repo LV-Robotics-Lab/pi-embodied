@@ -62,6 +62,9 @@ import { NdArray, type RpcClient } from "../rpc.ts";
 import type { Move } from "../units/index.ts";
 
 const SYSTEM = readFileSync(new URL("./SYSTEM.md", import.meta.url), "utf8");
+const EXPLORE = readFileSync(new URL("./explore.md", import.meta.url), "utf8");
+/** The motion tools: the recipe of a solved exploration attempt. */
+const MOTION = ["move_delta", "rotate_delta", "open_gripper", "close_gripper", "vla_grasp", "act"];
 
 type Task = { name: string; instruction: string; success_criteria: string; constraints: string[] };
 type Calibration = {
@@ -256,6 +259,10 @@ export default function franka(pi: ExtensionAPI) {
 	let chaining = false;
 	const steps: Step[] = [];
 	const task = () => robot.task.task;
+	/** The first state step of the current attempt: localization refuses older ones after a scene reset. */
+	let attemptStart = 0;
+	const exploring = () => pi.getFlag("explore") === true;
+	const judgedSuccess = () => (op.result() as Json).operator_verdict === "success";
 	const robot = defineRobot(pi, {
 		name: "franka",
 		task: ["task"],
@@ -263,13 +270,39 @@ export default function franka(pi: ExtensionAPI) {
 		video: true,
 		// Observations carry the external camera then the wrist image.
 		vdm: { views: 2, wrist: 1 },
-		// Franka memory is read-only and the prompt names none; the guard also opens the step artifacts.
+		// The evaluation prompt names no memory; exploration writes it. The guard also opens the step artifacts.
 		memory: {
 			cell: () => ({ tag: `franka_t${task()}`, reference: "" }),
-			primitives: [],
+			primitives: MOTION,
 			readable: () => [out],
 		},
-		operator: { step: () => steps.length },
+		operator: { step: () => steps.length, reset: resetRobot },
+		explore: {
+			// The operator restores the scene; a failed or unconfirmed reset throws and starts no attempt.
+			reset: async (result, ctx, signal) => {
+				const r: Json = await op.sceneReset(ctx, String(result.reason ?? ""), "", signal);
+				if (r.error) throw new Error(JSON.stringify(r));
+				const { output, pngs } = view(steps[steps.length - 1]);
+				return toolResult({ ...output, ...result, robot_reset: r.robot_reset, scene_reset_confirmed: true }, pngs);
+			},
+			prompt: () =>
+				EXPLORE.replace(/\{\{(task_id|task_name|instruction)\}\}/g, (_, k: string) =>
+					k === "task_id"
+						? task()
+						: k === "task_name"
+							? (setup?.task.name ?? "")
+							: (setup?.task.instruction ?? ""),
+				),
+			rewrite: [
+				[
+					/^5\. Finish only when the success evidence is visible and consistent with state\.$/m,
+					"5. This is an exploration run: follow the Exploration workflow below. Success is only the operator's verdict.",
+				],
+			],
+			// Every attempt costs the operator a manual scene reset (RPent's real-robot defaults).
+			budget: { sessions: 1, attempts: 3 },
+			operatorJudged: true,
+		},
 		// The env server's primitive registry (services robots/franka/primitives.py), both backends.
 		codeApi: () => env,
 		start: startRobot,
@@ -340,7 +373,32 @@ export default function franka(pi: ExtensionAPI) {
 	const check = (signal?: AbortSignal) => {
 		op.check();
 		if (signal?.aborted) throw new Error("tool operation interrupted");
+		if (exploring() && judgedSuccess())
+			throw new Error(
+				"motion refused: the operator judged this attempt a success. Write the audit and memory drafts, then call finish.",
+			);
 	};
+
+	/** The operator's scene reset (after the operator confirmed the scene): the env's reset, then a fresh step. */
+	async function resetRobot(): Promise<Json> {
+		if (!env || !steps.length) throw new Error("franka is not initialized; see the session start error");
+		const r = await call("env.reset", {}, 180_000);
+		if (r?.error) throw new Error(`env.reset failed: ${JSON.stringify(plain(r))}`);
+		remember(r.states);
+		const s = await dumpState({ action: "scene_reset" }, { ok: true }, null);
+		attemptStart = s.blob.step_idx;
+		return { ok: true, step: s.blob.step_idx };
+	}
+
+	/** A step to localize in: none from before the last scene reset. */
+	function freshStep(step?: number | null): Step {
+		const s = getStep(steps, step);
+		if (s.blob.step_idx < attemptStart)
+			throw new Error(
+				`localization refused: step ${s.blob.step_idx} predates the last scene reset (step ${attemptStart}); use a fresh observation`,
+			);
+		return s;
+	}
 
 	// ---- env client (the server returns camera frames, the client caches states)
 
@@ -643,7 +701,7 @@ export default function franka(pi: ExtensionAPI) {
 			debug: Type.Optional(Type.Boolean({ description: "Default false" })),
 		}),
 		async ({ row, col, step, camera = "wrist", debug = false }) => {
-			const s = getStep(steps, step);
+			const s = freshStep(step);
 			if (!s.meta) throw new Error("camera metadata not found in the recorded state");
 			calibration();
 			const tcp = tcpPose(s);
@@ -781,7 +839,7 @@ export default function franka(pi: ExtensionAPI) {
 			debug: Type.Optional(Type.Boolean({ description: "Default false" })),
 		}),
 		async ({ third_person_row, third_person_col, wrist_row, wrist_col, pixels, step, debug = false }) => {
-			const s = getStep(steps, step);
+			const s = freshStep(step);
 			if (!s.meta) throw new Error("camera metadata not found in the recorded state");
 			calibration();
 			tcpPose(s);
@@ -963,7 +1021,7 @@ export default function franka(pi: ExtensionAPI) {
 		env = envRpc;
 		vla = vlaRpc;
 		remember(reset.states);
-		await dumpState(null, null, null);
+		attemptStart = (await dumpState(null, null, null)).blob.step_idx;
 		ctx.ui.notify(`Franka ready (${caps.backend}): task ${task()} (${setup.task.name}); steps under ${out}`, "info");
 		return TOOLS.filter((name) => name !== "vla_grasp" || caps.has_vla);
 	}

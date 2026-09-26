@@ -226,3 +226,28 @@ test("guard fails closed without a cell, output dir or session_start", async () 
 	}
 	await assert.rejects(guarded({ cell: "../x" }), /invalid memory cell tag/);
 });
+
+test("a robot without a published corpus defaults to its local memory, empty or not; asking for it explicitly still needs one", async () => {
+	const home = realpathSync(mkdtempSync(join(tmpdir(), "unpublished-")));
+	const start = async (flags: Record<string, unknown>) => {
+		const hooks = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+		const pi = {
+			on: (name: string, fn: (event: unknown, ctx: unknown) => unknown) => hooks.set(name, fn),
+			registerFlag: () => {},
+			registerCommand: () => {},
+			getFlag: (name: string) => flags[name],
+		} as unknown as ExtensionAPI;
+		const m = memory(pi, {
+			robot: "maniskill",
+			home: () => home,
+			cell: () => ({ tag: "maniskill_PickCube-v1_s0", reference: "maniskill_PickCube-v1_s0" }),
+			published: false,
+		});
+		const ctx = { cwd: home, hasUI: false, sessionManager: { getSessionDir: () => home, getBranch: () => [] } };
+		await hooks.get("session_start")?.({}, ctx);
+		return m;
+	};
+	// No HF sync is attempted (it would need the network) and the missing corpus is no error.
+	assert.equal((await start({})).profile, "local");
+	await assert.rejects(start({ "memory-profile": "local" }), /local memory corpus not found/);
+});

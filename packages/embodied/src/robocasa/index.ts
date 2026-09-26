@@ -187,7 +187,10 @@ export default function robocasa(pi: ExtensionAPI) {
 				const elapsed = round((Date.now() - t0) / 1000, 1);
 				return view(await capture({ action: "reset" }, out, elapsed), { agent_elapsed_s: elapsed });
 			},
-			prompt: () => EXPLORE,
+			prompt: () =>
+				EXPLORE.replaceAll("{{task_name}}", robot.task["task-name"])
+					.replaceAll("{{split}}", robot.task.split)
+					.replaceAll("{{seed}}", robot.task.seed),
 		},
 		start: startEpisode,
 		stop: disconnect,

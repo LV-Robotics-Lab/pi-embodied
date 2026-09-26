@@ -186,6 +186,7 @@ export default function dualFranka(pi: ExtensionAPI) {
 			rewrite: REWRITE,
 			// RPent's real-robot defaults: every attempt costs the operator a manual scene reset.
 			budget: { sessions: 1, attempts: 3 },
+			operatorJudged: true,
 		},
 		// The env server's primitive registry (services robots/franka/primitives.py, the dual-arm set).
 		codeApi: () => env,
@@ -289,19 +290,6 @@ export default function dualFranka(pi: ExtensionAPI) {
 			);
 		return s;
 	}
-
-	// Exploration's success signal is `terminated` (../explore.ts, the memory recipe); here it is the operator's success verdict.
-	pi.on("tool_result", (event) => {
-		if (!exploring() || event.toolName !== "request_operator_verdict" || event.isError) return undefined;
-		const details = event.details as Json | undefined;
-		if (details?.status !== "success") return undefined;
-		const marked = { ...details, terminated: true };
-		return { details: marked, content: [{ type: "text" as const, text: JSON.stringify(marked) }] };
-	});
-	// In exploration `reset` is the scene reset: it counts attempts and bounds the recipe.
-	pi.on("before_agent_start", () => {
-		if (exploring()) pi.setActiveTools(pi.getActiveTools().filter((t) => t !== "request_scene_reset"));
-	});
 
 	// ---- env client
 

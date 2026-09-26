@@ -403,7 +403,10 @@ export default function robotwin(pi: ExtensionAPI) {
 				language = reset.instruction ?? (await env.call<string>("env.get_task_language"));
 				return present(await capture({ action: "reset" }, { ...result, success: true, instruction: language }));
 			},
-			prompt: () => EXPLORE,
+			prompt: () =>
+				EXPLORE.replaceAll("{{task_name}}", cell().task)
+					.replaceAll("{{task_config}}", cell().config)
+					.replaceAll("{{seed}}", cell().seed),
 			rewrite: [
 				[
 					/Satisfy the complete task in one no-restart episode\. Prefer one accurate sequence over broad exploration, and protect every achieved subgoal\./,

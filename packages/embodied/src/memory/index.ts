@@ -53,6 +53,11 @@ export type MemoryOptions = {
 	explore?: () => boolean;
 	/** Directories the agent may also read and search, e.g. the robot's saved state images. */
 	readable?: () => string[];
+	/**
+	 * Whether the robot has a published corpus on Hugging Face (default true). Without one, runs
+	 * default to the local profile, and a local corpus exploration has not written yet is empty, not an error.
+	 */
+	published?: boolean;
 };
 
 const defaultHome = () => process.env.PI_EMBODIED_MEMORY || join(homedir(), ".pi", "embodied", "memory");
@@ -212,7 +217,8 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 		if (!/^[\w.-]+$/.test(cell.tag) || /^\.+$/.test(cell.tag))
 			throw new Error(`invalid memory cell tag: ${cell.tag}`);
 		const explore = opts.explore?.() ?? false;
-		const requested = str(pi.getFlag("memory-profile")) || (explore ? "local" : "hf");
+		const explicit = str(pi.getFlag("memory-profile"));
+		const requested = explicit || (explore || opts.published === false ? "local" : "hf");
 		if (requested !== "hf" && requested !== "local") throw new Error(`unknown --memory-profile ${requested}`);
 		if (explore && requested === "hf") throw new Error("--explore cannot be used with --memory-profile hf");
 		profile = requested;
@@ -229,6 +235,7 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 		if (explore) return;
 		if (profile === "hf") await syncMemory(root, (m) => say(ctx, m, "warning"));
 		else if (
+			(explicit || opts.published !== false) &&
 			!existsSync(join(root, "MEMORY.md")) &&
 			!["global", "suite", "task_only"].some((s) => hasFiles(join(root, s)))
 		)

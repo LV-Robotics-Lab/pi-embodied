@@ -70,6 +70,9 @@ import {
 
 const SYSTEM = readFileSync(new URL("./SYSTEM.md", import.meta.url), "utf8");
 const SYSTEM_DUAL = readFileSync(new URL("./SYSTEM_DUAL.md", import.meta.url), "utf8");
+const EXPLORE = readFileSync(new URL("./explore.md", import.meta.url), "utf8");
+/** The motion tools: the recipe of a solved exploration attempt. */
+const MOTION = ["move_delta", "rotate_yaw", "open_gripper", "close_gripper", "act"];
 
 /** The dual rig's arms, as the env server names them. */
 export const PIPER_ARMS = ["left", "right"] as const;
@@ -306,6 +309,39 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 			return { views: c.length, wrist: c.flatMap((name, i) => (name.startsWith("wrist") ? [i] : [])) };
 		},
 		operator: { step: () => steps.length, reset: resetArm },
+		// No corpus is published for the Piper: memory is what exploration writes locally; the guard
+		// also opens the step images the prompt points at.
+		memory: {
+			cell: () => ({ tag: `${dual ? "piper_dual" : "piper"}_${taskName()}`, reference: "" }),
+			primitives: MOTION,
+			readable: () => [out],
+			published: false,
+		},
+		explore: {
+			// The operator restores the scene; a failed or unconfirmed reset throws and starts no attempt.
+			reset: async (result, ctx, signal) => {
+				const r: Json = await op.sceneReset(ctx, String(result.reason ?? ""), "", signal);
+				if (r.error) throw new Error(JSON.stringify(r));
+				return view(steps[steps.length - 1], {
+					...result,
+					robot_reset: r.robot_reset,
+					scene_reset_confirmed: true,
+				});
+			},
+			prompt: () =>
+				EXPLORE.replace(/\{\{(task_id|task_name|instruction)\}\}/g, (_, k: string) =>
+					k === "instruction" ? (task?.instruction ?? "") : taskName(),
+				),
+			rewrite: [
+				[
+					/^4\. Ask for the operator's verdict \(request_operator_verdict\) when you believe the task is done, then finish\.$/m,
+					"4. This is an exploration run: follow the Exploration workflow below. Success is only the operator's verdict.",
+				],
+			],
+			// Every attempt costs the operator a manual scene reset (RPent's real-robot defaults).
+			budget: { sessions: 1, attempts: 3 },
+			operatorJudged: true,
+		},
 		start: startRobot,
 		stop: () => {
 			env = meta = task = undefined;
@@ -373,6 +409,10 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 		const side = armName(arm);
 		op.check();
 		if (signal?.aborted) throw new Error("tool operation interrupted");
+		if (pi.getFlag("explore") === true && (op.result() as Json).operator_verdict === "success")
+			throw new Error(
+				"motion refused: the operator judged this attempt a success. Write the audit and memory drafts, then call finish.",
+			);
 		if (delta.length !== 3 || !delta.every(Number.isFinite)) throw new Error("delta must be 3 finite numbers");
 		if (!Number.isFinite(yaw)) throw new Error("yaw must be finite");
 		checkMove(delta, maxMove());
@@ -435,11 +475,11 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 	}
 
 	/** The step blob plus the front then the wrist image(s) (two arms: left, then right). */
-	function view(s: Step): AgentToolResult<unknown> {
+	function view(s: Step, extra: Json = {}): AgentToolResult<unknown> {
 		const pngs = cameras()
 			.filter((k) => s.images[k])
 			.map((k) => readFileSync(s.images[k]));
-		return toolResult(s.blob, pngs);
+		return toolResult({ ...s.blob, ...extra }, pngs);
 	}
 
 	/** Run one motion, then record and return the new state; errors are returned, not thrown. */

@@ -66,6 +66,19 @@ BEHAVIOR_PRIMITIVES = (
         tiers=("high",),
     ),
     Primitive(
+        "move_hand_delta",
+        "env.move_hand_delta",
+        "A small relative step of an arm's end effector: optional gripper open/close first, then a base-frame delta (m; +x ahead, +y left, +z up; at most 0.1) turned by yaw (rad about world +z; at most 0.3), planned like move_hand.",
+        {
+            "arm": Param("string", "left | right"),
+            "delta_xyz": Param("vec3", "[dx, dy, dz] in the base frame, m"),
+            "yaw": Param("number", "rad about world +z (default 0)", False),
+            "gripper": Param("string", "open | close first (default none)", False),
+        },
+        mutating=True,
+        tiers=("high",),
+    ),
+    Primitive(
         "grasp_object",
         "env.grasp_object",
         "Grasp at a world pose: open, hover pregrasp_offset_m above, descend, close, settle, lift. Judge the grasp from gripper_width, not ok.",

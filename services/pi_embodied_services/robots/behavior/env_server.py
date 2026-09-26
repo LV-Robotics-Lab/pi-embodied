@@ -69,6 +69,9 @@ PICKED_RISE_M = 0.005
 MAX_NAVIGATE_M = 5.0
 #: Farthest move_hand target from the arm's shoulder-height base point, m (beyond reach).
 MAX_HAND_REACH_M = 1.5
+#: move_hand_delta: the largest relative step (m) and turn (rad) one call commands.
+MAX_HAND_STEP_M = 0.1
+MAX_HAND_YAW_RAD = 0.3
 
 
 def check_arm(arm: str) -> str:
@@ -128,6 +131,7 @@ class BehaviorEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         super()._register_rpc()
         self._rpc["env.navigate_to_pose"] = self.navigate_to_pose
         self._rpc["env.move_hand"] = self.move_hand
+        self._rpc["env.move_hand_delta"] = self.move_hand_delta
         self._rpc["env.grasp_object"] = self.grasp_object
         self._rpc["env.open_gripper"] = self.open_gripper
         self._rpc["env.close_gripper"] = self.close_gripper
@@ -352,6 +356,62 @@ class BehaviorEnvFacade(MainThreadServeMixin, BaseEnvFacade):
                 f"target is {reach:.2f} m from the base in xy; the arm reaches {MAX_HAND_REACH_M} m: navigate first"
             )
         report = self._primitive("move_hand", ("move", self._hand(arm, pos, quat)))
+        return {**self._pack(), **self._hand_report(arm, pos, report)}
+
+    def hand_delta_target(
+        self, arm: str, delta_xyz, yaw: float = 0.0
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """The world pose ``move_hand_delta`` servoes to: the EEF moved by a base-frame delta
+        (+x ahead of the base, +y to its left, +z up) and turned by ``yaw`` about world +z."""
+        from scipy.spatial.transform import Rotation
+
+        arm = check_arm(arm)
+        d = np.asarray(delta_xyz, dtype=np.float64).reshape(-1)
+        if d.shape != (3,) or not np.all(np.isfinite(d)) or not math.isfinite(yaw):
+            raise ValueError("delta_xyz must be 3 finite numbers and yaw finite")
+        if not float(np.linalg.norm(d)) <= MAX_HAND_STEP_M:
+            raise ValueError(
+                f"delta_xyz moves {np.linalg.norm(d):.3f} m; the limit is {MAX_HAND_STEP_M} m per call"
+            )
+        if not abs(float(yaw)) <= MAX_HAND_YAW_RAD:
+            raise ValueError(
+                f"yaw {yaw:.3f} rad; the limit is {MAX_HAND_YAW_RAD} rad per call"
+            )
+        _base, _q, base_yaw = sim.base_pose(self._robot)
+        c, s_ = math.cos(base_yaw), math.sin(base_yaw)
+        world = np.array([c * d[0] - s_ * d[1], s_ * d[0] + c * d[1], d[2]])
+        p, q = sim.eef_pose(self._robot, arm)
+        turned = Rotation.from_rotvec([0.0, 0.0, float(yaw)]) * Rotation.from_quat(q)
+        return p + world, turned.as_quat()
+
+    def move_hand_delta(
+        self, arm: str, delta_xyz, yaw: float = 0.0, gripper: str | None = None
+    ) -> dict:
+        """A small relative step of ``arm``'s end effector: an optional gripper command
+        ("open" / "close") first, then a move by a base-frame ``delta_xyz`` (m; +x ahead of the
+        base, +y to its left, +z up; at most ``MAX_HAND_STEP_M``) turned by ``yaw`` (rad about
+        world +z; at most ``MAX_HAND_YAW_RAD``), planned like ``move_hand``. A zero step with
+        no gripper command holds still. The units (pi's ``act``) run on it."""
+        arm = check_arm(arm)
+        if gripper not in (None, "open", "close"):
+            raise ValueError(
+                f"gripper must be 'open', 'close' or null, got {gripper!r}"
+            )
+        pos, quat = self.hand_delta_target(arm, delta_xyz, yaw)
+        phases = []
+        if gripper is not None:
+            self._ctrl.arm = arm
+            gen = (
+                self._ctrl._execute_release()
+                if gripper == "open"
+                else self._ctrl._execute_grasp()
+            )
+            phases.append((gripper, gen))
+        if float(np.linalg.norm(np.asarray(delta_xyz, dtype=np.float64))) > 0 or yaw:
+            phases.append(("move", self._hand(arm, pos, quat)))
+        if not phases:
+            phases.append(("hold", self._ctrl._settle_robot()))
+        report = self._primitive("move_hand_delta", *phases)
         return {**self._pack(), **self._hand_report(arm, pos, report)}
 
     def grasp_object(
@@ -603,6 +663,7 @@ def main():
             mutating=(
                 "env.navigate_to_pose",
                 "env.move_hand",
+                "env.move_hand_delta",
                 "env.grasp_object",
                 "env.open_gripper",
                 "env.close_gripper",

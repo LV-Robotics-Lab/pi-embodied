@@ -32,6 +32,7 @@ import { detectionActive, detectionArgs, detectionTools, registerDetectionFlags 
 import { mountGraspTool } from "../primitives/grasp.ts";
 import { attach, defineRobot, type Mat, mark, median, round, SERVICES, toolResult } from "../robot.ts";
 import { type NdArray, RpcClient } from "../rpc.ts";
+import type { Move, MoveUnit, Vec3 } from "../units/index.ts";
 
 const SYSTEM = template(new URL("./SYSTEM.md", import.meta.url));
 const EXPLORE = template(new URL("./explore.md", import.meta.url));
@@ -168,6 +169,28 @@ export function project(depth: Float32Array, width: number, height: number, meta
 	return xyz;
 }
 
+/**
+ * Units (../units, --units) run on `env.move_hand_delta`: each MV_* is a 2 cm step in the robot BASE
+ * frame (+x ahead of the base, +y to its left, +z up), so it looks the same in the head camera wherever
+ * the base stands; the server turns it into the world by the base yaw.
+ */
+export const VECTORS: Record<MoveUnit, Vec3> = {
+	MV_FWD: [1, 0, 0],
+	MV_BACK: [-1, 0, 0],
+	MV_LEFT: [0, 1, 0],
+	MV_RIGHT: [0, -1, 0],
+	MV_UP: [0, 0, 1],
+	MV_DOWN: [0, 0, -1],
+};
+export const STEP_M = 0.02;
+export const YAW_STEP_RAD = 0.15;
+/** env_server MAX_HAND_STEP_M / MAX_HAND_YAW_RAD: one move_hand_delta call's limits. */
+export const MAX_HAND_STEP_M = 0.1;
+export const MAX_HAND_YAW_RAD = 0.3;
+export const UNITS_VIEWS = `Each result shows the head camera, then the left wrist view, then the right wrist view; every unit names the arm it moves.
+- Head camera (first image): on the robot's head looking ahead and down at the workspace. MV_FWD moves the gripper away from the robot (up the image, smaller), MV_BACK toward it, MV_LEFT toward the image left and MV_RIGHT toward the image right; MV_UP / MV_DOWN raise and lower it.
+- Wrist views: close range from each gripper; judge contact there, direction in the head camera.`;
+
 export default function behavior(pi: ExtensionAPI) {
 	const flag = (name: string, fallback: string) => String(pi.getFlag(name) ?? fallback);
 	pi.registerFlag("task", {
@@ -218,6 +241,32 @@ export default function behavior(pi: ExtensionAPI) {
 		video: true,
 		// Observations carry the head image, then the left and right wrist images.
 		vdm: { views: 3, wrist: [1, 2] },
+		// Show-Harness action units on the server's small base-frame hand step (env.move_hand_delta).
+		units: {
+			vectors: VECTORS,
+			stepM: STEP_M,
+			yawStepRad: YAW_STEP_RAD,
+			maxYawRad: () => MAX_HAND_YAW_RAD,
+			maxMoveM: () => MAX_HAND_STEP_M,
+			arms: ARMS,
+			apply: (move, signal) => unitStep(move, signal),
+			state: async (arm) => {
+				const a = (arm ?? "right") as (typeof ARMS)[number];
+				const base = obs.base_pos.toArray();
+				const e = obs.eef[a].pos.toArray();
+				const [c, sn] = [Math.cos(obs.base_yaw), Math.sin(obs.base_yaw)];
+				const [dx, dy] = [e[0] - base[0], e[1] - base[1]];
+				return {
+					eef_xyz: [c * dx + sn * dy, -sn * dx + c * dy, e[2] - base[2]].map((v) => round(v, 4)),
+					gripper_width: round(obs.eef[a].gripper_width, 4),
+				};
+			},
+			instruction: () => meta?.instruction ?? "",
+			views: UNITS_VIEWS,
+			// The wrist views are not calibrated to the units' directions: the wrist-judged plugins stay off.
+			wrist: false,
+			emptyWidthM: 0.004,
+		},
 		groundTruth: (names) => env.call("env.ground_truth_poses", { names: names ?? null }, 120_000, [], robot.signal),
 		// No corpus is published for BEHAVIOR: memory is what exploration writes locally, one cell per task instance.
 		memory: {
@@ -642,6 +691,18 @@ export default function behavior(pi: ExtensionAPI) {
 		cameras: ["head", "left_wrist", "right_wrist"],
 	}))
 		mountGraspTool(robot.tool, d);
+
+	/** One action unit (../units): a gripper command and a base-frame step / yaw of one arm, in one server call. */
+	async function unitStep(move: Move, signal: AbortSignal | undefined) {
+		if (move.rot?.some(Boolean)) throw new Error("the R1Pro's units turn only about the vertical (ROTATE_*)");
+		const arm = move.arm ?? "right";
+		const result = await motion(
+			"env.move_hand_delta",
+			{ arm, delta_xyz: move.delta, yaw: move.yaw ?? 0, gripper: move.gripper ?? null },
+			signal,
+		);
+		return observe({ name: "act", ...result });
+	}
 
 	async function startEpisode() {
 		const { task, seed } = robot.task;

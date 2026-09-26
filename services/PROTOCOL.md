@@ -476,6 +476,7 @@ primitive's result is the observation plus `{"primitive", "ok", "phase", "steps"
 | `env.chunk_step` | `actions` float[N,action_dim], kw `return_all_frames=false` | `[obs or list[obs], terminated, truncated, info[, "cancelled"]]` |
 | `env.navigate_to_pose` | kw `x`, `y`, `yaw` (world, m / rad; refused beyond 5 m) | obs + primitive report + `{"goal", "reached_pos", "reached_yaw", "distance_left_m", "yaw_left_rad"}` |
 | `env.move_hand` | kw `arm` left/right, `position` float[3], `quat_xyzw=null` (default: the current orientation; refused beyond 1.5 m of the base in xy) | obs + report + `{"arm", "eef_pos", "eef_quat_xyzw", "distance_left_m", "gripper_width"}` |
+| `env.move_hand_delta` | `arm`, `delta_xyz` float[3] (m, BASE frame: +x ahead, +y left, +z up; at most 0.1), kw `yaw=0` (rad about world +z; at most 0.3), `gripper=null` ("open" / "close" first) | as `env.move_hand` (a zero step without a gripper command settles in place); the units' primitive |
 | `env.grasp_object` | kw `arm`, `position`, `quat_xyzw=null`, `pregrasp_offset_m=0.1` | obs + report (phases open, pregrasp, close/approach, settle, lift) + `{"grasping_mode", ...as move_hand}` |
 | `env.open_gripper` / `env.close_gripper` | kw `arm` | obs + report + `{"arm", "gripper_width"}` |
 | `env.get_robot_position` | - | `{"pos", "quat_xyzw", "yaw", "eef": {left/right: {"pos", "quat_xyzw"}}}` (no stepping) |

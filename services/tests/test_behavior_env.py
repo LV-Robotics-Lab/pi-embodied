@@ -18,10 +18,12 @@ move_hand keeps the planner's obstacles, the task/scene lookup and the code API 
 
 from __future__ import annotations
 
+import math
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from scipy.spatial.transform import Rotation
 
 from pi_embodied_services.robots.behavior import env_server, sim, tasks
 
@@ -337,6 +339,7 @@ def test_code_api_is_the_registry_with_capx_motions_in_the_high_tier():
         "get_robot_position",
         "navigate_to_pose",
         "move_hand",
+        "move_hand_delta",
         "grasp_object",
         "open_gripper",
         "close_gripper",
@@ -460,3 +463,34 @@ def test_success_is_latched_at_its_first_step_until_reset():
     obs, _ = f.reset()
     assert obs["success"] is False and obs["q_score"] == 0.0
     assert f.state()["success"] is False
+
+
+def test_move_hand_delta_is_a_bounded_base_frame_step_with_the_gripper_first():
+    """The units' primitive: the delta is in the base frame (turned by the base yaw into the
+    world), the yaw turns the hand about world +z, a gripper command runs first, and a step
+    beyond the per-call limits is refused before anything moves."""
+    fake = FakeSim()
+    f = fake.facade()
+    f.reset()
+    fake.yaw = math.pi / 2  # the base faces world +y: its +x (ahead) is world +y
+    before = len(fake.calls)
+    r = f.move_hand_delta("left", [0.05, 0.0, -0.02], yaw=0.1, gripper="close")
+    kinds = [k for k, _ in fake.calls[before:]]
+    assert kinds == ["grasp", "move_hand"], kinds
+    (pos, quat), _kw = fake.calls[-1][1]
+    assert np.allclose(np.asarray(pos), [0.3, 0.25, 0.88], atol=1e-6)
+    turned = (
+        Rotation.from_quat(np.asarray(quat))
+        * Rotation.from_quat([0.0, 0.7071, 0.0, 0.7071]).inv()
+    )
+    assert np.allclose(turned.as_rotvec(), [0, 0, 0.1], atol=1e-4)
+    assert r["arm"] == "left" and "distance_left_m" in r
+    before = len(fake.calls)
+    f.move_hand_delta("right", [0, 0, 0])
+    assert [k for k, _ in fake.calls[before:]] == ["settle"], "a zero step holds"
+    with pytest.raises(ValueError, match="the limit is 0.1 m"):
+        f.move_hand_delta("left", [0.2, 0, 0])
+    with pytest.raises(ValueError, match="the limit is 0.3 rad"):
+        f.move_hand_delta("left", [0, 0, 0], yaw=0.5)
+    with pytest.raises(ValueError, match="gripper must be"):
+        f.move_hand_delta("left", [0, 0, 0.01], gripper="half")

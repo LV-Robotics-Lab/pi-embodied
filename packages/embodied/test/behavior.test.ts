@@ -5,7 +5,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import behavior, { project, TASKS } from "../src/behavior/index.ts";
+import behavior, { project, STEP_M, TASKS, VECTORS } from "../src/behavior/index.ts";
 import { RESULT_ENTRY, toolSections } from "../src/robot.ts";
 import { checkSimExplore } from "./sim-stub.ts";
 
@@ -129,6 +129,8 @@ async function fakeEnv() {
 			else if (method === "env.navigate_to_pose")
 				result = motion("navigate_to_pose", { reached_pos: [kwargs.x, kwargs.y, 0], reached_yaw: kwargs.yaw });
 			else if (method === "env.move_hand") result = motion("move_hand", { arm: kwargs.arm, distance_left_m: 0 });
+			else if (method === "env.move_hand_delta")
+				result = motion("move_hand_delta", { arm: kwargs.arm, distance_left_m: 0 });
 			else if (method === "env.grasp_object") {
 				state.held = "radio_89";
 				state.picked = true;
@@ -414,4 +416,27 @@ test("memory and exploration: reset loads the task instance again, the cell is b
 		resets: () => env.calls.filter((c) => c.method === "env.reset").length,
 		observe: "view_env_state",
 	});
+});
+
+test("units: act runs one env.move_hand_delta with the arm, the base-frame step, the yaw and the gripper", async (t) => {
+	const env = await fakeEnv();
+	t.after(env.close);
+	const s = stubPi({ env: env.url, units: "true", "units-plugins": "" });
+	behavior(s.pi);
+	await s.emit("session_start");
+	process.exitCode = undefined;
+	assert.deepEqual(s.active(), ["act", "finish"]);
+	await s.run("act", { unit: "MV_FWD", arm: "left" });
+	assert.deepEqual(env.calls.at(-1), {
+		method: "env.move_hand_delta",
+		kwargs: { arm: "left", delta_xyz: [STEP_M, 0, 0], yaw: 0, gripper: null },
+	});
+	await s.run("act", { unit: "GRASP", arm: "right" });
+	assert.equal(env.calls.at(-1)?.kwargs.gripper, "close");
+	await s.run("act", { unit: "ROTATE_CCW", arm: "right" });
+	assert.ok(
+		Math.abs(Number(env.calls.at(-1)?.kwargs.yaw) + 0.15) < 1e-9 ||
+			Math.abs(Number(env.calls.at(-1)?.kwargs.yaw) - 0.15) < 1e-9,
+	);
+	assert.deepEqual(VECTORS.MV_LEFT, [0, 1, 0]);
 });

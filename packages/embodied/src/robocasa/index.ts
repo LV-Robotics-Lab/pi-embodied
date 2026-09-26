@@ -21,6 +21,7 @@ import { type Static, type TSchema, Type } from "typebox";
 import { encodePng } from "../png.ts";
 import { attach, defineRobot, median, round, SERVICES } from "../robot.ts";
 import { NdArray, RpcClient } from "../rpc.ts";
+import type { Move } from "../units/index.ts";
 import { vlaSeeds } from "../vla-seed.ts";
 
 const read = (name: string) => readFileSync(new URL(name, import.meta.url), "utf8");
@@ -70,6 +71,14 @@ const norm = (v: number[]) => Math.hypot(...v);
 const clip = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 /** Yaw of an xyzw quaternion, as scipy's `as_euler("xyz")[2]`. */
 const yawOf = ([x, y, z, w]: number[]) => Math.atan2(2 * (x * y + z * w), 1 - 2 * (y * y + z * z));
+/**
+ * How the action units look (--units): MV_* are the robot base's own directions, turned into the world
+ * by the base heading. Derived from the base-mounted agentview, not yet calibrated in the simulator.
+ */
+const UNITS_VIEWS = `Each result shows the agentview, then the navview, then the wrist view. MV_FWD moves the gripper along the robot base's forward direction (away from the base), MV_BACK toward the base, MV_LEFT / MV_RIGHT toward the robot's left / right, MV_UP / MV_DOWN up and down; the base does not move.
+- Agentview (first image): a camera on the robot's base, behind and left of the arm, looking forward at the counter: MV_FWD moves the gripper toward the image top (deeper into the scene), MV_BACK toward the bottom, MV_LEFT / MV_RIGHT toward the image left / right.
+- Navview (second image): the floor around the base, for navigation; ignore it for arm moves.
+- Wrist view (third image): moves with the gripper. These directions come from the robot's geometry and are not calibrated: after the first move, check where the gripper went in the agentview and trust what you see.`;
 /** Rows of an HxWx3 image in reverse order (MuJoCo renders bottom-up). */
 function flipRows(data: Buffer, height: number): Buffer {
 	const row = data.length / height;
@@ -161,6 +170,31 @@ export default function robocasa(pi: ExtensionAPI) {
 			.filter((f) => existsSync(f));
 		return files.length ? files.map((f) => `- ${f}`).join("\n") : "(none: this task has no published memory)";
 	};
+	/** --units: one move as the robot's own tools make it, then a new recorded state. */
+	async function unitMove(m: Move) {
+		const t0 = Date.now();
+		let result: Record<string, unknown>;
+		try {
+			const [dx, dy, dz] = m.delta;
+			const c = Math.cos(baseYaw());
+			const s = Math.sin(baseYaw());
+			const target = eef().map((v, k) => v + [dx * c - dy * s, dx * s + dy * c, dz][k]);
+			result = {
+				...(m.gripper ? { gripper: await setGripper(m.gripper === "close" ? 1 : -1) } : {}),
+				...(Math.hypot(dx, dy, dz) > 0 ? { move: await moveTo(target, m.gripper ?? "hold") } : {}),
+			};
+		} catch (err) {
+			result = {
+				error: err instanceof Error ? err.message : String(err),
+				interrupted: robot.signal?.aborted ?? false,
+			};
+		}
+		const elapsed = round((Date.now() - t0) / 1000, 1);
+		return view(await capture({ action: "act", delta: m.delta, gripper: m.gripper }, result, elapsed), {
+			agent_elapsed_s: elapsed,
+		});
+	}
+
 	const robot = defineRobot(pi, {
 		name: "robocasa",
 		task: ["task-name", "split", "seed"],
@@ -170,6 +204,27 @@ export default function robocasa(pi: ExtensionAPI) {
 		budget: { turns: 0, seconds: 0 },
 		// Observations carry the agentview, navview and wrist images.
 		vdm: { views: 3, wrist: 2 },
+		units: {
+			// The base frame: MV_* keep their look in the base-mounted agentview wherever the base stands.
+			vectors: {
+				MV_FWD: [1, 0, 0],
+				MV_BACK: [-1, 0, 0],
+				MV_LEFT: [0, 1, 0],
+				MV_RIGHT: [0, -1, 0],
+				MV_UP: [0, 0, 1],
+				MV_DOWN: [0, 0, -1],
+			},
+			stepM: 0.02,
+			instruction: () => language,
+			views: UNITS_VIEWS,
+			// The robosuite Panda gripper, as on LIBERO.
+			emptyWidthM: 0.004,
+			apply: (m) => unitMove(m),
+			state: async () => ({
+				eef_xyz: eef().map((v) => round(v)),
+				gripper_width: round(vec("robot0_gripper_qpos").reduce((a, v) => a + Math.abs(v), 0)),
+			}),
+		},
 		memory: {
 			cell: () => ({
 				tag: tag(),

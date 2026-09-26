@@ -21,6 +21,7 @@ import { type Static, type TSchema, Type } from "typebox";
 import { encodePng } from "../png.ts";
 import { attach, defineRobot, median, SERVICES, u8 } from "../robot.ts";
 import { NdArray, type RpcClient } from "../rpc.ts";
+import type { Move } from "../units/index.ts";
 import { vlaSeeds } from "../vla-seed.ts";
 
 const read = (name: string) => readFileSync(new URL(name, import.meta.url), "utf8");
@@ -30,6 +31,13 @@ const EXPLORE = read("./explore.md");
 const VIEWS = ["head", "left_wrist", "right_wrist"] as const;
 type View = (typeof VIEWS)[number];
 type Arm = "left" | "right";
+/**
+ * How the action units look (--units): RoboTwin's world frame, in which the robot faces +y with its
+ * right arm on +x. Derived from the head camera's mounting, not yet calibrated in the simulator.
+ */
+const UNITS_VIEWS = `Each result shows the head view, then the left wrist view, then the right wrist view; every unit names the arm it moves. MV_FWD moves that gripper away from the robot (toward the far side of the table), MV_BACK toward the robot, MV_LEFT / MV_RIGHT toward the robot's left / right, MV_UP / MV_DOWN up and down. ROTATE_CW / ROTATE_CCW turn the gripper about the vertical.
+- Head view (first image): the robot's head camera, above and behind the arms, looking forward at the table: MV_FWD moves the gripper toward the image top, MV_BACK toward the bottom, MV_LEFT / MV_RIGHT toward the image left / right. The left arm is on the image left.
+- Wrist views: each moves with its gripper. These directions come from the robot's geometry and are not calibrated: after the first move, check where the gripper went in the head view and trust what you see.`;
 type Status = { eval_success: boolean; take_action_cnt: number; step_lim: number | null; actual_seed: number };
 type Info = {
 	robot_state: Record<string, unknown>;
@@ -376,6 +384,35 @@ export default function robotwin(pi: ExtensionAPI) {
 	const tag = (seed: string) => `robotwin_${cell().task}_${cell().config}_s${seed}`;
 	/** Local corpora (and exploration) key the seed-0 reference like the cell; the published HF corpus by task. */
 	const local = () => pi.getFlag("memory-profile") === "local" || pi.getFlag("explore") === true;
+	/** --units: one arm's move as move_to / rotate_wrist / set_gripper make it, then a new recorded state. */
+	async function unitMove(m: Move) {
+		const arm = m.arm as Arm;
+		if (success() || exhausted())
+			return {
+				content: [
+					{
+						type: "text" as const,
+						text: `Episode is terminal (eval_success=${success()}, budget_exhausted=${exhausted()}); call finish.`,
+					},
+				],
+				details: {},
+			};
+		const result: Record<string, unknown> = {};
+		if (m.gripper) result.gripper = await setGripper(arm, m.gripper === "close" ? 0 : 1, 10);
+		const current = pose(arm);
+		const half = m.yaw / 2;
+		const quat = m.yaw ? qmult([Math.cos(half), 0, 0, Math.sin(half)], current.slice(3)) : undefined;
+		if (m.yaw || m.delta.some((v) => v !== 0))
+			result.move = await moveTo(
+				arm,
+				current.slice(0, 3).map((v, k) => v + m.delta[k]),
+				quat,
+				undefined,
+				25,
+			);
+		return present(await capture({ action: "act", arm, delta: m.delta, yaw: m.yaw, gripper: m.gripper }, result));
+	}
+
 	const robot = defineRobot(pi, {
 		name: "robotwin",
 		task: ["task-name", "task-config", "seed"],
@@ -386,6 +423,31 @@ export default function robotwin(pi: ExtensionAPI) {
 		budget: { turns: 100, seconds: 4800 },
 		// Observations carry the head, left wrist and right wrist images.
 		vdm: { views: VIEWS.length, wrist: [1, 2] },
+		units: {
+			// RoboTwin's world frame (the robot faces +y, right arm on +x): the head view's directions.
+			vectors: {
+				MV_FWD: [0, 1, 0],
+				MV_BACK: [0, -1, 0],
+				MV_LEFT: [-1, 0, 0],
+				MV_RIGHT: [1, 0, 0],
+				MV_UP: [0, 0, 1],
+				MV_DOWN: [0, 0, -1],
+			},
+			stepM: 0.02,
+			yawStepRad: 0.15,
+			arms: ["left", "right"],
+			instruction: () => language,
+			views: UNITS_VIEWS,
+			apply: (m) => unitMove(m),
+			// RoboTwin's gripper is normalized (0 closed .. 1 open), not a width in metres: no empty-grasp check.
+			state: async (arm) => ({
+				eef_xyz: pose(arm as Arm)
+					.slice(0, 3)
+					.map((v) => round(v)),
+				gripper_opening: grip(arm as Arm),
+			}),
+			plugins: ["proprioception", "variable_step", "action_chunk", "rotation", "plan", "mem_text"],
+		},
 		memory: {
 			cell: () => ({ tag: tag(cell().seed), reference: local() ? tag("0") : `${cell().task}_s0` }),
 			primitives: ["lingbot_act", "move_to", "rotate_wrist", "set_gripper", "release"],

@@ -154,3 +154,20 @@ test("every robot mounts memory and exploration (the real ones reset through the
 		assert.ok("explore" in f.flags && "memory-profile" in f.flags, name);
 	}
 });
+
+test("every robot mounts the action units (so GUMI and the fine-tuned model drive it too)", () => {
+	for (const [name, robot] of [
+		["libero", libero],
+		["robocasa", robocasa],
+		["maniskill", maniskill],
+		["robotwin", robotwin],
+		["robolab", robolab],
+		["franka", franka],
+		["dual_franka", dualFranka],
+		["piper", piper],
+	] as const) {
+		const f = stubPi();
+		robot(f.pi);
+		assert.ok("units" in f.flags && "units-plugins" in f.flags, name);
+	}
+});

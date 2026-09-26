@@ -52,6 +52,11 @@ from pi_embodied_services.components.env_facade_base import BaseEnvFacade
 from pi_embodied_services.robots.robolab import sim
 from pi_embodied_services.robots.robolab.primitives import ROBOLAB_PRIMITIVES
 from pi_embodied_services.utils import ground_truth
+from pi_embodied_services.utils.perception import (
+    add_perception_arguments,
+    install_perception,
+    render_view,
+)
 from pi_embodied_services.utils.rpc.main_thread_serve import MainThreadServeMixin
 
 #: configs/robot_robolab.yaml: physical metres per decision (the MVTOKEN 2 cm convention).
@@ -461,6 +466,7 @@ def main():
         action="store_true",
         help="exit when stdin closes (the parent died)",
     )
+    add_perception_arguments(p, sam3=True)
     args = p.parse_args()
 
     # Vulkan ignores CUDA_VISIBLE_DEVICES, so the renderer is pinned by index (sim.launch_isaac);
@@ -535,6 +541,11 @@ def main():
             },
         )
         facade.reset()
+        # --sam3 / --unidepth: env.detect, env.select_detection, env.reject_detection,
+        # env.enhance_depth (no rendered depth here: enhance_depth supplies it).
+        install_perception(
+            facade, args, cameras=["agentview", "wrist"], view=render_view(facade)
+        )
         print(
             f"[robolab-env] {args.task} ready in {time.monotonic() - t0:.1f}s: {handle.instruction!r}",
             flush=True,

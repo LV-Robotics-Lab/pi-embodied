@@ -45,6 +45,10 @@ from pi_embodied_services.utils.grasp import (
     urls_from_args,
 )
 from pi_embodied_services.utils.logging import get_logger
+from pi_embodied_services.utils.perception import (
+    add_perception_arguments,
+    install_perception,
+)
 from pi_embodied_services.utils.serialization import to_numpy_tree
 
 # MuJoCo env vars must be set BEFORE importing anything that touches MuJoCo.
@@ -1302,6 +1306,7 @@ def main():
         help="GPU device to pin MuJoCo EGL rendering and the torch "
         "default device to (physical CUDA ordinal).",
     )
+    add_perception_arguments(p)
     args = p.parse_args()
 
     if args.cuda_device is not None:
@@ -1349,6 +1354,14 @@ def main():
         ik_reach=reach.reach_from_args(args, "panda_libero"),
         sam3=args.sam3,
         grasp=urls_from_args(args),
+    )
+    # --sam3 / --unidepth: env.detect, env.select_detection, env.reject_detection, env.enhance_depth,
+    # on the views the grasp planner and code mode read (its own env.segment stays).
+    install_perception(
+        facade,
+        args,
+        cameras=["agentview", "wrist"],
+        view=facade._view,
     )
     try:
         facade.serve(

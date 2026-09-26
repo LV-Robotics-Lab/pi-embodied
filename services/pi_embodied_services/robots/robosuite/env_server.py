@@ -60,6 +60,10 @@ from pi_embodied_services.utils.grasp import (
     urls_from_args,
 )
 from pi_embodied_services.utils.logging import get_logger
+from pi_embodied_services.utils.perception import (
+    add_perception_arguments,
+    install_perception,
+)
 from pi_embodied_services.utils.rpc.main_thread_serve import MainThreadServeMixin
 
 # MuJoCo env vars must be set before anything imports mujoco.
@@ -1064,6 +1068,7 @@ def main():
         action="store_true",
         help="watch parent process via stdin pipe and exit when it dies",
     )
+    add_perception_arguments(p)
     args = p.parse_args()
 
     if args.cuda_device is not None:
@@ -1083,6 +1088,15 @@ def main():
         sam3=args.sam3,
         ik_reach=reach.reach_from_args(args, IK_ROBOT),
         grasp=urls_from_args(args),
+    )
+    # --sam3 / --unidepth: env.detect, env.select_detection, env.reject_detection, env.enhance_depth,
+    # on the views the grasp planner and code mode read (its own env.segment stays).
+    install_perception(
+        facade,
+        args,
+        cameras=["agentview", "wrist"],
+        view=facade._view,
+        mutating=("env.move_to",),
     )
     try:
         facade.serve(

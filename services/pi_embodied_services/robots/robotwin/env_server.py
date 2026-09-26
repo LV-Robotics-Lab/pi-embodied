@@ -162,6 +162,11 @@ from pi_embodied_services.robots.robotwin.reward_compat import (
 from pi_embodied_services.robots.robotwin.rlinf_env import (
     RoboTwinAgentEnv,
 )
+from pi_embodied_services.utils.perception import (
+    add_perception_arguments,
+    install_perception,
+    render_view,
+)
 
 
 class RoboTwinEnvFacade(BaseEnvFacade):
@@ -462,6 +467,7 @@ def main() -> None:
     )
     parser.add_argument("--assets-path", required=True)
     parser.add_argument("--parent-watch", action="store_true")
+    add_perception_arguments(parser, sam3=True)
     args = parser.parse_args()
 
     env = make_env(
@@ -481,6 +487,13 @@ def main() -> None:
             seed=args.seed,
             max_episode_steps=args.max_episode_steps,
         ),
+    )
+    # --sam3 / --unidepth: env.detect, env.select_detection, env.reject_detection, env.enhance_depth.
+    install_perception(
+        facade,
+        args,
+        cameras=["head", "left_wrist", "right_wrist"],
+        view=render_view(facade),
     )
     facade.serve(
         transport=args.transport,

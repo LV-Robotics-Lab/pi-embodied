@@ -52,6 +52,11 @@ from pi_embodied_services.robots.behavior import sim
 from pi_embodied_services.robots.behavior.primitives import BEHAVIOR_PRIMITIVES
 from pi_embodied_services.robots.behavior.tasks import LANGUAGE, TASK_INDEX, TASK_NAMES
 from pi_embodied_services.utils import ground_truth
+from pi_embodied_services.utils.perception import (
+    add_perception_arguments,
+    install_perception,
+    render_view,
+)
 from pi_embodied_services.utils.rpc.main_thread_serve import MainThreadServeMixin
 
 #: Control steps one primitive may take before it is declared stuck.
@@ -538,6 +543,7 @@ def main():
         action="store_true",
         help="exit when stdin closes (the parent died)",
     )
+    add_perception_arguments(p, sam3=True)
     args = p.parse_args()
 
     # OmniGibson's macros read these at import: set them before anything imports it.
@@ -587,6 +593,21 @@ def main():
             max_primitive_steps=args.max_primitive_steps,
         )
         facade.reset()
+        # --sam3 / --unidepth: env.detect, env.select_detection, env.reject_detection,
+        # env.enhance_depth. The cameras follow OpenGL: no pinhole K for the camera point.
+        install_perception(
+            facade,
+            args,
+            cameras=sorted(sim.CAMERAS),
+            view=render_view(facade, intrinsics=False),
+            mutating=(
+                "env.navigate_to_pose",
+                "env.move_hand",
+                "env.grasp_object",
+                "env.open_gripper",
+                "env.close_gripper",
+            ),
+        )
         print(
             f"[behavior-env] {args.task} instance {args.seed} in {scene} ready in "
             f"{time.monotonic() - t0:.1f}s: {LANGUAGE[args.task]!r}",

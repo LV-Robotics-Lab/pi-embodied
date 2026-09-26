@@ -28,6 +28,14 @@ bound to the observation they came from (OpenETA port spec, section 0.2):
   sensor depth (or stands in for a camera without depth) and replaces that camera's
   depth in the current observation, so later ids project through it.
 
+A server without a Franka-style ``env.get_observation`` (the simulators, which render on
+demand) gives :class:`Perception` a ``view(camera) -> {"rgb", "depth"?, "intrinsic_K"?}``
+instead of the observation layout: frames are then rendered when a primitive first needs
+them and dropped at every new observation of the :class:`Epoch` (a motion). Such servers
+already serve their own ``env.segment`` code primitive, so they install the id primitives
+under other names (``names``, :data:`SIM_NAMES`: ``env.detect`` for the segmentation with
+ids); ``render_view`` builds the view from ``env.render_camera`` / ``env.get_camera_meta``.
+
 :class:`Perception` is installed on a facade after its own ``_register_rpc``: it wraps
 ``env.get_observation`` (a new observation invalidates the ids when the robot state changed
 since they were cut, or always when the facade gave the :class:`Epoch` no state digest, and
@@ -68,6 +76,20 @@ logger = get_logger("perception")
 #: camera alias -> (image key, depth key, index into a stacked extra view, or the key of a
 #: per-camera dict such as the dual Franka's ``raw_camera_frames``, or None)
 Cameras = dict[str, tuple[str, str, int | str | None]]
+
+#: ``view(camera)``: one camera now, ``{"rgb": uint8[H, W, 3], "depth": float32[H, W] (metres)
+#: or None, "intrinsic_K": [3, 3] or None}`` (the grasp planner's ``utils/grasp.View`` shape).
+View = Callable[[str], dict[str, Any]]
+
+#: The primitives' RPC names on a Franka server (the defaults) and on the other servers,
+#: whose own ``env.segment`` is the code-mode primitive.
+NAMES = {
+    "segment": "env.segment",
+    "select_detection": "env.select_detection",
+    "reject_detection": "env.reject_detection",
+    "enhance_depth": "env.enhance_depth",
+}
+SIM_NAMES = {**NAMES, "segment": "env.detect"}
 
 #: The franka servers' observation layout: main = wrist, extra_view[0] = external.
 FRANKA_CAMERAS: Cameras = {
@@ -120,7 +142,9 @@ class Perception:
     ``sam3`` / ``unidepth`` are RPC clients (``call(method, args, kwargs)``) or None;
     ``cameras`` maps the aliases the tools take to observation keys; ``intrinsics``
     returns the 3x3 K of an observation image key (``main``, ``extra_0``, or a camera's
-    dict key such as ``d455_rgb``) or None.
+    dict key such as ``d455_rgb``) or None. With ``view`` the frames come from it instead
+    (``cameras`` is then the list of aliases it renders) and are dropped at every tick of
+    the epoch; ``names`` renames the primitives' RPC methods (:data:`SIM_NAMES`).
     """
 
     def __init__(
@@ -128,14 +152,26 @@ class Perception:
         *,
         sam3: Any | None = None,
         unidepth: Any | None = None,
-        cameras: Cameras,
+        cameras: Cameras | list[str] | tuple[str, ...],
         intrinsics: Callable[[str], np.ndarray | None] = lambda key: None,
         epoch: Epoch | None = None,
+        view: View | None = None,
+        names: dict[str, str] | None = None,
     ) -> None:
         self._sam3 = sam3
         self._depth = DepthEstimator(unidepth) if unidepth is not None else None
-        self._cameras = dict(cameras)
+        if view is None and not isinstance(cameras, dict):
+            raise ValueError(
+                "cameras must map aliases to observation keys without a view"
+            )
+        self._cameras = (
+            dict(cameras)
+            if isinstance(cameras, dict)
+            else {c: ("", "", None) for c in cameras}
+        )
         self._intrinsics = intrinsics
+        self._view = view
+        self._names = {**NAMES, **(names or {})}
         self._epoch = epoch if epoch is not None else Epoch()
         self._book = DetectionBook(self._epoch)
         self._book.bind(self._epoch.observation)
@@ -143,7 +179,17 @@ class Perception:
         self._signatures: dict[str, dict[str, Any]] = {}
         #: the facade's own env.get_observation (install), for a fresh capture per call
         self._capture: Callable[[], Any] | None = None
+        self._intr: dict[str, np.ndarray | None] = {}
         self._enhanced: dict[str, dict[str, Any]] = {}
+        if view is not None:
+            # No observation call rebinds the book: the current one is, until the next motion.
+            # A rendered frame belongs to the observation it was rendered in.
+            self._epoch.on_tick(lambda _observation: self._forget())
+
+    def _forget(self) -> None:
+        self._frames = {}
+        self._intr = {}
+        self._enhanced = {}
 
     @classmethod
     def from_urls(
@@ -151,8 +197,10 @@ class Perception:
         *,
         sam3: str | None,
         unidepth: str | None,
-        cameras: Cameras,
+        cameras: Cameras | list[str] | tuple[str, ...],
         intrinsics: Callable[[str], np.ndarray | None] = lambda key: None,
+        view: View | None = None,
+        names: dict[str, str] | None = None,
     ) -> Perception | None:
         """A Perception for the given service URLs, or None when both are empty."""
         if not sam3 and not unidepth:
@@ -164,6 +212,8 @@ class Perception:
             unidepth=HttpRpcClient(unidepth) if unidepth else None,
             cameras=cameras,
             intrinsics=intrinsics,
+            view=view,
+            names=names,
         )
 
     # -- wiring ----------------------------------------------------------------
@@ -174,16 +224,32 @@ class Perception:
             "enhance_depth": self._depth is not None,
         }
 
-    def install(self, facade: Any) -> None:
-        """Wrap ``env.get_observation`` / ``env.get_env_meta`` and add the primitives."""
-        rpc: dict[str, Callable[..., Any]] = facade._rpc
-        observe = rpc["env.get_observation"]
-        meta = rpc["env.get_env_meta"]
+    def methods(self) -> dict[str, str]:
+        """The RPC name of each primitive this Perception serves."""
+        on = self.capabilities()
+        return {
+            k: v
+            for k, v in self._names.items()
+            if on["enhance_depth" if k == "enhance_depth" else "segment"]
+        }
 
-        def get_observation(*args: Any, **kwargs: Any) -> Any:
-            obs = observe(*args, **kwargs)
-            self.observe(obs)
-            return obs
+    def install(
+        self, facade: Any, *, mutating: tuple[str, ...] = MOTION_METHODS
+    ) -> None:
+        """Wrap ``env.get_observation`` (without a view) / ``env.get_env_meta`` and the
+        motion methods (``mutating``), and add the primitives under their ``names``."""
+        rpc: dict[str, Callable[..., Any]] = facade._rpc
+        meta = rpc["env.get_env_meta"]
+        if self._view is None:
+            observe = rpc["env.get_observation"]
+
+            def get_observation(*args: Any, **kwargs: Any) -> Any:
+                obs = observe(*args, **kwargs)
+                self.observe(obs)
+                return obs
+
+            rpc["env.get_observation"] = get_observation
+            self._capture = observe
 
         def get_env_meta(*args: Any, **kwargs: Any) -> Any:
             out = meta(*args, **kwargs)
@@ -193,19 +259,18 @@ class Perception:
                 out = {**out, "capabilities": caps}
             return out
 
-        rpc["env.get_observation"] = get_observation
         rpc["env.get_env_meta"] = get_env_meta
-        self._capture = observe
-        self._epoch.install(facade, MOTION_METHODS)
+        self._epoch.install(facade, mutating)
+        n = self._names
         if self._sam3 is not None:
-            rpc["env.segment"] = self.segment
-            rpc["env.select_detection"] = self.select_detection
-            rpc["env.reject_detection"] = self.reject_detection
+            rpc[n["segment"]] = self.segment
+            rpc[n["select_detection"]] = self.select_detection
+            rpc[n["reject_detection"]] = self.reject_detection
             facade._readonly_methods.update(
-                {"env.segment", "env.select_detection", "env.reject_detection"}
+                {n["segment"], n["select_detection"], n["reject_detection"]}
             )
         if self._depth is not None:
-            rpc["env.enhance_depth"] = self.enhance_depth
+            rpc[n["enhance_depth"]] = self.enhance_depth
 
     def observe(self, obs: Any) -> list[str]:
         """A new observation. The ids expire (and its frames replace the cached ones) when the
@@ -269,6 +334,23 @@ class Perception:
             )
         if self._capture is not None:
             self.observe(self._capture())
+        elif camera not in self._frames and self._view is not None:
+            v = self._view(camera)
+            rgb = np.asarray(v["rgb"])
+            depth = v.get("depth")
+            depth = None if depth is None else np.asarray(depth, dtype=np.float32)
+            if depth is not None:
+                depth = depth.reshape(depth.shape[:2])
+            if depth is not None and depth.shape != rgb.shape[:2]:
+                depth = None
+            K = v.get("intrinsic_K")
+            K = None if K is None else np.asarray(K, dtype=np.float64)
+            self._intr[camera] = (
+                K
+                if K is not None and K.shape == (3, 3) and np.all(np.isfinite(K))
+                else None
+            )
+            self._frames[camera] = (rgb[..., :3], depth)
         if camera not in self._frames:
             raise ValueError(
                 f"no current frame for camera {camera!r}: take an observation first"
@@ -281,6 +363,8 @@ class Perception:
         return self._frames[camera]
 
     def _K(self, camera: str) -> np.ndarray | None:
+        if self._view is not None:
+            return self._intr.get(camera)
         image_key, _depth_key, index = self._cameras[camera]
         key = (
             "main"
@@ -423,4 +507,105 @@ class Perception:
         }
 
 
-__all__ = ["FRANKA_CAMERAS", "Cameras", "Perception", "franka_intrinsics"]
+def render_view(
+    facade: Any,
+    *,
+    size: int | None = None,
+    intrinsics: bool = True,
+    flip: bool = False,
+    cameras: dict[str, str] | None = None,
+) -> View:
+    """A :data:`View` over a simulator facade's ``env.render_camera`` (``depth=True``: rgb, or
+    ``[rgb, depth]``) and ``env.get_camera_meta``: the frame the model sees. ``size`` passes
+    ``height`` / ``width`` to both; ``flip`` turns a bottom-up render (robosuite's native
+    orientation) upright; ``cameras`` maps an alias to the server's camera name. K is left out
+    where it does not describe the image: ``intrinsics=False`` (a letterbox, an OpenGL
+    convention), a flipped image, a camera without metadata, or metadata of another size."""
+    rpc = facade._rpc
+
+    def view(camera: str) -> dict[str, Any]:
+        name = (cameras or {}).get(camera, camera)
+        sized = {"height": size, "width": size} if size else {}
+        out = rpc["env.render_camera"](camera_name=name, depth=True, **sized)
+        rgb, depth = (
+            (out[0], out[1])
+            if isinstance(out, (list, tuple)) and len(out) == 2
+            else (out, None)
+        )
+        rgb = np.asarray(rgb)
+        if depth is not None:
+            depth = np.asarray(depth, dtype=np.float32)
+        if flip:
+            rgb = np.ascontiguousarray(rgb[::-1])
+            depth = None if depth is None else np.ascontiguousarray(depth[::-1])
+        K = None
+        if intrinsics and not flip:
+            try:
+                meta = rpc["env.get_camera_meta"](camera_name=name, **sized)
+            except Exception:  # a camera without calibration: masks, no camera point
+                meta = None
+            if isinstance(meta, dict):
+                h, w = meta.get("height"), meta.get("width")
+                if (h is None or int(h) == rgb.shape[0]) and (
+                    w is None or int(w) == rgb.shape[1]
+                ):
+                    K = meta.get("intrinsic_K")
+        return {"rgb": rgb, "depth": depth, "intrinsic_K": K}
+
+    return view
+
+
+def install_perception(
+    facade: Any,
+    args: Any,
+    *,
+    cameras: Cameras | list[str] | tuple[str, ...],
+    view: View | None = None,
+    intrinsics: Callable[[str], np.ndarray | None] = lambda key: None,
+    mutating: tuple[str, ...] = (),
+    names: dict[str, str] | None = None,
+) -> Perception | None:
+    """Install a :class:`Perception` for ``args.sam3`` / ``args.unidepth`` on a constructed
+    facade (nothing without either): the primitives under ``names`` (default
+    :data:`SIM_NAMES`), ids expiring on :data:`MOTION_METHODS` plus the robot's own
+    ``mutating`` motions."""
+    perception = Perception.from_urls(
+        sam3=getattr(args, "sam3", None) or None,
+        unidepth=getattr(args, "unidepth", None) or None,
+        cameras=cameras,
+        intrinsics=intrinsics,
+        view=view,
+        names=SIM_NAMES if names is None else names,
+    )
+    if perception is not None:
+        perception.install(facade, mutating=MOTION_METHODS + tuple(mutating))
+    return perception
+
+
+def add_perception_arguments(parser: Any, *, sam3: bool = False) -> None:
+    """``--unidepth`` (and ``--sam3`` for a server without one): the perception services."""
+    if sam3:
+        parser.add_argument(
+            "--sam3",
+            default="",
+            help="SAM3 server URL: adds env.detect / env.select_detection / env.reject_detection",
+        )
+    parser.add_argument(
+        "--unidepth",
+        default="",
+        help="UniDepth server URL: adds env.enhance_depth",
+    )
+
+
+__all__ = [
+    "FRANKA_CAMERAS",
+    "NAMES",
+    "SIM_NAMES",
+    "Cameras",
+    "Perception",
+    "View",
+    "add_perception_arguments",
+    "franka_intrinsics",
+    "install_perception",
+    "render_view",
+]

@@ -547,6 +547,15 @@ dropped since the previous one. Ids are never reused within a server process.
 filled with the UniDepth estimate scaled to their overlap; a camera without depth takes the
 estimate as-is), so later `env.segment` calls project through it.
 
+Every other env server (the simulators, Piper, UR5e) serves the same primitives with the same
+`--sam3` / `--unidepth` flags, the segmentation under the name `env.detect` (their own
+`env.segment`, where they have one, is the code-mode primitive). The simulators render the
+camera (`camera` = the model's view names, e.g. `agentview` / `wrist`, `head` / `left_wrist` /
+`right_wrist`) when a primitive first needs it and keep that frame until the next motion, which
+also expires the ids; Piper and UR5e read `env.get_observation`'s `images[name]` / `depths[name]`
+as the Frankas do. `enhance_depth` gives a camera without depth (ManiSkill, RoboLab, the Piper and
+UR5e webcams) the UniDepth estimate.
+
 ### ur5e-env (`robots/ur5e/env_server.py`)
 
 One UR5e over ur_rtde (moveL / moveJ at `limits.speed_mps` 0.25 and `accel_mps2` 0.5 by default),

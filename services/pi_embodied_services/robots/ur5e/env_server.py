@@ -82,6 +82,10 @@ from pi_embodied_services.robots.ur5e.primitives import UR5E_PRIMITIVES
 from pi_embodied_services.utils import hardware_lock
 from pi_embodied_services.utils.daemon import watch_parent_death
 from pi_embodied_services.utils.logging import get_logger
+from pi_embodied_services.utils.perception import (
+    add_perception_arguments,
+    install_perception,
+)
 
 logger = get_logger("ur5e_env_server")
 
@@ -744,6 +748,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Test doubles instead of hardware; refused unless PI_EMBODIED_MOCK_ROBOT=1.",
     )
     hardware_lock.add_lock_arguments(parser)
+    add_perception_arguments(parser, sam3=True)
     args = parser.parse_args(argv)
     if args.mock:
         from pi_embodied_services.robots.ur5e.mock import MOCK_ENV
@@ -790,6 +795,17 @@ def main(argv: list[str] | None = None) -> int:
             config_path=str(args.robot_config or DEFAULT_CONFIG),
             camera_flag=args.cameras,
             task_description=args.task_description,
+        )
+        # --sam3 / --unidepth: env.detect, env.select_detection, env.reject_detection and
+        # env.enhance_depth (UniDepth fills an RGB-only camera's depth) on get_observation's frames.
+        install_perception(
+            facade,
+            args,
+            cameras={name: ("images", "depths", name) for name in cameras},
+            intrinsics=lambda key: (
+                facade.get_camera_meta()["cameras"].get(key) or {}
+            ).get("intrinsic_K"),
+            mutating=("env.move_pose",),
         )
     except Exception:
         for cam in cameras.values():

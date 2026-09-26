@@ -43,6 +43,11 @@ from pi_embodied_services.components.env_facade_base import BaseEnvFacade
 from pi_embodied_services.robots.maniskill.primitives import MANISKILL_PRIMITIVES
 from pi_embodied_services.utils import ground_truth
 from pi_embodied_services.utils.logging import get_logger
+from pi_embodied_services.utils.perception import (
+    add_perception_arguments,
+    install_perception,
+    render_view,
+)
 from pi_embodied_services.utils.rpc.main_thread_serve import MainThreadServeMixin
 
 logger = get_logger("env_server")
@@ -1184,6 +1189,7 @@ def main():
         action="store_true",
         help="watch parent process via stdin pipe and exit when it dies",
     )
+    add_perception_arguments(p, sam3=True)
     args = p.parse_args()
 
     facade = ManiskillEnvFacade(
@@ -1198,6 +1204,15 @@ def main():
         wrist_rotation=args.wrist_rotation,
         wrist_flip=args.wrist_flip,
         scene=dict(kv.split("=", 1) for kv in args.scene.split(",") if kv) or None,
+    )
+    # --sam3 / --unidepth: env.detect, env.select_detection, env.reject_detection, env.enhance_depth
+    # (no rendered depth here: enhance_depth supplies it). The views are letterboxed: no K.
+    install_perception(
+        facade,
+        args,
+        cameras=["agentview", "wrist"],
+        view=render_view(facade, intrinsics=False),
+        mutating=("env.servo",),
     )
     try:
         facade.serve(

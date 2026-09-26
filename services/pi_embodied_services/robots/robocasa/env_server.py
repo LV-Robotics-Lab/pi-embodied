@@ -31,6 +31,11 @@ from pi_embodied_services.robots.robocasa import tasks
 from pi_embodied_services.robots.robocasa.primitives import ROBOCASA_PRIMITIVES
 from pi_embodied_services.utils import ground_truth
 from pi_embodied_services.utils.logging import get_logger
+from pi_embodied_services.utils.perception import (
+    add_perception_arguments,
+    install_perception,
+    render_view,
+)
 from pi_embodied_services.utils.rpc.main_thread_serve import MainThreadServeMixin
 
 logger = get_logger("env_server")
@@ -468,6 +473,7 @@ def main():
         default=None,
         help="RoboCasa365 manifest scene index (0-49); overrides --seed",
     )
+    add_perception_arguments(p, sam3=True)
     args = p.parse_args()
 
     if args.cuda_device is not None:
@@ -503,6 +509,23 @@ def main():
         split=args.split,
         seed=args.seed,
         scene=args.scene,
+    )
+    # --sam3 / --unidepth: env.detect, env.select_detection, env.reject_detection,
+    # env.enhance_depth, on the upright 256 px views the model sees.
+    install_perception(
+        facade,
+        args,
+        cameras=["agentview", "navview", "wrist"],
+        view=render_view(
+            facade,
+            size=256,
+            flip=True,
+            cameras={
+                "agentview": "robot0_agentview_left",
+                "navview": "mobilebase0_navview",
+                "wrist": "robot0_eye_in_hand",
+            },
+        ),
     )
     facade.serve(
         transport=args.transport,

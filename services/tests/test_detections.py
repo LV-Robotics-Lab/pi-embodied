@@ -32,8 +32,12 @@ from pi_embodied_services.utils.detections import (
 )
 from pi_embodied_services.utils.perception import (
     FRANKA_CAMERAS,
+    SIM_NAMES,
     Perception,
+    add_perception_arguments,
     franka_intrinsics,
+    install_perception,
+    render_view,
 )
 from pi_embodied_services.utils.rpc import RpcFacade
 
@@ -478,3 +482,154 @@ def test_a_moved_object_or_a_reset_expires_ids_under_a_still_arm() -> None:
     server._dispatch("env.reset", (), {})  # the arm reads the same pose after the reset
     after = server._dispatch("env.select_detection", (), {"id": fresh["ids"][0]})
     assert after["ok"] is False and "stale" in after["error"]
+
+
+# ---- Perception over a simulator's rendered views ----------------------------------
+
+
+class SimServer(RpcFacade):
+    """A simulator-shaped env server: env.render_camera / env.get_camera_meta, its own
+    env.segment code primitive, env.move_delta; no env.get_observation."""
+
+    SERVICE_NAME = "fake-sim-env"
+
+    def __init__(self, depth: bool = True) -> None:
+        super().__init__()
+        self.renders = 0
+        self.z = 0.5
+        self._depth = depth
+        self._rpc["env.get_env_meta"] = lambda: {"task": "t", "capabilities": {}}
+        self._rpc["env.render_camera"] = self.render_camera
+        self._rpc["env.get_camera_meta"] = lambda camera_name, **_: {
+            "intrinsic_K": K.tolist()
+        }
+        self._rpc["env.segment"] = lambda prompt, camera="agentview": {"own": True}
+        self._rpc["env.move_delta"] = self.move_delta
+
+    def render_camera(self, camera_name, depth=False, **_):
+        self.renders += 1
+        rgb = np.full((H, W, 3), 90, dtype=np.uint8)
+        if not (depth and self._depth):
+            return rgb
+        return [rgb, np.full((H, W), self.z, dtype=np.float32)]
+
+    def move_delta(self, dz: float) -> dict:
+        self.z += dz
+        return {"ok": True}
+
+
+def _sim(sam3=None, unidepth=None, depth=True):
+    server = SimServer(depth)
+    perception = Perception(
+        sam3=sam3,
+        unidepth=unidepth,
+        cameras=["agentview", "wrist"],
+        view=render_view(server),
+        names=SIM_NAMES,
+    )
+    perception.install(server)
+    return server, perception
+
+
+def test_a_rendered_view_serves_detect_beside_the_servers_own_segment() -> None:
+    server, _ = _sim(sam3=FakeSam3())
+    assert server._dispatch("env.segment", ("bowl",), {}) == {"own": True}
+    meta = server._dispatch("env.get_env_meta", (), {})["capabilities"]["perception"]
+    assert meta == {"segment": True, "enhance_depth": False}
+    assert "env.enhance_depth" not in server._rpc
+    out = server._dispatch(
+        "env.detect", (), {"camera": "agentview", "text_prompt": "bowl", "all": True}
+    )
+    assert out["found"] and len(out["ids"]) == 2
+    assert out["detections"][0]["depth_m"] == pytest.approx(0.5)
+    assert out["detections"][0]["point_camera"] is not None, "K from get_camera_meta"
+    renders = server.renders
+    # The same observation: the frame is rendered once.
+    server._dispatch("env.detect", (), {"camera": "agentview", "text_prompt": "cup"})
+    assert server.renders == renders
+    assert server._dispatch("env.select_detection", (), {"id": out["ids"][1]})["ok"]
+    # A motion starts a new observation: the ids expire and the next call renders again.
+    server._dispatch("env.move_delta", (0.1,), {})
+    stale = server._dispatch("env.select_detection", (), {"id": out["ids"][0]})
+    assert stale["ok"] is False and set(stale["invalidated"]) >= set(out["ids"])
+    again = server._dispatch(
+        "env.detect", (), {"camera": "agentview", "text_prompt": "bowl"}
+    )
+    assert server.renders == renders + 1
+    assert again["detections"][0]["depth_m"] == pytest.approx(0.6)
+    with pytest.raises(ValueError, match="unknown camera"):
+        server._dispatch("env.detect", (), {"camera": "top", "text_prompt": "bowl"})
+
+
+def test_enhance_depth_supplies_depth_to_a_view_without_it() -> None:
+    server, _ = _sim(sam3=FakeSam3(), unidepth=FakeUniDepth(), depth=False)
+    assert "env.select_detection" in server._rpc and "env.enhance_depth" in server._rpc
+    bare = server._dispatch(
+        "env.detect", (), {"camera": "wrist", "text_prompt": "bowl"}
+    )
+    assert bare["detections"][0]["depth_m"] is None
+    out = server._dispatch("env.enhance_depth", (), {"camera": "wrist"})
+    assert out["ok"] and out["depth"].shape == (H, W)
+    after = server._dispatch(
+        "env.detect", (), {"camera": "wrist", "text_prompt": "bowl"}
+    )
+    assert after["detections"][0]["depth_m"] == pytest.approx(0.25)
+    # The estimate belongs to this observation only.
+    server._dispatch("env.move_delta", (0.1,), {})
+    moved = server._dispatch(
+        "env.detect", (), {"camera": "wrist", "text_prompt": "bowl"}
+    )
+    assert moved["detections"][0]["depth_m"] is None
+
+
+def test_without_a_view_the_cameras_must_name_observation_keys() -> None:
+    with pytest.raises(ValueError, match="observation keys"):
+        Perception(sam3=FakeSam3(), cameras=["wrist"])
+
+
+def test_install_perception_from_args_on_a_real_robots_observation_layout() -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    add_perception_arguments(parser, sam3=True)
+    off = parser.parse_args([])
+    server = Server()
+    before = set(server._rpc)
+    assert install_perception(server, off, cameras={"cam": ("a", "b", "c")}) is None
+    assert set(server._rpc) == before, "nothing without --sam3 / --unidepth"
+
+    server = Server()
+    server._rpc["env.get_observation"] = lambda: {
+        "images": {"front": np.full((H, W, 3), 90, dtype=np.uint8)},
+        "depths": {},
+    }
+    args = parser.parse_args(["--sam3", "http://sam3", "--unidepth", "http://unidepth"])
+    perception = install_perception(
+        server,
+        args,
+        cameras={"front": ("images", "depths", "front")},
+        intrinsics=lambda key: K if key == "front" else None,
+    )
+    assert perception is not None and perception.methods() == {
+        "segment": "env.detect",
+        "select_detection": "env.select_detection",
+        "reject_detection": "env.reject_detection",
+        "enhance_depth": "env.enhance_depth",
+    }
+    assert "env.segment" not in server._rpc, "the id primitive is env.detect here"
+
+
+def test_every_env_server_but_the_frankas_installs_perception() -> None:
+    """Every robot's env server takes --sam3 / --unidepth and installs the primitives (the
+    Franka servers install theirs under the Franka names)."""
+    from pathlib import Path
+
+    robots = Path(__file__).resolve().parents[1] / "pi_embodied_services" / "robots"
+    servers = sorted(robots.glob("*/env_server.py"))
+    assert len(servers) >= 13
+    for path in servers:
+        text = path.read_text()
+        if path.parent.name in ("franka", "franka_polymetis", "dual_franka"):
+            continue
+        assert "install_perception(" in text, path.parent.name
+        assert "add_perception_arguments(" in text, path.parent.name

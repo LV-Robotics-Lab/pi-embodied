@@ -46,6 +46,11 @@ from pi_embodied_services.components.env_facade_base import BaseEnvFacade
 from pi_embodied_services.robots.metaworld.primitives import METAWORLD_PRIMITIVES
 from pi_embodied_services.utils import ground_truth
 from pi_embodied_services.utils.logging import get_logger
+from pi_embodied_services.utils.perception import (
+    add_perception_arguments,
+    install_perception,
+    render_view,
+)
 from pi_embodied_services.utils.rpc.main_thread_serve import MainThreadServeMixin
 
 # MuJoCo env vars must be set BEFORE importing anything that touches MuJoCo. EGL by default;
@@ -607,10 +612,15 @@ def main():
         action="store_true",
         help="watch parent process via stdin pipe and exit when it dies",
     )
+    add_perception_arguments(p, sam3=True)
     args = p.parse_args()
 
     facade = MetaworldEnvFacade(
         task=args.task, seed=args.seed, view_size=args.view_size
+    )
+    # --sam3 / --unidepth: env.detect, env.select_detection, env.reject_detection, env.enhance_depth.
+    install_perception(
+        facade, args, cameras=["agentview", "wrist"], view=render_view(facade)
     )
     try:
         facade.serve(

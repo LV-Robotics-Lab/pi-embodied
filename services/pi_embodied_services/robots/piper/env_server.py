@@ -63,6 +63,10 @@ from pi_embodied_services.robots.piper.controller import PiperController, PiperL
 from pi_embodied_services.robots.piper.primitives import PIPER_PRIMITIVES
 from pi_embodied_services.utils import hardware_lock
 from pi_embodied_services.utils.logging import get_logger
+from pi_embodied_services.utils.perception import (
+    add_perception_arguments,
+    install_perception,
+)
 
 logger = get_logger("piper_env_server")
 
@@ -650,6 +654,7 @@ def main() -> int:
         help="Print each arm's identity (for calibration.arm_id), then exit; no motion.",
     )
     hardware_lock.add_lock_arguments(parser)
+    add_perception_arguments(parser, sam3=True)
     args = parser.parse_args()
     if args.print_identity:
         from pi_embodied_services.robots.piper.ros_io import arm_identity
@@ -675,6 +680,14 @@ def main() -> int:
     robot, cameras = build(cfg)
     facade = PiperEnvFacade(
         cfg, robot, cameras, config_path=str(args.robot_config or DEFAULT_CONFIG)
+    )
+    # --sam3 / --unidepth: env.detect, env.select_detection, env.reject_detection and
+    # env.enhance_depth (the webcams have no depth: UniDepth supplies it) on get_observation's frames.
+    install_perception(
+        facade,
+        args,
+        cameras={name: ("images", "depths", name) for name in cameras},
+        mutating=("env.move_joints", "env.halt_arm"),
     )
     try:
         facade.serve(

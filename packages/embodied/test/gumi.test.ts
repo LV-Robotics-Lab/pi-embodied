@@ -13,6 +13,7 @@ import {
 	armState,
 	DUAL,
 	gumi,
+	haltReason,
 	KEYS,
 	keyMap,
 	type Observation,
@@ -1007,34 +1008,123 @@ test("replay: a recording's units in order (actions.jsonl, else steps.jsonl), re
 	);
 });
 
-test("/gumi-replay runs the recording through the operator's units path; --dry-run moves nothing", async () => {
+/** A command context: `ui` with a confirm answering `yes` (recorded), or none without a UI. */
+function commandCtx(o: { ui: boolean; yes?: boolean }) {
+	const notes: string[] = [];
+	const asked: string[] = [];
+	const c = {
+		hasUI: o.ui,
+		signal: undefined,
+		ui: {
+			notify: (m: string) => notes.push(m),
+			confirm: async (_title: string, message: string) => {
+				asked.push(message);
+				return o.yes === true;
+			},
+		},
+	};
+	return { c, notes, asked };
+}
+
+function replayRig() {
 	const f = fakePi({});
-	gumi(f.pi);
+	const g = gumi(f.pi);
 	const robot = fakeRobot();
-	await f.emit("session_start");
-	f.pi.events.emit(UNITS_EVENT, robot.handle);
 	const dir = mkdtempSync(join(tmpdir(), "gumi-replay-"));
 	writeFileSync(
 		join(dir, "actions.jsonl"),
 		`${JSON.stringify({ step: 0, token: "MV_FWD", n: 2 })}\n${JSON.stringify({ step: 1, token: "GRASP" })}\n`,
 	);
-	const notes: string[] = [];
-	const c = { ui: { notify: (m: string) => notes.push(m) } };
-	await f.commands.get("gumi-replay").handler(`${dir} --dry-run`, c);
-	assert.deepEqual(robot.calls, []);
-	assert.match(notes[0], /2 record\(s\)[\s\S]*0: MV_FWD x2\n1: GRASP/);
-	await f.commands.get("gumi-replay").handler(dir, c);
-	assert.deepEqual(
-		(robot.calls as { unit: string; operator?: boolean }[]).map((x) => [x.unit, x.operator]),
-		[
-			["MV_FWD", true],
-			["MV_FWD", true],
-			["GRASP", true],
-		],
-	);
-	assert.match(notes.at(-1) as string, /2 record\(s\) executed/);
+	const replay = (args: string, c: unknown) => f.commands.get("gumi-replay").handler(args, c);
+	const units = () => (robot.calls as { unit: string; operator?: boolean }[]).map((x) => [x.unit, x.operator]);
+	return { f, g, robot, dir, replay, units };
+}
+
+test("/gumi-replay asks before anything moves: dry run lists only, a declined confirm moves nothing", async () => {
+	const r = replayRig();
+	await r.f.emit("session_start");
+	r.f.pi.events.emit(UNITS_EVENT, r.robot.handle);
+	const dry = commandCtx({ ui: true, yes: true });
+	await r.replay(`${r.dir} --dry-run`, dry.c);
+	assert.deepEqual(r.robot.calls, []);
+	assert.deepEqual(dry.asked, []);
+	assert.match(dry.notes[0], /2 record\(s\)[\s\S]*0: MV_FWD x2\n1: GRASP/);
+
+	const no = commandCtx({ ui: true, yes: false });
+	await r.replay(r.dir, no.c);
+	assert.deepEqual(r.robot.calls, []);
+	assert.match(no.asked[0], new RegExp(`Replay ${r.dir} on the robot: 2 record\\(s\\), first MV_FWD x2`));
+	assert.match(no.notes.at(-1) as string, /cancelled; nothing moved/);
+
+	// Without a UI: refused unless --yes.
+	const headless = commandCtx({ ui: false });
+	await r.replay(r.dir, headless.c);
+	assert.deepEqual(r.robot.calls, []);
+	assert.match(headless.notes.at(-1) as string, /refused without a UI: add --yes/);
+
+	const ok = commandCtx({ ui: true, yes: true });
+	await r.replay(r.dir, ok.c);
+	assert.deepEqual(r.units(), [
+		["MV_FWD", true],
+		["MV_FWD", true],
+		["GRASP", true],
+	]);
+	assert.match(ok.notes.at(-1) as string, /2 record\(s\) executed/);
 	// The robot's gates stop a replay like any operator step.
-	robot.refusal = "The episode is finished.";
-	await f.commands.get("gumi-replay").handler(dir, c);
-	assert.match(notes.at(-1) as string, /stopped at record 0: The episode is finished/);
+	r.robot.refusal = "The episode is finished.";
+	await r.replay(`${r.dir} --yes`, commandCtx({ ui: false }).c);
+	assert.equal(r.robot.calls.length, 3);
+});
+
+test("/gumi-replay stops when the arm is blocked (contact, floor) and at the dashboard's Interrupt", async () => {
+	const r = replayRig();
+	await r.f.emit("session_start");
+	const run = r.robot.handle.run;
+	let n = 0;
+	// The second unit stalls against something: the units layer reports it as blocked.
+	r.robot.handle.run = async (params, signal) => {
+		const out = await run(params, signal);
+		if (++n !== 2) return out;
+		return {
+			...out,
+			content: [
+				{ type: "text", text: "units: MV_FWD x1\nLast MV_FWD moved 0.2 of 2.0 cm -> blocked" },
+				...out.content,
+			],
+		};
+	};
+	r.f.pi.events.emit(UNITS_EVENT, r.robot.handle);
+	const blocked = commandCtx({ ui: false });
+	await r.replay(`${r.dir} --yes`, blocked.c);
+	assert.equal(r.robot.calls.length, 2);
+	assert.match(
+		blocked.notes.at(-1) as string,
+		/stopped at record 0 \(MV_FWD x2\): halted: Last MV_FWD moved 0.2 of 2.0 cm -> blocked/,
+	);
+	assert.equal(haltReason({ content: [{ type: "text", text: "ok" }], details: { error: "floor" } }), "floor");
+	assert.equal(haltReason({ content: [{ type: "text", text: "units: MV_UP x1" }], details: {} }), undefined);
+
+	// Interrupt (stop()) between records: nothing after it runs, and the pause ends at once.
+	r.robot.handle.run = run;
+	r.robot.calls.length = 0;
+	const stopped = commandCtx({ ui: false });
+	const done = r.replay(`${r.dir} --yes --pause 30`, stopped.c);
+	while (r.robot.calls.length < 2) await new Promise((res) => setTimeout(res, 1));
+	await new Promise((res) => setTimeout(res, 5));
+	assert.equal(r.g.stop(), true);
+	await done;
+	assert.equal(r.robot.calls.length, 2);
+	assert.match(stopped.notes.at(-1) as string, /stopped before record 1 of 2/);
+
+	// Interrupt during a unit: the unit's RPC is stopped and the replay ends there.
+	r.robot.calls.length = 0;
+	r.robot.slow(true);
+	const mid = commandCtx({ ui: false });
+	const running = r.replay(`${r.dir} --yes`, mid.c);
+	while (!r.robot.calls.length) await new Promise((res) => setTimeout(res, 1));
+	r.g.stop();
+	await running;
+	assert.equal(r.robot.calls.length, 1);
+	assert.match(mid.notes.at(-1) as string, /stopped at record 0/);
+	assert.equal(r.g.stop(), false);
 });

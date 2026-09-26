@@ -717,6 +717,8 @@ export function gumi(
 	const takeover = new Takeover();
 	/** Stops the running operator batch (`stop()`), also while the agent is idle. */
 	let batch: AbortController | undefined;
+	/** Stops the running /gumi-replay between its records (`stop()`, the session's end). */
+	let replaying: AbortController | undefined;
 
 	const root = () => {
 		const v = pi.getFlag("gumi-record");
@@ -766,6 +768,7 @@ export function gumi(
 	});
 	pi.on("session_shutdown", () => {
 		// A rollout still open when the episode ends is kept, marked unfinished (GUMI saves on shutdown too).
+		replaying?.abort();
 		if (recorder?.active) recorder.stop({ success: false, end_reason: "session_shutdown" });
 		takeover.release();
 	});
@@ -963,9 +966,13 @@ export function gumi(
 					const next = observation(result);
 					if (next) latest = next;
 					last = `human ${label}`;
-					results.push({ step, ok: true });
-					o.onStep?.(label, step, result, false);
-					publish(`executed ${label}`);
+					// The robot's gates: a unit it refused or halted, or an arm that stalled against something
+					// (contact, the floor, a workspace limit), ends the batch; a held key or a replay must not push on.
+					const halt = haltReason(result);
+					results.push(halt ? { step, ok: false, error: `halted: ${halt}` } : { step, ok: true });
+					o.onStep?.(label, step, result, halt !== undefined);
+					publish(halt ? `${label} halted: ${halt}` : `executed ${label}`);
+					if (halt) break;
 				}
 			} finally {
 				batch = undefined;
@@ -1023,9 +1030,10 @@ export function gumi(
 		},
 		/** Stop the running operator batch (the robot's RPC gets `stop`); false when none runs. */
 		stop() {
-			if (!batch) return false;
-			batch.abort();
-			publish("stopping the operator batch");
+			if (!batch && !replaying) return false;
+			batch?.abort();
+			replaying?.abort();
+			publish(replaying ? "stopping the replay" : "stopping the operator batch");
 			return true;
 		},
 		/** take | release. */
@@ -1048,15 +1056,17 @@ export function gumi(
 	// Show-Harness scripts/trajectory/replay_rollout.py: a recording's units, in order, on this robot.
 	pi.registerCommand("gumi-replay", {
 		description:
-			"Replay a GUMI recording's units on the robot as operator steps: /gumi-replay <run dir> [--dry-run] [--pause <s>]",
+			"Replay a GUMI recording's units on the robot as operator steps (asks first; the dashboard's Interrupt stops it): /gumi-replay <run dir> [--dry-run] [--pause <s>] [--yes]",
 		handler: async (args, c) => {
+			const usage = "Usage: /gumi-replay <run dir> [--dry-run] [--pause <s>] [--yes]";
 			const words = args.trim().split(/\s+/).filter(Boolean);
 			const dry = words.includes("--dry-run");
+			const yes = words.includes("--yes");
 			const p = words.indexOf("--pause");
 			const pause = p >= 0 ? Number(words[p + 1]) : 0;
 			const dir = words.find((w, i) => !w.startsWith("--") && (p < 0 || i !== p + 1));
 			if (!dir || !(pause >= 0)) {
-				c.ui.notify("Usage: /gumi-replay <run dir> [--dry-run] [--pause <s>]", "error");
+				c.ui.notify(usage, "error");
 				return;
 			}
 			let plan: ReplayStep[];
@@ -1066,28 +1076,92 @@ export function gumi(
 				c.ui.notify(`gumi-replay: ${(e as Error).message}`, "error");
 				return;
 			}
+			if (!plan.length) {
+				c.ui.notify(`gumi-replay: ${dir} has no recorded steps`, "error");
+				return;
+			}
 			const lines = plan.map((r, i) => `${i}: ${replayLabel(r, arms)}`);
 			c.ui.notify(
 				`gumi-replay ${dir}: ${plan.length} record(s), relative to the robot's pose now (place the scene as recorded)\n${lines.join("\n")}`,
 				"info",
 			);
 			if (dry) return;
-			for (const [i, r] of plan.entries()) {
-				try {
-					await controller.step(replayBody(r, arms));
-				} catch (e) {
-					c.ui.notify(`gumi-replay stopped at record ${i}: ${(e as Error).message}`, "error");
-					return;
-				}
-				if (pause > 0 && i < plan.length - 1) await new Promise((res) => setTimeout(res, pause * 1000));
+			if (replaying) {
+				c.ui.notify("gumi-replay: a replay is already running", "error");
+				return;
 			}
-			c.ui.notify(`gumi-replay: ${plan.length} record(s) executed`, "info");
+			// The robot moves: the operator confirms the run first (without a UI, only with --yes).
+			const summary = `Replay ${dir} on the robot: ${plan.length} record(s), first ${replayLabel(plan[0], arms)}. Moves are relative to the arm's pose now; the dashboard's Interrupt stops it.`;
+			if (c.hasUI ? !(await c.ui.confirm("Replay the GUMI recording?", summary)) : !yes) {
+				c.ui.notify(
+					c.hasUI
+						? "gumi-replay cancelled; nothing moved"
+						: `gumi-replay refused without a UI: add --yes to run it (${summary})`,
+					c.hasUI ? "info" : "error",
+				);
+				return;
+			}
+			const stop = new AbortController();
+			replaying = stop;
+			// An abort of the agent (Esc, the dashboard's Interrupt) stops the replay too.
+			const onAbort = () => stop.abort();
+			c.signal?.addEventListener("abort", onAbort, { once: true });
+			try {
+				for (const [i, r] of plan.entries()) {
+					if (stop.signal.aborted) {
+						c.ui.notify(`gumi-replay stopped before record ${i} of ${plan.length}`, "warning");
+						return;
+					}
+					let out: Awaited<ReturnType<typeof controller.step>>;
+					try {
+						out = await controller.step(replayBody(r, arms));
+					} catch (e) {
+						c.ui.notify(`gumi-replay stopped at record ${i}: ${(e as Error).message}`, "error");
+						return;
+					}
+					if (!out.ok) {
+						const why = out.results.find((x) => !x.ok)?.error ?? "stopped";
+						c.ui.notify(`gumi-replay stopped at record ${i} (${replayLabel(r, arms)}): ${why}`, "error");
+						return;
+					}
+					if (pause > 0 && i < plan.length - 1)
+						await new Promise<void>((res) => {
+							const t = setTimeout(res, pause * 1000);
+							const wake = () => {
+								clearTimeout(t);
+								res();
+							};
+							stop.signal.addEventListener("abort", wake, { once: true });
+						});
+				}
+				c.ui.notify(`gumi-replay: ${plan.length} record(s) executed`, "info");
+			} finally {
+				c.signal?.removeEventListener("abort", onAbort);
+				if (replaying === stop) replaying = undefined;
+				publish();
+			}
 		},
 	});
 	return controller;
 }
 
 export type Gumi = ReturnType<typeof gumi>;
+
+/**
+ * Why an executed unit's result must end an operator batch, else undefined: the robot returned an
+ * error, a unit was refused or not run (../units: the rotation, travel or per-call limits), or the arm
+ * stalled (../units proprioception: blocked, already in contact).
+ */
+export function haltReason(result: Pick<AgentToolResult<unknown>, "content" | "details">): string | undefined {
+	const error = (result.details as { error?: unknown } | undefined)?.error;
+	if (error) return typeof error === "string" ? error : JSON.stringify(error);
+	for (const part of result.content) {
+		if (part.type !== "text") continue;
+		const line = part.text.split("\n").find((l) => /-> blocked|-> already in contact| refused: | not run: /.test(l));
+		if (line) return line.trim();
+	}
+	return undefined;
+}
 
 /** One recorded step to replay: the unit per arm, repeated `n` times. */
 export type ReplayStep = { step: Step; n: number };

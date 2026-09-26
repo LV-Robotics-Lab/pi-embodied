@@ -73,6 +73,7 @@ import yaml
 from pi_embodied_services.components.code_api import register_code_api
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
 from pi_embodied_services.robots.franka.primitives import franka_primitives
+from pi_embodied_services.robots.franka.runtime_config import set_robot_config_path
 from pi_embodied_services.robots.franka_polymetis.control import (
     PolymetisController,
     PolymetisLimits,
@@ -670,6 +671,8 @@ def main(argv: list[str] | None = None) -> int:
     reach.add_ik_argument(parser)
     hardware_lock.add_lock_arguments(parser)
     args = parser.parse_args(argv)
+    # The grasp planner reads perception.calibration from the robot config in this process.
+    set_robot_config_path(args.robot_config or DEFAULT_CONFIG)
     if args.mock:
         from pi_embodied_services.robots.franka_polymetis.mock import MOCK_ENV
 

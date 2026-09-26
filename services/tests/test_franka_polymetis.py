@@ -1261,3 +1261,39 @@ def test_the_planner_segments_object_text_with_the_perception_sam3(monkeypatch):
     call(f, "env.move_delta", [0.0, 0.0, 0.02])
     with pytest.raises(G.GraspError, match="stale"):
         call(f, "env.resolve_grasp", gid)
+
+
+def test_the_facade_process_reads_the_users_robot_config(tmp_path, monkeypatch):
+    """Audit: only the dual arm's Ray worker recorded --robot-config, so the planner and
+    perception in the facade process read the example YAML's calibration."""
+    from pi_embodied_services.robots.franka import runtime_config
+
+    monkeypatch.setattr(runtime_config, "_robot_config_path", None)
+    path = tmp_path / "mine.yaml"
+    path.write_text(yaml.safe_dump(cfg()))
+    assert main(["--print-config", "--robot-config", str(path)]) == 0
+    assert runtime_config.get_robot_config_path() == path
+
+
+def test_the_rlinf_franka_facade_process_reads_the_users_robot_config(
+    tmp_path, monkeypatch
+):
+    from pi_embodied_services.robots.franka import env_server as rlinf_server
+    from pi_embodied_services.robots.franka import runtime_config
+
+    monkeypatch.setattr(runtime_config, "_robot_config_path", None)
+    path = tmp_path / "mine.yaml"
+    path.write_text(runtime_config.DEFAULT_CONFIG.read_text())
+    seen = {}
+
+    def load(robot_config, **kw):
+        seen["path"] = runtime_config.get_robot_config_path()
+        raise SystemExit(0)  # stop before the Ray worker
+
+    with pytest.raises(SystemExit):
+        rlinf_server.main(
+            create_worker_class=lambda: None,
+            load_runtime_config=load,
+            argv=["--task-description", "t", "--robot-config", str(path)],
+        )
+    assert seen["path"] == path

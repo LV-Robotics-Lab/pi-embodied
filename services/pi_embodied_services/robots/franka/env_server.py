@@ -34,7 +34,10 @@ from pi_embodied_services.robots.franka.primitives import (
     FRANKA_PRIMITIVES,
     franka_primitives,
 )
-from pi_embodied_services.robots.franka.runtime_config import load_runtime_config
+from pi_embodied_services.robots.franka.runtime_config import (
+    load_runtime_config,
+    set_robot_config_path,
+)
 from pi_embodied_services.utils import hardware_lock, reach
 from pi_embodied_services.utils.detections import state_digest
 from pi_embodied_services.utils.grasp import (
@@ -700,6 +703,7 @@ def main(
     create_worker_class: Callable[[], Any],
     load_runtime_config: Callable[..., Any],
     facade_class: type[FrankaEnvFacade] = FrankaEnvFacade,
+    argv: list[str] | None = None,
 ) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--transport", choices=["http"], default="http")
@@ -722,7 +726,10 @@ def main(
     add_grasp_arguments(parser)
     reach.add_ik_argument(parser)
     hardware_lock.add_lock_arguments(parser)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    # This process's planner and perception layout read the calibration and projection views
+    # from the robot config too (not only the Ray worker): the user's --robot-config.
+    set_robot_config_path(args.robot_config)
     if args.ik and facade_class is not FrankaEnvFacade:
         parser.error("--ik is only supported by the single-arm franka env server")
 

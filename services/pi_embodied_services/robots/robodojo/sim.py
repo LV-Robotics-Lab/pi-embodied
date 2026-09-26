@@ -117,6 +117,18 @@ EXTRA_EXTS = (
 )
 
 
+#: Tasks that do not run on Isaac Sim 6.1 (the 54-task smoke on the box), and why. The rest reset,
+#: render all three cameras, move and reach RoboDojo's success check.
+_NO_PARTICLE_CLOTH = (
+    "the garment is PhysX particle cloth (isaacsim.core.prims.SingleClothPrim), which Isaac Sim 6 "
+    "removed; porting it to the FEM deformable-body API would change the benchmark's physics"
+)
+UNSUPPORTED: dict[str, str] = {
+    "fold_clothes": _NO_PARTICLE_CLOTH,
+    "fold_clothes_random": _NO_PARTICLE_CLOTH,
+}
+
+
 def dimension(task: str) -> str | None:
     base = task.removesuffix("_random")
     return next((d for d, tasks in DIMENSIONS.items() if base in tasks), None)
@@ -550,8 +562,16 @@ def object_poses(env: Any) -> dict[str, dict]:
             label = rec.get("label")
             if not label or label in out:
                 continue
-            pos, rot = lm.get_instance_pose(env_idx=0, label=label, relative=True)
+            pose = lm.get_instance_pose(env_idx=0, label=label, relative=True)
+            pos, rot = pose if pose is not None else (None, None)
             if pos is None or rot is None:
-                continue
+                # RoboDojo's layout manager has no pose for its "dynamic" type (conveyor items):
+                # read the prim's own world pose.
+                inst = lm.get_instance_name(0, label)
+                obj = lm.get_scene_object(0, inst) if inst is not None else None
+                if obj is None or not hasattr(obj, "get_world_pose"):
+                    continue
+                pos, rot = obj.get_world_pose()
+                pos = _np(pos)[:3] - env_origin(env)
             out[label] = ground_truth.pose(_np(pos)[:3], _np(rot)[:4])
     return out

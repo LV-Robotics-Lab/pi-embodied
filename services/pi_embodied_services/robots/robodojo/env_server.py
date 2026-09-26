@@ -758,6 +758,10 @@ def main():
     tasks = sim.task_names(root)
     if args.task not in tasks:
         raise SystemExit(f"unknown RoboDojo task {args.task!r}; have {tasks}")
+    if args.task in sim.UNSUPPORTED:
+        raise SystemExit(
+            f"RoboDojo task {args.task!r} does not run on Isaac Sim 6.1: {sim.UNSUPPORTED[args.task]}"
+        )
     layouts = sim.layout_count(root, args.task, args.eval_seed)
     if not layouts:
         raise SystemExit(

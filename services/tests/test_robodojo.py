@@ -606,3 +606,67 @@ def test_a_motion_stopped_by_contact_is_reported_blocked_and_holds_where_it_is(
     assert facade._q["left"][2] == pytest.approx(0.15)
     free = facade.move_delta("left", [0.0, 0.0, 0.02])
     assert "stopped" not in free
+
+
+def test_unsupported_tasks_are_real_tasks_and_refused_before_isaac_starts(
+    root, monkeypatch
+):
+    assert set(sim.UNSUPPORTED) <= {
+        t + suffix
+        for ts in sim.DIMENSIONS.values()
+        for t in ts
+        for suffix in ("", "_random")
+    }
+    monkeypatch.setattr(sim, "robodojo_root", lambda: root)
+    monkeypatch.setattr(
+        sim, "task_names", lambda _root: ["fold_clothes", "stack_bowls"]
+    )
+    monkeypatch.setattr(
+        sim, "launch_isaac", lambda **_: pytest.fail("Isaac must not start")
+    )
+    monkeypatch.setattr(sys, "argv", ["env_server", "--task", "fold_clothes"])
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+    with pytest.raises(
+        SystemExit,
+        match="does not run on Isaac Sim 6.1: the garment is PhysX particle cloth",
+    ):
+        env_server.main()
+
+
+def test_object_poses_read_the_layout_and_fall_back_to_the_prim_for_dynamic_objects():
+    class Records:
+        def __init__(self, labels):
+            self.layout_records_by_env = [[{"label": lb} for lb in labels]]
+
+    class Prim:
+        def get_world_pose(self):
+            return np.array([1.5, 2.0, 0.8]), np.array([1.0, 0, 0, 0])
+
+    class Layout:
+        object_records_by_type = {
+            "Rigid": Records(["bowl0"]),
+            "Dynamic": Records(["item0"]),
+        }
+
+        def get_instance_pose(self, env_idx, label, relative):
+            return (
+                (np.array([0.1, 0.2, 0.79]), np.array([1.0, 0, 0, 0]))
+                if label == "bowl0"
+                else None
+            )
+
+        def get_instance_name(self, env_idx, label):
+            return f"inst_{label}"
+
+        def get_scene_object(self, env_idx, inst):
+            return Prim()
+
+    env = SimpleNamespace(
+        scene_manager=SimpleNamespace(
+            layout_manager=Layout(), env_origins=np.array([[1.0, 1.0, 0.0]])
+        )
+    )
+    poses = sim.object_poses(env)
+    assert poses["bowl0"]["pos"] == [0.1, 0.2, 0.79]
+    # The dynamic item's world pose, in the env frame (minus the env origin).
+    assert poses["item0"] == {"pos": [0.5, 1.0, 0.8], "quat_xyzw": [0.0, 0.0, 0.0, 1.0]}

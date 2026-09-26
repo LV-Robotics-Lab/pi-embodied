@@ -123,9 +123,22 @@ _NO_PARTICLE_CLOTH = (
     "the garment is PhysX particle cloth (isaacsim.core.prims.SingleClothPrim), which Isaac Sim 6 "
     "removed; porting it to the FEM deformable-body API would change the benchmark's physics"
 )
+_LIQUID_SPILLS = (
+    "the liquid (PhysX PBD particles) does not stay in the bottle on Isaac Sim 6.1: the bottle settles "
+    "4.1 cm off its recorded pose in every eval layout tried (pour_liquid_into_cup 0-5, the other "
+    "two tasks layout 0), so RoboDojo's own stability check discards it, and the particles spill "
+    "over the table"
+)
 UNSUPPORTED: dict[str, str] = {
     "fold_clothes": _NO_PARTICLE_CLOTH,
     "fold_clothes_random": _NO_PARTICLE_CLOTH,
+    "pour_liquid_into_cup": _LIQUID_SPILLS,
+    "pour_liquid_into_cup_random": _LIQUID_SPILLS,
+    "pour_by_language": _LIQUID_SPILLS,
+    "plug_in_charger": (
+        "PhysX 110 cannot build the SDF collider of one of its meshes (not watertight, repair fails) "
+        "and the GPU solver then faults (CUDA illegal memory access) during reset; reproduced twice"
+    ),
 }
 
 

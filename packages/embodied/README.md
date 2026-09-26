@@ -222,8 +222,8 @@ in a new session. Boolean flags take the next word as their value; write them as
   so every episode pays its own Kit start (about 10 s warm, minutes cold) and cuRobo warmup (20-50 s),
   and holds its own Kit, renderer and cuRobo memory (8.6 GB of GPU memory measured on stack_bowls
   with the three 640x480 cameras and depth). Parallelism is episodes as processes (`eval-parallel.sh -j`, which takes
-  `LOCK` for RoboDojo like RoboLab): budget that memory per worker. The garment and fluid tasks
-  (`fold_clothes*`, `pour_*`) use Isaac Sim's cloth and particle APIs, the riskiest part of the port.
+  `LOCK` for RoboDojo like RoboLab): budget that memory per worker. On Isaac Sim 6.1 48 of the 54 tasks run;
+  the cloth, liquid and charger tasks do not (the per-task table and the reasons: services/pi_embodied_services/robots/robodojo/README.md).
 - Metaworld: the services' `[metaworld]` extra (Python 3.11, metaworld 3.1.1, no assets); the 50 MT50
   Sawyer tasks (`--task reach-v3 --seed 0`), a world-frame `move_delta` plus `gripper`, depth tools
   (`back_project`, `segment` with a SAM3 server), units mode and `--privileged`; `src/metaworld/eval.sh`.

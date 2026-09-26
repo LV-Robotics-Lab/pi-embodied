@@ -337,7 +337,7 @@ index 4da8a60..4c6d4d7 100644
  
      def _find_first_mesh_in_hierarchy(self, prim_path: str) -> str | None:
 diff --git a/env/scene_manager/objects/fluid.py b/env/scene_manager/objects/fluid.py
-index 4d2aa3c..0fe96ab 100644
+index 4d2aa3c..6cd72c6 100644
 --- a/env/scene_manager/objects/fluid.py
 +++ b/env/scene_manager/objects/fluid.py
 @@ -4,7 +4,7 @@ import carb
@@ -349,6 +349,32 @@ index 4d2aa3c..0fe96ab 100644
  import numpy as np
  from omegaconf import DictConfig, ListConfig
  import omni.kit.commands
+@@ -14,6 +14,16 @@ from scipy.spatial import Delaunay
+ import torch
+ 
+ 
++def _add_pbd_particle_material(stage, path, **kwargs):
++    """particleUtils.add_pbd_particle_material with the attributes this PhysX still has: omni.physx 110
++    (Isaac Sim 6) dropped drag and lift, the particle-cloth aerodynamics, along with particle cloth."""
++    import inspect
++
++    accepted = inspect.signature(particleUtils.add_pbd_particle_material).parameters
++    _pbd_material_kwargs = {k: v for k, v in kwargs.items() if k in accepted}
++    return particleUtils.add_pbd_particle_material(stage=stage, path=path, **_pbd_material_kwargs)
++
++
+ class FluidObject:
+     """
+     FluidObject class for simulating fluid particles in Isaac Sim.
+@@ -201,7 +211,7 @@ class FluidObject:
+         create_mdl_material(material_url, material_name, color_material_path)
+ 
+         inst_particle_material_cfg = self.physics_cfg.get("particle_material", {})
+-        particleUtils.add_pbd_particle_material(
++        _add_pbd_particle_material(
+             stage=self.stage,
+             path=color_material_path,
+             adhesion=inst_particle_material_cfg.get("adhesion"),
 diff --git a/env/scene_manager/objects/garment.py b/env/scene_manager/objects/garment.py
 index 377a4f0..7f4d75b 100644
 --- a/env/scene_manager/objects/garment.py

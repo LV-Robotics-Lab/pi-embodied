@@ -180,6 +180,8 @@ export default function dualFranka(pi: ExtensionAPI) {
 			// RPent's real-robot defaults: every attempt costs the operator a manual scene reset.
 			budget: { sessions: 1, attempts: 3 },
 		},
+		// The env server's primitive registry (services robots/franka/primitives.py, the dual-arm set).
+		codeApi: () => env,
 		start: startRobot,
 		stop: () => {
 			env = vla = sam3 = undefined;

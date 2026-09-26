@@ -206,6 +206,18 @@ test("a claimed grasp runs leg by leg with the claim's orientation and stops at 
 	await runClaim(place, { ...io(), released: async () => released.push("place") });
 	await runClaim(claim, { ...io(), released: async () => released.push("grasp") });
 	assert.deepEqual(released, ["place"]);
+	// An episode that ends during a leg leaves the arm short of it: that is not a stall.
+	let over = false;
+	const finished = await runClaim(claim, {
+		...io("grasp"),
+		servo: async () => {
+			over = true;
+			return { steps: 3, final_dist_m: 0.08 };
+		},
+		ended: () => over,
+	});
+	assert.equal(finished.stalled, undefined);
+	assert.equal(finished.error, undefined);
 	const ended = await runClaim(claim, { ...io(), ended: () => true });
 	assert.deepEqual(ended, { legs: [], steps_used: 0 });
 });

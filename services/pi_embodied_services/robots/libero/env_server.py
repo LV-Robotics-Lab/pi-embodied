@@ -1127,7 +1127,8 @@ class LiberoEnvFacade(BaseEnvFacade):
                 steps, cancelled = self._servo_pose(target, quat, grip, int(max_steps))
                 dist = float(np.linalg.norm(target - self._eef()))
                 legs.append({"to": leg["to"], "final_dist_m": round(dist, 4)})
-                if dist > 0.03 and not cancelled:
+                # Short of the waypoint because the episode ended is not a stall.
+                if dist > 0.03 and not cancelled and self._live():
                     total += steps
                     return self._motion_result(
                         name,

@@ -196,7 +196,8 @@ export async function runClaim(
 		const r = await io.servo(c.waypoints[leg.to], c.eef_quat_xyzw, leg.gripper);
 		steps += r.steps;
 		legs.push({ to: leg.to, final_dist_m: r.final_dist_m });
-		if (r.final_dist_m > 0.03)
+		// Short of the waypoint because the episode ended is not a stall.
+		if (r.final_dist_m > 0.03 && !io.ended())
 			return {
 				legs,
 				steps_used: steps,

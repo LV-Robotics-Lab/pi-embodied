@@ -699,3 +699,16 @@ def test_the_executor_servos_the_full_orientation_of_a_tilted_rolled_grasp():
     assert np.linalg.norm(G.orientation_error(now, target)) < 0.05
     assert now[:, 2] == pytest.approx(target[:, 2], abs=0.05), "the approach tilted too"
     assert steps < 150
+
+
+def test_an_episode_that_ends_mid_leg_is_not_reported_as_a_stall():
+    f, _ = grasp_facade()
+    gid = f._rpc["env.plan_grasp"](object="bowl")["active"]
+
+    def ends(*args, **kwargs):
+        f._terminated = True  # LIBERO judged the task done on this step
+        return 1, False
+
+    f._servo_pose = ends
+    out = f._rpc["env.execute_grasp"](grasp_id=gid)
+    assert "stalled" not in out and "error" not in out and out["terminated"] is True

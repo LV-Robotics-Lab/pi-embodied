@@ -79,26 +79,36 @@ with `--env` / `--vla` / `--sam3`. Real-arm robots (Franka, dual Franka) stay on
 | Piper / dual Piper (real) | `src/piper` | operator verdict (required) | all below but `--privileged`; explore resets through the operator |
 | UR5e (real) | `src/ur5e` | operator verdict (required) | all below but `--privileged` and memory/explore; bound to one arm (`--arm-id`) |
 
-ManiSkill's `--robot` picks the arm (ManiSkill 3.0.1 agents with a parallel gripper that the stock
-table scene places), all in translation-only `pd_ee_delta_pos` with the same MV_* vectors, 2 cm step
-and servo (each measured at 19.7 mm per unit along its axis). The RLinf rigs (BlockPAP-v1 /
-BlockStack-v1) run their own Panda. Results record a non-Panda arm as `maniskill_robot`, and
-`maniskill/eval.sh` keeps each arm in its own out dir.
+ManiSkill's `--robot` picks the arm (ManiSkill 3.0.1 agents the stock table scene places, and the
+robots the other scenes of OpenETA's ManiSkill table are built for), all translation-only with the same
+MV_* vectors, 2 cm step and servo (each measured at 19.5-20.3 mm per unit along its axis). The RLinf
+rigs (BlockPAP-v1 / BlockStack-v1) run their own Panda; a task built for another robot runs only on it.
+Results record a non-Panda arm as `maniskill_robot`, and `maniskill/eval.sh` keeps each arm in its own
+out dir.
 
 | `--robot` | ManiSkill uid | Env ids | Gripper | Wrist view |
 | --- | --- | --- | --- | --- |
-| `panda` (default) | `panda_wristcam` | all 12 stock ids and the rigs | mimic, +1 open / -1 close | Show-Harness's centred D415, turned 270 deg |
+| `panda` (default) | `panda_wristcam` | the rigs, the 12 stock tabletop ids and FMBAssembly1Easy | mimic, +1 open / -1 close | Show-Harness's centred D415, turned 270 deg |
 | `xarm6_robotiq` | `xarm6_robotiq` | PickCube, StackCube, PullCube, LiftPegUpright, PlaceSphere, StackPyramid, PlugCharger | Robotiq 2F-85 in delta mode, +1 close / -1 open | the wristcam variant's camera on `camera_link`, turned 90 deg |
-| `widowxai` | `widowxai` (+ `pd_ee_delta_pos` on its six arm joints) | PickCube | carriages, +1 open / -1 close; 10-step hold | none: the agentview alone |
+| `widowxai` | `widowxai` (+ `pd_ee_delta_pos` on its six arm joints) | PickCube, PickCubeWidowXAI | carriages, +1 open / -1 close; 10-step hold | none: the agentview alone |
+| `panda_stick` | `panda_stick` | PushT, DrawTriangle, DrawSVG | none: a stick (no GRASP / RELEASE units) | none |
+| `panda_pair` | `("panda", "panda")` | TwoRobotPickCube, TwoRobotStackCube | mimic per arm; `move_delta` / `act` take `arm` (left / right), world frame | none |
+| `widowx250s` | the bridge scenes' own WidowX 250 S (pose controller, zero rotation) | PutCarrotOnPlateInScene, PutEggplantInBasketScene, StackGreenCubeOnYellowCubeBakedTexInScene, PutSpoonOnTableClothInScene | mimic, +1 open / -1 close; 4-step hold | none; the agentview is the scene's `3rd_view_camera`, world frame |
 
 The other ids are refused per arm: the xArm6 cannot reach PushCube's and PokeCube's goals,
 PegInsertionSide resets a Panda joint vector, PickSingleYCB has no xArm6 layout, PullCubeTool's
 "cube within 0.6 m of the base" already holds at reset on ~8 % of seeds with the xArm6's nearer base, and with its
 gripper held pointing down the WidowX AI reaches only ~0.37 m from its base (PickCube's own layout).
 Not offered: `so100` and `koch-v1.1` (joint control only and no TCP link), `fetch` (mobile base),
-`ur_10e` / `widowx250s` (joint control only; the table scene has no placement for them), and the
+`ur_10e` (joint control only; the table scene has no placement for it), and the
 `*_wristcam` uids of the xArm6 and WidowX AI (the table scene does not place the former, its arm
 spawns inside the table; PickCube gives the latter the Panda's layout, out of its reach).
+Of OpenETA's ManiSkill table (sim/envs/maniskill at 7d4a0a1), not offered: AssemblingKits,
+PickClutterYCB, TurnFaucet and OpenCabinetDrawer / OpenCabinetDoor (their assets are on
+storage1.ucsd.edu, unreachable, and PartNet-Mobility's mirror is gated; PickClutterYCB also never
+reports success), TableTopFreeDraw (no success condition), RollBall (its robot faces -y with the goal
+out of the shared camera's view), the SO100 scenes (joint control only, no TCP link), and the scene,
+locomotion, humanoid and dexterous-hand envs.
 
 "All below" is memory, explore, video, units (so GUMI and the fine-tuned provider), VDM (`--vdm`),
 the primitive registry (`code.api`) and, in simulation, `--privileged`. ManiSkill, RoboLab, RoboDojo and the

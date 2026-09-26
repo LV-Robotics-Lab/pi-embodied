@@ -251,6 +251,9 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 	let task: Task | undefined;
 	let out = "";
 	const steps: Step[] = [];
+	const cameras = () =>
+		meta?.cameras?.filter((c) => c === "front" || c.startsWith("wrist")) ??
+		(dual ? ["front", "wrist_left", "wrist_right"] : ["front", "wrist"]);
 	const taskName = () => robot.task.task;
 	const viewSelect = () => pi.getFlag("view-select") === true;
 	/** The frame of the last unit move: the stall check converts that move's delta to the base frame. */
@@ -294,6 +297,8 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 		},
 		// The server's smooth stream chains `continuous` moves: they return before the arm settles.
 		chains: () => chains(meta),
+		// The wrist camera(s) the server streams (front + wrist, or front + wrist_left/right, by default).
+		wrist: () => cameras().some((c) => c.startsWith("wrist")),
 	};
 	const spec: RobotSpec = {
 		name: dual ? "piper_dual" : "piper",
@@ -386,9 +391,6 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 		if (!arms.includes(arm)) throw new Error(`unknown arm '${arm}' (have ${arms.join(", ")})`);
 		return arm;
 	}
-	const cameras = () =>
-		meta?.cameras?.filter((c) => c === "front" || c.startsWith("wrist")) ??
-		(dual ? ["front", "wrist_left", "wrist_right"] : ["front", "wrist"]);
 
 	function call<T = Json>(method: string, kwargs: Json = {}, timeoutMs = 30_000, signal?: AbortSignal) {
 		if (!env) throw new Error("piper is not initialized; see the session start error");

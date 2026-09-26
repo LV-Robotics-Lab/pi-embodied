@@ -202,6 +202,8 @@ export default function robosuite(pi: ExtensionAPI) {
 			},
 			instruction: () => language,
 			views: VIEWS,
+			// The wrist camera, the second image (one- and two-arm tasks).
+			wrist: true,
 			emptyWidthM: EMPTY_WIDTH_M,
 		},
 		finish: {

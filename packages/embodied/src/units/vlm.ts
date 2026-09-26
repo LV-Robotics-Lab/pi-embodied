@@ -89,11 +89,11 @@ export function parseJson(raw: string): unknown {
 // the final task check (core/vlm/dual_roles.py verify_task)
 
 /** One strict visual judgment of whole-task completion from the current camera views. */
-export function verifyPrompt(task: string, arms: readonly string[], cameras: number) {
+export function verifyPrompt(task: string, arms: readonly string[], cameras: number, wrist = true) {
 	return [
 		`TASK: ${task}`,
 		"",
-		`The ${cameras} image(s) are the robot's current camera views (the third-person view first, then the wrist view${arms.length > 1 ? "s" : ""}).`,
+		`The ${cameras} image(s) are the robot's current camera views (${wrist ? `the third-person view first, then the wrist view${arms.length > 1 ? "s" : ""}` : "third-person: this robot has no wrist view"}).`,
 		arms.length > 1 ? "Both robot arms have finished their plans." : "The robot has finished its plan.",
 		"Judge STRICTLY from the images whether the task is fully complete: every object at its required destination, nothing dropped beside or outside it.",
 		'Return JSON only: {"complete":true|false,"reason":"one visual sentence"}',

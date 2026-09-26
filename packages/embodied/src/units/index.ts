@@ -36,6 +36,11 @@
  * - point: affordance pixels -> world xyz (robots with `point`).
  * - mem_text: "Recent moves, newest first" in every result, with the history rules (no oscillation,
  *   no GRASP in place after an empty one); off, the results carry no move history at all.
+ * A robot configuration without a wrist view (the spec's `wrist`, e.g. ManiSkill's --robot widowxai)
+ * runs without variable_step and action_chunk whatever --units-plugins says, and rotation keeps only
+ * its realign: those key on the wrist view. `act` then takes no `target_in_wrist` (one sent anyway is
+ * ignored, and the result says so), the prompt drops its wrist-view text, a notice names the plugins
+ * turned off, and the effective plugins are in every `units_state` entry and the robot result.
  *
  * Side VLM calls (./vlm.ts, `--units-vlm-model`, default the session's model):
  * - `--units-verify=true|false|auto` (auto: on for dual-arm robots, as Show-Harness's dual runner): a `finish`
@@ -62,7 +67,7 @@
  */
 
 import { StringEnum } from "@earendil-works/pi-ai";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type TSchema, Type } from "typebox";
 import { renderPrompt } from "./prompt.ts";
 import {
@@ -113,7 +118,7 @@ import {
 	type Vec3,
 } from "./vocabulary.ts";
 
-export { DEFAULT_VIEWS } from "./prompt.ts";
+export { DEFAULT_VIEWS, DEFAULT_VIEWS_NO_WRIST } from "./prompt.ts";
 export {
 	STATE_ENTRY,
 	type ToolRegistrar,
@@ -167,6 +172,9 @@ const NOTES = {
 	empty_grasp: "Empty close; do not retry on an edge/corner. Recenter body and confirm depth.",
 	lost_grasp: "Grasp lost; return to GRASP, recenter the object body, then confirm depth.",
 };
+
+/** Plugins that key on the wrist view (`target_in_wrist`): off on a robot configuration without one. */
+const WRIST_PLUGINS: readonly Plugin[] = ["variable_step", "action_chunk"];
 
 const r3 = (v: number) => Number(v.toFixed(3));
 const text = (s: string) => ({ type: "text" as const, text: s });
@@ -237,13 +245,20 @@ export function units(
 		if (v === true || v === "true" || v === "pure") return "pure";
 		return v === "both" ? "both" : undefined;
 	};
-	const plugin = (name: Plugin) =>
+	/** The robot configuration has a wrist view (spec.wrist), read at load, session start and robot start. */
+	const readWrist = () => (typeof spec.wrist === "function" ? spec.wrist() : spec.wrist) !== false;
+	let wristView = readWrist();
+	/** A plugin --units-plugins asks for and the robot can run, before the wrist view is considered. */
+	const requested = (name: Plugin) =>
 		String(pi.getFlag("units-plugins") ?? "")
 			.split(",")
 			.map((s) => s.trim())
 			.includes(name) &&
 		(name !== "point" || spec.point !== undefined) &&
 		(name !== "rotation" || Boolean(spec.yawStepRad));
+	const plugin = (name: Plugin) => requested(name) && (wristView || !WRIST_PLUGINS.includes(name));
+	/** The plugins that run this session (`units_state`, the robot result). */
+	const effective = () => PLUGINS.filter(plugin);
 	const armNames = spec.arms ?? [];
 	/** --units-verify: on, off, or auto (Show-Harness's dual runner verifies, its single-arm runners do not). */
 	const verifying = () => {
@@ -252,7 +267,8 @@ export function units(
 	};
 	const coarse = () => Number(pi.getFlag("units-coarse-step")) || spec.stepM;
 	const high = spec.highAboveTableM ?? 0.08;
-	const wristSignal = () => plugin("variable_step") || plugin("action_chunk") || plugin("rotation");
+	/** `act` takes `target_in_wrist`: a wrist view and a plugin that reads it. */
+	const wristSignal = () => wristView && (plugin("variable_step") || plugin("action_chunk") || plugin("rotation"));
 	const rtOn = () => String(pi.getFlag("units-rt") ?? "false") === "true";
 	/** Why `act` refuses an RT_* unit, else undefined. */
 	const rtRefusal = (u: RtUnit) => {
@@ -311,6 +327,8 @@ export function units(
 	/** The episode state as recorded in `units_state` entries (not the verifier's images). */
 	const snapshot = () =>
 		JSON.stringify({
+			plugins: effective(),
+			wrist: wristView,
 			closed: Object.fromEntries(closed),
 			yaw: Object.fromEntries(yaw),
 			...(roll.size ? { roll: Object.fromEntries(roll) } : {}),
@@ -339,6 +357,7 @@ export function units(
 		// A session start resets the robot's scene: a new episode, so the units state starts fresh
 		// (an earlier `units_state` in the branch belongs to an episode whose scene is gone).
 		reset();
+		wristView = readWrist();
 		demoError = undefined;
 		const branch = ctx.sessionManager.getBranch();
 		const custom = (type: string) =>
@@ -516,17 +535,23 @@ export function units(
 			view?: GuideView;
 			retreat?: boolean;
 		};
-		const { unit, arm, target_in_wrist: inWrist } = p;
+		const { unit, arm } = p;
+		// No wrist view: a `target_in_wrist` sent anyway (a model trained on wrist robots) is ignored, not refused.
+		const inWrist = wristView ? p.target_in_wrist : undefined;
 		// A human's unit (GUMI teleop) runs as pressed: the agent-side assists would override the operator
 		// (recovery reopens a GRASP that closed on air), as in Show-Harness's collectors.
 		const assist = (name: Plugin) => !p.operator && plugin(name);
 		const key = arm ?? "";
 		// The schema offers these only with their plugins; a stale or hand-written call is refused, not silently dropped.
 		if (p.plan !== undefined && !plugin("action_chunk"))
-			throw new Error("act: `plan` needs the action_chunk plugin (--units-plugins)");
+			throw new Error(
+				wristView
+					? "act: `plan` needs the action_chunk plugin (--units-plugins)"
+					: "act: `plan` needs the action_chunk plugin, which is off: this robot has no wrist view",
+			);
 		if (p.view !== undefined && !(spec.viewSelect?.() && (GUIDE_VIEWS as readonly string[]).includes(p.view)))
 			throw new Error("act: `view` needs the robot's view select (WRIST or FRONT)");
-		if (p.target_in_wrist !== undefined && !wristSignal())
+		if (p.target_in_wrist !== undefined && wristView && !wristSignal())
 			throw new Error(
 				"act: `target_in_wrist` needs the variable_step, action_chunk or rotation plugin (--units-plugins)",
 			);
@@ -540,6 +565,8 @@ export function units(
 		const rtWhy = isRt(unit) ? rtRefusal(unit) : rotateRefusal(unit);
 		if (rtWhy) throw new Error(`act: ${rtWhy}`);
 		const lines: string[] = [];
+		if (!wristView && p.target_in_wrist !== undefined && !p.operator)
+			lines.push("target_in_wrist ignored: this robot has no wrist view.");
 		let queue: Unit[] = Array(Math.max(1, Math.min(MAX_REPEAT, Math.floor(p.n ?? 1)))).fill(unit);
 		if (p.plan?.length && plugin("action_chunk")) {
 			if (inWrist === false) queue = p.plan.filter(isMove).slice(0, CHUNK_STEPS);
@@ -567,7 +594,8 @@ export function units(
 			if (assist("rotation") && u === "MV_UP" && closed.get(key) && Math.abs(acc) > NEUTRAL_YAW) {
 				move = { delta: [0, 0, 0], yaw: -acc, gripper: null };
 				label = "MV_UP(realign)";
-			} else if (assist("rotation") && isMove(u) && inWrist !== false)
+				// Wrist-judged moves follow the turned wrist camera; without one every move is judged in the base frame.
+			} else if (assist("rotation") && wristView && isMove(u) && inWrist !== false)
 				move.delta = compensate(move.delta, (spec.yawCompensationSign ?? 1) * acc);
 			else if (move.yaw && Math.abs(acc + move.yaw) > MAX_YAW) {
 				// The accumulated-yaw guard holds with or without the rotation plugin.
@@ -683,6 +711,7 @@ export function units(
 		run: actAndSave,
 		state: spec.state,
 		viewSelect: false,
+		wrist: () => wristView,
 		...base,
 	};
 	pi.on("session_start", () =>
@@ -767,6 +796,7 @@ export function units(
 		pi,
 		check,
 		arms: armNames,
+		wrist: () => wristView,
 		active: () => mode() !== undefined,
 		verifying,
 		instruction,
@@ -840,8 +870,25 @@ export function units(
 		return kept ? { messages: kept } : undefined;
 	});
 
+	/**
+	 * The robot started (../robot.ts, after its `start`): its configuration is known now (the server's
+	 * cameras), so the wrist view is read again, `act` re-registered for it, and a configuration
+	 * without one says which requested plugins it turns off.
+	 */
+	function started(ctx: Pick<ExtensionContext, "hasUI" | "ui">) {
+		wristView = readWrist();
+		saved = snapshot();
+		registerAct();
+		if (wristView || !mode()) return;
+		const off = WRIST_PLUGINS.filter(requested);
+		const notice = `units: this robot has no wrist view: ${off.length ? `${off.join(", ")} off (asked for by --units-plugins), ` : ""}${requested("rotation") ? "rotation keeps only its realign, " : ""}act takes no target_in_wrist; plugins running: ${effective().join(", ") || "none"}`;
+		if (ctx.hasUI) ctx.ui.notify(notice, "info");
+		else console.error(`[units] ${notice}`);
+	}
+
 	return {
 		mode,
+		started,
 		/**
 		 * Why the robot must not start with these flags, else undefined: --units-rt on a robot that declares
 		 * no RT_* axis would drop ROTATE_* and offer no turn at all.
@@ -852,6 +899,8 @@ export function units(
 				: undefined,
 		/** The robot result's verifier fields: whether the success finish was checked, and the call's latest error. */
 		result: () => ({
+			// What ran: the plugins after the robot's wrist view, and that view (units mode only).
+			...(mode() ? { units_plugins: effective(), units_wrist_view: wristView } : {}),
 			...(check.finishVerified !== undefined ? { finish_verified: check.finishVerified } : {}),
 			...(check.verifierError ? { verifier_error: check.verifierError } : {}),
 		}),
@@ -870,6 +919,7 @@ export function units(
 				arms: armNames,
 				rt: rtOn(),
 				wrist: wristSignal(),
+				wristView,
 				plugin,
 				stateless: pi.getFlag("stateless") === true,
 				brief: demo?.key.startsWith(`${pi.getFlag("units-video-ref")}#`) ? demo.brief : undefined,

@@ -389,6 +389,8 @@ export default function franka(pi: ExtensionAPI) {
 			instruction: () => setup?.task.instruction ?? "",
 			// Show-Harness plugins/recovery: a closed Franka gripper at or below 1 mm holds nothing.
 			emptyWidthM: 0.001,
+			// The wrist camera is the rig's main camera (observation `main`).
+			wrist: true,
 		},
 		finish: {
 			description:

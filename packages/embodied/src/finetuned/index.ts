@@ -504,6 +504,10 @@ export default function finetuned(pi: ExtensionAPI) {
 		envId = String(data["env-id"] || "");
 		const warn = (s: string) => (ctx.hasUI ? ctx.ui.notify(s, "warning") : console.error(`[finetuned] ${s}`));
 		if (!pi.getActiveTools().includes("act")) warn("the `act` tool is not active: run the robot with --units");
+		if (units?.wrist?.() === false)
+			warn(
+				"this robot has no wrist view: the adapters read (agentview, wrist) images (--ft-cameras), so the second image is missing and variable_step / action_chunk are off",
+			);
 		if (!robotViews() && !flag("ft-agentview") && !flag("ft-wrist"))
 			warn(
 				`no calibrated camera transform for robot "${robot}"; using ${formatView(DEFAULT_VIEWS.wrist)} for the wrist`,

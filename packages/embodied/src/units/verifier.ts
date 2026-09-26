@@ -58,6 +58,8 @@ export type VerifierDeps = {
 	/** Updated in place. */
 	check: VerifierState;
 	arms: readonly string[];
+	/** The robot configuration has a wrist view (the images the verifier judges). */
+	wrist: () => boolean;
 	/** Units mode is on (--units). */
 	active: () => boolean;
 	/** --units-verify resolved for this robot. */
@@ -169,7 +171,7 @@ export function registerVerifier(d: VerifierDeps) {
 					ctx,
 					String(pi.getFlag("units-vlm-model") ?? ""),
 					pi.getThinkingLevel(),
-					verifyPrompt(d.instruction(), armNames, check.images.length),
+					verifyPrompt(d.instruction(), armNames, check.images.length, d.wrist()),
 					check.images,
 					ctx.signal,
 				).then((r) => {

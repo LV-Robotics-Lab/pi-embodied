@@ -221,7 +221,7 @@ const XARM6_ROBOTIQ: ManiskillRobot = {
  */
 export const WIDOWXAI_VIEWS = `Each result shows the third-person view (256x256, black bars are padding); this robot has NO wrist camera, so there is no wrist view. MV_LEFT / MV_RIGHT move the gripper toward the image left / right, MV_FWD toward the image bottom, MV_BACK toward the image top.
 ${THIRD_PERSON}
-- With no wrist view, leave target_in_wrist out; judge alignment from the gripper's position against the target in the third-person view, and descend in small steps.`;
+- With no wrist view, judge alignment from the gripper's position against the target in the third-person view, and descend in small steps.`;
 const WIDOWXAI: ManiskillRobot = {
 	arm: "Trossen WidowX AI arm",
 	envs: ["PickCube-v1"],
@@ -567,6 +567,11 @@ export default function maniskill(pi: ExtensionAPI) {
 			},
 			get emptyWidthM() {
 				return arm().emptyWidthM;
+			},
+			// From --robot (as `vdm`), so it holds before the robot starts: the WidowX AI has no wrist camera.
+			wrist: () => {
+				const r = ROBOTS[String(pi.getFlag("robot") ?? "panda") as RobotId];
+				return !r || hasWrist(r);
 			},
 			apply: async (m, signal) => {
 				if (m.yaw) throw new Error("this robot has no yaw (pd_ee_delta_pos holds the orientation)");

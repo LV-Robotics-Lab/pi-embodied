@@ -39,6 +39,8 @@ export type UnitsHandle = {
 	viewSelect?: boolean;
 	/** --units-rt is on: the turns are RT_* (those in `vocabulary`) instead of ROTATE_*. */
 	rt?: boolean;
+	/** Whether this session's robot configuration has a wrist view (UnitsSpec.wrist), read once the robot started. */
+	wrist?: () => boolean;
 };
 
 export type Result = AgentToolResult<unknown>;
@@ -67,6 +69,14 @@ export type UnitsSpec = {
 	emptyWidthM?: number;
 	/** Default of --units-plugins. */
 	plugins?: readonly Plugin[];
+	/**
+	 * Whether the robot's observations carry a wrist view (default true), a function when the
+	 * configuration decides it (a `--robot` flag, the server's cameras). Read at load, at session start
+	 * and again once the robot started. Without one, variable_step and action_chunk are off whatever
+	 * --units-plugins says, rotation keeps only its realign (no wrist-judged compensation), `act` takes
+	 * no `target_in_wrist` and the prompt drops its wrist-view text.
+	 */
+	wrist?: boolean | (() => boolean);
 	/** variable_step: the coarse step (default 0.04 m) and the "high above the table" gap (default 0.08 m). */
 	coarseStepM?: number;
 	highAboveTableM?: number;

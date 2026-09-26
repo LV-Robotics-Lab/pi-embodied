@@ -139,6 +139,10 @@ async function toyRobot(
 		/** Every result reports the robot's success signal (terminated), as LIBERO does once solved. */
 		latched?: boolean;
 		reset?: () => Promise<Record<string, unknown>>;
+		/** UnitsSpec.wrist (default: omitted, a wrist view). */
+		wrist?: UnitsSpec["wrist"];
+		/** Called by the robot's `start` (a configuration learnt from the server). */
+		onStart?: () => void;
 		/** The run was aborted (ctx.signal). */
 		aborted?: boolean;
 	} = {},
@@ -163,6 +167,7 @@ async function toyRobot(
 		...(o.chains !== undefined ? { chains: () => o.chains as boolean } : {}),
 		...(o.arms ? { arms: o.arms } : {}),
 		...(o.viewSelect !== undefined ? { viewSelect: () => o.viewSelect as boolean } : {}),
+		...(o.wrist !== undefined ? { wrist: o.wrist } : {}),
 		apply: async (move) => {
 			if (move.retreat && o.refuseRetreat)
 				return { content: [{ type: "text", text: "Episode already ended." }], details: { terminated: true } };
@@ -186,7 +191,10 @@ async function toyRobot(
 		name: "toy",
 		task: [],
 		keepImages: 2,
-		start: async () => ["move_to", "segment", "finish"],
+		start: async () => {
+			o.onStart?.();
+			return ["move_to", "segment", "finish"];
+		},
 		...(o.prompt ? { prompt: () => o.prompt } : {}),
 		...(o.reset ? { operator: { step: () => 0, reset: o.reset } } : {}),
 		result: () => ({}),
@@ -1164,4 +1172,108 @@ test("--units-rt swaps the turn vocabulary: ROTATE_* (v3) or RT_* (v5), never bo
 		head(more),
 		/RT_YAW_CW x5 of 10 \(stopped early\)\nRT_YAW_CW refused: .* turned -150 deg about its yaw axis/,
 	);
+});
+
+/** Show-Harness's zero-shot plugin set (DEFAULT_PLUGINS). */
+const ALL_PLUGINS = "recovery,auto_release,proprioception,variable_step,action_chunk,rotation,plan,mem_text";
+
+test("no wrist view: variable_step and action_chunk off, rotation without compensation, no target_in_wrist, no wrist text", async () => {
+	const f = await toyRobot({ "units-plugins": ALL_PLUGINS }, { yaw: Math.PI / 4, wrist: false });
+	const props = f.tools.get("act").parameters.properties;
+	assert.ok(!("target_in_wrist" in props), "act offers no target_in_wrist");
+	assert.ok(!("plan" in props), "act offers no action_chunk plan");
+	assert.match(f.notes.join("\n"), /no wrist view: variable_step, action_chunk off .*rotation keeps only its realign/);
+	const prompt = (await f.emit("before_agent_start")).systemPrompt as string;
+	assert.doesNotMatch(
+		prompt.replaceAll("no wrist view", ""),
+		/wrist|WRIST|ACTION PLAN|coarse/,
+		"no wrist-view text beyond saying there is none, no variable_step / action_chunk rules",
+	);
+	assert.doesNotMatch(prompt, /\[\/?\w+\]/, "no section markers left");
+	assert.match(prompt, /There is no wrist view: the third-person view is the only guide/);
+	assert.match(prompt, /this robot has no wrist view\./, "the default views describe the third-person view alone");
+	assert.match(prompt, /GRASP when the third-person view confirms the grasp point/);
+	assert.match(prompt, /ROTATE_CW turns it counter-clockwise seen from above; ROTATE_CCW the opposite/);
+	assert.match(prompt, /the first MV_UP turns the gripper back/, "rotation's realign stays");
+	// 20 cm above the table with target_in_wrist false: still the fine step, and the ignored field is named.
+	const r = await f.run("act", { unit: "MV_LEFT", target_in_wrist: false });
+	assert.deepEqual(f.moves.at(-1)?.delta, [0, -0.02, 0]);
+	assert.match(head(r), /target_in_wrist ignored: this robot has no wrist view/);
+	assert.match(head(r), /each step moves ~2 cm\./, "no coarse step in the proprioception line");
+	await f.run("act", { unit: "MV_UP" });
+	assert.deepEqual(f.moves.at(-1)?.delta, [0, 0, 0.02], "MV_UP is not coarse either");
+	await assert.rejects(
+		f.run("act", { unit: "MV_FWD", plan: ["MV_FWD"] }),
+		/action_chunk plugin, which is off: this robot has no wrist view/,
+	);
+	// A turned gripper: MV_* stay in the base frame (no wrist camera turned with it), holding MV_UP still realigns.
+	await f.run("act", { unit: "ROTATE_CW", n: 2 });
+	await f.run("act", { unit: "MV_FWD", target_in_wrist: true });
+	assert.deepEqual(f.moves.at(-1)?.delta, [0.02, 0, 0]);
+	await f.run("act", { unit: "GRASP" });
+	assert.match(head(await f.run("act", { unit: "MV_UP" })), /MV_UP\(realign\)/);
+	// The episode names what ran: every units_state entry and the robot result.
+	const state = f.entries.filter((e) => e.customType === STATE_ENTRY).pop()?.data;
+	assert.deepEqual(state.plugins, ["recovery", "auto_release", "proprioception", "rotation", "plan", "mem_text"]);
+	assert.equal(state.wrist, false);
+	await f.run("finish", { status: "failure", summary: "" });
+	await f.emit("agent_start");
+	await f.emit("agent_end");
+	const result = f.entries.find((e) => e.customType === RESULT_ENTRY)?.data;
+	assert.deepEqual(result.units_plugins, state.plugins);
+	assert.equal(result.units_wrist_view, false);
+	// The verifier is told the images carry no wrist view.
+	const v = await toyRobot({ "units-verify": "true" }, { wrist: false, vlm: ['{"complete": true, "reason": "in"}'] });
+	await v.emit("tool_result", { toolName: "act", content: (await v.run("act", { unit: "STOP" })).content });
+	await v.emit("tool_call", { toolName: "finish", input: { status: "success", summary: "" } });
+	const asked = JSON.stringify(v.asked[0]?.content ?? "");
+	assert.match(asked, /third-person: this robot has no wrist view/);
+});
+
+test("a wrist robot is unchanged: target_in_wrist, the wrist rules and every requested plugin", async () => {
+	const f = await toyRobot({ "units-plugins": ALL_PLUGINS }, { yaw: Math.PI / 4 });
+	const props = f.tools.get("act").parameters.properties;
+	assert.ok("target_in_wrist" in props && "plan" in props);
+	assert.equal(f.notes.length, 0, "no notice");
+	const prompt = (await f.emit("before_agent_start")).systemPrompt as string;
+	assert.match(prompt, /WRIST CHECK/);
+	assert.match(prompt, /Is the current step about grasping AND the target inside the wrist view\?/);
+	assert.match(prompt, /GRASP when BOTH views confirm the grasp point/);
+	assert.match(prompt, /so the scene turns clockwise in the wrist view/);
+	assert.doesNotMatch(prompt, /no wrist view/);
+	await f.run("act", { unit: "MV_LEFT", target_in_wrist: false });
+	assert.deepEqual(f.moves.at(-1)?.delta, [0, -0.04, 0], "coarse while the target is not in the wrist view");
+	const state = f.entries.filter((e) => e.customType === STATE_ENTRY).pop()?.data;
+	assert.deepEqual(state.plugins, ALL_PLUGINS.split(","));
+	assert.equal(state.wrist, true);
+	// An explicit `wrist: true` is the default.
+	const t = await toyRobot({ "units-plugins": ALL_PLUGINS }, { yaw: Math.PI / 4, wrist: () => true });
+	assert.deepEqual(t.tools.get("act").parameters, f.tools.get("act").parameters);
+});
+
+test("the wrist view is read again once the robot started (a configuration the server reports)", async () => {
+	let cameras = ["front", "wrist"];
+	const f = await toyRobot(
+		{ "units-plugins": ALL_PLUGINS },
+		{
+			wrist: () => cameras.includes("wrist"),
+			onStart: () => {
+				cameras = ["front"];
+			},
+		},
+	);
+	assert.ok(!("target_in_wrist" in f.tools.get("act").parameters.properties), "re-registered after the start");
+	assert.match(f.notes.join("\n"), /no wrist view/);
+	assert.doesNotMatch((await f.emit("before_agent_start")).systemPrompt, /WRIST CHECK/);
+	// The next session's server streams a wrist camera again.
+	const g = await toyRobot(
+		{ "units-plugins": ALL_PLUGINS },
+		{
+			wrist: () => cameras.includes("wrist"),
+			onStart: () => {
+				cameras = ["front", "wrist"];
+			},
+		},
+	);
+	assert.ok("target_in_wrist" in g.tools.get("act").parameters.properties);
 });

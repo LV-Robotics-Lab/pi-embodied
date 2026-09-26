@@ -20,6 +20,10 @@ export const DEFAULT_VIEWS = `Each result shows the third-person view (it faces 
 - Third-person view: MV_LEFT / MV_RIGHT move toward the image left / right, MV_FWD toward the image bottom, MV_BACK toward the image top.
 - Wrist view: a target to the fingers' left / right needs MV_LEFT / MV_RIGHT, one near the image bottom and far from the fingers needs MV_FWD, one between the image top and the fingers needs MV_BACK; centered between the fingers: MV_DOWN.`;
 
+/** DEFAULT_VIEWS for a robot configuration without a wrist view: the third-person view alone. */
+export const DEFAULT_VIEWS_NO_WRIST = `Each result shows the third-person view (it faces the robot); this robot has no wrist view.
+- Third-person view: MV_LEFT / MV_RIGHT move toward the image left / right, MV_FWD toward the image bottom, MV_BACK toward the image top.`;
+
 const TEMPLATE = readFileSync(new URL("./SYSTEM.md", import.meta.url), "utf8").replace(/^<!--[\s\S]*?-->\n/, "");
 
 /** Keep every `[name]...[/name]` block when `on`, drop them otherwise. */
@@ -35,8 +39,10 @@ export type PromptContext = {
 	arms: readonly string[];
 	/** --units-rt is on. */
 	rt: boolean;
-	/** `act` takes `target_in_wrist` (variable_step, action_chunk or rotation). */
+	/** `act` takes `target_in_wrist` (a wrist view and variable_step, action_chunk or rotation). */
 	wrist: boolean;
+	/** The robot configuration has a wrist view (UnitsSpec.wrist): its [wrist_view] or [no_wrist_view] text. */
+	wristView: boolean;
 	plugin: (name: Plugin) => boolean;
 	stateless: boolean;
 	/** video_ref: the demo brief of the current --units-video-ref, if extracted. */
@@ -55,6 +61,8 @@ export function renderPrompt(c: PromptContext) {
 	p = section(p, "yaw", Boolean(spec.yawStepRad) && !c.rt);
 	p = section(p, "rt", c.rt && Boolean(spec.rt));
 	p = section(p, "wrist", c.wrist);
+	p = section(p, "wrist_view", c.wristView);
+	p = section(p, "no_wrist_view", !c.wristView);
 	for (const name of PLUGINS)
 		p = section(
 			p,
@@ -66,11 +74,13 @@ export function renderPrompt(c: PromptContext) {
 	const vars: Record<string, string> = {
 		arm: arms.length ? `with ${arms.length} arms` : "arm",
 		task: c.task,
-		views: (spec.views ?? DEFAULT_VIEWS).trim(),
+		views: (spec.views ?? (c.wristView ? DEFAULT_VIEWS : DEFAULT_VIEWS_NO_WRIST)).trim(),
 		step_cm: (spec.stepM * 100).toFixed(0),
 		coarse_cm: (c.coarseM * 100).toFixed(0),
 		high_cm: (c.highM * 100).toFixed(0),
 		chunk: String(CHUNK_STEPS),
+		yaw_wrist: c.wristView ? ", so the scene turns clockwise in the wrist view" : "",
+		grasp_confirm: c.wristView ? "BOTH views confirm" : "the third-person view confirms",
 		yaw_deg: String(Math.round(((spec.yawStepRad ?? 0) * 180) / Math.PI)),
 		rt_deg: String(Math.round(((spec.rt?.stepRad ?? 0) * 180) / Math.PI)),
 		arms: arms.join(", "),

@@ -355,6 +355,8 @@ export default function libero(pi: ExtensionAPI) {
 			}),
 			instruction: () => language,
 			views: VIEWS,
+			// robot0_eye_in_hand, the second image.
+			wrist: true,
 			// Measured: fingers closed on nothing read <= 0.003 (sum of both finger joints); a held can reads ~0.06.
 			emptyWidthM: 0.004,
 			point: { cameras: ["agentview", "wrist"], locate: (camera, points) => locate(camera as Camera, points) },

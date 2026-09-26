@@ -392,6 +392,8 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 			if (misconfigured) throw new Error(misconfigured);
 			api = undefined;
 			const tools = await spec.start(ctx);
+			// The robot's configuration (its cameras) is known now: the units read its wrist view again.
+			un?.started(ctx);
 			const client = spec.codeApi?.();
 			if (client) {
 				api = await fetchCodeApi(client, privileged() ? "privileged" : undefined);

@@ -244,6 +244,9 @@ export default function dualFranka(pi: ExtensionAPI) {
 				};
 			},
 			instruction: () => setup?.task.instruction ?? "",
+			// Only the policy's inline cameras reach the model (the D455 alone by default): a wrist view only
+			// when cameras.agent_observation.inline_cameras names one (the latest step's camera meta).
+			wrist: () => policy(steps[steps.length - 1]?.meta ?? envMeta).inline_cameras.some((c) => c.includes("wrist")),
 			views: "Each result shows the configured inline front view with both arms (Show-Harness's front-view convention: MV_LEFT / MV_RIGHT move the chosen arm toward the image left / right, MV_FWD toward the image bottom, MV_BACK toward the image top). Verify the first move of each arm against the image before relying on it.",
 			emptyWidthM: 0.001,
 		},

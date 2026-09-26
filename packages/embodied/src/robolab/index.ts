@@ -246,6 +246,8 @@ export default function robolab(pi: ExtensionAPI) {
 			stepM: STEP_M,
 			instruction: () => meta.instruction,
 			views: VIEWS,
+			// The wrist camera, the second image.
+			wrist: true,
 			emptyWidthM: EMPTY_WIDTH_M,
 			yawStepRad: YAW_STEP_RAD,
 			maxYawRad: () => MAX_ROTATE_RAD,

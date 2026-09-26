@@ -188,6 +188,8 @@ export default function genesis(pi: ExtensionAPI) {
 			stepM: STEP_M,
 			instruction: () => meta.instruction,
 			views: VIEWS,
+			// The env server's WRIST camera, the second image.
+			wrist: true,
 			emptyWidthM: EMPTY_WIDTH_M,
 			maxMoveM: () => MAX_MOVE_M,
 			apply: async (m, signal) => {

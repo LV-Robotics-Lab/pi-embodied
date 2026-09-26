@@ -237,6 +237,8 @@ export default function metaworld(pi: ExtensionAPI) {
 			stepM: STEP_M,
 			instruction: () => language,
 			views: VIEWS,
+			// gripperPOV, the second image (VIEW_SETUP).
+			wrist: true,
 			emptyWidthM: EMPTY_WIDTH_M,
 			maxMoveM: () => MAX_MOVE_M,
 			apply: async (m, signal) => {

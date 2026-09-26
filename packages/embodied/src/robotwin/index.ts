@@ -490,6 +490,8 @@ export default function robotwin(pi: ExtensionAPI) {
 			arms: ["left", "right"],
 			instruction: () => language,
 			views: UNITS_VIEWS,
+			// left_wrist and right_wrist, the second and third images.
+			wrist: true,
 			apply: (m) => unitMove(m),
 			// RoboTwin's gripper is normalized (0 closed .. 1 open), not a width in metres: no empty-grasp check.
 			state: async (arm) => ({

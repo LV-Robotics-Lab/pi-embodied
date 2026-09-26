@@ -311,6 +311,8 @@ export default function robocasa(pi: ExtensionAPI) {
 			stepM: 0.02,
 			instruction: () => language,
 			views: UNITS_VIEWS,
+			// robot0_eye_in_hand, the third image.
+			wrist: true,
 			// The robosuite Panda gripper, as on LIBERO.
 			emptyWidthM: 0.004,
 			apply: (m) => unitMove(m),

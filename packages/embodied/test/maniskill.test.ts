@@ -394,3 +394,56 @@ test("the Panda's prompt is unchanged by --robot, and a server running another a
 	assert.deepEqual(x.active(), []);
 	assert.ok(!xarm.calls.some((c) => c.method === "env.reset"), "the robot never reset");
 });
+
+test("--units on --robot widowxai: no wrist view, so fine steps, no target_in_wrist and no wrist rules; the Panda keeps them", async (t) => {
+	const plugins = "recovery,auto_release,proprioception,variable_step,action_chunk,rotation,plan,mem_text";
+	const run = async (robot: string | undefined, setup: Record<string, unknown>, wrist: boolean) => {
+		const env = await fakeEnv(robot, setup, wrist);
+		t.after(env.close);
+		const s = stubPi({
+			env: env.url,
+			"env-id": "PickCube-v1",
+			...(robot ? { robot } : {}),
+			units: "true",
+			"units-plugins": plugins,
+		});
+		maniskill(s.pi);
+		const schema = s.tools.get("act").parameters.properties;
+		await s.emit("session_start");
+		process.exitCode = undefined;
+		const prompt = (await s.emit("before_agent_start")).systemPrompt as string;
+		// 8 cm above the table: coarse on the Panda (the target not in the wrist view), fine without a wrist view.
+		const before = env.calls.filter((c) => c.method === "env.servo").length;
+		const r = await s.run("act", { unit: "MV_LEFT", target_in_wrist: false });
+		const servos = env.calls.filter((c) => c.method === "env.servo").length - before;
+		await s.emit("agent_start");
+		await s.run("finish", { status: "failure", summary: "stop" });
+		await s.emit("agent_end", { messages: [] });
+		const result = s.entries.find((e) => e.type === "robot_result")?.data;
+		return { schema, prompt, head: r.content[0].text as string, servos, result, active: s.active() };
+	};
+	const w = await run("widowxai", ROBOTS.widowxai.setup, false);
+	assert.deepEqual(w.active, ["act", "plan", "finish"]);
+	assert.ok(!("target_in_wrist" in w.schema) && !("plan" in w.schema), "act at load already follows --robot");
+	assert.equal(w.servos, 1, "one 2 cm waypoint: the fine step");
+	assert.match(w.head, /target_in_wrist ignored: this robot has no wrist view/);
+	assert.doesNotMatch(w.prompt, /WRIST CHECK|target_in_wrist|ACTION PLAN|coarse/);
+	assert.match(w.prompt, /There is no wrist view: the third-person view is the only guide/);
+	assert.deepEqual(w.result.units_plugins, ["recovery", "auto_release", "proprioception", "plan", "mem_text"]);
+	assert.equal(w.result.units_wrist_view, false);
+
+	const p = await run(undefined, VIEW_SETUP, true);
+	assert.ok("target_in_wrist" in p.schema && "plan" in p.schema);
+	assert.equal(p.servos, 2, "the 4 cm coarse step as two 2 cm waypoints");
+	assert.match(p.prompt, /WRIST CHECK/);
+	assert.deepEqual(p.result.units_plugins, [
+		"recovery",
+		"auto_release",
+		"proprioception",
+		"variable_step",
+		"action_chunk",
+		"plan",
+		"mem_text",
+	]);
+	assert.equal(p.result.units_wrist_view, true);
+});

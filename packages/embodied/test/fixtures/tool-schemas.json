@@ -352,26 +352,6 @@
 							"maximum": 10,
 							"description": "Repeat count (default 1)"
 						},
-						"target_in_wrist": {
-							"type": "boolean",
-							"description": "WRIST CHECK: is the TARGET visible in the wrist view?"
-						},
-						"plan": {
-							"type": "array",
-							"items": {
-								"type": "string",
-								"enum": [
-									"MV_FWD",
-									"MV_BACK",
-									"MV_LEFT",
-									"MV_RIGHT",
-									"MV_UP",
-									"MV_DOWN"
-								]
-							},
-							"maxItems": 3,
-							"description": "Only with target_in_wrist false: up to 3 MV_* moves run in order (replaces unit and n)"
-						},
 						"arm": {
 							"type": "string",
 							"enum": [

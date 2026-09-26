@@ -176,6 +176,14 @@ export default function ur5e(pi: ExtensionAPI) {
 	let task: Task | undefined;
 	let out = "";
 	const steps: Step[] = [];
+	/** Main camera first, then the others in the server's order. */
+	const cameras = () => {
+		const names = meta?.cameras ?? [];
+		const main = meta?.main_camera;
+		return main && names.includes(main) ? [main, ...names.filter((n) => n !== main)] : names;
+	};
+	/** A camera's mount (`wrist` or `fixed`) from the latest recorded camera metadata. */
+	const mountOf = (name: string) => steps[steps.length - 1]?.meta?.cameras?.[name]?.mount ?? null;
 	const taskName = () => robot.task.task;
 	const armId = () => flag("arm-id").trim();
 
@@ -231,6 +239,11 @@ export default function ur5e(pi: ExtensionAPI) {
 			get emptyWidthM() {
 				return meta?.limits.empty_width_m ?? 0.005;
 			},
+			// A wrist view unless every camera reports a fixed mount (a camera without `mount` may be one).
+			wrist: () => {
+				const c = cameras();
+				return !c.length || c.some((name) => mountOf(name) !== "fixed");
+			},
 		},
 		finish: {
 			description:
@@ -246,14 +259,6 @@ export default function ur5e(pi: ExtensionAPI) {
 
 	const maxMove = () => Math.min(Number(flag("max-move", "0.08")), meta?.limits.max_move_m ?? Infinity);
 	const maxRotate = () => Math.min(Number(flag("max-rotate", "0.2")), meta?.limits.max_rotate_rad ?? Infinity);
-	/** Main camera first, then the others in the server's order. */
-	const cameras = () => {
-		const names = meta?.cameras ?? [];
-		const main = meta?.main_camera;
-		return main && names.includes(main) ? [main, ...names.filter((n) => n !== main)] : names;
-	};
-	/** A camera's mount (`wrist` or `fixed`) from the latest recorded camera metadata. */
-	const mountOf = (name: string) => steps[steps.length - 1]?.meta?.cameras?.[name]?.mount ?? null;
 
 	function call<T = Json>(method: string, kwargs: Json = {}, timeoutMs = 30_000, signal?: AbortSignal) {
 		if (!env) throw new Error("ur5e is not initialized; see the session start error");

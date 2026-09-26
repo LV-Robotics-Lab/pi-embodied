@@ -25,7 +25,7 @@ VIEWS:
 ACTION UNITS (`act` with `unit` and an optional repeat count `n`, default 1):
 - MV_FWD, MV_BACK, MV_LEFT, MV_RIGHT, MV_UP, MV_DOWN: move the gripper about {{step_cm}} cm that way (see VIEWS for how each one looks in the images).
 [yaw]
-- ROTATE_CW, ROTATE_CCW: turn the gripper about {{yaw_deg}} degrees. ROTATE_CW turns it counter-clockwise seen from above, so the scene turns clockwise in the wrist view; ROTATE_CCW the opposite.
+- ROTATE_CW, ROTATE_CCW: turn the gripper about {{yaw_deg}} degrees. ROTATE_CW turns it counter-clockwise seen from above{{yaw_wrist}}; ROTATE_CCW the opposite.
 [/yaw]
 [rt]
 - RT_ROLL_LEFT / RT_ROLL_RIGHT, RT_PITCH_FWD / RT_PITCH_BACK, RT_YAW_CW / RT_YAW_CCW: turn the gripper about {{rt_deg}} degrees about a world axis through the fingertips (roll about the MV_FWD axis, pitch about the MV_LEFT-MV_RIGHT axis, yaw about the vertical, clockwise / counter-clockwise seen from above).
@@ -47,6 +47,7 @@ ACTION UNITS (`act` with `unit` and an optional repeat count `n`, default 1):
 [/action_chunk]
 
 DIRECTION:
+[wrist_view]
 Is the current step about grasping AND the target inside the wrist view?
 A) YES: the wrist view is the primary guide. Judge the grasp point against the gripper fingers and take the unit of the LARGEST deviation: toward the side it is off by (MV_LEFT / MV_RIGHT / MV_FWD / MV_BACK as the wrist view shows them); roughly centered between the fingers: MV_DOWN.
 [yaw]
@@ -56,11 +57,23 @@ A) YES: the wrist view is the primary guide. Judge the grasp point against the g
    After a turn keep judging directions as the wrist view shows them; the robot compensates for the turn. Holding an object, the first MV_UP turns the gripper back to its original heading.
 [/rotation]
 B) NO: the third-person view is the primary guide. Judge the target against the gripper (before GRASP) or the held object (after GRASP) and take the unit of the LARGEST deviation.
+[/wrist_view]
+[no_wrist_view]
+There is no wrist view: the third-person view is the only guide.
+A) Before GRASP: judge the grasp point against the gripper and take the unit of the LARGEST deviation (MV_LEFT / MV_RIGHT / MV_FWD / MV_BACK as the third-person view shows them); with the grasp point right under the fingers: MV_DOWN. Near the target move one step at a time and re-check after each.
+[yaw]
+   If the gripper fingers need to rotate to align with the target's sides: ROTATE_CW / ROTATE_CCW.
+[/yaw]
+[rotation]
+   Moves stay in the third-person view's directions after a turn. Holding an object, the first MV_UP turns the gripper back to its original heading.
+[/rotation]
+B) After GRASP: judge the held object against its destination the same way.
+[/no_wrist_view]
 C) MV_UP when you need to lift the object, when too low to reach the target, and to retreat after a RELEASE.
 Use n > 1 only for long, confident travel far from any object; near objects, when descending onto them and for the final alignment use n = 1.
 
 GRIPPER:
-- GRASP when BOTH views confirm the grasp point is clearly between the two fingers and low enough to close around.
+- GRASP when {{grasp_confirm}} the grasp point is clearly between the two fingers and low enough to close around.
 - RELEASE only when the held object is above its destination and lowered onto it.
 [recovery]
 - A GRASP that closes on nothing is reopened automatically (Recovery note): do not retry on an edge or corner; re-center on the object's body and confirm depth first.

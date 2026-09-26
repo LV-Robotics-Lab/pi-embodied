@@ -11,6 +11,7 @@
  * box, above a Z floor and within a per-call cap, all checked before anything moves; `gripper` opens
  * or closes and holds. Every result carries the front and wrist images and the state; success is the
  * task's own predicate (cube_pick: the cube lifted 8 cm off the table), recorded in `robot_result`.
+ * --vdm (../vdm.ts) differences the front and wrist views between observations.
  * `segment` (SAM3, `--sam3`) and `back_project` give world coordinates from the current image
  * through the server's depth.
  *
@@ -162,6 +163,8 @@ export default function genesis(pi: ExtensionAPI) {
 		task: ["task", "seed"],
 		keepImages: 4,
 		video: true,
+		// Observations carry the front view, then the wrist view.
+		vdm: { views: 2, wrist: 1 },
 		groundTruth: (names) => call("env.ground_truth_poses", { names: names ?? null }),
 		// The env server's primitive registry (code.api, robots/genesis/primitives.py), recorded per episode.
 		codeApi: () => env,

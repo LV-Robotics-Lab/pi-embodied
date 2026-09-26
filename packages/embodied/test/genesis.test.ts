@@ -3,7 +3,7 @@ import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import genesis, { CAMERAS, maskPixels, medianPoint, STEP_M, TASKS, VECTORS } from "../src/genesis/index.ts";
 import { ground, MOVE_UNITS } from "../src/units/index.ts";
-import { checkSimExplore, f32, fakeEnv, rgb } from "./sim-stub.ts";
+import { checkSimExplore, f32, fakeEnv, rgb, stubPi as simPi } from "./sim-stub.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
@@ -129,4 +129,22 @@ test("memory and exploration: reset restarts the seeded scene, the cell is genes
 		resets: () => env.calls.filter((c) => c.method === "env.reset").length,
 		observe: "view_env_state",
 	});
+});
+
+test("VDM is mounted over the two images every observation carries (front, then wrist)", async (t) => {
+	const f = stubPi();
+	genesis(f.pi);
+	for (const name of ["vdm", "vdm-model", "vdm-wrist"]) assert.ok(name in f.flags, name);
+	const env = await fakeGenesis();
+	t.after(env.close);
+	const s = simPi({ env: env.url });
+	genesis(s.pi);
+	await s.emit("session_start");
+	process.exitCode = undefined;
+	const r = await s.run("view_env_state", {});
+	assert.deepEqual(
+		r.content.map((c: { type: string }) => c.type),
+		["text", "image", "image"],
+	);
+	assert.deepEqual(r.details.images, ["front 2x2", "wrist 2x2"]);
 });

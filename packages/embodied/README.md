@@ -72,7 +72,7 @@ with `--env` / `--vla` / `--sam3`. Real-arm robots (Franka, dual Franka) stay on
 | RoboDojo (two ARX X5) | `src/robodojo` | RoboDojo's `is_episode_end` (`score` = partial credit) | all below, plus flywheel (joint space), recipe Flash (Molmo + depth back-projection) |
 | Robosuite | `src/robosuite` | robosuite `_check_success` (Restack adds CaP-X's off-table rule), latched | memory, explore, video, units, VDM, code.api, `--privileged` |
 | Metaworld | `src/metaworld` | Metaworld `info["success"]`, latched | memory, explore, video, units, VDM, code.api, `--privileged` |
-| Genesis | `src/genesis` | the task predicate (cube_pick: an 8 cm lift) | memory, explore, video, units, code.api, `--privileged` |
+| Genesis | `src/genesis` | the task predicate (cube_pick: an 8 cm lift) | memory, explore, video, units, VDM, code.api, `--privileged` |
 | BEHAVIOR-1K / R1Pro | `src/behavior` | the BDDL activity's `success`, latched (`q_score` = partial credit) | memory, explore, video, VDM, code.api, `--privileged` |
 | Franka (real) | `src/franka` | operator verdict (`--operator`) | all below but `--privileged`; explore resets through the operator |
 | Dual Franka (real) | `src/dual_franka` | operator verdict (required) | all below but `--privileged`; explore resets through the operator |

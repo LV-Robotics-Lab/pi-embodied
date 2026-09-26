@@ -88,7 +88,12 @@ export function viserView(pi: ExtensionAPI, spec: ViserSpec) {
 		];
 		const proc = spawn(python, args, {
 			cwd: services,
-			env: { ...process.env, PYTHONPATH: [services, process.env.PYTHONPATH].filter(Boolean).join(":") },
+			env: {
+				...process.env,
+				PYTHONPATH: [services, process.env.PYTHONPATH].filter(Boolean).join(":"),
+				// The env server's RPC token (services/PROTOCOL.md), in the environment: argv is world-readable.
+				...(env.token ? { PI_EMBODIED_ENV_TOKEN: env.token } : {}),
+			},
 			stdio: ["pipe", "pipe", "pipe"],
 		});
 		const log = join(tmpdir(), `pi-embodied-viser-${process.pid}-${Date.now()}.log`);

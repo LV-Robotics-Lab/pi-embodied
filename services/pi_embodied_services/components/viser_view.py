@@ -37,7 +37,11 @@ the active one larger. Sources:
   bundle only the EEF is drawn.
 
 Env calls queue behind the robot's own (the env server runs one call at a time), so the
-interval bounds what the view costs the episode. The process is an RPC service
+interval bounds what the view costs the episode; while a ``code.run`` program runs, the env
+server refuses them and the view skips those reads. An env server that requires its RPC
+token (``REQUIRE_TOKEN``, services/PROTOCOL.md) gets it from ``PI_EMBODIED_ENV_TOKEN`` in
+the environment (never on the command line, which other processes can read); the view
+removes it from its environment once read. The process is an RPC service
 (``viser.status``, ``viser.refresh``, ``viser.grasps``, ``viser.attach``) and exits with
 its parent under ``--parent-watch``. Viser itself is the ``viser`` extra.
 """
@@ -47,6 +51,7 @@ from __future__ import annotations
 import argparse
 import logging
 import math
+import os
 import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -57,6 +62,9 @@ from pi_embodied_services.utils.logging import get_logger
 from pi_embodied_services.utils.rpc import RpcFacade
 
 logger = get_logger("viser_view")
+
+#: The env server's RPC token, handed over in the environment (see the module docstring).
+TOKEN_ENV = "PI_EMBODIED_ENV_TOKEN"
 
 Call = Callable[[str], Any]
 
@@ -336,9 +344,10 @@ class ViserViewFacade(RpcFacade):
         source: Callable[[Call], Snapshot],
         *,
         env: str | None,
+        token: str | None = None,
         interval: float = 1.0,
         url: str = "",
-        client: Callable[[str], Any] | None = None,
+        client: Callable[[str, str | None], Any] | None = None,
     ) -> None:
         super().__init__()
         self._scene = scene
@@ -353,7 +362,7 @@ class ViserViewFacade(RpcFacade):
         self.points = 0
         self.last_error: str | None = None
         if env:
-            self.attach(env)
+            self.attach(env, token)
         self._rpc.update(
             {
                 "viser.status": self.status,
@@ -363,11 +372,11 @@ class ViserViewFacade(RpcFacade):
             }
         )
 
-    def attach(self, env: str) -> dict[str, Any]:
-        """Follow another env server (a new episode's)."""
+    def attach(self, env: str, token: str | None = None) -> dict[str, Any]:
+        """Follow another env server (a new episode's), with its RPC token when it requires one."""
         with self._draw:
             self._env_url = env
-            self._env = self._client_factory(env)
+            self._env = self._client_factory(env, token)
         return self.status()
 
     def status(self) -> dict[str, Any]:
@@ -415,10 +424,12 @@ class ViserViewFacade(RpcFacade):
                 logger.debug("refresh failed: %s", exc)
 
 
-def _http_client(url: str) -> Any:
-    from pi_embodied_services.utils.rpc.client_utils import make_rpc_client
+def _http_client(url: str, token: str | None) -> Any:
+    from pi_embodied_services.utils.rpc.client_utils import parse_endpoint
+    from pi_embodied_services.utils.rpc.http_rpc import HttpRpcClient
 
-    return make_rpc_client(url)
+    _, host, port = parse_endpoint(url)
+    return HttpRpcClient(f"http://{host}:{port}", token=token)
 
 
 def _build_argparser() -> argparse.ArgumentParser:
@@ -459,6 +470,7 @@ def main() -> None:
         Scene(server, stride=args.stride, max_depth=args.max_depth),
         SOURCES[args.robot],
         env=args.env,
+        token=os.environ.pop(TOKEN_ENV, None) or None,
         interval=args.interval,
         url=url,
     )

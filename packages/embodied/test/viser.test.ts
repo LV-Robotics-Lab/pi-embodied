@@ -68,6 +68,7 @@ function fakeViewer(dir: string) {
 const { createServer } = require("node:http");
 const { appendFileSync, writeFileSync } = require("node:fs");
 writeFileSync(${JSON.stringify(join(dir, "argv"))}, JSON.stringify(process.argv.slice(2)));
+writeFileSync(${JSON.stringify(join(dir, "token"))}, process.env.PI_EMBODIED_ENV_TOKEN ?? "");
 const server = createServer((req, res) => {
 	let body = "";
 	req.on("data", (c) => (body += c));
@@ -108,7 +109,14 @@ async function toy(flags: Record<string, unknown>, viser = true) {
 		start: async () => ["finish"],
 		result: () => ({}),
 		finish,
-		...(viser ? { viser: { source: "libero" as const, env: () => new RpcClient("http://127.0.0.1:4567") } } : {}),
+		...(viser
+			? {
+					viser: {
+						source: "libero" as const,
+						env: () => Object.assign(new RpcClient("http://127.0.0.1:4567"), { token: "f00d" }),
+					},
+				}
+			: {}),
 	});
 	await f.emit("session_start");
 	return { ...f, statuses };
@@ -145,6 +153,8 @@ test("--viser starts the view on the env server, links its port, draws plan resu
 	assert.equal(arg("--env"), "http://127.0.0.1:4567");
 	assert.equal(arg("--viser-port"), "8123");
 	assert.ok(argv.includes("--parent-watch"));
+	assert.equal(readFileSync(join(dir, "token"), "utf8"), "f00d", "the env server's token, in the environment");
+	assert.equal(argv.join(" ").includes("f00d"), false, "never on the command line");
 	assert.equal(f.statuses.at(-1)?.viser_port, 18123, "the dashboard gets the page's port");
 	assert.match(f.notes.join("\n"), /viser 3D view: http:\/\/0\.0\.0\.0:18123\//);
 

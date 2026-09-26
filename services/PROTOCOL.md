@@ -26,8 +26,9 @@ Every service except the LingBot-VLA launcher speaks the same JSON-over-HTTP RPC
   `"token"`, or it fails with `requires its RPC token`; `healthz`, `stop` and `cancel` need
   none. pi (`robot.serve`) reads it from the line, sends it on every call and writes the line
   to its log file with the token redacted; to attach to such a server by URL (`--env`), pass
-  `URL#token=HEX`. The other servers do not require it: the env servers call the model servers,
-  which have no way to learn a token.
+  `URL#token=HEX`. The `--viser` view (`components/viser_view.py`) gets it from pi in its
+  environment (`PI_EMBODIED_ENV_TOKEN`, never argv). The other servers do not require it: the env
+  servers call the model servers, which have no way to learn a token.
 - Only HTTP exists. The pickle-framed `socket` transport was removed (unpickling a
   request is remote code execution for anyone who can reach the port); `--transport`
   accepts only `http`.

@@ -187,7 +187,7 @@ def test_facade_refresh_status_attach_and_grasps():
         vv.libero_snapshot,
         env="http://a:1",
         url="http://0.0.0.0:8080",
-        client=lambda url: envs[url],
+        client=lambda url, token: envs[url],
     )
     assert set(f._rpc) >= {
         "viser.status",
@@ -212,7 +212,7 @@ def test_poll_thread_keeps_going_after_errors_and_stops_on_the_event():
         vv.libero_snapshot,
         env="x",
         interval=0.01,
-        client=lambda u: env,
+        client=lambda u, t: env,
     )
     stop = threading.Event()
     t = threading.Thread(target=f.poll_forever, args=(stop,))
@@ -257,3 +257,44 @@ def test_franka_snapshot_places_cameras_with_the_calibration_or_only_the_eef_wit
     assert all(c.cam2world is None for c in bare.cameras)
     assert bare.eef is not None and bare.notes
     assert vv.Scene(FakeServer()).update(bare) == 0
+
+
+def test_the_env_token_goes_to_the_client_and_is_sent_with_every_call(monkeypatch):
+    seen = []
+    f = vv.ViserViewFacade(
+        vv.Scene(FakeServer()),
+        vv.libero_snapshot,
+        env="http://a:1",
+        token="t0",
+        client=lambda url, token: seen.append((url, token)) or FakeEnv(libero_obs()),
+    )
+    f.attach("http://b:2", "t1")
+    f.attach("http://c:3")
+    assert seen == [("http://a:1", "t0"), ("http://b:2", "t1"), ("http://c:3", None)]
+
+    sent = []
+
+    class Reply:
+        def __init__(self, body):
+            self.body = body
+
+        def read(self):
+            return self.body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    import json
+
+    client = vv._http_client("127.0.0.1:9", "secret")
+
+    def fake_open(req, timeout=None):
+        sent.append(json.loads(req.data))
+        return Reply(json.dumps({"ok": True, "result": {}}).encode())
+
+    monkeypatch.setattr(client._opener, "open", fake_open)
+    client.call("env.get_observation")
+    assert sent[0]["token"] == "secret" and sent[0]["method"] == "env.get_observation"

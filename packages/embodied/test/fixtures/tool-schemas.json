@@ -2,6 +2,22 @@
 	"robots": {
 		"behavior": [
 			{
+				"name": "reset",
+				"description": "Exploration only. Abandon the current episode and restore the same initial scene. Archive the failed attempt first and state which strategy lever changes in the next attempt.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"reason"
+					],
+					"properties": {
+						"reason": {
+							"type": "string",
+							"description": "Why this episode is unrecoverable and what will change"
+						}
+					}
+				}
+			},
+			{
 				"name": "finish",
 				"description": "End the episode after checking the latest state. Success is the BDDL task's own predicate, not this call.",
 				"parameters": {

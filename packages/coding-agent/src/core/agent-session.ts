@@ -2050,6 +2050,23 @@ export class AgentSession {
 		return { steering, followUp };
 	}
 
+	/**
+	 * Withdraw one queued steering or follow-up message (its text as queued) before the agent takes it.
+	 * False when no such message is queued any more, e.g. it was already delivered.
+	 */
+	withdrawQueuedMessage(text: string): boolean {
+		const queued = (m: AgentMessage) => m.role === "user" && contentText(m.content, "") === text;
+		if (!this.agent.removeQueuedMessage(queued)) return false;
+		for (const list of [this._steeringMessages, this._followUpMessages]) {
+			const i = list.indexOf(text);
+			if (i === -1) continue;
+			list.splice(i, 1);
+			break;
+		}
+		this._emitQueueUpdate();
+		return true;
+	}
+
 	/** Number of pending messages (includes both steering and follow-up) */
 	get pendingMessageCount(): number {
 		return this._steeringMessages.length + this._followUpMessages.length;
@@ -3106,6 +3123,9 @@ export class AgentSession {
 					void this.abort();
 				},
 				hasPendingMessages: () => this.pendingMessageCount > 0,
+				withdrawQueuedMessage: (text) => this.withdrawQueuedMessage(text),
+				exportSession: (format, outputPath) =>
+					format === "html" ? this.exportToHtml(outputPath) : Promise.resolve(this.exportToJsonl(outputPath)),
 				shutdown: () => {
 					this._extensionShutdownHandler?.();
 				},

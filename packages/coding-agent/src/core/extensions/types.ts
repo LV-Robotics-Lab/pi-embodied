@@ -348,6 +348,10 @@ export interface ExtensionContext {
 	abort(): void;
 	/** Whether there are queued messages waiting */
 	hasPendingMessages(): boolean;
+	/** Withdraw a queued steering/follow-up message (its text as queued) the agent has not taken yet; false when it is gone. */
+	withdrawQueuedMessage(text: string): boolean;
+	/** Export the current session branch as /export does (JSONL or HTML) to `outputPath`; resolves to the written path. */
+	exportSession(format: "jsonl" | "html", outputPath: string): Promise<string>;
 	/** Gracefully shutdown pi and exit. Available in all contexts. */
 	shutdown(): void;
 	/** Get current context usage for the active model. */
@@ -1896,6 +1900,8 @@ export interface ExtensionContextActions {
 	getSignal: () => AbortSignal | undefined;
 	abort: () => void;
 	hasPendingMessages: () => boolean;
+	withdrawQueuedMessage?: (text: string) => boolean;
+	exportSession?: (format: "jsonl" | "html", outputPath: string) => Promise<string>;
 	shutdown: () => void;
 	getContextUsage: () => ContextUsage | undefined;
 	compact: (options?: CompactOptions) => void;

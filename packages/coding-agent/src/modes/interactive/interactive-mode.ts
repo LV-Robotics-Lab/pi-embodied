@@ -2164,6 +2164,11 @@ export class InteractiveMode {
 				this.restoreQueuedMessagesToEditor({ abort: true });
 			},
 			hasPendingMessages: () => this.session.pendingMessageCount > 0,
+			withdrawQueuedMessage: (text) => this.session.withdrawQueuedMessage(text),
+			exportSession: async (format, outputPath) =>
+				format === "html"
+					? this.session.exportToHtml(outputPath, { themeName: theme.name })
+					: this.session.exportToJsonl(outputPath),
 			shutdown: () => {
 				this.shutdownRequested = true;
 			},

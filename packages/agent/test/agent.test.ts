@@ -670,6 +670,21 @@ describe("Agent", () => {
 		expect(agent.state.messages).not.toContainEqual(message);
 	});
 
+	it("removes one queued message that matches, before the loop takes it", () => {
+		const agent = new Agent({ streamFn: unusedStreamFunction });
+		const a = createUserMessage("a");
+		const b = createUserMessage("b");
+		agent.steer(a);
+		agent.steer(b);
+		agent.followUp(createUserMessage("c"));
+		expect(agent.removeQueuedMessage((m) => m === a)).toBe(true);
+		expect(agent.removeQueuedMessage((m) => m === a)).toBe(false);
+		expect(agent.peekQueuedMessages()).toEqual([b]);
+		expect(agent.removeQueuedMessage((m) => m === b)).toBe(true);
+		expect(agent.removeQueuedMessage((m) => m.role === "user" && m.content === "c")).toBe(true);
+		expect(agent.hasQueuedMessages()).toBe(false);
+	});
+
 	it("should support follow-up message queue", async () => {
 		const agent = new Agent({ streamFn: unusedStreamFunction });
 

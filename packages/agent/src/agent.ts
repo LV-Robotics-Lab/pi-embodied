@@ -171,6 +171,14 @@ class PendingMessageQueue {
 	clear(): void {
 		this.messages = [];
 	}
+
+	/** Remove the first queued message that matches; false when none does. */
+	remove(match: (message: AgentMessage) => boolean): boolean {
+		const i = this.messages.findIndex(match);
+		if (i < 0) return false;
+		this.messages.splice(i, 1);
+		return true;
+	}
 }
 
 type ActiveRun = {
@@ -313,6 +321,14 @@ export class Agent {
 	/** Remove all queued follow-up messages. */
 	clearFollowUpQueue(): void {
 		this.followUpQueue.clear();
+	}
+
+	/**
+	 * Remove the first queued steering (else follow-up) message that matches, before the loop takes
+	 * it. False when none matches, e.g. it was already delivered.
+	 */
+	removeQueuedMessage(match: (message: AgentMessage) => boolean): boolean {
+		return this.steeringQueue.remove(match) || this.followUpQueue.remove(match);
 	}
 
 	/** Remove all queued steering and follow-up messages. */

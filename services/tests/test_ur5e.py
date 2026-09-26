@@ -46,6 +46,7 @@ from pi_embodied_services.robots.ur5e.control import (
     async_phase,
     pose7_of,
     pose_rotvec,
+    rotation_gap,
     tool_tilt,
 )
 from pi_embodied_services.robots.ur5e.env_server import (
@@ -59,7 +60,9 @@ from pi_embodied_services.robots.ur5e.env_server import (
     main,
 )
 from pi_embodied_services.robots.ur5e.hardware import (
+    FULL_TURN,
     RtdeArm,
+    fk_tcp_argument,
 )
 from pi_embodied_services.robots.ur5e.mock import DOWN, MockRobotiq, MockUrArm
 
@@ -1465,10 +1468,13 @@ class _Status:
 class _FakeControl:
     """The RTDEControlInterface calls RtdeArm makes, with ur_rtde's behaviour."""
 
-    def __init__(self, registers, *, running=True) -> None:
+    def __init__(self, registers, *, tcp=(0.0,) * 6, running=True) -> None:
         self.registers = list(registers)
+        self.tcp = list(tcp)
         self.running = running
         self.reuploads = 0
+        self.fk_calls: list[tuple[list[float], list[float]]] = []
+        self.inputs = [9.9] * 12  # left over from an earlier command
 
     def getAsyncOperationProgressEx(self):  # noqa: N802
         op, running = (
@@ -1496,6 +1502,30 @@ class _FakeControl:
         self.reuploads += 1
         self.running = True
         return True
+
+    def getTCPOffset(self):  # noqa: N802
+        return list(self.tcp)
+
+    def getForwardKinematics(self, q, tcp):  # noqa: N802
+        """rtde_control_interface.cpp: an empty or all-zero offset takes the q-only
+        recipe (6 values sent), and the script reads the offset from input registers
+        6-11 anyway, which hold an earlier command's values."""
+        self.fk_calls.append((list(q), list(tcp)))
+        sent = list(q) if all(v == 0.0 for v in tcp) else list(q) + list(tcp)
+        self.inputs[: len(sent)] = sent
+        return _flange_times(self.inputs[6:12])
+
+
+FLANGE = np.array([0.4, -0.1, 0.5, np.pi, 0.0, 0.0])
+
+
+def _flange_times(offset) -> list[float]:
+    """The flange pose composed with a TCP offset (``pose_trans``)."""
+    f = Rotation.from_rotvec(FLANGE[3:])
+    o = np.asarray(offset, dtype=np.float64)
+    p = FLANGE[:3] + f.apply(o[:3])
+    r = (f * Rotation.from_rotvec(o[3:])).as_rotvec()
+    return [*p, *r]
 
 
 def _rtde_arm(ctrl) -> RtdeArm:
@@ -1525,3 +1555,34 @@ def test_a_reupload_waits_for_the_new_scripts_register():
     t0 = time.monotonic()
     _rtde_arm(ctrl)._await_fresh_register(timeout_s=0.05)
     assert time.monotonic() - t0 < 1.0
+
+
+# -- forward kinematics with an all-zero TCP offset (未上机验证) ----------------------
+
+
+def test_fk_tcp_argument_sends_a_zero_offset_as_a_full_turn():
+    assert fk_tcp_argument([0.0] * 6) == [0.0, 0.0, 0.0, 0.0, 0.0, FULL_TURN]
+    assert np.allclose(Rotation.from_rotvec([0, 0, FULL_TURN]).as_matrix(), np.eye(3))
+    tcp = [0.0, 0.0, 0.15, 0.0, 0.0, 0.0]
+    assert fk_tcp_argument(tcp) == tcp
+    with pytest.raises(RuntimeError, match="invalid offset"):
+        fk_tcp_argument([0.0] * 5)
+    with pytest.raises(RuntimeError, match="invalid offset"):
+        fk_tcp_argument([0.0, 0.0, float("nan"), 0.0, 0.0, 0.0])
+
+
+def test_forward_kinematics_with_a_zero_tcp_offset_is_the_flange():
+    q = [0.1, -1.2, 1.3, -1.6, -1.5, 0.2]
+    ctrl = _FakeControl([(0, False)], tcp=(0.0,) * 6)
+    # What passing the zero offset through gave: stale registers composed in.
+    wrong = np.asarray(ctrl.getForwardKinematics(q, [0.0] * 6))
+    assert not np.allclose(wrong, FLANGE, atol=1e-6)
+    pose = _rtde_arm(ctrl).forward_kinematics(q)
+    assert np.allclose(pose[:3], FLANGE[:3], atol=1e-12)
+    assert rotation_gap(pose[3:], FLANGE[3:]) < 1e-12
+    assert ctrl.fk_calls[-1] == (q, [0.0, 0.0, 0.0, 0.0, 0.0, FULL_TURN])
+    # A real offset is passed as it is and composed.
+    ctrl = _FakeControl([(0, False)], tcp=(0.0, 0.0, 0.15, 0.0, 0.0, 0.0))
+    pose = _rtde_arm(ctrl).forward_kinematics(q)
+    assert np.allclose(pose, _flange_times([0.0, 0.0, 0.15, 0.0, 0.0, 0.0]))
+    assert ctrl.fk_calls[-1][1] == [0.0, 0.0, 0.15, 0.0, 0.0, 0.0]

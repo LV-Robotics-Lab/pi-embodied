@@ -18,7 +18,8 @@
 # poll ``stop`` and call stopL/stopJ (and waits for the async operation to start,
 # then end, by its operation id); a stopped control script is re-uploaded and its
 # async register awaited until it resets; forward
-# kinematics with the active TCP checks the reset target; the arm's serial number is
+# kinematics with the active TCP checks the reset target (an all-zero TCP offset is
+# sent as a full turn, around ur_rtde's q-only path); the arm's serial number is
 # read for the calibration binding; the gripper client is read/write with
 # non-blocking go_to.
 
@@ -51,6 +52,29 @@ ROBOTIQ_PORT = 63352
 #: read 3 from the last motion; ``PRE`` (gPR, the echoed requested position) tells
 #: whether a new command was taken.
 OBJ_MOVING, OBJ_OPENING_CONTACT, OBJ_CLOSING_CONTACT, OBJ_AT_POSITION = 0, 1, 2, 3
+
+
+#: A full turn about the tool z axis: the identity rotation, but not all zero.
+FULL_TURN = 2.0 * np.pi
+
+
+def fk_tcp_argument(offset: Any) -> list[float]:
+    """The TCP offset to pass to ``getForwardKinematics(q, tcp)``.
+
+    ur_rtde (rtde_control_interface.cpp getForwardKinematics) takes the
+    ``q``-only path when the offset is empty *or all zero*, and that path sends
+    only the six joint values while the script (``get_forward_kin(q, tcp_offset)``,
+    cmd 44) reads the offset from input registers 6-11 regardless: stale values from
+    the previous command. A zero offset is sent as ``[0, 0, 0, 0, 0, 2*pi]``: a full
+    turn about the tool z axis, the same transform, which takes the path that sends
+    all twelve values. Any other offset is passed unchanged. The offset must be six
+    finite numbers."""
+    tcp = [float(v) for v in np.asarray(offset, dtype=np.float64).reshape(-1)]
+    if len(tcp) != 6 or not all(np.isfinite(tcp)):
+        raise RuntimeError(f"getTCPOffset returned an invalid offset {tcp}")
+    if all(v == 0.0 for v in tcp):
+        return [0.0, 0.0, 0.0, 0.0, 0.0, FULL_TURN]
+    return tcp
 
 
 class RtdeArm:
@@ -191,11 +215,17 @@ class RtdeArm:
     # -- kinematics (the controller's model, with the active TCP offset) ---------
 
     def forward_kinematics(self, q: Any) -> np.ndarray:
-        """TCP pose ``[x, y, z, rx, ry, rz]`` at joints ``q``. ``getForwardKinematics``
-        with its default (zero) offset returns the tool flange; the active TCP offset
-        (``getTCPOffset``, the pendant's TCP) is passed so the pose is the TCP's."""
+        """TCP pose ``[x, y, z, rx, ry, rz]`` at joints ``q``, with the active TCP
+        offset (``getTCPOffset``, the pendant's TCP) passed so the pose is the TCP's.
+
+        The offset goes through ``fk_tcp_argument``: ur_rtde's getForwardKinematics
+        sends an all-zero offset (a TCP at the flange) with the 6-register recipe,
+        so the script reads the offset from input registers 6-11, which still hold
+        whatever an earlier command wrote there (the previous motion's speed and
+        acceleration): the pose is off by tens of centimetres, and the mismatched
+        recipe can leave the call waiting inside the server's RPC lock."""
         ctrl = self._control()
-        tcp = [float(v) for v in ctrl.getTCPOffset()]
+        tcp = fk_tcp_argument(ctrl.getTCPOffset())
         return np.asarray(
             ctrl.getForwardKinematics([float(v) for v in q], tcp), dtype=np.float64
         )

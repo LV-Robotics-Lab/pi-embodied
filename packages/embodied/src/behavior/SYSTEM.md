@@ -17,6 +17,8 @@ This is a single episode with a time limit. You may recover within it (re-naviga
 - Perception: [tool:segment]`segment` (SAM3, a text prompt or a point) gives an object's mask, `world_xyz` and `top_xyz`; [/tool:segment][tool:point]`point` (Molmo) finds what a phrase names and gives its pixel and world xyz; [/tool:point][tool:back_project]`back_project` turns pixels (row, col; row 0 = top) into world xyz, region mode gives a surface's centre.[/tool:back_project] All three read the latest images of the camera you name (`head` by default; the wrists see close range). Pixels are only valid for the image they came from: after any motion, look again.
 [/tool:segment|point|back_project]
 
+{{memory}}
+
 # Rules
 1. [tool:view_env_state]Start with `view_env_state`. [/tool:view_env_state]Read the task text literally and find each named object in the head image before moving; duplicates are told apart by where they are, not by names.
 2. Navigate first, manipulate second: drive so the target is within about 0.8 m of the base and in front of it, then localize it again from the new images.

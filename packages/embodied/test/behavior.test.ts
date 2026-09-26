@@ -7,6 +7,7 @@ import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import behavior, { project, TASKS } from "../src/behavior/index.ts";
 import { RESULT_ENTRY, toolSections } from "../src/robot.ts";
+import { checkSimExplore } from "./sim-stub.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
@@ -197,6 +198,7 @@ test("the tools are CaP-X's primitive set plus perception; motions carry the thr
 	assert.equal(s.flags.task, "turning_on_radio");
 	assert.equal(s.flags.privileged, false, "a simulated robot: --privileged exists, off by default");
 	await s.emit("session_start");
+	// The robot's tools, then memory's file tools.
 	assert.deepEqual(s.active(), [
 		"view_env_state",
 		"get_robot_position",
@@ -209,6 +211,11 @@ test("the tools are CaP-X's primitive set plus perception; motions carry the thr
 		"point",
 		"back_project",
 		"finish",
+		"read",
+		"ls",
+		"grep",
+		"find",
+		"write",
 	]);
 	assert.deepEqual(
 		env.calls.map((c) => c.method).filter((m) => m !== "code.api"),
@@ -395,4 +402,16 @@ test("the system prompt describes only the active tools", () => {
 	assert.doesNotMatch(noGrasp, /Molmo/);
 	assert.doesNotMatch(noGrasp, /open_gripper/);
 	assert.doesNotMatch(noGrasp, /\[tool:/);
+});
+
+test("memory and exploration: reset loads the task instance again, the cell is behavior_<task>_s<instance>", async (t) => {
+	const env = await fakeEnv();
+	t.after(env.close);
+	await checkSimExplore({
+		load: behavior,
+		values: { env: env.url, task: "turning_on_radio", seed: "0" },
+		tag: "behavior_turning_on_radio_s0",
+		resets: () => env.calls.filter((c) => c.method === "env.reset").length,
+		observe: "view_env_state",
+	});
 });

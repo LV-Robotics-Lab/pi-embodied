@@ -32,6 +32,8 @@ import { attach, defineRobot, type Mat, mark, median, round, SERVICES, toolResul
 import { type NdArray, RpcClient } from "../rpc.ts";
 
 const SYSTEM = template(new URL("./SYSTEM.md", import.meta.url));
+const EXPLORE = template(new URL("./explore.md", import.meta.url));
+const MEMORY = template(new URL("./memory.md", import.meta.url));
 
 /** The 2025 challenge tasks, in the env server's order (services/.../robots/behavior/tasks.py): CaP-X's two first. */
 export const TASKS = [
@@ -194,6 +196,8 @@ export default function behavior(pi: ExtensionAPI) {
 	const worldMaps = new Map<Camera, WorldMap>();
 	const privileged = () => pi.getFlag("privileged") === true;
 
+	/** The memory cell of this task at instance `seed`. */
+	const tag = (seed: string) => `behavior_${robot.task.task}_s${seed}`;
 	const robot = defineRobot(pi, {
 		name: "behavior",
 		task: ["task", "seed"],
@@ -204,8 +208,35 @@ export default function behavior(pi: ExtensionAPI) {
 		// Observations carry the head image, then the left and right wrist images.
 		vdm: { views: 3, wrist: [1, 2] },
 		groundTruth: (names) => env.call("env.ground_truth_poses", { names: names ?? null }, 120_000, [], robot.signal),
+		// No corpus is published for BEHAVIOR: memory is what exploration writes locally, one cell per task instance.
+		memory: {
+			cell: () => ({ tag: tag(robot.task.seed), reference: tag("0") }),
+			primitives: ["navigate_to_pose", "move_hand", "grasp_object", "open_gripper", "close_gripper"],
+			published: false,
+		},
+		explore: {
+			// The exploration `reset` tool is not a robot.tool, so robot.signal is unset here; use its own signal.
+			reset: async (result, _ctx, signal) => {
+				const [o] = await env.call<[Obs, unknown]>("env.reset", {}, 600_000, [], signal);
+				absorb(o);
+				return observe({ ...result, reset: true });
+			},
+			prompt: () => EXPLORE.replaceAll("{{task}}", robot.task.task).replaceAll("{{seed}}", robot.task.seed),
+			rewrite: [
+				[
+					/This is a single episode with a time limit\. You may recover within it \(re-navigate, re-grasp\), but you cannot restart it\./,
+					"This is an exploration run: `reset` starts a fresh attempt (see Exploration). Within an attempt, recover in place (re-navigate, re-grasp).",
+				],
+			],
+			// A reset reloads the whole house (minutes): fewer, longer attempts.
+			budget: { sessions: 2, attempts: 3 },
+		},
 		start: startEpisode,
-		prompt: () => SYSTEM.replaceAll("{{task_language}}", meta.instruction),
+		prompt: () =>
+			SYSTEM.replaceAll("{{task_language}}", meta.instruction).replaceAll(
+				"{{memory}}",
+				pi.getFlag("explore") === true ? "" : robot.mem!.render(MEMORY).trim(),
+			),
 		result: () => ({
 			task: robot.task.task,
 			seed: Number(robot.task.seed),
@@ -291,6 +322,8 @@ export default function behavior(pi: ExtensionAPI) {
 			result,
 			step: obs.env_steps,
 			success: obs.success,
+			// Exploration's and the memory recipe's success signal (../explore.ts, ../memory).
+			terminated: obs.success,
 			q_score: obs.q_score,
 			goals: obs.goals,
 			truncated: obs.truncated,

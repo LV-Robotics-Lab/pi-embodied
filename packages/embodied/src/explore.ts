@@ -172,6 +172,8 @@ export function explore(pi: ExtensionAPI, robot: Robot) {
 		return closeOut(p);
 	}
 
+	// Registered here, not with the robot's `tool`: a reset is not an action step. The robot still
+	// counts it as moving the robot (../robot.ts lists it for the units gate and a GUMI takeover).
 	pi.registerTool({
 		name: "reset",
 		label: "reset",

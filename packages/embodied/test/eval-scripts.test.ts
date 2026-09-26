@@ -143,7 +143,10 @@ for (const [robot, positional, cell, env] of CELLS.filter(([r]) => ["libero", "r
 			const [a, b] = rerun(robot, positional, env ?? {}, first, second);
 			assert.equal(a.status, 0, a.stdout + a.stderr);
 			assert.equal(b.status, 1);
-			assert.match(b.stderr, /--privileged or --anchor-image; use another out dir|--privileged or --anchor-image \(or an older/);
+			assert.match(
+				b.stderr,
+				/--privileged or --anchor-image; use another out dir|--privileged or --anchor-image \(or an older/,
+			);
 		}
 		// The same configuration keeps its valid result.
 		const [, same] = rerun(robot, positional, env ?? {}, ["--privileged"], ["--privileged"]);

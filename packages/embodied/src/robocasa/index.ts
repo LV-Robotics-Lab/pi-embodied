@@ -46,7 +46,7 @@ const PRIMITIVES = [
 ];
 
 type Raw = Record<string, NdArray>;
-type Grip = number | string | undefined;
+type Grip = number | "close" | "open" | "hold" | undefined;
 type WorldMap = { size: number; xyz: Float32Array };
 type Image = { role: string; camera: string; artifact: string; png: Buffer };
 type State = {
@@ -244,8 +244,9 @@ export default function robocasa(pi: ExtensionAPI) {
 	const eef = () => vec("robot0_eef_pos");
 	const finger = () => vec("robot0_gripper_qpos")[0];
 	const zero = (baseMode = -1) => [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, baseMode];
-	/** a[6] for a motion step: a number passes through (+1 close, -1 open); "hold" servos the fingers back to `q`. */
-	const grip = (g: Grip, q: number) => (typeof g === "number" ? clip(g, -1, 1) : clip(60 * (finger() - q), -1, 1));
+	/** a[6] for a motion step: "close" = +1, "open" = -1, a number passes through; "hold" servos the fingers back to `q`. */
+	const grip = (g: Grip, q: number) =>
+		g === "close" ? 1 : g === "open" ? -1 : typeof g === "number" ? clip(g, -1, 1) : clip(60 * (finger() - q), -1, 1);
 
 	/** One env step with the PandaOmron 12-D action [eef_pos 3, eef_rot 3, gripper, base 3, torso, base_mode]. */
 	async function step(a: number[]) {
@@ -645,7 +646,7 @@ export default function robocasa(pi: ExtensionAPI) {
 	const num = (description: string) => Type.Optional(Type.Number({ description }));
 	const int = (description: string) => Type.Optional(Type.Integer({ description }));
 	const gripArg = (description: string) =>
-		Type.Optional(Type.Union([Type.Number(), Type.String()], { description: `${description} (default 'hold')` }));
+		Type.Optional(StringEnum(["close", "open", "hold"] as const, { description: `${description} (default 'hold')` }));
 	const camera = Type.Optional(
 		StringEnum(["agentview", "navview", "wrist"] as const, {
 			description: "Camera (default agentview)",
@@ -659,10 +660,10 @@ export default function robocasa(pi: ExtensionAPI) {
 
 	tool(
 		"move_to",
-		"Scripted EEF servo to a world-frame XYZ target via the OSC controller. Holds pitch/yaw orientation (use rotate_pitch to reorient). gripper='hold' (default) maintains current finger width: carry-safe without crushing small objects. Pass +1 to close, -1 to open. Never command a single move_to with |dxyz| > 0.30: OSC flips IK; split long traversal into 2-3 waypoints at carry z.",
+		"Scripted EEF servo to a world-frame XYZ target via the OSC controller. Holds pitch/yaw orientation (use rotate_pitch to reorient). gripper='hold' (default) maintains current finger width: carry-safe without crushing small objects. Pass 'close' to close, 'open' to open. Never command a single move_to with |dxyz| > 0.30: OSC flips IK; split long traversal into 2-3 waypoints at carry z.",
 		Type.Object({
 			xyz,
-			gripper: gripArg("+1 close, -1 open, or 'hold' to maintain the current finger width"),
+			gripper: gripArg("'close', 'open', or 'hold' to maintain the current finger width"),
 			step_clip: num("Per-step dxyz cap, m (default 0.02)"),
 			max_steps: int("Step budget (default 200)"),
 			tol: num("Position tolerance, m (default 0.012)"),
@@ -675,7 +676,7 @@ export default function robocasa(pi: ExtensionAPI) {
 		"Relative EEF displacement: target = current_eef + dxyz, then move_to. Use for small adjustments (micro-align for grasp, approach). gripper='hold' (default) maintains current finger width.",
 		Type.Object({
 			dxyz: Type.Array(Type.Number(), { minItems: 3, maxItems: 3, description: "Relative [dx, dy, dz], m" }),
-			gripper: gripArg("+1 close, -1 open, or 'hold'"),
+			gripper: gripArg("'close', 'open', or 'hold'"),
 			step_clip: num("Per-step dxyz cap, m (default 0.02)"),
 			max_steps: int("Step budget (default 80)"),
 		}),
@@ -751,9 +752,7 @@ export default function robocasa(pi: ExtensionAPI) {
 	const rldxParams = (baseClip: string) =>
 		Type.Object({
 			prompt: Type.String({ description: "Complete live task_language, copied verbatim" }),
-			base_clip: Type.Optional(
-				Type.Union([Type.Number(), Type.Null()], { description: `Base motion cap (${baseClip})` }),
-			),
+			base_clip: num(`Base motion cap, >= 0 (${baseClip}); a negative value means no clamp`),
 			max_chunks: int("Action-chunk budget (default 70; RLDX_MAX_CHUNKS overrides)"),
 			force_reset: Type.Optional(Type.Boolean({ description: "Force VLA frame history reset (default false)" })),
 			n_action_steps: int("Actions per VLA chunk (default 8)"),
@@ -764,15 +763,15 @@ export default function robocasa(pi: ExtensionAPI) {
 	tool(
 		"rldx_skill",
 		"RLDX-1 VLA closed-loop skill with FULL base motion: the VLA drives both arm and mobile base. Use for full-body tasks where the base must reposition. Pass the complete live task_language verbatim; the runtime always uses that environment language. Do NOT interrupt consecutive VLA calls with manual primitives: that breaks VLA frame history continuity (sets vla_desync).",
-		rldxParams("default null = no clamp"),
-		(p) => rldx({ ...p, base_clip: p.base_clip === undefined ? null : p.base_clip }),
+		rldxParams("default: no clamp"),
+		(p) => rldx({ ...p, base_clip: p.base_clip === undefined || p.base_clip < 0 ? null : p.base_clip }),
 	);
 
 	tool(
 		"rldx_arm",
 		"RLDX-1 VLA closed-loop skill with the base CLAMPED to small motions (base_clip 0.1): the VLA drives the arm for precise micro-alignment but cannot drive the base away. Pass the complete live task_language verbatim. Do NOT interrupt consecutive VLA calls with manual primitives.",
 		rldxParams("default 0.1 = small"),
-		(p) => rldx({ ...p, base_clip: p.base_clip === undefined ? 0.1 : p.base_clip }),
+		(p) => rldx({ ...p, base_clip: p.base_clip === undefined ? 0.1 : p.base_clip < 0 ? null : p.base_clip }),
 	);
 
 	tool(
@@ -782,7 +781,7 @@ export default function robocasa(pi: ExtensionAPI) {
 			xy: Type.Array(Type.Number(), { minItems: 2, maxItems: 2, description: "World-frame [x, y], m" }),
 			tol: num("Distance threshold to stop, m (default 0.20)"),
 			max_steps: int("Step budget (default 300)"),
-			gripper: gripArg("+1 close, -1 open, or 'hold'"),
+			gripper: gripArg("'close', 'open', or 'hold'"),
 		}),
 		async ({ xy, tol = 0.2, max_steps = 300, gripper }) => {
 			vlaDesync = true;
@@ -831,7 +830,7 @@ export default function robocasa(pi: ExtensionAPI) {
 			lateral: num("Lateral / strafe velocity, [-1, 1] (default 0)"),
 			turn: num("Yaw rotation velocity, [-1, 1] (default 0)"),
 			steps: int("Env steps (default 10)"),
-			gripper: gripArg("+1 close, -1 open, or 'hold'"),
+			gripper: gripArg("'close', 'open', or 'hold'"),
 		}),
 		async ({ forward = 0, lateral = 0, turn = 0, steps = 10, gripper }) => {
 			vlaDesync = true;
@@ -874,7 +873,7 @@ export default function robocasa(pi: ExtensionAPI) {
 		"view_env_state",
 		"Read state NN (default latest): env state, success (robocasa_terminated), task_progress, vla_desync, the command log, and the agentview (calibration frame), navview (base floor view) and wrist images. Use agentview pixels for back-projection, navview for base navigation and floor walkability, wrist for close-range details near the gripper.",
 		Type.Object({
-			step: Type.Optional(Type.Union([Type.Integer(), Type.Null()], { description: "0 = initial; null = latest" })),
+			step: int("0 = initial (default latest)"),
 		}),
 		async ({ step: n }) => {
 			const s = states[n ?? states.length - 1];
@@ -888,9 +887,7 @@ export default function robocasa(pi: ExtensionAPI) {
 		"Back-project MULTIPLE pixels [row, col] (row 0 = image top) to world XYZ from one state's world map. Returns each pixel's world_xyz plus summary.median_xyz. For robust localization sample 3-8 pixels on the target and read summary.median_xyz. Max 50 pixels. Pixels from agentview_high need resolution 'high'.",
 		Type.Object({
 			pixels: Type.Array(Type.Array(Type.Integer(), { minItems: 2, maxItems: 2 }), { minItems: 1, maxItems: 50 }),
-			step: Type.Optional(
-				Type.Union([Type.Integer(), Type.Null()], { description: "State to use (default latest)" }),
-			),
+			step: int("State to use (default latest)"),
 			camera,
 			resolution,
 		}),
@@ -935,8 +932,20 @@ export default function robocasa(pi: ExtensionAPI) {
 		Type.Object({
 			z_min: num("Minimum Z, m (default 0.85, counter height)"),
 			z_max: num("Maximum Z, m (default 0.95)"),
-			x_range: Type.Optional(Type.Union([Type.Array(Type.Number(), { minItems: 2, maxItems: 2 }), Type.Null()])),
-			y_range: Type.Optional(Type.Union([Type.Array(Type.Number(), { minItems: 2, maxItems: 2 }), Type.Null()])),
+			x_range: Type.Optional(
+				Type.Array(Type.Number(), {
+					minItems: 2,
+					maxItems: 2,
+					description: "[min, max] world x, m (default: any)",
+				}),
+			),
+			y_range: Type.Optional(
+				Type.Array(Type.Number(), {
+					minItems: 2,
+					maxItems: 2,
+					description: "[min, max] world y, m (default: any)",
+				}),
+			),
 			camera,
 			resolution,
 			min_cluster_size: int("Minimum sampled pixels per cluster (default 10)"),

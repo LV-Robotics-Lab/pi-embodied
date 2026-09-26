@@ -2165,7 +2165,7 @@
 			},
 			{
 				"name": "move_to",
-				"description": "Scripted EEF servo to a world-frame XYZ target via the OSC controller. Holds pitch/yaw orientation (use rotate_pitch to reorient). gripper='hold' (default) maintains current finger width: carry-safe without crushing small objects. Pass +1 to close, -1 to open. Never command a single move_to with |dxyz| > 0.30: OSC flips IK; split long traversal into 2-3 waypoints at carry z.",
+				"description": "Scripted EEF servo to a world-frame XYZ target via the OSC controller. Holds pitch/yaw orientation (use rotate_pitch to reorient). gripper='hold' (default) maintains current finger width: carry-safe without crushing small objects. Pass 'close' to close, 'open' to open. Never command a single move_to with |dxyz| > 0.30: OSC flips IK; split long traversal into 2-3 waypoints at carry z.",
 				"parameters": {
 					"type": "object",
 					"required": [
@@ -2182,15 +2182,13 @@
 							"description": "World-frame [x, y, z] in meters"
 						},
 						"gripper": {
-							"anyOf": [
-								{
-									"type": "number"
-								},
-								{
-									"type": "string"
-								}
+							"type": "string",
+							"enum": [
+								"close",
+								"open",
+								"hold"
 							],
-							"description": "+1 close, -1 open, or 'hold' to maintain the current finger width (default 'hold')"
+							"description": "'close', 'open', or 'hold' to maintain the current finger width (default 'hold')"
 						},
 						"step_clip": {
 							"type": "number",
@@ -2226,15 +2224,13 @@
 							"description": "Relative [dx, dy, dz], m"
 						},
 						"gripper": {
-							"anyOf": [
-								{
-									"type": "number"
-								},
-								{
-									"type": "string"
-								}
+							"type": "string",
+							"enum": [
+								"close",
+								"open",
+								"hold"
 							],
-							"description": "+1 close, -1 open, or 'hold' (default 'hold')"
+							"description": "'close', 'open', or 'hold' (default 'hold')"
 						},
 						"step_clip": {
 							"type": "number",
@@ -2345,15 +2341,8 @@
 							"description": "Complete live task_language, copied verbatim"
 						},
 						"base_clip": {
-							"anyOf": [
-								{
-									"type": "number"
-								},
-								{
-									"type": "null"
-								}
-							],
-							"description": "Base motion cap (default null = no clamp)"
+							"type": "number",
+							"description": "Base motion cap, >= 0 (default: no clamp); a negative value means no clamp"
 						},
 						"max_chunks": {
 							"type": "integer",
@@ -2392,15 +2381,8 @@
 							"description": "Complete live task_language, copied verbatim"
 						},
 						"base_clip": {
-							"anyOf": [
-								{
-									"type": "number"
-								},
-								{
-									"type": "null"
-								}
-							],
-							"description": "Base motion cap (default 0.1 = small)"
+							"type": "number",
+							"description": "Base motion cap, >= 0 (default 0.1 = small); a negative value means no clamp"
 						},
 						"max_chunks": {
 							"type": "integer",
@@ -2452,15 +2434,13 @@
 							"description": "Step budget (default 300)"
 						},
 						"gripper": {
-							"anyOf": [
-								{
-									"type": "number"
-								},
-								{
-									"type": "string"
-								}
+							"type": "string",
+							"enum": [
+								"close",
+								"open",
+								"hold"
 							],
-							"description": "+1 close, -1 open, or 'hold' (default 'hold')"
+							"description": "'close', 'open', or 'hold' (default 'hold')"
 						}
 					}
 				}
@@ -2488,15 +2468,13 @@
 							"description": "Env steps (default 10)"
 						},
 						"gripper": {
-							"anyOf": [
-								{
-									"type": "number"
-								},
-								{
-									"type": "string"
-								}
+							"type": "string",
+							"enum": [
+								"close",
+								"open",
+								"hold"
 							],
-							"description": "+1 close, -1 open, or 'hold' (default 'hold')"
+							"description": "'close', 'open', or 'hold' (default 'hold')"
 						}
 					}
 				}
@@ -2508,15 +2486,8 @@
 					"type": "object",
 					"properties": {
 						"step": {
-							"anyOf": [
-								{
-									"type": "integer"
-								},
-								{
-									"type": "null"
-								}
-							],
-							"description": "0 = initial; null = latest"
+							"type": "integer",
+							"description": "0 = initial (default latest)"
 						}
 					}
 				}
@@ -2544,14 +2515,7 @@
 							"maxItems": 50
 						},
 						"step": {
-							"anyOf": [
-								{
-									"type": "integer"
-								},
-								{
-									"type": "null"
-								}
-							],
+							"type": "integer",
 							"description": "State to use (default latest)"
 						},
 						"camera": {
@@ -2589,34 +2553,22 @@
 							"description": "Maximum Z, m (default 0.95)"
 						},
 						"x_range": {
-							"anyOf": [
-								{
-									"type": "array",
-									"items": {
-										"type": "number"
-									},
-									"minItems": 2,
-									"maxItems": 2
-								},
-								{
-									"type": "null"
-								}
-							]
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 2,
+							"maxItems": 2,
+							"description": "[min, max] world x, m (default: any)"
 						},
 						"y_range": {
-							"anyOf": [
-								{
-									"type": "array",
-									"items": {
-										"type": "number"
-									},
-									"minItems": 2,
-									"maxItems": 2
-								},
-								{
-									"type": "null"
-								}
-							]
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 2,
+							"maxItems": 2,
+							"description": "[min, max] world y, m (default: any)"
 						},
 						"camera": {
 							"type": "string",

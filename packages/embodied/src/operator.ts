@@ -231,6 +231,8 @@ export function operator(pi: ExtensionAPI, robot: Robot) {
 		};
 	}
 
+	// Registered here, not with the robot's `tool`: a reset is not an action step. The robot still
+	// counts it as moving the robot (../robot.ts lists it for the units gate and a GUMI takeover).
 	if (robot.reset)
 		pi.registerTool({
 			name: "request_scene_reset",

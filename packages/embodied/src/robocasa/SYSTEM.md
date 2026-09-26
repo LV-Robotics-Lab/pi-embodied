@@ -43,7 +43,7 @@ Cell: {{task_name}} / {{split}} / seed {{seed}}
 
 [/tool:rldx_skill|rldx_arm]
 # Gripper
-- To carry a grasped object, omit `gripper` (default `hold` keeps the current finger width without crushing it). `+1` actively closes, `-1` actively opens; carrying with `-1` silently drops the object.[tool:release] `release` is the safe way to drop.[/tool:release]
+- To carry a grasped object, omit `gripper` (default `hold` keeps the current finger width without crushing it). `"close"` actively closes, `"open"` actively opens; carrying with `"open"` silently drops the object.[tool:release] `release` is the safe way to drop.[/tool:release]
 
 # Workflow
 1. Read the memory files, the task language and the success condition below; look at state 0.

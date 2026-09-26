@@ -58,6 +58,11 @@ import { RT_UNITS, UNITS_EVENT, type UnitsHandle } from "../units/index.ts";
 import { decodePng, fingerprint, formatView, parseView, prepareView, type ViewSpec } from "./views.ts";
 
 type Json = Record<string, unknown>;
+/** The parts of an OpenAI-compatible chat completion reply this provider reads; the server may send anything. */
+type ChatCompletion = {
+	choices?: { message?: { content?: unknown; reasoning_content?: string } }[];
+	error?: unknown;
+};
 
 /** The single-arm vocabulary the lite prompts offer (mvtoken_roles.MVTOKEN_ACTIONS). */
 export const MVTOKEN_ACTIONS = [
@@ -331,14 +336,14 @@ async function complete(
 			});
 			const raw = await res.text();
 			if (res.ok) {
-				let data: any;
+				let data: ChatCompletion | undefined;
 				try {
-					data = JSON.parse(raw);
+					data = JSON.parse(raw) as ChatCompletion;
 				} catch {
 					data = undefined;
 				}
 				const message = data?.choices?.[0]?.message;
-				if (message && typeof message === "object" && !data.error) {
+				if (message && typeof message === "object" && !data?.error) {
 					const content = typeof message.content === "string" ? message.content : "";
 					const text = content.trim() ? content : (message.reasoning_content ?? content ?? "");
 					return { text: stripReasoning(String(text)), ms: Date.now() - t0 };

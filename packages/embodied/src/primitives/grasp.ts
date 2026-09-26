@@ -60,6 +60,12 @@ export type GraspRig = {
 	task: () => string;
 	/** Two arms: the `arm` parameter's schema and the validated arm name of its value. */
 	arm?: { schema: TSchema; name: (v: unknown) => string };
+	/**
+	 * The robot runs a planned id with its own executor (`execute_grasp` / `execute_place` over
+	 * `env.claim_waypoints`, LIBERO), which also lets plan_place follow the grasp; otherwise the
+	 * tools only describe planning and plan_place is asked before the grasp.
+	 */
+	executes?: boolean;
 };
 
 export function registerGraspFlags(pi: ExtensionAPI) {
@@ -143,8 +149,9 @@ export function graspTools(pi: ExtensionAPI, rig: GraspRig): GraspToolDef[] {
 	);
 	const planGrasp: GraspToolDef = {
 		name: "plan_grasp",
-		description:
-			"Predict grasps for one object from the current RGB-D observation, ranked best first, in the world frame. Give the object as text (segmented with SAM3) or a mask_id of this observation. Each candidate has a short id (g3) and its EEF pose, valid until the robot moves; execute_grasp (where the robot has it) runs one from a single resolution of its id. Try `active` first; when it is refused before the robot moves (unreachable), call again with next_after=<that id> to get the next rank without re-planning; after a failed motion, plan again.",
+		description: rig.executes
+			? "Predict grasps for one object from the current RGB-D observation, ranked best first, in the world frame. Give the object as text (segmented with SAM3) or a mask_id of this observation. Each candidate has a short id (g3) and its EEF pose, valid until the robot moves or the scene changes; execute_grasp runs one from a single resolution of its id. Try `active` first; when it is refused before the robot moves (unreachable), call again with next_after=<that id> to get the next rank without re-planning; after a failed motion, plan again."
+			: "Predict grasps for one object from the current RGB-D observation, ranked best first, in the world frame. Give the object as text (segmented with SAM3) or a mask_id of this observation. Each candidate has a short id (g3) and its EEF pose (eef_position, eef_quat_xyzw, approach, width_m), valid until the robot moves or the scene changes; drive the arm to that pose with the motion tools. Try `active` first; when it is refused before the robot moves (unreachable), call again with next_after=<that id> to get the next rank without re-planning; after a failed motion, plan again.",
 		parameters: Type.Object({
 			object: Type.Optional(Type.String({ description: "Object to grasp (SAM3 text prompt), e.g. 'black bowl'" })),
 			mask_id: Type.Optional(
@@ -188,14 +195,19 @@ export function graspTools(pi: ExtensionAPI, rig: GraspRig): GraspToolDef[] {
 	};
 	const planPlace: GraspToolDef = {
 		name: "plan_place",
-		description:
-			"Where to hold the grasped object so it comes to rest on a placement region (AnyPlace). Give the region as text (segmented now) or as a mask id, and the grasp id: after executing the grasp, that grasp's id (the held object is segmented again from its prompt, or object_mask_id, and the gripper's actual pose is used; refused when the fingers hold nothing); before it, a current g id with region and object from the same observation. Returns place poses with ids (p1); execute_place (where the robot has it) runs one.",
+		description: rig.executes
+			? "Where to hold the grasped object so it comes to rest on a placement region (AnyPlace). Give the region as text (segmented now) or as a mask id, and the grasp id: after execute_grasp, that grasp's id (the held object is segmented again from its prompt, or object_mask_id, and the gripper's actual pose is used; refused when the fingers hold nothing); before it, a current g id with region and object from the same observation. Returns place poses with ids (p1); execute_place runs one."
+			: "Where to hold the grasped object so it comes to rest on a placement region (AnyPlace). Ask it before the grasp, from the observation the grasp was planned on: the region as text (segmented now) or a mask id, and that current g id (the object is the grasp's mask, or object_mask_id). Returns place poses (eef_position, eef_quat_xyzw) with ids (p1); after grasping with that grasp, drive the arm to the place pose and open.",
 		parameters: Type.Object({
 			region: Type.Optional(
 				Type.String({ description: "The surface it goes onto / into (SAM3 text), or region_mask_id" }),
 			),
 			region_mask_id: Type.Optional(Type.String()),
-			grasp_id: Type.String({ description: "The executed grasp (g id) the object is held with, or a current one" }),
+			grasp_id: Type.String({
+				description: rig.executes
+					? "The executed grasp (g id) the object is held with, or a current one"
+					: "A current grasp (g id) of this observation, the one the object will be held with",
+			}),
 			object_mask_id: Type.Optional(
 				Type.String({ description: "The object's mask id; default the mask the grasp was planned on" }),
 			),

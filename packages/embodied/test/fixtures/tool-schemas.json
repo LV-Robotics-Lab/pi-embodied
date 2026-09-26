@@ -749,7 +749,7 @@
 			},
 			{
 				"name": "plan_grasp",
-				"description": "Predict grasps for one object from the current RGB-D observation, ranked best first, in the world frame. Give the object as text (segmented with SAM3) or a mask_id of this observation. Each candidate has a short id (g3) and its EEF pose, valid until the robot moves; execute_grasp (where the robot has it) runs one from a single resolution of its id. Try `active` first; when it is refused before the robot moves (unreachable), call again with next_after=<that id> to get the next rank without re-planning; after a failed motion, plan again.",
+				"description": "Predict grasps for one object from the current RGB-D observation, ranked best first, in the world frame. Give the object as text (segmented with SAM3) or a mask_id of this observation. Each candidate has a short id (g3) and its EEF pose (eef_position, eef_quat_xyzw, approach, width_m), valid until the robot moves or the scene changes; drive the arm to that pose with the motion tools. Try `active` first; when it is refused before the robot moves (unreachable), call again with next_after=<that id> to get the next rank without re-planning; after a failed motion, plan again.",
 				"parameters": {
 					"type": "object",
 					"required": [
@@ -798,7 +798,7 @@
 			},
 			{
 				"name": "plan_place",
-				"description": "Where to hold the grasped object so it comes to rest on a placement region (AnyPlace). Give the region as text (segmented now) or as a mask id, and the grasp id: after executing the grasp, that grasp's id (the held object is segmented again from its prompt, or object_mask_id, and the gripper's actual pose is used; refused when the fingers hold nothing); before it, a current g id with region and object from the same observation. Returns place poses with ids (p1); execute_place (where the robot has it) runs one.",
+				"description": "Where to hold the grasped object so it comes to rest on a placement region (AnyPlace). Ask it before the grasp, from the observation the grasp was planned on: the region as text (segmented now) or a mask id, and that current g id (the object is the grasp's mask, or object_mask_id). Returns place poses (eef_position, eef_quat_xyzw) with ids (p1); after grasping with that grasp, drive the arm to the place pose and open.",
 				"parameters": {
 					"type": "object",
 					"required": [
@@ -814,7 +814,7 @@
 						},
 						"grasp_id": {
 							"type": "string",
-							"description": "The executed grasp (g id) the object is held with, or a current one"
+							"description": "A current grasp (g id) of this observation, the one the object will be held with"
 						},
 						"object_mask_id": {
 							"type": "string",
@@ -1315,7 +1315,7 @@
 			},
 			{
 				"name": "plan_grasp",
-				"description": "Predict grasps for one object from the current RGB-D observation, ranked best first, in the world frame. Give the object as text (segmented with SAM3) or a mask_id of this observation. Each candidate has a short id (g3) and its EEF pose, valid until the robot moves; execute_grasp (where the robot has it) runs one from a single resolution of its id. Try `active` first; when it is refused before the robot moves (unreachable), call again with next_after=<that id> to get the next rank without re-planning; after a failed motion, plan again.",
+				"description": "Predict grasps for one object from the current RGB-D observation, ranked best first, in the world frame. Give the object as text (segmented with SAM3) or a mask_id of this observation. Each candidate has a short id (g3) and its EEF pose (eef_position, eef_quat_xyzw, approach, width_m), valid until the robot moves or the scene changes; drive the arm to that pose with the motion tools. Try `active` first; when it is refused before the robot moves (unreachable), call again with next_after=<that id> to get the next rank without re-planning; after a failed motion, plan again.",
 				"parameters": {
 					"type": "object",
 					"properties": {
@@ -1357,7 +1357,7 @@
 			},
 			{
 				"name": "plan_place",
-				"description": "Where to hold the grasped object so it comes to rest on a placement region (AnyPlace). Give the region as text (segmented now) or as a mask id, and the grasp id: after executing the grasp, that grasp's id (the held object is segmented again from its prompt, or object_mask_id, and the gripper's actual pose is used; refused when the fingers hold nothing); before it, a current g id with region and object from the same observation. Returns place poses with ids (p1); execute_place (where the robot has it) runs one.",
+				"description": "Where to hold the grasped object so it comes to rest on a placement region (AnyPlace). Ask it before the grasp, from the observation the grasp was planned on: the region as text (segmented now) or a mask id, and that current g id (the object is the grasp's mask, or object_mask_id). Returns place poses (eef_position, eef_quat_xyzw) with ids (p1); after grasping with that grasp, drive the arm to the place pose and open.",
 				"parameters": {
 					"type": "object",
 					"required": [
@@ -1373,7 +1373,7 @@
 						},
 						"grasp_id": {
 							"type": "string",
-							"description": "The executed grasp (g id) the object is held with, or a current one"
+							"description": "A current grasp (g id) of this observation, the one the object will be held with"
 						},
 						"object_mask_id": {
 							"type": "string",
@@ -2048,7 +2048,7 @@
 			},
 			{
 				"name": "plan_grasp",
-				"description": "Predict grasps for one object from the current RGB-D observation, ranked best first, in the world frame. Give the object as text (segmented with SAM3) or a mask_id of this observation. Each candidate has a short id (g3) and its EEF pose, valid until the robot moves; execute_grasp (where the robot has it) runs one from a single resolution of its id. Try `active` first; when it is refused before the robot moves (unreachable), call again with next_after=<that id> to get the next rank without re-planning; after a failed motion, plan again.",
+				"description": "Predict grasps for one object from the current RGB-D observation, ranked best first, in the world frame. Give the object as text (segmented with SAM3) or a mask_id of this observation. Each candidate has a short id (g3) and its EEF pose, valid until the robot moves or the scene changes; execute_grasp runs one from a single resolution of its id. Try `active` first; when it is refused before the robot moves (unreachable), call again with next_after=<that id> to get the next rank without re-planning; after a failed motion, plan again.",
 				"parameters": {
 					"type": "object",
 					"properties": {
@@ -2090,7 +2090,7 @@
 			},
 			{
 				"name": "plan_place",
-				"description": "Where to hold the grasped object so it comes to rest on a placement region (AnyPlace). Give the region as text (segmented now) or as a mask id, and the grasp id: after executing the grasp, that grasp's id (the held object is segmented again from its prompt, or object_mask_id, and the gripper's actual pose is used; refused when the fingers hold nothing); before it, a current g id with region and object from the same observation. Returns place poses with ids (p1); execute_place (where the robot has it) runs one.",
+				"description": "Where to hold the grasped object so it comes to rest on a placement region (AnyPlace). Give the region as text (segmented now) or as a mask id, and the grasp id: after execute_grasp, that grasp's id (the held object is segmented again from its prompt, or object_mask_id, and the gripper's actual pose is used; refused when the fingers hold nothing); before it, a current g id with region and object from the same observation. Returns place poses with ids (p1); execute_place runs one.",
 				"parameters": {
 					"type": "object",
 					"required": [

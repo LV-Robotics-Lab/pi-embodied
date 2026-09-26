@@ -135,6 +135,15 @@ test("every robot registers the three grasp tools at load, with the arm paramete
 		assert.ok(l.tools.get(tool).parameters.required?.includes("xyz"), `${tool}: xyz is required`);
 	}
 	assert.deepEqual(l.tools.get("execute_grasp").parameters.required, ["grasp_id"]);
+	// Only a robot with the executors describes plan_place after the grasp.
+	assert.match(l.tools.get("plan_place").description, /after execute_grasp/);
+	for (const load of [franka, dualFranka]) {
+		const r = fakePi();
+		load(r.pi);
+		assert.doesNotMatch(r.tools.get("plan_place").description, /execute_|after executing/);
+		assert.match(r.tools.get("plan_place").description, /Ask it before the grasp/);
+		assert.doesNotMatch(r.tools.get("plan_grasp").description, /execute_grasp/);
+	}
 	assert.deepEqual(l.tools.get("execute_place").parameters.required, ["place_id"]);
 });
 

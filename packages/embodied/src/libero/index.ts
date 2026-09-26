@@ -1223,6 +1223,7 @@ export default function libero(pi: ExtensionAPI) {
 		call: (method, kwargs, timeoutMs) => call(env, method, kwargs, timeoutMs),
 		cameras: ["agentview", "wrist"],
 		task: () => language,
+		executes: true,
 	}))
 		mountGraspTool(robot.tool, d);
 

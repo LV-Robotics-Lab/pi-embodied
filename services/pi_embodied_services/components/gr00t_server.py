@@ -21,8 +21,9 @@ the same keys over a 16-step horizon, and the instruction under
 ``annotation.human.action.task_description`` (RLinf's ``simulation_io.py`` does
 the same split). A LIBERO fine-tune carries the embodiment's statistics; the
 base models know the embodiment id but have no statistics, so a fine-tune is
-required. Actions come back in LIBERO's own OSC space (gripper -1 open / +1
-close); only the gripper is binarised. A flow-matching sampler: the per-call
+required. Actions come back denormalised in LIBERO's OSC space except the
+gripper, which the fine-tune emits in [0, 1] (dataset open = 1) and which is
+binarised and inverted like OpenVLA's (RLinf's ``action_utils.py``). A flow-matching sampler: the per-call
 ``seed`` makes a replay bit-identical.
 
 Checkpoints are pinned by commit hash in ``GR00T_CHECKPOINTS`` and fetched
@@ -44,6 +45,7 @@ from pi_embodied_services.components.vla_adapter_base import (
     Frame,
     add_server_args,
     apply_cuda_device,
+    libero_gripper,
     snapshot,
 )
 from pi_embodied_services.utils.logging import get_logger
@@ -116,9 +118,11 @@ class Gr00tFacade(ChunkVLAFacade):
         super().__init__(model=model, revision=revision)
 
     def _act(self, frame: Frame) -> np.ndarray:
-        actions = actions_of(self._policy(libero_panda_obs(frame)), self.horizon)
-        actions[..., 6] = np.where(actions[..., 6] > 0, 1.0, -1.0)
-        return actions
+        # The libero_panda fine-tune emits the gripper in [0, 1] (dataset open = 1); RLinf maps
+        # N1.6/N1.7 like OpenVLA: threshold at 0.5, then invert for LIBERO (action_utils.py).
+        return libero_gripper(
+            actions_of(self._policy(libero_panda_obs(frame)), self.horizon)
+        )
 
 
 def load_policy(path: str, embodiment: str) -> tuple[Policy, int]:

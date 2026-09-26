@@ -15,8 +15,8 @@
 """RPC server wrapping OpenVLA (openvla/openvla) for LIBERO.
 
 One 7-D action per call from the agentview only (OpenVLA has no wrist camera
-or proprioception): the frame is flipped (LIBERO renders upside down), JPEG
-round-tripped and Lanczos-resized to 224 like its ``resize_image``, prompted
+or proprioception): the frame (already rotated 180 degrees by RLinf's LiberoEnv,
+like OpenVLA's LIBERO evaluation does) is JPEG round-tripped and Lanczos-resized to 224 like its ``resize_image``, prompted
 with ``In: What action should the robot take to {task}?\\nOut:`` and decoded
 greedily; the gripper is binarised and inverted as in its LIBERO evaluation.
 
@@ -40,7 +40,6 @@ from pi_embodied_services.components.vla_adapter_base import (
     Frame,
     add_server_args,
     apply_cuda_device,
-    flip180,
     libero_gripper,
     resize_jpeg_lanczos,
     snapshot,
@@ -90,7 +89,7 @@ class OpenVLAFacade(ChunkVLAFacade):
         super().__init__(model=model, revision=revision)
 
     def _act(self, frame: Frame) -> np.ndarray:
-        image = resize_jpeg_lanczos(flip180(frame.main), IMAGE_SIZE)
+        image = resize_jpeg_lanczos(frame.main, IMAGE_SIZE)
         return libero_gripper(
             np.asarray(self._policy(image, frame.instruction), np.float32)
         )

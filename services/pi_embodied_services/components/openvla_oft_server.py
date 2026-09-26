@@ -15,7 +15,7 @@
 """RPC server wrapping OpenVLA-OFT (moojink/openvla-oft) for LIBERO.
 
 An 8-step chunk of 7-D actions per call from the agentview and wrist images
-(both flipped: LIBERO renders upside down) and the 8-D proprio state, through
+(both already rotated 180 degrees by RLinf's LiberoEnv) and the 8-D proprio state, through
 the repository's own ``get_vla_action`` (its 224 resize, 0.9 center crop,
 prompt and L1 action head + proprio projector), then the gripper is binarised
 and inverted as in its LIBERO evaluation.
@@ -41,7 +41,6 @@ from pi_embodied_services.components.vla_adapter_base import (
     Frame,
     add_server_args,
     apply_cuda_device,
-    flip180,
     libero_gripper,
     snapshot,
 )
@@ -77,7 +76,7 @@ HORIZON = 8
 PROPRIO_DIM = 8
 
 #: ``policy(main, wrist, state, instruction) -> raw [8, 7] actions`` (denormalised, gripper in [0, 1]);
-#: the images are the flipped env frames at their native size.
+#: the images are the env frames at their native size.
 Policy = Callable[[np.ndarray, np.ndarray, np.ndarray, str], np.ndarray]
 
 
@@ -97,9 +96,7 @@ class OpenVLAOFTFacade(ChunkVLAFacade):
             raise ValueError(
                 f"OpenVLA-OFT needs an {PROPRIO_DIM}-D state, got {frame.state.shape}"
             )
-        raw = self._policy(
-            flip180(frame.main), flip180(frame.wrist), frame.state, frame.instruction
-        )
+        raw = self._policy(frame.main, frame.wrist, frame.state, frame.instruction)
         return libero_gripper(np.asarray(raw, np.float32))
 
 

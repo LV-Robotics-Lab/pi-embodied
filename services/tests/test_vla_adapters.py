@@ -24,7 +24,6 @@ from pi_embodied_services.components.openvla_oft_server import OpenVLAOFTFacade
 from pi_embodied_services.components.openvla_server import OpenVLAFacade, prompt_for
 from pi_embodied_services.components.vla_adapter_base import (
     center_crop_resize,
-    flip180,
     frame_of,
     libero_gripper,
     resize_jpeg_lanczos,
@@ -56,11 +55,13 @@ class Sampler:
         self.horizon = horizon
         self.gr00t = gr00t
         self.seen = []
+        self.seen_out = []
 
     def __call__(self, *args):
         self.seen.append(args)
         raw = np.random.uniform(-1, 1, (self.horizon, 7)).astype(np.float32)
         raw[:, 6] = np.random.uniform(0, 1, self.horizon)
+        self.seen_out.append(raw)
         if self.gr00t:  # Gr00tPolicy.get_action: {key: [B, horizon, d]}
             return {k: raw[None, :, i : i + 1] for i, k in enumerate(ACTION_KEYS)}
         return raw[0] if self.horizon == 1 else raw
@@ -163,9 +164,7 @@ def test_libero_gripper_binarises_and_inverts():
     assert raw[0, 6] == 0.9, "the input is not modified"
 
 
-def test_flip180_and_resizes():
-    img = np.arange(4 * 4 * 3, dtype=np.uint8).reshape(4, 4, 3)
-    assert np.array_equal(flip180(img)[0, 0], img[3, 3])
+def test_resizes():
     big = np.random.default_rng(1).integers(0, 255, (256, 256, 3), dtype=np.uint8)
     small = resize_jpeg_lanczos(big, 224)
     assert small.shape == (224, 224, 3) and small.dtype == np.uint8
@@ -182,7 +181,7 @@ def test_flip180_and_resizes():
 # ---- per-model wiring -----------------------------------------------------------------------
 
 
-def test_openvla_sees_a_flipped_224_frame_and_the_prompt_is_openvlas():
+def test_openvla_sees_a_224_frame_and_the_prompt_is_openvlas():
     pol = Sampler(1)
     OpenVLAFacade(policy=pol, model="m", revision=None).predict(obs(), None)
     image, instruction = pol.seen[-1]
@@ -194,13 +193,14 @@ def test_openvla_sees_a_flipped_224_frame_and_the_prompt_is_openvlas():
     )
 
 
-def test_openvla_oft_passes_flipped_images_state_and_needs_the_wrist():
+def test_openvla_oft_passes_the_env_frames_state_and_needs_the_wrist():
     pol = Sampler(8)
     o = obs()
     OpenVLAOFTFacade(policy=pol, model="m", revision=None).predict(o, None)
     main, wrist, state, instruction = pol.seen[-1]
-    assert np.array_equal(main, o["main_images"][0][::-1, ::-1])
-    assert np.array_equal(wrist, o["wrist_images"][0][::-1, ::-1])
+    # RLinf's LiberoEnv already rotates the frames 180 degrees; the adapter must not do it again.
+    assert np.array_equal(main, o["main_images"][0])
+    assert np.array_equal(wrist, o["wrist_images"][0])
     assert state.shape == (8,) and instruction == "Pick up the black bowl"
     with pytest.raises(ValueError, match="wrist"):
         OpenVLAOFTFacade(policy=pol, model="m", revision=None).predict(
@@ -230,3 +230,7 @@ def test_gr00t_builds_the_libero_panda_observation():
         o, {"seed": 1}
     )
     assert a.shape == (1, 16, 7) and set(np.unique(a[..., 6])) <= {-1.0, 1.0}
+    # The fine-tune's gripper is in [0, 1] with 1 = open: like OpenVLA, RLinf thresholds at 0.5 and
+    # inverts for LIBERO (-1 open), so 0.9 -> -1 and 0.1 -> +1.
+    raw = np.asarray(pol.seen_out[-1], np.float32)
+    assert np.array_equal(a[0, :, 6], np.where(raw[:, 6] > 0.5, -1.0, 1.0))

@@ -20,7 +20,7 @@ observation (``main_images`` uint8 [1, H, W, 3], ``wrist_images`` or None,
 ``states`` float32 [1, 8], ``task_descriptions`` [str]) and returns a float32
 action chunk [1, horizon, 7] in the env's own OSC space (xyz delta, axis-angle
 delta, gripper -1 open / +1 close), ready for ``env.chunk_step``. The model's
-preprocessing (flips, crops, prompt templates) and its action denormalisation
+preprocessing (crops, prompt templates) and its action denormalisation
 live in the adapter, not in the robot.
 
 ``options["seed"]`` seeds every RNG for that one call (``seeded``), so a
@@ -82,11 +82,6 @@ def frame_of(obs: dict) -> Frame:
     if len(tasks) != 1 or not isinstance(tasks[0], str):
         raise ValueError(f"task_descriptions must be one string, got {tasks!r}")
     return Frame(main=main, wrist=wrist, state=state, instruction=tasks[0])
-
-
-def flip180(img: np.ndarray) -> np.ndarray:
-    """LIBERO renders upside down; the OpenVLA family trains on ``img[::-1, ::-1]``."""
-    return np.ascontiguousarray(img[::-1, ::-1])
 
 
 def resize_jpeg_lanczos(img: np.ndarray, size: int) -> np.ndarray:

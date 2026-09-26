@@ -67,12 +67,12 @@ with `--env` / `--vla` / `--sam3`. Real-arm robots (Franka, dual Franka) stay on
 | LIBERO / LIBERO-PRO | `src/libero` | LIBERO `terminated` | all below, plus flywheel, operator, Flash (Molmo re-anchoring) |
 | RoboCasa | `src/robocasa` | `env._check_success()` | all below, plus flywheel, recipe Flash (Molmo re-anchoring) |
 | RoboTwin | `src/robotwin` | `eval_success` | all below, plus flywheel, recipe Flash (Molmo re-anchoring), XPolicyLab (`aloha_agilex`, joint and ee) |
-| ManiSkill (`--robot`, below) | `src/maniskill` | ManiSkill `success` | all below, plus recipe Flash (Molmo + ray-plane re-anchoring of delta waypoints) |
+| ManiSkill (`--robot`, below) | `src/maniskill` | ManiSkill `success` | all below, plus flywheel, recipe Flash (Molmo + ray-plane re-anchoring of delta waypoints) |
 | RoboLab | `src/robolab` | RoboLab's task predicate | all below, plus recipe Flash (Molmo + ray-plane re-anchoring of delta waypoints) |
 | RoboDojo (two ARX X5) | `src/robodojo` | RoboDojo's `is_episode_end` (`score` = partial credit) | all below, plus flywheel (joint space), recipe Flash (Molmo + depth back-projection) |
-| Robosuite | `src/robosuite` | robosuite `_check_success` (Restack adds CaP-X's off-table rule), latched | memory, explore, video, units, VDM, code.api, `--privileged` |
-| Metaworld | `src/metaworld` | Metaworld `info["success"]`, latched | memory, explore, video, units, VDM, code.api, `--privileged` |
-| Genesis | `src/genesis` | the task predicate (cube_pick: an 8 cm lift) | memory, explore, video, units, VDM, code.api, `--privileged` |
+| Robosuite | `src/robosuite` | robosuite `_check_success` (Restack adds CaP-X's off-table rule), latched | memory, explore, video, units, VDM, code.api, `--privileged`, flywheel |
+| Metaworld | `src/metaworld` | Metaworld `info["success"]`, latched | memory, explore, video, units, VDM, code.api, `--privileged`, flywheel |
+| Genesis | `src/genesis` | the task predicate (cube_pick: an 8 cm lift) | memory, explore, video, units, VDM, code.api, `--privileged`, flywheel |
 | BEHAVIOR-1K / R1Pro | `src/behavior` | the BDDL activity's `success`, latched (`q_score` = partial credit) | memory, explore, video, units (on `env.move_hand_delta`), VDM, code.api, `--privileged` |
 | Franka (real) | `src/franka` | operator verdict (`--operator`) | all below but `--privileged`; explore resets through the operator; XPolicyLab (`franka`, ee) |
 | Dual Franka (real) | `src/dual_franka` | operator verdict (required) | all below but `--privileged`; explore resets through the operator |
@@ -147,7 +147,10 @@ Shared modules:
   `ctx.ui.select` dialogs (TUI or RPC client), plus `/success /failure /abort /done /continue /operator`.
 - `src/video.ts`: episode video (ffmpeg). `src/flywheel.ts`: Flywheel data (`--collect-flywheel-data`,
   default root `~/.pi/embodied/datacollection`): every env step with what the robot's VLA reads and
-  emits, on LIBERO, RoboCasa and RoboTwin (the robots whose VLA runs agent-side). `/flywheel-export
+  emits, on LIBERO, RoboCasa and RoboTwin (the robots whose VLA runs agent-side), and every control
+  step of a motion with the env action it applied on Metaworld, Genesis, Robosuite and ManiSkill
+  (their env servers return the steps; one dataset per Robosuite arm layout and ManiSkill `--robot`,
+  its `--space`). The UR5e's session data has export rules but no converter. `/flywheel-export
   [selection]` writes a LeRobot v3.0 dataset with the shared feature names (`--flywheel-python`,
   default `--python`; LeRobot needs its own venv, see services/README.md, which also covers GUMI runs).
 - `src/units/`: Show-Harness action units. `--units=true` hides the robot's tools: the model drives

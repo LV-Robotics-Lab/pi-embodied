@@ -11,6 +11,7 @@
  * motion (`env.move_delta`: at most 0.2 m per call, inside the task's workspace box). Every result
  * carries the agentview (Metaworld's `corner4`) and wrist (`gripperPOV`) images and the state;
  * success is the env's own `info["success"]`, latched and recorded in `robot_result`.
+ * --collect-flywheel-data records every control step of a motion (services robots/metaworld/flywheel.py).
  */
 
 import { tmpdir } from "node:os";
@@ -19,6 +20,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { template } from "../context-version.ts";
+import type { FlywheelObs, FlywheelSpec } from "../flywheel.ts";
 import { sideBySide } from "../maniskill/index.ts";
 import { SAM3 } from "../model-services.ts";
 import { decodePngChannel, encodePng } from "../png.ts";
@@ -135,6 +137,8 @@ type Obs = {
 	obs: NdArray;
 };
 type Info = Record<string, unknown>;
+/** A control step of a motion: its observation, the env action it applied and its success. */
+type Frame = Obs & { action?: NdArray; success?: boolean };
 type MoveResult = {
 	ok: boolean;
 	final_tcp_pos: number[];
@@ -143,7 +147,7 @@ type MoveResult = {
 	gripper: string;
 	gripper_width: number;
 	steps_used: number;
-	frames: Obs[];
+	frames: Frame[];
 	info: Info;
 	cancelled?: boolean;
 };
@@ -158,6 +162,18 @@ type CameraMeta = { intrinsic_K: Mat; extrinsic_cam2world: Mat; height: number; 
 type WorldMap = { envStep: number; size: number; rgb: Buffer; xyz: Float32Array };
 type Camera = "agentview" | "wrist";
 const CAMERAS: readonly Camera[] = ["agentview", "wrist"];
+
+/** The two views, the TCP and finger opening, and the env action (services robots/metaworld/flywheel.py). */
+export const FLYWHEEL: FlywheelSpec = {
+	robot: "metaworld",
+	images: { agentview_images: [VIEW_SIZE, VIEW_SIZE, 3], wrist_images: [VIEW_SIZE, VIEW_SIZE, 3] },
+	state: 4,
+	action: 4,
+};
+const flyObs = (o: Obs): FlywheelObs => ({
+	images: { agentview_images: o.agentview, wrist_images: o.wrist },
+	state: [...o.tcp_pos.toArray(), o.gripper_width],
+});
 
 /** A pixel's world point is valid when finite and not the zero the renderer gives the sky. */
 const valid = (p: number[]) => p.every(Number.isFinite) && Math.abs(p[0]) + Math.abs(p[1]) + Math.abs(p[2]) > 1e-6;
@@ -228,6 +244,7 @@ export default function metaworld(pi: ExtensionAPI) {
 		keepImages: 4,
 		video: true,
 		vdm: { views: 2, wrist: 1 },
+		flywheel: { spec: FLYWHEEL, select: () => robot.task.task },
 		groundTruth: (names) => call("env.ground_truth_poses", { names: names ?? null }),
 		// No corpus is published for Metaworld: memory is what exploration writes locally, one cell per task and seed.
 		memory: {
@@ -303,6 +320,7 @@ export default function metaworld(pi: ExtensionAPI) {
 		},
 	});
 	const { video } = robot;
+	const fly = robot.fly!;
 
 	const call = <T = unknown>(
 		method: string,
@@ -328,7 +346,12 @@ export default function metaworld(pi: ExtensionAPI) {
 			[delta.map((v) => round(v, 6))],
 			signal,
 		);
-		for (const f of r.frames) video.frame(sideBySide(f.agentview, f.wrist));
+		for (const f of r.frames) {
+			video.frame(sideBySide(f.agentview, f.wrist));
+			// Flywheel: every control step the motion ran (a call that ran none returns no action).
+			if (fly.recording && f.action)
+				fly.transition(f.action.toArray(), flyObs(f), f.success ? 1 : 0, Boolean(f.success), false);
+		}
 		envStep += r.frames.length;
 		worldMaps.clear();
 		gripper = r.gripper === "close" ? "close" : "open";
@@ -677,6 +700,11 @@ export default function metaworld(pi: ExtensionAPI) {
 		absorb(o, i);
 		workspace = (await env.call<Meta>("env.get_env_meta")).workspace;
 		language = await env.call<string>("env.get_task_language");
+		// raw/metaworld/<task>/seed_NNN (services robots/metaworld/flywheel.py).
+		fly.reset(flyObs(o), {
+			path: [task, `seed_${seed.padStart(3, "0")}`],
+			metadata: { task, seed: Number(seed), task_language: language },
+		});
 		return [
 			...["view_env_state", "view_camera_meta", "segment", "back_project", "move_delta", "gripper", "finish"],
 			...detectionActive(pi, meta.capabilities?.perception),

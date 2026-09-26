@@ -81,6 +81,8 @@ ARM_DIM = 6
 OPEN, CLOSE = -1.0, 1.0
 #: The episode video's frame: the task camera at this size, every ``video_every`` servo steps.
 VIDEO_SIZE = 256
+#: The camera size of a recorded control step (a motion call's ``record``).
+RECORD_SIZE = 256
 #: Image size of ``get_observation`` / ``segment`` / ``back_project`` (the code primitives).
 CODE_RES = 512
 #: The ik service's robot model for the Panda's grip site (components/ik_server.py ROBOTS).
@@ -242,6 +244,8 @@ class RobosuiteEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         )
         # The video frames of the motion call in progress.
         self._motion_frames: list[np.ndarray] = []
+        # Its recorded control steps (``record=True``), else None.
+        self._record: list[dict] | None = None
         self._meta: dict[str, Any] = {
             "task": task,
             "seed": self._seed,
@@ -381,12 +385,22 @@ class RobosuiteEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         return ok
 
     def _step(self, action: np.ndarray) -> None:
-        """One control step; success latched."""
+        """One control step; success latched. While a motion records, the step's cameras
+        (RECORD_SIZE), robot state, the composite ``action`` and the latched ``success``."""
         self._env.step(action)
         self._steps += 1
         self._success_step = tasks.latch(
             self._success_step, self._success(), self._steps
         )
+        if self._record is not None:
+            self._record.append(
+                {
+                    "agentview": self._render(self._cameras["agentview"], RECORD_SIZE),
+                    "wrist": self._render(self._cameras["wrist"], RECORD_SIZE),
+                    **self._robot_state(),
+                    "action": np.asarray(action, dtype=np.float32),
+                }
+            )
 
     def _render(self, camera: str, size: int, depth: bool = False):
         """Upright rgb (and metric depth) of a camera: robosuite renders bottom-up, its
@@ -526,6 +540,7 @@ class RobosuiteEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         step_m: float = 0.02,
         step_rad: float = 0.2,
         max_steps: int = 100,
+        record: bool = False,
     ) -> dict:
         """Servo one arm's TCP to a world position, holding its orientation.
 
@@ -541,6 +556,8 @@ class RobosuiteEnvFacade(MainThreadServeMixin, BaseEnvFacade):
             gripper: "open" / "close" sets the held gripper command first; None keeps it.
             tol_m, tol_rad: the servo stops within these of the target.
             max_steps: control-step budget (each moves at most ``step_m`` / ``step_rad``).
+            record: also return every control step (``info["steps"]``: the cameras at
+                RECORD_SIZE, the robot state, the composite action, ``success``).
 
         Returns:
             dict with ``obs`` (the new observation) and ``info``: ``ok`` (target reached),
@@ -584,6 +601,7 @@ class RobosuiteEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         if gripper is not None:
             self._set_grip(name, gripper)
         self._motion_frames = []
+        self._record = [] if record else None
         _, base_rot = self._base(i)
         base_t = base_rot.T
         info: dict[str, Any] = {"ok": False, "cancelled": False}
@@ -644,6 +662,7 @@ class RobosuiteEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         step_m: float = 0.02,
         step_rad: float = 0.2,
         max_steps: int = 100,
+        record: bool = False,
     ) -> dict:
         """Servo one arm's TCP by a world-frame offset, holding its orientation.
 
@@ -673,10 +692,16 @@ class RobosuiteEnvFacade(MainThreadServeMixin, BaseEnvFacade):
             step_m=step_m,
             step_rad=step_rad,
             max_steps=max_steps,
+            record=record,
         )
 
     def set_gripper(
-        self, close: bool | str, *, arm: str | None = None, steps: int = 15
+        self,
+        close: bool | str,
+        *,
+        arm: str | None = None,
+        steps: int = 15,
+        record: bool = False,
     ) -> dict:
         """Hold the arm and open or close its gripper; the command stays in force for later moves.
 
@@ -685,6 +710,7 @@ class RobosuiteEnvFacade(MainThreadServeMixin, BaseEnvFacade):
             arm: "robot0" or "robot1" on the two-arm tasks; omit on one arm.
             steps: control steps to drive the fingers (they stop early once they no longer
                 move, e.g. on a grasped object).
+            record: as `move_to`.
 
         Returns:
             dict with ``obs`` and ``info``: ``gripper`` ("open" / "close"), ``gripper_width`` (m,
@@ -698,6 +724,7 @@ class RobosuiteEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         command = close if isinstance(close, str) else ("close" if close else "open")
         self._set_grip(name, command)
         self._motion_frames = []
+        self._record = [] if record else None
         prev = None
         used = 0
         cancelled = False
@@ -726,10 +753,16 @@ class RobosuiteEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         )
 
     def _motion_result(self, info: dict) -> dict:
-        """A motion call's answer: the new observation and the video frames it produced."""
+        """A motion call's answer: the new observation, the video frames it produced and,
+        when it recorded, its control steps."""
+        steps, self._record = self._record, None
         return {
             "obs": self._pack(),
-            "info": {**info, "frames": list(self._motion_frames)},
+            "info": {
+                **info,
+                "frames": list(self._motion_frames),
+                **({"steps": steps} if steps is not None else {}),
+            },
         }
 
     # ---- read-only ----

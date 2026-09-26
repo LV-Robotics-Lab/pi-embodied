@@ -426,7 +426,8 @@ class MetaworldEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         lag, so commanding the hand's own error overshoots (measured 7 cm for a 5 cm command).
         Stops when the mocap has arrived and the TCP moved less than SETTLED_M in a step (or
         SETTLE_STEPS after arrival), at success or at ``stop``. ``hold`` steps run first with
-        the target fixed (a gripper change). One agentview+wrist frame per step."""
+        the target fixed (a gripper change). One agentview+wrist frame per step, with the
+        ``[dx, dy, dz, gripper]`` action it applied and its ``success``."""
         target = self._mocap() + delta
         frames: list = []
         info = dict(self._info)
@@ -453,7 +454,10 @@ class MetaworldEnvFacade(MainThreadServeMixin, BaseEnvFacade):
             last = self._tcp()
             a = np.append(np.clip(err / ACTION_SCALE_M, -1, 1), gripper)
             _rew, term, _trunc, info = self._step(a)
-            frames.append(self._pack())
+            # The env action of the step and its success, for the Flywheel recorder.
+            frames.append(
+                {**self._pack(), "action": a.astype(np.float32), "success": term}
+            )
             if term:
                 break
         return frames, info, cancelled

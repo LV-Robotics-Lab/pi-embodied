@@ -149,3 +149,56 @@ def test_visible_pixels_counts_the_cubes_segmentation_index_not_its_entity_idx()
     f._cube = SimpleNamespace(idx=9)
     with pytest.raises(RuntimeError, match="no segmentation index"):
         f.visible_pixels()
+
+
+def _moving_facade():
+    """A facade whose TCP moves half its gap to the commanded point each control step (no
+    Genesis): the IK, the scene and the renders are stand-ins."""
+    from types import SimpleNamespace
+
+    f = object.__new__(g.GenesisEnvFacade)
+    g.BaseEnvFacade.__init__(f)
+    tcp = np.array([0.5, 0.0, 0.3])
+    f._torch = SimpleNamespace(
+        as_tensor=lambda x, dtype=None: x, tensor=lambda x, dtype=None: x, float32=None
+    )
+    f._robot = SimpleNamespace(
+        inverse_kinematics=lambda **kw: np.zeros(9),
+        control_dofs_position=lambda q, dofs: None,
+        get_dofs_position=lambda: np.full(9, 0.02),
+    )
+    f._cube = SimpleNamespace(get_pos=lambda: np.array([0.6, 0.0, 0.02]))
+
+    def step():
+        if f._cmd_tcp is not None:
+            tcp[:] = tcp + 0.5 * (f._cmd_tcp - tcp)
+
+    f._scene = SimpleNamespace(step=step)
+    f._tcp = lambda: tcp.copy()
+    f._obs = lambda: {"tcp_pos": tcp.astype(np.float32), "success": f._success}
+    f._hand, f._hold_quat = None, np.array([0.0, 1.0, 0.0, 0.0])
+    f._cmd_tcp, f._record, f._offset = None, None, np.zeros(3)
+    f._gripper_open, f._success, f._hold, f._steps = True, False, 0, 0
+    return f
+
+
+def test_a_recorded_motion_returns_every_control_step_as_env_step_takes_it():
+    f = _moving_facade()
+    start = f._tcp()
+    out = f.move_delta([0.02, 0, 0], record=True)
+    steps = out["steps"]
+    assert len(steps) == out["control_steps"] > 0
+    first = steps[0]["action"]
+    assert first.dtype == np.float32 and first.shape == (4,)
+    # The first servo step commands the waypoint plus half its error (the offset integrator).
+    assert first.tolist() == pytest.approx([0.03, 0, 0, 1.0])
+    assert steps[0]["tcp_pos"][0] == pytest.approx(start[0] + 0.015)
+    assert f._record is None, "recording ends with the call"
+    # A gripper change holds the commanded point: each step's action is its remaining gap.
+    out = f.set_gripper(open=False, record=True)
+    actions = np.stack([s["action"] for s in out["steps"]])
+    assert len(actions) == g.GRIPPER_STEPS and (actions[:, 3] == -1).all()
+    gaps = np.linalg.norm(actions[:, :3], axis=1)
+    assert (np.diff(gaps) <= 1e-9).all()
+    # Without record nothing is kept.
+    assert "steps" not in f.move_delta([0, 0.02, 0])

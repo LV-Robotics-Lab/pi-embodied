@@ -1078,7 +1078,9 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         ``tol_m`` (after ``min_steps``), ``max_steps``, success or ``stop``. The closed-loop
         2 cm execution of Show-Harness's real2sim tokenizer; open-loop steps fall short when
         the arm reverses (PD lag). A multi-arm robot drives ``arm``; the others hold still
-        with their last gripper command. Returns ``[frames, info]`` with one frame per step."""
+        with their last gripper command. Returns ``[frames, info]`` with one frame per step,
+        each with the action it applied (flat: every arm's in agent order) and its
+        ``success`` (a call that ran no step returns the current frame alone, without them)."""
         target = np.asarray(target_xyz, dtype=np.float64).reshape(3)
         idx = self._arm(arm)
         agent = self._agents[idx]
@@ -1102,7 +1104,16 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
             )
             a = self._env_action(actions)
             obs, _rew, term, trunc, info = self._step(a)
-            frames.append(self._pack(obs))
+            # The env action of the step and its success, for the Flywheel recorder.
+            frames.append(
+                {
+                    **self._pack(obs),
+                    "action": np.concatenate(
+                        [np.asarray(x, dtype=np.float32).reshape(-1) for x in actions]
+                    ),
+                    "success": bool(info.get("success")),
+                }
+            )
             if term or trunc or info.get("success"):
                 break
         if not frames:

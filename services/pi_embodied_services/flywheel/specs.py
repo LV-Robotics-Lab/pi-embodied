@@ -21,9 +21,20 @@ import importlib
 from pathlib import Path
 from typing import Any
 
-#: The simulators whose VLA runs agent-side, so every env step is seen and recorded. A real Franka's
-#: motions servo inside its env server, where no per-step observation reaches the recorder.
-ROBOTS = ("libero", "robocasa", "robotwin", "robodojo")
+#: The simulators whose every env step is recorded: agent-side VLA steps (RoboDojo: joint space), and the motions whose
+#: env servers return each control step (Metaworld, Genesis, Robosuite, ManiSkill). A real
+#: robot's motions servo inside its env server; UR5e's rules (robots/ur5e/flywheel.py) describe
+#: its session data, which no converter reads yet.
+ROBOTS = (
+    "libero",
+    "robocasa",
+    "robotwin",
+    "metaworld",
+    "genesis",
+    "robosuite",
+    "maniskill",
+    "robodojo",
+)
 
 
 def spec(robot: str, space: str | None = None) -> dict[str, Any]:

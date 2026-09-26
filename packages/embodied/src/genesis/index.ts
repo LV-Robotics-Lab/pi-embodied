@@ -13,7 +13,8 @@
  * task's own predicate (cube_pick: the cube lifted 8 cm off the table), recorded in `robot_result`.
  * --vdm (../vdm.ts) differences the front and wrist views between observations.
  * `segment` (SAM3, `--sam3`) and `back_project` give world coordinates from the current image
- * through the server's depth.
+ * through the server's depth. --collect-flywheel-data records every control step of a motion
+ * (services robots/genesis/flywheel.py).
  *
  * OpenETA (github.com/OpenETA at 7d4a0a1) sim/envs/genesis: its Franka scene and cube_pick task,
  * ported as a pi robot with the pi-embodied motion limits and cameras.
@@ -25,6 +26,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { template } from "../context-version.ts";
+import type { FlywheelObs, FlywheelSpec } from "../flywheel.ts";
 import { ikArgs, previewReachTool, type Reach, registerIkFlag } from "../ik.ts";
 import { SAM3 } from "../model-services.ts";
 import { decodePngChannel, encodePng } from "../png.ts";
@@ -84,15 +86,24 @@ type Obs = {
 	lift_m: number;
 	env_steps: number;
 };
+/** A recorded control step (`record`): its observation and the step as `env.step` takes it. */
+type Step = Obs & { action: NdArray };
 type Moved = Obs & {
 	commanded_m: number[];
 	moved_m: number[];
 	decisions: number;
 	control_steps: number;
 	frames?: NdArray[];
+	steps?: Step[];
 	cancelled?: boolean;
 };
-type Gripped = Obs & { control_steps: number; frames?: NdArray[]; grasp_empty?: boolean; cancelled?: boolean };
+type Gripped = Obs & {
+	control_steps: number;
+	frames?: NdArray[];
+	steps?: Step[];
+	grasp_empty?: boolean;
+	cancelled?: boolean;
+};
 type Meta = {
 	task: string;
 	seed: number;
@@ -106,6 +117,19 @@ type Meta = {
 type CameraMeta = { intrinsic_K: number[][]; extrinsic_cam2world: number[][]; width: number; height: number };
 
 const round = (v: number, d = 4) => Number(v.toFixed(d));
+
+/** The two views, the TCP pose and finger opening, and the env step (services robots/genesis/flywheel.py). */
+export const FLYWHEEL: FlywheelSpec = {
+	robot: "genesis",
+	// The server's --view-size: the first frame's.
+	images: { agentview_images: null, wrist_images: null },
+	state: 8,
+	action: 4,
+};
+const flyObs = (o: Obs): FlywheelObs => ({
+	images: { agentview_images: o.agentview, wrist_images: o.wrist },
+	state: [...o.tcp_pos.toArray(), ...o.tcp_quat_wxyz.toArray(), o.gripper_width],
+});
 
 /**
  * The (row, col) pixels of a SAM3 mask (a decoded PNG channel, >= 128 = in), at most `limit` of
@@ -181,6 +205,7 @@ export default function genesis(pi: ExtensionAPI) {
 		video: true,
 		// Observations carry the front view, then the wrist view.
 		vdm: { views: 2, wrist: 1 },
+		flywheel: { spec: FLYWHEEL, select: () => robot.task.task },
 		groundTruth: (names) => call("env.ground_truth_poses", { names: names ?? null }),
 		// The env server's primitive registry (code.api, robots/genesis/primitives.py), recorded per episode.
 		codeApi: () => env,
@@ -254,6 +279,7 @@ export default function genesis(pi: ExtensionAPI) {
 		},
 	});
 	const { video } = robot;
+	const fly = robot.fly!;
 	let everGrasped = false;
 
 	const call = <T = unknown>(
@@ -268,11 +294,22 @@ export default function genesis(pi: ExtensionAPI) {
 		everGrasped ||= o.is_grasped;
 	}
 
+	/** Flywheel: every control step a motion recorded (`record` is sent only while recording). */
+	function record(steps: Step[] | undefined) {
+		for (const s of steps ?? []) fly.transition(s.action.toArray(), flyObs(s), s.success ? 1 : 0, s.success, false);
+	}
+
 	/** One base-frame move (m) with an optional gripper command first; the server checks the limits. */
 	async function move(delta: Vec3, gripper: "open" | "close" | null, signal: AbortSignal | undefined) {
-		const r = await call<Moved>("env.move_delta", { gripper, return_frames: true }, [delta], signal);
+		const r = await call<Moved>(
+			"env.move_delta",
+			{ gripper, return_frames: true, ...(fly.recording ? { record: true } : {}) },
+			[delta],
+			signal,
+		);
 		for (const f of r.frames ?? []) video.frame(f);
-		const { frames: _frames, commanded_m, moved_m, decisions, control_steps, cancelled, ...o } = r;
+		record(r.steps);
+		const { frames: _frames, steps: _steps, commanded_m, moved_m, decisions, control_steps, cancelled, ...o } = r;
 		absorb(o);
 		return { commanded_m, moved_m, decisions, control_steps, ...(cancelled ? { cancelled } : {}) };
 	}
@@ -423,9 +460,15 @@ export default function genesis(pi: ExtensionAPI) {
 		"Open or close the gripper and hold it (the command persists). A close that ends nearly shut holds nothing (`grasp_empty`). Returns the new state and images.",
 		Type.Object({ action: StringEnum(["open", "close"] as const) }),
 		async ({ action }, signal) => {
-			const r = await call<Gripped>("env.set_gripper", { open: action === "open", return_frames: true }, [], signal);
+			const r = await call<Gripped>(
+				"env.set_gripper",
+				{ open: action === "open", return_frames: true, ...(fly.recording ? { record: true } : {}) },
+				[],
+				signal,
+			);
 			for (const f of r.frames ?? []) video.frame(f);
-			const { frames: _frames, control_steps, grasp_empty, cancelled, ...o } = r;
+			record(r.steps);
+			const { frames: _frames, steps: _steps, control_steps, grasp_empty, cancelled, ...o } = r;
 			absorb(o);
 			return observe({
 				gripper: action,
@@ -534,6 +577,11 @@ export default function genesis(pi: ExtensionAPI) {
 		everGrasped = false;
 		const [o] = await env.call<[Obs, unknown]>("env.reset", {}, 300_000);
 		absorb(o);
+		// raw/genesis/<task>/seed_NNN (services robots/genesis/flywheel.py).
+		fly.reset(flyObs(o), {
+			path: [task, `seed_${seed.padStart(3, "0")}`],
+			metadata: { task, seed: Number(seed), task_language: meta.instruction },
+		});
 		return [
 			...["view_env_state", "view_camera_meta", "segment", "back_project", "move_delta", "gripper", "finish"],
 			...detectionActive(pi, meta.capabilities?.perception),

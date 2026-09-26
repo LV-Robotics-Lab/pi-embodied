@@ -301,6 +301,10 @@ class GenesisEnvFacade(MainThreadServeMixin, BaseEnvFacade):
             np.array([87, 87, 87, 87, 12, 12, 12, 100, 100]),
         )
         self._hold_quat: np.ndarray | None = None
+        #: The TCP point the arm was last commanded to (``_command_arm``).
+        self._cmd_tcp: np.ndarray | None = None
+        #: The Flywheel records of the motion call in progress (``record=True``), else None.
+        self._record: list | None = None
         self._offset = np.zeros(3)
         self._gripper_open = True
         self._success = False
@@ -376,6 +380,7 @@ class GenesisEnvFacade(MainThreadServeMixin, BaseEnvFacade):
             dofs_idx_local=MOTOR_DOFS,
         )
         self._robot.control_dofs_position(q[: len(MOTOR_DOFS)], MOTOR_DOFS)
+        self._cmd_tcp = np.asarray(target_tcp, dtype=np.float64).reshape(3)
 
     def _command_gripper(self) -> None:
         w = FINGER_OPEN_M if self._gripper_open else 0.0
@@ -384,11 +389,19 @@ class GenesisEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         )
 
     def _step(self) -> None:
+        # While recording: the step as ``env.step`` takes it, the commanded TCP point minus the
+        # TCP before the step, and the gripper (+1 open / -1 close).
+        action = None
+        if self._record is not None:
+            cmd = self._tcp() if self._cmd_tcp is None else self._cmd_tcp
+            action = np.append(cmd - self._tcp(), 1.0 if self._gripper_open else -1.0)
         self._scene.step()
         self._steps += 1
         cube_z = float(_np(self._cube.get_pos()).reshape(3)[2])
         self._hold = self._hold + 1 if lifted(cube_z) else 0
         self._success = self._success or self._hold >= SUCCESS_HOLD_STEPS
+        if action is not None:
+            self._record.append({**self._obs(), "action": action.astype(np.float32)})
 
     # ---- observation ----
 
@@ -472,6 +485,7 @@ class GenesisEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         self._scene.reset()
         self._success, self._hold, self._steps = False, 0, 0
         self._offset = np.zeros(3)
+        self._cmd_tcp = None
         self._gripper_open = True
         t = self._torch
         home = t.tensor(HOME_QPOS, dtype=t.float32)
@@ -551,12 +565,18 @@ class GenesisEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         return GRIPPER_STEPS, False
 
     def move_delta(
-        self, delta_xyz, *, gripper: str | None = None, return_frames: bool = False
+        self,
+        delta_xyz,
+        *,
+        gripper: str | None = None,
+        return_frames: bool = False,
+        record: bool = False,
     ):
         """Translate the TCP by a base-frame delta (m), after an optional gripper command
         (the arm holds still while the fingers settle). Refused (nothing moves) beyond
         MAX_MOVE_M, below Z_FLOOR_M or outside WORKSPACE. Returns the observation plus
-        commanded_m, moved_m, decisions, control_steps[, frames, cancelled]."""
+        commanded_m, moved_m, decisions, control_steps[, frames, steps, cancelled];
+        ``record`` adds ``steps``: every control step's observation with its ``action``."""
         start = self._tcp()
         target = check_target(start, delta_xyz)
         if (
@@ -571,6 +591,7 @@ class GenesisEnvFacade(MainThreadServeMixin, BaseEnvFacade):
             raise ValueError(
                 f"gripper must be 'open', 'close' or null, not {gripper!r}"
             )
+        self._record = [] if record else None
         frames: list = []
         steps = 0
         cancelled = False
@@ -607,16 +628,25 @@ class GenesisEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         }
         if return_frames:
             out["frames"] = frames
+        if record:
+            out["steps"] = self._record
+        self._record = None
         if cancelled:
             out["cancelled"] = True
         return out
 
-    def set_gripper(self, *, open: bool, return_frames: bool = False):
+    def set_gripper(
+        self, *, open: bool, return_frames: bool = False, record: bool = False
+    ):
         """Open or close the gripper and hold GRIPPER_STEPS; a close that ends at or below
-        EMPTY_WIDTH_M reports ``grasp_empty``."""
+        EMPTY_WIDTH_M reports ``grasp_empty``. ``record`` as ``move_delta``."""
         self._gripper_open = bool(open)
+        self._record = [] if record else None
         n, cancelled = self._grip()
         out = {**self._obs(), "control_steps": n}
+        if record:
+            out["steps"] = self._record
+        self._record = None
         if return_frames:
             out["frames"] = [self._frame()]
         if not open and self._width() <= EMPTY_WIDTH_M:

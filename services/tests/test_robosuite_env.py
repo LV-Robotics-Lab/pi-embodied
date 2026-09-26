@@ -250,3 +250,40 @@ def test_ground_truth_adds_the_two_arm_grasp_points_as_robosuite_defines_them():
         "pot_handle0",
         "pot_handle1",
     ]
+
+
+def test_a_recorded_motion_returns_every_control_step_with_the_composite_action():
+    """``record``: each control step's cameras at RECORD_SIZE, the robot state and the
+    action sent; the video frames stay every ``video_every`` steps."""
+    from pi_embodied_services.robots.robosuite import env_server as rs
+
+    class SteppingEnv(FakeEnv):
+        def step(self, action):
+            self.sent.append(np.asarray(action))
+
+    env = SteppingEnv(success=False, action_dim=14)
+    env.sent = []
+    f = facade("TwoArmLift", env)
+    rs.BaseEnvFacade.__init__(f)
+    f._cameras = {"agentview": "agentview", "wrist": rs.WRIST_CAMERA}
+    f._video_every = 4
+    f._motion_frames = []
+    f._record = None
+    sizes = []
+    f._render = lambda camera, size, depth=False: (
+        sizes.append(size) or np.zeros((size, size, 3), np.uint8)
+    )
+    f._robot_state = lambda: {
+        "robot1_gripper_width": 0.08 - 0.01 * f._steps,
+        "success": False,
+    }
+    f._pack = lambda: {}
+    out = f.set_gripper("close", arm="robot1", steps=6, record=True)
+    steps = out["info"]["steps"]
+    assert len(steps) == out["info"]["steps_used"] == len(env.sent) == 6
+    assert steps[0]["action"].dtype == np.float32
+    assert steps[0]["action"].tolist() == [0] * 6 + [OPEN] + [0] * 6 + [CLOSE]
+    assert steps[0]["agentview"].shape == (rs.RECORD_SIZE, rs.RECORD_SIZE, 3)
+    assert len(out["info"]["frames"]) == 1, "the video keeps its own rate"
+    assert f._record is None
+    assert "steps" not in f.set_gripper("open", arm="robot1", steps=2)["info"]

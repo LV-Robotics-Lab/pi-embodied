@@ -19,6 +19,7 @@
  * motion path: a base-frame delta in metres becomes ~2 cm decisions, each a closed-loop servo of
  * 2-8 control steps to its waypoint (Show-Harness's step calibration and real2sim execution);
  * every result carries the agentview and wrist images and the state; success is ManiSkill's own `success` flag, recorded in `robot_result`.
+ * --collect-flywheel-data records every control step of a motion, per arm (services robots/maniskill/flywheel.py).
  *
  * Copyright 2026 The Show-Harness Authors (github.com/showlab/Show-Harness @137d571).
  * Licensed under the Apache License, Version 2.0.
@@ -35,6 +36,7 @@ import { Type } from "typebox";
 import { template } from "../context-version.ts";
 import { anchorPlane, type CameraMeta, pixelOnPlane, unletterbox } from "../flash/plane.ts";
 import { recipeFlash } from "../flash/recipe.ts";
+import type { FlywheelObs, FlywheelSpec } from "../flywheel.ts";
 import { ikArgs, previewReachTool, type Reach, registerIkFlag } from "../ik.ts";
 import { MOLMO } from "../model-services.ts";
 import { encodePng } from "../png.ts";
@@ -156,7 +158,9 @@ type Obs = {
 	arms?: Record<string, ArmObs>;
 } & Partial<ArmObs>;
 type Info = Record<string, unknown>;
-type ServoReturn = [Obs[], Info];
+/** A servo control step: its observation, the env action it applied and its success (absent when none ran). */
+type Frame = Obs & { action?: NdArray; success?: boolean };
+type ServoReturn = [Frame[], Info];
 /**
  * The RLinf rigs (BlockPAP-v1 / BlockStack-v1), measured on BlockPAP seed 20000 by stepping each
  * unit 4 cm and tracking the block's segmentation centroid: agentview = the calibrated front
@@ -442,6 +446,22 @@ export function robotFor(robot: string, envId: string): ManiskillRobot {
 
 const round = (v: number, d = 4) => Number(v.toFixed(d));
 
+/** One arm's TCP pose and finger opening. */
+const armState = (a: Partial<ArmObs>): number[] => [
+	...(a.tcp_pos?.toArray() ?? []),
+	...(a.tcp_quat_wxyz?.toArray() ?? []),
+	a.gripper_width ?? 0,
+];
+
+/**
+ * The views, the TCP pose and finger opening (services robots/maniskill/flywheel.py; a robot without a wrist
+ * camera has none); a two-arm robot's `arms`, in their order, one after the other.
+ */
+export const flyObs = (o: Obs, arms?: readonly string[]): FlywheelObs => ({
+	images: { agentview_images: o.agentview, ...(o.wrist ? { wrist_images: o.wrist } : {}) },
+	state: arms ? arms.flatMap((a) => armState(o.arms?.[a] ?? {})) : armState(o),
+});
+
 /** ManiSkill's grasp flag: `is_grasped` (PickCube), `is_cubeA_grasped` (StackCube), ... */
 export const grasped = (info: Record<string, unknown>) =>
 	Object.entries(info).some(([k, v]) => /^is_.*grasped$/.test(k) && Boolean(v));
@@ -607,6 +627,34 @@ export default function maniskill(pi: ExtensionAPI) {
 			throw new Error(`this robot has two arms; arm must be one of ${names.join(", ")}`);
 		if (!names && a) throw new Error("this robot has one arm; leave `arm` out");
 	}
+	/** The scene's raw-path part: its options as a tag, or `default`. */
+	const sceneTag = () => (robot.task.scene ? tagPart(robot.task.scene) : "default");
+	/** Every control step: the robot's views, its TCP state and the pd_ee_delta_pos action; one space per arm. */
+	const FLYWHEEL: FlywheelSpec = {
+		robot: "maniskill",
+		get space() {
+			return robotId;
+		},
+		get images(): FlywheelSpec["images"] {
+			return wrist() ? { agentview_images: null, wrist_images: null } : { agentview_images: null };
+		},
+		/** Each arm's TCP pose and finger opening. */
+		get state() {
+			return 8 * (arms()?.length ?? 1);
+		},
+		action: 4,
+	};
+	/** raw/maniskill/<robot>/<env-id>/<scene>/seed_NNN (services robots/maniskill/flywheel.py). */
+	const flyMeta = () => ({
+		path: [robotId, robot.task["env-id"], sceneTag(), `seed_${robot.task.seed.padStart(3, "0")}`],
+		metadata: {
+			maniskill_robot: robotId,
+			env_id: robot.task["env-id"],
+			scene: robot.task.scene ?? "",
+			seed: Number(robot.task.seed),
+			task_language: language,
+		},
+	});
 	/** The --probe-axes vectors (undefined: VECTORS) and their calibration record. */
 	let vectors: Record<MoveUnit, Vec3> | undefined;
 	let calibration: Record<string, unknown> | undefined;
@@ -622,6 +670,7 @@ export default function maniskill(pi: ExtensionAPI) {
 		codeApi: () => env,
 		keepImages: 4,
 		video: true,
+		flywheel: { spec: FLYWHEEL, select: () => `${robotId}/${robot.task["env-id"]}/${sceneTag()}` },
 		// Observations carry the agentview then the wrist image (the agentview alone on a robot without one).
 		vdm: () => {
 			const r = ROBOTS[String(pi.getFlag("robot") ?? "panda") as RobotId];
@@ -670,6 +719,7 @@ export default function maniskill(pi: ExtensionAPI) {
 				envStep = 0;
 				grippers = {};
 				absorb(o, i);
+				fly.reset(flyObs(o, arms()), flyMeta());
 				return observe({ ...result, reset: true });
 			},
 			prompt: () =>
@@ -771,6 +821,7 @@ export default function maniskill(pi: ExtensionAPI) {
 		},
 	});
 	const { video } = robot;
+	const fly = robot.fly!;
 
 	const call = <T = unknown>(
 		method: string,
@@ -810,7 +861,12 @@ export default function maniskill(pi: ExtensionAPI) {
 				[target, gripper],
 				signal,
 			);
-			for (const f of frames) video.frame(f.wrist ? sideBySide(f.agentview, f.wrist) : f.agentview);
+			for (const f of frames) {
+				video.frame(f.wrist ? sideBySide(f.agentview, f.wrist) : f.agentview);
+				// Flywheel: every control step the servo ran (a call that ran none returns no action).
+				if (fly.recording && f.action)
+					fly.transition(f.action.toArray(), flyObs(f, arms()), f.success ? 1 : 0, Boolean(f.success), false);
+			}
 			steps += frames.length;
 			envStep += frames.length;
 			absorb(frames[frames.length - 1], i);
@@ -1025,6 +1081,7 @@ export default function maniskill(pi: ExtensionAPI) {
 		const [o, i] = await env.call<[Obs, Info]>("env.reset", {}, 300_000);
 		absorb(o, i);
 		language = await env.call<string>("env.get_task_language");
+		fly.reset(flyObs(o, arms()), flyMeta());
 		return [
 			"view_env_state",
 			"move_delta",

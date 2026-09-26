@@ -206,6 +206,23 @@ def test_move_delta_refuses_long_moves_and_targets_outside_the_workspace_box():
     assert r["moved_m"] == pytest.approx([0, 0, 0])
 
 
+def test_every_motion_frame_carries_the_env_action_it_applied_and_its_success():
+    """The Flywheel recorder's per-step row: the ``[dx, dy, dz, gripper]`` of each control
+    step, clipped to [-1, 1], and the env's success after it."""
+    f = _facade(goal=(0.0, 0.6, 0.15))
+    f.reset()
+    r = f.move_delta([0, 0, -0.04], "close")
+    actions = np.stack([fr["action"] for fr in r["frames"]])
+    assert actions.dtype == np.float32 and actions.shape == (r["steps_used"], 4)
+    assert (np.abs(actions) <= 1).all() and (actions[:, 3] == mw.CLOSE).all()
+    assert (actions[: mw.GRIPPER_STEPS, :3] == 0).all(), (
+        "the arm holds while the fingers close"
+    )
+    assert actions[mw.GRIPPER_STEPS, 2] == pytest.approx(-1.0)
+    assert [fr["success"] for fr in r["frames"]][-1] is True
+    assert not any(fr["success"] for fr in r["frames"][:-1])
+
+
 def test_stop_cancels_a_move_between_control_steps():
     f = _facade()
     f.reset()

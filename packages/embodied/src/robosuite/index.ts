@@ -13,6 +13,7 @@
  * at 512 px and the arms' state. Success is robosuite's `_check_success` (Restack adds CaP-X's
  * off-table rule), latched at its first step and recorded in `robot_result`. The two-arm tasks
  * take an `arm` on every motion tool (robot0 | robot1), like dual_franka's left | right.
+ * --collect-flywheel-data records every control step of a motion (services robots/robosuite/flywheel.py).
  */
 
 import { tmpdir } from "node:os";
@@ -21,6 +22,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
 import { template } from "../context-version.ts";
+import type { FlywheelObs, FlywheelSpec } from "../flywheel.ts";
 import { ikArgs, type Reach, registerIkFlag } from "../ik.ts";
 import { SAM3 } from "../model-services.ts";
 import { decodePngChannel, encodePng } from "../png.ts";
@@ -85,7 +87,12 @@ export const VIEWS = `Each result shows the task camera, then the wrist view (bo
 - Wrist view (second image): looks down from the gripper; the fingers are at the image sides and the grasp point is at the centre. Judge fine alignment here, gross layout in the task camera.`;
 
 type Obs = Record<string, unknown> & { agentview: NdArray; wrist: NdArray };
-type Motion = { obs: Obs; info: Record<string, unknown> & { frames?: NdArray[]; ok?: boolean; cancelled?: boolean } };
+/** A recorded control step (`record`): the cameras at 256 px, the robot state, the composite action. */
+type Step = Obs & { action: NdArray; success: boolean };
+type Motion = {
+	obs: Obs;
+	info: Record<string, unknown> & { frames?: NdArray[]; steps?: Step[]; ok?: boolean; cancelled?: boolean };
+};
 type CameraMeta = { intrinsic_K: number[][]; extrinsic_cam2world: number[][] };
 type Meta = {
 	task: string;
@@ -105,6 +112,20 @@ type Camera = "agentview" | "wrist";
 const round = (v: number, d = 4) => Number(v.toFixed(d));
 const num = (v: unknown) => (v instanceof NdArray ? v.toArray() : Array.isArray(v) ? v.map(Number) : [Number(v)]);
 const clip = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+
+/** Size of a recorded step's cameras (env_server RECORD_SIZE). */
+export const RECORD_SIZE = 256;
+/** The services spec's space of a task (robots/robosuite/flywheel.py SPACES): its arms and gripper. */
+export const flywheelSpace = (task: string) =>
+	!hasGripper(task) ? "wipe" : arms(task).length > 1 ? "two_arm" : "one_arm";
+/** Per arm: eef_pos, eef_quat (xyzw), the finger joints (a task with a gripper). */
+export function flyState(task: string, o: Obs): number[] {
+	return arms(task).flatMap((a) => [
+		...num(o[`${a}_eef_pos`]),
+		...num(o[`${a}_eef_quat`]),
+		...(hasGripper(task) ? num(o[`${a}_gripper_qpos`]) : []),
+	]);
+}
 
 export default function robosuite(pi: ExtensionAPI) {
 	const flag = (name: string, fallback: string) => String(pi.getFlag(name) ?? fallback);
@@ -165,6 +186,24 @@ export default function robosuite(pi: ExtensionAPI) {
 	/** The memory cell of this task at `seed`. */
 	const tag = (seed: string) => `robosuite_${robot.task.task}_s${seed}`;
 	const twoArm = () => TWO_ARM.includes(robot.task.task as Task);
+	/** The task's cameras, robot state and composite action; their widths are the task's space. */
+	const FLYWHEEL: FlywheelSpec = {
+		robot: "robosuite",
+		get space() {
+			return flywheelSpace(robot.task.task);
+		},
+		images: { agentview_images: [RECORD_SIZE, RECORD_SIZE, 3], wrist_images: [RECORD_SIZE, RECORD_SIZE, 3] },
+		get state() {
+			return arms(robot.task.task).length * (hasGripper(robot.task.task) ? 9 : 7);
+		},
+		get action() {
+			return arms(robot.task.task).length * (hasGripper(robot.task.task) ? 7 : 6);
+		},
+	};
+	const flyObs = (o: Obs): FlywheelObs => ({
+		images: { agentview_images: o.agentview, wrist_images: o.wrist },
+		state: flyState(robot.task.task, o),
+	});
 	const robot = defineRobot(pi, {
 		name: "robosuite",
 		services: { models: [SAM3] },
@@ -196,6 +235,7 @@ export default function robosuite(pi: ExtensionAPI) {
 				],
 			],
 		},
+		flywheel: { spec: FLYWHEEL, select: () => robot.task.task },
 		start: startEpisode,
 		prompt: () =>
 			SYSTEM.replaceAll("{{task_language}}", language)
@@ -253,6 +293,7 @@ export default function robosuite(pi: ExtensionAPI) {
 		},
 	});
 	const { video } = robot;
+	const fly = robot.fly!;
 
 	/** Every robot RPC carries the running tool's abort signal, so an abort stops motion between calls. */
 	const call = <T = unknown>(
@@ -262,6 +303,8 @@ export default function robosuite(pi: ExtensionAPI) {
 		signal = robot.signal,
 		timeoutMs = 300_000,
 	) => env.call<T>(method, kwargs, timeoutMs, args, signal);
+	/** A motion's kwargs: while the Flywheel records, the server returns every control step. */
+	const rec = (kwargs: Record<string, unknown>) => (fly.recording ? { ...kwargs, record: true } : kwargs);
 
 	function absorb(o: Obs) {
 		obs = o;
@@ -274,7 +317,9 @@ export default function robosuite(pi: ExtensionAPI) {
 	/** A motion call's result: its video frames go to the episode video, the observation is absorbed. */
 	function motion(r: Motion) {
 		for (const f of r.info.frames ?? []) video.frame(f);
-		const { frames: _frames, ...info } = r.info;
+		for (const s of r.info.steps ?? [])
+			fly.transition(s.action.toArray(), flyObs(s), s.success ? 1 : 0, s.success, Boolean(s.truncated));
+		const { frames: _frames, steps: _steps, ...info } = r.info;
 		absorb(r.obs);
 		return info;
 	}
@@ -373,13 +418,13 @@ export default function robosuite(pi: ExtensionAPI) {
 				...motion(
 					await call<Motion>(
 						"env.move_to",
-						{
+						rec({
 							arm: armOf(a) ?? null,
 							...(g ? { gripper: g } : {}),
 							...(rotvec ? { rotvec } : {}),
 							...(tol !== undefined ? { tol_m: tol } : {}),
 							...(max_steps !== undefined ? { max_steps } : {}),
-						},
+						}),
 						[target],
 						signal,
 					),
@@ -399,7 +444,7 @@ export default function robosuite(pi: ExtensionAPI) {
 				...motion(
 					await call<Motion>(
 						"env.move_delta",
-						{ arm: armOf(a) ?? null, ...(g ? { gripper: g } : {}) },
+						rec({ arm: armOf(a) ?? null, ...(g ? { gripper: g } : {}) }),
 						[delta_xyz],
 						signal,
 					),
@@ -423,7 +468,7 @@ export default function robosuite(pi: ExtensionAPI) {
 				...motion(
 					await call<Motion>(
 						"env.set_gripper",
-						{ arm: armOf(a) ?? null, ...(steps !== undefined ? { steps } : {}) },
+						rec({ arm: armOf(a) ?? null, ...(steps !== undefined ? { steps } : {}) }),
 						[command],
 						signal,
 					),
@@ -690,7 +735,7 @@ export default function robosuite(pi: ExtensionAPI) {
 		if (move.gripper) {
 			if (!hasGripper(robot.task.task)) throw new Error(`${robot.task.task}'s wiping gripper has no fingers`);
 			grip.set(name, move.gripper);
-			info = motion(await call<Motion>("env.set_gripper", { arm: a ?? null }, [move.gripper], signal));
+			info = motion(await call<Motion>("env.set_gripper", rec({ arm: a ?? null }), [move.gripper], signal));
 			steps += Number(info.steps_used ?? 0);
 		}
 		const turning = Boolean(move.yaw) || Boolean(move.rot?.some(Boolean));
@@ -699,7 +744,7 @@ export default function robosuite(pi: ExtensionAPI) {
 			info = motion(
 				await call<Motion>(
 					"env.move_delta",
-					{ arm: a ?? null, ...(rotvec ? { rotvec } : {}), tol_m: 0.004, max_steps: 40 },
+					rec({ arm: a ?? null, ...(rotvec ? { rotvec } : {}), tol_m: 0.004, max_steps: 40 }),
 					[move.delta],
 					signal,
 				),
@@ -708,7 +753,9 @@ export default function robosuite(pi: ExtensionAPI) {
 		}
 		if (!move.gripper && !turning && !Math.hypot(...move.delta)) {
 			// STOP: hold the setpoint for one step (a zero move).
-			info = motion(await call<Motion>("env.move_delta", { arm: a ?? null, max_steps: 1 }, [[0, 0, 0]], signal));
+			info = motion(
+				await call<Motion>("env.move_delta", rec({ arm: a ?? null, max_steps: 1 }), [[0, 0, 0]], signal),
+			);
 			steps += 1;
 		}
 		return observe({
@@ -761,6 +808,16 @@ export default function robosuite(pi: ExtensionAPI) {
 		const [o] = await env.call<[Obs, unknown]>("env.reset", {}, 600_000);
 		absorb(o);
 		language = await env.call<string>("env.get_task_language");
+		// raw/robosuite/<task>/seed_NNN (services robots/robosuite/flywheel.py): the reset at 256 px.
+		if (pi.getFlag("collect-flywheel-data")) {
+			const shot = (camera: string) =>
+				call<NdArray>("env.render_camera", { camera_name: camera, height: RECORD_SIZE, width: RECORD_SIZE });
+			const first = { ...o, agentview: await shot("agentview"), wrist: await shot("wrist") };
+			fly.reset(flyObs(first), {
+				path: [task, `seed_${seed.padStart(3, "0")}`],
+				metadata: { task, seed: Number(seed), space: flywheelSpace(task), task_language: language },
+			});
+		}
 		return [
 			"view_env_state",
 			"view_camera_meta",

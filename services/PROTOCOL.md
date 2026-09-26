@@ -283,7 +283,9 @@ episode steps) ends an episode.
 | `env.ground_truth_poses` | kw `names=null` | poses of the kitchen's objects (`obj_body_id`) and fixtures (root bodies) |
 
 maniskill-env (`robots/maniskill/env_server.py`) serves `env.ground_truth_poses` over the scene's
-actors (goal markers included) and its articulations other than the robot.
+actors (goal markers included) and its articulations other than the robot. `env.servo`'s frames
+(one per control step) carry `action` float32[4] (the `pd_ee_delta_pos` action it sent, the arm's
+own gripper action) and `success`; a call that ran no step returns the current frame without them.
 
 ### metaworld-env (`robots/metaworld/env_server.py`)
 
@@ -302,7 +304,7 @@ task's metrics as scalars (`success`, `grasp_success`, `near_object`, `obj_to_ta
 | `env.reset` | kw `seed=null` (default the launch seed) | `[obs, info]`; the hand at the task's start pose, gripper open |
 | `env.step` | `action` float[4] | `[obs, reward, terminated (= success), truncated, info]` |
 | `env.chunk_step` | `actions` float[N,4], kw `return_all_frames=false` | `[obs or list[obs], reward[N], terminated[N], truncated[N], info]`; stops at success or `stop` |
-| `env.move_delta` | `delta_xyz` float[3] (m, world), kw `gripper=null` ("open" / "close" first, held 20 steps), `tol_m=0.006` | `{"ok", "requested_delta_xyz", "start_tcp_pos", "final_tcp_pos", "final_error_m", "moved_m", "gripper", "gripper_width", "steps_used", "frames" list[obs] (one per control step), "info"[, "cancelled"]}`; refuses (error, nothing commanded) more than 0.2 m or a target outside the workspace box (the mocap bounds, in TCP coordinates). The mocap target moves 1 cm per step and the hand settles behind it |
+| `env.move_delta` | `delta_xyz` float[3] (m, world), kw `gripper=null` ("open" / "close" first, held 20 steps), `tol_m=0.006` | `{"ok", "requested_delta_xyz", "start_tcp_pos", "final_tcp_pos", "final_error_m", "moved_m", "gripper", "gripper_width", "steps_used", "frames" list[obs] (one per control step, each with "action" float32[4], the env action applied, and "success"), "info"[, "cancelled"]}`; refuses (error, nothing commanded) more than 0.2 m or a target outside the workspace box (the mocap bounds, in TCP coordinates). The mocap target moves 1 cm per step and the hand settles behind it |
 | `env.set_gripper` | kw `open` bool | as `env.move_delta` with `target_gripper_open` |
 | `env.state` | - | `{"tcp_pos", "gripper_width", "gripper_command", "success", "success_once", "info", "workspace"}` (no stepping) |
 | `env.raw_obs` | - | `{"obs" float64[39], "info"}` |
@@ -336,8 +338,8 @@ before each action (`cancelled: true`), not the Genesis step in progress.
 | `env.reset` | kw `seed=null` (default: the launch seed) | `[obs, {"instruction", "seed"}]`; refuses (error) when the front camera does not show the task object |
 | `env.step` | `action` float[4] `[dx, dy, dz, gripper]` (m, base frame; +1 open / -1 close), one control step | `[obs, 0.0, success, false, {"success"}]` |
 | `env.chunk_step` | `actions` float[N,4], kw `return_all_frames=false` | `[obs or list[obs], reward[n], terminated[n], truncated[n], {"success"[, "cancelled"]}]`, n = executed actions (stops at success or `stop`) |
-| `env.move_delta` | `delta_xyz` float[3] (m), kw `gripper` "open"/"close"/null (first, holding still), `return_frames=false` | obs + `{"commanded_m", "moved_m", "decisions", "control_steps"[, "frames" (both views side by side, one per decision), "cancelled"]}` |
-| `env.set_gripper` | kw `open` bool, `return_frames=false` | obs + `{"control_steps"[, "frames", "grasp_empty" (a close ending at or below `empty_width_m`), "cancelled"]}` |
+| `env.move_delta` | `delta_xyz` float[3] (m), kw `gripper` "open"/"close"/null (first, holding still), `return_frames=false`, `record=false` | obs + `{"commanded_m", "moved_m", "decisions", "control_steps"[, "frames" (both views side by side, one per decision), "steps" (`record`: one obs per control step with "action" float32[4], the step as `env.step` takes it: the commanded TCP point minus the TCP before it, and the gripper), "cancelled"]}` |
+| `env.set_gripper` | kw `open` bool, `return_frames=false`, `record=false` | obs + `{"control_steps"[, "frames", "steps" (as `env.move_delta`), "grasp_empty" (a close ending at or below `empty_width_m`), "cancelled"]}` |
 | `env.state` | - | the obs without images (no stepping) |
 | `env.render_camera` | `camera_name="agentview"` or `"wrist"`, `depth=false` | rgb uint8[256,256,3] as the model sees it, or `[rgb, depth_m float32[256,256]]` |
 | `env.get_camera_meta` | `camera_name="agentview"` | `{"intrinsic_K" 3x3, "extrinsic_cam2world" 4x4 (OpenCV), "width", "height"}` |
@@ -370,9 +372,9 @@ handover task renders no instance segmentation.
 | `env.reset` | - | `[obs, {"language"}]`; reseeds the global numpy / Python RNGs (robosuite 1.5's samplers draw from them) with the episode seed, then settles 20 steps with the grippers open |
 | `env.step` | `action` float[action_dim] (per arm: 6 OSC_POSE deltas in [-1, 1], then the gripper, +1 close / -1 open) | `[obs, reward, success, truncated, state]` |
 | `env.chunk_step` | `actions` float[N, action_dim], kw `return_all_frames=false` | `[obs or list[obs], reward[n], success[n], truncated[n], info]`; stops at `stop` (`info.cancelled`) |
-| `env.move_to` | `target_xyz` float[3] (m, world), kw `arm`, `quat_xyzw` or `rotvec` (a world-frame turn applied to the current orientation), `gripper` "open"/"close"/null (set first), `tol_m=0.005`, `tol_rad=0.03`, `step_m=0.02`, `step_rad=0.2`, `max_steps=100` | `{"obs", "info": {"ok", "arm", "target_xyz", "final_eef_pos", "final_dist_m", "final_rot_err_rad"?, "steps_used", "success", "cancelled", "frames" list[uint8[256,256,3]] (the task camera every 4 steps)}}`; refuses (error, nothing moves) a target more than `--max-move` (0.3 m) away, outside the table box (footprint + 0.1 m, widened 0.15 m around each arm's start), below `z_floor` (table + 0.005 m; Wipe: table - 0.02) or above `z_ceiling`, and with `--ik` an unreachable one |
+| `env.move_to` | `target_xyz` float[3] (m, world), kw `arm`, `quat_xyzw` or `rotvec` (a world-frame turn applied to the current orientation), `gripper` "open"/"close"/null (set first), `tol_m=0.005`, `tol_rad=0.03`, `step_m=0.02`, `step_rad=0.2`, `max_steps=100`, `record=false` | `{"obs", "info": {"ok", "arm", "target_xyz", "final_eef_pos", "final_dist_m", "final_rot_err_rad"?, "steps_used", "success", "cancelled", "frames" list[uint8[256,256,3]] (the task camera every 4 steps), "steps"? (`record`: per control step "agentview" and "wrist" uint8[256,256,3], the obs's state fields and "action" float32[action_dim], the composite action sent)}}`; refuses (error, nothing moves) a target more than `--max-move` (0.3 m) away, outside the table box (footprint + 0.1 m, widened 0.15 m around each arm's start), below `z_floor` (table + 0.005 m; Wipe: table - 0.02) or above `z_ceiling`, and with `--ik` an unreachable one |
 | `env.move_delta` | `delta_xyz` float[3] (m, world), kw as `env.move_to` | as `env.move_to` |
-| `env.set_gripper` | `close` bool or "open"/"close", kw `arm`, `steps=15` | `{"obs", "info": {"ok", "arm", "gripper", "gripper_width", "steps_used", "cancelled", "frames"}}`; the fingers stop early once they no longer move |
+| `env.set_gripper` | `close` bool or "open"/"close", kw `arm`, `steps=15`, `record=false` | `{"obs", "info": {"ok", "arm", "gripper", "gripper_width", "steps_used", "cancelled", "frames"[, "steps"]}}`; the fingers stop early once they no longer move |
 | `env.state` / `env.get_state` | - | the obs without images plus `home_eef_pos`, `table_z` (no stepping; `get_state` as plain lists) |
 | `env.raw_obs` | - | robosuite's `robot*_` observations only |
 | `env.render_camera` | `camera_name="agentview"` or `"wrist"`, `height=512`, `width=512`, `depth=false` | upright rgb uint8[H,W,3], or `[rgb, depth_m float32[H,W]]` |

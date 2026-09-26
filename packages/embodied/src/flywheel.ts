@@ -27,6 +27,8 @@ import type { NdArray } from "./rpc.ts";
 export type FlywheelSpec = {
 	/** The raw data directory under `raw/` and the services spec the export uses. */
 	robot: string;
+	/** One of that spec's `SPACES` (its --space) when the robot's episodes differ in shape or embodiment. */
+	space?: string;
 	/** Camera images of every observation, by transitions.npz key: [H, W, 3] uint8 (null: the first frame's size). */
 	images: Record<string, readonly [number, number, number] | null>;
 	/** Length of the state vector (`states`) and of the action vector (`actions`). */
@@ -262,6 +264,7 @@ export function flywheel(pi: ExtensionAPI, spec: FlywheelSpec, select: () => str
 			const [selection = select(), id] = args.trim().split(/\s+/).filter(Boolean);
 			const cli = ["-m", "pi_embodied_services.flywheel.cli", "export-lerobot", "--data-root", root()];
 			cli.push("--robot", spec.robot, "--select", selection, ...(id ? ["--dataset-id", id] : []));
+			if (spec.space) cli.push("--space", spec.space);
 			// LeRobot's pins (numpy 2, huggingface-hub) conflict with the env servers', hence its own Python.
 			const python = String(
 				pi.getFlag("flywheel-python") || pi.getFlag("python") || process.env.PI_EMBODIED_PYTHON || "python",

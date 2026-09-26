@@ -163,9 +163,12 @@ that is installed, which needs FFmpeg's shared libraries (4 to 8, e.g. `libavuti
 the system; with them missing, uninstall `torchcodec` to read through PyAV, or install FFmpeg.
 
 ```bash
-# Flywheel (LIBERO, RoboCasa, RoboTwin; pi's /flywheel-export runs the same)
+# Flywheel (LIBERO, RoboCasa, RoboTwin, Metaworld, Genesis, Robosuite, ManiSkill; pi's /flywheel-export runs the same)
 python -m pi_embodied_services.flywheel.cli export-lerobot --data-root ~/.pi/embodied/datacollection \
   --robot robocasa --select target/PnPCounterToCab
+# ManiSkill and Robosuite name the embodiment as the space: the --robot arm, the task's arm layout
+python -m pi_embodied_services.flywheel.cli export-lerobot --data-root ~/.pi/embodied/datacollection \
+  --robot maniskill --select xarm6_robotiq/PickCube-v1/default --space xarm6_robotiq
 # RoboTwin for XPolicyLab's training scripts (datasets/lerobot-joint/robotwin/<select>/<id>)
 python -m pi_embodied_services.flywheel.cli export-lerobot --data-root ~/.pi/embodied/datacollection \
   --robot robotwin --select demo_randomized/beat_block_hammer --space joint

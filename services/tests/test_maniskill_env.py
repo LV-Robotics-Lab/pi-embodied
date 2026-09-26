@@ -1,6 +1,7 @@
 """ManiSkill env server helpers that need no simulator."""
 
 import numpy as np
+import pytest
 
 from pi_embodied_services.robots.maniskill import env_server as ms
 
@@ -297,7 +298,7 @@ def test_servo_holds_the_robots_gripper_action_and_the_width_is_its_own():
         sent = []
         f.stop_requested = lambda: False
         f._state = lambda: {"tcp_pos": np.zeros(3)}
-        f._pack = lambda obs: obs
+        f._pack = lambda obs: {}
         f._step = lambda a, sent=sent: (sent.append(a) or "obs", 0.0, False, False, {})
         frames, _ = f.servo([0.01, 0, 0], command, min_steps=2, max_steps=2)
         assert len(sent) == 2 and all(a[-1] == action for a in sent), (robot, sent)
@@ -325,7 +326,7 @@ def _servo_actions(f, target, command=1.0):
     sent = []
     f.stop_requested = lambda: False
     f._state = lambda: {"tcp_pos": np.zeros(3)}
-    f._pack = lambda obs: obs
+    f._pack = lambda obs: {}
     f._step = lambda a: (sent.append(a) or "obs", 0.0, False, False, {})
     f.servo(target, command, min_steps=1, max_steps=1)
     return sent
@@ -396,7 +397,7 @@ def test_a_two_arm_robot_drives_one_arm_and_holds_the_other():
     f = _pair_facade()
     sent = []
     f.stop_requested = lambda: False
-    f._pack = lambda obs: obs
+    f._pack = lambda obs: {}
     f._step = lambda a: (sent.append(a) or "obs", 0.0, False, False, {})
     f.servo([0.01, -0.12, 0.18], -1.0, arm="left", min_steps=1, max_steps=1)
     (a,) = sent
@@ -489,6 +490,26 @@ def test_the_bridge_widowx_takes_an_unnormalised_pose_action_and_objs_actors():
         0,
         1.0,
     ]
+
+
+def test_servo_frames_carry_the_action_sent_and_the_steps_success():
+    """One frame per control step, each with the env action the servo sent and ManiSkill's
+    success after it; a call that ran no step returns the current frame without them."""
+    f = _facade("xarm6_robotiq")
+    f.stop_requested = lambda: False
+    f._state = lambda: {"tcp_pos": np.zeros(3)}
+    f._pack = lambda obs: {"obs": obs}
+    f._obs = "now"
+    wins = iter([False, True])
+    f._step = lambda a: ("obs", 0.0, False, False, {"success": next(wins)})
+    frames, info = f.servo([0.01, 0, 0], -1, min_steps=3, max_steps=3)
+    assert [fr["success"] for fr in frames] == [False, True], "stops at success"
+    assert all(fr["action"].dtype == np.float32 for fr in frames)
+    assert frames[0]["action"].tolist() == pytest.approx(
+        [0.01 * 1.3 / ms.DELTA_BOUND_M, 0, 0, 1.0]
+    ), "the Robotiq closes with +1"
+    frames, _ = f.servo([0, 0, 0], 1, min_steps=0, max_steps=0)
+    assert frames == [{"obs": "now"}]
 
 
 def test_a_robot_without_a_wrist_camera_observes_the_agentview_alone():

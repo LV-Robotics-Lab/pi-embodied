@@ -259,7 +259,9 @@ ROBOTS: dict[str, RobotSpec] = {
         width=("pads", "left_inner_finger_pad", "right_inner_finger_pad", 0.0067),
         # PushCube / PokeCube put the goal (and PokeCube the cube) beyond its reach (x > 0.1,
         # 0.62 m from the base); PegInsertionSide resets a Panda's joint vector only;
-        # PickSingleYCB has no xarm6 layout.
+        # PickSingleYCB has no xarm6 layout. PullCubeTool succeeds with the cube within
+        # 0.6 m of the base, and the xArm6's base (x = -0.522) is 9 cm nearer the cube
+        # than the Panda's: ~8 % of seeds start solved.
         envs=(
             "PickCube-v1",
             "StackCube-v1",
@@ -267,7 +269,6 @@ ROBOTS: dict[str, RobotSpec] = {
             "LiftPegUpright-v1",
             "PlaceSphere-v1",
             "StackPyramid-v1",
-            "PullCubeTool-v1",
             "PlugCharger-v1",
         ),
         wrist={

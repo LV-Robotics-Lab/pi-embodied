@@ -88,11 +88,12 @@ BlockStack-v1) run their own Panda. Results record a non-Panda arm as `maniskill
 | `--robot` | ManiSkill uid | Env ids | Gripper | Wrist view |
 | --- | --- | --- | --- | --- |
 | `panda` (default) | `panda_wristcam` | all 12 stock ids and the rigs | mimic, +1 open / -1 close | Show-Harness's centred D415, turned 270 deg |
-| `xarm6_robotiq` | `xarm6_robotiq` | PickCube, StackCube, PullCube, LiftPegUpright, PlaceSphere, StackPyramid, PullCubeTool, PlugCharger | Robotiq 2F-85 in delta mode, +1 close / -1 open | the wristcam variant's camera on `camera_link`, turned 90 deg |
+| `xarm6_robotiq` | `xarm6_robotiq` | PickCube, StackCube, PullCube, LiftPegUpright, PlaceSphere, StackPyramid, PlugCharger | Robotiq 2F-85 in delta mode, +1 close / -1 open | the wristcam variant's camera on `camera_link`, turned 90 deg |
 | `widowxai` | `widowxai` (+ `pd_ee_delta_pos` on its six arm joints) | PickCube | carriages, +1 open / -1 close; 10-step hold | none: the agentview alone |
 
 The other ids are refused per arm: the xArm6 cannot reach PushCube's and PokeCube's goals,
-PegInsertionSide resets a Panda joint vector, PickSingleYCB has no xArm6 layout, and with its
+PegInsertionSide resets a Panda joint vector, PickSingleYCB has no xArm6 layout, PullCubeTool's
+"cube within 0.6 m of the base" already holds at reset on ~8 % of seeds with the xArm6's nearer base, and with its
 gripper held pointing down the WidowX AI reaches only ~0.37 m from its base (PickCube's own layout).
 Not offered: `so100` and `koch-v1.1` (joint control only and no TCP link), `fetch` (mobile base),
 `ur_10e` / `widowx250s` (joint control only; the table scene has no placement for them), and the

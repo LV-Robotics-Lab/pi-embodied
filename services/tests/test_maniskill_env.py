@@ -142,6 +142,8 @@ def test_robot_spec_refuses_unknown_arms_rigs_and_unmeasured_scenes():
         ("ur5", "PickCube-v1", False, "unknown robot"),
         ("xarm6_robotiq", "BlockStack-v1", True, "--robot panda only"),
         ("xarm6_robotiq", "PushCube-v1", False, "not PushCube-v1"),
+        # Its base is near enough that PullCubeTool starts solved on ~8 % of seeds.
+        ("xarm6_robotiq", "PullCubeTool-v1", False, "not PullCubeTool-v1"),
         ("widowxai", "StackCube-v1", False, "not StackCube-v1"),
     ]:
         try:

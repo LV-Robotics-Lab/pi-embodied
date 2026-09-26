@@ -197,7 +197,6 @@ const XARM6_ROBOTIQ: ManiskillRobot = {
 		"LiftPegUpright-v1",
 		"PlaceSphere-v1",
 		"StackPyramid-v1",
-		"PullCubeTool-v1",
 		"PlugCharger-v1",
 	],
 	vectors: VECTORS,

@@ -193,6 +193,8 @@ test("--robot is checked against the env id: a rig runs its own Panda, a stock s
 	assert.throws(() => robotFor("widowxai", "BlockStack-v1"), /--robot panda only/);
 	// The goal beyond the xArm6's reach; the WidowX AI's reach ends before the stock scenes' objects.
 	assert.throws(() => robotFor("xarm6_robotiq", "PushCube-v1"), /runs PickCube-v1, .*not PushCube-v1/);
+	// PullCubeTool's "within 0.6 m of the base" holds at reset on ~8 % of seeds with the nearer xArm6 base.
+	assert.throws(() => robotFor("xarm6_robotiq", "PullCubeTool-v1"), /not PullCubeTool-v1/);
 	assert.throws(() => robotFor("widowxai", "StackCube-v1"), /runs PickCube-v1, not StackCube-v1/);
 	assert.throws(() => robotFor("ur5", "PickCube-v1"), /unknown --robot ur5; one of panda, xarm6_robotiq, widowxai/);
 	assert.throws(() => robotFor("toString", "PickCube-v1"), /unknown --robot/);

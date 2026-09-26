@@ -29,6 +29,8 @@ import { NdArray, RpcClient } from "../rpc.ts";
 import { finishMove, type Move, type MoveUnit, type Vec3 } from "../units/index.ts";
 
 const SYSTEM = template(new URL("./SYSTEM.md", import.meta.url));
+const EXPLORE = template(new URL("./explore.md", import.meta.url));
+const MEMORY = template(new URL("./memory.md", import.meta.url));
 
 /** The seven tasks (services/.../robots/robosuite/tasks.py TASKS), the `--task` values. */
 export const TASKS = ["Lift", "Stack", "Restack", "Wipe", "NutAssemblySquare", "TwoArmLift", "TwoArmHandover"] as const;
@@ -152,6 +154,8 @@ export default function robosuite(pi: ExtensionAPI) {
 
 	/** The task the flags name at load: units reads `arms` once, so the arm set is fixed here (startEpisode checks it). */
 	const loadedTask = flag("task", "Lift");
+	/** The memory cell of this task at `seed`. */
+	const tag = (seed: string) => `robosuite_${robot.task.task}_s${seed}`;
 	const twoArm = () => TWO_ARM.includes(robot.task.task as Task);
 	const robot = defineRobot(pi, {
 		name: "robosuite",
@@ -161,9 +165,32 @@ export default function robosuite(pi: ExtensionAPI) {
 		groundTruth: (names) => call("env.ground_truth_poses", { names: names ?? null }),
 		// Observations carry the task camera, then the wrist view.
 		vdm: { views: 2, wrist: 1 },
+		// No corpus is published for robosuite: memory is what exploration writes locally, one cell per task and seed.
+		memory: {
+			cell: () => ({ tag: tag(robot.task.seed), reference: tag("0") }),
+			primitives: ["move_to", "move_delta", "gripper", "act"],
+			published: false,
+		},
+		explore: {
+			// The exploration `reset` tool is not a robot.tool, so robot.signal is unset here; use its own signal.
+			reset: async (result, _ctx, signal) => {
+				grip.clear();
+				const [o] = await env.call<[Obs, unknown]>("env.reset", {}, 600_000, [], signal);
+				absorb(o);
+				return observe({ ...result, reset: true });
+			},
+			prompt: () => EXPLORE.replaceAll("{{task}}", robot.task.task).replaceAll("{{seed}}", robot.task.seed),
+			rewrite: [
+				[
+					/This is a single episode\. You may recover within it \(re-position, re-grasp\), but you cannot restart it\./,
+					"This is an exploration run: `reset` starts a fresh attempt (see Exploration). Within an attempt, recover in place (re-position, re-grasp).",
+				],
+			],
+		},
 		start: startEpisode,
 		prompt: () =>
 			SYSTEM.replaceAll("{{task_language}}", language)
+				.replaceAll("{{memory}}", pi.getFlag("explore") === true ? "" : robot.mem!.render(MEMORY).trim())
 				.replaceAll("{{table_z}}", String(round(meta?.table_z ?? 0.8, 3)))
 				.replaceAll(
 					"{{arms}}",
@@ -269,6 +296,8 @@ export default function robosuite(pi: ExtensionAPI) {
 			result,
 			step: envStep,
 			success,
+			// Exploration's and the memory recipe's success signal (../explore.ts, ../memory).
+			terminated: success,
 			success_step: successStep,
 			task_language: language,
 			state,

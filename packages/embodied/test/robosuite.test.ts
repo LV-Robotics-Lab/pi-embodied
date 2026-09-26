@@ -17,7 +17,7 @@ import robosuite, {
 	YAW_STEP_RAD,
 } from "../src/robosuite/index.ts";
 import { ground, MOVE_UNITS } from "../src/units/index.ts";
-import { type Call, f32, fakeEnv, rgb, stubPi as simPi } from "./sim-stub.ts";
+import { type Call, checkSimExplore, f32, fakeEnv, rgb, stubPi as simPi } from "./sim-stub.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 type Tool = { name: string; description: string; parameters: any; execute: (...a: any[]) => Promise<any> };
@@ -290,4 +290,16 @@ test("--ik activates preview_reach, which asks env.preview_reach for the named a
 	process.exitCode = undefined;
 	assert.ok(!off.active().includes("preview_reach"));
 	assert.doesNotMatch((await off.emit("before_agent_start")).systemPrompt as string, /preview_reach/);
+});
+
+test("memory and exploration: reset restarts the seeded scene, the cell is robosuite_<task>_s<seed>", async (t) => {
+	const env = await fakeRobosuite("Stack");
+	t.after(env.close);
+	await checkSimExplore({
+		load: robosuite,
+		values: { env: env.url, task: "Stack", seed: "0" },
+		tag: "robosuite_Stack_s0",
+		resets: () => env.calls.filter((c) => c.method === "env.reset").length,
+		observe: "view_env_state",
+	});
 });

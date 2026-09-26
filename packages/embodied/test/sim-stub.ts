@@ -3,9 +3,12 @@
  * server speaking ../src/rpc.ts's wire protocol with a per-method handler.
  */
 
+import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 type Handler = (event: any, ctx: any) => unknown;
@@ -16,6 +19,8 @@ export function stubPi(values: Record<string, unknown> = {}) {
 	const flags: Record<string, unknown> = {};
 	const tools = new Map<string, any>();
 	const entries: { type: string; data: any }[] = [];
+	const branch: any[] = [];
+	const dir = mkdtempSync(join(tmpdir(), "pi-sim-stub-"));
 	let active: string[] = [];
 	const pi = {
 		on: (name: string, fn: Handler) => handlers.set(name, [...(handlers.get(name) ?? []), fn]),
@@ -38,14 +43,14 @@ export function stubPi(values: Record<string, unknown> = {}) {
 	} as unknown as ExtensionAPI;
 	const ctx = {
 		hasUI: false,
-		cwd: tmpdir(),
+		cwd: dir,
 		ui: { notify: () => {} },
 		shutdown: () => {},
 		abort: () => {},
 		sessionManager: {
-			getBranch: () => [],
-			getEntries: () => [],
-			getSessionDir: () => tmpdir(),
+			getBranch: () => branch,
+			getEntries: () => branch,
+			getSessionDir: () => dir,
 			getSessionFile: () => undefined,
 			getSessionId: () => "sess",
 		},
@@ -57,7 +62,55 @@ export function stubPi(values: Record<string, unknown> = {}) {
 	}
 	const run = async (name: string, params: unknown) =>
 		(await tools.get(name).execute("id", params, undefined, undefined, ctx)) as any;
-	return { pi, flags, tools, entries, emit, run, active: () => active };
+	/** Record a tool result on the branch, as pi does after execution. */
+	const record = (toolName: string, details: Record<string, unknown>, isError = false) =>
+		branch.push({ type: "message", message: { role: "toolResult", toolName, toolCallId: "id", details, isError } });
+	return { pi, flags, tools, entries, emit, run, record, dir, active: () => active };
+}
+
+/**
+ * Exploration on a simulated robot: `reset` is refused until the attempt is archived, then restarts the
+ * episode through env.reset (`resets` counts them) with a fresh observation; the exploration prompt names
+ * the cell; an evaluation prompt carries the memory section instead.
+ */
+export async function checkSimExplore(o: {
+	load: (pi: ExtensionAPI) => unknown;
+	values: Record<string, unknown>;
+	tag: string;
+	resets: () => number;
+	observe: string;
+}) {
+	const s = stubPi({ ...o.values, explore: true, "output-dir": "run", "memory-dir": "memory" });
+	o.load(s.pi);
+	await s.emit("session_start");
+	process.exitCode = undefined;
+	assert.ok(s.flags.explore === true && "explore-sessions" in s.flags);
+	assert.ok(s.active().includes("finish"), "the robot started");
+	await assert.rejects(s.run("reset", { reason: "slipped" }), /Close out attempt 1 first/);
+	const before = o.resets();
+	const attempts = join(s.dir, "run", "attempts", o.tag);
+	mkdirSync(attempts, { recursive: true });
+	writeFileSync(join(attempts, "attempt_1_failed.json"), "{}");
+	const r = await s.run("reset", { reason: "slipped" });
+	assert.equal(o.resets(), before + 1, "reset restarts the episode on the env server");
+	assert.equal(r.details.result?.attempt ?? r.details.attempt, 2);
+	assert.equal(r.details.terminated ?? r.details.result?.terminated, false);
+	s.pi.setActiveTools([o.observe]);
+	const explored = (await s.emit("before_agent_start", { systemPrompt: "base" })).systemPrompt as string;
+	assert.ok(s.active().includes("reset"));
+	assert.match(explored, new RegExp(`MULTI-ATTEMPT EXPLORE mode[\\s\\S]*cell \`${o.tag}\``));
+	assert.doesNotMatch(explored, /\{\{\w+\}\}/);
+
+	const e = stubPi({ ...o.values, "memory-dir": "memory" });
+	o.load(e.pi);
+	mkdirSync(join(e.dir, "memory"));
+	await e.emit("session_start");
+	process.exitCode = undefined;
+	assert.ok(e.active().includes("read"), `memory's read tool is active: ${e.active()}`);
+	assert.ok(!e.active().includes("reset"));
+	const evaluated = (await e.emit("before_agent_start", { systemPrompt: "base" })).systemPrompt as string;
+	assert.match(evaluated, /# Memory\nNotes from earlier explored episodes/);
+	assert.doesNotMatch(evaluated, /MULTI-ATTEMPT|\{\{\w+\}\}/);
 }
 
 /** A numpy array on the wire. */

@@ -663,7 +663,7 @@ def test_the_franka_planners_get_the_perception_sam3_and_its_camera_names(monkey
     single = FrankaEnvFacade(
         _FrankaBackend(),
         Perception(sam3=sam3, cameras=single_cams),
-        {"graspnet": FakeServer([])},
+        {"contact_graspnet": FakeServer([])},
     )
     planner = single._rpc["env.plan_grasp"].__self__
     assert planner._sam3 is sam3 and planner.capabilities()["segment"] is True
@@ -680,7 +680,7 @@ def test_the_franka_planners_get_the_perception_sam3_and_its_camera_names(monkey
     dual = dual_server.DualFrankaEnvFacade(
         backend,
         Perception(sam3=sam3, cameras=dual_cams, intrinsics=intrinsics),
-        {"graspnet": FakeServer([])},
+        {"contact_graspnet": FakeServer([])},
     )
     planner = dual._rpc["env.plan_grasp"].__self__
     assert planner._sam3 is sam3

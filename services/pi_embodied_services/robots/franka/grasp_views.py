@@ -195,7 +195,9 @@ def franka_grasp_planner(
     from pi_embodied_services.utils.grasp import GraspPlanner
 
     urls = dict(urls or {})
-    if not any(urls.get(k) for k in ("graspnet", "graspgenx", "anygrasp", "anyplace")):
+    if not any(
+        urls.get(k) for k in ("contact_graspnet", "graspgenx", "anygrasp", "anyplace")
+    ):
         return None
     cache: dict[str, Any] = {}
 

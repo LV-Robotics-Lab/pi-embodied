@@ -14,7 +14,7 @@
 
 """Grasp and placement planning an env server composes over its current observation.
 
-The grasp servers (``components/graspnet_server.py``, ``graspgenx_server.py``,
+The grasp servers (``components/contact_graspnet_server.py``, ``graspgenx_server.py``,
 ``anygrasp_server.py``) answer in the **GraspNet grasp frame** in the camera's OpenCV frame:
 origin at the grasp center (between the finger pads), X = approach, Y = closing (the fingers
 slide along it), Z = X x Y. Each server converts its model's native frame itself (the
@@ -591,22 +591,22 @@ class GraspPlanner:
         view: View,
         *,
         cameras: list[str],
-        graspnet: str | None = None,
+        contact_graspnet: str | None = None,
         graspgenx: str | None = None,
         anygrasp: str | None = None,
         anyplace: str | None = None,
         sam3: str | None = None,
         **kwargs: Any,
     ) -> GraspPlanner | None:
-        """A planner for the ``--graspnet/--graspgenx/--anygrasp/--anyplace`` URLs, or None when
+        """A planner for the ``--contact-graspnet/--graspgenx/--anygrasp/--anyplace`` URLs, or None when
         none was given (the env server then changes nothing)."""
-        if not (graspnet or graspgenx or anygrasp or anyplace):
+        if not (contact_graspnet or graspgenx or anygrasp or anyplace):
             return None
         return cls(
             view,
             cameras=cameras,
             backends={
-                "contact_graspnet": graspnet,
+                "contact_graspnet": contact_graspnet,
                 "graspgenx": graspgenx,
                 "anygrasp": anygrasp,
             },
@@ -1014,12 +1014,12 @@ class GraspPlanner:
     def _backend(self, backend: str | None) -> tuple[str, Any]:
         if not self._backends:
             raise GraspError(
-                "no grasp backend: start the env server with --graspnet, --graspgenx or --anygrasp"
+                "no grasp backend: start the env server with --contact-graspnet, --graspgenx or --anygrasp"
             )
         if backend is None:
             name = next(n for n in BACKENDS if n in self._backends)
         else:
-            name = {"graspnet": "contact_graspnet"}.get(str(backend), str(backend))
+            name = str(backend)
             if name not in self._backends:
                 raise GraspError(
                     f"backend {backend!r} is not configured; available: {sorted(self._backends)}"
@@ -1705,9 +1705,9 @@ __all__ = [
 
 
 def add_grasp_arguments(parser: Any) -> None:
-    """``--graspnet/--graspgenx/--anygrasp/--anyplace <url>`` and ``--grasp-to-eef``."""
+    """``--contact-graspnet/--graspgenx/--anygrasp/--anyplace <url>`` and ``--grasp-to-eef``."""
     for name, what in (
-        ("graspnet", "Contact-GraspNet server URL"),
+        ("contact-graspnet", "Contact-GraspNet server URL"),
         ("graspgenx", "GraspGenX server URL"),
         ("anygrasp", "AnyGrasp server URL"),
         ("anyplace", "AnyPlace server URL"),
@@ -1772,7 +1772,7 @@ def urls_from_args(args: Any) -> dict[str, Any]:
         else:
             cal = GraspToEef.from_config(raw)
     return {
-        "graspnet": getattr(args, "graspnet", None),
+        "contact_graspnet": getattr(args, "contact_graspnet", None),
         "graspgenx": getattr(args, "graspgenx", None),
         "anygrasp": getattr(args, "anygrasp", None),
         "anyplace": getattr(args, "anyplace", None),

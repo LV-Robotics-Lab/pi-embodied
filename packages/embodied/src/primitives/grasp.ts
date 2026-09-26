@@ -2,7 +2,7 @@
  * Grasp and placement tools over the env servers' grasp primitives (services
  * `utils/grasp.py`): `plan_grasp`, `plan_place` and the VLM attachment probe `check_attached`.
  *
- *   pi -e packages/embodied/src/libero --graspnet http://127.0.0.1:8120 [--graspgenx URL] [--anyplace URL] [--anygrasp URL]
+ *   pi -e packages/embodied/src/libero --contact-graspnet http://127.0.0.1:8120 [--graspgenx URL] [--anyplace URL] [--anygrasp URL]
  *
  * The robot registers the flags (`registerGraspFlags`) and passes them to its env server
  * (`graspArgs`), which composes SAM3, the grasp servers and its own camera calibration and hands
@@ -40,7 +40,7 @@ export const CHECK_ATTACHED_ENTRY = "check_attached";
 export const GRASP_TOOLS = ["plan_grasp", "plan_place", "check_attached"] as const;
 export const BACKENDS = ["contact_graspnet", "graspgenx", "anygrasp"] as const;
 /** The env-server flag per grasp service: `--<name> <url>`. */
-const SERVICES = ["graspnet", "graspgenx", "anyplace", "anygrasp"] as const;
+const SERVICES = ["contact-graspnet", "graspgenx", "anyplace", "anygrasp"] as const;
 
 /** A grasp tool as the robot mounts it: `run` gets the abort signal and the pi context (for the VLM). */
 export type GraspToolDef<P extends TSchema = TSchema> = {
@@ -69,7 +69,11 @@ export type GraspRig = {
 };
 
 export function registerGraspFlags(pi: ExtensionAPI) {
-	pi.registerFlag("graspnet", { type: "string", default: "", description: "Contact-GraspNet server for plan_grasp" });
+	pi.registerFlag("contact-graspnet", {
+		type: "string",
+		default: "",
+		description: "Contact-GraspNet server for plan_grasp",
+	});
 	pi.registerFlag("graspgenx", { type: "string", default: "", description: "GraspGenX server for plan_grasp" });
 	pi.registerFlag("anyplace", { type: "string", default: "", description: "AnyPlace server for plan_place" });
 	pi.registerFlag("anygrasp", { type: "string", default: "", description: "AnyGrasp server for plan_grasp" });
@@ -82,7 +86,7 @@ export function registerGraspFlags(pi: ExtensionAPI) {
 
 const url = (pi: ExtensionAPI, name: string) => String(pi.getFlag(name) ?? "").trim();
 
-/** The env server arguments for the configured grasp services (`--graspnet URL ...`). */
+/** The env server arguments for the configured grasp services (`--contact-graspnet URL ...`). */
 export function graspArgs(pi: ExtensionAPI): string[] {
 	return SERVICES.flatMap((name) => (url(pi, name) ? [`--${name}`, url(pi, name)] : []));
 }

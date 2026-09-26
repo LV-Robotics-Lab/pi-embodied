@@ -153,7 +153,7 @@ export default function dualFranka(pi: ExtensionAPI) {
 		description:
 			"Lowest right_base TCP z for move_delta and units, m (required: the robot does not start without it)",
 	});
-	// --graspnet/--graspgenx/--anyplace/--anygrasp: plan_grasp, plan_place, check_attached (../primitives/grasp.ts).
+	// --contact-graspnet/--graspgenx/--anyplace/--anygrasp: plan_grasp, plan_place, check_attached (../primitives/grasp.ts).
 	registerGraspFlags(pi);
 
 	let env: RpcClient | undefined;
@@ -624,7 +624,7 @@ export default function dualFranka(pi: ExtensionAPI) {
 	});
 
 	// plan_grasp / plan_place / check_attached (../primitives/grasp.ts): the env server plans over its
-	// calibrated RGB-D cameras; active with --graspnet/--graspgenx/--anyplace/--anygrasp.
+	// calibrated RGB-D cameras; active with --contact-graspnet/--graspgenx/--anyplace/--anygrasp.
 	for (const d of graspTools(pi, {
 		call: (method, kwargs, timeoutMs) => call(method, kwargs, timeoutMs ?? 120_000),
 		task: () => setup?.task.instruction ?? "",

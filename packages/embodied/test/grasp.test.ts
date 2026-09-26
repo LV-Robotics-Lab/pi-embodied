@@ -102,12 +102,23 @@ const PNG = Buffer.from(
 test("the grasp flags are off by default: no env args and no active tool", () => {
 	const f = fakePi();
 	registerGraspFlags(f.pi);
-	assert.deepEqual(Object.keys(f.flags).sort(), ["anygrasp", "anyplace", "attach-vlm-model", "graspgenx", "graspnet"]);
+	assert.deepEqual(Object.keys(f.flags).sort(), [
+		"anygrasp",
+		"anyplace",
+		"attach-vlm-model",
+		"contact-graspnet",
+		"graspgenx",
+	]);
 	assert.deepEqual(graspArgs(f.pi), []);
 	assert.deepEqual(graspActive(f.pi), []);
-	const g = fakePi({ graspnet: "http://127.0.0.1:8120", anyplace: "http://127.0.0.1:8123" });
+	const g = fakePi({ "contact-graspnet": "http://127.0.0.1:8120", anyplace: "http://127.0.0.1:8123" });
 	registerGraspFlags(g.pi);
-	assert.deepEqual(graspArgs(g.pi), ["--graspnet", "http://127.0.0.1:8120", "--anyplace", "http://127.0.0.1:8123"]);
+	assert.deepEqual(graspArgs(g.pi), [
+		"--contact-graspnet",
+		"http://127.0.0.1:8120",
+		"--anyplace",
+		"http://127.0.0.1:8123",
+	]);
 	assert.deepEqual(graspActive(g.pi), [...GRASP_TOOLS]);
 });
 
@@ -125,7 +136,7 @@ test("every robot registers the three grasp tools at load, with the arm paramete
 		assert.ok("object" in props && "mask_id" in props && "next_after" in props);
 		assert.ok("grasp_id" in f.tools.get("plan_place").parameters.properties);
 		assert.ok("object" in f.tools.get("check_attached").parameters.properties);
-		assert.ok("graspnet" in f.flags && "anyplace" in f.flags, `${name} registers the flags`);
+		assert.ok("contact-graspnet" in f.flags && "anyplace" in f.flags, `${name} registers the flags`);
 	}
 	// LIBERO executes a planned id in one tool (one resolution); its free motions take xyz only.
 	const l = fakePi();

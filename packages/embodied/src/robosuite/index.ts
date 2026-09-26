@@ -120,7 +120,7 @@ export default function robosuite(pi: ExtensionAPI) {
 	});
 	// --ik: the env server checks reach before every move, and preview_reach asks it (../ik.ts).
 	registerIkFlag(pi);
-	// --graspnet / --graspgenx / --anyplace / --anygrasp: plan_grasp, plan_place and check_attached (../primitives/grasp.ts).
+	// --contact-graspnet / --graspgenx / --anyplace / --anygrasp: plan_grasp, plan_place and check_attached (../primitives/grasp.ts).
 	registerGraspFlags(pi);
 	// --detections / --unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
 	registerDetectionFlags(pi);

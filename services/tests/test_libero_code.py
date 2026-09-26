@@ -492,7 +492,9 @@ def grasp_facade():
         ]
     )
     f = LiberoEnvFacade(
-        DownArm(), meta={}, grasp={"graspnet": server, "anyplace": FakeAnyPlace([T])}
+        DownArm(),
+        meta={},
+        grasp={"contact_graspnet": server, "anyplace": FakeAnyPlace([T])},
     )
     f._grasp._sam3 = FakeSam3(mask)
     f.reset()

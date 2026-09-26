@@ -324,7 +324,7 @@ class LiberoEnvFacade(BaseEnvFacade):
         self._run_steps = 0
         self._run_success: int | None = None
         self._run_frames: list = []
-        # --graspnet/--graspgenx/--anygrasp/--anyplace: env.plan_grasp, env.plan_place and the
+        # --contact-graspnet/--graspgenx/--anygrasp/--anyplace: env.plan_grasp, env.plan_place and the
         # grasp/placement ids over the 512x512 upright agentview / wrist frames (utils/grasp.py);
         # None without them, and the server is unchanged.
         self._grasp = GraspPlanner.from_args(
@@ -1156,7 +1156,7 @@ class LiberoEnvFacade(BaseEnvFacade):
                 "into waypoints at carry height"
             )
 
-    # ---- planned grasps (--graspnet/--graspgenx/--anygrasp/--anyplace) ----
+    # ---- planned grasps (--contact-graspnet/--graspgenx/--anygrasp/--anyplace) ----
 
     def _servo_pose(
         self,

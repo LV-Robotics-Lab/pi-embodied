@@ -1186,12 +1186,17 @@ def test_code_api_lists_the_primitives_and_resolves_to_the_facade_methods():
 
 
 def test_the_grasp_arguments_parse(tmp_path, capsys):
-    """Finding: pi passes --graspnet/--anyplace/... to every franka backend; this argparse
+    """Finding: pi passes --contact-graspnet/--anyplace/... to every franka backend; this argparse
     refused them, so the Polymetis server could not start with a grasp service."""
     path = tmp_path / "c.yaml"
     path.write_text(yaml.safe_dump(cfg()))
     argv = ["--print-config", "--robot-config", str(path)]
-    grasp = ["--graspnet", "http://127.0.0.1:1", "--anyplace", "http://127.0.0.1:2"]
+    grasp = [
+        "--contact-graspnet",
+        "http://127.0.0.1:1",
+        "--anyplace",
+        "http://127.0.0.1:2",
+    ]
     grasp += ["--anygrasp", "http://127.0.0.1:3", "--graspgenx", "http://127.0.0.1:4"]
     grasp += ["--grasp-to-eef", '{"translation": [0, 0, 0.01]}']
     assert main(argv + grasp) == 0
@@ -1246,7 +1251,7 @@ def test_the_planner_segments_object_text_with_the_perception_sam3(monkeypatch):
         cams,
         sleep=lambda s: None,
         perception=perception,
-        grasp={"graspnet": server},
+        grasp={"contact_graspnet": server},
     )
     holder["f"] = f
     assert {"env.plan_grasp", "env.plan_place", "env.claim_waypoints"} <= set(f._rpc)

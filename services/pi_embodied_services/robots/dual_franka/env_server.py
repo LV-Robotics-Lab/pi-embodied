@@ -129,7 +129,8 @@ class DualFrankaEnvFacade(FrankaEnvFacade):
 
         urls = self._grasp_urls or {}
         if not any(
-            urls.get(k) for k in ("graspnet", "graspgenx", "anygrasp", "anyplace")
+            urls.get(k)
+            for k in ("contact_graspnet", "graspgenx", "anygrasp", "anyplace")
         ):
             return None
         bundle = p.load_calibration_bundle()

@@ -17,10 +17,9 @@
 Run manually with::
 
     CONTACT_GRASPNET_ROOT=/path/to/contact_graspnet_pytorch PYTHONPATH=/path/to/pi/services \
-        python -m pi_embodied_services.components.graspnet_server --port 8120
+        python -m pi_embodied_services.components.contact_graspnet_server --port 8120
 
-Runs in its own venv (the ``graspnet`` extra: the elchun/contact_graspnet_pytorch checkout
-installed with ``pip install -e``, a CUDA torch; the checkpoint ships in the checkout under
+Runs in its own venv (the elchun/contact_graspnet_pytorch checkout installed with ``pip install -e``, a CUDA torch; the checkpoint ships in the checkout under
 ``checkpoints/contact_graspnet``). Serves ``contact_graspnet.plan``: the model predicts in its
 Panda base frame (Z approach, X closing, origin at the gripper base); the answer is in the
 GraspNet grasp frame (``utils/grasp.contact_graspnet_candidates``). CaP-X served the same
@@ -51,7 +50,7 @@ from pi_embodied_services.utils.grasp import (
 )
 from pi_embodied_services.utils.logging import get_logger
 
-logger = get_logger("graspnet_server")
+logger = get_logger("contact_graspnet_server")
 
 TARGET_SEGMENT = 1
 

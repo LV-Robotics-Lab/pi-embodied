@@ -87,7 +87,7 @@ test("flags: --task lists the tasks, --seed, --max-move, the service URLs, and n
 	assert.equal(f.flags.seed.default, "0");
 	assert.equal(f.flags["max-move"].default, String(MAX_MOVE_M));
 	assert.equal(f.flags.sam3.default, "http://127.0.0.1:18300");
-	assert.ok("ik" in f.flags && "graspnet" in f.flags && "cuda-device" in f.flags && "privileged" in f.flags);
+	assert.ok("ik" in f.flags && "contact-graspnet" in f.flags && "cuda-device" in f.flags && "privileged" in f.flags);
 	assert.ok(!f.tools.has("ground_truth_poses"), "--privileged off registers nothing");
 	// Units and VDM are mounted.
 	assert.ok("units" in f.flags && "vdm" in f.flags);

@@ -34,7 +34,7 @@ The primitive registry (``code.api``, ./primitives.py, components/code_api.py) d
 same facade methods for a code-as-policy caller: ``move_to`` / ``move_delta`` / ``set_gripper``
 step the same env under the same limits and stop generation as pi's tools; ``segment`` needs
 ``--sam3``, ``preview_reach`` and the reach check before a move need ``--ik``, ``plan_grasp`` and
-friends a grasp server (``--graspnet`` ...; utils/grasp.py).
+friends a grasp server (``--contact-graspnet`` ...; utils/grasp.py).
 """
 
 from __future__ import annotations
@@ -228,7 +228,7 @@ class RobosuiteEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         self._closed = False
         self._cameras = {"agentview": t.camera, "wrist": WRIST_CAMERA}
         # --sam3: the `segment` primitive; --ik: env.preview_reach and the reach check before a
-        # move (utils/reach.py); --graspnet & co: env.plan_grasp and friends (utils/grasp.py).
+        # move (utils/reach.py); --contact-graspnet & co: env.plan_grasp and friends (utils/grasp.py).
         self._sam3_url = sam3
         self._sam3 = None
         self._reach = ik_reach

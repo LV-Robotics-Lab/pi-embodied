@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { CLOSED_LOOP } from "../src/closed-loop.ts";
 import {
 	defineRobot,
 	RESULT_ENTRY,
@@ -12,6 +13,7 @@ import {
 	STATUS_EVENT,
 	SYSTEM_PROMPT_ENTRY,
 	TASK_ENTRY,
+	toolSections,
 } from "../src/robot.ts";
 import { RpcUnavailable } from "../src/rpc.ts";
 import { UNITS_EVENT, type UnitsHandle, type UnitsSpec } from "../src/units/index.ts";
@@ -381,9 +383,11 @@ test("the forced system prompt is recorded once per change (pi sends it without 
 	await f.emit("before_agent_start");
 	prompt = "Move the block carefully.";
 	await f.emit("before_agent_start");
-	assert.deepEqual(first, { systemPrompt: "Move the block." });
+	// Every prompt closes with the shared closed-loop rules (../src/closed-loop.md).
+	const closed = (text: string) => `${text}\n\n${toolSections(CLOSED_LOOP, ["move", "finish"])}`;
+	assert.deepEqual(first, { systemPrompt: closed("Move the block.") });
 	assert.deepEqual(
 		f.entries.filter((e) => e.type === SYSTEM_PROMPT_ENTRY).map((e) => e.data),
-		[{ text: "Move the block." }, { text: "Move the block carefully." }],
+		[{ text: closed("Move the block.") }, { text: closed("Move the block carefully.") }],
 	);
 });

@@ -36,7 +36,7 @@
 # scene, seed, env_id, success, status, termination_reason, the planner and the units/stateless/privileged
 # modes as above. The cell timeout is TIME_LIMIT (default 1800 s). Reruns retry invalid cells the same
 # way. The summary is per split (success rate, task-weighted rate, invalid cells), printed and written to
-# <out>/robocasa365-summary.json; validate_target50.py never sees these results. An out dir holds results
+# <out>/robocasa365-<split>-summary.json; validate_target50.py never sees these results. An out dir holds results
 # of one protocol only: a Target50 run refuses a dir with robocasa365 results and vice versa.
 # The fallback planner (--fallback-model, --fallback-after, --fallback-retry-primary; src/fallback.ts) is part of the
 # configuration too, and the summary totals the turns each planner model planned (planner_models).
@@ -311,9 +311,11 @@ for (const split of new Set(rows.map((r) => r.split))) {
 	};
 	const x = summary.splits[split];
 	console.log(`robocasa365 ${split}: success ${ok}/${s.length} (${s.length ? ((100 * ok) / s.length).toFixed(1) : "-"}%) over ${perTask.size} tasks, task-weighted ${perTask.size ? (100 * weighted).toFixed(1) : "-"}%, planner_timeout ${x.planner_timeout}, claimed-but-failed ${x.claimed_but_failed}, invalid ${bad} of ${all.length}`);
+	// One file per split: a run of the other split into the same out dir leaves this one alone.
+	const file = `${out}/robocasa365-${split}-summary.json`;
+	fs.writeFileSync(file, `${JSON.stringify({ protocol: summary.protocol, split, config: summary.config, planner_models: summary.planner_models, ...x }, null, 2)}\n`);
+	console.log(`${summary.config ?? "-"}: ${split} summary written to ${file}`);
 }
-fs.writeFileSync(`${out}/robocasa365-summary.json`, `${JSON.stringify(summary, null, 2)}\n`);
-console.log(`${summary.config ?? "-"}: summary written to ${out}/robocasa365-summary.json`);
 if (invalid) process.exit(1);
 ' "$out" "$cells"
 	exit $?

@@ -136,18 +136,10 @@ test("robocasa/eval.sh summarizes per split, keeps valid cells on rerun and refu
 	const a = evalSh(dir, ["target"], ["--model", "m/x"], env, ok);
 	assert.equal(a.status, 0, a.stdout + a.stderr);
 	assert.match(a.stdout, /robocasa365 target: success 4\/4 \(100\.0%\) over 2 tasks, task-weighted 100\.0%/);
-	const summary = JSON.parse(a.read("out/robocasa365-summary.json") ?? "{}");
-	assert.equal(summary.protocol, "robocasa365");
-	assert.deepEqual(Object.keys(summary.splits), ["target"]);
-	assert.deepEqual(
-		[
-			summary.splits.target.tasks,
-			summary.splits.target.cells,
-			summary.splits.target.successes,
-			summary.splits.target.success_rate,
-		],
-		[2, 4, 4, 1],
-	);
+	const summary = JSON.parse(a.read("out/robocasa365-target-summary.json") ?? "{}");
+	assert.deepEqual([summary.protocol, summary.split], ["robocasa365", "target"]);
+	assert.deepEqual([summary.tasks, summary.cells, summary.successes, summary.success_rate], [2, 4, 4, 1]);
+	assert.equal(a.read("out/robocasa365-pretrain-summary.json"), undefined);
 	assert.ok(!existsSync(join(dir, "out/target50.pi.json")), "no Target50 derived manifest");
 	// The same configuration keeps its results (pi is not run again); another one is refused.
 	const same = evalSh(dir, ["target"], ["--model", "m/x"], env);
@@ -167,10 +159,15 @@ test("robocasa/eval.sh summarizes per split, keeps valid cells on rerun and refu
 	assert.equal(both.status, 0, both.stdout + both.stderr);
 	assert.match(both.stdout, /robocasa365 pretrain: success 1\/1/);
 	assert.match(both.stdout, /robocasa365 target: success 1\/1/);
-	assert.deepEqual(Object.keys(JSON.parse(both.read("out/robocasa365-summary.json") ?? "{}").splits), [
-		"pretrain",
-		"target",
-	]);
+	for (const split of ["pretrain", "target"])
+		assert.equal(JSON.parse(both.read(`out/robocasa365-${split}-summary.json`) ?? "{}").split, split);
+	// A later run of one split into the same out dir leaves the other split's summary alone.
+	const dir2 = mkdtempSync(join(tmpdir(), "eval365-"));
+	assert.equal(evalSh(dir2, ["pretrain"], [], { TASKS: "OpenDrawer", SCENES: "0" }, ok).status, 0);
+	const pre = evalSh(dir2, ["target"], [], { TASKS: "OpenDrawer", SCENES: "0" }, ok).read(
+		"out/robocasa365-pretrain-summary.json",
+	);
+	assert.equal(JSON.parse(pre ?? "{}").successes, 1);
 });
 
 test("robocasa/eval.sh never mixes Target50 and robocasa365 results in one out dir", () => {

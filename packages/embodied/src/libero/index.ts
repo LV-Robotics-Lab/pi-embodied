@@ -1430,6 +1430,12 @@ export default function libero(pi: ExtensionAPI) {
 		const tools = flag("ik", "") ? TOOLS : TOOLS.filter((name) => name !== "preview_reach");
 		const grasp = graspActive(pi);
 		const extra = [...extras.flatMap((on) => on()), ...advisor(grasp.length > 0)];
-		return [...tools, ...grasp, ...(grasp.length ? ["execute_grasp", "execute_place"] : []), ...adapters.keys(), ...extra];
+		return [
+			...tools,
+			...grasp,
+			...(grasp.length ? ["execute_grasp", "execute_place"] : []),
+			...adapters.keys(),
+			...extra,
+		];
 	}
 }

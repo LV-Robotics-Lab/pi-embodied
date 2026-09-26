@@ -79,6 +79,7 @@ from pi_embodied_services.robots.ur5e.control import (
     pose7_of,
 )
 from pi_embodied_services.robots.ur5e.primitives import UR5E_PRIMITIVES
+from pi_embodied_services.utils import hardware_lock
 from pi_embodied_services.utils.daemon import watch_parent_death
 from pi_embodied_services.utils.logging import get_logger
 
@@ -742,6 +743,7 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Test doubles instead of hardware; refused unless PI_EMBODIED_MOCK_ROBOT=1.",
     )
+    hardware_lock.add_lock_arguments(parser)
     args = parser.parse_args(argv)
     if args.mock:
         from pi_embodied_services.robots.ur5e.mock import MOCK_ENV
@@ -766,6 +768,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.print_config:
         print(yaml.safe_dump(cfg, sort_keys=False))
         return 0
+    # One server per physical arm on this machine (utils/hardware_lock.py); a mock drives none.
+    _lock = (
+        None
+        if args.mock
+        else hardware_lock.lock_from_args(
+            args,
+            hardware_lock.config_arm_ids("ur5e", cfg.get("robot") or {}),
+            "ur5e-env",
+        )
+    )
     arm, gripper, cameras = (
         build_mock(cfg, args.cameras) if args.mock else build(cfg, args.cameras)
     )

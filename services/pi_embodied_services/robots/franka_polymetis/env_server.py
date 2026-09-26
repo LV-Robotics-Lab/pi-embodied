@@ -78,7 +78,7 @@ from pi_embodied_services.robots.franka_polymetis.control import (
     PolymetisLimits,
     flange_to_tcp,
 )
-from pi_embodied_services.utils import reach
+from pi_embodied_services.utils import hardware_lock, reach
 from pi_embodied_services.utils.daemon import watch_parent_death
 from pi_embodied_services.utils.detections import state_digest
 from pi_embodied_services.utils.grasp import add_grasp_arguments, urls_from_args
@@ -668,6 +668,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     add_grasp_arguments(parser)
     reach.add_ik_argument(parser)
+    hardware_lock.add_lock_arguments(parser)
     args = parser.parse_args(argv)
     if args.mock:
         from pi_embodied_services.robots.franka_polymetis.mock import MOCK_ENV
@@ -682,6 +683,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.print_config:
         print(yaml.safe_dump(cfg, sort_keys=False))
         return 0
+    # One server per physical arm on this machine (utils/hardware_lock.py); a mock drives none.
+    _lock = (
+        None
+        if args.mock
+        else hardware_lock.lock_from_args(
+            args,
+            hardware_lock.config_arm_ids("franka-polymetis", cfg.get("robot") or {}),
+            "franka-polymetis-env",
+        )
+    )
     robot, cameras = build_mock(cfg) if args.mock else build(cfg)
     try:
         facade = FrankaPolymetisFacade(

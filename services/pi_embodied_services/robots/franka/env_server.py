@@ -35,7 +35,7 @@ from pi_embodied_services.robots.franka.primitives import (
     franka_primitives,
 )
 from pi_embodied_services.robots.franka.runtime_config import load_runtime_config
-from pi_embodied_services.utils import reach
+from pi_embodied_services.utils import hardware_lock, reach
 from pi_embodied_services.utils.detections import state_digest
 from pi_embodied_services.utils.grasp import (
     GraspPlanner,
@@ -721,6 +721,7 @@ def main(
     )
     add_grasp_arguments(parser)
     reach.add_ik_argument(parser)
+    hardware_lock.add_lock_arguments(parser)
     args = parser.parse_args()
     if args.ik and facade_class is not FrankaEnvFacade:
         parser.error("--ik is only supported by the single-arm franka env server")
@@ -734,6 +735,12 @@ def main(
 
         print(OmegaConf.to_yaml(runtime.rlinf))
         return 0
+    # One server per physical arm on this machine (utils/hardware_lock.py), before Ray touches it.
+    from omegaconf import OmegaConf
+
+    rlinf = OmegaConf.to_container(runtime.rlinf, resolve=True)
+    arms = hardware_lock.config_arm_ids("franka", rlinf, keys=r"(\w+_)?robot_ip")
+    _lock = hardware_lock.lock_from_args(args, arms, facade_class.SERVICE_NAME)
     worker, stop_flag = _launch_worker(
         runtime.rlinf, runtime.controller, create_worker_class=create_worker_class
     )

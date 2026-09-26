@@ -61,6 +61,7 @@ from pi_embodied_services.components.code_api import register_code_api
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
 from pi_embodied_services.robots.piper.controller import PiperController, PiperLimits
 from pi_embodied_services.robots.piper.primitives import PIPER_PRIMITIVES
+from pi_embodied_services.utils import hardware_lock
 from pi_embodied_services.utils.logging import get_logger
 
 logger = get_logger("piper_env_server")
@@ -648,6 +649,7 @@ def main() -> int:
         action="store_true",
         help="Print each arm's identity (for calibration.arm_id), then exit; no motion.",
     )
+    hardware_lock.add_lock_arguments(parser)
     args = parser.parse_args()
     if args.print_identity:
         from pi_embodied_services.robots.piper.ros_io import arm_identity
@@ -662,6 +664,14 @@ def main() -> int:
     if args.print_config:
         print(yaml.safe_dump(cfg, sort_keys=False))
         return 0
+    _lock = hardware_lock.lock_from_args(
+        args,
+        [
+            f"piper:{(acfg.get('calibration') or {}).get('arm_id') or side}"
+            for side, acfg in arm_configs(cfg).items()
+        ],
+        "piper-env",
+    )
     robot, cameras = build(cfg)
     facade = PiperEnvFacade(
         cfg, robot, cameras, config_path=str(args.robot_config or DEFAULT_CONFIG)

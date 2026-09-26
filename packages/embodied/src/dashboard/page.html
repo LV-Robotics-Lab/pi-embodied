@@ -127,6 +127,15 @@ details.ops > summary { padding: 6px 12px; font-weight: 600; cursor: pointer; }
         <div id="videos" class="ops-row"></div>
       </div>
     </details>
+    <div class="teleop" id="human" hidden>
+      <div class="title"><span data-t="humanTitle"></span><span id="hmTurn" class="badge meta"></span></div>
+      <div class="tp-body">
+        <pre id="hmText" class="meta" style="max-height:12em;overflow:auto;white-space:pre-wrap;margin:0"></pre>
+        <div id="hmImages" class="tp-row"></div>
+        <form id="hmForm" class="tp-row"><select id="hmTool"></select><textarea id="hmArgs" rows="3" style="flex:1"></textarea><button class="primary" data-t="humanAnswer"></button></form>
+        <div class="status" id="hmStatus"></div>
+      </div>
+    </div>
     <div class="composer">
       <textarea id="msg" rows="2"></textarea>
       <button id="send" class="primary" data-t="send"></button>
@@ -188,6 +197,7 @@ const COPY = {
     withdrawn: "Withdrawn; the text is back in the box.",
     axes: { rotate: "rotate", roll: "roll", pitch: "pitch", yaw: "yaw" },
     turns: (rt, any) => rt ? "turns: RT roll/pitch/yaw (v5, --units-rt)" : any ? "turns: ROTATE (v3)" : "turns: none (no yaw on this robot)",
+    humanTitle: "Answer as the model (human/operator)", humanAnswer: "Answer", humanText: "(text reply)",
   },
   "zh-cn": {
     monitor: "实时监控", reasoning: "智能体推理与工具调用", expand: "展开工具调用", autoscroll: "自动滚动",
@@ -222,6 +232,7 @@ const COPY = {
     withdrawn: "已撤回;文字已放回输入框。",
     axes: { rotate: "旋转", roll: "横滚", pitch: "俯仰", yaw: "偏航" },
     turns: (rt, any) => rt ? "转动:RT 横滚/俯仰/偏航(v5,--units-rt)" : any ? "转动:ROTATE(v3)" : "转动:无(此机器人没有偏航)",
+    humanTitle: "以模型身份回答(human/operator)", humanAnswer: "回答", humanText: "(文字回答)",
   },
 };
 const T = COPY[document.documentElement.lang === "zh-cn" ? "zh-cn" : "en"];
@@ -363,15 +374,50 @@ function connect() {
       if ($("stream").checked) showStream(); else { $("frames").replaceChildren(el("div", "empty", T.noFrame)); $("caption").textContent = ""; }
       $("live").checked = true;
       if (!op.items.length) $("transcript").append(el("div", "empty", T.noEvents));
-      op.items.forEach(putItem); op.steps.forEach(putStep); renderEpisode(); renderGumi(op.gumi); renderQueued(op.queued ?? []);
+      op.items.forEach(putItem); op.steps.forEach(putStep); renderEpisode(); renderGumi(op.gumi); renderQueued(op.queued ?? []); renderHuman(op.human);
     } else if (op.op === "item") putItem(op.item);
     else if (op.op === "append") appendText(op.id, op.text);
     else if (op.op === "step") putStep(op.step);
     else if (op.op === "episode") { episode = op.episode; renderEpisode(); }
     else if (op.op === "gumi") renderGumi(op.gumi);
     else if (op.op === "queued") renderQueued(op.queued);
+    else if (op.op === "human") renderHuman(op.human);
   };
 }
+
+/** A human/operator request (../human.ts): its text and images, and a composer for a text reply or a tool call. */
+let human = null;
+function renderHuman(h) {
+  human = h ?? null;
+  $("human").hidden = !human;
+  if (!human) return;
+  $("hmStatus").textContent = "";
+  $("hmTurn").textContent = `#${h.turn} · ${h.kind}`;
+  $("hmText").textContent = h.text;
+  $("hmImages").replaceChildren(...Array.from({ length: h.images }, (_, k) => {
+    const img = document.createElement("img");
+    img.src = `/human/image/${h.id}/${k}`; img.style.maxWidth = "180px"; img.style.cursor = "zoom-in";
+    img.onclick = () => window.open(img.src, "_blank");
+    return img;
+  }));
+  const sel = $("hmTool");
+  sel.replaceChildren(...[["", T.humanText], ...h.tools.map((t) => [t.name, t.name])].map(([v, n]) => {
+    const o = document.createElement("option"); o.value = v; o.textContent = n; return o;
+  }));
+  sel.onchange = () => {
+    const t = h.tools.find((x) => x.name === sel.value);
+    $("hmArgs").value = t ? t.skeleton : ""; $("hmArgs").title = t ? t.description : "";
+  };
+  sel.onchange();
+}
+$("hmForm").onsubmit = async (ev) => {
+  ev.preventDefault();
+  if (!human) return;
+  const name = $("hmTool").value;
+  const body = name ? { id: human.id, tool: name, arguments: $("hmArgs").value } : { id: human.id, text: $("hmArgs").value };
+  try { await post("/human/reply", body); $("hmStatus").textContent = T.sent; }
+  catch (err) { $("hmStatus").textContent = T.failed(err.message); }
+};
 
 async function post(path, body) {
   const res = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });

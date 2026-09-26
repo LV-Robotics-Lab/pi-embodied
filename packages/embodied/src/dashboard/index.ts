@@ -51,6 +51,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { llmCheck } from "../check.ts";
 import { type Gumi, type GumiState, gumi, observation, type Step as UnitStep } from "../gumi/index.ts";
+import { argumentSkeleton, HUMAN_EVENT, type HumanRequest, parseArguments } from "../human.ts";
 import { encodePng } from "../png.ts";
 import {
 	PRIMITIVES_EVENT,
@@ -211,12 +212,35 @@ function createHub(server: Server, url: string, page: string, liveFps: number) {
 	let llmChecking = false;
 	/** Episode video directory of every session this process served (session id -> dir), current last. */
 	const videoDirs = new Map<string, string>();
+	/** The pending human/operator request (../human.ts), answered from the page or pi's own UI. */
+	let human: HumanRequest | undefined;
+	const humanView = () =>
+		human && {
+			id: human.id,
+			turn: human.turn,
+			kind: human.kind,
+			text: human.text,
+			images: human.images.length,
+			tools: human.tools.map((t) => ({
+				name: t.name,
+				description: t.description,
+				skeleton: argumentSkeleton(t.parameters),
+			})),
+		};
 
 	const send = (op: Record<string, unknown>) => {
 		const line = `data: ${JSON.stringify(op)}\n\n`;
 		for (const res of clients) res.write(line);
 	};
-	const snapshot = () => ({ op: "reset", episode, items, steps, gumi: teleopState, queued });
+	const snapshot = () => ({
+		op: "reset",
+		episode,
+		items,
+		steps,
+		gumi: teleopState,
+		queued,
+		human: humanView() ?? null,
+	});
 	const sendQueued = () => send({ op: "queued", queued });
 	const touch = () => send({ op: "episode", episode });
 	const add = (item: Omit<Item, "id">) => {
@@ -357,6 +381,7 @@ function createHub(server: Server, url: string, page: string, liveFps: number) {
 			ctx = nextCtx;
 			teleop = g;
 			teleopState = g.state();
+			human = undefined;
 			items = [];
 			steps = [];
 			images = [];
@@ -424,6 +449,17 @@ function createHub(server: Server, url: string, page: string, liveFps: number) {
 			if (!id) return;
 			videoDirs.delete(id);
 			videoDirs.set(id, dir);
+		},
+		/** A human/operator request: shown until it is answered (`done`); claiming it lets a UI-less pi wait for the page. */
+		humanRequest(req: HumanRequest) {
+			if (req.done) {
+				if (human?.id !== req.id) return;
+				human = undefined;
+			} else {
+				req.claimed = true;
+				human = req;
+			}
+			send({ op: "human", human: humanView() ?? null });
 		},
 		gumiState(s: GumiState) {
 			teleopState = s;
@@ -580,6 +616,14 @@ function createHub(server: Server, url: string, page: string, liveFps: number) {
 				createReadStream(join(dir, file)).pipe(res);
 				return;
 			}
+			const humanImage = url.pathname.match(/^\/human\/image\/(\w+)\/(\d+)$/);
+			if (req.method === "GET" && humanImage) {
+				const img = human?.id === humanImage[1] ? human.images[Number(humanImage[2])] : undefined;
+				if (!img) return reply(404, { error: "no such image" });
+				res.writeHead(200, { "Content-Type": img.mimeType, "Cache-Control": "no-store" });
+				res.end(Buffer.from(img.data, "base64"));
+				return;
+			}
 			const frame = url.pathname.match(/^\/frame\/(\d+)\/(\d+)\/(\d+)$/);
 			if (req.method === "GET" && frame) {
 				const [gen, n, k] = frame.slice(1).map(Number);
@@ -717,6 +761,20 @@ function createHub(server: Server, url: string, page: string, liveFps: number) {
 					return reply(status, { error: (err as Error).message, state: g.state() });
 				}
 			}
+			if (url.pathname === "/human/reply") {
+				if (!human || body.id !== human.id) return reply(409, { error: "no such pending request" });
+				let why: string | undefined;
+				if (typeof body.tool === "string" && body.tool) {
+					let args: unknown;
+					try {
+						args = parseArguments(String(body.arguments ?? ""));
+					} catch (err) {
+						return reply(422, { error: `invalid JSON: ${(err as Error).message}` });
+					}
+					why = human.answer({ tool: { name: body.tool, arguments: args } });
+				} else why = human.answer({ text: String(body.text ?? "") });
+				return why ? reply(422, { error: why }) : reply(200, { ok: true });
+			}
 			if (url.pathname === "/interrupt") {
 				// Also an operator's GUMI batch, which runs while the agent is idle too.
 				const stopped = (teleop?.stop() ?? false) || manual !== undefined;
@@ -796,6 +854,7 @@ export default function dashboard(pi: ExtensionAPI) {
 		videoDir = String(data);
 		on((h) => h.videoDir(videoDir as string));
 	});
+	pi.events.on(HUMAN_EVENT, (data) => on((h) => h.humanRequest(data as HumanRequest)));
 
 	pi.on("session_start", async (_event, ctx) => {
 		if (pi.getFlag("dashboard") !== true) return;

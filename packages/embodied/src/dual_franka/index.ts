@@ -25,6 +25,7 @@ import { join, resolve } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
+import { template } from "../context-version.ts";
 import { encodePng } from "../png.ts";
 import { graspActive, graspArgs, graspTools, registerGraspFlags } from "../primitives/grasp.ts";
 import { checkRotate, type MotionRig, moveDelta, rotateDelta, setGripper } from "../primitives/motion.ts";
@@ -59,8 +60,8 @@ import { alias, inlineWrist, policy, REWRITE, SETUP_PY, type Setup, type Step } 
 import { mountPerception } from "./perception.ts";
 import { mountSkills } from "./skills.ts";
 
-const SYSTEM = readFileSync(new URL("./SYSTEM.md", import.meta.url), "utf8");
-const EXPLORE = readFileSync(new URL("./explore.md", import.meta.url), "utf8");
+const SYSTEM = template(new URL("./SYSTEM.md", import.meta.url));
+const EXPLORE = template(new URL("./explore.md", import.meta.url));
 
 const MOTION = [
 	"move_delta",

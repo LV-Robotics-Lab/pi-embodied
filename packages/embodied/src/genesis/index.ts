@@ -18,18 +18,18 @@
  * ported as a pi robot with the pi-embodied motion limits and cameras.
  */
 
-import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { template } from "../context-version.ts";
 import { decodePngChannel, encodePng } from "../png.ts";
 import { attach, defineRobot, median, SERVICES } from "../robot.ts";
 import { type NdArray, RpcClient } from "../rpc.ts";
 import type { MoveUnit, Vec3 } from "../units/index.ts";
 
-const SYSTEM = readFileSync(new URL("./SYSTEM.md", import.meta.url), "utf8");
+const SYSTEM = template(new URL("./SYSTEM.md", import.meta.url));
 
 /** The env server's tasks (its TASKS table); `--task` takes one of them. */
 export const TASKS = ["cube_pick"] as const;

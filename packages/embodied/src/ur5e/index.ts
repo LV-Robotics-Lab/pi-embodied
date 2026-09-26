@@ -27,6 +27,7 @@ import { join, resolve } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
+import { template } from "../context-version.ts";
 import { decodePngChannel, encodePng } from "../png.ts";
 import {
 	apply,
@@ -55,7 +56,7 @@ import {
 import { NdArray, type RpcClient } from "../rpc.ts";
 import type { Move, MoveUnit, Vec3 } from "../units/index.ts";
 
-const SYSTEM = readFileSync(new URL("./SYSTEM.md", import.meta.url), "utf8");
+const SYSTEM = template(new URL("./SYSTEM.md", import.meta.url));
 
 type Task = { instruction: string; success_criteria?: string };
 type Meta = {

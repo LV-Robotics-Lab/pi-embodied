@@ -13,19 +13,19 @@
  * success is the env's own `info["success"]`, latched and recorded in `robot_result`.
  */
 
-import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { template } from "../context-version.ts";
 import { sideBySide } from "../maniskill/index.ts";
 import { decodePngChannel, encodePng } from "../png.ts";
 import { attach, defineRobot, type Mat, median, round, SERVICES } from "../robot.ts";
 import { type NdArray, RpcClient } from "../rpc.ts";
 import type { MoveUnit, Vec3 } from "../units/index.ts";
 
-const SYSTEM = readFileSync(new URL("./SYSTEM.md", import.meta.url), "utf8");
+const SYSTEM = template(new URL("./SYSTEM.md", import.meta.url));
 
 /** Metaworld's MT50 task names (`metaworld.env_dict.ALL_V3_ENVIRONMENTS`), the server's table. */
 export const TASKS = [

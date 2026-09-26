@@ -39,6 +39,7 @@ import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type TSchema, Type } from "typebox";
+import { template } from "../context-version.ts";
 import { encodePng } from "../png.ts";
 import {
 	attach,
@@ -68,9 +69,9 @@ import {
 	type Vec3,
 } from "../units/index.ts";
 
-const SYSTEM = readFileSync(new URL("./SYSTEM.md", import.meta.url), "utf8");
-const SYSTEM_DUAL = readFileSync(new URL("./SYSTEM_DUAL.md", import.meta.url), "utf8");
-const EXPLORE = readFileSync(new URL("./explore.md", import.meta.url), "utf8");
+const SYSTEM = template(new URL("./SYSTEM.md", import.meta.url));
+const SYSTEM_DUAL = template(new URL("./SYSTEM_DUAL.md", import.meta.url));
+const EXPLORE = template(new URL("./explore.md", import.meta.url));
 /** The motion tools: the recipe of a solved exploration attempt. */
 const MOTION = ["move_delta", "rotate_yaw", "open_gripper", "close_gripper", "act"];
 

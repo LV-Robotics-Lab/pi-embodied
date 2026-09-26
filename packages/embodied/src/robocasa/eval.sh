@@ -57,6 +57,7 @@ full=""
 [ "$splits" = atomic,composite_seen,composite_unseen ] && [ -z "${TASKS:-}${SEEDS:-}" ] && full=1
 model="" thinking="" turns=${MAX_TURNS:-100} units=false stateless=false
 anchor=false
+approval=standard max_tool_calls=0 max_tokens=0
 vdm=false vdm_model="" vdm_wrist=false
 privileged=false
 fallback_model="" fallback_after=2 fallback_retry=0
@@ -109,6 +110,13 @@ for ((i = 0; i < ${#args[@]}; i++)); do
 	--fallback-retry-primary=*) fallback_retry=${args[i]#*=} ;;
 	--vdm-model) vdm_model=${args[i + 1]:-} ;;
 	--vdm-model=*) vdm_model=${args[i]#*=} ;;
+	# --approval (motion approval, src/operator.ts) and the --max-tool-calls / --max-tokens budgets (src/robot.ts).
+	--approval) approval=${args[i + 1]:-standard} ;;
+	--approval=*) approval=${args[i]#*=} ;;
+	--max-tool-calls) max_tool_calls=${args[i + 1]:-0} ;;
+	--max-tool-calls=*) max_tool_calls=${args[i]#*=} ;;
+	--max-tokens) max_tokens=${args[i + 1]:-0} ;;
+	--max-tokens=*) max_tokens=${args[i]#*=} ;;
 	# --anchor-image (keep the first camera frame in context) is a boolean like --stateless.
 	--anchor-image) case ${args[i + 1]:-} in "" | -* | @* | true) anchor=true ;; *)
 		echo "--anchor-image takes no value: pi would turn it on and swallow '${args[i + 1]}'" >&2 && exit 2 ;;
@@ -332,14 +340,14 @@ export RLDX_MAX_CHUNKS=$(protocol m.runtime_protocol.rldx_max_chunks)
 export RLDX_SETTLE_PATIENCE=$(protocol m.runtime_protocol.rldx_settle_patience)
 export RLDX_ACTION_STEPS_PER_CHUNK=$(protocol m.runtime_protocol.rldx_action_steps_per_chunk)
 unset RLDX_RESET_SEED
-config=("$model" "$thinking" "$turns" "$units" "$stateless" "$privileged" "$anchor" "$vdm" "$vdm_model" "$vdm_wrist" "$fallback_model" "$fallback_after" "$fallback_retry")
+config=("$model" "$thinking" "$turns" "$units" "$stateless" "$privileged" "$anchor" "$vdm" "$vdm_model" "$vdm_wrist" "$fallback_model" "$fallback_after" "$fallback_retry" "$approval" "$max_tool_calls" "$max_tokens")
 # The protocol pins the task-memory snapshot (hf profile); PI_EMBODIED_MEMORY_REVISION overrides it.
 export PI_EMBODIED_MEMORY_REVISION=${PI_EMBODIED_MEMORY_REVISION:-$(protocol m.dependencies.task_memory.revision)}
 
 record() { # <dir> <exit code> <split> <task> <seed> <cell timeout> <elapsed s>: write result.json
 	node --input-type=module -e '
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
-const [dir, code, manifest, split, task, seed, limit, elapsed, model, thinking, turns, units, stateless, privileged, anchor, vdm, vdmModel, vdmWrist, fallbackModel, fallbackAfter, fallbackRetry] = process.argv.slice(1);
+const [dir, code, manifest, split, task, seed, limit, elapsed, model, thinking, turns, units, stateless, privileged, anchor, vdm, vdmModel, vdmWrist, fallbackModel, fallbackAfter, fallbackRetry, approval, maxToolCalls, maxTokens] = process.argv.slice(1);
 const m = JSON.parse(readFileSync(manifest, "utf8"));
 const results = [];
 for (const f of readdirSync(dir).filter((f) => f.endsWith(".jsonl"))) {
@@ -390,7 +398,7 @@ const result = {
 	thinking: thinking || null,
 	max_turns: Number(turns),
 	units,
-	anchor_image: anchor === "true",
+	anchor_image: anchor === "true", approval, max_tool_calls: Number(maxToolCalls), max_tokens: Number(maxTokens),
 	vdm: vdm === "true", vdm_model: vdmModel || null, vdm_wrist: vdmWrist === "true", stateless: stateless === "true",
 	privileged: privileged === "true",
 	fallback_model: fallbackModel || null, fallback_after: fallbackModel ? Number(fallbackAfter) : null, fallback_retry_primary: fallbackModel ? Number(fallbackRetry) : null,
@@ -402,13 +410,15 @@ console.log(JSON.stringify({ status, termination_reason: result.termination_reas
 
 valid() { # <dir>: 0 = a valid result of this configuration, 2 = a valid result of another one, 1 = none
 	node -e '
-const [path, protocolId, model, thinking, turns, units, stateless, privileged, anchor, vdm, vdmModel, vdmWrist, fallbackModel, fallbackAfter, fallbackRetry] = process.argv.slice(1);
+const [path, protocolId, model, thinking, turns, units, stateless, privileged, anchor, vdm, vdmModel, vdmWrist, fallbackModel, fallbackAfter, fallbackRetry, approval, maxToolCalls, maxTokens] = process.argv.slice(1);
 const r = JSON.parse(require("fs").readFileSync(path, "utf8"));
 if (r.status !== "success" && r.status !== "failure") process.exit(1);
 const same = r.protocol_id === protocolId && r.model === (model || null) && r.thinking === (thinking || null) && r.max_turns === Number(turns)
 	&& r.units === units && r.stateless === (stateless === "true") && (r.privileged ?? false) === (privileged === "true")
 	// Results written before --anchor-image existed ran without it.
 	&& (r.anchor_image ?? false) === (anchor === "true")
+	// Results written before --approval, --max-tool-calls and --max-tokens existed ran with standard approval and neither budget.
+	&& (r.approval ?? "standard") === approval && (r.max_tool_calls ?? 0) === Number(maxToolCalls) && (r.max_tokens ?? 0) === Number(maxTokens)
 	// Results written before --vdm existed ran without it.
 	&& (r.vdm ?? false) === (vdm === "true") && (r.vdm_model ?? null) === (vdmModel || null)
 	&& (r.vdm_wrist ?? false) === (vdmWrist === "true")
@@ -438,7 +448,7 @@ while read -r split task seed limit; do
 	valid "$dir"
 	case $? in
 	0) continue ;;
-	2) echo "$dir holds a result of another protocol, model, thinking level, --max-turns, units mode, vdm, fallback, --privileged or --anchor-image (or an older result format); use another out dir" >&2 && exit 1 ;;
+	2) echo "$dir holds a result of another protocol, model, thinking level, --max-turns, units mode, vdm, fallback, --privileged, --anchor-image, --approval, --max-tool-calls or --max-tokens (or an older result format); use another out dir" >&2 && exit 1 ;;
 	esac
 	rm -rf "$dir" && mkdir -p "$dir"
 	echo "== $split $task seed $seed"
@@ -467,7 +477,7 @@ const rows = cells.trim().split("\n").map((line) => {
 	}
 });
 const scoredRows = rows.filter((r) => r.status === "success" || r.status === "failure");
-const configs = new Set(scoredRows.map((r) => `${r.model}/${r.thinking}/turns=${r.max_turns}/units=${r.units}${r.units_wrist_view === false ? `/no-wrist:${(r.units_plugins ?? []).join("+")}` : ""}${r.stateless ? "/stateless" : ""}${r.anchor_image ? "/anchor" : ""}${r.vdm ? `/vdm=${r.vdm_model ?? "default"}${r.vdm_wrist ? "+wrist" : ""}` : ""}${r.privileged ? "/privileged" : ""}${r.fallback_model ? `/fallback=${r.fallback_model}:${r.fallback_after}:${r.fallback_retry_primary}` : ""}`));
+const configs = new Set(scoredRows.map((r) => `${r.model}/${r.thinking}/turns=${r.max_turns}/units=${r.units}${r.units_wrist_view === false ? `/no-wrist:${(r.units_plugins ?? []).join("+")}` : ""}${r.stateless ? "/stateless" : ""}${r.anchor_image ? "/anchor" : ""}${(r.approval ?? "standard") !== "standard" ? `/approval=${r.approval}` : ""}${r.max_tool_calls ? `/tool_calls=${r.max_tool_calls}` : ""}${r.max_tokens ? `/tokens=${r.max_tokens}` : ""}${r.vdm ? `/vdm=${r.vdm_model ?? "default"}${r.vdm_wrist ? "+wrist" : ""}` : ""}${r.privileged ? "/privileged" : ""}${r.fallback_model ? `/fallback=${r.fallback_model}:${r.fallback_after}:${r.fallback_retry_primary}` : ""}`));
 if (configs.size > 1) {
 	console.log(`refusing to summarize: ${out} mixes configurations ${[...configs].join(", ")}`);
 	process.exit(1);

@@ -295,13 +295,43 @@ for (const [robot, positional, cell, env] of CELLS) {
 			assert.equal(b.status, 1);
 			assert.match(
 				b.stderr,
-				/--privileged or --anchor-image; use another out dir|--privileged or --anchor-image \(or an older/,
+				/--privileged, --anchor-image, --approval, --max-tool-calls or --max-tokens(; use another out dir| \(or an older)/,
 			);
 		}
 		// The same configuration keeps its valid result.
 		const [, same] = rerun(robot, positional, env ?? {}, ["--privileged"], ["--privileged"]);
 		assert.equal(same.status, 0, same.stdout + same.stderr);
 		assert.match(same.stdout, /\/privileged/);
+	});
+}
+
+for (const [robot, positional, cell, env] of CELLS) {
+	test(`${robot}/eval.sh keys --approval, --max-tool-calls and --max-tokens and keeps the context version as data`, () => {
+		const r = run(
+			robot,
+			positional,
+			cell,
+			["--approval", "reviewed", "--max-tool-calls=40", "--max-tokens", "900000"],
+			env,
+		);
+		assert.equal(r.result?.approval, "reviewed");
+		assert.equal(r.result?.max_tool_calls, 40);
+		assert.equal(r.result?.max_tokens, 900000);
+		assert.ok(r.argv?.includes("reviewed"), "pi gets the flag");
+		const version = { context_version: { system_prompt_sha256: "a".repeat(64), git_commit: "unknown" } };
+		for (const [first, second] of [
+			[["--approval", "reviewed"], []],
+			[[], ["--max-tool-calls", "5"]],
+			[["--max-tokens=100"], ["--max-tokens=200"]],
+		]) {
+			const [a, b] = rerun(robot, positional, env ?? {}, first, second, version);
+			assert.equal(a.status, 0, a.stdout + a.stderr);
+			assert.equal(b.status, 1, `${first} then ${second}`);
+		}
+		// The same configuration (with a context version in its results) keeps its valid result.
+		const [, same] = rerun(robot, positional, env ?? {}, ["--approval=human"], ["--approval=human"], version);
+		assert.equal(same.status, 0, same.stdout + same.stderr);
+		assert.match(same.stdout, /\/approval=human/);
 	});
 }
 

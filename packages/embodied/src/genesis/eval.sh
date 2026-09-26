@@ -23,6 +23,7 @@ PI=${PI:-pi}
 expand() { for part in ${1//,/ }; do seq "${part%-*}" "${part#*-}"; done; }
 model="" thinking="" turns=0 limit=${TIME_LIMIT:-1800} limited="" units=false stateless=false
 anchor=false
+approval=standard max_tool_calls=0 max_tokens=0
 vdm=false vdm_model="" vdm_wrist=false
 privileged=false
 fallback_model="" fallback_after=2 fallback_retry=0
@@ -77,6 +78,13 @@ for ((i = 0; i < ${#args[@]}; i++)); do
 	--fallback-after=*) fallback_after=${args[i]#*=} ;;
 	--fallback-retry-primary) fallback_retry=${args[i + 1]:-0} ;;
 	--fallback-retry-primary=*) fallback_retry=${args[i]#*=} ;;
+	# --approval (motion approval, src/operator.ts) and the --max-tool-calls / --max-tokens budgets (src/robot.ts).
+	--approval) approval=${args[i + 1]:-standard} ;;
+	--approval=*) approval=${args[i]#*=} ;;
+	--max-tool-calls) max_tool_calls=${args[i + 1]:-0} ;;
+	--max-tool-calls=*) max_tool_calls=${args[i]#*=} ;;
+	--max-tokens) max_tokens=${args[i + 1]:-0} ;;
+	--max-tokens=*) max_tokens=${args[i]#*=} ;;
 	# --anchor-image (keep the first camera frame in context) is a boolean like --stateless.
 	--anchor-image) case ${args[i + 1]:-} in "" | -* | @* | true) anchor=true ;; *)
 		echo "--anchor-image takes no value: pi would turn it on and swallow '${args[i + 1]}'" >&2 && exit 2 ;;
@@ -97,12 +105,12 @@ done
 backstop=()
 [ "$limit" -gt 0 ] && command -v timeout >/dev/null && backstop=(timeout -k 30 $((limit + 900)))
 mkdir -p "$out"
-config=("$model" "$thinking" "$turns" "$limit" "$units" "$stateless" "$privileged" "$anchor" "$vdm" "$vdm_model" "$vdm_wrist" "$fallback_model" "$fallback_after" "$fallback_retry")
+config=("$model" "$thinking" "$turns" "$limit" "$units" "$stateless" "$privileged" "$anchor" "$vdm" "$vdm_model" "$vdm_wrist" "$fallback_model" "$fallback_after" "$fallback_retry" "$approval" "$max_tool_calls" "$max_tokens")
 
 record() { # <dir> <exit code>: write result.json from the episode's session
 	node --input-type=module -e '
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
-const [dir, code, model, thinking, turns, limit, units, stateless, privileged, anchor, vdm, vdmModel, vdmWrist, fallbackModel, fallbackAfter, fallbackRetry] = process.argv.slice(1);
+const [dir, code, model, thinking, turns, limit, units, stateless, privileged, anchor, vdm, vdmModel, vdmWrist, fallbackModel, fallbackAfter, fallbackRetry, approval, maxToolCalls, maxTokens] = process.argv.slice(1);
 const results = [];
 for (const f of readdirSync(dir).filter((f) => f.endsWith(".jsonl"))) {
 	for (const line of readFileSync(`${dir}/${f}`, "utf8").split("\n")) {
@@ -116,7 +124,7 @@ const status = Number(code) === 124 ? "timeout" : results.length > 1 ? "duplicat
 	: !last ? (Number(code) ? "env_error" : "missing")
 	: last.env_error ? "env_error" : last.planner_error ? "planner_error" : last.success ? "success" : "failure";
 const result = { ...(last ?? {}), status, exit_code: Number(code), model: model || null, thinking: thinking || null,
-	max_turns: Number(turns), time_limit: Number(limit), units, anchor_image: anchor === "true",
+	max_turns: Number(turns), time_limit: Number(limit), units, anchor_image: anchor === "true", approval, max_tool_calls: Number(maxToolCalls), max_tokens: Number(maxTokens),
 	vdm: vdm === "true", vdm_model: vdmModel || null, vdm_wrist: vdmWrist === "true", stateless: stateless === "true",
 	privileged: privileged === "true",
 	fallback_model: fallbackModel || null, fallback_after: fallbackModel ? Number(fallbackAfter) : null, fallback_retry_primary: fallbackModel ? Number(fallbackRetry) : null };
@@ -127,7 +135,7 @@ console.log(JSON.stringify({ status, success: result.success, claimed: result.cl
 
 valid() { # <dir>: 0 = a valid result of this configuration, 2 = a valid result of another one, 1 = none
 	node -e '
-const [path, model, thinking, turns, limit, units, stateless, privileged, anchor, vdm, vdmModel, vdmWrist, fallbackModel, fallbackAfter, fallbackRetry] = process.argv.slice(1);
+const [path, model, thinking, turns, limit, units, stateless, privileged, anchor, vdm, vdmModel, vdmWrist, fallbackModel, fallbackAfter, fallbackRetry, approval, maxToolCalls, maxTokens] = process.argv.slice(1);
 const r = JSON.parse(require("fs").readFileSync(path, "utf8"));
 if (r.status !== "success" && r.status !== "failure") process.exit(1);
 const same = r.model === (model || null) && r.thinking === (thinking || null) && r.max_turns === Number(turns)
@@ -135,6 +143,8 @@ const same = r.model === (model || null) && r.thinking === (thinking || null) &&
 	&& (r.privileged ?? false) === (privileged === "true")
 	// Results written before --anchor-image existed ran without it.
 	&& (r.anchor_image ?? false) === (anchor === "true")
+	// Results written before --approval, --max-tool-calls and --max-tokens existed ran with standard approval and neither budget.
+	&& (r.approval ?? "standard") === approval && (r.max_tool_calls ?? 0) === Number(maxToolCalls) && (r.max_tokens ?? 0) === Number(maxTokens)
 	// Results written before --vdm existed ran without it.
 	&& (r.vdm ?? false) === (vdm === "true") && (r.vdm_model ?? null) === (vdmModel || null)
 	&& (r.vdm_wrist ?? false) === (vdmWrist === "true")
@@ -153,7 +163,7 @@ for task in ${tasks//,/ }; do
 		valid "$dir"
 		case $? in
 		0) continue ;;
-		2) echo "$dir holds a result of another model, thinking level, --max-turns, --time-limit, units mode, vdm, fallback, --privileged or --anchor-image; use another out dir" >&2 && exit 1 ;;
+		2) echo "$dir holds a result of another model, thinking level, --max-turns, --time-limit, units mode, vdm, fallback, --privileged, --anchor-image, --approval, --max-tool-calls or --max-tokens; use another out dir" >&2 && exit 1 ;;
 		esac
 		rm -rf "$dir" && mkdir -p "$dir"
 		echo "== $task seed $seed"
@@ -175,7 +185,7 @@ const rows = cells.map((c) => {
 	}
 });
 const configs = new Set(rows.filter((r) => r.status === "success" || r.status === "failure")
-	.map((r) => `${r.model}/${r.thinking}/turns=${r.max_turns}/limit=${r.time_limit}/units=${r.units}${r.units_wrist_view === false ? `/no-wrist:${(r.units_plugins ?? []).join("+")}` : ""}${r.stateless ? "/stateless" : ""}${r.anchor_image ? "/anchor" : ""}${r.vdm ? `/vdm=${r.vdm_model ?? "default"}${r.vdm_wrist ? "+wrist" : ""}` : ""}${r.privileged ? "/privileged" : ""}${r.fallback_model ? `/fallback=${r.fallback_model}:${r.fallback_after}:${r.fallback_retry_primary}` : ""}`));
+	.map((r) => `${r.model}/${r.thinking}/turns=${r.max_turns}/limit=${r.time_limit}/units=${r.units}${r.units_wrist_view === false ? `/no-wrist:${(r.units_plugins ?? []).join("+")}` : ""}${r.stateless ? "/stateless" : ""}${r.anchor_image ? "/anchor" : ""}${(r.approval ?? "standard") !== "standard" ? `/approval=${r.approval}` : ""}${r.max_tool_calls ? `/tool_calls=${r.max_tool_calls}` : ""}${r.max_tokens ? `/tokens=${r.max_tokens}` : ""}${r.vdm ? `/vdm=${r.vdm_model ?? "default"}${r.vdm_wrist ? "+wrist" : ""}` : ""}${r.privileged ? "/privileged" : ""}${r.fallback_model ? `/fallback=${r.fallback_model}:${r.fallback_after}:${r.fallback_retry_primary}` : ""}`));
 if (configs.size > 1) {
 	console.log(`refusing to summarize: ${out} mixes configurations ${[...configs].join(", ")}`);
 	process.exit(1);

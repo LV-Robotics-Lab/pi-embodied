@@ -324,7 +324,8 @@ vdirs.forEach((vdir, v) => {
 	const rows = cells.map(({ key, d }) => ({ key, ...read(`${out}/${vdir}/${d}/result.json`) }));
 	const configs = new Set(rows.filter(valid).map((r) =>
 		[r.model, r.thinking, `turns=${r.max_turns}`, r.time_limit === undefined ? "" : `limit=${r.time_limit}`, `units=${r.units}`,
-			r.stateless ? "stateless" : "", r.anchor_image ? "anchor" : "",
+			r.stateless ? "stateless" : "", r.anchor_image ? "anchor" : "", (r.approval ?? "standard") !== "standard" ? `approval=${r.approval}` : "",
+			r.max_tool_calls ? `tool_calls=${r.max_tool_calls}` : "", r.max_tokens ? `tokens=${r.max_tokens}` : "",
 			r.unit_tol === undefined ? "" : `unit_tol=${r.unit_tol}`,
 			r.vdm ? `vdm=${r.vdm_model ?? "default"}${r.vdm_wrist ? "+wrist" : ""}` : "", r.privileged ? "privileged" : "",
 			r.fallback_model ? `fallback=${r.fallback_model}:${r.fallback_after}:${r.fallback_retry_primary}` : "",

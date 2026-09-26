@@ -15,7 +15,9 @@ import { validateToolArguments } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
 import { robotCheck } from "./check.ts";
+import { CLOSED_LOOP, closedLoop, NON_MOTION, RESETS } from "./closed-loop.ts";
 import { type CodeSpec, code } from "./code/index.ts";
+import { CONTEXT_VERSION_ENTRY, gitCommit, sha256, usedTemplates } from "./context-version.ts";
 import { ensemble } from "./ensemble.ts";
 import { explore } from "./explore.ts";
 import { fallback } from "./fallback.ts";
@@ -24,7 +26,7 @@ import { type FlywheelSpec, flywheel } from "./flywheel.ts";
 import { human } from "./human.ts";
 import { type MemoryOptions, memory } from "./memory/index.ts";
 import { objectMemory } from "./objects.ts";
-import { operator } from "./operator.ts";
+import { approval, operator } from "./operator.ts";
 import { CODE_API_ENTRY, CODE_API_EVENT, type CodeApi, fetchCodeApi } from "./primitives/registry.ts";
 import { forgetUnresponsive, NdArray, RpcClient, RpcUnavailable } from "./rpc.ts";
 import { type UnitsSpec, units } from "./units/index.ts";
@@ -223,7 +225,12 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	let server: { proc: ChildProcess; rpc: RpcClient } | undefined;
 	let turns = 0;
 	let started: number | undefined;
-	let outOfBudget: "turns" | "time" | "cost" | undefined;
+	let outOfBudget: "turns" | "time" | "cost" | "tool_calls" | "tokens" | undefined;
+	/** Planner tool calls that passed the budget gate, and the planner's tokens (input with cache reads and writes, output). */
+	let toolCalls = 0;
+	let tokens = { input: 0, output: 0 };
+	/** SHA-256 of each distinct system prompt the episode's agent starts ran with (./context-version.ts). */
+	let prompts: string[] = [];
 	/** USD of this episode's model replies, as pi prices them from models.json. */
 	let cost = 0;
 	let plannerError: string | undefined;
@@ -250,6 +257,17 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		default: String(spec.budget?.seconds ?? 0),
 		description: "Planner wall-time budget from the first prompt, s (0 = none)",
 	});
+	pi.registerFlag("max-tool-calls", {
+		type: "string",
+		default: "0",
+		description: "Planner tool-call budget, finish excluded (0 = none)",
+	});
+	pi.registerFlag("max-tokens", {
+		type: "string",
+		default: "0",
+		description:
+			"Planner token budget: input (cache reads and writes included) plus output, as pi reports usage (0 = none)",
+	});
 	pi.registerFlag("max-cost", {
 		type: "string",
 		default: "0",
@@ -272,7 +290,9 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		deadline = undefined;
 		// A service that stopped answering ended the last episode; this one may find it restarted.
 		forgetUnresponsive();
-		turns = cost = 0;
+		turns = cost = toolCalls = 0;
+		tokens = { input: 0, output: 0 };
+		prompts = [];
 		pi.setActiveTools([]);
 		const picked = ctx.sessionManager
 			.getBranch()
@@ -426,7 +446,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		await stop();
 		try {
 			// A flag the robot cannot honour fails closed, before the robot boots.
-			const misconfigured = un?.configError() ?? co?.configError();
+			const misconfigured = un?.configError() ?? co?.configError() ?? ap.configError(ctx.hasUI);
 			if (misconfigured) throw new Error(misconfigured);
 			api = undefined;
 			const tools = await spec.start(ctx);
@@ -525,7 +545,8 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		const systemPrompt =
 			mode === "pure" ? mod?.prompt() : mode === "both" ? `${own ?? ""}\n\n${mod?.prompt()}`.trim() : own;
 		if (systemPrompt === undefined) return undefined;
-		const text = toolSections(systemPrompt, pi.getActiveTools());
+		// OpenETA's closed-loop rules (./closed-loop.md) close every robot's prompt, in every mode.
+		const text = toolSections(`${systemPrompt}\n\n${CLOSED_LOOP}`, pi.getActiveTools());
 		// pi sends a forced prompt without recording it; the entry keeps what the planner saw (planner_export.py).
 		if (text !== recordedPrompt) pi.appendEntry(SYSTEM_PROMPT_ENTRY, { text });
 		recordedPrompt = text;
@@ -535,6 +556,8 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		const m = event.message;
 		if (m.role !== "assistant") return;
 		cost += m.usage?.cost?.total ?? 0;
+		tokens.input += (m.usage?.input ?? 0) + (m.usage?.cacheRead ?? 0) + (m.usage?.cacheWrite ?? 0);
+		tokens.output += m.usage?.output ?? 0;
 		finishing = m.content.some((c) => c.type === "toolCall" && c.name === "finish");
 		// The model failing (after pi's own retries) makes the episode's outcome meaningless, whatever it is.
 		plannerError = m.stopReason === "error" ? (m.errorMessage ?? "model error") : undefined;
@@ -557,14 +580,34 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		const late = limit > 0 && started !== undefined && Date.now() - started > limit * 1000;
 		const maxCost = Number(pi.getFlag("max-cost"));
 		const spent = maxCost > 0 && cost >= maxCost;
-		if (!(maxTurns > 0 && turns >= maxTurns) && !late && !spent) return undefined;
-		outOfBudget = late ? "time" : spent ? "cost" : "turns";
+		const maxCalls = Number(pi.getFlag("max-tool-calls"));
+		const called = maxCalls > 0 && toolCalls >= maxCalls;
+		const maxTokens = Number(pi.getFlag("max-tokens"));
+		const talked = maxTokens > 0 && tokens.input + tokens.output >= maxTokens;
+		if (!(maxTurns > 0 && turns >= maxTurns) && !late && !spent && !called && !talked) return undefined;
+		outOfBudget = late ? "time" : spent ? "cost" : called ? "tool_calls" : talked ? "tokens" : "turns";
 		ended = true;
 		return `Planner ${outOfBudget} budget exhausted; the episode is over.`;
 	}
 	pi.on("tool_call", (event) => {
 		const reason = refusal(event.toolName);
-		return reason === undefined ? undefined : { block: true, reason, terminate: true };
+		if (reason !== undefined) return { block: true, reason, terminate: true };
+		if (event.toolName !== "finish") toolCalls++;
+		return undefined;
+	});
+	/** Whether a tool moves the robot: the robot's own (units and code mode included) and the scene resets, less NON_MOTION. */
+	const moves = (t: string) =>
+		(robotTools.includes(t) || (RESETS as readonly string[]).includes(t)) && !NON_MOTION.has(t);
+	// After the budget gate: re-observe after a motion of unknown outcome (./closed-loop.ts).
+	const loop = closedLoop(pi, moves);
+	// --approval (./operator.ts): its gate joins the tool_call chain last, at the first session start that needs it.
+	const ap = approval(pi, {
+		moves,
+		task: () =>
+			spec.status?.().language ||
+			Object.entries(task)
+				.map(([k, v]) => `${k} ${v}`)
+				.join(", "),
 	});
 	/**
 	 * Older camera frames are replaced by a stub, keeping the latest --keep-images. With --anchor-image
@@ -613,6 +656,20 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 			...(anchored() ? { anchor_image: true } : {}),
 			...(extras.length ? { extras } : {}),
 		};
+		// What the planner's context was built from (./context-version.ts): data, not configuration.
+		const context_version = {
+			system_prompt_sha256: prompts[0] ?? null,
+			...(prompts.length > 1 ? { system_prompts_sha256: prompts } : {}),
+			templates: usedTemplates({
+				explore: exploring(),
+				memoryProfile: mem && spec.memory?.cell?.() ? mem.profile : undefined,
+				code: co?.mode() !== undefined,
+				units: un?.mode() !== undefined,
+			}),
+			memory_files: mem?.loaded() ?? {},
+			code_api_digest: api?.digest ?? null,
+			git_commit: gitCommit(),
+		};
 		const r =
 			failed !== undefined
 				? { robot: name, ...task, ...mark, env_error: true, error: failed }
@@ -630,10 +687,17 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 						...en?.result(),
 						// Which primitive API (code.api) the episode ran with.
 						...(api ? { code_api_digest: api.digest, code_api_tier: api.tier } : {}),
+						...ap.result(),
+						...loop.result(),
+						tool_calls: toolCalls,
+						planner_tokens: { ...tokens },
+						max_tool_calls: Number(pi.getFlag("max-tool-calls")) || 0,
+						max_tokens: Number(pi.getFlag("max-tokens")) || 0,
+						context_version,
 						claimed: claimed?.status ?? null,
 						summary: claimed?.summary ?? null,
 						turns,
-						// Which budget ended the episode: "turns", "time" (a planner timeout), "cost", or null.
+						// Which budget ended the episode: "turns", "time" (a planner timeout), "cost", "tool_calls", "tokens", or null.
 						planner_budget_exhausted: outOfBudget ?? null,
 						cost_usd: Number(cost.toFixed(6)),
 						// An operator verdict (/success /failure /abort) aborts the model mid-request; that ends the run, it is not a planner failure.
@@ -644,12 +708,19 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 						...(broken !== undefined ? { error: broken } : {}),
 					};
 		try {
+			if (failed === undefined) pi.appendEntry(CONTEXT_VERSION_ENTRY, context_version);
 			pi.appendEntry(RESULT_ENTRY, r);
 		} catch {}
 		if (!hasUI) console.error(`[${name}] ${JSON.stringify(r)}`);
 	}
-	pi.on("agent_start", () => {
+	pi.on("agent_start", (_event, ctx) => {
 		ran = true;
+		// The system prompt pi sends, after every extension's before_agent_start (exploration's included).
+		const prompt = ctx.getSystemPrompt?.();
+		if (typeof prompt === "string") {
+			const digest = sha256(prompt);
+			if (!prompts.includes(digest)) prompts.push(digest);
+		}
 	});
 	pi.on("tool_execution_end", publish);
 	pi.on("agent_end", (_event, ctx) => {

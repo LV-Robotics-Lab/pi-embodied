@@ -7,7 +7,8 @@
  *   pi -e packages/embodied/src/memory -p "/memory validate" --memory-dir memory/libero
  */
 
-import { existsSync, mkdirSync, readlinkSync, realpathSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, readlinkSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -201,6 +202,8 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 	let profile: "hf" | "local" = "hf";
 	let cell: { tag: string; reference: string } | undefined;
 	let guard: Guard | undefined;
+	/** The memory files the agent read this episode: path under the corpus -> SHA-256 when read (../context-version.ts). */
+	let loaded: Record<string, string> = {};
 
 	function locate(ctx: ExtensionContext) {
 		const dir = str(pi.getFlag("memory-dir"));
@@ -212,6 +215,7 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		guard = undefined;
+		loaded = {};
 		locate(ctx);
 		cell = opts.cell?.();
 		if (!cell) return;
@@ -261,6 +265,16 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 		} catch (e) {
 			return { block: true, reason: `file access denied: ${(e as Error).message}` };
 		}
+	});
+
+	pi.on("tool_result", (event, ctx) => {
+		if (event.toolName !== "read" || event.isError || !root) return;
+		try {
+			const path = canonicalPath(str((event.input as { path?: unknown }).path), ctx.cwd);
+			const rel = relative(root, path);
+			if (!rel || rel.startsWith("..") || isAbsolute(rel)) return;
+			loaded[rel.split(sep).join("/")] = createHash("sha256").update(readFileSync(path)).digest("hex");
+		} catch {}
 	});
 
 	// Once the run has settled (continuations such as DISTIL included): export the recipe, merge drafts.
@@ -316,6 +330,8 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 	return {
 		/** Built-in tools the agent uses on memory; add them to setActiveTools. */
 		tools: ["read", "ls", "grep", "find", "write"],
+		/** The memory files the agent read this episode, with their SHA-256 at the time. */
+		loaded: () => ({ ...loaded }),
 		get profile() {
 			return profile;
 		},

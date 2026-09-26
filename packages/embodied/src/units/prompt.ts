@@ -7,7 +7,7 @@
  * Modified by pi-embodied: see ./index.ts.
  */
 
-import { readFileSync } from "node:fs";
+import { template } from "../context-version.ts";
 import type { UnitsSpec } from "./types.ts";
 import { type DemoBrief, renderBrief } from "./vlm.ts";
 import { CHUNK_STEPS, PLUGINS, type Plugin } from "./vocabulary.ts";
@@ -24,7 +24,7 @@ export const DEFAULT_VIEWS = `Each result shows the third-person view (it faces 
 export const DEFAULT_VIEWS_NO_WRIST = `Each result shows the third-person view (it faces the robot); this robot has no wrist view.
 - Third-person view: MV_LEFT / MV_RIGHT move toward the image left / right, MV_FWD toward the image bottom, MV_BACK toward the image top.`;
 
-const TEMPLATE = readFileSync(new URL("./SYSTEM.md", import.meta.url), "utf8").replace(/^<!--[\s\S]*?-->\n/, "");
+const TEMPLATE = template(new URL("./SYSTEM.md", import.meta.url)).replace(/^<!--[\s\S]*?-->\n/, "");
 
 /** Keep every `[name]...[/name]` block when `on`, drop them otherwise. */
 function section(prompt: string, name: string, on: boolean) {

@@ -23,7 +23,6 @@
  * configs/robot_robolab.yaml ported as a pi robot.
  */
 
-import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
@@ -35,8 +34,9 @@ import { encodePng } from "../png.ts";
 import { attach, defineRobot, SERVICES } from "../robot.ts";
 import type { NdArray, RpcClient } from "../rpc.ts";
 import type { MoveUnit, Vec3 } from "../units/index.ts";
+import { template } from "../context-version.ts";
 
-const read = (name: string) => readFileSync(new URL(name, import.meta.url), "utf8");
+const read = (name: string) => template(new URL(name, import.meta.url));
 const SYSTEM = read("./SYSTEM.md");
 const MEMORY = read("./memory.md");
 const EXPLORE = read("./explore.md");

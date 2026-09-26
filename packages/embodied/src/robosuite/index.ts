@@ -15,18 +15,18 @@
  * take an `arm` on every motion tool (robot0 | robot1), like dual_franka's left | right.
  */
 
-import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
+import { template } from "../context-version.ts";
 import { decodePngChannel, encodePng } from "../png.ts";
 import { attach, defineRobot, median, SERVICES, toolResult } from "../robot.ts";
 import { NdArray, RpcClient } from "../rpc.ts";
 import { finishMove, type Move, type MoveUnit, type Vec3 } from "../units/index.ts";
 
-const SYSTEM = readFileSync(new URL("./SYSTEM.md", import.meta.url), "utf8");
+const SYSTEM = template(new URL("./SYSTEM.md", import.meta.url));
 
 /** The seven tasks (services/.../robots/robosuite/tasks.py TASKS), the `--task` values. */
 export const TASKS = ["Lift", "Stack", "Restack", "Wipe", "NutAssemblySquare", "TwoArmLift", "TwoArmHandover"] as const;

@@ -12,12 +12,12 @@
  * recorded in the session's `robot_result` entry.
  */
 
-import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
+import { template } from "../context-version.ts";
 import { recipeFlash } from "../flash/recipe.ts";
 import type { FlywheelObs, FlywheelSpec } from "../flywheel.ts";
 import { encodePng } from "../png.ts";
@@ -26,7 +26,7 @@ import { NdArray, type RpcClient } from "../rpc.ts";
 import type { Move } from "../units/index.ts";
 import { vlaSeeds } from "../vla-seed.ts";
 
-const read = (name: string) => readFileSync(new URL(name, import.meta.url), "utf8");
+const read = (name: string) => template(new URL(name, import.meta.url));
 const SYSTEM = read("./SYSTEM.md");
 const MEMORY = read("./memory.md");
 const EXPLORE = read("./explore.md");

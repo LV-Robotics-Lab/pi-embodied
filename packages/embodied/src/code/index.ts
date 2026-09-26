@@ -31,10 +31,10 @@
  * is confirmed by the operator (`ui.confirm`) before it runs.
  */
 
-import { readFileSync } from "node:fs";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { template } from "../context-version.ts";
 import { type CodeApi, type CodeApiPrimitive, type CodeApiTier, fetchCodeApi } from "../primitives/registry.ts";
 import type { RpcClient } from "../rpc.ts";
 import { latestTurn, type ToolRegistrar } from "../units/index.ts";
@@ -87,7 +87,7 @@ export type CodeSpec = {
 	maxMoveM?: number;
 };
 
-const TEMPLATE = readFileSync(new URL("./SYSTEM.md", import.meta.url), "utf8").replace(/^<!--[\s\S]*?-->\n/, "");
+const TEMPLATE = template(new URL("./SYSTEM.md", import.meta.url)).replace(/^<!--[\s\S]*?-->\n/, "");
 const text = (s: string) => ({ type: "text" as const, text: s });
 
 /** Keep every `[name]...[/name]` block when `on`, drop them otherwise. */

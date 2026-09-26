@@ -66,8 +66,8 @@ import {
 import { NdArray, type RpcClient } from "../rpc.ts";
 import type { Move } from "../units/index.ts";
 
-const SYSTEM = readFileSync(new URL("./SYSTEM.md", import.meta.url), "utf8");
-const EXPLORE = readFileSync(new URL("./explore.md", import.meta.url), "utf8");
+const SYSTEM = template(new URL("./SYSTEM.md", import.meta.url));
+const EXPLORE = template(new URL("./explore.md", import.meta.url));
 /** The motion tools: the recipe of a solved exploration attempt. */
 const MOTION = ["move_delta", "rotate_delta", "open_gripper", "close_gripper", "vla_grasp", "act"];
 
@@ -138,6 +138,8 @@ except Exception as exc:
     out["calibration_error"] = str(exc)
 print(json.dumps(out, default=lambda v: v.tolist() if hasattr(v, "tolist") else str(v)))
 `;
+
+import { template } from "../context-version.ts";
 
 const TOOLS = [
 	"view_env_state",

@@ -26,7 +26,7 @@
  * and configs/robot_maniskill.yaml ported as a pi robot.
  */
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
@@ -38,8 +38,9 @@ import { encodePng } from "../png.ts";
 import { attach, defineRobot, SERVICES } from "../robot.ts";
 import { NdArray, type RpcClient } from "../rpc.ts";
 import { MOVE_UNITS, type MoveUnit, type Vec3 } from "../units/index.ts";
+import { template } from "../context-version.ts";
 
-const read = (name: string) => readFileSync(new URL(name, import.meta.url), "utf8");
+const read = (name: string) => template(new URL(name, import.meta.url));
 const SYSTEM = read("./SYSTEM.md");
 const MEMORY = read("./memory.md");
 const EXPLORE = read("./explore.md");

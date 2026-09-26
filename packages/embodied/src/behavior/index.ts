@@ -21,17 +21,17 @@
  * ported as pi tools; the reward of capx/envs/simulators/r1pro_b1k.py is not.
  */
 
-import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { template } from "../context-version.ts";
 import { decodePngChannel, encodePng } from "../png.ts";
 import { attach, defineRobot, type Mat, mark, median, round, SERVICES, toolResult } from "../robot.ts";
 import { type NdArray, RpcClient } from "../rpc.ts";
 
-const SYSTEM = readFileSync(new URL("./SYSTEM.md", import.meta.url), "utf8");
+const SYSTEM = template(new URL("./SYSTEM.md", import.meta.url));
 
 /** The 2025 challenge tasks, in the env server's order (services/.../robots/behavior/tasks.py): CaP-X's two first. */
 export const TASKS = [

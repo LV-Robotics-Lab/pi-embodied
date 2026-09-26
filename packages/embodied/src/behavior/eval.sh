@@ -20,7 +20,7 @@
 # --grasping-mode (OmniGibson's sticky or assisted grasping; default sticky) is recorded too.
 # So is code mode (--code, --code-api: high, low or low-noexamples = CaP-X's S2-S4, and --code-oracle, a reference
 # program run instead of the model), e.g.
-#   eval.sh runs/b1k-code turning_on_radio 0-2 --code=true --code-timeout 900 --model <provider/model>
+#   eval.sh runs/b1k-code turning_on_radio 0-2 --code=true --model <provider/model>
 set -uo pipefail
 out=$1 tasks=$2 seeds=$3
 shift 3

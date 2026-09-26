@@ -120,6 +120,8 @@ export type CodeSpec = {
 	real?: boolean;
 	/** Default of --code-max-move, m (the accumulated translation one program may command). */
 	maxMoveM?: number;
+	/** Default of --code-timeout and of a program's timeout_s, s (primitives that take minutes, e.g. BEHAVIOR's). */
+	timeoutS?: number;
 };
 
 const TEMPLATE = template(new URL("./SYSTEM.md", import.meta.url)).replace(/^<!--[\s\S]*?-->\n/, "");
@@ -208,8 +210,8 @@ export function code(
 	});
 	pi.registerFlag("code-timeout", {
 		type: "string",
-		default: String(DEFAULT_TIMEOUT_S),
-		description: "Code mode: the most wall-clock seconds one program may run (its default timeout_s is 60 or this)",
+		default: String(spec.timeoutS ?? DEFAULT_TIMEOUT_S),
+		description: `Code mode: the most wall-clock seconds one program may run (its default timeout_s is ${spec.timeoutS ?? DEFAULT_TIMEOUT_S} or this)`,
 	});
 	pi.registerFlag("code-max-calls", {
 		type: "string",
@@ -247,7 +249,8 @@ export function code(
 	/** The registry tier this episode runs: --privileged wins over --code-api. */
 	const tier = (): CodeApiTier | string =>
 		base.privileged() ? "privileged" : String(pi.getFlag("code-api") ?? "high");
-	const timeoutCap = () => Number(pi.getFlag("code-timeout")) || DEFAULT_TIMEOUT_S;
+	const defaultTimeout = spec.timeoutS ?? DEFAULT_TIMEOUT_S;
+	const timeoutCap = () => Number(pi.getFlag("code-timeout")) || defaultTimeout;
 	const maxCalls = () => Math.max(1, Math.floor(Number(pi.getFlag("code-max-calls")) || DEFAULT_MAX_CALLS));
 	const maxMove = () => {
 		const v = Number(pi.getFlag("code-max-move"));
@@ -280,7 +283,7 @@ export function code(
 				timeout_s: Type.Optional(
 					Type.Number({
 						minimum: 1,
-						description: `Wall-clock timeout, s (default ${Math.min(DEFAULT_TIMEOUT_S, timeoutCap())}, at most ${timeoutCap()})`,
+						description: `Wall-clock timeout, s (default ${Math.min(defaultTimeout, timeoutCap())}, at most ${timeoutCap()})`,
 					}),
 				),
 			}),
@@ -296,7 +299,7 @@ export function code(
 		const refused = spec.refuse?.();
 		if (refused) return { content: [text(refused)], details: { status: "error", error: refused } };
 		const cap = timeoutCap();
-		const timeout_s = Math.min(params.timeout_s ?? Math.min(DEFAULT_TIMEOUT_S, cap), cap);
+		const timeout_s = Math.min(params.timeout_s ?? Math.min(defaultTimeout, cap), cap);
 		if (spec.real) {
 			// A real robot: the operator reads the program before it moves anything.
 			const go = ctx.hasUI ? await ctx.ui.confirm("Run this program on the robot?", params.code) : false;
@@ -479,6 +482,8 @@ export function code(
 				? {
 						code: mode() === "pure" ? "true" : "both",
 						code_api: tier(),
+						// The digest of the tier the programs ran with (robot.ts's code_api_digest is the episode's whole registry).
+						...(api ? { code_tier_digest: api.digest } : {}),
 						// A reference program ran, not the model: never comparable with a planner's run.
 						...(oracleRun ? { code_oracle: oracleRun.name, code_oracle_sha256: oracleRun.sha256 } : {}),
 					}

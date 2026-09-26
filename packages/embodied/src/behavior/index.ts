@@ -4,8 +4,8 @@
  *
  *   pi -e packages/embodied/src/behavior --task turning_on_radio --seed 0 --gpu-id 1
  *   pi -e packages/embodied/src/behavior --task picking_up_trash --seed 2 --privileged
- *   pi -e packages/embodied/src/behavior --task turning_on_radio --seed 0 --code=true --code-timeout 900
- *      (run_code over the server's registry; a primitive takes minutes, so raise --code-timeout)
+ *   pi -e packages/embodied/src/behavior --task turning_on_radio --seed 0 --code=true
+ *      (run_code over the server's registry; a primitive takes minutes: --code-timeout defaults to 900 s)
  *
  * Starts one BEHAVIOR env server per session (services/.../robots/behavior/env_server.py in the
  * `behavior` venv, see robots/behavior/install.sh; OmniGibson loads a whole house, minutes). The
@@ -102,6 +102,8 @@ export type Camera = (typeof CAMERAS)[number];
 export const ARMS = ["left", "right"] as const;
 /** Code mode's default --code-max-move, m: four of navigate_to_pose's 5 m drives. */
 export const CODE_MAX_MOVE_M = 20;
+/** Code mode: the default --code-timeout, s. */
+export const CODE_TIMEOUT_S = 900;
 /** Depth beyond this is no hit (OmniGibson's depth_linear on the sky), m. */
 export const MAX_DEPTH_M = 20;
 
@@ -250,6 +252,8 @@ export default function behavior(pi: ExtensionAPI) {
 			instruction: () => meta.instruction,
 			// A house: one navigate_to_pose may drive 5 m.
 			maxMoveM: CODE_MAX_MOVE_M,
+			// One primitive (a navigate, a grasp) takes minutes: programs get 15 minutes by default.
+			timeoutS: CODE_TIMEOUT_S,
 			// Like the motion tools (`ended`): nothing runs once the episode is over.
 			refuse: () =>
 				obs?.truncated

@@ -18,7 +18,8 @@ Every service except the LingBot-VLA launcher speaks the same JSON-over-HTTP RPC
   rules below) makes the server drop the connection instead of answering.
 - The server binds `--host` (default `127.0.0.1`) and `--port` (default `0` = any free
   port) and prints `RPC server listening on http://HOST:PORT` to stdout once bound.
-- **Token (opt-in per server; every env server with `code.run`, `utils/code_exec.py` `CodeRunMixin`).** The
+- **Token (opt-in per server; every env server serving `code.run`, `utils/code_exec.py` `CodeRunMixin`:
+  the simulators always, the real-robot servers only when started with `--code`).** The
   server draws a random 32-hex-digit token at start and prints it on that line only:
   `RPC server listening on http://HOST:PORT (token HEX)` (stdout, i.e. the pipe of the process
   that spawned it; never the log). Every business call and `shutdown` must carry it as
@@ -218,6 +219,20 @@ run), `success`, `success_step` (the episode's), `obs` (the tools' observation) 
 most 128, halved when full)). `tier` also accepts `low-noexamples` (the low tier's primitives,
 docs without their examples). pi's `--code-oracle <file>` sends a ported CaP-X human oracle
 (`packages/embodied/src/<robot>/oracle/`) as one `code.run` instead of asking the model.
+
+The servers with `code.run`: libero-env, robosuite-env, metaworld-env, maniskill-env, genesis-env,
+behavior-env, robocasa-env, robolab-env, robotwin-env, and, only when started with `--code` (pi
+passes it with `--code-real`), franka-env, franka-polymetis-env, dual-franka-env, piper-env and
+ur5e-env. Each one's run fields are what its pi robot absorbs: the steps the run took, the
+episode's (latched) success or termination flags, the new observation in the shape its tools
+return, and a bounded video (`frames`; real robots record the run as their next state step).
+What a program receives of a primitive is that facade method's result minus object state (e.g.
+MetaWorld's 39-D observation and its reward metrics, Genesis' `lift_m`, BEHAVIOR's `privileged`
+block, RoboCasa's object observations, ManiSkill's dense rewards) and minus bulk (motion video
+frames, observation images). A real-robot server also takes `code.set_limits` (kw: the robot's
+pi-side per-call limits, e.g. `max_move_m`, `max_yaw_rad` / `max_rotate_rad`, Franka's workspace
+box and z floor): pi sends it when code mode starts, the server refuses every program motion until
+it is set and beyond it afterwards; it is not a registry primitive, so no program reaches it.
 
 libero-env serves `code.run` over its registry (`code.api`, above): the runner is
 `utils/code_exec.py` (`CodeRunner` + `registry_primitives`), and every call a program makes goes

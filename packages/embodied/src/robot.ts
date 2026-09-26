@@ -604,7 +604,15 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		if (reported || (failed === undefined && !(ready && ran))) return;
 		reported = true;
 		// Ground truth was on offer (--privileged): not comparable with a run without it.
-		const mark = { ...(privileged() ? { privileged: true } : {}), ...(anchored() ? { anchor_image: true } : {}) };
+		// The OpenETA extras that were on (flags of ./primitives, ./objects.ts, ./web.ts): not comparable with a run without them.
+		const extras = ["waypoints", "align-wrist", "grasp-advisor", "object-memory", "web-tools"].filter(
+			(f) => pi.getFlag(f) === true,
+		);
+		const mark = {
+			...(privileged() ? { privileged: true } : {}),
+			...(anchored() ? { anchor_image: true } : {}),
+			...(extras.length ? { extras } : {}),
+		};
 		const r =
 			failed !== undefined
 				? { robot: name, ...task, ...mark, env_error: true, error: failed }

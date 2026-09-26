@@ -69,6 +69,16 @@ loads the robot extension, so the user answers yes (`/trust` saves it); declined
 the robot. The dashboard URL is shown at startup. Boolean flags take the next word: write `--flag=true`.
 Without the experiment settings: `pi -e packages/embodied/src/<robot> ...`.
 
+Optional, per launch (each registers nothing when off): `--web-tools` keeps web search and page
+fetch for the robot, from pi packages installed once in the experiment directory
+(`pi install -l npm:pi-web-search npm:@zeldrisho/pi-web-fetch`; web_search uses the planner provider's
+native search, so it needs a provider that has one); `--object-memory` (`--object-memory-dir` to keep
+records per scene), and on LIBERO / Franka `--waypoints`, `--align-wrist`, `--grasp-advisor`.
+`--model human/operator` lets a person answer as the planner (pi's dialogs, or the dashboard). The
+task skills `/skill:embodied-pick`, `embodied-place`, `embodied-push-pull`, `embodied-stack` and
+`embodied-object-memory` go in front of the prompt (`pi ... "/skill:embodied-pick Solve the task."`):
+a robot's system prompt replaces pi's, so the model does not see the skill list itself.
+
 ## 5. Evaluate
 
 ```bash

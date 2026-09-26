@@ -189,15 +189,16 @@ test("follow_waypoints runs segments in order and stops at the first one not rea
 	assert.equal(refused.moved, false);
 	assert.equal(d.moves.length, 0);
 	// A real arm's gripper keeps its last command: no gripper parameter.
-	assert.ok("gripper" in followWaypoints(a.rig).parameters.properties);
-	assert.ok(!("gripper" in followWaypoints({ ...a.rig, gripper: false }).parameters.properties));
+	const props = (r: WaypointRig) => (followWaypoints(r).parameters as { properties: object }).properties;
+	assert.ok("gripper" in props(a.rig));
+	assert.ok(!("gripper" in props({ ...a.rig, gripper: false })));
 });
 
 test("--waypoints registers nothing when off and mounts the tool once when on", () => {
 	const mounted: string[] = [];
 	const off = fakePi();
-	assert.deepEqual(waypointsTool(off.pi, waypointRig().rig, (d) => mounted.push(d.name))(), []);
-	assert.deepEqual(mounted, []);
+	assert.deepEqual(waypointsTool(off.pi, waypointRig().rig, (d) => mounted.push(d.name))(), [] as string[]);
+	assert.equal(mounted.length, 0);
 	const on = fakePi({ waypoints: true });
 	const activate = waypointsTool(on.pi, waypointRig().rig, (d) => mounted.push(d.name));
 	assert.deepEqual(activate(), ["follow_waypoints"]);

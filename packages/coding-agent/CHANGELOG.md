@@ -8,6 +8,8 @@
 - Added classifier support to `ModelRuntime`, including `classify()`, classifier model accessors, runtime-resolved authentication, and the built-in TypeSafe `jev-latest` model.
 - Added `types=chat,image,classifier` to pi.dev model catalog requests so remote refreshes overlay every supported model type; entries of unknown model types are ignored.
 - Added the `provider_stream_event` extension event for observing parsed provider events before normalization, with an opt-in `/debug-provider` example viewer ([#9784](https://github.com/earendil-works/pi/issues/9784)).
+- Added `ctx.withdrawQueuedMessage(text)` for extensions: it removes one queued steering or follow-up message (its text as queued) that the agent has not taken yet, and returns `false` once it is gone (`AgentSession.withdrawQueuedMessage`).
+- Added `ctx.exportSession(format, outputPath)` for extensions: it exports the current session branch as `/export` does, as JSONL or HTML, and resolves to the written path.
 
 ### Fixed
 

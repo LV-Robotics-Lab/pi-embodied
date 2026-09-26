@@ -613,19 +613,20 @@ class LiberoEnvFacade(BaseEnvFacade):
             d = np.asarray(kwargs["dxyz"], dtype=np.float64).reshape(3)
             return float(np.linalg.norm(d))
         if method in ("env.execute_grasp", "env.execute_place"):
-            # To the pre-pose, down the standoff and back up (or the lift), at most.
-            key = "grasp_id" if method == "env.execute_grasp" else "place_id"
+            # The claimed path's legs: to the pre-pose, the standoff down, then the lift up
+            # (a grasp) or the standoff back (a place).
+            grasp = method == "env.execute_grasp"
+            key = "grasp_id" if grasp else "place_id"
+            standoff = float(_finite("standoff", kwargs.get("standoff", 0.10)))
             try:
-                pose = self._grasp.resolve_grasp(kwargs[key])
+                pre = self._grasp.resolve_grasp(kwargs[key], standoff=standoff)
             except Exception:
                 return 0.0  # the call itself refuses the id
-            at = np.asarray(pose["eef_position"], dtype=np.float64)
-            standoff = float(_finite("standoff", kwargs.get("standoff", 0.10)))
-            return float(
-                np.linalg.norm(at - self._eef())
-                + 2 * standoff
-                + float(kwargs.get("lift", 0.10))
+            last = (
+                float(_finite("lift", kwargs.get("lift", 0.10))) if grasp else standoff
             )
+            to_pre = np.asarray(pre["eef_position"], dtype=np.float64) - self._eef()
+            return float(np.linalg.norm(to_pre) + standoff + last)
         if method in ("env.step", "env.chunk_step"):
             a = np.asarray(
                 kwargs.get("action", kwargs.get("actions")), dtype=np.float64

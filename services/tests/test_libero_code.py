@@ -594,7 +594,21 @@ def test_the_executors_are_code_primitives_only_with_a_grasp_server():
     # The run's translation cap counts the whole path.
     gid = f._rpc["env.plan_grasp"](object="bowl")["active"]
     moved = f._code_move_m("env.execute_grasp", {"grasp_id": gid})
-    assert moved == pytest.approx(0.05 + 0.2 + 0.1, abs=1e-3)
+    # From (0, 0, 0.2) to the pre-grasp (0.05, 0, 0.3), 0.10 down, 0.10 up.
+    assert moved == pytest.approx(np.hypot(0.05, 0.1) + 0.2, abs=1e-3)
+    travel = []
+    act = f._act
+
+    def tracked(action):
+        before = f._eef()
+        act(action)
+        travel.append(float(np.linalg.norm(f._eef() - before)))
+
+    f._act = tracked
+    assert "error" not in f._rpc["env.execute_grasp"](grasp_id=gid)
+    assert sum(travel) <= moved + 0.02, "the cap covers the path the arm travels"
+    f._act = act
+    gid = f._rpc["env.plan_grasp"](object="bowl")["active"]
     with pytest.raises(ValueError, match="finite"):
         f._rpc["env.execute_grasp"](grasp_id=gid, standoff=float("nan"))
     assert f._rpc["env.resolve_grasp"](gid)["id"] == gid, "refused before moving"

@@ -30,7 +30,13 @@ in the env server. It
 - composes AnyPlace's object placement transform with a chosen grasp into the place grasp pose
   (``p1``), refusing masks and grasps from different snapshots,
 - resolves a grasp id to the robot's EEF pose (``GraspToEef``) for the motion primitives,
-- expires every id when the robot moves (``invalidate``: the facade's mutating RPCs are wrapped).
+- claims one grasp or place id for execution (``claim_waypoints``): the whole pre-grasp ->
+  grasp -> lift (or pre-place -> place -> retreat) path is resolved at once from that one
+  candidate, so the motions that follow never re-read an id they have themselves expired,
+- remembers the executed grasp (the robot now holds its object) so ``plan_place`` can be
+  asked after the grasp, from the new observation and the gripper's actual pose,
+- expires every id when the robot moves (``invalidate``: the facade's mutating RPCs are
+  wrapped; with a state digest only when the robot state actually changed).
 
 Nothing here imports torch; the model servers run in their own venvs.
 """
@@ -69,6 +75,10 @@ DEFAULT_DEPTH_TRUNCATION = 2.0
 DEFAULT_MAX_CANDIDATES = 10
 #: How far above the grasp (against the approach) the pre-grasp pose sits.
 DEFAULT_STANDOFF_M = 0.10
+#: How far straight up the arm lifts after closing on a claimed grasp.
+DEFAULT_LIFT_M = 0.10
+#: The longest standoff or lift a claim accepts.
+MAX_WAYPOINT_OFFSET_M = 0.30
 
 #: Columns are the GraspNet basis vectors in a model-native basis whose Z is the approach and
 #: X the closing direction (Contact-GraspNet, GraspGenX): GraspNet X = native Z, Y = native X,
@@ -141,6 +151,22 @@ def quat_xyzw(R: np.ndarray) -> list[float]:
         )
     q = np.array([x, y, z, w])
     return [float(v) for v in q / np.linalg.norm(q)]
+
+
+def quat_xyzw_matrix(q: Any) -> np.ndarray:
+    """The rotation matrix of an xyzw quaternion (normalized first)."""
+    x, y, z, w = np.asarray(q, dtype=np.float64).reshape(4)
+    n = math.sqrt(x * x + y * y + z * z + w * w)
+    if not n > 0:
+        raise GraspError("zero quaternion")
+    x, y, z, w = x / n, y / n, z / n, w / n
+    return np.array(
+        [
+            [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+        ]
+    )
 
 
 def yaw_of(R: np.ndarray) -> float:
@@ -458,7 +484,10 @@ class GraspPlanner:
     ``plan_grasp`` also accepts (the stage-7 ``env.segment`` book), else only this planner's.
     With ``masks`` the planner shares that book's :class:`Epoch`: one id counter (an id names
     one mask, whichever book holds it) and one observation clock (a motion or a new
-    observation expires both books).
+    observation expires both books). ``state_digest() -> comparable`` is the robot-state
+    fingerprint the clock compares (:meth:`Epoch.set_digest`: an unmoved robot keeps its ids);
+    ``holding(arm) -> bool | None`` says whether the gripper holds something (None: unknown),
+    checked before ``plan_place`` trusts an executed grasp.
     """
 
     def __init__(
@@ -475,6 +504,8 @@ class GraspPlanner:
         max_candidates: int = DEFAULT_MAX_CANDIDATES,
         depth_truncation: float = DEFAULT_DEPTH_TRUNCATION,
         wrist_camera: str | None = None,
+        state_digest: Callable[[], Any] | None = None,
+        holding: Callable[[str | None], bool | None] | None = None,
     ) -> None:
         if not cameras:
             raise ValueError("GraspPlanner needs at least one camera")
@@ -492,6 +523,9 @@ class GraspPlanner:
         self._eef_pose = eef_pose
         self._external = masks
         self._epoch = masks.epoch if masks is not None else Epoch()
+        if state_digest is not None:
+            self._epoch.set_digest(state_digest)
+        self._holding = holding
         self._book = DetectionBook(self._epoch)
         self._book.bind(self._epoch.observation)
         self._epoch.on_tick(self._on_tick)
@@ -501,6 +535,9 @@ class GraspPlanner:
         self._wrist = wrist_camera
         #: grasp ids in rank order per inference, for the greedy candidate policy
         self._rankings: dict[str, list[str]] = {}
+        #: per arm (None for one arm): the grasp claimed for execution, which the gripper
+        #: holds until a place is claimed, the env resets or ``holding`` says it does not
+        self._held: dict[str | None, dict[str, Any]] = {}
 
     @staticmethod
     def _client(v: Any) -> Any:
@@ -558,6 +595,17 @@ class GraspPlanner:
         :meth:`invalidate` (after they ran, whatever they returned)."""
         rpc: dict[str, Callable[..., Any]] = facade._rpc
         self._epoch.install(facade, mutating)
+        reset = rpc.get("env.reset")
+        if reset is not None:
+
+            def reset_and_forget(*args: Any, **kwargs: Any) -> Any:
+                try:
+                    return reset(*args, **kwargs)
+                finally:
+                    self._held.clear()
+
+            rpc["env.reset"] = reset_and_forget
+        rpc["env.claim_waypoints"] = self.claim_waypoints
         rpc["env.plan_grasp"] = self.plan_grasp
         rpc["env.next_grasp"] = self.next_grasp
         rpc["env.resolve_grasp"] = self.resolve_grasp
@@ -620,14 +668,35 @@ class GraspPlanner:
                 },
             ),
             Primitive(
+                "claim_waypoints",
+                "env.claim_waypoints",
+                "Claim one grasp or place id for execution: its whole path from that one candidate (pre_grasp, grasp, lift; or pre_place, place, retreat) as world positions with the orientation and the gripper per step. Motions after it may use these coordinates though they expire the id; a claimed grasp is remembered as held for plan_place.",
+                {
+                    "grasp_id": Param(
+                        "string", "a g or p id of the current observation"
+                    ),
+                    "standoff": Param(
+                        "number",
+                        "m backed off along the approach (default 0.10)",
+                        False,
+                    ),
+                    "lift": Param(
+                        "number", "grasp: m lifted straight up (default 0.10)", False
+                    ),
+                },
+            ),
+            Primitive(
                 "plan_place",
                 "env.plan_place",
-                "AnyPlace: place poses (p ids) for a held object on a region; region mask and grasp must share one observation.",
+                "AnyPlace: place poses (p ids) for the held object on a region. Before the grasp: region mask and grasp from one observation; after executing it: the executed grasp's id, the region from the current observation.",
                 {
                     "region_mask_id": Param(
                         "string", "mask id of the placement region"
                     ),
-                    "grasp_id": Param("string", "the grasp the object is held with"),
+                    "grasp_id": Param(
+                        "string",
+                        "the grasp the object is held with (a current g id, or the executed one)",
+                    ),
                     "object_mask_id": Param(
                         "string",
                         "mask id of the object (default: the mask the grasp was planned on)",
@@ -1064,6 +1133,118 @@ class GraspPlanner:
             "arm": item.get("arm"),
         }
 
+    # -- execution -------------------------------------------------------------
+
+    def claim_waypoints(
+        self,
+        grasp_id: str,
+        standoff: float = DEFAULT_STANDOFF_M,
+        lift: float = DEFAULT_LIFT_M,
+    ) -> dict:
+        """Claim one grasp or place id of the current observation for execution.
+
+        The whole path is resolved now, from this one candidate: a grasp gives ``pre_grasp``
+        (``standoff`` back along the approach), ``grasp`` and ``lift`` (``lift`` straight up);
+        a place gives ``pre_place``, ``place`` and ``retreat`` (back to ``pre_place``). The
+        motions that follow expire the id, which is why they run on these coordinates and not
+        on the id: the evidence chain ends at this claim, one observation, one candidate.
+
+        A claimed grasp is remembered as the arm's held grasp (``plan_place`` accepts its id
+        after the grasp, from the new observation); a claimed place forgets it.
+
+        Returns:
+            dict with ``id``, ``kind``, ``observation``, ``waypoints`` (name -> world
+            ``[x, y, z]`` of the EEF), ``steps`` (in order: ``{"to": name, "gripper": -1|+1}``
+            or ``{"gripper": ...}`` to close / open in place), ``eef_quat_xyzw``,
+            ``eef_yaw``, ``eef_pitch``, ``approach``, ``width_m``, ``arm``.
+
+        Example:
+            >>> c = claim_waypoints(plan_grasp("black bowl")["active"])
+            >>> move_to(c["waypoints"]["pre_grasp"], gripper=-1)
+        """
+        item = self._grasp_item(grasp_id)
+        grasp_id = str(grasp_id)
+        if item.get("rejected"):
+            raise GraspError(
+                f"{grasp_id} was rejected ({item.get('reject_reason') or 'no reason'}); "
+                "execute the plan's active candidate"
+            )
+        offsets = {"standoff": float(standoff), "lift": float(lift)}
+        for name, value in offsets.items():
+            if not (0.0 <= value <= MAX_WAYPOINT_OFFSET_M):
+                raise GraspError(
+                    f"{name} must be within [0, {MAX_WAYPOINT_OFFSET_M}] m, got {value}"
+                )
+        at = np.asarray(item["eef_position"], dtype=np.float64)
+        approach = np.asarray(item["approach"], dtype=np.float64)
+        pre = at - offsets["standoff"] * approach
+        arm = item.get("arm")
+        if item["kind"] == "grasp":
+            waypoints = {
+                "pre_grasp": pre,
+                "grasp": at,
+                "lift": at + np.array([0.0, 0.0, offsets["lift"]]),
+            }
+            steps = [
+                {"to": "pre_grasp", "gripper": -1},
+                {"to": "grasp", "gripper": -1},
+                {"gripper": 1},
+                {"to": "lift", "gripper": 1},
+            ]
+            self._held[arm] = {
+                "grasp_id": grasp_id,
+                "arm": arm,
+                "camera": item["camera"],
+                "observation": item["observation"],
+                "mask_id": item.get("mask_id"),
+                "prompt": self._prompt_of(item.get("mask_id")),
+                "width_m": item["width_m"],
+            }
+        else:
+            waypoints = {"pre_place": pre, "place": at, "retreat": pre}
+            steps = [
+                {"to": "pre_place", "gripper": 1},
+                {"to": "place", "gripper": 1},
+                {"gripper": -1},
+                {"to": "retreat", "gripper": -1},
+            ]
+            self._held.pop(arm, None)
+        return {
+            "id": grasp_id,
+            "kind": item["kind"],
+            "observation": self._epoch.observation,
+            "arm": arm,
+            "waypoints": {
+                k: [round(float(v), 5) for v in w] for k, w in waypoints.items()
+            },
+            "steps": steps,
+            "eef_quat_xyzw": item["eef_quat_xyzw"],
+            "eef_yaw": item["eef_yaw"],
+            "eef_pitch": item["eef_pitch"],
+            "approach": item["approach"],
+            "width_m": item["width_m"],
+            "standoff_m": offsets["standoff"],
+            "lift_m": offsets["lift"] if item["kind"] == "grasp" else None,
+            "expired_ids": self._expired(),
+        }
+
+    def held(self, arm: str | None = None) -> dict[str, Any] | None:
+        """The grasp claimed for ``arm`` and not yet placed (None when there is none)."""
+        record = self._held.get(arm)
+        return None if record is None else dict(record)
+
+    def _prompt_of(self, mask_id: str | None) -> str | None:
+        if mask_id is None:
+            return None
+        for book in (self._book, self._external):
+            if book is not None and book.known(str(mask_id)):
+                try:
+                    prompt = book.get(str(mask_id)).get("prompt")
+                except DetectionStale:
+                    return None
+                return str(prompt) if prompt else None
+        return None
+
     # -- placement -------------------------------------------------------------
 
     def plan_place(
@@ -1076,28 +1257,41 @@ class GraspPlanner:
         """Where to hold the grasped object so it comes to rest on the placement region.
 
         AnyPlace predicts the object's placement transform from the object mask and the
-        placement-region mask; the place grasp pose is that transform applied to the chosen
-        grasp (Placement Grasp Composition). The ids must come from the same observation
-        snapshot (same camera, no motion in between), or the call is refused.
+        placement-region mask; the place grasp pose is that transform applied to the grasp
+        pose (Placement Grasp Composition). Two ways to name the grasp:
+
+        - a current ``g`` id, before executing it: the object mask, the region mask and the
+          grasp must come from the same observation snapshot (same camera, no motion in
+          between), or the call is refused;
+        - the id of the grasp executed last (``claim_waypoints``), after the grasp: the object
+          is in the gripper, so the grasp pose is the EEF's actual pose now, and the object
+          mask (default: the grasp's text prompt segmented again) and the region mask come
+          from the current observation. Refused when ``holding`` says the gripper is empty.
 
         Args:
             region_mask_id: mask id of the local surface it goes onto / into.
             grasp_id: the grasp (``g`` id) the object is or will be held with.
             object_mask_id: mask id of the object being placed; default the mask the grasp
-                was planned on (the usual case: segmenting the object again would give a
-                new id that is not the grasp's).
+                was planned on (before the grasp) or its prompt segmented now (after).
 
         Returns:
             dict with ``candidates`` (each: ``id`` such as ``p2``, ``eef_position``,
             ``eef_quat_xyzw``, ``eef_yaw``, ``eef_pitch``, ``object_position``: where the
-            object's grasp center lands), ``active`` and ``expired_ids``.
+            object's grasp center lands), ``active``, ``held`` and ``expired_ids``.
 
         Example:
-            >>> p = plan_place(region["id"], "g1"); resolve_grasp(p["active"], 0.05)
+            >>> p = plan_place(region["id"], "g1"); claim_waypoints(p["active"])
         """
         if self._anyplace is None:
             raise GraspError(
                 "plan_place needs an AnyPlace server (start the env server with --anyplace)"
+            )
+        grasp_id = str(grasp_id)
+        held = next((h for h in self._held.values() if h["grasp_id"] == grasp_id), None)
+        live = self._book.known(grasp_id) and grasp_id in self._book.ids
+        if held is not None and not live:
+            return self._plan_place_held(
+                held, region_mask_id, object_mask_id, max_candidates
             )
         grasp = self._grasp_item(grasp_id)
         if grasp["kind"] != "grasp":
@@ -1123,7 +1317,108 @@ class GraspPlanner:
             raise GraspError(
                 f"grasp {grasp_id} was planned on mask {grasp['mask_id']}, not {object_mask_id}"
             )
-        snap = self._snapshot(grasp["camera"])
+        return self._place(
+            self._snapshot(grasp["camera"]),
+            grasp_id=grasp_id,
+            object_mask_id=str(object_mask_id),
+            object_mask=np.asarray(obj["mask"]),
+            region_mask_id=str(region_mask_id),
+            region_mask=np.asarray(region["mask"]),
+            grasp_R_camera=grasp["_camera_R"],
+            grasp_t_camera=grasp["_camera_t"],
+            width_m=grasp["width_m"],
+            arm=grasp.get("arm"),
+            max_candidates=max_candidates,
+            held=False,
+        )
+
+    def _plan_place_held(
+        self,
+        held: dict[str, Any],
+        region_mask_id: str,
+        object_mask_id: str | None,
+        max_candidates: int | None,
+    ) -> dict:
+        """``plan_place`` after the grasp: the grasp pose is the EEF's pose now."""
+        arm = held["arm"]
+        grasp_id = held["grasp_id"]
+        if self._holding is not None and self._holding(arm) is False:
+            self._held.pop(arm, None)
+            raise GraspError(
+                f"the gripper holds nothing: grasp {grasp_id} did not keep its object; "
+                "plan and execute a new grasp"
+            )
+        pose = self._eef_pose(arm) if self._eef_pose is not None else None
+        if pose is None:
+            raise GraspError(
+                "plan_place after a grasp needs the EEF pose, which this server does not give"
+            )
+        region = self._mask_item(region_mask_id)
+        camera = region.get("camera") or held["camera"]
+        snap = self._snapshot(camera)
+        if object_mask_id is None:
+            if not held.get("prompt"):
+                raise GraspError(
+                    f"grasp {grasp_id} was planned on a mask without a text prompt; "
+                    "segment the held object and pass object_mask_id"
+                )
+            seg = self._segment(held["prompt"], snap.camera)
+            if not seg["found"]:
+                raise GraspError(
+                    f"could not segment the held {held['prompt']!r}: {seg.get('reason')}"
+                )
+            object_mask_id = seg["id"]
+        obj = self._mask_item(object_mask_id)
+        observations = {
+            "object_mask": obj["observation"],
+            "region_mask": region["observation"],
+        }
+        cameras = {obj.get("camera"), region.get("camera"), snap.camera} - {None}
+        if len(set(observations.values())) != 1 or len(cameras) != 1:
+            raise GraspError(
+                "plan_place needs the object and region masks from the current observation "
+                f"(same camera); got observations {observations}, cameras {sorted(cameras)}"
+            )
+        cal = self._calibration_for(arm)
+        T_world_eef = rigid(quat_xyzw_matrix(pose[1]), np.asarray(pose[0], dtype=float))
+        T_world_grasp = T_world_eef @ np.linalg.inv(cal.matrix())
+        T_camera_grasp = (
+            np.linalg.inv(
+                np.asarray(snap.view["extrinsic_cam2world"], dtype=np.float64)
+            )
+            @ T_world_grasp
+        )
+        return self._place(
+            snap,
+            grasp_id=grasp_id,
+            object_mask_id=str(object_mask_id),
+            object_mask=np.asarray(obj["mask"]),
+            region_mask_id=str(region_mask_id),
+            region_mask=np.asarray(region["mask"]),
+            grasp_R_camera=T_camera_grasp[:3, :3],
+            grasp_t_camera=T_camera_grasp[:3, 3],
+            width_m=held["width_m"],
+            arm=arm,
+            max_candidates=max_candidates,
+            held=True,
+        )
+
+    def _place(
+        self,
+        snap: Snapshot,
+        *,
+        grasp_id: str,
+        object_mask_id: str,
+        object_mask: np.ndarray,
+        region_mask_id: str,
+        region_mask: np.ndarray,
+        grasp_R_camera: np.ndarray,
+        grasp_t_camera: np.ndarray,
+        width_m: float,
+        arm: str | None,
+        max_candidates: int | None,
+        held: bool,
+    ) -> dict:
         view = snap.view
         n = int(max_candidates or self._max)
         started = time.perf_counter()
@@ -1134,12 +1429,8 @@ class GraspPlanner:
                 "rgb": np.ascontiguousarray(view["rgb"], dtype=np.uint8),
                 "depth": np.ascontiguousarray(view["depth"], dtype=np.float32),
                 "intrinsic_K": np.asarray(view["intrinsic_K"], dtype=np.float64),
-                "object_mask": np.ascontiguousarray(
-                    np.asarray(obj["mask"]), dtype=np.uint8
-                ),
-                "region_mask": np.ascontiguousarray(
-                    np.asarray(region["mask"]), dtype=np.uint8
-                ),
+                "object_mask": np.ascontiguousarray(object_mask, dtype=np.uint8),
+                "region_mask": np.ascontiguousarray(region_mask, dtype=np.uint8),
                 "max_candidates": n,
             },
             timeout_s=600.0,
@@ -1148,14 +1439,12 @@ class GraspPlanner:
         if not isinstance(res, dict) or "placements" not in res:
             raise GraspError(f"anyplace server returned no placements field: {res!r}")
         T_cw = np.asarray(view["extrinsic_cam2world"], dtype=np.float64)
-        cal = self._calibration_for(grasp.get("arm"))
+        cal = self._calibration_for(arm)
         ids: list[str] = []
         cands: list[dict[str, Any]] = []
         for i, pl in enumerate(list(res["placements"])[:n]):
             R_c, t_c = compose_placement(
-                np.asarray(pl["transform_matrix"]),
-                grasp["_camera_R"],
-                grasp["_camera_t"],
+                np.asarray(pl["transform_matrix"]), grasp_R_camera, grasp_t_camera
             )
             R = T_cw[:3, :3] @ R_c
             t = T_cw[:3, :3] @ t_c + T_cw[:3, 3]
@@ -1168,19 +1457,19 @@ class GraspPlanner:
                 if pl.get("score") is None
                 else round(float(pl["score"]), 4),
                 "backend": "anyplace",
-                "source_grasp_id": str(grasp_id),
-                "object_mask_id": str(object_mask_id),
-                "region_mask_id": str(region_mask_id),
-                "mask_id": str(object_mask_id),
+                "source_grasp_id": grasp_id,
+                "object_mask_id": object_mask_id,
+                "region_mask_id": region_mask_id,
+                "mask_id": object_mask_id,
                 "position": [round(float(v), 5) for v in t],
                 "object_position": [round(float(v), 5) for v in t],
                 "approach": [round(float(v), 5) for v in R[:, 0]],
                 "closing": [round(float(v), 5) for v in R[:, 1]],
                 "rotation_matrix": [[round(float(v), 6) for v in row] for row in R],
-                "width_m": grasp["width_m"],
+                "width_m": width_m,
                 "contact_points": [],
                 **cal.eef_pose(R, t),
-                "arm": grasp.get("arm"),
+                "arm": arm,
                 "rejected": False,
                 "_camera_R": R_c,
                 "_camera_t": t_c,
@@ -1193,9 +1482,10 @@ class GraspPlanner:
         return {
             "observation": self._epoch.observation,
             "camera": snap.camera,
-            "grasp_id": str(grasp_id),
-            "object_mask_id": str(object_mask_id),
-            "region_mask_id": str(region_mask_id),
+            "grasp_id": grasp_id,
+            "held": held,
+            "object_mask_id": object_mask_id,
+            "region_mask_id": region_mask_id,
             "candidate_count": len(cands),
             "candidates": cands,
             "active": ids[0] if ids else None,
@@ -1256,6 +1546,7 @@ __all__ = [
     "BACKENDS",
     "CAMERA_FRAME",
     "CONTACT_GRASPNET_GRIPPER_DEPTH",
+    "DEFAULT_LIFT_M",
     "DEFAULT_STANDOFF_M",
     "GRASP_FRAME",
     "ZX_NATIVE_TO_GRASPNET",
@@ -1271,6 +1562,7 @@ __all__ = [
     "object_points",
     "pitch_of",
     "quat_xyzw",
+    "quat_xyzw_matrix",
     "rank",
     "transform_candidate",
     "yaw_of",

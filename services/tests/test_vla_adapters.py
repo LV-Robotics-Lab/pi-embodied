@@ -215,6 +215,14 @@ def test_openvla_reports_the_published_checkpoints_suite():
     vla = OpenVLAFacade(policy=Sampler(1), model="m", revision="r", suite="libero_10")
     info = call(vla, "vla.info")
     assert (info["suite"], info["model"], info["revision"]) == ("libero_10", "m", "r")
+    oft = OpenVLAOFTFacade(
+        policy=Sampler(8), model="m", revision="r", suite="libero_all"
+    )
+    assert call(oft, "vla.info")["suite"] == "libero_all"
+    custom = OpenVLAOFTFacade(policy=Sampler(8), model="m", revision="r")
+    assert call(custom, "vla.info")["suite"] is None, (
+        "a custom checkpoint's suite is unknown"
+    )
 
 
 def test_openvla_oft_passes_the_env_frames_state_and_needs_the_wrist():

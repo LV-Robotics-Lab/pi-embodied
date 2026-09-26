@@ -64,9 +64,21 @@ class DualFrankaEnvFacade(FrankaEnvFacade):
     _METHODS = (*FrankaEnvFacade._METHODS, "recover_joint_posture")
     _PRIMITIVES = DUAL_FRANKA_PRIMITIVES
 
+    @classmethod
+    def perception_layout(cls, backend: Any):
+        """``env.segment`` over the registered projection views, under the planner's camera
+        names (``d455``, ``base``), so its mask ids are valid ``plan_grasp`` mask ids."""
+        from pi_embodied_services.robots.dual_franka import perception as p
+        from pi_embodied_services.robots.franka.grasp_views import (
+            dual_perception_layout,
+        )
+
+        return dual_perception_layout(p._projection_cameras(), backend.get_camera_meta)
+
     def _grasp_planner(self):
         """The planner over the registered projection views (right_base frame), one grasp-to-EEF
-        calibration per arm (``--grasp-to-eef '{"left": ..., "right": ...}'``)."""
+        calibration per arm (``--grasp-to-eef '{"left": ..., "right": ...}'``); the perception's
+        SAM3 server (``--sam3``) segments ``plan_grasp(object=...)`` and ``plan_place`` text."""
         from pi_embodied_services.robots.dual_franka import perception as p
         from pi_embodied_services.robots.franka.grasp_views import dual_franka_view
         from pi_embodied_services.utils.grasp import GraspPlanner, GraspToEef
@@ -97,7 +109,9 @@ class DualFrankaEnvFacade(FrankaEnvFacade):
             dual_franka_view(self._backend, views, camera_transform),
             cameras=sorted(views),
             masks=self._perception.book if self._perception is not None else None,
+            sam3=self._perception.sam3 if self._perception is not None else None,
             eef_pose=eef_pose,
+            state_digest=self._state_digest,
             **{**urls, "grasp_to_eef": cal},
         )
 

@@ -17,9 +17,11 @@
 OpenETA's short-id evidence chain: the planner never handles pixels or poses, only ids
 such as ``d3``; the host resolves an id to its mask, the frame it was cut from and that
 frame's calibration. An id is valid only while the observation it belongs to is the
-current one. Once the robot moves and a new observation is taken, every earlier id is
-invalid, so a stale mask can never drive a motion (stage 8's grasp and place primitives
-accept only ids the book still holds).
+current one. Once the robot moves, every earlier id is invalid, so a stale mask can never
+drive a motion (stage 8's grasp and place primitives accept only ids the book still holds).
+With a state digest (:meth:`Epoch.set_digest`), "moved" means the robot state actually
+changed: a motion call refused before it moved, or a new camera observation of an unmoved
+robot, keeps the ids; without one every motion call and observation expires them.
 
 Ids are never reused within a server process: a stale id names exactly one past mask,
 and the error for it says which observation it belonged to.
@@ -114,17 +116,54 @@ def overlay_masks(rgb: np.ndarray, masks: list[np.ndarray]) -> np.ndarray:
     return out.astype(np.uint8)
 
 
-#: RPC methods that change the robot's state: every id expires once they ran.
+#: RPC methods that may change the robot's state: every id expires once they ran and the
+#: state changed (every time, without a digest).
 MOTION_METHODS = (
     "env.step",
     "env.chunk_step",
     "env.reset",
+    "env.move_to",
     "env.move_delta",
+    "env.rotate_wrist",
     "env.rotate_delta",
     "env.set_gripper",
     "env.recover_joint_posture",
+    "env.execute_grasp",
+    "env.execute_place",
     "code.run",
 )
+
+#: The robot-state keys :func:`state_digest` reads, wherever they sit in the state tree.
+DIGEST_KEYS = ("tcp_pose", "gripper_position", "gripper_open")
+
+
+def state_digest(
+    state: Any, keys: tuple[str, ...] = DIGEST_KEYS, decimals: int = 3
+) -> tuple:
+    """A comparable fingerprint of the robot's pose in a (nested) robot-state dict: every
+    ``keys`` entry at any depth, rounded to ``decimals`` (1 mm / about 2 mrad of quaternion
+    at 3), so sensor noise on an unmoved arm does not read as motion. Empty when none is
+    present."""
+    out: list[tuple[str, Any]] = []
+
+    def walk(node: Any, path: str) -> None:
+        if not isinstance(node, dict):
+            return
+        for key in sorted(node, key=str):
+            value = node[key]
+            where = f"{path}.{key}" if path else str(key)
+            if key in keys:
+                arr = np.asarray(value)
+                if arr.dtype.kind in "biuf":
+                    arr = np.round(arr.astype(np.float64), decimals) + 0.0
+                    out.append((where, tuple(arr.reshape(-1).tolist())))
+                else:
+                    out.append((where, repr(value)))
+            else:
+                walk(value, where)
+
+    walk(state, "")
+    return tuple(out)
 
 
 class Epoch:
@@ -132,35 +171,72 @@ class Epoch:
 
     ``tick()`` starts a new observation and tells every listener (the books, the planner's
     snapshot cache); ``next_id`` hands out ids that are unique across all books.
-    ``install`` wraps a facade's motion methods so that each of them ticks after it ran,
-    whatever it returned; wrapping the same method twice is a no-op.
+    ``install`` wraps a facade's motion methods so that each of them :meth:`refresh`-es
+    after it ran, whatever it returned; wrapping the same method twice is a no-op.
+
+    ``set_digest(fn)`` gives the clock a robot-state fingerprint (``fn() -> comparable``):
+    :meth:`refresh` then ticks only when it differs from the one the current observation
+    started with (a refused, unmoved motion keeps the ids). Without a digest, or when it
+    cannot be read, every refresh ticks.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, digest: Callable[[], Any] | None = None) -> None:
         self._observation = 0
         self._counter = 0
         self._listeners: list[Callable[[int], None]] = []
         self._wrapped: set[str] = set()
+        self._digest = digest
+        self._baseline: Any = None
 
     @property
     def observation(self) -> int:
         return self._observation
+
+    def set_digest(self, digest: Callable[[], Any] | None) -> None:
+        self._digest = digest
+        self._baseline = None
+
+    def _read_digest(self) -> Any:
+        if self._digest is None:
+            return None
+        try:
+            return self._digest()
+        except Exception:  # an unreadable state counts as changed
+            return None
 
     def on_tick(self, listener: Callable[[int], None]) -> None:
         self._listeners.append(listener)
 
     def tick(self) -> int:
         self._observation += 1
+        self._baseline = self._read_digest()
         for listener in self._listeners:
             listener(self._observation)
         return self._observation
 
+    def changed(self) -> bool:
+        """Whether the robot state differs from the current observation's (True when unknown)."""
+        if self._digest is None or self._baseline is None:
+            return True
+        now = self._read_digest()
+        return now is None or now != self._baseline
+
+    def refresh(self) -> bool:
+        """Tick when the robot state changed (always without a digest); True when it ticked."""
+        if not self.changed():
+            return False
+        self.tick()
+        return True
+
     def next_id(self, prefix: str = "d") -> str:
+        # The state the observation's ids are bound to, when no tick has recorded one yet.
+        if self._baseline is None:
+            self._baseline = self._read_digest()
         self._counter += 1
         return f"{prefix}{self._counter}"
 
     def install(self, facade: Any, methods: tuple[str, ...] = MOTION_METHODS) -> None:
-        """Wrap ``facade._rpc[name]`` for each of ``methods`` (those present) with a tick."""
+        """Wrap ``facade._rpc[name]`` for each of ``methods`` (those present) with a refresh."""
         rpc: dict[str, Callable[..., Any]] = facade._rpc
         for name in methods:
             fn = rpc.get(name)
@@ -172,7 +248,7 @@ class Epoch:
                 try:
                     return _fn(*args, **kwargs)
                 finally:
-                    self.tick()
+                    self.refresh()
 
             rpc[name] = wrapped
 
@@ -291,6 +367,7 @@ def public(item: dict[str, Any]) -> dict[str, Any]:
 
 
 __all__ = [
+    "DIGEST_KEYS",
     "MOTION_METHODS",
     "PALETTE",
     "DetectionBook",
@@ -300,4 +377,5 @@ __all__ = [
     "describe_mask",
     "overlay_masks",
     "public",
+    "state_digest",
 ]

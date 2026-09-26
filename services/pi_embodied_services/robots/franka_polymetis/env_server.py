@@ -80,6 +80,8 @@ from pi_embodied_services.robots.franka_polymetis.control import (
 )
 from pi_embodied_services.utils import reach
 from pi_embodied_services.utils.daemon import watch_parent_death
+from pi_embodied_services.utils.detections import state_digest
+from pi_embodied_services.utils.grasp import add_grasp_arguments, urls_from_args
 from pi_embodied_services.utils.logging import get_logger
 from pi_embodied_services.utils.perception import (
     FRANKA_CAMERAS,
@@ -288,9 +290,13 @@ class FrankaPolymetisFacade(MainThreadServeMixin, BaseEnvFacade):
         task_description: str = "",
         sleep: Callable[[float], None] = time.sleep,
         perception: Perception | None = None,
+        grasp: dict | None = None,
         ik_reach: reach.ReachPreview | None = None,
     ) -> None:
         self._perception = perception
+        # --graspnet/--graspgenx/--anygrasp/--anyplace: env.plan_grasp, env.plan_place and the
+        # grasp/placement ids over the wrist and external cameras, as on the RLinf backend.
+        self._grasp_urls = grasp
         # --ik: env.preview_reach, and move_delta / rotate_delta refuse a target the ik
         # service cannot reach from the current joints (utils/reach.py).
         self._reach = ik_reach
@@ -355,10 +361,35 @@ class FrankaPolymetisFacade(MainThreadServeMixin, BaseEnvFacade):
             self._rpc[f"env.{name}"] = getattr(self, name)
         self._rpc["env.preview_reach"] = self.preview_reach
         # --sam3 / --unidepth: env.segment, env.select_detection, env.reject_detection,
-        # env.enhance_depth over the latest env.get_observation (utils/perception.py).
+        # env.enhance_depth over the latest env.get_observation (utils/perception.py). Ids
+        # expire when the arm's pose or gripper changed, not on every observation.
         if self._perception is not None:
+            self._perception.epoch.set_digest(self._state_digest)
             self._perception.install(self)
-        register_code_api(self, franka_primitives(self._perception))
+        primitives = franka_primitives(self._perception)
+        grasp = self._grasp_planner()
+        if grasp is not None:
+            grasp.install(self)
+            primitives = (*primitives, *grasp.primitives())
+        register_code_api(self, primitives)
+
+    def _state_digest(self) -> tuple:
+        """The arm's TCP pose and gripper, rounded (``utils/detections.state_digest``)."""
+        return state_digest(self.controller.state())
+
+    def _grasp_planner(self):
+        """The RLinf backend's planner (``franka/grasp_views.franka_grasp_planner``) over this
+        server's own observation, camera meta and robot state."""
+        from pi_embodied_services.robots.franka.grasp_views import (
+            franka_grasp_planner,
+        )
+
+        return franka_grasp_planner(
+            self,
+            self._perception,
+            self._grasp_urls,
+            state_digest=self._state_digest,
+        )
 
     def close(self) -> None:
         for cam in self._cameras.values():
@@ -635,6 +666,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--unidepth", default="", help="UniDepth server URL: adds env.enhance_depth"
     )
+    add_grasp_arguments(parser)
     reach.add_ik_argument(parser)
     args = parser.parse_args(argv)
     if args.mock:
@@ -665,6 +697,7 @@ def main(argv: list[str] | None = None) -> int:
                 # Resolved per call, once the facade exists.
                 intrinsics=lambda key: franka_intrinsics(facade.get_camera_meta(), key),
             ),
+            grasp=urls_from_args(args),
             ik_reach=reach.reach_from_args(args, "panda"),
         )
     except Exception:

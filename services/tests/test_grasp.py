@@ -401,6 +401,163 @@ def test_motion_methods_tick_once_even_when_the_segment_book_installed_them():
     assert facade._rpc["env.step"]() == "stepped" and epoch.observation == 1
 
 
+def test_a_digest_keeps_ids_across_calls_that_did_not_move_the_robot():
+    """Finding: every observation and every refused motion expired the ids. With a state
+    digest the clock ticks only when the robot state changed."""
+    from pi_embodied_services.utils.detections import Epoch, state_digest
+
+    robot = {"raw_base_state": {"tcp_pose": [0.5, 0.0, 0.3, 1, 0, 0, 0]}}
+
+    def move(dz):
+        if abs(dz) > 0.1:
+            raise ValueError("refused: more than 0.10 m per call")  # before moving
+        robot["raw_base_state"]["tcp_pose"][2] += dz
+        return "moved"
+
+    class Facade:
+        def __init__(self):
+            self._rpc = {"env.move_delta": move}
+            self._readonly_methods = set()
+
+    planner, _ = _planner(
+        sam3=FakeSam3(_block_mask()), state_digest=lambda: state_digest(robot)
+    )
+    f = Facade()
+    planner.install(f)
+    gid = planner.plan_grasp(object="block")["active"]
+    with pytest.raises(ValueError, match="refused"):
+        f._rpc["env.move_delta"](0.5)
+    assert f._rpc["env.move_delta"](0.0) == "moved"
+    # Sub-millimetre noise on an unmoved arm is not motion either.
+    robot["raw_base_state"]["tcp_pose"][0] += 0.0001
+    f._rpc["env.move_delta"](0.0)
+    assert planner.resolve_grasp(gid)["id"] == gid, "unmoved: the id is current"
+    f._rpc["env.move_delta"](0.05)
+    with pytest.raises(G.GraspError, match="stale"):
+        planner.resolve_grasp(gid)
+    # Without a digest every wrapped call expires them, as before.
+    epoch = Epoch()
+    assert epoch.refresh() and epoch.refresh() and epoch.observation == 2
+    # An unreadable state counts as moved.
+    broken = Epoch(digest=lambda: 1 / 0)
+    broken.next_id()
+    assert broken.refresh()
+
+
+def test_state_digest_reads_the_pose_keys_at_any_depth_rounded():
+    from pi_embodied_services.utils.detections import state_digest
+
+    a = {
+        "left_arm": {"tcp_pose": [0.1, 0.2, 0.3], "force": [9.0]},
+        "right_arm": {"tcp_pose": [0.4, 0.5, 0.6], "gripper_open": True},
+        "stamp": 12.5,
+    }
+    b = {
+        **a,
+        "left_arm": {"tcp_pose": [0.1002, 0.2, 0.3], "force": [3.0]},
+        "stamp": 99.0,
+    }
+    assert state_digest(a) == state_digest(b), "noise, forces and stamps are ignored"
+    c = {**a, "right_arm": {"tcp_pose": [0.4, 0.5, 0.6], "gripper_open": False}}
+    assert state_digest(a) != state_digest(c), "a gripper change is a change"
+    assert state_digest({"nothing": 1}) == ()
+
+
+def test_claim_resolves_the_whole_grasp_path_once_and_remembers_the_held_grasp():
+    planner, _ = _planner(sam3=FakeSam3(_block_mask()))
+    out = planner.plan_grasp(object="block")
+    gid, other = out["active"], out["candidates"][1]["id"]
+    claim = planner.claim_waypoints(gid, standoff=0.1, lift=0.05)
+    assert claim["kind"] == "grasp" and claim["id"] == gid
+    # The block's grasp is 0.2 m up with a downward approach: the pre-grasp sits 0.1 m above.
+    assert np.allclose(claim["waypoints"]["pre_grasp"], [0, 0, 0.3], atol=1e-6)
+    assert np.allclose(claim["waypoints"]["grasp"], [0, 0, 0.2], atol=1e-6)
+    assert np.allclose(claim["waypoints"]["lift"], [0, 0, 0.25], atol=1e-6)
+    assert claim["steps"] == [
+        {"to": "pre_grasp", "gripper": -1},
+        {"to": "grasp", "gripper": -1},
+        {"gripper": 1},
+        {"to": "lift", "gripper": 1},
+    ]
+    held = planner.held()
+    assert held["grasp_id"] == gid and held["prompt"] == "block"
+    # A rejected candidate is not executed; offsets are bounded; a stale id is refused.
+    planner.next_grasp(other, "unreachable")
+    with pytest.raises(G.GraspError, match="rejected"):
+        planner.claim_waypoints(other)
+    with pytest.raises(G.GraspError, match="standoff"):
+        planner.claim_waypoints(gid, standoff=1.0)
+    planner.invalidate()
+    with pytest.raises(G.GraspError, match="stale"):
+        planner.claim_waypoints(gid)
+    assert planner.held()["grasp_id"] == gid, "the held grasp outlives its id"
+
+
+def test_plan_place_after_the_grasp_uses_the_held_pose_and_refuses_an_empty_gripper():
+    """plan_grasp -> execute (claim, motions) -> plan_place(executed id) -> claim the place."""
+    T = np.eye(4)
+    T[:3, 3] = [
+        0.0,
+        0.05,
+        0.0,
+    ]  # AnyPlace: move the object 5 cm along camera +y (world -x)
+    eef = {"xyz": np.array([0.0, 0.0, 0.2]), "quat": np.array([1.0, 0, 0, 0])}
+    holding = {"now": True}
+    planner, _ = _planner(
+        sam3=FakeSam3(_block_mask()),
+        anyplace=FakeAnyPlace([T]),
+        eef_pose=lambda arm: (eef["xyz"], eef["quat"]),
+        holding=lambda arm: holding["now"],
+    )
+    gid = planner.plan_grasp(object="block")["active"]
+    planner.claim_waypoints(gid, lift=0.1)
+    planner.invalidate()  # the grasp's motions
+    eef["xyz"] = np.array([0.0, 0.0, 0.3])  # lifted 10 cm, holding the block
+    region = planner.segment_mask("plate")["id"]
+    place = planner.plan_place(region, gid)
+    assert place["held"] is True and place["grasp_id"] == gid
+    assert place["object_mask_id"] != region, "the held block was segmented again"
+    p = place["candidates"][0]
+    # The composition starts from the gripper's actual pose (0.3 up), not the planned 0.2.
+    assert np.allclose(p["eef_position"], [-0.05, 0, 0.3], atol=1e-6)
+    assert np.allclose(p["eef_quat_xyzw"], [1, 0, 0, 0], atol=1e-6)
+    claim = planner.claim_waypoints(place["active"])
+    assert claim["kind"] == "placement" and [s.get("to") for s in claim["steps"]] == [
+        "pre_place",
+        "place",
+        None,
+        "retreat",
+    ]
+    assert planner.held() is None, "claiming the place releases the held grasp"
+    with pytest.raises(G.GraspError, match="stale"):
+        planner.plan_place(region, gid)
+    # An empty gripper is refused (and forgotten).
+    planner.invalidate()
+    gid = planner.plan_grasp(object="block")["active"]
+    planner.claim_waypoints(gid)
+    planner.invalidate()
+    holding["now"] = False
+    region = planner.segment_mask("plate")["id"]
+    with pytest.raises(G.GraspError, match="holds nothing"):
+        planner.plan_place(region, gid)
+    assert planner.held() is None
+
+
+def test_a_reset_forgets_the_held_grasp():
+    planner, _ = _planner(sam3=FakeSam3(_block_mask()))
+
+    class Facade:
+        _rpc = {"env.reset": lambda: "reset"}
+        _readonly_methods = set()
+
+    f = Facade()
+    planner.install(f)
+    assert "env.claim_waypoints" in f._rpc
+    planner.claim_waypoints(planner.plan_grasp(object="block")["active"])
+    assert planner.held() is not None
+    assert f._rpc["env.reset"]() == "reset" and planner.held() is None
+
+
 def test_planner_refuses_unknown_backends_and_frames():
     with pytest.raises(ValueError, match="unknown grasp backends"):
         G.GraspPlanner(_view, cameras=["agentview"], backends={"nope": FakeServer([])})
@@ -467,3 +624,64 @@ def test_grasp_server_validates_and_ranks():
         s.plan(depth, K, np.ones((H + 1, W), np.uint8))
     with pytest.raises(ValueError, match="intrinsic_K"):
         s.plan(depth, np.zeros((3, 3)), np.ones((H, W), np.uint8))
+
+
+class _FrankaBackend:
+    """Any env.* worker method answers {}; the robot state carries the TCP pose."""
+
+    def get_robot_state(self):
+        return {
+            "raw_base_state": {"tcp_pose": [0.4, 0.0, 0.3, 1.0, 0.0, 0.0, 0.0]},
+            "left_arm": {"tcp_pose": [0.4, 0.3, 0.3, 1.0, 0.0, 0.0, 0.0]},
+            "right_arm": {"tcp_pose": [0.4, -0.3, 0.3, 1.0, 0.0, 0.0, 0.0]},
+        }
+
+    def get_camera_meta(self):
+        return {}
+
+    def __getattr__(self, name):
+        return lambda *a, **k: {}
+
+
+def test_the_franka_planners_get_the_perception_sam3_and_its_camera_names(monkeypatch):
+    """Finding: the Franka and dual-Franka planners had no SAM3, so plan_grasp(object=<text>)
+    and plan_place(region=<text>) always failed; the dual arm's env.segment cameras were the
+    single arm's names, not its projection views."""
+    from pi_embodied_services.robots.dual_franka import env_server as dual_server
+    from pi_embodied_services.robots.dual_franka import perception as dual_perception
+    from pi_embodied_services.robots.franka.env_server import FrankaEnvFacade
+    from pi_embodied_services.utils.perception import Perception
+
+    sam3 = FakeSam3(_block_mask())
+    single_cams, _ = FrankaEnvFacade.perception_layout(_FrankaBackend())
+    single = FrankaEnvFacade(
+        _FrankaBackend(),
+        Perception(sam3=sam3, cameras=single_cams),
+        {"graspnet": FakeServer([])},
+    )
+    planner = single._rpc["env.plan_grasp"].__self__
+    assert planner._sam3 is sam3 and planner.capabilities()["segment"] is True
+    assert planner.capabilities()["cameras"] == list(single_cams)
+
+    views = {
+        "d455": {"raw_key": "d455_rgb", "calibration_key": "d455_camera"},
+        "base": {"raw_key": "base_0_rgb", "calibration_key": "base_camera"},
+    }
+    monkeypatch.setattr(dual_perception, "_projection_cameras", lambda: views)
+    monkeypatch.setattr(dual_perception, "load_calibration_bundle", lambda: {})
+    backend = _FrankaBackend()
+    dual_cams, intrinsics = dual_server.DualFrankaEnvFacade.perception_layout(backend)
+    dual = dual_server.DualFrankaEnvFacade(
+        backend,
+        Perception(sam3=sam3, cameras=dual_cams, intrinsics=intrinsics),
+        {"graspnet": FakeServer([])},
+    )
+    planner = dual._rpc["env.plan_grasp"].__self__
+    assert planner._sam3 is sam3
+    assert (
+        sorted(planner.capabilities()["cameras"])
+        == sorted(dual_cams)
+        == ["base", "d455"]
+    )
+    # The digest reads both arms' poses.
+    assert len(dual._state_digest()) == 3

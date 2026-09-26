@@ -455,3 +455,146 @@ def test_the_server_requires_a_token_and_is_exclusive_while_a_program_runs():
     assert out["steps"] == 0
     with pytest.raises(PermissionError):
         f._serve_dispatch("env.get_state", (), {})
+
+
+# ---- planned grasps: plan_grasp -> execute_grasp -> plan_place -> execute_place ----
+
+
+class DownArm(ArmSim):
+    """ArmSim with LIBERO's hand orientation: pointing down (180 deg about x), then the yaw."""
+
+    def _quat(self):
+        return np.array([np.cos(self.yaw / 2), np.sin(self.yaw / 2), 0.0, 0.0])
+
+
+def grasp_facade():
+    """A LIBERO facade with a fake grasp server, SAM3 and AnyPlace: one candidate 5 cm along
+    +x on the 0.2 m high table plane, and a place 10 cm further along +x."""
+    from test_grasp import FakeAnyPlace, FakeSam3, FakeServer
+
+    from pi_embodied_services.utils import grasp as G
+
+    mask = np.zeros((CODE_RES, CODE_RES), bool)
+    mask[200:300, 200:300] = True
+    T = np.eye(4)
+    T[:3, 3] = [0.1, 0.0, 0.0]  # camera +x is world +x
+    # Approach along camera +z (straight down), 0.5 m from the camera: world z = 0.2.
+    server = FakeServer(
+        [
+            G.make_candidate(
+                score=0.9,
+                rotation=G.ZX_NATIVE_TO_GRASPNET,
+                center=[0.05, 0.0, 0.5],
+                width=0.04,
+                depth=0.0,
+                source_model="fake",
+            )
+        ]
+    )
+    f = LiberoEnvFacade(
+        DownArm(), meta={}, grasp={"graspnet": server, "anyplace": FakeAnyPlace([T])}
+    )
+    f._grasp._sam3 = FakeSam3(mask)
+    f.reset()
+    return f, G
+
+
+def test_a_planned_grasp_and_place_run_end_to_end_from_one_resolution_each():
+    f, G = grasp_facade()
+    rpc = f._rpc
+    plan = rpc["env.plan_grasp"](object="bowl")
+    gid = plan["active"]
+    assert plan["candidates"][0]["eef_position"] == pytest.approx(
+        [0.05, 0, 0.2], abs=1e-6
+    )
+    # Looking at the robot does not expire the plan (the sim did not step).
+    rpc["env.get_observation"]()
+    rpc["env.get_state"]()
+    grasp = rpc["env.execute_grasp"](grasp_id=gid, standoff=0.1, lift=0.1)
+    assert "error" not in grasp, grasp
+    assert [leg.get("to") for leg in grasp["legs"]] == [
+        "pre_grasp",
+        "grasp",
+        None,
+        "lift",
+    ]
+    assert all(leg["final_dist_m"] < 0.012 for leg in grasp["legs"] if "to" in leg)
+    assert grasp["legs"][2]["gripper_width"] == pytest.approx(0.02), "closed on it"
+    assert grasp["eef_pos"] == pytest.approx([0.05, 0, 0.3], abs=0.012)
+    assert f._yaw() == pytest.approx(np.pi / 2, abs=0.05), (
+        "turned to the candidate's yaw"
+    )
+    # The grasp's own motion spent the id; plan_place takes it as the held grasp.
+    with pytest.raises(G.GraspError, match="stale"):
+        rpc["env.resolve_grasp"](gid)
+    region = rpc["env.segment_mask"]("plate")["id"]
+    place = rpc["env.plan_place"](region, gid)
+    assert place["held"] is True
+    pid = place["active"]
+    assert place["candidates"][0]["eef_position"] == pytest.approx(
+        [0.15, 0, 0.3], abs=0.013
+    ), "10 cm along +x from where the gripper actually holds it"
+    out = rpc["env.execute_place"](place_id=pid)
+    assert "error" not in out, out
+    assert [leg.get("to") for leg in out["legs"]] == [
+        "pre_place",
+        "place",
+        None,
+        "retreat",
+    ]
+    assert out["gripper_width"] == pytest.approx(0.08), "released"
+    assert f._grasp.held() is None
+    with pytest.raises(G.GraspError, match="stale"):
+        rpc["env.execute_place"](place_id=pid)
+
+
+def test_the_old_two_move_flow_is_what_the_executor_replaces():
+    """Finding: move_to(grasp_id, standoff 0.10) then move_to(grasp_id, standoff 0) could never
+    work: the first move's steps expire the id before the second resolves it."""
+    f, G = grasp_facade()
+    gid = f._rpc["env.plan_grasp"](object="bowl")["active"]
+    pre = f._rpc["env.resolve_grasp"](gid, standoff=0.1)["eef_position"]
+    f._rpc["env.move_to"](pre)
+    with pytest.raises(G.GraspError, match="stale"):
+        f._rpc["env.resolve_grasp"](gid, standoff=0.0)
+
+
+def test_a_wrist_turn_expires_the_ids_and_an_empty_grasp_is_not_placed():
+    f, G = grasp_facade()
+    gid = f._rpc["env.plan_grasp"](object="bowl")["active"]
+    f._rpc["env.rotate_wrist"](delta_yaw=0.3)
+    with pytest.raises(G.GraspError, match="stale"):
+        f._rpc["env.execute_grasp"](grasp_id=gid)
+    # A refused call leaves the sim untouched: the ids survive it.
+    gid = f._rpc["env.plan_grasp"](object="bowl")["active"]
+    with pytest.raises(ValueError, match="0.10"):
+        f._rpc["env.move_delta"]([0.0, 0.0, 0.5])
+    assert f._rpc["env.resolve_grasp"](gid)["id"] == gid
+    f._rpc["env.execute_grasp"](grasp_id=gid)
+    f._rpc["env.set_gripper"](False)  # dropped it
+    region = f._rpc["env.segment_mask"]("plate")["id"]
+    with pytest.raises(G.GraspError, match="holds nothing"):
+        f._rpc["env.plan_place"](region, gid)
+
+
+def test_the_executors_are_code_primitives_only_with_a_grasp_server():
+    plain = set(names(facade()._rpc["code.api"]("high")))
+    assert {"execute_grasp", "execute_place"} & plain == set()
+    f, _ = grasp_facade()
+    high = f._rpc["code.api"]("high")
+    assert {"execute_grasp", "execute_place", "claim_waypoints"} <= set(names(high))
+    assert "execute_grasp" not in names(f._rpc["code.api"]("low"))
+    ex = next(p for p in high["primitives"] if p["name"] == "execute_grasp")
+    assert ex["mutating"] is True and list(ex["params"]) == [
+        "grasp_id",
+        "standoff",
+        "lift",
+        "max_steps",
+    ]
+    # The run's translation cap counts the whole path.
+    gid = f._rpc["env.plan_grasp"](object="bowl")["active"]
+    moved = f._code_move_m("env.execute_grasp", {"grasp_id": gid})
+    assert moved == pytest.approx(0.05 + 0.2 + 0.1, abs=1e-3)
+    with pytest.raises(ValueError, match="finite"):
+        f._rpc["env.execute_grasp"](grasp_id=gid, standoff=float("nan"))
+    assert f._rpc["env.resolve_grasp"](gid)["id"] == gid, "refused before moving"

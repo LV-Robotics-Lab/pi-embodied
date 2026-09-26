@@ -85,9 +85,16 @@ class OpenVLAOFTFacade(ChunkVLAFacade):
     horizon = HORIZON
     uses_wrist = True
 
-    def __init__(self, *, policy: Policy, model: str, revision: str | None):
+    def __init__(
+        self,
+        *,
+        policy: Policy,
+        model: str,
+        revision: str | None,
+        suite: str | None = None,
+    ):
         self._policy = policy
-        super().__init__(model=model, revision=revision)
+        super().__init__(model=model, revision=revision, suite=suite)
 
     def _act(self, frame: Frame) -> np.ndarray:
         if frame.wrist is None:
@@ -215,6 +222,8 @@ def main() -> None:
     repo, pin = OPENVLA_OFT_CHECKPOINTS[args.suite]
     model = args.model_path or repo
     revision = args.revision or (pin if model == repo else None)
+    # A custom checkpoint's suite is unknown: only the published fine-tunes report theirs.
+    suite = args.suite if model == repo else None
     t0 = time.time()
     path = snapshot(model, revision)
     logger.info("loading OpenVLA-OFT from %s (revision=%s) ...", path, revision)
@@ -222,7 +231,7 @@ def main() -> None:
         path, args.unnorm_key, not args.no_center_crop, args.repo
     )
     logger.info("model ready in %.1fs (unnorm_key=%s)", time.time() - t0, unnorm_key)
-    OpenVLAOFTFacade(policy=policy, model=model, revision=revision).serve(
+    OpenVLAOFTFacade(policy=policy, model=model, revision=revision, suite=suite).serve(
         transport=args.transport,
         host=args.host,
         port=args.port,

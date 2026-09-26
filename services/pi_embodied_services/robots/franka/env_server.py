@@ -36,6 +36,7 @@ from pi_embodied_services.robots.franka.primitives import (
 )
 from pi_embodied_services.robots.franka.runtime_config import load_runtime_config
 from pi_embodied_services.utils import reach
+from pi_embodied_services.utils.detections import state_digest
 from pi_embodied_services.utils.grasp import (
     GraspPlanner,
     add_grasp_arguments,
@@ -117,8 +118,10 @@ class FrankaEnvFacade(BaseEnvFacade):
             }
         )
         # --sam3 / --unidepth: env.segment, env.select_detection, env.reject_detection,
-        # env.enhance_depth over the latest env.get_observation (utils/perception.py).
+        # env.enhance_depth over the latest env.get_observation (utils/perception.py). Ids
+        # expire when the arm's pose or gripper changed, not on every observation.
         if self._perception is not None:
+            self._perception.epoch.set_digest(self._state_digest)
             self._perception.install(self)
         primitives = self._PRIMITIVES
         if primitives is FRANKA_PRIMITIVES:
@@ -129,40 +132,32 @@ class FrankaEnvFacade(BaseEnvFacade):
             primitives = (*primitives, *grasp.primitives())
         register_code_api(self, primitives)
 
+    def _state_digest(self) -> tuple:
+        """The arm's TCP pose and gripper, rounded (``utils/detections.state_digest``)."""
+        return state_digest(to_numpy_tree(self._backend.get_robot_state()))
+
     def _grasp_planner(self) -> GraspPlanner | None:
         """The planner over the wrist and third-person cameras; the wrist camera rides on the TCP.
-        Mask ids from ``env.segment`` (the perception book) are accepted as ``mask_id``."""
-        from pi_embodied_services.robots.franka.grasp_views import franka_view
-        from pi_embodied_services.robots.franka.perception import (
-            load_calibration_bundle,
+        Mask ids from ``env.segment`` (the perception book) are accepted as ``mask_id``, and
+        its SAM3 server segments ``plan_grasp(object=...)`` text."""
+        from pi_embodied_services.robots.franka.grasp_views import (
+            franka_grasp_planner,
         )
 
-        urls = self._grasp_urls or {}
-        if not any(
-            urls.get(k) for k in ("graspnet", "graspgenx", "anygrasp", "anyplace")
-        ):
-            return None
-        cache: dict[str, Any] = {}
+        return franka_grasp_planner(
+            self._backend,
+            self._perception,
+            self._grasp_urls,
+            state_digest=self._state_digest,
+        )
 
-        def calibration() -> dict[str, Any]:
-            if "bundle" not in cache:
-                cache["bundle"] = load_calibration_bundle()
-            return cache["bundle"]
-
-        def eef_pose(arm: str | None):
-            tcp = np.asarray(
-                self._backend.get_robot_state()["raw_base_state"]["tcp_pose"],
-                dtype=float,
-            )
-            return tcp[:3], tcp[3:7]
-
-        return GraspPlanner.from_args(
-            franka_view(self._backend, calibration),
-            cameras=list(FRANKA_CAMERAS),
-            masks=self._perception.book if self._perception is not None else None,
-            eef_pose=eef_pose,
-            wrist_camera="wrist",
-            **urls,
+    @classmethod
+    def perception_layout(
+        cls, backend: Any
+    ) -> tuple[dict[str, Any], Callable[[str], Any]]:
+        """``(cameras, intrinsics)`` of the ``env.segment`` perception: the planner's names."""
+        return FRANKA_CAMERAS, lambda key: franka_intrinsics(
+            backend.get_camera_meta(), key
         )
 
     def _stoppable(self, handler: Callable[..., Any]) -> Callable[..., Any]:
@@ -743,11 +738,12 @@ def main(
         runtime.rlinf, runtime.controller, create_worker_class=create_worker_class
     )
     backend = _RayBackend(worker, stop_flag)
+    cameras, intrinsics = facade_class.perception_layout(backend)
     perception = Perception.from_urls(
         sam3=args.sam3,
         unidepth=args.unidepth,
-        cameras=FRANKA_CAMERAS,
-        intrinsics=lambda key: franka_intrinsics(backend.get_camera_meta(), key),
+        cameras=cameras,
+        intrinsics=intrinsics,
     )
     facade = facade_class(
         backend,

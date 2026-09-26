@@ -397,3 +397,58 @@ def test_enhance_depth_only_server_has_no_segment() -> None:
     assert "env.segment" not in server._rpc and "env.enhance_depth" in server._rpc
     caps = server._dispatch("env.get_env_meta", (), {})["capabilities"]["perception"]
     assert caps == {"segment": False, "enhance_depth": True}
+
+
+def test_an_observation_of_an_unmoved_robot_keeps_the_ids() -> None:
+    """With the facade's state digest, env.get_observation expires the ids only when the robot
+    moved since they were cut; a refused motion (nothing moved) keeps them too."""
+    from pi_embodied_services.utils.detections import state_digest
+
+    server = Server()
+    pose = {"raw_base_state": {"tcp_pose": [0.4, 0.0, 0.3, 1.0, 0.0, 0.0, 0.0]}}
+
+    def move_delta(dz: float) -> dict:
+        if abs(dz) > 0.08:
+            raise ValueError("limit is 0.08 m per call")
+        pose["raw_base_state"]["tcp_pose"][2] += dz
+        return {"ok": True}
+
+    server._rpc["env.move_delta"] = move_delta
+    perception = Perception(sam3=FakeSam3(), cameras=FRANKA_CAMERAS)
+    perception.epoch.set_digest(lambda: state_digest(pose))
+    perception.install(server)
+    server._dispatch("env.get_observation", (), {})
+    ids = server._dispatch("env.segment", (), {"text_prompt": "bowl"})["ids"]
+    server._dispatch("env.get_observation", (), {})
+    with pytest.raises(ValueError, match="0.08"):
+        server._dispatch("env.move_delta", (0.5,), {})
+    server._dispatch("env.get_observation", (), {})
+    kept = server._dispatch("env.select_detection", (), {"id": ids[0]})
+    assert kept["ok"] and kept["invalidated"] == [], "nothing moved: the id is current"
+    server._dispatch("env.move_delta", (0.05,), {})
+    server._dispatch("env.get_observation", (), {})
+    stale = server._dispatch("env.select_detection", (), {"id": ids[0]})
+    assert stale["ok"] is False and stale["invalidated"] == ids
+
+
+def test_perception_reads_per_camera_dict_frames_for_the_dual_arm_views() -> None:
+    """The dual Franka's env.segment works on its projection views (the planner's names)."""
+    from pi_embodied_services.robots.franka.grasp_views import dual_perception_layout
+
+    views = {"d455": {"raw_key": "d455_rgb", "calibration_key": "d455_camera"}}
+    meta = {"d455_rgb": {"color_intrinsics": {"fx": 20, "fy": 20, "ppx": 8, "ppy": 8}}}
+    cameras, intrinsics = dual_perception_layout(views, lambda: meta)
+    assert cameras == {"d455": ("raw_camera_frames", "raw_camera_depths", "d455_rgb")}
+    assert intrinsics("d455_rgb")[0, 0] == 20
+    server = Server()
+    server._rpc["env.get_observation"] = lambda: {
+        "raw_camera_frames": {"d455_rgb": np.full((H, W, 4), 90, dtype=np.uint8)},
+        "raw_camera_depths": {"d455_rgb": np.full((H, W), 0.5, dtype=np.float32)},
+    }
+    Perception(sam3=FakeSam3(), cameras=cameras, intrinsics=intrinsics).install(server)
+    server._dispatch("env.get_observation", (), {})
+    out = server._dispatch("env.segment", (), {"camera": "d455", "text_prompt": "bowl"})
+    assert out["found"] and out["camera"] == "d455"
+    assert out["detections"][0]["point_camera"] is not None, (
+        "K came from the view's meta"
+    )

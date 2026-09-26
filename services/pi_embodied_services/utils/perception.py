@@ -29,8 +29,9 @@ bound to the observation they came from (OpenETA port spec, section 0.2):
   depth in the current observation, so later ids project through it.
 
 :class:`Perception` is installed on a facade after its own ``_register_rpc``: it wraps
-``env.get_observation`` (every observation invalidates the ids) and the motion methods
-(``MOTION_METHODS``: a move invalidates them too, observed or not), wraps
+``env.get_observation`` (a new observation invalidates the ids when the robot state changed
+since they were cut, or always when the facade gave the :class:`Epoch` no state digest) and
+the motion methods (``MOTION_METHODS``: a move invalidates them too, observed or not), wraps
 ``env.get_env_meta`` (``capabilities.perception`` says what is on), and registers only the
 primitives whose service URL was given. Without ``--sam3`` / ``--unidepth`` nothing changes.
 The ids come from the facade's :class:`Epoch`, shared with the grasp planner when there is one.
@@ -59,8 +60,9 @@ from pi_embodied_services.utils.logging import get_logger
 
 logger = get_logger("perception")
 
-#: camera alias -> (image key, depth key, index into a stacked extra view or None)
-Cameras = dict[str, tuple[str, str, int | None]]
+#: camera alias -> (image key, depth key, index into a stacked extra view, or the key of a
+#: per-camera dict such as the dual Franka's ``raw_camera_frames``, or None)
+Cameras = dict[str, tuple[str, str, int | str | None]]
 
 #: The franka servers' observation layout: main = wrist, extra_view[0] = external.
 FRANKA_CAMERAS: Cameras = {
@@ -79,10 +81,13 @@ def _png_base64(rgb: np.ndarray) -> str:
     return base64.b64encode(buffer.getvalue()).decode("ascii")
 
 
-def _pick(obs: dict[str, Any], key: str, index: int | None) -> np.ndarray | None:
+def _pick(obs: dict[str, Any], key: str, index: int | str | None) -> np.ndarray | None:
     value = obs.get(key)
     if value is None:
         return None
+    if isinstance(index, str):
+        entry = value.get(index) if isinstance(value, dict) else None
+        return None if entry is None else np.asarray(entry)
     array = np.asarray(value)
     if index is None:
         return array
@@ -109,7 +114,8 @@ class Perception:
 
     ``sam3`` / ``unidepth`` are RPC clients (``call(method, args, kwargs)``) or None;
     ``cameras`` maps the aliases the tools take to observation keys; ``intrinsics``
-    returns the 3x3 K of an observation image key (``main``, ``extra_0``) or None.
+    returns the 3x3 K of an observation image key (``main``, ``extra_0``, or a camera's
+    dict key such as ``d455_rgb``) or None.
     """
 
     def __init__(
@@ -192,9 +198,11 @@ class Perception:
             rpc["env.enhance_depth"] = self.enhance_depth
 
     def observe(self, obs: Any) -> list[str]:
-        """A new observation: cache its frames, invalidate every id. Returns the ids."""
+        """A new observation: cache its frames; invalidate every id when the robot state
+        changed since they were cut (:meth:`Epoch.refresh`). Returns the ids it dropped."""
         dropped = self._book.ids
-        self._epoch.tick()
+        if not self._epoch.refresh():
+            dropped = []
         self._frames = {}
         self._enhanced = {}
         if isinstance(obs, dict):
@@ -205,10 +213,15 @@ class Perception:
                 depth = _pick(obs, depth_key, index)
                 if depth is not None and depth.shape != rgb.shape[:2]:
                     depth = None
-                self._frames[alias] = (rgb, depth)
+                self._frames[alias] = (rgb[..., :3], depth)
         return dropped
 
     # -- primitives ------------------------------------------------------------
+
+    @property
+    def sam3(self) -> Any | None:
+        """The SAM3 client (the grasp planner segments its ``object`` text with it too)."""
+        return self._sam3
 
     @property
     def book(self) -> DetectionBook:
@@ -237,7 +250,13 @@ class Perception:
 
     def _K(self, camera: str) -> np.ndarray | None:
         image_key, _depth_key, index = self._cameras[camera]
-        key = "main" if index is None else f"extra_{index}"
+        key = (
+            "main"
+            if index is None
+            else index
+            if isinstance(index, str)
+            else f"extra_{index}"
+        )
         try:
             return self._intrinsics(key)
         except Exception as exc:  # intrinsics are optional: no 3D, still masks

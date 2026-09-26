@@ -40,6 +40,8 @@ from pi_embodied_services.utils.code_exec import (
 from pi_embodied_services.utils.grasp import (
     GraspPlanner,
     add_grasp_arguments,
+    pitch_of,
+    quat_xyzw_matrix,
     urls_from_args,
 )
 from pi_embodied_services.utils.logging import get_logger
@@ -304,6 +306,8 @@ class LiberoEnvFacade(BaseEnvFacade):
             sam3=sam3,
             eef_pose=lambda arm: (self._eef(), self._quat_xyzw()),
             wrist_camera="wrist",
+            state_digest=self._state_digest,
+            holding=lambda arm: self._holding(),
             **(grasp or {}),
         )
         super().__init__()
@@ -337,9 +341,14 @@ class LiberoEnvFacade(BaseEnvFacade):
             }
         )
         self._readonly_methods.add("env.get_task_language")
-        primitives = libero_primitives(sam3=bool(self._sam3_url))
+        primitives = libero_primitives(
+            sam3=bool(self._sam3_url), grasp=self._grasp is not None
+        )
         if self._grasp is not None:
-            self._grasp.install(self, mutating=GraspPlanner.MUTATING + ("env.move_to",))
+            # Wrapped with the id invalidation like every motion (GraspPlanner.MUTATING).
+            self._rpc["env.execute_grasp"] = self.execute_grasp
+            self._rpc["env.execute_place"] = self.execute_place
+            self._grasp.install(self)
             primitives = (*primitives, *self._grasp.primitives())
         api = register_code_api(self, primitives)
         # Code mode (run_code): a program's calls go through the registry's resolve to the
@@ -379,6 +388,21 @@ class LiberoEnvFacade(BaseEnvFacade):
         return np.asarray(self.raw_obs()["robot0_eef_quat"], dtype=np.float64).reshape(
             4
         )
+
+    def _state_digest(self) -> tuple:
+        """The sim's low-dim state (robot and object poses, finger joints), exactly: grasp and
+        mask ids expire only when it changed, not on a call that did not step the sim."""
+        raw = self.raw_obs()
+        return tuple(
+            (k, np.asarray(v).tobytes())
+            for k, v in sorted(raw.items())
+            if k.endswith(("_pos", "_quat", "_qpos"))
+        )
+
+    def _holding(self) -> bool:
+        """Whether the fingers rest on something: neither open (about 0.08) nor closed on
+        nothing (about 0)."""
+        return 0.004 < self._gripper_width() < 0.075
 
     def _view(self, camera: str) -> dict:
         """One camera, upright: rgb uint8[S,S,3], depth float32[S,S] in metres (0 = none), K,
@@ -588,6 +612,20 @@ class LiberoEnvFacade(BaseEnvFacade):
         if method == "env.move_delta":
             d = np.asarray(kwargs["dxyz"], dtype=np.float64).reshape(3)
             return float(np.linalg.norm(d))
+        if method in ("env.execute_grasp", "env.execute_place"):
+            # To the pre-pose, down the standoff and back up (or the lift), at most.
+            key = "grasp_id" if method == "env.execute_grasp" else "place_id"
+            try:
+                pose = self._grasp.resolve_grasp(kwargs[key])
+            except Exception:
+                return 0.0  # the call itself refuses the id
+            at = np.asarray(pose["eef_position"], dtype=np.float64)
+            standoff = float(_finite("standoff", kwargs.get("standoff", 0.10)))
+            return float(
+                np.linalg.norm(at - self._eef())
+                + 2 * standoff
+                + float(kwargs.get("lift", 0.10))
+            )
         if method in ("env.step", "env.chunk_step"):
             a = np.asarray(
                 kwargs.get("action", kwargs.get("actions")), dtype=np.float64
@@ -1024,6 +1062,147 @@ class LiberoEnvFacade(BaseEnvFacade):
             if n > 3 and abs(widths[-1] - widths[-4]) < 1e-3:
                 break
         return self._motion_result("set_gripper", n, cancelled, close=bool(close))
+
+    # ---- planned grasps (--graspnet/--graspgenx/--anygrasp/--anyplace) ----
+
+    def _pitch(self) -> float:
+        return pitch_of(quat_xyzw_matrix(self._quat_xyzw()))
+
+    def _servo_pose(
+        self,
+        target: np.ndarray,
+        pitch: float,
+        yaw: float,
+        grip: float,
+        max_steps: int,
+        tol: float = 0.012,
+        ori_tol: float = 0.05,
+    ):
+        """pi's ``move_pose`` rule: position, pitch and yaw toward their targets each step."""
+        wrap = lambda a: (a + np.pi) % (2 * np.pi) - np.pi  # noqa: E731
+        steps = 0
+        cancelled = False
+        while steps < max_steps and self._live():
+            if self.stop_requested():
+                cancelled = True
+                break
+            diff = target - self._eef()
+            p_err = float(wrap(pitch - self._pitch()))
+            y_err = float(wrap(yaw - self._yaw()))
+            if np.linalg.norm(diff) < tol and max(abs(p_err), abs(y_err)) < ori_tol:
+                break
+            a = [*self._servo_action(diff, 0.02, 0.05), 0.0, 0.0, 0.0, grip]
+            a[3] = float(np.clip(np.clip(p_err, -0.08, 0.08) / 0.1, -1, 1))
+            a[5] = float(np.clip(np.clip(y_err, -0.08, 0.08) / 0.1, -1, 1))
+            self._act(a)
+            steps += 1
+        return steps, cancelled
+
+    def _execute_claim(self, claim: dict, max_steps: int, name: str) -> dict:
+        """Run a claimed path (``GraspPlanner.claim_waypoints``) step by step; stops at the
+        first leg that stalls (more than 3 cm short), a stop or the episode's end."""
+        waypoints = {
+            k: np.asarray(v, dtype=np.float64) for k, v in claim["waypoints"].items()
+        }
+        pitch, yaw = float(claim["eef_pitch"]), float(claim["eef_yaw"])
+        legs: list[dict] = []
+        total = 0
+        for leg in claim["steps"]:
+            grip = float(leg["gripper"])
+            self._grip = grip
+            if "to" not in leg:
+                out = self.set_gripper(grip > 0)
+                steps, cancelled = out["steps_used"], bool(out.get("cancelled"))
+                legs.append(
+                    {"gripper": int(grip), "gripper_width": out["gripper_width"]}
+                )
+            else:
+                target = waypoints[leg["to"]]
+                steps, cancelled = self._servo_pose(
+                    target, pitch, yaw, grip, int(max_steps)
+                )
+                dist = float(np.linalg.norm(target - self._eef()))
+                legs.append({"to": leg["to"], "final_dist_m": round(dist, 4)})
+                if dist > 0.03 and not cancelled:
+                    total += steps
+                    return self._motion_result(
+                        name,
+                        total,
+                        False,
+                        id=claim["id"],
+                        legs=legs,
+                        stalled=leg["to"],
+                        error=f"stalled {dist:.3f} m short of {leg['to']}: unreachable or "
+                        "blocked; plan again from the new observation",
+                    )
+            total += steps
+            if cancelled or not self._live():
+                return self._motion_result(
+                    name, total, cancelled, id=claim["id"], legs=legs
+                )
+        return self._motion_result(name, total, False, id=claim["id"], legs=legs)
+
+    def execute_grasp(
+        self,
+        grasp_id: str,
+        standoff: float = 0.10,
+        lift: float = 0.10,
+        max_steps: int = 150,
+    ) -> dict:
+        """Execute one planned grasp from a single resolution of its id: open to the pre-grasp
+        ``standoff`` back along its approach, descend to the grasp (pitch and yaw as planned),
+        close, lift ``lift`` straight up.
+
+        Args:
+            grasp_id: a ``g`` id of the current observation (``plan_grasp``).
+            standoff: pre-grasp distance, m (default 0.10).
+            lift: lift after closing, m (default 0.10).
+            max_steps: env-step budget per leg (default 150).
+
+        Returns:
+            dict with ``legs`` (each leg's final distance, the gripper width after closing),
+            ``gripper_width`` (0.01-0.05 holding, near 0 missed), ``eef_pos``, ``terminated``;
+            ``error`` and ``stalled`` when a leg stopped short. The id is spent either way;
+            ``plan_place(region, grasp_id)`` afterwards plans from the held object.
+
+        Example:
+            >>> g = plan_grasp("black bowl"); r = execute_grasp(g["active"])
+        """
+        if self._grasp.resolve_grasp(str(grasp_id))["kind"] != "grasp":
+            raise ValueError(f"{grasp_id} is a place id; use execute_place")
+        claim = self._grasp.claim_waypoints(
+            str(grasp_id),
+            float(_finite("standoff", standoff)),
+            float(_finite("lift", lift)),
+        )
+        return self._execute_claim(claim, max_steps, "execute_grasp")
+
+    def execute_place(
+        self, place_id: str, standoff: float = 0.10, max_steps: int = 150
+    ) -> dict:
+        """Execute one planned place from a single resolution of its id: carry (closed) to the
+        pre-place ``standoff`` back along its approach, descend to the place pose, open,
+        retreat to the pre-place.
+
+        Args:
+            place_id: a ``p`` id of the current observation (``plan_place``).
+            standoff: pre-place distance, m (default 0.10).
+            max_steps: env-step budget per leg (default 150).
+
+        Returns:
+            dict with ``legs``, ``gripper_width``, ``eef_pos``, ``terminated`` (placing may
+            finish the task); ``error`` and ``stalled`` when a leg stopped short.
+
+        Example:
+            >>> p = plan_place(segment_mask("plate")["id"], g["active"])
+            >>> execute_place(p["active"])
+        """
+        if self._grasp.resolve_grasp(str(place_id))["kind"] != "placement":
+            raise ValueError(f"{place_id} is a grasp id; use execute_grasp")
+        claim = self._grasp.claim_waypoints(
+            str(place_id), float(_finite("standoff", standoff)), 0.0
+        )
+        return self._execute_claim(claim, max_steps, "execute_place")
 
     # ---- reach preview (--ik, utils/reach.py) ----
 

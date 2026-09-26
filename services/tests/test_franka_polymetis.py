@@ -1183,3 +1183,81 @@ def test_code_api_lists_the_primitives_and_resolves_to_the_facade_methods():
     # A resolved call is the tool's call: the facade's own limits refuse an oversized move.
     with pytest.raises(ValueError, match="per\\s+call"):
         call(f, method, delta_xyz=[0.0, 0.0, 1.0])
+
+
+def test_the_grasp_arguments_parse(tmp_path, capsys):
+    """Finding: pi passes --graspnet/--anyplace/... to every franka backend; this argparse
+    refused them, so the Polymetis server could not start with a grasp service."""
+    path = tmp_path / "c.yaml"
+    path.write_text(yaml.safe_dump(cfg()))
+    argv = ["--print-config", "--robot-config", str(path)]
+    grasp = ["--graspnet", "http://127.0.0.1:1", "--anyplace", "http://127.0.0.1:2"]
+    grasp += ["--anygrasp", "http://127.0.0.1:3", "--graspgenx", "http://127.0.0.1:4"]
+    grasp += ["--grasp-to-eef", '{"translation": [0, 0, 0.01]}']
+    assert main(argv + grasp) == 0
+    assert "nuc_ip" in capsys.readouterr().out
+
+
+def test_the_planner_segments_object_text_with_the_perception_sam3(monkeypatch):
+    """plan_grasp(object=<text>) works on Polymetis (and the RLinf server, which shares
+    franka_grasp_planner): the planner uses --sam3's client. Ids survive an observation and a
+    refused move, and expire once the arm moved."""
+    from test_grasp import FakeSam3, FakeServer
+
+    from pi_embodied_services.robots.franka import perception as franka_perception
+    from pi_embodied_services.utils import grasp as G
+    from pi_embodied_services.utils.perception import (
+        FRANKA_CAMERAS,
+        Perception,
+        franka_intrinsics,
+    )
+
+    monkeypatch.setattr(
+        franka_perception,
+        "load_calibration_bundle",
+        lambda: {"external": {"matrix": np.eye(4)}, "wrist": {"matrix": np.eye(4)}},
+    )
+    mask = np.zeros((256, 256), bool)
+    mask[100:160, 100:160] = True
+    sam3 = FakeSam3(mask)
+    server = FakeServer(
+        [
+            G.make_candidate(
+                score=0.9,
+                rotation=G.ZX_NATIVE_TO_GRASPNET,
+                center=[0.0, 0.0, 0.5],
+                width=0.04,
+                depth=0.0,
+                source_model="fake",
+            )
+        ]
+    )
+    robot = MockPolymetisRobot((0.5, 0.0, 0.3, *DOWN))
+    cams = {"wrist": MockRGBD("1"), "third_person": MockRGBD("2", depth_m=0.9)}
+    holder: dict = {}
+    perception = Perception(
+        sam3=sam3,
+        cameras=FRANKA_CAMERAS,
+        intrinsics=lambda key: franka_intrinsics(holder["f"].get_camera_meta(), key),
+    )
+    f = FrankaPolymetisFacade(
+        cfg(),
+        robot,
+        cams,
+        sleep=lambda s: None,
+        perception=perception,
+        grasp={"graspnet": server},
+    )
+    holder["f"] = f
+    assert {"env.plan_grasp", "env.plan_place", "env.claim_waypoints"} <= set(f._rpc)
+    out = call(f, "env.plan_grasp", object="block", camera="third_person")
+    assert out["candidate_count"] == 1 and out["mask_id"].startswith("d")
+    assert server.calls[0][1]["mask"].sum() == 60 * 60
+    gid = out["active"]
+    call(f, "env.get_observation")
+    with pytest.raises(ValueError):
+        call(f, "env.move_delta", [0.2, 0.0, 0.0])  # refused, unmoved
+    assert call(f, "env.resolve_grasp", gid)["id"] == gid
+    call(f, "env.move_delta", [0.0, 0.0, 0.02])
+    with pytest.raises(G.GraspError, match="stale"):
+        call(f, "env.resolve_grasp", gid)

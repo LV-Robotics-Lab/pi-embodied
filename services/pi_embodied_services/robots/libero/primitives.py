@@ -225,6 +225,56 @@ SEGMENT = Primitive(
 )
 
 
-def libero_primitives(sam3: bool = False) -> tuple[Primitive, ...]:
-    """The server's registry: the raw surface, the code-mode primitives, `segment` with a SAM3 server."""
-    return LIBERO_PRIMITIVES + CODE_PRIMITIVES + ((SEGMENT,) if sam3 else ())
+# ---- planned grasps (with a grasp server): plan_grasp / plan_place hand out ids that the
+# first motion expires, so a planned grasp or place runs as one primitive from one resolution
+# of its id (GraspPlanner.claim_waypoints) instead of a move per waypoint.
+
+GRASP_EXECUTION = (
+    Primitive(
+        "execute_grasp",
+        "env.execute_grasp",
+        "Execute one planned grasp (a g id of the current observation) from a single resolution "
+        "of the id: open to the pre-grasp standoff back along its approach, descend to it with "
+        "its pitch and yaw, close, lift straight up. Returns legs (each leg's final_dist_m; the "
+        "gripper width after closing), gripper_width (0.01-0.05 holding, near 0 missed), "
+        "eef_pos, terminated; error and stalled when a leg stopped short (the robot moved: plan "
+        "again). Afterwards plan_place(region, that grasp id) plans from the held object.",
+        {
+            "grasp_id": Param("string", "a g id from plan_grasp / next_grasp"),
+            "standoff": Param("number", "pre-grasp distance, m (default 0.10)", False),
+            "lift": Param("number", "lift after closing, m (default 0.10)", False),
+            "max_steps": Param(
+                "integer", "env-step budget per leg (default 150)", False
+            ),
+        },
+        mutating=True,
+        tiers=("high",),
+    ),
+    Primitive(
+        "execute_place",
+        "env.execute_place",
+        "Execute one planned place (a p id of the current observation) from a single resolution "
+        "of the id: carry closed to the pre-place standoff, descend to the place pose, open, "
+        "retreat. Returns legs, gripper_width, eef_pos, terminated (placing may finish the task).",
+        {
+            "place_id": Param("string", "a p id from plan_place"),
+            "standoff": Param("number", "pre-place distance, m (default 0.10)", False),
+            "max_steps": Param(
+                "integer", "env-step budget per leg (default 150)", False
+            ),
+        },
+        mutating=True,
+        tiers=("high",),
+    ),
+)
+
+
+def libero_primitives(sam3: bool = False, grasp: bool = False) -> tuple[Primitive, ...]:
+    """The server's registry: the raw surface, the code-mode primitives, `segment` with a SAM3
+    server, and the planned-grasp executors with a grasp server."""
+    return (
+        LIBERO_PRIMITIVES
+        + CODE_PRIMITIVES
+        + ((SEGMENT,) if sam3 else ())
+        + (GRASP_EXECUTION if grasp else ())
+    )

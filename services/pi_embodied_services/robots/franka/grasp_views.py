@@ -19,6 +19,10 @@ A view is one camera of the current observation with its calibration: ``{"rgb", 
 fixed in the base frame (its easy_handeye ``external`` transform); the ``wrist`` camera rides
 on the TCP (``T_base_tcp @ T_tcp_camera``, with the TCP read from the robot state at the same
 time as the frames). The dual arm's registered projection views are fixed in ``right_base``.
+
+``franka_grasp_planner`` is the single arm's planner (the RLinf and Polymetis servers share
+it); ``dual_perception_layout`` makes the dual arm's ``env.segment`` masks live on the same
+camera names as its planner's views, so a segment mask id is a valid ``mask_id``.
 """
 
 from __future__ import annotations
@@ -48,6 +52,21 @@ def franka_intrinsics(meta: Any, key: str) -> np.ndarray | None:
         return None
     K = np.asarray(K, dtype=np.float64)
     return K if K.shape == (3, 3) and np.all(np.isfinite(K)) else None
+
+
+def color_intrinsics_K(meta: Any, raw_key: str, camera: str) -> np.ndarray | None:
+    """The 3x3 K of a RealSense's ``color_intrinsics`` in the dual Franka's camera meta."""
+    meta = meta if isinstance(meta, dict) else {}
+    intr = (meta.get(raw_key) or meta.get(camera) or {}).get("color_intrinsics")
+    if not intr:
+        return None
+    return np.array(
+        [
+            [float(intr["fx"]), 0.0, float(intr.get("ppx", intr.get("cx")))],
+            [0.0, float(intr["fy"]), float(intr.get("ppy", intr.get("cy")))],
+            [0.0, 0.0, 1.0],
+        ]
+    )
 
 
 def _pick(obs: dict[str, Any], key: str, index: int | None) -> np.ndarray:
@@ -123,17 +142,9 @@ def dual_franka_view(
             raise ValueError(
                 f"the observation has no RGB-D frame for {camera!r} ({raw_key})"
             )
-        meta = backend.get_camera_meta() or {}
-        intr = (meta.get(raw_key) or meta.get(camera) or {}).get("color_intrinsics")
-        if not intr:
+        K = color_intrinsics_K(backend.get_camera_meta(), raw_key, camera)
+        if K is None:
             raise ValueError(f"no colour intrinsics for camera {camera!r}")
-        K = np.array(
-            [
-                [float(intr["fx"]), 0.0, float(intr.get("ppx", intr.get("cx")))],
-                [0.0, float(intr["fy"]), float(intr.get("ppy", intr.get("cy")))],
-                [0.0, 0.0, 1.0],
-            ]
-        )
         return {
             "rgb": np.ascontiguousarray(
                 np.asarray(frames[raw_key])[..., :3], dtype=np.uint8
@@ -150,4 +161,72 @@ def dual_franka_view(
     return view
 
 
-__all__ = ["dual_franka_view", "franka_view"]
+def dual_perception_layout(
+    projection_views: dict[str, dict[str, Any]], camera_meta: Callable[[], Any]
+) -> tuple[dict[str, tuple[str, str, str]], Callable[[str], np.ndarray | None]]:
+    """``(cameras, intrinsics)`` for ``utils/perception.Perception`` on the dual Franka: one
+    alias per registered projection view (``d455``, ``base``: the planner's camera names),
+    read from the observation's ``raw_camera_frames`` / ``raw_camera_depths`` by raw key."""
+    cameras = {
+        alias: ("raw_camera_frames", "raw_camera_depths", str(cfg["raw_key"]))
+        for alias, cfg in projection_views.items()
+    }
+    aliases = {str(cfg["raw_key"]): alias for alias, cfg in projection_views.items()}
+
+    def intrinsics(raw_key: str) -> np.ndarray | None:
+        return color_intrinsics_K(camera_meta(), raw_key, aliases.get(raw_key, raw_key))
+
+    return cameras, intrinsics
+
+
+def franka_grasp_planner(
+    backend: Any,
+    perception: Any | None,
+    urls: dict[str, Any] | None,
+    *,
+    state_digest: Callable[[], Any] | None = None,
+) -> Any | None:
+    """The single Franka's grasp planner over the wrist and third-person cameras (None without
+    a grasp or place URL). ``backend`` answers ``get_observation``, ``get_camera_meta`` and
+    ``get_robot_state`` (``raw_base_state.tcp_pose``, xyzw); ``perception``'s SAM3 client
+    segments ``plan_grasp(object=...)`` / ``segment_mask`` text, and its book's mask ids are
+    accepted as ``mask_id``."""
+    from pi_embodied_services.robots.franka import perception as franka_perception
+    from pi_embodied_services.utils.grasp import GraspPlanner
+
+    urls = dict(urls or {})
+    if not any(urls.get(k) for k in ("graspnet", "graspgenx", "anygrasp", "anyplace")):
+        return None
+    cache: dict[str, Any] = {}
+
+    def calibration() -> dict[str, Any]:
+        if "bundle" not in cache:
+            cache["bundle"] = franka_perception.load_calibration_bundle()
+        return cache["bundle"]
+
+    def eef_pose(arm: str | None):
+        tcp = np.asarray(
+            backend.get_robot_state()["raw_base_state"]["tcp_pose"], dtype=float
+        )
+        return tcp[:3], tcp[3:7]
+
+    return GraspPlanner.from_args(
+        franka_view(backend, calibration),
+        cameras=list(FRANKA_CAMERAS),
+        masks=perception.book if perception is not None else None,
+        sam3=urls.pop("sam3", None)
+        or (perception.sam3 if perception is not None else None),
+        eef_pose=eef_pose,
+        wrist_camera="wrist",
+        state_digest=state_digest,
+        **urls,
+    )
+
+
+__all__ = [
+    "color_intrinsics_K",
+    "dual_franka_view",
+    "dual_perception_layout",
+    "franka_grasp_planner",
+    "franka_view",
+]

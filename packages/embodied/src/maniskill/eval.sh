@@ -46,6 +46,9 @@ for ((i = 0; i < ${#args[@]}; i++)); do
 	--units=*) units=${args[i]#*=} ;;
 	--units-plugins) units_plugins=${args[i + 1]-} ;;
 	--units-plugins=*) units_plugins=${args[i]#*=} ;;
+	# The units' experiment knobs (stage cap, action ablation, point self-check) are part of the units mode too.
+	--units-stage-steps | --units-ablation | --units-point-verify) units_opts+="+${args[i]#--units-}=${args[i + 1]-}" ;;
+	--units-stage-steps=* | --units-ablation=* | --units-point-verify=*) units_opts+="+${args[i]#--units-}" ;;
 	# pi sets a boolean flag to true whatever value it is given (`--stateless=false` runs stateless)
 	# and takes a following word as that value: only the forms that say what pi runs are accepted.
 	--stateless) case ${args[i + 1]:-} in "" | -* | @* | true) stateless=true ;; *)
@@ -109,6 +112,7 @@ done
 case ",$envs," in *,BlockPAP-v1,* | *,BlockStack-v1,*)
 	[ "$robot" = panda ] || { echo "BlockPAP-v1 / BlockStack-v1 (and \"-\") are real2sim rigs with their own Panda; --robot $robot takes stock env ids" >&2 && exit 2; } ;;
 esac
+[ "$units" != false ] && units="$units${units_opts-}"
 # --time-limit (default $TIME_LIMIT, 1800 s; 0 = none) ends the planner gracefully, as a failure;
 # `timeout` is only the backstop for a hung process, and a killed episode is invalid.
 [ -n "$limited" ] || set -- "$@" --time-limit "$limit"

@@ -436,6 +436,20 @@ test("eval.sh keys the units mode on --units-plugins and the summary on a no-wri
 		assert.equal(run1(["--units-plugins=", "--units=both"]), "both+plugins=", robot);
 		assert.equal(run1(["--units"]), "true", `${robot}: without the flag, as before`);
 		assert.equal(run1(["--units-plugins", "rotation"]), "false", `${robot}: units off`);
+		// The units' experiment knobs are part of the configuration too, in either flag spelling.
+		assert.equal(
+			run1([
+				"--units",
+				"--units-plugins=plan,action_ablation",
+				"--units-ablation",
+				"letters_blind",
+				"--units-stage-steps=20",
+				"--units-point-verify",
+				"0",
+			]),
+			"true+plugins=plan,action_ablation+ablation=letters_blind+stage-steps=20+point-verify=0",
+			robot,
+		);
 	}
 	// Two valid ManiSkill results of the same flags, one on a robot without a wrist view: not one configuration.
 	const dir = mkdtempSync(join(tmpdir(), "eval-"));

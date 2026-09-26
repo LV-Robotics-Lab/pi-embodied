@@ -46,6 +46,9 @@ for ((i = 0; i < ${#args[@]}; i++)); do
 	--units=*) units=${args[i]#*=} ;;
 	--units-plugins) units_plugins=${args[i + 1]-} ;;
 	--units-plugins=*) units_plugins=${args[i]#*=} ;;
+	# The units' experiment knobs (stage cap, action ablation, point self-check) are part of the units mode too.
+	--units-stage-steps | --units-ablation | --units-point-verify) units_opts+="+${args[i]#--units-}=${args[i + 1]-}" ;;
+	--units-stage-steps=* | --units-ablation=* | --units-point-verify=*) units_opts+="+${args[i]#--units-}" ;;
 	# --code / --code-api (run_code, packages/embodied/src/code) are string flags like --units.
 	--code) [[ ${args[i + 1]:---} == --* ]] && code=true || code=${args[i + 1]} ;;
 	--code=*) code=${args[i]#*=} ;;
@@ -112,6 +115,7 @@ done
 [ "$units" = pure ] && units=true
 # --units-plugins is part of the units mode: a result with other plugins is another configuration.
 [ "$units" != false ] && [ -n "${units_plugins+x}" ] && units="$units+plugins=$units_plugins"
+[ "$units" != false ] && units="$units${units_opts-}"
 [ "$code" = pure ] && code=true
 # Without --vdm no VDM call runs, so its model is not part of the configuration.
 [ "$vdm" = true ] || vdm_model=""

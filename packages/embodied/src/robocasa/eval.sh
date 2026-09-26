@@ -74,6 +74,9 @@ for ((i = 0; i < ${#args[@]}; i++)); do
 	--units=*) units=${args[i]#*=} ;;
 	--units-plugins) units_plugins=${args[i + 1]-} ;;
 	--units-plugins=*) units_plugins=${args[i]#*=} ;;
+	# The units' experiment knobs (stage cap, action ablation, point self-check) are part of the units mode too.
+	--units-stage-steps | --units-ablation | --units-point-verify) units_opts+="+${args[i]#--units-}=${args[i + 1]-}" ;;
+	--units-stage-steps=* | --units-ablation=* | --units-point-verify=*) units_opts+="+${args[i]#--units-}" ;;
 	# pi sets a boolean flag to true whatever value it is given (`--stateless=false` runs stateless)
 	# and takes a following word as that value: only the forms that say what pi runs are accepted.
 	--stateless) case ${args[i + 1]:-} in "" | -* | @* | true) stateless=true ;; *)
@@ -131,6 +134,7 @@ done
 [ "$units" = pure ] && units=true
 # --units-plugins is part of the units mode: a result with other plugins is another configuration.
 [ "$units" != false ] && [ -n "${units_plugins+x}" ] && units="$units+plugins=$units_plugins"
+[ "$units" != false ] && units="$units${units_opts-}"
 
 # One protocol per out dir: Target50 results carry protocol_id, robocasa365 results protocol "robocasa365".
 node -e '

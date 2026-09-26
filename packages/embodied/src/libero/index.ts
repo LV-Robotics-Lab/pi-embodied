@@ -909,11 +909,11 @@ export default function libero(pi: ExtensionAPI) {
 		(p) => pick(vla, "pi0", p),
 	);
 
-	// The same grasp tool per mounted third-party VLA (`--openvla <url>` etc.); its client is made at start.
-	for (const a of VLA_ADAPTERS) {
-		if (!flag(a.flag, "")) continue;
+	// The same grasp tool per third-party VLA (`--openvla <url>` etc.): registered always, because pi sets
+	// the command-line flag values only after the extensions have loaded (a getFlag here reads the
+	// default), and made active at start only when its flag names a server; the client is made there too.
+	for (const a of VLA_ADAPTERS)
 		tool(a.tool, pickDescription(a.model), PICK_PARAMETERS, (p) => pick(adapters.get(a.tool)!, a.tool, p));
-	}
 
 	tool(
 		"pi0_doubled",

@@ -19,14 +19,17 @@ import {
 
 type Tool = { name: string; description: string; parameters: unknown };
 
-/** Load the LIBERO robot into a stub pi with `values` as the command-line flags; returns its registered tools. */
+/**
+ * Load the LIBERO robot into a stub pi that, like pi, answers getFlag with the flag's default while the
+ * extension loads and applies the command-line `values` only afterwards; returns its registered tools.
+ */
 function loaded(values: Record<string, unknown> = {}) {
 	const flags: Record<string, unknown> = {};
 	const tools: Tool[] = [];
 	const pi = {
 		on: () => {},
 		registerFlag: (name: string, o: { default?: unknown }) => {
-			flags[name] = name in values ? values[name] : o.default;
+			flags[name] = o.default;
 		},
 		getFlag: (name: string) => flags[name],
 		registerTool: (t: Tool) => tools.push(t),
@@ -40,26 +43,29 @@ function loaded(values: Record<string, unknown> = {}) {
 		events: { emit: () => {}, on: () => () => {} },
 	} as unknown as ExtensionAPI;
 	libero(pi);
+	Object.assign(flags, values);
 	return { flags, tools: new Map(tools.map((t) => [t.name, t])) };
 }
 const schema = (t: Tool | undefined) => JSON.parse(JSON.stringify(t?.parameters));
 
-test("no adapter flag: no adapter tool, no adapter flag value", () => {
-	const { flags, tools } = loaded();
-	for (const a of VLA_ADAPTERS) {
-		assert.equal(flags[a.flag], undefined, a.flag);
-		assert.equal(tools.has(a.tool), false, a.tool);
-	}
-	assert.ok(tools.has("pi0_pick"));
+test("the adapter flags have no default", () => {
+	const { flags } = loaded();
+	for (const a of VLA_ADAPTERS) assert.equal(flags[a.flag], undefined, a.flag);
 });
 
-test("--openvla / --openvla-oft / --gr00t each mount their grasp tool with pi0_pick's parameters", () => {
-	const { tools } = loaded({ openvla: "http://127.0.0.1:18600", gr00t: "127.0.0.1:18800" });
-	assert.ok(tools.has("openvla_act") && tools.has("gr00t_act") && !tools.has("openvla_oft_act"));
-	assert.deepEqual(schema(tools.get("openvla_act")), schema(tools.get("pi0_pick")));
-	assert.deepEqual(schema(tools.get("pi0_pick")), JSON.parse(JSON.stringify(PICK_PARAMETERS)));
-	assert.match(tools.get("gr00t_act")!.description, /GR00T .* grasp/);
-	assert.match(tools.get("openvla_act")!.description, /OpenVLA .* grasp/);
+test("every adapter's grasp tool is registered at load with pi0_pick's parameters (flags are read at start)", () => {
+	// pi applies --openvla etc. after the extension loaded, so registration cannot depend on them; the
+	// tools become active at episode start only when their flag names a server.
+	const bare = loaded().tools;
+	const flagged = loaded({ openvla: "http://127.0.0.1:18600", gr00t: "127.0.0.1:18800" }).tools;
+	assert.deepEqual([...bare.keys()], [...flagged.keys()]);
+	for (const a of VLA_ADAPTERS) {
+		assert.ok(bare.has(a.tool), a.tool);
+		assert.deepEqual(schema(bare.get(a.tool)), schema(bare.get("pi0_pick")), a.tool);
+	}
+	assert.deepEqual(schema(bare.get("pi0_pick")), JSON.parse(JSON.stringify(PICK_PARAMETERS)));
+	assert.match(bare.get("gr00t_act")!.description, /GR00T .* grasp/);
+	assert.match(bare.get("openvla_act")!.description, /OpenVLA .* grasp/);
 });
 
 test("the LIBERO prompt describes an adapter only when its tool is active", () => {

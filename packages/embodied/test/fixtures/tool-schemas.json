@@ -1757,6 +1757,114 @@
 				}
 			},
 			{
+				"name": "openvla_act",
+				"description": "OpenVLA (7B, LIBERO fine-tune; one action per call) closed-loop grasp, run as action chunks until the pick heuristics say the object is lifted or the budget ends. Use it only for the grasp; you do every move_to and release. Success needs a descent then a lift with the gripper partly closed; it is a hint, confirm from gripper opening and the wrist image.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"prompt"
+					],
+					"properties": {
+						"prompt": {
+							"type": "string",
+							"description": "VLA instruction, e.g. 'pick up the black bowl'"
+						},
+						"max_chunks": {
+							"type": "integer",
+							"description": "Action-chunk budget (default 24)"
+						},
+						"lift_thresh": {
+							"type": "number",
+							"description": "Post-descent ascent for success, m (default 0.05)"
+						},
+						"gripper_closed_thresh": {
+							"type": "number",
+							"description": "Finger separation below which the gripper counts as closed (default 0.06)"
+						},
+						"gripper_open_thresh": {
+							"type": "number",
+							"description": "Minimum finger separation accepted as holding (default 0.0)"
+						},
+						"descent_thresh": {
+							"type": "number",
+							"description": "Required descent before lift detection, m (default 0.10)"
+						}
+					}
+				}
+			},
+			{
+				"name": "openvla_oft_act",
+				"description": "OpenVLA-OFT (7B, LIBERO fine-tune; 8-step chunks) closed-loop grasp, run as action chunks until the pick heuristics say the object is lifted or the budget ends. Use it only for the grasp; you do every move_to and release. Success needs a descent then a lift with the gripper partly closed; it is a hint, confirm from gripper opening and the wrist image.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"prompt"
+					],
+					"properties": {
+						"prompt": {
+							"type": "string",
+							"description": "VLA instruction, e.g. 'pick up the black bowl'"
+						},
+						"max_chunks": {
+							"type": "integer",
+							"description": "Action-chunk budget (default 24)"
+						},
+						"lift_thresh": {
+							"type": "number",
+							"description": "Post-descent ascent for success, m (default 0.05)"
+						},
+						"gripper_closed_thresh": {
+							"type": "number",
+							"description": "Finger separation below which the gripper counts as closed (default 0.06)"
+						},
+						"gripper_open_thresh": {
+							"type": "number",
+							"description": "Minimum finger separation accepted as holding (default 0.0)"
+						},
+						"descent_thresh": {
+							"type": "number",
+							"description": "Required descent before lift detection, m (default 0.10)"
+						}
+					}
+				}
+			},
+			{
+				"name": "gr00t_act",
+				"description": "GR00T N1.6/N1.7 (LIBERO libero_panda fine-tune; 16-step chunks) closed-loop grasp, run as action chunks until the pick heuristics say the object is lifted or the budget ends. Use it only for the grasp; you do every move_to and release. Success needs a descent then a lift with the gripper partly closed; it is a hint, confirm from gripper opening and the wrist image.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"prompt"
+					],
+					"properties": {
+						"prompt": {
+							"type": "string",
+							"description": "VLA instruction, e.g. 'pick up the black bowl'"
+						},
+						"max_chunks": {
+							"type": "integer",
+							"description": "Action-chunk budget (default 24)"
+						},
+						"lift_thresh": {
+							"type": "number",
+							"description": "Post-descent ascent for success, m (default 0.05)"
+						},
+						"gripper_closed_thresh": {
+							"type": "number",
+							"description": "Finger separation below which the gripper counts as closed (default 0.06)"
+						},
+						"gripper_open_thresh": {
+							"type": "number",
+							"description": "Minimum finger separation accepted as holding (default 0.0)"
+						},
+						"descent_thresh": {
+							"type": "number",
+							"description": "Required descent before lift detection, m (default 0.10)"
+						}
+					}
+				}
+			},
+			{
 				"name": "pi0_doubled",
 				"description": "Pi0.5 closed-loop contact skill for non-pick interactions (knob, stove, drawer, button, short push). success only mirrors task termination; inspect the images for intermediate progress.",
 				"parameters": {

@@ -12,7 +12,16 @@ import metaworld, {
 	VIEW_SIZE,
 } from "../src/metaworld/index.ts";
 import { ground, MOVE_UNITS } from "../src/units/index.ts";
-import { checkDetections, checkSimExplore, f32, fakeEnv, perceptionAnswers, rgb, withPerception } from "./sim-stub.ts";
+import {
+	checkDetections,
+	checkPoint,
+	checkSimExplore,
+	f32,
+	fakeEnv,
+	perceptionAnswers,
+	rgb,
+	withPerception,
+} from "./sim-stub.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
@@ -229,4 +238,17 @@ test("--detections / --unidepth: the env server's perception primitives; detect 
 	});
 	const r = await s.run("detect", { prompt: "puck" });
 	assert.deepEqual(r.details.detections[0].centroid_world_xyz, [1, 1, 1]);
+});
+
+test("--point: Molmo on the current images; the pixel's world xyz where the robot has depth", async (t) => {
+	const env = await fakeMetaworld(true);
+	t.after(env.close);
+	const { one } = await checkPoint({
+		load: metaworld,
+		values: { env: env.url, task: "reach-v3" },
+		url: env.url,
+		calls: env.calls,
+		cameras: ["agentview", "wrist"],
+	});
+	assert.deepEqual(one.details.world_xyz, [1, 1, 1]);
 });

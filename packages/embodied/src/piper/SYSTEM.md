@@ -9,6 +9,9 @@ The runner owns the Piper env server, the ROS arm node and the cameras. Do not s
 4. A note starting with `divergence` or `gripper ... did not move` means commands are not reaching the arm: stop and finish instead of retrying.
 5. If state, images, or motion results are inconsistent, stop instead of guessing.
 
+[tool:point]
+- `point` (Molmo) finds what a short phrase names in a camera's current image and returns the pixel, marked on the image; with `cameras` it points over several views at once and names the camera of each point.
+[/tool:point]
 [tool:detect]
 - `detect` gives SAM3 masks with ids (`d3`) on a camera's current image, drawn on an overlay, each with its `centroid_pixel` and `depth_m`; `all: true` returns every candidate. Ids expire at the next motion.[tool:select_detection] `select_detection` names the target.[/tool:select_detection][tool:reject_detection] `reject_detection` rules one out.[/tool:reject_detection]
 [/tool:detect]

@@ -21,6 +21,9 @@ This is a single episode. You may recover within it (re-position, re-grasp), but
 - Every motion result shows the new state, then {{views}}. Do not call `view_env_state` right after a motion tool.
 - Moves run in ~2 cm steps; a single call moves at most 0.2 m.
 
+[tool:point]
+- `point` (Molmo) finds what a short phrase names in a camera's current image and returns the pixel, marked on the image; with `cameras` it points over several views at once and names the camera of each point.
+[/tool:point]
 [tool:detect]
 - `detect` gives SAM3 masks with ids (`d3`) on a camera's current image, drawn on an overlay, each with its `centroid_pixel` and `depth_m`; `all: true` returns every candidate. Ids expire at the next motion.[tool:select_detection] `select_detection` names the target.[/tool:select_detection][tool:reject_detection] `reject_detection` rules one out.[/tool:reject_detection]
 [/tool:detect]

@@ -2667,6 +2667,42 @@
 				}
 			},
 			{
+				"name": "point",
+				"description": "Molmo points at what a short noun phrase names ('the red mug handle') in a camera's current image and returns the pixel [row, col], its world point where the robot has depth, and the image with the point marked. With cameras (up to 4) it asks once over that ordered set (the query may say \"Image 1\" for the first) and every point names its camera.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"query"
+					],
+					"properties": {
+						"query": {
+							"type": "string"
+						},
+						"camera": {
+							"type": "string",
+							"enum": [
+								"agentview",
+								"wrist"
+							],
+							"description": "Default agentview"
+						},
+						"cameras": {
+							"type": "array",
+							"items": {
+								"type": "string",
+								"enum": [
+									"agentview",
+									"wrist"
+								]
+							},
+							"minItems": 2,
+							"maxItems": 4,
+							"description": "Several cameras at once (MolmoPoint)"
+						}
+					}
+				}
+			},
+			{
 				"name": "detect",
 				"description": "SAM3 masks on a camera's current image, each with a short id (d3) drawn on the returned overlay in rank order (red, blue, green, yellow, ...). Give exactly one of a text prompt or a positive point [row, col]. all=true returns every candidate instead of only the best; then choose one with select_detection or rule one out with reject_detection. Ids die with the observation: detect again after any motion.",
 				"parameters": {
@@ -2988,6 +3024,35 @@
 				"parameters": {
 					"type": "object",
 					"properties": {}
+				}
+			},
+			{
+				"name": "point",
+				"description": "Molmo points at what a short noun phrase names ('the red mug handle') in a camera's current image and returns the pixel [row, col], its world point where the robot has depth, and the image with the point marked. With cameras (up to 4) it asks once over that ordered set (the query may say \"Image 1\" for the first) and every point names its camera.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"query"
+					],
+					"properties": {
+						"query": {
+							"type": "string"
+						},
+						"camera": {
+							"type": "string",
+							"description": "Camera name (default: the main camera)"
+						},
+						"cameras": {
+							"type": "array",
+							"items": {
+								"type": "string",
+								"description": "Camera name"
+							},
+							"minItems": 2,
+							"maxItems": 4,
+							"description": "Several cameras at once (MolmoPoint)"
+						}
+					}
 				}
 			},
 			{
@@ -3379,6 +3444,35 @@
 						"reason": {
 							"type": "string",
 							"description": "Why the arm stops"
+						}
+					}
+				}
+			},
+			{
+				"name": "point",
+				"description": "Molmo points at what a short noun phrase names ('the red mug handle') in a camera's current image and returns the pixel [row, col], its world point where the robot has depth, and the image with the point marked. With cameras (up to 4) it asks once over that ordered set (the query may say \"Image 1\" for the first) and every point names its camera.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"query"
+					],
+					"properties": {
+						"query": {
+							"type": "string"
+						},
+						"camera": {
+							"type": "string",
+							"description": "Camera name (default: the main camera)"
+						},
+						"cameras": {
+							"type": "array",
+							"items": {
+								"type": "string",
+								"description": "Camera name"
+							},
+							"minItems": 2,
+							"maxItems": 4,
+							"description": "Several cameras at once (MolmoPoint)"
 						}
 					}
 				}
@@ -4037,6 +4131,44 @@
 				}
 			},
 			{
+				"name": "point",
+				"description": "Molmo points at what a short noun phrase names ('the red mug handle') in a camera's current image and returns the pixel [row, col], its world point where the robot has depth, and the image with the point marked. With cameras (up to 4) it asks once over that ordered set (the query may say \"Image 1\" for the first) and every point names its camera.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"query"
+					],
+					"properties": {
+						"query": {
+							"type": "string"
+						},
+						"camera": {
+							"type": "string",
+							"enum": [
+								"agentview",
+								"navview",
+								"wrist"
+							],
+							"description": "Default agentview"
+						},
+						"cameras": {
+							"type": "array",
+							"items": {
+								"type": "string",
+								"enum": [
+									"agentview",
+									"navview",
+									"wrist"
+								]
+							},
+							"minItems": 2,
+							"maxItems": 4,
+							"description": "Several cameras at once (MolmoPoint)"
+						}
+					}
+				}
+			},
+			{
 				"name": "detect",
 				"description": "SAM3 masks on a camera's current image, each with a short id (d3) drawn on the returned overlay in rank order (red, blue, green, yellow, ...). Give exactly one of a text prompt or a positive point [row, col]. all=true returns every candidate instead of only the best; then choose one with select_detection or rule one out with reject_detection. Ids die with the observation: detect again after any motion.",
 				"parameters": {
@@ -4315,6 +4447,42 @@
 					"properties": {
 						"yaw": {
 							"type": "number"
+						}
+					}
+				}
+			},
+			{
+				"name": "point",
+				"description": "Molmo points at what a short noun phrase names ('the red mug handle') in a camera's current image and returns the pixel [row, col], its world point where the robot has depth, and the image with the point marked. With cameras (up to 4) it asks once over that ordered set (the query may say \"Image 1\" for the first) and every point names its camera.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"query"
+					],
+					"properties": {
+						"query": {
+							"type": "string"
+						},
+						"camera": {
+							"type": "string",
+							"enum": [
+								"agentview",
+								"wrist"
+							],
+							"description": "Default agentview"
+						},
+						"cameras": {
+							"type": "array",
+							"items": {
+								"type": "string",
+								"enum": [
+									"agentview",
+									"wrist"
+								]
+							},
+							"minItems": 2,
+							"maxItems": 4,
+							"description": "Several cameras at once (MolmoPoint)"
 						}
 					}
 				}
@@ -4816,6 +4984,44 @@
 						"steps": {
 							"type": "integer",
 							"minimum": 1
+						}
+					}
+				}
+			},
+			{
+				"name": "point",
+				"description": "Molmo points at what a short noun phrase names ('the red mug handle') in a camera's current image and returns the pixel [row, col], its world point where the robot has depth, and the image with the point marked. With cameras (up to 4) it asks once over that ordered set (the query may say \"Image 1\" for the first) and every point names its camera.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"query"
+					],
+					"properties": {
+						"query": {
+							"type": "string"
+						},
+						"camera": {
+							"type": "string",
+							"enum": [
+								"head",
+								"left_wrist",
+								"right_wrist"
+							],
+							"description": "Default head"
+						},
+						"cameras": {
+							"type": "array",
+							"items": {
+								"type": "string",
+								"enum": [
+									"head",
+									"left_wrist",
+									"right_wrist"
+								]
+							},
+							"minItems": 2,
+							"maxItems": 4,
+							"description": "Several cameras at once (MolmoPoint)"
 						}
 					}
 				}

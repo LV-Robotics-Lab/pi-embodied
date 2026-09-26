@@ -38,7 +38,8 @@ import { recipeFlash } from "../flash/recipe.ts";
 import { encodePng } from "../png.ts";
 import { detectionActive, detectionArgs, detectionTools, registerDetectionFlags } from "../primitives/detections.ts";
 import { mountGraspTool } from "../primitives/grasp.ts";
-import { attach, defineRobot, SERVICES } from "../robot.ts";
+import { pointActive, pointTool, registerPointFlags } from "../primitives/pointing.ts";
+import { attach, defineRobot, rgbOf, SERVICES } from "../robot.ts";
 import { NdArray, type RpcClient } from "../rpc.ts";
 import { MOVE_UNITS, type MoveUnit, type Vec3 } from "../units/index.ts";
 
@@ -549,6 +550,8 @@ export default function maniskill(pi: ExtensionAPI) {
 	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
 	// --detections / --unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
 	registerDetectionFlags(pi, { sam3: true });
+	// --point: Molmo's point over --molmo (../primitives/pointing.ts).
+	registerPointFlags(pi);
 	pi.registerFlag("probe-axes", {
 		type: "boolean",
 		default: false,
@@ -932,6 +935,20 @@ export default function maniskill(pi: ExtensionAPI) {
 		if (file) writeFileSync(join(dirname(file), "calibration.json"), `${JSON.stringify(calibration, null, 2)}\n`);
 	}
 
+	// Molmo pointing on the current images (active with --point).
+	mountGraspTool(
+		robot.tool,
+		pointTool(pi, {
+			cameras: ["agentview", "wrist"],
+			frame: async (c) => {
+				const a = c === "wrist" ? obs.wrist : obs.agentview;
+				if (!a) throw new Error(`${arm().arm} has no ${c} camera`);
+				return rgbOf(a);
+			},
+			signal: () => robot.signal,
+		}),
+	);
+
 	// SAM3 masks with ids and UniDepth over the env server's perception (active with --detections / --unidepth).
 	for (const d of detectionTools(pi, {
 		call: (method, kwargs, timeoutMs) =>
@@ -994,6 +1011,12 @@ export default function maniskill(pi: ExtensionAPI) {
 		const [o, i] = await env.call<[Obs, Info]>("env.reset", {}, 300_000);
 		absorb(o, i);
 		language = await env.call<string>("env.get_task_language");
-		return ["view_env_state", "move_delta", "finish", ...detectionActive(pi, meta.capabilities?.perception)];
+		return [
+			"view_env_state",
+			"move_delta",
+			"finish",
+			...detectionActive(pi, meta.capabilities?.perception),
+			...pointActive(pi),
+		];
 	}
 }

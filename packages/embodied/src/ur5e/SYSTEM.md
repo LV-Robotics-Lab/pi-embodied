@@ -18,6 +18,9 @@ back_project turns a pixel (row, col) of a camera with depth into a base-frame p
 segment finds an object by text or by a point in a camera image and, on a camera with depth, returns its median base-frame point.
 [/tool:segment]
 
+[tool:point]
+- `point` (Molmo) finds what a short phrase names in a camera's current image and returns the pixel, marked on the image and, on a camera with depth, its base-frame point; with `cameras` it points over several views at once and names the camera of each point.
+[/tool:point]
 [tool:detect]
 - `detect` gives SAM3 masks with ids (`d3`) on a camera's current image, drawn on an overlay, each with its `centroid_pixel` and `depth_m`[tool:back_project] (back_project a centroid for its base-frame point)[/tool:back_project]; `all: true` returns every candidate. Ids expire at the next motion.[tool:select_detection] `select_detection` names the target.[/tool:select_detection][tool:reject_detection] `reject_detection` rules one out.[/tool:reject_detection]
 [/tool:detect]

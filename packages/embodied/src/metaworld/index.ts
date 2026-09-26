@@ -23,7 +23,8 @@ import { sideBySide } from "../maniskill/index.ts";
 import { decodePngChannel, encodePng } from "../png.ts";
 import { detectionActive, detectionArgs, detectionTools, registerDetectionFlags } from "../primitives/detections.ts";
 import { mountGraspTool } from "../primitives/grasp.ts";
-import { attach, defineRobot, type Json, type Mat, median, round, SERVICES } from "../robot.ts";
+import { pointActive, pointTool, registerPointFlags } from "../primitives/pointing.ts";
+import { attach, defineRobot, type Json, type Mat, median, rgbOf, round, SERVICES } from "../robot.ts";
 import { type NdArray, RpcClient } from "../rpc.ts";
 import type { MoveUnit, Vec3 } from "../units/index.ts";
 
@@ -190,6 +191,8 @@ export default function metaworld(pi: ExtensionAPI) {
 	pi.registerFlag("sam3", { type: "string", default: "http://127.0.0.1:18300", description: "SAM3 server (segment)" });
 	// --detections / --unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
 	registerDetectionFlags(pi);
+	// --point: Molmo's point over its --molmo server (../primitives/pointing.ts).
+	registerPointFlags(pi, { molmo: true });
 	pi.registerFlag("services", {
 		type: "string",
 		default: process.env.PI_EMBODIED_SERVICES ?? SERVICES,
@@ -546,6 +549,25 @@ export default function metaworld(pi: ExtensionAPI) {
 		},
 	);
 
+	// Molmo pointing on the current images (active with --point).
+	mountGraspTool(
+		robot.tool,
+		pointTool(pi, {
+			cameras: CAMERAS,
+			frame: async (c) => {
+				const a = obs[c as Camera];
+				return rgbOf(a);
+			},
+			locate: async (c, row, col) => {
+				const map = await worldMap(c as Camera, VIEW_SIZE);
+				const i = (row * VIEW_SIZE + col) * 3;
+				const p = [map.xyz[i], map.xyz[i + 1], map.xyz[i + 2]];
+				return valid(p) ? { world_xyz: p.map((v) => round(v, 4)) } : undefined;
+			},
+			signal: () => robot.signal,
+		}),
+	);
+
 	// SAM3 masks with ids and UniDepth over the env server's perception (active with --detections / --unidepth).
 	for (const d of detectionTools(pi, {
 		call: (method, kwargs, timeoutMs) => env.call<Json>(method, kwargs, timeoutMs ?? 120_000, [], robot.signal),
@@ -627,6 +649,7 @@ export default function metaworld(pi: ExtensionAPI) {
 		return [
 			...["view_env_state", "view_camera_meta", "segment", "back_project", "move_delta", "gripper", "finish"],
 			...detectionActive(pi, meta.capabilities?.perception),
+			...pointActive(pi),
 		];
 	}
 }

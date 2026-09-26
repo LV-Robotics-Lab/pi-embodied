@@ -41,6 +41,7 @@ import {
 	registerDetectionFlags,
 } from "../primitives/detections.ts";
 import { mountGraspTool } from "../primitives/grasp.ts";
+import { pointActive, pointTool, registerPointFlags } from "../primitives/pointing.ts";
 import {
 	apply,
 	attach,
@@ -185,6 +186,8 @@ export default function ur5e(pi: ExtensionAPI) {
 	// --detections (the env server's SAM3 masks with ids through --robot-sam3) / --unidepth (enhance_depth:
 	// UniDepth depth for an RGB-only camera, which back_project then reads): ../primitives/detections.ts.
 	registerDetectionFlags(pi);
+	// --point: Molmo's point over its --molmo server (../primitives/pointing.ts).
+	registerPointFlags(pi, { molmo: true });
 	pi.registerFlag("services", {
 		type: "string",
 		default: process.env.PI_EMBODIED_SERVICES ?? SERVICES,
@@ -629,6 +632,30 @@ export default function ur5e(pi: ExtensionAPI) {
 		false,
 	);
 
+	// Molmo pointing on the current images (active with --point).
+	mountGraspTool(
+		robot.tool,
+		pointTool(pi, {
+			cameras: [],
+			defaultCamera: () => cameras()[0] ?? "",
+			frame: async (c) => {
+				const s = getStep(-1);
+				const { width, height } = JSON.parse(readFileSync(join(s.dir, `${c}.json`), "utf8"));
+				return { width, height, rgb: readFileSync(join(s.dir, `${c}.rgb`)) };
+			},
+			locate: async (c, row, col) => {
+				const s = getStep(-1);
+				try {
+					const p = project(s, cameraOf(s, c), row, col);
+					return { world_xyz: p.point_base, coordinate_frame: "ur5e_base", depth_m: p.depth_m };
+				} catch {
+					return undefined;
+				}
+			},
+			signal: () => robot.signal,
+		}),
+	);
+
 	// SAM3 masks with ids and UniDepth over the env server's perception, on the latest step's frames.
 	for (const d of detectionTools(pi, {
 		call: (method, kwargs, timeoutMs) => call<Json>(method, kwargs, timeoutMs ?? 120_000, robot.signal),
@@ -878,6 +905,6 @@ export default function ur5e(pi: ExtensionAPI) {
 			"info",
 		);
 		const perception = (m as { capabilities?: { perception?: PerceptionCaps } }).capabilities?.perception;
-		return [...TOOLS, ...(sam ? ["segment"] : []), ...detectionActive(pi, perception)];
+		return [...TOOLS, ...(sam ? ["segment"] : []), ...detectionActive(pi, perception), ...pointActive(pi)];
 	}
 }

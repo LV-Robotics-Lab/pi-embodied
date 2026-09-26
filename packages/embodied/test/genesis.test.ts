@@ -5,6 +5,7 @@ import genesis, { CAMERAS, maskPixels, medianPoint, STEP_M, TASKS, VECTORS } fro
 import { ground, MOVE_UNITS } from "../src/units/index.ts";
 import {
 	checkDetections,
+	checkPoint,
 	checkSimExplore,
 	f32,
 	fakeEnv,
@@ -171,4 +172,17 @@ test("--detections / --unidepth: the env server's perception primitives; detect 
 		camera_name: "agentview",
 		pixels: [[1, 1]],
 	});
+});
+
+test("--point: Molmo on the current images; the pixel's world xyz where the robot has depth", async (t) => {
+	const env = await fakeGenesis(true);
+	t.after(env.close);
+	const { one } = await checkPoint({
+		load: genesis,
+		values: { env: env.url },
+		url: env.url,
+		calls: env.calls,
+		cameras: ["agentview", "wrist"],
+	});
+	assert.deepEqual(one.details.world_xyz, [0.4, 0, 0.02]);
 });

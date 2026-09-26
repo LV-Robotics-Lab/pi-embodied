@@ -120,6 +120,8 @@ async function mockServer(
 		beginPose?: boolean;
 		/** The camera metadata per camera (default: an eye-in-hand wrist and an uncalibrated front camera). */
 		cameraMeta?: Record<string, Record<string, unknown>>;
+		/** Serve the perception primitives (env.detect & co) and Molmo on this server too. */
+		perception?: boolean;
 	} = {},
 ) {
 	const calls: { method: string; kwargs: Record<string, any> }[] = [];
@@ -178,7 +180,27 @@ async function mockServer(
 						reset_lift_m: 0.05,
 					},
 					tasks: { block_bowl: { instruction: "put the block in the bowl" } },
+					...(o.perception ? { capabilities: { perception: { segment: true, enhance_depth: true } } } : {}),
 				};
+			case "env.detect":
+				return {
+					found: true,
+					observation: 1,
+					ids: ["d1"],
+					invalidated: [],
+					detections: [{ id: "d1", score: 0.8, centroid_rc: [1, 1], depth_m: null }],
+				};
+			case "env.enhance_depth":
+				return {
+					ok: true,
+					observation: 1,
+					camera: kwargs.camera,
+					depth,
+					report: { mode: "mono_only" },
+					estimate: {},
+				};
+			case "molmo.ground":
+				return { point_xy: [1, 1], answer: "<point>" };
 			case "env.reset":
 				return { ok: true, gripper: { ok: true }, move: { ok: true }, robot_state: state() };
 			case "env.get_observation":
@@ -486,5 +508,60 @@ test("exploration: reset is the operator's scene reset then the arm's reset, wit
 		assert.doesNotMatch(prompt, /\{\{\w+\}\}|[Pp]iper/);
 	} finally {
 		m.close();
+	}
+});
+
+test("--unidepth: enhance_depth stores the estimate in the latest step, so an RGB-only camera back-projects; --point locates through it", async () => {
+	const front = {
+		name: "front",
+		has_depth: false,
+		intrinsic_K: [
+			[2, 0, 2],
+			[0, 2, 2],
+			[0, 0, 1],
+		],
+		extrinsic: {
+			frame: "base",
+			matrix: [
+				[1, 0, 0, 0],
+				[0, 1, 0, 0],
+				[0, 0, 1, 0],
+				[0, 0, 0, 1],
+			],
+			path: "f.yaml",
+			arm_id: ARM,
+		},
+	};
+	const wrist = { name: "wrist", has_depth: true, intrinsic_K: front.intrinsic_K, extrinsic: null };
+	const m0 = await mockServer({ perception: true });
+	const { f, m } = await started(
+		{ detections: true, unidepth: "http://127.0.0.1:1", point: true, molmo: m0.url },
+		{ perception: true, cameraMeta: { wrist, front } },
+	);
+	try {
+		for (const name of ["detect", "select_detection", "reject_detection", "enhance_depth", "point"])
+			assert.ok(f.active().includes(name), name);
+		const before = await f.run("back_project", { row: 1, col: 1, camera: "front" });
+		assert.match(JSON.stringify(before.details), /has no depth/);
+		const d = await f.run("detect", { prompt: "block", camera: "front" });
+		assert.deepEqual(d.details.ids, ["d1"]);
+		assert.deepEqual(m.calls.find((c) => c.method === "env.detect")?.kwargs, {
+			camera: "front",
+			text_prompt: "block",
+			min_score: 0.2,
+			all: false,
+		});
+		const e = await f.run("enhance_depth", { camera: "front" });
+		assert.equal(e.details.step, 0);
+		assert.match(e.details.depth_path, /front_depth\.f32$/);
+		const after = await f.run("back_project", { row: 1, col: 1, camera: "front" });
+		assert.equal(after.details.depth_m, 0.5);
+		assert.deepEqual(after.details.point_base, [-0.25, -0.25, 0.5]);
+		const p = await f.run("point", { query: "the block", camera: "front" });
+		assert.deepEqual(p.details.pixel, [1, 1]);
+		assert.deepEqual(p.details.world_xyz, [-0.25, -0.25, 0.5]);
+	} finally {
+		m.close();
+		m0.close();
 	}
 });

@@ -10,6 +10,9 @@ This is a single episode with a time limit. You may recover within it (re-positi
 - Every motion result shows the new state, then the front view (a fixed camera facing the robot: image left is -y, image bottom is +x) and the wrist view (looking straight down from the gripper, fingers at the top of the image).[tool:view_env_state] Do not call `view_env_state` right after a motion tool.[/tool:view_env_state]
 - Moves run in ~2 cm steps[tool:move_delta]; a single `move_delta` call moves at most 0.3 m[/tool:move_delta].
 
+[tool:point]
+- `point` (Molmo) finds what a short phrase names in a camera's current image and returns the pixel, marked on the image; with `cameras` it points over several views at once and names the camera of each point.
+[/tool:point]
 [tool:detect]
 - `detect` gives SAM3 masks with ids (`d3`) on a camera's current image, drawn on an overlay, each with its `centroid_pixel` and `depth_m`; `all: true` returns every candidate. Ids expire at the next motion.[tool:select_detection] `select_detection` names the target.[/tool:select_detection][tool:reject_detection] `reject_detection` rules one out.[/tool:reject_detection]
 [/tool:detect]

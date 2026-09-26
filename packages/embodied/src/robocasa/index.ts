@@ -30,6 +30,7 @@ import {
 	registerDetectionFlags,
 } from "../primitives/detections.ts";
 import { mountGraspTool } from "../primitives/grasp.ts";
+import { pointActive, pointTool, registerPointFlags } from "../primitives/pointing.ts";
 import { attach, defineRobot, median, round, SERVICES } from "../robot.ts";
 import { NdArray, RpcClient } from "../rpc.ts";
 import type { Move } from "../units/index.ts";
@@ -164,6 +165,8 @@ export default function robocasa(pi: ExtensionAPI) {
 	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
 	// --detections / --unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
 	registerDetectionFlags(pi, { sam3: true });
+	// --point: Molmo's point over --molmo (../primitives/pointing.ts).
+	registerPointFlags(pi);
 	const seeds = vlaSeeds(pi, () => ["robocasa", robot.task]);
 	pi.registerFlag("services", {
 		type: "string",
@@ -1204,6 +1207,22 @@ export default function robocasa(pi: ExtensionAPI) {
 		vla = undefined;
 	}
 
+	// Molmo pointing on the current images (active with --point).
+	mountGraspTool(
+		robot.tool,
+		pointTool(pi, {
+			cameras: ["agentview", "navview", "wrist"],
+			frame: async (c) => ({ width: SIZE, height: SIZE, rgb: await rgb(CAMERAS[c as keyof typeof CAMERAS]) }),
+			locate: async (c, row, col) => {
+				const { map } = await rgbd(CAMERAS[c as keyof typeof CAMERAS], SIZE);
+				const i = (row * SIZE + col) * 3;
+				const p = [map.xyz[i], map.xyz[i + 1], map.xyz[i + 2]];
+				return p.every(Number.isFinite) ? { world_xyz: p.map((v) => round(v, 4)) } : undefined;
+			},
+			signal: () => robot.signal,
+		}),
+	);
+
 	// SAM3 masks with ids and UniDepth over the env server's perception (active with --detections / --unidepth).
 	for (const d of detectionTools(pi, {
 		call: (method, kwargs, timeoutMs) =>
@@ -1277,6 +1296,7 @@ export default function robocasa(pi: ExtensionAPI) {
 		return [
 			...[...PRIMITIVES, "view_env_state", "back_project_batch", "query_world_map", "finish"],
 			...detectionActive(pi, perception),
+			...pointActive(pi),
 		];
 	}
 }

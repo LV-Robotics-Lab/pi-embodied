@@ -84,6 +84,9 @@ Every robot but the Frankas (whose `segment` does this with `--robot-sam3` / `--
 `reject_detection`, through its `--sam3`) and `--unidepth <url>` (`enhance_depth`: UniDepth depth,
 the only depth ManiSkill, RoboLab and the Piper / UR5e webcams have; UR5e's `back_project` then reads
 it); `src/primitives/detections.ts`, the env servers' `env.detect` & co.
+`--point` adds Molmo's `point` on the same robots (BEHAVIOR has it by default) over `--molmo`: one
+camera through `molmo.ground`, several at once through MolmoPoint's `molmo.ground_set`, each point
+with its camera and, where the robot has depth, its world point (`src/primitives/pointing.ts`).
 
 ManiSkill's `--robot` picks the arm (ManiSkill 3.0.1 agents the stock table scene places, and the
 robots the other scenes of OpenETA's ManiSkill table are built for), all translation-only with the same

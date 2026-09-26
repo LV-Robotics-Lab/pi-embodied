@@ -29,7 +29,8 @@ import {
 	registerDetectionFlags,
 } from "../primitives/detections.ts";
 import { mountGraspTool } from "../primitives/grasp.ts";
-import { attach, defineRobot, median, SERVICES, u8 } from "../robot.ts";
+import { pointActive, pointTool, registerPointFlags } from "../primitives/pointing.ts";
+import { attach, defineRobot, median, rgbOf, SERVICES, u8 } from "../robot.ts";
 import { NdArray, type RpcClient } from "../rpc.ts";
 import type { Move } from "../units/index.ts";
 import { vlaSeeds } from "../vla-seed.ts";
@@ -400,6 +401,8 @@ export default function robotwin(pi: ExtensionAPI) {
 	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
 	// --detections / --unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
 	registerDetectionFlags(pi, { sam3: true });
+	// --point: Molmo's point over --molmo (../primitives/pointing.ts).
+	registerPointFlags(pi);
 	const seeds = vlaSeeds(pi, () => ["robotwin", robot.task]);
 	pi.registerFlag("services", {
 		type: "string",
@@ -1108,6 +1111,25 @@ export default function robotwin(pi: ExtensionAPI) {
 		async (p) => setGripper(p.arm, p.val ?? 1, p.steps ?? 10),
 	);
 
+	// Molmo pointing on the current images (active with --point).
+	mountGraspTool(
+		robot.tool,
+		pointTool(pi, {
+			cameras: VIEWS,
+			frame: async (c) =>
+				rgbOf(await env.call<NdArray>("env.render_camera", { camera_name: c, depth: false }, READ_MS)),
+			// The latest recorded state's same-step world map (point asks about the current images).
+			locate: async (c, row, col) => {
+				const map = snapshots.at(-1)?.world[c as View];
+				if (!map || row >= map.height || col >= map.width) return undefined;
+				const i = (row * map.width + col) * 3;
+				const p = [map.xyz[i], map.xyz[i + 1], map.xyz[i + 2]];
+				return p.every(Number.isFinite) ? { world_xyz: p.map((v) => round(v, 4)) } : undefined;
+			},
+			signal: () => robot.signal,
+		}),
+	);
+
 	// SAM3 masks with ids and UniDepth over the env server's perception (active with --detections / --unidepth).
 	for (const d of detectionTools(pi, {
 		call: (method, kwargs, timeoutMs) =>
@@ -1174,6 +1196,7 @@ export default function robotwin(pi: ExtensionAPI) {
 			"release",
 			"finish",
 			...detectionActive(pi, meta.capabilities?.perception),
+			...pointActive(pi),
 		];
 	}
 }

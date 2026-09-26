@@ -156,6 +156,9 @@ export async function fakeEnv(answer: (c: Call) => unknown) {
 
 /** Answers for the env server's perception primitives: SAM3 ids and UniDepth (merge into a fake server's answers). */
 export function perceptionAnswers(c: Call): unknown {
+	if (c.method === "molmo.ground") return { point_xy: [1.2, 0.6], answer: "<point>" };
+	if (c.method === "molmo.ground_set")
+		return { points: [{ image_index: 1, pixel_x: 0, pixel_y: 1 }], answer: "<points>" };
 	if (c.method === "env.detect")
 		return {
 			found: true,
@@ -232,4 +235,45 @@ export async function checkDetections(o: {
 	const prompt = (await s.emit("before_agent_start", { systemPrompt: "" }))?.systemPrompt as string | undefined;
 	if (prompt !== undefined) assert.match(prompt, /`detect` gives SAM3 masks[\s\S]*`enhance_depth` fuses/);
 	return s;
+}
+
+/**
+ * --point on a robot whose fake env server also answers Molmo (it is the --molmo server here): point is
+ * active only with the flag, one camera asks molmo.ground, several ask molmo.ground_set and each point names its camera.
+ */
+export async function checkPoint(o: {
+	load: (pi: ExtensionAPI) => unknown;
+	values: Record<string, unknown>;
+	url: string;
+	calls: Call[];
+	cameras: [string, string];
+	started?: (s: ReturnType<typeof stubPi>) => Promise<void> | void;
+}) {
+	const off = stubPi({ ...o.values, molmo: o.url });
+	o.load(off.pi);
+	await off.emit("session_start");
+	process.exitCode = undefined;
+	assert.ok(off.active().includes("finish"), "the robot started");
+	assert.ok(!off.active().includes("point"), "off by default");
+	const s = stubPi({ ...o.values, molmo: o.url, point: true });
+	o.load(s.pi);
+	await s.emit("session_start");
+	process.exitCode = undefined;
+	await o.started?.(s);
+	assert.ok(s.active().includes("point"));
+	const one = await s.run("point", { query: "the cube", camera: o.cameras[0] });
+	assert.equal(one.details.found, true);
+	assert.equal(one.details.camera, o.cameras[0]);
+	assert.deepEqual(one.details.pixel, [1, 1]);
+	assert.equal(o.calls.filter((c) => c.method === "molmo.ground").at(-1)?.kwargs.query, "the cube");
+	assert.equal(one.content.filter((c: { type: string }) => c.type === "image").length, 1);
+	const set = await s.run("point", { query: "the cube in Image 2", cameras: o.cameras });
+	const call = o.calls.filter((c) => c.method === "molmo.ground_set").at(-1);
+	assert.equal(call?.kwargs.images_base64.length, 2);
+	assert.equal(set.details.points[0].camera, o.cameras[1]);
+	assert.deepEqual(set.details.points[0].pixel, [1, 0]);
+	s.pi.setActiveTools(s.active());
+	const prompt = (await s.emit("before_agent_start", { systemPrompt: "" }))?.systemPrompt as string | undefined;
+	if (prompt !== undefined) assert.match(prompt, /`point` \(Molmo\) finds/);
+	return { s, one };
 }

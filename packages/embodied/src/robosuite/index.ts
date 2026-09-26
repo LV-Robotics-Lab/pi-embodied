@@ -25,7 +25,8 @@ import { ikArgs, type Reach, registerIkFlag } from "../ik.ts";
 import { decodePngChannel, encodePng } from "../png.ts";
 import { detectionActive, detectionArgs, detectionTools, registerDetectionFlags } from "../primitives/detections.ts";
 import { graspActive, graspArgs, graspTools, mountGraspTool, registerGraspFlags } from "../primitives/grasp.ts";
-import { attach, defineRobot, type Json, median, SERVICES, toolResult } from "../robot.ts";
+import { pointActive, pointTool, registerPointFlags } from "../primitives/pointing.ts";
+import { attach, defineRobot, type Json, median, rgbOf, SERVICES, toolResult } from "../robot.ts";
 import { NdArray, RpcClient } from "../rpc.ts";
 import { finishMove, type Move, type MoveUnit, type Vec3 } from "../units/index.ts";
 
@@ -123,6 +124,8 @@ export default function robosuite(pi: ExtensionAPI) {
 	registerGraspFlags(pi);
 	// --detections / --unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
 	registerDetectionFlags(pi);
+	// --point: Molmo's point over its --molmo server (../primitives/pointing.ts).
+	registerPointFlags(pi, { molmo: true });
 	pi.registerFlag("max-move", {
 		type: "string",
 		default: String(MAX_MOVE_M),
@@ -628,6 +631,25 @@ export default function robosuite(pi: ExtensionAPI) {
 	}))
 		mountGraspTool(robot.tool, d);
 
+	// Molmo pointing on the current images (active with --point).
+	mountGraspTool(
+		robot.tool,
+		pointTool(pi, {
+			cameras: ["agentview", "wrist"],
+			frame: async (c) => {
+				const a = obs[c as Camera];
+				return rgbOf(a);
+			},
+			locate: async (c, row, col) => {
+				const map = await worldMap(c as Camera, IMAGE_SIZE);
+				const i = (row * IMAGE_SIZE + col) * 3;
+				const p = [map.xyz[i], map.xyz[i + 1], map.xyz[i + 2]];
+				return valid(p) ? { world_xyz: p.map((v) => round(v)) } : undefined;
+			},
+			signal: () => robot.signal,
+		}),
+	);
+
 	// SAM3 masks with ids and UniDepth over the env server's perception (active with --detections / --unidepth).
 	for (const d of detectionTools(pi, {
 		call: (method, kwargs, timeoutMs) => call<Json>(method, kwargs, [], robot.signal, timeoutMs ?? 120_000),
@@ -745,6 +767,7 @@ export default function robosuite(pi: ExtensionAPI) {
 			// The env server serves env.preview_reach only with --ik.
 			...(flag("ik", "") ? ["preview_reach"] : []),
 			...detectionActive(pi, meta.capabilities?.perception),
+			...pointActive(pi),
 			// Grasping needs fingers: Wipe's sponge has none.
 			...(hasGripper(task) ? graspActive(pi) : []),
 			"finish",

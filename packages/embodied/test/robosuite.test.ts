@@ -17,7 +17,16 @@ import robosuite, {
 	YAW_STEP_RAD,
 } from "../src/robosuite/index.ts";
 import { ground, MOVE_UNITS } from "../src/units/index.ts";
-import { type Call, checkSimExplore, f32, fakeEnv, rgb, stubPi as simPi } from "./sim-stub.ts";
+import {
+	type Call,
+	checkPoint,
+	checkSimExplore,
+	f32,
+	fakeEnv,
+	perceptionAnswers,
+	rgb,
+	stubPi as simPi,
+} from "./sim-stub.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 type Tool = { name: string; description: string; parameters: any; execute: (...a: any[]) => Promise<any> };
@@ -395,4 +404,34 @@ test("--detections activates detect / select_detection / reject_detection over e
 		(await s.emit("before_agent_start")).systemPrompt as string,
 		/`detect` gives SAM3 masks[\s\S]*`enhance_depth` fuses/,
 	);
+});
+
+test("--point: Molmo on the current images; the pixel's world xyz through the world map", async (t) => {
+	const env = await fakeRobosuite("Lift", (c) => {
+		if (c.method === "env.render_camera") return [rgb(512, 512), f32(new Array(512 * 512).fill(1))];
+		if (c.method === "env.get_camera_meta")
+			return {
+				intrinsic_K: [
+					[1, 0, 0],
+					[0, 1, 0],
+					[0, 0, 1],
+				],
+				extrinsic_cam2world: [
+					[1, 0, 0, 0],
+					[0, 1, 0, 0],
+					[0, 0, 1, 0],
+					[0, 0, 0, 1],
+				],
+			};
+		return perceptionAnswers(c);
+	});
+	t.after(env.close);
+	const { one } = await checkPoint({
+		load: robosuite,
+		values: { env: env.url, task: "Lift" },
+		url: env.url,
+		calls: env.calls,
+		cameras: ["agentview", "wrist"],
+	});
+	assert.deepEqual(one.details.world_xyz, [1, 1, 1]);
 });

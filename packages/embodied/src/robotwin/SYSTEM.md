@@ -18,6 +18,9 @@ The episode is done when a tool result shows `eval_success: true`; that flag is 
 - World maps are `[row, col] -> [x, y, z]` from the same step and view as the image and may contain NaN. Query with the exact view (and step) whose RGB supplied the pixels. A visible surface point is not an object center.
 [/tool:query_world_map|sample_world_xyz]
 
+[tool:point]
+- `point` (Molmo) finds what a short phrase names in a camera's current image and returns the pixel, marked on the image and its world point; with `cameras` it points over several views at once and names the camera of each point.
+[/tool:point]
 [tool:detect]
 - `detect` gives SAM3 masks with ids (`d3`) on a camera's current image, drawn on an overlay, each with its `centroid_pixel` and `depth_m`; `all: true` returns every candidate. Ids expire at the next motion.[tool:select_detection] `select_detection` names the target.[/tool:select_detection][tool:reject_detection] `reject_detection` rules one out.[/tool:reject_detection]
 [/tool:detect]

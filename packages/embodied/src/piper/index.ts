@@ -49,6 +49,7 @@ import {
 	registerDetectionFlags,
 } from "../primitives/detections.ts";
 import { mountGraspTool } from "../primitives/grasp.ts";
+import { pointActive, pointTool, registerPointFlags } from "../primitives/pointing.ts";
 import {
 	attach,
 	checkMove,
@@ -57,6 +58,7 @@ import {
 	type Json,
 	message,
 	plain,
+	type Rgb,
 	type RobotSpec,
 	rgbOf,
 	round,
@@ -240,6 +242,8 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 	});
 	// --detections / --unidepth: the env server's SAM3 masks with ids and UniDepth depth for the webcams (../primitives/detections.ts).
 	registerDetectionFlags(pi, { sam3: true });
+	// --point: Molmo's point over its --molmo server (../primitives/pointing.ts).
+	registerPointFlags(pi, { molmo: true });
 	pi.registerFlag("services", {
 		type: "string",
 		default: process.env.PI_EMBODIED_SERVICES ?? SERVICES,
@@ -276,6 +280,8 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 	let task: Task | undefined;
 	let out = "";
 	const steps: Step[] = [];
+	/** Each camera's latest frame (point reads it). */
+	const frames = new Map<string, Rgb>();
 	const cameras = () =>
 		meta?.cameras?.filter((c) => c === "front" || c.startsWith("wrist")) ??
 		(dual ? ["front", "wrist_left", "wrist_right"] : ["front", "wrist"]);
@@ -488,6 +494,7 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 			if (!framed) robot.video.frame(frameOf(v));
 			framed = true;
 			const img = rgbOf(v);
+			frames.set(name, img);
 			images[name] = join(dir, `${name}.png`);
 			writeFileSync(images[name], encodePng(img.rgb, img.width, img.height));
 		}
@@ -631,6 +638,21 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 		return { ok: true, step: steps.length - 1 };
 	}
 
+	// Molmo pointing on the current images (active with --point).
+	mountGraspTool(
+		robot.tool,
+		pointTool(pi, {
+			cameras: [],
+			defaultCamera: () => cameras()[0] ?? "front",
+			frame: async (c) => {
+				const f = frames.get(c);
+				if (!f) throw new Error(`no current image of camera ${c} (cameras: ${cameras().join(", ")})`);
+				return f;
+			},
+			signal: () => robot.signal,
+		}),
+	);
+
 	// SAM3 masks with ids and UniDepth over the env server's perception, on its latest frames.
 	for (const d of detectionTools(pi, {
 		call: (method, kwargs, timeoutMs) => call<Json>(method, kwargs, timeoutMs ?? 120_000, robot.signal),
@@ -727,6 +749,6 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 		task = t;
 		ctx.ui.notify(`Piper ready: ${taskName()} (${dual ? "both arms" : `${m.arm} arm`}); steps under ${out}`, "info");
 		const perception = (m as { capabilities?: { perception?: PerceptionCaps } }).capabilities?.perception;
-		return [...TOOLS, ...(dual ? ["halt_arm"] : []), ...detectionActive(pi, perception)];
+		return [...TOOLS, ...(dual ? ["halt_arm"] : []), ...detectionActive(pi, perception), ...pointActive(pi)];
 	}
 }

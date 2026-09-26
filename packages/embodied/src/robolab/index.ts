@@ -34,7 +34,8 @@ import { recipeFlash } from "../flash/recipe.ts";
 import { encodePng } from "../png.ts";
 import { detectionActive, detectionArgs, detectionTools, registerDetectionFlags } from "../primitives/detections.ts";
 import { mountGraspTool } from "../primitives/grasp.ts";
-import { attach, defineRobot, SERVICES } from "../robot.ts";
+import { pointActive, pointTool, registerPointFlags } from "../primitives/pointing.ts";
+import { attach, defineRobot, rgbOf, SERVICES } from "../robot.ts";
 import type { NdArray, RpcClient } from "../rpc.ts";
 import type { MoveUnit, Vec3 } from "../units/index.ts";
 
@@ -134,6 +135,8 @@ export default function robolab(pi: ExtensionAPI) {
 	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
 	// --detections / --unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
 	registerDetectionFlags(pi, { sam3: true });
+	// --point: Molmo's point over --molmo (../primitives/pointing.ts).
+	registerPointFlags(pi);
 	pi.registerFlag("services", {
 		type: "string",
 		default: process.env.PI_EMBODIED_SERVICES ?? SERVICES,
@@ -406,6 +409,19 @@ export default function robolab(pi: ExtensionAPI) {
 		},
 	);
 
+	// Molmo pointing on the current images (active with --point).
+	mountGraspTool(
+		robot.tool,
+		pointTool(pi, {
+			cameras: ["agentview", "wrist"],
+			frame: async (c) => {
+				const a = c === "wrist" ? obs.wrist : obs.agentview;
+				return rgbOf(a);
+			},
+			signal: () => robot.signal,
+		}),
+	);
+
 	// SAM3 masks with ids and UniDepth over the env server's perception (active with --detections / --unidepth).
 	for (const d of detectionTools(pi, {
 		call: (method, kwargs, timeoutMs) =>
@@ -453,6 +469,7 @@ export default function robolab(pi: ExtensionAPI) {
 		return [
 			...["view_env_state", "move_delta", "rotate_delta", "finish"],
 			...detectionActive(pi, meta.capabilities?.perception),
+			...pointActive(pi),
 		];
 	}
 }

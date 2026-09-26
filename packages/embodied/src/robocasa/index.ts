@@ -18,6 +18,7 @@ import { join } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
+import { recipeFlash } from "../flash/recipe.ts";
 import type { FlywheelObs, FlywheelSpec } from "../flywheel.ts";
 import { encodePng } from "../png.ts";
 import { attach, defineRobot, median, round, SERVICES } from "../robot.ts";
@@ -238,6 +239,45 @@ export default function robocasa(pi: ExtensionAPI) {
 		// Observations carry the agentview, navview and wrist images.
 		vdm: { views: 3, wrist: 2 },
 		flywheel: { spec: FLYWHEEL, select: () => `${cell().split}/${cell().task}` },
+		flash: recipeFlash(pi, {
+			// This cell's program, else the task's seed-0 reference (local and HF memory name it differently).
+			names: () => [tag(), `${cell().task}_${cell().split}_s0`, `${cell().task}_s0`],
+			memory: () => robot.mem?.render("{{memory_dir}}") ?? "",
+			observe: "view_env_state",
+			targets: { move_to: "xyz", scripted_grasp: "xyz", navigate_to: "xy" },
+			// Molmo points in the view's agentview (the --hi-res one when it is 1024 wide).
+			backProject: async (fr, [col, row]) => {
+				const image = fr.latest().images[0] ?? "";
+				const high = Buffer.from(image.slice(0, 44), "base64").readUInt32BE(16) > SIZE;
+				const [r] = await fr.act([
+					{
+						name: "back_project_batch",
+						arguments: {
+							pixels: [[Math.round(row), Math.round(col)]],
+							camera: "agentview",
+							resolution: high ? "high" : "low",
+						},
+					},
+				]);
+				const xyz = (r.json.summary as { median_xyz?: number[] } | undefined)?.median_xyz;
+				return r.error === undefined && Array.isArray(xyz) ? xyz : undefined;
+			},
+			picks: {
+				isPick: (name) => name === "scripted_grasp",
+				// The fingers stopped apart: something is between them.
+				succeeded: (reply) => {
+					const q = ((reply.json.result as Record<string, unknown> | undefined)?.gripper_qpos as number[]) ?? [];
+					return (reply.json.result as { ok?: boolean } | undefined)?.ok === true && Math.abs(q[0] ?? 0) > 0.004;
+				},
+				attempts: 3,
+				approach: ["move_to", "move_delta", "set_gripper", "rotate_pitch"],
+				keep: 6,
+				boundary: ["release", "rldx_arm", "rldx_skill"],
+				release: "release",
+			},
+			over: (latest) => latest.json.success === true,
+			solved: (latest) => latest.json.success === true,
+		}),
 		units: {
 			// The base frame: MV_* keep their look in the base-mounted agentview wherever the base stands.
 			vectors: {

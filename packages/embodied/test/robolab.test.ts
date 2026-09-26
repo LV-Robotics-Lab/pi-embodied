@@ -16,6 +16,7 @@ function stubPi(values: Record<string, unknown> = {}) {
 		getFlag: (name: string) => flags[name],
 		registerTool: (t: any) => tools.set(t.name, t),
 		registerCommand: () => {},
+		registerProvider: () => {},
 		setActiveTools: () => {},
 		getActiveTools: () => [],
 		appendEntry: () => {},

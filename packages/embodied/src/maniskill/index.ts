@@ -29,6 +29,7 @@ import { dirname, join } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { recipeFlash } from "../flash/recipe.ts";
 import { encodePng } from "../png.ts";
 import { attach, defineRobot, SERVICES } from "../robot.ts";
 import { NdArray, type RpcClient } from "../rpc.ts";
@@ -278,6 +279,16 @@ export default function maniskill(pi: ExtensionAPI) {
 			primitives: ["move_delta", "act"],
 			published: false,
 		},
+		// Flash replays the solved exploration's recipe as recorded: its moves are relative and the robot has no
+		// back-projection to re-anchor them, so it reproduces the recorded seed (--model flash/replay).
+		flash: recipeFlash(pi, {
+			names: () => [tag(robot.task.seed), tag("0")],
+			memory: () => robot.mem?.render("{{memory_dir}}") ?? "",
+			observe: "view_env_state",
+			targets: {},
+			over: (latest) => latest.json.success === true,
+			solved: (latest) => latest.json.success === true,
+		}),
 		explore: {
 			// The exploration `reset` tool is not a robot.tool, so robot.signal is unset here; use its own signal.
 			reset: async (result, _ctx, signal) => {

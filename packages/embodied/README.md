@@ -64,11 +64,11 @@ with `--env` / `--vla` / `--sam3`. Real-arm robots (Franka, dual Franka) stay on
 
 | Robot | Extension | Success signal | Shared modules |
 | --- | --- | --- | --- |
-| LIBERO / LIBERO-PRO | `src/libero` | LIBERO `terminated` | all below, plus flywheel, operator, Flash |
-| RoboCasa | `src/robocasa` | `env._check_success()` | all below |
-| RoboTwin | `src/robotwin` | `eval_success` | all below |
-| ManiSkill | `src/maniskill` | ManiSkill `success` | all below |
-| RoboLab | `src/robolab` | RoboLab's task predicate | all below |
+| LIBERO / LIBERO-PRO | `src/libero` | LIBERO `terminated` | all below, plus flywheel, operator, Flash (Molmo re-anchoring) |
+| RoboCasa | `src/robocasa` | `env._check_success()` | all below, plus flywheel, recipe Flash (Molmo re-anchoring) |
+| RoboTwin | `src/robotwin` | `eval_success` | all below, plus flywheel, recipe Flash (Molmo re-anchoring) |
+| ManiSkill | `src/maniskill` | ManiSkill `success` | all below, plus recipe Flash (recorded seed only) |
+| RoboLab | `src/robolab` | RoboLab's task predicate | all below, plus recipe Flash (recorded seed only) |
 | Franka (real) | `src/franka` | operator verdict (`--operator`) | all below but `--privileged`; explore resets through the operator |
 | Dual Franka (real) | `src/dual_franka` | operator verdict (required) | all below but `--privileged`; explore resets through the operator |
 | Piper / dual Piper (real) | `src/piper` | operator verdict (required) | all below but `--privileged`; explore resets through the operator |

@@ -18,6 +18,7 @@ import { join } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
+import { recipeFlash } from "../flash/recipe.ts";
 import type { FlywheelObs, FlywheelSpec } from "../flywheel.ts";
 import { encodePng } from "../png.ts";
 import { attach, defineRobot, median, SERVICES, u8 } from "../robot.ts";
@@ -438,6 +439,28 @@ export default function robotwin(pi: ExtensionAPI) {
 		// Observations carry the head, left wrist and right wrist images.
 		vdm: { views: VIEWS.length, wrist: [1, 2] },
 		flywheel: { spec: FLYWHEEL, select: () => `${cell().config}/${cell().task}` },
+		flash: recipeFlash(pi, {
+			// This cell's program, else the task's seed-0 reference (local and HF memory name it differently).
+			names: () => [tag(cell().seed), tag("0"), `${cell().task}_s0`],
+			memory: () => robot.mem?.render("{{memory_dir}}") ?? "",
+			observe: "view_env_state",
+			targets: { move_to: "xyz" },
+			// Molmo points in the head view; the same step's metric depth gives the world point.
+			backProject: async (fr, [col, row]) => {
+				const [r] = await fr.act([
+					{ name: "sample_world_xyz", arguments: { view: "head", pixels: [[Math.round(row), Math.round(col)]] } },
+				]);
+				const xyz = (r.json.samples as { xyz?: number[] }[] | undefined)?.[0]?.xyz;
+				return r.error === undefined && Array.isArray(xyz) ? xyz : undefined;
+			},
+			over: (latest) => latest.json.eval_success === true || latest.json.budget_exhausted === true,
+			solved: (latest) => latest.json.eval_success === true,
+			// Motion tools answer "Episode is terminal (eval_success=.., budget_exhausted=..)" once it is over.
+			textResult: (text) =>
+				/^Episode is terminal/.test(text)
+					? { eval_success: /eval_success=true/.test(text), budget_exhausted: /budget_exhausted=true/.test(text) }
+					: undefined,
+		}),
 		units: {
 			// RoboTwin's world frame (the robot faces +y, right arm on +x): the head view's directions.
 			vectors: {

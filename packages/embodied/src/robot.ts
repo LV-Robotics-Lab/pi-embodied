@@ -15,7 +15,7 @@ import { validateToolArguments } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
 import { robotCheck } from "./check.ts";
-import { CLOSED_LOOP, closedLoop, NON_MOTION, RESETS } from "./closed-loop.ts";
+import { CLOSED_LOOP, closedLoop, NON_MOTION, OBSERVE, RESETS } from "./closed-loop.ts";
 import { type CodeSpec, code } from "./code/index.ts";
 import { CONTEXT_VERSION_ENTRY, gitCommit, sha256, usedTemplates } from "./context-version.ts";
 import { ensemble } from "./ensemble.ts";
@@ -603,6 +603,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	// --approval (./operator.ts): its gate joins the tool_call chain last, at the first session start that needs it.
 	const ap = approval(pi, {
 		moves,
+		observes: (t) => (OBSERVE as readonly string[]).includes(t),
 		task: () =>
 			spec.status?.().language ||
 			Object.entries(task)

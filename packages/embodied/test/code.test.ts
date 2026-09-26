@@ -271,7 +271,8 @@ test("--code=both adds run_code to the robot's tools and appends the code sectio
 	assert.deepEqual(off.active(), ["move_to", "segment"]);
 	assert.equal(off.tools.has("run_code"), false, "off: no run_code registered");
 	assert.equal(off.env.calls.length, 0, "off: the env is never asked for code.api");
-	assert.equal((await off.emit("before_agent_start")).systemPrompt, "ROBOT PROMPT");
+	// Off, the prompt is the robot's, closed by the shared closed-loop rules (../src/closed-loop.md).
+	assert.match((await off.emit("before_agent_start")).systemPrompt, /^ROBOT PROMPT\n\n## Closed-loop rules\n/);
 });
 
 test("run_code passes the code, the clamped timeout and the limits, and reports the run before the observation", async () => {

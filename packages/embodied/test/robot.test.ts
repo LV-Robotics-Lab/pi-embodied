@@ -208,20 +208,29 @@ test("finish ends the episode, terminates its batch, and yields exactly one resu
 	await f.emit("agent_end");
 	await f.emit("session_shutdown");
 	const results = f.entries.filter((e) => e.type === RESULT_ENTRY).map((e) => e.data);
-	assert.deepEqual(results, [
+	assert.deepEqual(f.stderr, [`[toy] ${JSON.stringify(results[0])}`]);
+	// The context version (../src/context-version.ts) is checked in runtime-mech.test.ts.
+	assert.equal(typeof results[0]?.context_version?.git_commit, "string");
+	assert.deepEqual(
+		results.map(({ context_version: _, ...r }) => r),
+		[
 		{
 			robot: "toy",
 			steps: 3,
 			claimed: "success",
 			summary: "ok",
+			tool_calls: 0,
+			planner_tokens: { input: 0, output: 0 },
+			max_tool_calls: 0,
+			max_tokens: 0,
 			turns: 0,
 			planner_budget_exhausted: null,
 			cost_usd: 0,
 			planner_error: null,
 			env_error: false,
-		},
-	]);
-	assert.deepEqual(f.stderr, [`[toy] ${JSON.stringify(results[0])}`]);
+			},
+		],
+	);
 	assert.equal(f.events.at(-1)?.data.claimed, "success");
 	assert.equal(f.events.at(-1)?.data.step, 3);
 });

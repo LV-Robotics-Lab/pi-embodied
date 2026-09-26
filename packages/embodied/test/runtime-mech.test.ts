@@ -261,10 +261,12 @@ test("--approval reviewed: a rejection blocks the motion with the reviewer's rea
 	);
 	t.after(f.restore);
 	toy(f);
-	f.branch.push({
+	const shot = (toolName: string, data: string) => ({
 		type: "message",
-		message: { role: "toolResult", content: [{ type: "image", data: "main", mimeType: "image/png" }] },
+		message: { role: "toolResult", toolName, content: [{ type: "image", data, mimeType: "image/png" }] },
 	});
+	// The latest camera view, not the later segmentation overlay.
+	f.branch.push(shot("view_env_state", "main"), shot("segment", "overlay"));
 	await f.emit("session_start");
 	const blocked = await call(f, "move", { xyz: [0.1, 0, 0.2] });
 	assert.equal(blocked?.block, true);

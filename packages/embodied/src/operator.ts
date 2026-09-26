@@ -361,6 +361,8 @@ export function parseReview(raw: string): { decision: "approve" | "reject" | "ab
 type ApprovalRobot = {
 	/** Whether a tool moves the robot (../closed-loop.ts NON_MOTION). */
 	moves: (tool: string) => boolean;
+	/** Whether a tool fetches a fresh observation (../closed-loop.ts OBSERVE). */
+	observes: (tool: string) => boolean;
 	/** The task text the reviewer judges against. */
 	task: () => string;
 };
@@ -418,16 +420,22 @@ export function approval(pi: ExtensionAPI, robot: ApprovalRobot) {
 		}
 	});
 
-	/** The latest tool result's camera images: what the planner last saw. */
+	/**
+	 * The camera views the planner last saw: the images of the latest observation or motion result
+	 * (a segmentation overlay is not the scene), else of the latest result with any.
+	 */
 	function latestImages(ctx: ExtensionContext): ImageContent[] {
+		let any: ImageContent[] = [];
 		const branch = ctx.sessionManager.getBranch();
 		for (let i = branch.length - 1; i >= 0; i--) {
 			const e = branch[i];
 			if (e.type !== "message" || e.message.role !== "toolResult") continue;
 			const images = e.message.content.filter((c): c is ImageContent => c.type === "image");
-			if (images.length) return images.slice(0, 4);
+			if (!images.length) continue;
+			if (robot.observes(e.message.toolName) || robot.moves(e.message.toolName)) return images.slice(0, 4);
+			if (!any.length) any = images.slice(0, 4);
 		}
-		return [];
+		return any;
 	}
 
 	async function decide(event: { toolName: string; input: Record<string, unknown> }, ctx: ExtensionContext) {

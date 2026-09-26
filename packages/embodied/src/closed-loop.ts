@@ -9,8 +9,10 @@
  * When a motion tool times out or returns an ambiguous result (`unknownOutcome`), the next motion
  * call is refused until an observation tool (`OBSERVE`: view_env_state, RoboTwin's render) has run
  * successfully. Without an active observation tool (pure units or code mode) there is nothing to
- * re-observe with and the gate stays open. Each unknown outcome, refusal and re-observation is a
- * `closed_loop` session entry; the robot result counts them (`unknown_outcomes`, `reobserve_refusals`).
+ * re-observe with: the gate stays open, and its hooks are only registered at the first session start
+ * that has one. Each unknown outcome, refusal and re-observation is a
+ * `closed_loop` session entry; the robot result counts them (`unknown_outcomes`, `reobserve_refusals`)
+ * once the gate is mounted.
  *
  * Which tools move the robot is shared with --approval (../operator.ts): every tool the robot
  * registered with its `tool` (the units' and code mode's included) plus the scene resets, except
@@ -90,11 +92,18 @@ export function closedLoop(pi: ExtensionAPI, moves: (tool: string) => boolean) {
 	let pending: { tool: string; why: string } | undefined;
 	let unknown = 0;
 	let refused = 0;
+	let hooked = false;
+	const observers = () => pi.getActiveTools().filter((t) => (OBSERVE as readonly string[]).includes(t));
+	// Mounted after the robot's start, so the active tools are known here.
 	pi.on("session_start", () => {
 		pending = undefined;
 		unknown = refused = 0;
+		if (hooked || !observers().length) return;
+		hooked = true;
+		pi.on("tool_result", watch);
+		pi.on("tool_call", gate);
 	});
-	pi.on("tool_result", (event) => {
+	function watch(event: Outcome & { toolName: string }) {
 		if ((OBSERVE as readonly string[]).includes(event.toolName)) {
 			if (event.isError || !pending) return undefined;
 			pi.appendEntry(CLOSED_LOOP_ENTRY, { kind: "reobserved", tool: event.toolName, after: pending.tool });
@@ -108,20 +117,20 @@ export function closedLoop(pi: ExtensionAPI, moves: (tool: string) => boolean) {
 		unknown++;
 		pi.appendEntry(CLOSED_LOOP_ENTRY, { kind: "unknown_outcome", tool: event.toolName, why });
 		return undefined;
-	});
-	pi.on("tool_call", (event) => {
+	}
+	function gate(event: { toolName: string }) {
 		if (!pending || !moves(event.toolName)) return undefined;
-		const observers = pi.getActiveTools().filter((t) => (OBSERVE as readonly string[]).includes(t));
-		if (!observers.length) return undefined;
+		const active = observers();
+		if (!active.length) return undefined;
 		refused++;
 		pi.appendEntry(CLOSED_LOOP_ENTRY, { kind: "refused", tool: event.toolName, after: pending.tool });
 		return {
 			block: true,
-			reason: `${event.toolName} refused: the last motion (${pending.tool}) has an unknown outcome (${pending.why}). Re-observe with ${observers.join(" or ")} before issuing another motion.`,
+			reason: `${event.toolName} refused: the last motion (${pending.tool}) has an unknown outcome (${pending.why}). Re-observe with ${active.join(" or ")} before issuing another motion.`,
 		};
-	});
+	}
 	return {
-		/** The robot result's closed-loop counts. */
-		result: () => ({ unknown_outcomes: unknown, reobserve_refusals: refused }),
+		/** The robot result's closed-loop counts (none while the gate was never mounted). */
+		result: () => (hooked ? { unknown_outcomes: unknown, reobserve_refusals: refused } : {}),
 	};
 }

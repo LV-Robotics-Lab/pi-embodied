@@ -501,6 +501,12 @@ function createHub(server: Server, url: string, page: string, liveFps: number) {
 			touch();
 		},
 		agentEnd() {
+			// The run is over and pi holds no queued message (an Interrupt, or the end of the run, took them
+			// or dropped them): a message still shown as queued can no longer be withdrawn or delivered.
+			if (ctx && !ctx.hasPendingMessages() && queued.some((q) => q.status === "queued")) {
+				for (const q of queued) if (q.status === "queued") q.status = "dropped";
+				sendQueued();
+			}
 			const last = ctx?.sessionManager.getBranch().at(-1);
 			if (last?.type === "custom" && last.customType === RESULT_ENTRY)
 				add({ kind: "meta", text: `${RESULT_ENTRY} ${JSON.stringify(last.data)}` });

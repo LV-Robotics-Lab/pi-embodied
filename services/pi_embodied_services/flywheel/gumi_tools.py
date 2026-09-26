@@ -36,6 +36,7 @@ import shutil
 import statistics
 import subprocess
 import sys
+import tempfile
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -204,16 +205,27 @@ def write_mp4(path: Path, frames: list[np.ndarray], fps: float) -> None:
         "yuv420p",
         str(path),
     ]
-    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
-    assert proc.stdin is not None
-    for f in frames:
-        if f.shape[:2] != (h, w):
-            f = np.asarray(Image.fromarray(f).resize((w, h), Image.Resampling.BILINEAR))
-        proc.stdin.write(np.ascontiguousarray(f, dtype=np.uint8).tobytes())
-    proc.stdin.close()
-    err = proc.stderr.read().decode() if proc.stderr else ""
-    if proc.wait() != 0:
-        raise SystemExit(f"ffmpeg failed: {err.strip()}")
+    # stderr goes to a file: a pipe nobody reads while frames are written could fill and hang ffmpeg.
+    with tempfile.TemporaryFile() as log:
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=log)
+        assert proc.stdin is not None
+        try:
+            for f in frames:
+                if f.shape[:2] != (h, w):
+                    f = np.asarray(
+                        Image.fromarray(f).resize((w, h), Image.Resampling.BILINEAR)
+                    )
+                proc.stdin.write(np.ascontiguousarray(f, dtype=np.uint8).tobytes())
+            proc.stdin.close()
+        except (BrokenPipeError, OSError):
+            pass  # ffmpeg exited early: its exit code and log say why
+        code = proc.wait()
+        log.seek(0)
+        err = log.read().decode(errors="replace").strip()
+    if code != 0:
+        raise SystemExit(
+            f"ffmpeg exited with {code} writing {path}: {err or 'no output'}"
+        )
 
 
 def rebuild_video(argv: list[str]) -> int:

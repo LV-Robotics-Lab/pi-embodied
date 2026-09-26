@@ -482,3 +482,15 @@ def test_capture_write_shows_old_and_new_asks_and_keeps_a_backup(
     assert write["written"] is True and write["old"] is None and write["new"] == 0.1
     assert Path(write["backup"]).read_text() == before
     assert yaml.safe_load(cfg.read_text())["calibration"]["z_floor_m"] == 0.1
+
+
+def test_rebuild_video_reports_an_ffmpeg_that_exits_early(tmp_path, monkeypatch):
+    fake = tmp_path / "ffmpeg"
+    fake.write_text("#!/bin/sh\necho 'Unknown encoder libx264' >&2\nexit 3\n")
+    fake.chmod(0o755)
+    monkeypatch.setattr(gumi_tools, "ffmpeg_exe", lambda: str(fake))
+    frames = [np.zeros((480, 640, 3), np.uint8)] * 20
+    with pytest.raises(
+        SystemExit, match="ffmpeg exited with 3 .*Unknown encoder libx264"
+    ):
+        gumi_tools.write_mp4(tmp_path / "out.mp4", frames, 5.0)

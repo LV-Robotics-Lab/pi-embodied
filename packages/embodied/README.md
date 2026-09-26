@@ -151,7 +151,16 @@ Shared modules:
   `run_code` to the robot's tools. Mutually exclusive with `--units`; `--stateless` applies. Real
   robots need `--code-real` and `--operator`, and every program is confirmed by the operator.
   LIBERO today (services/PROTOCOL.md, code mode).
-- `src/dashboard/`: live web dashboard (`--dashboard`) for any robot.
+- `src/dashboard/`: live web dashboard (`--dashboard`) for any robot. Operator tools: withdraw a
+  message still in pi's queue (`POST /message/withdraw`), call one robot tool by hand while the agent
+  is idle or taken over (`GET /primitives`, `POST /primitive`; the robot's gates apply, one robot call
+  at a time, recorded in the session), a real 1-token model check (`POST /llm-check`), and downloads
+  (`GET /download/session?format=jsonl|html`, pi's `/export`; `GET /downloads`,
+  `GET /download/video/<session>/<file>.mp4`). `/gumi-replay <run>` replays a GUMI recording as operator steps (asks first).
+- Operator CLIs in `services/` (hardware, unverified on a rig): `robots.dual_franka.manual_call`
+  (one facade call, dry-run by default), `robots.franka.capture` (`z-floor`, `pose`),
+  `robots.piper.capture_z_floor`, `robots/piper/ros_launch.sh` (`can`, `arms`, `cameras`), and
+  `flywheel.gumi_tools` (`rebuild-video`, `step-timing` of GUMI runs).
 - `src/libero/flash.ts`: Flash replay without an LLM (`--model flash/replay`).
 
 Every robot result carries `robot`, `claimed`, `summary`, `turns`, `planner_budget_exhausted`,

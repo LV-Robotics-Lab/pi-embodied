@@ -9,13 +9,15 @@
 #   ros_launch.sh can [--list]            both CAN buses (can_left, can_right @ 1 Mbaud), matched by the
 #                                         USB-CAN adapter's stable serial: PIPER_LEFT_CAN_SERIAL /
 #                                         PIPER_RIGHT_CAN_SERIAL (`can --list` shows them). Needs sudo.
-#   ros_launch.sh arms [mode] [enable]    both arm nodes (piper start_ms_piper.launch; mode 1 = software
-#                                         control, the mode ros_io.py commands in). Enabling CLOSES both
-#                                         grippers to width 0: clear all fingers first.
+#   ros_launch.sh arms [mode] [--enable]  both arm nodes (piper start_ms_piper.launch; mode 1 = software
+#                                         control, the mode ros_io.py commands in). The arms stay disabled
+#                                         unless --enable is given: enabling CLOSES both grippers to width 0,
+#                                         so clear all fingers first.
 #   ros_launch.sh cameras                 the Orbbec cameras (astra_camera multi_camera.launch:
 #                                         /camera_f front, /camera_l /camera_r wrists)
 # Run each in its own terminal, in that order; they share one roscore (started detached when none
-# runs). Ctrl+C stops that launcher's nodes. Paths: COBOT_MAGIC_DIR (default ~/cobot_magic),
+# runs). Ctrl+C stops that launcher's nodes; a node of the same kind already running is reported,
+# never killed (stop it yourself: it may be another operator's). Paths: COBOT_MAGIC_DIR (default ~/cobot_magic),
 # CONDA_ENV (default aloha, the env with piper_sdk, for `arms`).
 set -o pipefail
 
@@ -39,8 +41,9 @@ source_file() {
 
 ensure_roscore() {
 	timeout 3 rosnode list >/dev/null 2>&1 && return 0
-	info "starting a detached roscore (log /tmp/piper_roscore.log; pkill -f roscore stops it)"
+	info "starting a detached roscore (log /tmp/piper_roscore.log; kill \$(cat /tmp/piper_roscore.pid) stops it)"
 	setsid nohup roscore >/tmp/piper_roscore.log 2>&1 </dev/null &
+	echo $! >/tmp/piper_roscore.pid
 	for _ in $(seq 1 30); do
 		timeout 3 rosnode list >/dev/null 2>&1 && return 0
 		sleep 1
@@ -48,17 +51,11 @@ ensure_roscore() {
 	die "roscore did not come up; see /tmp/piper_roscore.log"
 }
 
-# Stop processes matching a pattern: SIGINT, then SIGTERM, then SIGKILL. Never roscore.
-kill_pattern() {
-	pgrep -f "$1" >/dev/null 2>&1 || return 0
-	pkill -INT -f "$1" 2>/dev/null || true
-	for _ in $(seq 1 10); do
-		pgrep -f "$1" >/dev/null 2>&1 || return 0
-		sleep 0.3
-	done
-	pkill -TERM -f "$1" 2>/dev/null || true
-	sleep 1
-	pkill -KILL -f "$1" 2>/dev/null || true
+# Refuse to start a second copy of a node: `rosnode list` names what is registered with the master.
+refuse_running() {
+	local running
+	running="$(timeout 3 rosnode list 2>/dev/null | grep -E "$1" || true)"
+	[ -z "$running" ] || die "already running: $running (stop it first, e.g. rosnode kill <name>)"
 }
 
 # Wait (in the background) until every topic delivers one message.
@@ -144,28 +141,34 @@ cmd_can() {
 }
 
 cmd_arms() {
-	local mode="${1:-1}" enable="${2:-true}" pattern="piper_start_ms_node" watcher=""
+	local mode="${1:-1}" enable=false watcher=""
+	[ "${2:-}" = "--enable" ] && enable=true
 	source_file "$HOME/miniconda3/etc/profile.d/conda.sh" "conda"
 	conda activate "${CONDA_ENV:-aloha}" || die "could not activate conda env ${CONDA_ENV:-aloha}"
 	source_file /opt/ros/noetic/setup.bash "ROS Noetic"
 	source_file "$PIPER_WS" "the Piper workspace"
 	python3 -c "import piper_sdk" 2>/dev/null || die "piper_sdk is not importable in this env"
 	ensure_roscore
-	kill_pattern "$pattern"
-	trap '[ -n "$watcher" ] && kill "$watcher" 2>/dev/null; kill_pattern "$pattern"' INT TERM EXIT
-	info "launching both arms, mode=$mode auto_enable=$enable -- enabling CLOSES both grippers"
+	refuse_running "piper"
+	# roslaunch runs in the foreground: Ctrl+C reaches it and it stops its own nodes.
+	trap '[ -n "$watcher" ] && kill "$watcher" 2>/dev/null' INT TERM EXIT
+	if [ "$enable" = true ]; then
+		info "launching both arms, mode=$mode, ENABLED -- this CLOSES both grippers"
+	else
+		info "launching both arms, mode=$mode, not enabled (ros_launch.sh arms $mode --enable to enable)"
+	fi
 	watch_ready 60 "left + right joint states streaming" /puppet/joint_left /puppet/joint_right &
 	watcher=$!
 	roslaunch piper start_ms_piper.launch mode:="$mode" auto_enable:="$enable"
 }
 
 cmd_cameras() {
-	local pattern="astra_camera" watcher=""
+	local watcher=""
 	source_file /opt/ros/noetic/setup.bash "ROS Noetic"
 	source_file "$CAMERA_WS" "the camera workspace"
 	ensure_roscore
-	kill_pattern "$pattern"
-	trap '[ -n "$watcher" ] && kill "$watcher" 2>/dev/null; kill_pattern "$pattern"' INT TERM EXIT
+	refuse_running "camera_[flr]"
+	trap '[ -n "$watcher" ] && kill "$watcher" 2>/dev/null' INT TERM EXIT
 	watch_ready 90 "front + wrist cameras publishing" \
 		/camera_f/color/image_raw /camera_l/color/image_raw /camera_r/color/image_raw &
 	watcher=$!
@@ -179,7 +182,7 @@ can | arms | cameras)
 	"cmd_$sub" "$@"
 	;;
 *)
-	sed -n '8,19p' "$0"
+	sed -n '8,21p' "$0"
 	exit 2
 	;;
 esac

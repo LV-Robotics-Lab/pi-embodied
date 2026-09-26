@@ -79,6 +79,7 @@ function rig(o: { idle?: boolean } = {}) {
 		ui: { notify: (m: string) => notes.push(m) },
 		sessionManager: { getBranch: () => branch, getSessionId: () => "sess-1", getSessionFile: () => undefined },
 		isIdle: () => idle,
+		hasPendingMessages: () => queue.length > 0,
 		signal: undefined,
 		abort: () => {},
 		shutdown: () => {},
@@ -238,6 +239,15 @@ test("a message sent while the agent runs goes to pi's queue and can be withdraw
 		assert.equal(late.status, 409);
 		assert.match(late.json.error, /already delivered/);
 		assert.equal((await post(`${url}message/withdraw`, { id: 99 })).status, 404);
+
+		// After an Interrupt pi holds nothing any more: at the run's end the list says so.
+		const d = await post(`${url}message`, { text: "after the stop" });
+		await r.emit("agent_end");
+		assert.equal((await snapshot(url)).queued.at(-1).status, "queued");
+		r.queue.splice(0);
+		await r.emit("agent_end");
+		assert.equal((await snapshot(url)).queued.at(-1).status, "dropped");
+		assert.match((await post(`${url}message/withdraw`, { id: d.json.id })).json.error, /already dropped/);
 
 		// Idle: a plain prompt, nothing to withdraw.
 		r.setIdle(true);

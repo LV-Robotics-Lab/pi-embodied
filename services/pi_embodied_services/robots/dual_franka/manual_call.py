@@ -31,11 +31,15 @@ Connects to a running dual-Franka env server (``env_server.py``, e.g. the one pi
 
 Motion calls (move_delta, rotate_delta, set_gripper, recover_joint_posture, reset) print the
 validated request and send nothing unless ``--execute`` is given. The same limits as the dual_franka
-pi tools apply before anything is sent: a move's norm is at most ``--max-move`` (m, default 0.1), a
-rotation's at most ``--max-rotate`` (rad, default 0.5), and a move may not end outside the
+pi tools apply before anything is sent: a move's norm is at most ``--max-move`` (m, default and
+upper bound 0.1), a rotation's at most ``--max-rotate`` (rad, default and upper bound 0.5; both
+flags can only tighten), and a move may not end outside the
 ``--workspace-xy`` box (right_base frame) or below ``--z-floor`` unless it moves back towards it
 (the arm's current ``tcp_pose`` is read with ``get_robot_state``). ``--z-floor`` is required for
-move_delta, as it is for the pi robot. ``reset`` is manual-only (no pi tool exposes a full reset).
+move_delta, as it is for the pi robot. The env server checks each arm's ee_pose_limit box itself
+(its z minimum is the floor), whoever calls. Ctrl-C during a call sends the server's lock-free
+``stop``, which interrupts the motion between servo steps. ``reset`` is manual-only (no pi tool
+exposes a full reset).
 """
 
 from __future__ import annotations
@@ -80,6 +84,24 @@ def workspace_limits(xy: str, z_floor: str | None) -> tuple[list[float] | None, 
             f'--z-floor must be the lowest safe TCP z in m (e.g. 0.14), got "{z_floor or ""}"'
         )
     return box, floor
+
+
+MAX_MOVE_M = 0.1
+MAX_ROTATE_RAD = 0.5
+
+
+def _bounded(cap: float, unit: str):
+    """An argparse type: a positive number no larger than `cap`."""
+
+    def parse(text: str) -> float:
+        value = float(text)
+        if not 0 < value <= cap:
+            raise argparse.ArgumentTypeError(
+                f"must be in (0, {cap}] {unit}, got {text}"
+            )
+        return value
+
+    return parse
 
 
 def check_move(delta: list[float], cap: float) -> None:
@@ -165,14 +187,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument(
         "--max-move",
-        type=float,
-        default=0.1,
+        type=_bounded(MAX_MOVE_M, "m"),
+        default=MAX_MOVE_M,
         help="largest move_delta norm per call, m",
     )
     p.add_argument(
         "--max-rotate",
-        type=float,
-        default=0.5,
+        type=_bounded(MAX_ROTATE_RAD, "rad"),
+        default=MAX_ROTATE_RAD,
         help="largest rotate_delta norm per call, rad",
     )
     p.add_argument(
@@ -273,7 +295,26 @@ def main(argv: list[str] | None = None, client=None) -> int:
         k: np.asarray(v, dtype=np.float32) if k.startswith("delta_") else v
         for k, v in kwargs.items()
     }
-    result = call(method, sent)
+    try:
+        result = call(method, sent)
+    except KeyboardInterrupt:
+        # Ctrl-C: the server's lock-free `stop` interrupts the running motion between servo steps.
+        try:
+            client.call("stop", timeout_s=5.0)
+            stopped = True
+        except Exception:  # noqa: BLE001 - report, the operator must stop the arm by hand
+            stopped = False
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "method": f"env.{method}",
+                    "interrupted": True,
+                    "stop_sent": stopped,
+                }
+            )
+        )
+        return 130
     print(
         json.dumps(
             {

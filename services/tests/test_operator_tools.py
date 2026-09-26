@@ -340,3 +340,102 @@ def test_step_timing_per_source(tmp_path, capsys):
     assert "human  period ms  mean    1500" in text
     assert "agent  period ms  mean    2500" in text
     assert gumi_tools.main(["step-timing", str(tmp_path / "none")]) == 1
+
+
+def test_manual_call_limits_have_upper_bounds(capsys):
+    client = FakeClient({"env.get_robot_state": dual_state()})
+    for flag, value in (
+        ("--max-move", "0.5"),
+        ("--max-rotate", "1.0"),
+        ("--max-move", "0"),
+    ):
+        with pytest.raises(SystemExit):
+            manual_call.main(["--env", "u", flag, value, "get_env_meta"], client)
+    assert "must be in (0, " in capsys.readouterr().err
+    assert (
+        manual_call.main(
+            [
+                "--env",
+                "u",
+                "--max-move",
+                "0.05",
+                "--z-floor",
+                "0.1",
+                "move_delta",
+                "--arm",
+                "right",
+                "--delta",
+                "0.06",
+                "0",
+                "0",
+            ],
+            client,
+        )
+        == 2
+    )
+    assert "limit is 0.05 m" in out_json(capsys)["refused"]
+
+
+def test_manual_call_ctrl_c_sends_the_servers_stop(capsys):
+    def interrupted(_kwargs):
+        raise KeyboardInterrupt
+
+    client = FakeClient(
+        {
+            "env.get_robot_state": dual_state(),
+            "env.move_delta": interrupted,
+            "stop": {"stopped": True},
+        }
+    )
+    argv = [
+        "--env",
+        "u",
+        "--execute",
+        "--z-floor",
+        "0.14",
+        "move_delta",
+        "--arm",
+        "right",
+        "--delta",
+        "0",
+        "0",
+        "0.02",
+    ]
+    assert manual_call.main(argv, client) == 130
+    out = out_json(capsys)
+    assert out["interrupted"] is True and out["stop_sent"] is True
+    assert [m for m, _ in client.calls][-2:] == ["env.move_delta", "stop"]
+
+
+def test_dual_franka_server_refuses_moves_outside_each_arms_box():
+    from pi_embodied_services.robots.dual_franka import env_server
+
+    lo, hi = [0.3, -0.8, 0.1], [0.8, 0.8, 0.7]
+    assert (
+        env_server.workspace_refusal([0.5, 0, 0.2], [0.5, 0, 0.12], lo, hi, "left")
+        is None
+    )
+    assert "z 0.1 m is the floor" in env_server.workspace_refusal(
+        [0.5, 0, 0.2], [0.5, 0, 0.05], lo, hi, "left"
+    )
+    assert "outside" in env_server.workspace_refusal(
+        [0.5, 0, 0.2], [0.9, 0, 0.2], lo, hi, "right"
+    )
+    # From outside, a move back towards the box is allowed; one further out is not.
+    assert (
+        env_server.workspace_refusal([0.5, 0, 0.05], [0.5, 0, 0.08], lo, hi, "left")
+        is None
+    )
+    assert (
+        env_server.workspace_refusal([0.5, 0, 0.05], [0.5, 0, 0.04], lo, hi, "left")
+        is not None
+    )
+    per_arm = {
+        "ee_pose_limit_min": [lo, [0.2, -0.5, 0.2]],
+        "ee_pose_limit_max": [hi, [0.6, 0.5, 0.6]],
+    }
+    assert env_server._arm_limits(per_arm, 1) == ([0.2, -0.5, 0.2], [0.6, 0.5, 0.6])
+    assert env_server._arm_limits(
+        {"ee_pose_limit_min": lo, "ee_pose_limit_max": hi}, 1
+    ) == (lo, hi)
+    assert env_server._arm_limits({}, 0) is None

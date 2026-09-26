@@ -116,6 +116,40 @@ class DualFrankaEnvFacade(FrankaEnvFacade):
         )
 
 
+def workspace_refusal(
+    start: Any, target: Any, lo: Any, hi: Any, arm: str
+) -> str | None:
+    """Why a move from ``start`` to ``target`` (xyz in the arm's base frame) is refused, else None.
+
+    The target must lie in the arm's ``ee_pose_limit_min/max`` box (its z minimum is the floor),
+    unless the move goes back towards it from outside. RLinf would silently clip each servo
+    target into the box; a refusal tells the caller instead, whoever it is (pi, a manual call).
+    """
+    lo3, hi3 = np.asarray(lo, float)[:3], np.asarray(hi, float)[:3]
+
+    def outside(p: np.ndarray) -> float:
+        return float(np.sum(np.maximum(0.0, lo3 - p) + np.maximum(0.0, p - hi3)))
+
+    start3, target3 = np.asarray(start, float)[:3], np.asarray(target, float)[:3]
+    if outside(target3) > 1e-6 and outside(target3) >= outside(start3) - 1e-6:
+        return (
+            f"the {arm} move ends at {np.round(target3, 3).tolist()} in its base frame, outside "
+            f"ee_pose_limit_min/max {lo3.tolist()}..{hi3.tolist()} (z {lo3[2]} m is the floor)"
+        )
+    return None
+
+
+def _arm_limits(override: Any, arm_idx: int) -> tuple[list[float], list[float]] | None:
+    """One arm's xyz box from override_cfg (per-arm lists, or one list for both)."""
+    lo, hi = override.get("ee_pose_limit_min"), override.get("ee_pose_limit_max")
+    if lo is None or hi is None:
+        return None
+    lo, hi = list(lo), list(hi)
+    if lo and not isinstance(lo[0], (int, float)):
+        lo, hi = list(lo[arm_idx]), list(hi[arm_idx])
+    return [float(v) for v in lo[:3]], [float(v) for v in hi[:3]]
+
+
 def _batch_raw_obs(raw_obs: dict[str, Any]) -> dict[str, Any]:
     """Add the vector-env batch axis to one raw real-world observation."""
     output: dict[str, Any] = {}
@@ -763,6 +797,16 @@ def _create_worker_class():
             start_world = self._pose_to_world(arm_name, start_local)
             target_world = start_world.copy()
             target_world[:3] = start_world[:3] + requested
+            limits = _arm_limits(self.cfg.env.eval.get("override_cfg") or {}, arm_idx)
+            if limits is not None:
+                why = workspace_refusal(
+                    start_local[:3],
+                    self._pose_from_world(arm_name, target_world)[:3],
+                    *limits,
+                    arm_name,
+                )
+                if why:
+                    raise ValueError(why)
             max_step = self.controller["move_max_step_m"]
             deadline = time.time() + self.controller["move_timeout_s"]
             max_iterations = max(

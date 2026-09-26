@@ -9,8 +9,10 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import finetuned, {
 	allowedTokens,
 	buildRequest,
+	DUAL_PROMPTS,
 	formatPrompt,
 	PROMPTS,
+	parsePair,
 	parseToken,
 	prepareImages,
 	RELEASED,
@@ -630,4 +632,145 @@ test("fine-tuned mode refuses a robot whose images are not an agentview and a wr
 	});
 	await libero.emit("session_start");
 	assert.deepEqual(calls(await libero.turn([]))[0].arguments, { unit: "RELEASE" });
+});
+
+/** A dual-arm units `act` result: the header, then the front, left wrist and right wrist images. */
+const dualObservation = (m: any) =>
+	calls(m).map((c: any) => ({
+		role: "toolResult",
+		toolCallId: c.id,
+		toolName: c.name,
+		content: [
+			{ type: "text", text: `units: ${c.arguments.unit} x1\nTASK: fold the towel` },
+			{ type: "image", data: png(agentRaw).toString("base64"), mimeType: "image/png" },
+			{ type: "image", data: png(wristRaw).toString("base64"), mimeType: "image/png" },
+			{ type: "image", data: png(wristRaw).toString("base64"), mimeType: "image/png" },
+		],
+		details: {},
+		isError: false,
+	}));
+const DUAL_UNITS: Partial<UnitsHandle> = {
+	arms: ["left", "right"],
+	vocabulary: [...UNITS],
+	wrist: () => true,
+	views: () => ({ views: 3, wrist: [1, 2] }),
+};
+
+test("dual prompts: the v4 templates verbatim, one token per arm, and the pair parser", () => {
+	assert.match(DUAL_PROMPTS["v4-dual-once"].template, /^You are controlling a dual-arm robot with three cameras:/);
+	assert.match(DUAL_PROMPTS["v4-dual-once"].template, /Return the two tokens only, no punctuation, no explanation:$/);
+	assert.match(DUAL_PROMPTS["v4-dual-twice"].template, /Control the \{arm\} arm now\./);
+	assert.match(DUAL_PROMPTS["v4-dual-chain"].followup ?? "", /Now choose the next action for the RIGHT arm/);
+	const allowed = ["MV_FWD", "MV_UP", "STILL", "DONE"];
+	assert.deepEqual(parsePair("MV_UP STILL", allowed), ["MV_UP", "STILL"]);
+	assert.deepEqual(
+		parsePair("<think>x</think>STILL, MV_FWD.", allowed),
+		["STILL", "MV_FWD"],
+		"reading order, not vocabulary order",
+	);
+	assert.throws(() => parsePair("MV_UP", allowed), /needs TWO tokens/);
+});
+
+test("dual fine-tuned (once): both arms open, pairs run as one paired act, a lone DONE holds, both DONE finish", async () => {
+	const ep = await endpoint(["MV_UP MV_FWD", "STILL GRASP", "DONE MV_UP", "garbage", "DONE DONE"]);
+	const p = fakePi(
+		{ "ft-endpoint": ep.url, "ft-prompt": "v4-dual-once" },
+		"piper_dual",
+		["act", "finish"],
+		DUAL_UNITS,
+	);
+	try {
+		await p.emit("session_start");
+		await p.emit("before_agent_start");
+		const t0 = await p.turn([]);
+		assert.deepEqual(calls(t0)[0].arguments, { unit: "RELEASE", arm: "left", other: "RELEASE" });
+		const history: unknown[] = [t0, ...dualObservation(t0)];
+		const acts: unknown[] = [];
+		let m = t0;
+		for (let i = 0; i < 6 && calls(m)[0]?.name === "act"; i++) {
+			m = await p.turn(history);
+			history.push(m, ...dualObservation(m));
+			acts.push(calls(m)[0].name === "act" ? calls(m)[0].arguments : calls(m)[0].name);
+		}
+		assert.deepEqual(acts, [
+			{ unit: "MV_UP", arm: "left", other: "MV_FWD" },
+			{ unit: "GRASP", arm: "right" },
+			{ unit: "MV_UP", arm: "right" },
+			// Unparsable: both arms hold; STOP on one arm returns the next observation.
+			{ unit: "STOP", arm: "left" },
+			"finish",
+		]);
+		assert.equal(calls(m)[0].arguments.status, "success");
+		const body = ep.bodies[3].body;
+		assert.equal(body.max_tokens, 48, "two tokens: the budget doubles");
+		assert.equal(body.messages[0].content.filter((c: any) => c.type === "image_url").length, 3);
+		const text = body.messages[0].content[3].text;
+		// Per-arm history, newest first, STILL included (the lone DONE is recorded as the STILL it ran).
+		assert.match(text, /Left arm recent moves, newest first: STILL, STILL, MV_UP\n/);
+		assert.match(text, /Right arm recent moves, newest first: MV_UP, MV_FWD\n/);
+		const steps = p.entries.filter((e) => e.type === STEP_ENTRY).map((e) => e.data);
+		assert.deepEqual(steps[2].executed, { left: "STILL", right: "MV_UP" });
+		assert.equal(steps[3].fallback, true);
+		assert.deepEqual(
+			steps[0].media.map((x: any) => x.camera),
+			["agentview", "wrist_left", "wrist_right"],
+		);
+	} finally {
+		await ep.close();
+	}
+});
+
+test("dual fine-tuned twice and chain: the request shapes of the scheme", async () => {
+	const ep = await endpoint(["MV_UP", "MV_FWD", "MV_DOWN", "GRASP"]);
+	try {
+		const t = fakePi(
+			{ "ft-endpoint": ep.url, "ft-prompt": "v4-dual-twice" },
+			"piper_dual",
+			["act", "finish"],
+			DUAL_UNITS,
+		);
+		await t.emit("session_start");
+		const t0 = await t.turn([]);
+		const t1 = await t.turn([t0, ...dualObservation(t0)]);
+		assert.deepEqual(calls(t1)[0].arguments, { unit: "MV_UP", arm: "left", other: "MV_FWD" });
+		const [left, right] = ep.bodies.map((b) => b.body.messages[0].content.at(-1).text);
+		assert.match(left, /Control the LEFT arm now\./);
+		assert.match(right, /Control the RIGHT arm now\./);
+		assert.equal(
+			right,
+			left
+				.replaceAll("LEFT arm", "RIGHT arm")
+				.replaceAll("LEFT wrist", "RIGHT wrist")
+				.replaceAll("LEFT gripper fingers", "RIGHT gripper fingers")
+				.replaceAll("LEFT gripper holds", "RIGHT gripper holds"),
+			"the right call is not told the left token",
+		);
+
+		const c = fakePi(
+			{ "ft-endpoint": ep.url, "ft-prompt": "v4-dual-chain" },
+			"piper_dual",
+			["act", "finish"],
+			DUAL_UNITS,
+		);
+		await c.emit("session_start");
+		const c0 = await c.turn([]);
+		const c1 = await c.turn([c0, ...dualObservation(c0)]);
+		assert.deepEqual(calls(c1)[0].arguments, { unit: "MV_DOWN", arm: "left", other: "GRASP" });
+		const follow = ep.bodies[3].body.messages;
+		assert.equal(follow.length, 3);
+		assert.deepEqual(follow[1], { role: "assistant", content: "MV_DOWN" });
+		assert.match(follow[2].content, /Now choose the next action for the RIGHT arm/);
+	} finally {
+		await ep.close();
+	}
+	// A dual prompt on one arm, and a single-arm prompt on two, are refused before any step.
+	const one = fakePi({ "ft-prompt": "v4-dual-once" }, "piper", ["act", "finish"], {
+		arms: [],
+		vocabulary: [...UNITS],
+	});
+	await one.emit("session_start");
+	assert.match(one.warnings.join("\n"), /drives two arms .* this robot has 1/);
+	const two = fakePi({ "ft-prompt": "v4-piper" }, "piper_dual", ["act", "finish"], DUAL_UNITS);
+	await two.emit("session_start");
+	assert.match(two.warnings.join("\n"), /this robot has two arms/);
 });

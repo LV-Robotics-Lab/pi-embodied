@@ -28,14 +28,24 @@
  * reply asked again constrained to the vocabulary. Each rule is also a flag (--ft-stuck-guard-mm,
  * --ft-ignore-done, --ft-oov, --ft-max-steps), off for v3/v4.
  *
+ * Two arms (`--ft-prompt v4-dual-once|v4-dual-twice|v4-dual-chain`, the dual Piper and dual Franka):
+ * Show-Harness's DualMvTokenRunner (core/runners/dual_mvtoken.py, core/vlm/dual_mvtoken_roles.py) for
+ * the dual_cloth LoRAs, with the v4 dual templates copied verbatim. Three views (agentview, left
+ * wrist, right wrist; --ft-cameras auto = 0,1,2), each arm's last 5 moves or STILLs, one token per arm
+ * in the scheme the adapter was trained on (once: one call answering "<left> <right>" with twice the
+ * token budget; twice: one call per arm, the right one not told the left token; chain: the left
+ * answer fed back and a text-only follow-up for the right), run as one paired units `act` step
+ * (`other`; both arms at once where the robot has `applyPair`). Both arms open first; STILL holds an
+ * arm; a lone DONE holds that arm; DONE on both arms finishes; an unparsable reply holds both arms.
+ *
  * Every step appends a `finetuned_step` entry: the token, the raw reply, the exact prompt text and
  * the pixel fingerprint (sha1 of the uint8 HWC bytes) of each image sent, in wire order.
  *
  * Copyright 2026 The Show-Harness Authors (github.com/showlab/Show-Harness @137d571).
  * Licensed under the Apache License, Version 2.0.
- * Modified by pi-embodied: core/runners/mvtoken.py, core/vlm/mvtoken_roles.py and the bare-token
- * shape of core/vlm/vlm_client.py ported as a pi provider; prompts/v3 and prompts/v4 lite templates
- * copied verbatim into ./templates/.
+ * Modified by pi-embodied: core/runners/mvtoken.py, core/runners/dual_mvtoken.py, core/vlm/mvtoken_roles.py,
+ * core/vlm/dual_mvtoken_roles.py and the bare-token, pair and chain shapes of core/vlm/vlm_client.py
+ * ported as a pi provider; prompts/v3 and prompts/v4 lite and dual templates copied verbatim into ./templates/.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -109,6 +119,43 @@ export const NO_THINKING = { enable_thinking: false, thinking: false };
 const RETRIES = { max: 5, baseS: 2, maxS: 30 };
 const RETRYABLE = new Set([408, 409, 425, 429]);
 
+/**
+ * The dual-arm vocabulary (core/vlm/dual_mvtoken_roles.DUAL_MVTOKEN_ACTIONS): one per arm and step.
+ * STILL (hold, the other arm is catching up) is first-class; DONE ends only when both arms say it.
+ */
+export const DUAL_ACTIONS = [
+	"MV_FWD",
+	"MV_BACK",
+	"MV_LEFT",
+	"MV_RIGHT",
+	"MV_UP",
+	"MV_DOWN",
+	"GRASP",
+	"RELEASE",
+	"STILL",
+	"DONE",
+] as const;
+/** The per-arm history: moves and STILL (core/runners/dual_mvtoken.HISTORY_TOKENS), newest first. */
+const DUAL_HISTORY = new Set<string>([...MOVES, "STILL"]);
+/** The dual runner's fallback on an unparsable reply: both arms hold (a guess could drive them into each other). */
+export const DUAL_FALLBACK = "STILL";
+/** The dual arms in wire and prompt order (dual_mvtoken_roles.SIDES). */
+export const SIDES = ["left", "right"] as const;
+/**
+ * The three request shapes of the dual LoRAs (dual_mvtoken_roles): once = one call answering
+ * "<left> <right>" (the recommended one); twice = one call per arm, the right one not told the left
+ * token; chain = one image call for the left token, a text-only follow-up for the right.
+ */
+export type DualScheme = "once" | "twice" | "chain";
+const dualTemplate = (name: string) =>
+	readFileSync(new URL(`./templates/v4_dual_mvtoken_${name}.txt`, import.meta.url), "utf8").trim();
+/** The dual prompt versions (prompts/v4/dual_mvtoken_<scheme>.txt, copied verbatim). */
+export const DUAL_PROMPTS: Record<string, { scheme: DualScheme; template: string; followup?: string }> = {
+	"v4-dual-once": { scheme: "once", template: dualTemplate("once") },
+	"v4-dual-twice": { scheme: "twice", template: dualTemplate("twice") },
+	"v4-dual-chain": { scheme: "chain", template: dualTemplate("chain"), followup: dualTemplate("chain_right") },
+};
+
 /** The lite prompts (prompts/<version>/…), stripped like the runners read them. */
 export const PROMPTS: Record<string, string> = {
 	v3: readFileSync(new URL("./templates/v3_mvtoken_generator_lite.txt", import.meta.url), "utf8").trim(),
@@ -135,6 +182,10 @@ export const PRESETS: Record<string, Preset> = {
 	"v4-franka": RUNNER,
 	"v4-piper": RUNNER,
 	v5: { maxSteps: 200, stuckGuardMm: 5, ignoreDone: true, oov: "reask" },
+	// configs/robot_piper_ft.yaml max_steps (the dual runner's budget); no guard, DONE ends (both arms).
+	...Object.fromEntries(
+		Object.keys(DUAL_PROMPTS).map((k) => [k, { maxSteps: 150, stuckGuardMm: 0, ignoreDone: false, oov: "fallback" }]),
+	),
 };
 /** Units plugins that change what a policy token does (step size, frame, extra gripper moves). */
 const GROUNDING_PLUGINS = ["variable_step", "action_chunk", "rotation", "recovery", "auto_release"];
@@ -177,6 +228,11 @@ export const ROBOT_VIEWS: Record<string, { agentview: ViewSpec; wrist: ViewSpec 
 		agentview: { rot: 0, flip: "none", square: SQUARE },
 		wrist: { rot: 0, flip: "vertical", crop: 1.3333, square: SQUARE },
 	},
+	// The dual rig's two Piper wrists as the single Piper's (both wrists take this transform).
+	piper_dual: {
+		agentview: { rot: 0, flip: "none", square: SQUARE },
+		wrist: { rot: 0, flip: "vertical", crop: 1.3333, square: SQUARE },
+	},
 };
 const DEFAULT_VIEWS = ROBOT_VIEWS.robolab;
 /** No transform: the frames already are what the adapter was trained on (`--ft-agentview raw --ft-wrist raw`). */
@@ -210,6 +266,20 @@ export function allowedTokens(template: string): string[] {
 	return present;
 }
 
+/**
+ * vlm_client.parse_token_pair: the first two vocabulary tokens in reading order ("<left> <right>",
+ * the LoRA answers LEFT first), or an error when there are fewer than two.
+ */
+export function parsePair(raw: string, allowed: readonly string[]): [string, string] {
+	const alt = allowed.map(reEscape).join("|");
+	const found = [...stripReasoning(raw).matchAll(new RegExp(`\\b(${alt})\\b`, "g"))].map((m) => m[1]);
+	if (found.length < 2)
+		throw new Error(
+			`VLM returned ${JSON.stringify(raw)}; the once/pair contract needs TWO tokens ('<left> <right>'), found ${JSON.stringify(found)}`,
+		);
+	return [found[0], found[1]];
+}
+
 /** The recent-moves field: newest first, "none" when empty. */
 export const recentText = (recent: readonly string[]) => (recent.length ? recent.join(", ") : "none");
 
@@ -224,6 +294,7 @@ export function buildRequest(
 	pngs: readonly Buffer[],
 	temperature = 0,
 	choice?: readonly string[],
+	o: { maxTokens?: number; followup?: { answer: string; prompt: string } } = {},
 ) {
 	return {
 		model,
@@ -238,9 +309,16 @@ export function buildRequest(
 					{ type: "text", text: prompt },
 				],
 			},
+			// chain: the left answer fed back verbatim, then the text-only turn asking for the right one.
+			...(o.followup
+				? [
+						{ role: "assistant", content: o.followup.answer },
+						{ role: "user", content: o.followup.prompt },
+					]
+				: []),
 		],
 		temperature,
-		max_tokens: MAX_TOKENS,
+		max_tokens: o.maxTokens ?? MAX_TOKENS,
 		chat_template_kwargs: { ...NO_THINKING },
 		...(choice ? { structured_outputs: { choice: [...choice] } } : {}),
 	};
@@ -441,8 +519,9 @@ export default function finetuned(pi: ExtensionAPI) {
 	pi.registerFlag("ft-task", { type: "string", default: "", description: "Task text (default: the robot's)" });
 	pi.registerFlag("ft-cameras", {
 		type: "string",
-		default: "0,1",
-		description: "Indices of the agentview and wrist images in the robot's observation",
+		default: "auto",
+		description:
+			"Indices of the agentview and wrist images in the robot's observation (dual prompts: agentview, left wrist, right wrist; auto: 0,1 or 0,1,2)",
 	});
 	pi.registerFlag("ft-agentview", {
 		type: "string",
@@ -470,6 +549,8 @@ export default function finetuned(pi: ExtensionAPI) {
 	let over = false;
 	let steps = 0;
 	let recent: string[] = [];
+	/** Dual prompts: each arm's history (moves and STILL), newest first. */
+	let recentDual: Record<string, string[]> = { left: [], right: [] };
 	let pending: string | undefined;
 	let ids = 0;
 	/** The robot's units layer (its vocabulary and proprioception), published at session start. */
@@ -486,26 +567,37 @@ export default function finetuned(pi: ExtensionAPI) {
 	/** Why the policy cannot run on this robot's images (set at session start), else undefined. */
 	let refused: string | undefined;
 	const cameraIndices = () =>
-		flag("ft-cameras")
+		(flag("ft-cameras") === "auto" || !flag("ft-cameras") ? (dual() ? "0,1,2" : "0,1") : flag("ft-cameras"))
 			.split(",")
 			.map((s) => Number(s.trim()));
+	/** The dual-arm prompt version this session runs, else undefined. */
+	const dual = () => DUAL_PROMPTS[flag("ft-prompt")];
 	/**
 	 * Why the adapters cannot read this robot's images, else undefined: they take an agentview and a
 	 * wrist image (--ft-cameras), so a configuration without a wrist camera, or --ft-cameras naming a
 	 * non-wrist image as the wrist (or the wrist as the agentview), is refused instead of fed wrong images.
 	 */
 	function imageRefusal(): string | undefined {
+		const d = dual();
+		const armCount = units?.arms?.length ?? 0;
+		if (d && units && armCount !== 2)
+			return `--ft-prompt ${flag("ft-prompt")} drives two arms (one token per arm), and this robot has ${armCount || 1}`;
+		if (!d && armCount > 1)
+			return `this robot has two arms: the single-arm prompt ${flag("ft-prompt") || "v3"} cannot drive it; pass a dual prompt (${Object.keys(DUAL_PROMPTS).join(", ")})`;
 		if (units?.wrist?.() === false)
 			return "the fine-tuned adapters read an agentview and a wrist image, and this robot configuration has no wrist camera; run it with a planner model instead";
 		const v = units?.views?.();
 		if (!v) return undefined;
 		const wrists = v.wrist === undefined ? [] : [v.wrist].flat();
-		const [agent, wrist] = cameraIndices();
-		const named = `--ft-cameras ${flag("ft-cameras")}`;
-		if (!(agent < v.views && wrist < v.views))
-			return `${named} names image ${Math.max(agent, wrist)}, but the robot's observation carries ${v.views} image(s)`;
-		if (!wrists.includes(wrist) || wrists.includes(agent))
-			return `${named}: image ${wrist} must be a wrist view and image ${agent} a third-person view (the robot's wrist views are image(s) ${wrists.join(", ") || "none"}); pass --ft-cameras <agentview>,<wrist>`;
+		const [agent, ...wristIdx] = cameraIndices();
+		const named = `--ft-cameras ${cameraIndices().join(",")}`;
+		if (wristIdx.length !== (d ? 2 : 1))
+			return `${named}: ${d ? "a dual prompt takes the agentview, left wrist and right wrist" : "the adapter takes the agentview and one wrist"}`;
+		const top = Math.max(agent, ...wristIdx);
+		if (!(top < v.views))
+			return `${named} names image ${top}, but the robot's observation carries ${v.views} image(s)`;
+		if (wristIdx.some((w) => !wrists.includes(w)) || wrists.includes(agent))
+			return `${named}: image${wristIdx.length > 1 ? "s" : ""} ${wristIdx.join(", ")} ${wristIdx.length > 1 ? "must be wrist views" : "must be a wrist view"} and image ${agent} a third-person view (the robot's wrist views are image(s) ${wrists.join(", ") || "none"}); pass --ft-cameras <agentview>,${d ? "<left wrist>,<right wrist>" : "<wrist>"}`;
 		return undefined;
 	}
 	/** Refuse the episode before the first step: the model never sees the wrong images. */
@@ -527,6 +619,7 @@ export default function finetuned(pi: ExtensionAPI) {
 		over = false;
 		steps = ids = dones = 0;
 		recent = [];
+		recentDual = { left: [], right: [] };
 		pending = undefined;
 		robot = envId = "";
 		lastEef = undefined;
@@ -578,6 +671,7 @@ export default function finetuned(pi: ExtensionAPI) {
 	const template = () => {
 		const p = version();
 		if (flag("ft-prompt-file")) return readFileSync(flag("ft-prompt-file"), "utf8").trim();
+		if (DUAL_PROMPTS[p]) return DUAL_PROMPTS[p].template;
 		if (p === "v5") {
 			if (!existsSync(V5_PROMPT))
 				throw new Error(
@@ -605,10 +699,8 @@ export default function finetuned(pi: ExtensionAPI) {
 	const robotViews = () => viewsFor(robot, envId);
 	const views = () => {
 		const d = robotViews() ?? DEFAULT_VIEWS;
-		return [
-			flag("ft-agentview") ? parseView(flag("ft-agentview")) : d.agentview,
-			flag("ft-wrist") ? parseView(flag("ft-wrist")) : d.wrist,
-		];
+		const wrist = flag("ft-wrist") ? parseView(flag("ft-wrist")) : d.wrist;
+		return [flag("ft-agentview") ? parseView(flag("ft-agentview")) : d.agentview, wrist, ...(dual() ? [wrist] : [])];
 	};
 	const swap = (token: string) => {
 		const pair = flag("ft-swap")
@@ -651,7 +743,8 @@ export default function finetuned(pi: ExtensionAPI) {
 		if (refused) return { text: `The fine-tuned policy refused this robot: ${refused}`, calls: [] };
 		if (over) return { text: "The fine-tuned policy already ended this episode.", calls: [] };
 		if (!pending) {
-			const c = call("act", { unit: OPENING });
+			// Both arms open first on two arms (core/runners/dual_mvtoken.py), one paired step.
+			const c = call("act", dual() ? { unit: OPENING, arm: "left", other: OPENING } : { unit: OPENING });
 			pending = c.id;
 			return { text: `opening ${OPENING} (the runner's first step; it returns the first observation)`, calls: [c] };
 		}
@@ -669,6 +762,14 @@ export default function finetuned(pi: ExtensionAPI) {
 				"failure",
 				`max_steps (${max}) reached without ${r.ignoreDone ? "env success" : "DONE"}`,
 				`max_steps ${max} reached`,
+			);
+
+		if (dual())
+			return nextDual(
+				texts,
+				result.content.filter((c) => c.type === "image") as { data: string }[],
+				modelId,
+				signal,
 			);
 
 		// Stuck guard: the displacement of the last executed MV_*, from the robot's proprioception.
@@ -783,6 +884,131 @@ export default function finetuned(pi: ExtensionAPI) {
 		if (MOTION.has(token)) recent = [token, ...recent].slice(0, RECENT_MOVES_MAX);
 		lastToken = token;
 		const c = call("act", { unit: executed });
+		pending = c.id;
+		return { text: note, calls: [c] };
+	}
+
+	/**
+	 * One dual-arm step (core/runners/dual_mvtoken.py + core/vlm/dual_mvtoken_roles.py): three views, one
+	 * token per arm in the prompt's scheme, both run together as one paired `act` step. DONE ends only
+	 * when both arms say it (a lone DONE holds that arm); an unparsable reply holds both arms.
+	 */
+	async function nextDual(
+		texts: string[],
+		images: { data: string }[],
+		modelId: string,
+		signal: AbortSignal | undefined,
+	): Promise<Turn> {
+		const d = dual();
+		const wrong = imageRefusal();
+		if (wrong) {
+			refused = wrong;
+			return end(`The fine-tuned policy refused this robot: ${wrong}`);
+		}
+		const adapter = flag("ft-model") || (modelId === "local" ? "" : modelId);
+		if (!adapter) throw new Error("finetuned/local needs --ft-model <adapter name>");
+		const sent = prepareImages(images, cameraIndices(), views());
+		const pngs = sent.map((x) => x.png);
+		const tpl = flag("ft-prompt-file") ? readFileSync(flag("ft-prompt-file"), "utf8").trim() : d.template;
+		const fields = {
+			task: taskOf(texts),
+			recent_left: recentText(recentDual.left),
+			recent_right: recentText(recentDual.right),
+		};
+		const allowed = [...DUAL_ACTIONS];
+		const ask = async (body: unknown) => complete(flag("ft-endpoint"), flag("ft-api-key"), body, signal);
+		const prompts: string[] = [];
+		const raws: string[] = [];
+		let ms = 0;
+		let tokens: Record<string, string>;
+		let fallback = false;
+		try {
+			if (d.scheme === "twice") {
+				tokens = {};
+				for (const side of SIDES) {
+					// Each call is rendered for its arm; the right call is not told the left token.
+					const prompt = formatPrompt(tpl, { ...fields, arm: side.toUpperCase() });
+					prompts.push(prompt);
+					const r = await ask(buildRequest(adapter, prompt, pngs, 0));
+					raws.push(r.text);
+					ms += r.ms;
+					tokens[side] = parseToken(r.text, allowed);
+				}
+			} else {
+				const prompt = formatPrompt(tpl, fields);
+				prompts.push(prompt);
+				if (d.scheme === "once") {
+					const r = await ask(buildRequest(adapter, prompt, pngs, 0, undefined, { maxTokens: MAX_TOKENS * 2 }));
+					raws.push(r.text);
+					ms += r.ms;
+					const [left, right] = parsePair(r.text, allowed);
+					tokens = { left, right };
+				} else {
+					const r = await ask(buildRequest(adapter, prompt, pngs, 0));
+					raws.push(r.text);
+					ms += r.ms;
+					const left = parseToken(r.text, allowed);
+					const followup = d.followup ?? "";
+					prompts.push(followup);
+					const r2 = await ask(
+						buildRequest(adapter, prompt, pngs, 0, undefined, { followup: { answer: left, prompt: followup } }),
+					);
+					raws.push(r2.text);
+					ms += r2.ms;
+					tokens = { left, right: parseToken(r2.text, allowed) };
+				}
+			}
+		} catch (err) {
+			if (signal?.aborted || (err instanceof Error && err.message.startsWith("VLM chat completion failed")))
+				throw err;
+			// Degraded-output safeguard: both arms hold.
+			tokens = { left: DUAL_FALLBACK, right: DUAL_FALLBACK };
+			fallback = true;
+		}
+		const step = steps++;
+		const done = SIDES.filter((a) => tokens[a] === "DONE");
+		const executed = { ...tokens };
+		// A lone DONE holds that arm: one arm thinks the task is over while the other disagrees.
+		if (done.length === 1) executed[done[0]] = "STILL";
+		pi.appendEntry(STEP_ENTRY, {
+			step,
+			scheme: d.scheme,
+			tokens,
+			executed,
+			raw: raws.join(" | "),
+			fallback,
+			latency_ms: ms,
+			adapter,
+			endpoint: flag("ft-endpoint"),
+			prompt: prompts.join("\n---\n"),
+			media: sent.map((x, slot) => ({
+				slot,
+				camera: ["agentview", "wrist_left", "wrist_right"][slot] ?? `view${slot}`,
+				...fingerprint(x.view),
+			})),
+		});
+		const note = `step ${step}: L ${tokens.left} R ${tokens.right}${done.length === 1 ? ` (lone DONE: the ${done[0]} arm holds)` : ""}${fallback ? ` (unparsable reply ${JSON.stringify(raws.join(" | "))}; both arms hold)` : ""} · ${ms} ms`;
+		if (done.length === 2) return finish("success", `the policy emitted DONE on both arms after ${step} steps`, note);
+		const arms = units?.arms?.length ? units.arms : SIDES;
+		const acting = SIDES.filter((a) => executed[a] !== "STILL");
+		const missing = acting.filter((a) => !units?.vocabulary.includes(executed[a]));
+		if (units && missing.length)
+			return finish(
+				"failure",
+				`the policy emitted ${missing.map((a) => executed[a]).join(", ")}, which this robot's act does not offer`,
+				note,
+			);
+		for (const side of SIDES)
+			if (DUAL_HISTORY.has(executed[side]))
+				recentDual[side] = [executed[side], ...recentDual[side]].slice(0, RECENT_MOVES_MAX);
+		const [a, b] = acting;
+		// Both hold: STOP on one arm returns the next observation without moving.
+		const args = !a
+			? { unit: "STOP", arm: arms[0] }
+			: b
+				? { unit: executed[a], arm: a, other: executed[b] }
+				: { unit: executed[a], arm: a };
+		const c = call("act", args);
 		pending = c.id;
 		return { text: note, calls: [c] };
 	}

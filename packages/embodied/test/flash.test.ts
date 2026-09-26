@@ -435,6 +435,54 @@ test("LIBERO with Molmo re-localizes anchors, refines from the wrist, retries a 
 	assert.equal(out.finish.status, "success");
 });
 
+test("LIBERO with --molmo-set surveys the agentview and wrist images in one MolmoPoint call, and falls back to the wrist point", async (t) => {
+	const calls: { method: string; kwargs: any }[] = [];
+	const server = createServer((req, res) => {
+		let body = "";
+		req.on("data", (c) => {
+			body += c;
+		});
+		req.on("end", () => {
+			const { method, kwargs } = JSON.parse(body) as { method: string; kwargs: any };
+			calls.push({ method, kwargs });
+			const result =
+				method === "molmo.ground_set"
+					? {
+							points: [{ image_index: 1, pixel_x: 128, pixel_y: 128 }],
+							image_sizes: [
+								[512, 512],
+								[512, 512],
+							],
+						}
+					: method === "molmo.ground"
+						? { point_xy: [256, 256], image_size: [512, 512] }
+						: "ok";
+			res.end(JSON.stringify({ ok: true, result }));
+		});
+	});
+	await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+	t.after(() => {
+		server.closeAllConnections();
+		server.close();
+	});
+	const molmo = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+	const p = libero({ molmo, "molmo-set": true, "flash-plans": liberoPlans() });
+	const out = await drive(p, liberoExec([-0.12, 0.11, 0.9]));
+	const set = calls.filter((c) => c.method === "molmo.ground_set");
+	assert.equal(set.length, 1, "one call for the one Molmo anchor");
+	assert.equal(set[0].kwargs.query, "Point to the bowl.");
+	assert.equal(set[0].kwargs.images_base64.length, 2);
+	// The wrist point (128, 128) of 512 is (256, 256) in the 1024 image, profiled in the wrist view.
+	assert.deepEqual(out.sent[1][1], { row: 211, col: 256, camera: "wrist", resolution: "high" });
+	assert.match(out.notes, /the bowl located in the wrist image only/);
+	// The refinement and the held body still ask molmo.ground from the wrist.
+	assert.deepEqual(
+		calls.filter((c) => c.method === "molmo.ground").map((c) => c.kwargs.query),
+		["the center of the bowl directly below the gripper", "the body of the bowl held in the gripper"],
+	);
+	assert.equal(out.finish.status, "success");
+});
+
 test("LIBERO Flash refuses a LIBERO-plus episode: plan task indices are pro ones", () => {
 	const plans = liberoPlans();
 	const hook = (liberoType: string) =>

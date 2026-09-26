@@ -11,7 +11,10 @@
  * held, as offsets of the object rather than the gripper. A `pi0_pick` that does not take hold is
  * retried by ../flash. With `--molmo off` nothing is pointed at: point anchors stay where they were
  * recorded and picks keep their recorded thresholds without retries, so the plan replays its
- * recorded calls verbatim (meaningful only on the recorded seed).
+ * recorded calls verbatim (meaningful only on the recorded seed). With `--molmo-set` (a MolmoPoint
+ * server, `--model molmopoint`) the survey points at each anchor in the agentview and wrist images at
+ * once (`molmo.ground_set`, OpenETA's Pointing Image Set) and profiles the agentview point, or the
+ * wrist one when the agentview has none.
  *
  * Plans are `<family>_<suite>_t<task>_{plan,anchors}.json` in `--flash-plans`, else in the LIBERO memory root
  * (`--memory-dir`, or the synced HF memory) under `flash/` (flash-generate.ts) or `task_card/` (the HF
@@ -115,7 +118,7 @@ function load(dir: string, name: string): Program {
  * Re-localize the program's anchors and return how its calls are rewritten. Motion results carry
  * `{result, terminated, state}` and the agentview + wrist images.
  */
-async function start(program: Program, robot: FlashRobot, molmo: RpcClient | undefined) {
+async function start(program: Program, robot: FlashRobot, molmo: RpcClient | undefined, pointSet = false) {
 	const { plan, reference, locatorOf } = program;
 	const { act, note } = robot;
 	const images = () => robot.latest().images;
@@ -135,6 +138,27 @@ async function start(program: Program, robot: FlashRobot, molmo: RpcClient | und
 		return [(res.point_xy[0] * IMAGE) / w, (res.point_xy[1] * IMAGE) / h];
 	}
 
+	/**
+	 * MolmoPoint's points for `query` over the agentview and wrist images at once, each as [col, row] in
+	 * its 1024 image, by camera (the first point in each).
+	 */
+	async function pointSetOf(query: string): Promise<Partial<Record<"agentview" | "wrist", XY>>> {
+		const [agentview, wrist] = images();
+		if (!agentview || !wrist || !molmo) return {};
+		const res = await molmo.call<{
+			points?: { image_index: number; pixel_x: number; pixel_y: number }[];
+			image_sizes?: number[][];
+		}>("molmo.ground_set", { images_base64: [agentview, wrist], query: `Point to ${query}.` }, 180_000);
+		const out: Partial<Record<"agentview" | "wrist", XY>> = {};
+		for (const p of res.points ?? []) {
+			const camera = p.image_index === 0 ? "agentview" : p.image_index === 1 ? "wrist" : undefined;
+			if (!camera || out[camera]) continue;
+			const [w, h] = res.image_sizes?.[p.image_index] ?? [IMAGE, IMAGE];
+			out[camera] = [(p.pixel_x * IMAGE) / w, (p.pixel_y * IMAGE) / h];
+		}
+		return out;
+	}
+
 	/** World points of pixels in the current image of `camera`. */
 	async function project(camera: string, pixels: XY[]): Promise<number[][]> {
 		const replies = await act(
@@ -147,8 +171,8 @@ async function start(program: Program, robot: FlashRobot, molmo: RpcClient | und
 	}
 
 	/** A phrase's pixel profiled down a vertical line; readings below the top 3 cm left the object. */
-	async function locate(camera: "agentview" | "wrist", query: string): Promise<XY | undefined> {
-		const px = await point(images()[camera === "agentview" ? 0 : 1], query);
+	async function locate(camera: "agentview" | "wrist", query: string, at?: XY): Promise<XY | undefined> {
+		const px = at ?? (await point(images()[camera === "agentview" ? 0 : 1], query));
 		if (!px) return undefined;
 		const line = Array.from({ length: 9 }, (_, i): XY => [px[0], px[1] - 45 + i * 11.25]);
 		const pts = await project(camera, line);
@@ -184,6 +208,12 @@ async function start(program: Program, robot: FlashRobot, molmo: RpcClient | und
 			const w = r.error === undefined ? worldOf(r.json) : undefined;
 			if (!w) note(`${phrase} segmentation failed: ${r.error ?? r.json.error ?? "no world_xyz"}`);
 			xy = w ? [w[0], w[1]] : undefined;
+		} else if (molmo && pointSet) {
+			// Both opening images in one MolmoPoint call: the agentview reading, else the wrist one.
+			const set = await pointSetOf(PROMPTS.survey(phrase));
+			const camera = set.agentview ? "agentview" : set.wrist ? "wrist" : undefined;
+			xy = camera ? await locate(camera, PROMPTS.survey(phrase), set[camera]) : undefined;
+			if (camera === "wrist") note(`${phrase} located in the wrist image only`);
 		} else if (molmo) {
 			xy = await locate("agentview", PROMPTS.survey(phrase));
 		} else {
@@ -293,6 +323,12 @@ export function liberoFlash(pi: ExtensionAPI, cell: Cell): FlashHook<Program> {
 		default: "http://127.0.0.1:18400",
 		description: "Molmo server, or off to replay point anchors at their recorded positions",
 	});
+	pi.registerFlag("molmo-set", {
+		type: "boolean",
+		default: false,
+		description:
+			"Flash surveys each anchor in the agentview and wrist images at once (MolmoPoint's molmo.ground_set; needs --model molmopoint)",
+	});
 	pi.registerFlag("flash-plans", {
 		type: "string",
 		description: "Directory of Flash plans (default: <memory>/libero/flash, then task_card)",
@@ -317,7 +353,7 @@ export function liberoFlash(pi: ExtensionAPI, cell: Cell): FlashHook<Program> {
 			molmo = endpoint && endpoint !== "off" ? new RpcClient(endpoint) : undefined;
 			return loaded;
 		},
-		start: (program, robot) => start(program, robot, molmo),
+		start: (program, robot) => start(program, robot, molmo, pi.getFlag("molmo-set") === true),
 		over: (latest) => latest.json.terminated === true || latest.json.truncated === true,
 		solved: (latest) => latest.json.terminated === true,
 		// Motion tools answer "Episode already ended (terminated=.., truncated=..)" once LIBERO is done.

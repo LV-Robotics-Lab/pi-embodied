@@ -381,8 +381,11 @@ def test_curobo_world_dict_maps_every_obstacle_type():
     )
     assert world["cuboid"]["table"]["dims"] == [1, 1, 0.1]
     assert world["cuboid"]["table"]["pose"] == [0.5, 0, -0.05, 1, 0, 0, 0]
-    assert world["sphere"]["sphere_1"]["radius"] == 0.1
-    assert world["capsule"]["capsule_2"]["base"] == [0, 0, -0.2]
+    # cuRobo's primitive checker sees only cuboids: spheres and capsules become bounding boxes.
+    assert sorted(world) == ["cuboid"]
+    assert world["cuboid"]["sphere_1"]["dims"] == [0.2, 0.2, 0.2]
+    assert world["cuboid"]["sphere_1"]["pose"][:3] == [0, 0, 1]
+    assert world["cuboid"]["capsule_2"]["dims"] == pytest.approx([0.1, 0.1, 0.5])
     slab = world["cuboid"]["halfspace_3"]
     assert slab["pose"][2] < 0  # the slab lies below the plane
     # No obstacles: cuRobo still needs one primitive, far away.

@@ -89,9 +89,9 @@ CUROBO_EMPTY_WORLD = {
 }
 
 
-#: Obstacles cuRobo's planner world holds per primitive type: an env server's scene (up to
-#: utils/collision.MAX_BOXES boxes) plus another arm as spheres (franka.yml: about 60).
-CUROBO_COLLISION_CACHE = {"obb": 160, "sphere": 160, "capsule": 16}
+#: Cuboids cuRobo's planner world holds: an env server's scene (up to
+#: utils/collision.MAX_BOXES boxes) plus another arm's spheres as cubes (franka.yml: about 60).
+CUROBO_COLLISION_CACHE = {"obb": 256}
 
 
 # ---------------------------------------------------------------------------
@@ -1051,28 +1051,31 @@ class CuroboBackend:
 
     @staticmethod
     def _world_dict(obstacles: list[dict[str, Any]]) -> dict[str, Any]:
-        """cuRobo ``WorldConfig`` dict; a halfspace becomes a 10 m slab below its plane."""
-        world: dict[str, dict[str, Any]] = {"cuboid": {}, "sphere": {}, "capsule": {}}
+        """cuRobo ``WorldConfig`` dict of cuboids only: cuRobo's primitive collision checker
+        (MotionGen's) sees nothing but cuboids and meshes and silently ignores spheres and
+        capsules (measured: a plan into another arm's spheres succeeded), so a sphere becomes
+        its bounding cube, a capsule its bounding box and a halfspace a 10 m slab below its
+        plane; all conservative."""
+        cuboids: dict[str, dict[str, Any]] = {}
         for i, obs in enumerate(obstacles):
             name = obs["name"] or f"{obs['type']}_{i}"
             if obs["type"] == "box":
                 q = np.asarray(obs["quat_xyzw"])[[3, 0, 1, 2]]
-                world["cuboid"][name] = {
+                cuboids[name] = {
                     "dims": obs["extent"].tolist(),
                     "pose": [*obs["position"].tolist(), *q.tolist()],
                 }
             elif obs["type"] == "sphere":
-                world["sphere"][name] = {
-                    "radius": obs["radius"],
+                side = 2.0 * obs["radius"]
+                cuboids[name] = {
+                    "dims": [side, side, side],
                     "pose": [*obs["center"].tolist(), 1.0, 0.0, 0.0, 0.0],
                 }
             elif obs["type"] == "capsule":
                 q = np.asarray(obs["quat_xyzw"])[[3, 0, 1, 2]]
-                h = obs["height"] / 2.0
-                world["capsule"][name] = {
-                    "radius": obs["radius"],
-                    "base": [0.0, 0.0, -h],
-                    "tip": [0.0, 0.0, h],
+                side = 2.0 * obs["radius"]
+                cuboids[name] = {
+                    "dims": [side, side, obs["height"] + side],
                     "pose": [*obs["position"].tolist(), *q.tolist()],
                 }
             else:
@@ -1081,12 +1084,11 @@ class CuroboBackend:
                 rot = Rotation.align_vectors([normal], [[0.0, 0.0, 1.0]])[0]
                 center = obs["point"] - normal * depth / 2.0
                 q = rot.as_quat()[[3, 0, 1, 2]]
-                world["cuboid"][name] = {
+                cuboids[name] = {
                     "dims": [depth * 2, depth * 2, depth],
                     "pose": [*center.tolist(), *q.tolist()],
                 }
-        world = {k: v for k, v in world.items() if v}
-        return world or dict(CUROBO_EMPTY_WORLD)
+        return {"cuboid": cuboids} if cuboids else dict(CUROBO_EMPTY_WORLD)
 
     def _full_q(self, solver: Any, arm_q: np.ndarray) -> np.ndarray:
         """``arm_q`` padded to cuRobo's cspace with the retract values of the other joints

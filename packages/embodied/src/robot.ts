@@ -560,6 +560,11 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	}
 
 	let recordedPrompt: string | undefined;
+	let forcing = false;
+	pi.on("session_start", () => {
+		recordedPrompt = undefined;
+		forcing = false;
+	});
 	pi.on("before_agent_start", (_event, ctx) => {
 		if (started === undefined) {
 			started = Date.now();
@@ -585,13 +590,19 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		const own = spec.prompt?.();
 		const systemPrompt =
 			mode === "pure" ? mod?.prompt() : mode === "both" ? `${own ?? ""}\n\n${mod?.prompt()}`.trim() : own;
-		if (systemPrompt === undefined) return undefined;
+		forcing = systemPrompt !== undefined;
+		if (!forcing) return undefined;
 		// OpenETA's closed-loop rules (./closed-loop.md) close every robot's prompt, in every mode.
-		const text = toolSections(`${systemPrompt}\n\n${CLOSED_LOOP}`, pi.getActiveTools());
-		// pi sends a forced prompt without recording it; the entry keeps what the planner saw (planner_export.py).
-		if (text !== recordedPrompt) pi.appendEntry(SYSTEM_PROMPT_ENTRY, { text });
+		return { systemPrompt: toolSections(`${systemPrompt}\n\n${CLOSED_LOOP}`, pi.getActiveTools()) };
+	});
+	// pi sends a forced prompt without recording it; the entry keeps what the planner saw
+	// (planner_export.py). Read at turn start, after every before_agent_start handler (explore's
+	// rewrite included) has run.
+	pi.on("turn_start", (_event, ctx) => {
+		const text = forcing ? ctx.getSystemPrompt?.() : undefined;
+		if (text === undefined || text === recordedPrompt) return;
+		pi.appendEntry(SYSTEM_PROMPT_ENTRY, { text });
 		recordedPrompt = text;
-		return { systemPrompt: text };
 	});
 	pi.on("message_end", (event) => {
 		const m = event.message;

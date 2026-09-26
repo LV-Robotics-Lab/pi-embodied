@@ -8,6 +8,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { API_GATE_EVENT } from "../src/api-gate.ts";
 import { candidates, ENSEMBLE_ENTRY, ensemble, ensembleArgs } from "../src/ensemble.ts";
+import { FALLBACK_ENTRY, fallback } from "../src/fallback.ts";
 import { defineRobot, RESULT_ENTRY } from "../src/robot.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
@@ -21,12 +22,14 @@ const BASE = "selfhost/muse-glimmer-30b";
 const OTHER = "relay/gpt-6-astra";
 const ARGV = ["node", "pi", "--model", `ensemble/${BASE}`];
 
+const CLAUDE = "anthropic/claude-x";
+
 const model = (ref: string): Model<any> => {
 	const [provider, id] = [ref.slice(0, ref.indexOf("/")), ref.slice(ref.indexOf("/") + 1)];
 	return {
 		id,
 		provider,
-		api: "openai-completions",
+		api: ref === CLAUDE ? "anthropic-messages" : "openai-completions",
 		name: id,
 		baseUrl: "",
 		reasoning: true,
@@ -74,9 +77,14 @@ function fakePi(flagValues: Record<string, unknown> = {}) {
 	const registry = {
 		find: (provider: string, id: string) => {
 			const ref = `${provider}/${id}`;
-			return ref === BASE || ref === OTHER ? model(ref) : undefined;
+			// A registered wrapper (fallback/...) resolves to its own model, like pi's registry.
+			const wrapper = providers.find((p) => p.id === provider && p.id !== "ensemble");
+			if (wrapper) return wrapper.getModels().find((m: Model<any>) => m.id === id);
+			return [BASE, OTHER, CLAUDE].includes(ref) ? model(ref) : undefined;
 		},
 		streamSimple(m: Model<any>, context: { messages: any[] }, options: any) {
+			const wrapper = providers.find((p) => p.id === m.provider && p.id !== "ensemble");
+			if (wrapper) return wrapper.streamSimple(m, context, options);
 			const ref = `${m.provider}/${m.id}`;
 			const last = context.messages.at(-1);
 			const synth = last?.role === "user" && JSON.stringify(last.content).includes("[ensemble]");
@@ -158,12 +166,12 @@ function fakePi(flagValues: Record<string, unknown> = {}) {
 	const emit = async (name: string, event: Record<string, unknown> = {}) => {
 		for (const fn of handlers.get(name) ?? []) await fn({ type: name, ...event }, ctx);
 	};
-	const turn = async (signal?: AbortSignal) => {
+	const turn = async (signal?: AbortSignal, reasoning: string | undefined = "low") => {
 		const provider = providers.find((p) => p.id === "ensemble");
 		const context = {
 			messages: [{ role: "user", content: [{ type: "text", text: "Solve the task." }], timestamp: 1 }],
 		};
-		const stream = provider.streamSimple(provider.getModels()[0], context, { signal, reasoning: "low" });
+		const stream = provider.streamSimple(provider.getModels()[0], context, { signal, reasoning });
 		for await (const _ of stream);
 		const message: AssistantMessage = await stream.result();
 		// What robot.ts does at message_end.
@@ -407,4 +415,70 @@ test("off: defineRobot without ensemble/... registers no provider and no ensembl
 	await f.emit("agent_end");
 	const [result] = f.entries.filter((e) => e.type === RESULT_ENTRY).map((e) => e.data);
 	assert.equal("ensemble" in result, false);
+});
+
+test("candidate records keep the full text and call arguments", async () => {
+	const f = fakePi();
+	ensemble(f.pi, ARGV);
+	await f.emit("session_start");
+	const long = "x".repeat(2000);
+	f.scripts[`${BASE}@0.3`] = { text: long, call: "act" };
+	await f.turn();
+	const [c] = f.turns()[0].candidates;
+	assert.equal(c.text, long);
+	assert.deepEqual(c.tool_calls, [{ name: "act", arguments: { key: `${BASE}@0.3` } }]);
+});
+
+test("--ensemble-timeout: a candidate that runs too long fails alone; the others are synthesized", async () => {
+	const f = fakePi({ "ensemble-timeout": "0.05" });
+	const en = ensemble(f.pi, ARGV)!;
+	await f.emit("session_start");
+	f.scripts[`${BASE}@0.7`] = "hang";
+	const m = await f.turn();
+	assert.equal(m.stopReason, "toolUse");
+	const hung = f.calls.find((c) => c.key === `${BASE}@0.7`)!;
+	assert.ok(hung.options.signal.aborted, "the hung request was aborted");
+	assert.equal(f.turns()[0].candidates[1].error, "timed out after 0.05 s");
+	assert.ok(!JSON.stringify(f.calls.at(-1)?.messages.at(-1)).includes("@0.7"));
+	assert.equal(en.result().ensemble.candidate_failures, 1);
+});
+
+test("temperatures a delegate would drop are refused, not recorded", async () => {
+	const f = fakePi({ "ensemble-models": CLAUDE, "ensemble-temps": "0.2,0.9" });
+	ensemble(f.pi, ARGV);
+	await f.emit("session_start");
+	const m = await f.turn(undefined, "low");
+	assert.equal(m.stopReason, "error");
+	assert.match(m.errorMessage ?? "", /anthropic\/claude-x would silently ignore --ensemble-temps .*thinking low/);
+	assert.equal(f.calls.length, 0, "no call was made");
+	// Without thinking the Anthropic adapter sends the temperature: allowed.
+	assert.equal((await f.turn(undefined, "")).stopReason, "toolUse");
+	assert.deepEqual(
+		f.calls.map((c) => c.key),
+		[`${CLAUDE}@0.2`, `${CLAUDE}@0.9`, "synth"],
+	);
+	// Its own default temperature (no --ensemble-temps) is fine with thinking on.
+	const g = fakePi({ "ensemble-models": CLAUDE });
+	ensemble(g.pi, ARGV);
+	await g.emit("session_start");
+	assert.equal((await g.turn()).stopReason, "toolUse");
+});
+
+test("ensemble/fallback/<primary> plans every candidate and the synthesis through the fallback provider", async () => {
+	const argv = ["node", "pi", "--model", `ensemble/fallback/${OTHER}`, "--fallback-model", BASE];
+	const f = fakePi({ "fallback-after": "1", "ensemble-temps": "0.5" });
+	const fb = fallback(f.pi, argv)!;
+	ensemble(f.pi, argv);
+	await f.emit("session_start");
+	f.scripts[`${OTHER}@0.5`] = { error: "Request failed (503): down" };
+	const m = await f.turn();
+	assert.equal(m.stopReason, "toolUse");
+	assert.deepEqual(
+		f.calls.map((c) => c.key),
+		[`${OTHER}@0.5`, `${BASE}@0.5`, "synth"],
+		"the candidate failed over to the backup, which then synthesized",
+	);
+	assert.equal(m.model, "muse-glimmer-30b");
+	assert.equal(f.entries.filter((e) => e.type === FALLBACK_ENTRY).length, 1);
+	assert.deepEqual(fb.result(), { planner_models: { primary: 0, fallback: 2 } });
 });

@@ -11,10 +11,12 @@
  * too, every model at every temperature). Then `--ensemble-synth-model` (default the base) is asked
  * once with the same transcript plus a user note listing the candidates that answered (their text
  * and proposed tool calls, none of which ran); its reply, tool calls included, is the turn. A
- * candidate that fails is left out; the turn fails only when all of them fail (with the first
+ * candidate that fails, or runs past `--ensemble-timeout` seconds (default 180; 0 = none), is
+ * left out; the turn fails only when all of them fail (with the first
  * candidate's error, so pi's own retry judges it as usual) or the synthesis fails. An abort ends
  * the turn as aborted. Each turn writes a `planner_ensemble` entry {turn, candidates: [{model,
- * temperature, ok, error?, text, tool_calls, cost_usd, tokens, ms}], synth, cost_usd}; `result()`
+ * temperature, ok, error?, text, tool_calls, cost_usd, tokens, ms}], synth, cost_usd}, with each
+ * candidate's full text and call arguments; `result()`
  * gives `ensemble` {candidates, synth, turns, candidate_calls, candidate_failures, synth_failures,
  * cost_usd} for the `robot_result` row.
  *
@@ -24,6 +26,13 @@
  * `--max-cost` (../robot.ts sums `usage.cost` at message_end) and pi's session cost see every call
  * exactly once, and nothing goes through VLM_COST_EVENT. Streaming is per turn: the synthesis
  * events are relayed once it has completed.
+ *
+ * Temperatures are only sent where they take effect: a candidate whose delegate would drop them
+ * (pi-ai's Anthropic adapter with thinking on, or a model that takes no temperature) fails the
+ * turn with a configuration error instead of recording a temperature the model never saw.
+ *
+ * A delegate may be another wrapper: `--model ensemble/fallback/<primary> --fallback-model <backup>`
+ * runs every candidate and the synthesis through ./fallback.ts's `fallback/<primary>`.
  *
  * `--max-api-concurrency` (./api-gate.ts): the gate holds one slot for the turn; the first candidate
  * lane and the synthesis use it, and each further parallel lane takes a slot of its own through
@@ -94,6 +103,16 @@ const textOf = (m: AssistantMessage) =>
 		.trim();
 const callsOf = (m: AssistantMessage) =>
 	m.content.flatMap((c) => (c.type === "toolCall" ? [{ name: c.name, arguments: c.arguments }] : []));
+/**
+ * Whether pi-ai leaves `temperature` out of this delegate's request: its Anthropic adapter drops it
+ * with thinking on (and for models flagged supportsMidConvoEffort or supportsTemperature: false).
+ * A `fallback/...` delegate is not inspected (its planners are chosen per turn).
+ */
+export function ignoresTemperature(model: Model<Api>, options: SimpleStreamOptions): boolean {
+	if (model.api !== "anthropic-messages") return false;
+	const compat = (model.compat ?? {}) as { supportsMidConvoEffort?: boolean; supportsTemperature?: boolean };
+	return Boolean(options.reasoning) || compat.supportsMidConvoEffort === true || compat.supportsTemperature === false;
+}
 const ok = (m: AssistantMessage) => m.stopReason !== "error" && m.stopReason !== "aborted";
 
 /** The user note the synthesis model sees after the transcript: the candidates' text and proposed calls. */
@@ -123,6 +142,11 @@ export function ensemble(pi: ExtensionAPI, argv: readonly string[] = process.arg
 	pi.registerFlag("ensemble-models", {
 		type: "string",
 		description: "Candidate models (provider/model, comma list) instead of the base model",
+	});
+	pi.registerFlag("ensemble-timeout", {
+		type: "string",
+		default: "180",
+		description: "Seconds each candidate call may take before it counts as failed (0 = no limit)",
 	});
 	pi.registerFlag("ensemble-synth-model", {
 		type: "string",
@@ -167,22 +191,50 @@ export function ensemble(pi: ExtensionAPI, argv: readonly string[] = process.arg
 	};
 
 	/** One buffered delegate call. */
-	async function call(model: Model<Api>, messages: Message[], options: SimpleStreamOptions): Promise<Outcome> {
+	/** One buffered delegate call; with `seconds` > 0 it is aborted and reported as an error after that long. */
+	async function call(
+		model: Model<Api>,
+		messages: Message[],
+		options: SimpleStreamOptions,
+		seconds = 0,
+	): Promise<Outcome> {
 		const started = Date.now();
 		const events: AssistantMessageEvent[] = [];
 		let message: AssistantMessage | undefined;
+		const own = new AbortController();
+		const outer = options.signal;
+		const onAbort = () => own.abort();
+		if (outer?.aborted) own.abort();
+		else outer?.addEventListener("abort", onAbort, { once: true });
+		let timedOut = false;
+		// A plain (ref'd) timer: a hung call with nothing else open must still time out.
+		const timer =
+			seconds > 0
+				? setTimeout(() => {
+						timedOut = true;
+						own.abort();
+					}, seconds * 1000)
+				: undefined;
 		try {
 			if (!registry) throw new Error("ensemble: no session");
-			for await (const ev of registry.streamSimple(model, { messages }, options)) {
+			for await (const ev of registry.streamSimple(model, { messages }, { ...options, signal: own.signal })) {
 				events.push(ev);
 				if (ev.type === "done") message = ev.message;
 				if (ev.type === "error") message = ev.error;
 				if (message) break;
 			}
 		} catch (err) {
-			message = errored(model, err, options.signal?.aborted);
+			message = errored(model, err, outer?.aborted);
+		} finally {
+			clearTimeout(timer);
+			outer?.removeEventListener("abort", onAbort);
 		}
 		message ??= errored(model, new Error("stream ended without a result"));
+		if (timedOut && !outer?.aborted) {
+			const failed = errored(model, new Error(`timed out after ${seconds} s`));
+			failed.usage = message.usage ?? failed.usage;
+			message = failed;
+		}
 		return { message, events, ms: Date.now() - started };
 	}
 
@@ -199,7 +251,12 @@ export function ensemble(pi: ExtensionAPI, argv: readonly string[] = process.arg
 		const worker = async () => {
 			for (let i = next++; i < list.length; i = next++) {
 				const t = list[i].temperature;
-				out[i] = await call(models[i], context.messages, t === undefined ? rest : { ...rest, temperature: t });
+				out[i] = await call(
+					models[i],
+					context.messages,
+					t === undefined ? rest : { ...rest, temperature: t },
+					Number(pi.getFlag("ensemble-timeout")) || 0,
+				);
 			}
 		};
 		const extra = async () => {
@@ -242,6 +299,11 @@ export function ensemble(pi: ExtensionAPI, argv: readonly string[] = process.arg
 			({ list, synth: synthRef } = config());
 			models = list.map((c) => delegate(c.model));
 			synthModel = delegate(synthRef);
+			for (const [i, c] of list.entries())
+				if (c.temperature !== undefined && ignoresTemperature(models[i], rest))
+					throw new Error(
+						`ensemble: ${c.model} would silently ignore --ensemble-temps (${models[i].api} drops temperature ${rest.reasoning ? `with thinking ${rest.reasoning}` : "for this model"}); use --thinking off or --ensemble-models`,
+					);
 		} catch (err) {
 			return end(errored(MODEL, err));
 		}
@@ -256,11 +318,8 @@ export function ensemble(pi: ExtensionAPI, argv: readonly string[] = process.arg
 				temperature: list[i].temperature ?? null,
 				ok: ok(r.message),
 				...(ok(r.message) ? {} : { error: brief(r.message.errorMessage ?? r.message.stopReason, 300) }),
-				text: brief(textOf(r.message), 500),
-				tool_calls: callsOf(r.message).map((c) => ({
-					name: c.name,
-					arguments: brief(JSON.stringify(c.arguments), 500),
-				})),
+				text: textOf(r.message),
+				tool_calls: callsOf(r.message),
 				cost_usd: Number(usd(r.message).toFixed(6)),
 				tokens: r.message.usage?.totalTokens ?? 0,
 				ms: r.ms,

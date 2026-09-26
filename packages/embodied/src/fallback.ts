@@ -28,6 +28,9 @@
  * VLM calls use, and into the next switch entry as `failed: {attempts, cost_usd, tokens}`. `result()`
  * gives `planner_models`, the turns each model planned, for the `robot_result` row.
  *
+ * `--model ensemble/fallback/<primary>` (./ensemble.ts) registers the same model for the ensemble's
+ * candidates and synthesis to plan through; their turns count in `planner_models` one by one.
+ *
  * pi resolves `--model` when it loads the extensions, before any session runs, and reads the flags into
  * the runtime only after that; so the module reads `--model` and `--fallback-model` from `argv` itself
  * and registers nothing without `--fallback-model`. `defineRobot` mounts it; without a robot, mount it
@@ -68,7 +71,8 @@ export function fallbackArgs(argv: readonly string[]): FallbackArgs {
 		const i = argv.findIndex((a) => a === flag || a.startsWith(`${flag}=`));
 		return i < 0 ? undefined : argv[i] === flag ? argv[i + 1] : argv[i].slice(flag.length + 1);
 	};
-	const model = value("--model");
+	// `ensemble/fallback/<primary>` (./ensemble.ts) plans each candidate through this provider.
+	const model = value("--model")?.replace(/^ensemble\//, "");
 	return {
 		primary: model?.startsWith("fallback/") ? model.slice("fallback/".length) : undefined,
 		fallback: value("--fallback-model"),
@@ -307,7 +311,8 @@ export function fallback(pi: ExtensionAPI, argv: readonly string[] = process.arg
 		if (ctx.model?.provider === "fallback") fit(ctx.model);
 	});
 	pi.on("before_agent_start", (_event, ctx) => {
-		if (ctx.model?.provider === "fallback" || warned) return;
+		const through = ctx.model?.provider === "ensemble" && ctx.model.id.startsWith("fallback/");
+		if (ctx.model?.provider === "fallback" || through || warned) return;
 		warned = true;
 		const s = `--fallback-model is set but the model is not fallback/<primary>; nothing fails over`;
 		if (ctx.hasUI) ctx.ui.notify(s, "warning");

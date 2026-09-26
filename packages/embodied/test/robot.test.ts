@@ -55,13 +55,17 @@ function fakePi(flagValues: Record<string, unknown> = {}, branch: unknown[] = []
 			shutdown = true;
 		},
 		sessionManager: { getBranch: () => branch, getSessionDir: () => dir },
+		// Like pi: the prompt the last before_agent_start handler forced (see emit).
+		getSystemPrompt: () => forced ?? "pi default prompt",
 	};
+	let forced: string | undefined;
 	/** Emit like pi: every handler in order; a tool_call block or an input "handled" stops the chain. */
 	async function emit(name: string, event: Record<string, unknown> = {}) {
 		let result: any;
 		for (const fn of handlers.get(name) ?? []) {
 			const r: any = await fn({ type: name, ...event }, ctx);
 			if (r !== undefined) result = r;
+			if (name === "before_agent_start" && r?.systemPrompt !== undefined) forced = r.systemPrompt;
 			if (r && ((name === "tool_call" && r.block) || (name === "input" && r.action === "handled"))) return r;
 		}
 		return result;
@@ -373,21 +377,45 @@ test("an operator's unit passes the gates a tool call passes; every robot tool i
 	assert.equal(unitsHandle(k).refuse(), "The episode is finished.");
 });
 
-test("the forced system prompt is recorded once per change (pi sends it without recording it)", async (t) => {
+test("the prompt the planner saw is recorded at turn start, once per change and per session", async (t) => {
 	const f = fakePi();
 	t.after(f.restore);
 	let prompt = "Move the block.";
 	toy(f.pi, async () => ["move", "finish"], { prompt: () => prompt });
-	await f.emit("session_start");
-	const first = await f.emit("before_agent_start");
-	await f.emit("before_agent_start");
-	prompt = "Move the block carefully.";
-	await f.emit("before_agent_start");
 	// Every prompt closes with the shared closed-loop rules (../src/closed-loop.md).
 	const closed = (text: string) => `${text}\n\n${toolSections(CLOSED_LOOP, ["move", "finish"])}`;
-	assert.deepEqual(first, { systemPrompt: closed("Move the block.") });
+	// A later handler rewriting the robot's prompt, as explore.ts does: the entry holds the rewrite.
+	f.pi.on("before_agent_start", () => ({ systemPrompt: `${closed(prompt)}\n\nExplore.` }));
+	const recorded = () => f.entries.filter((e) => e.type === SYSTEM_PROMPT_ENTRY).map((e) => e.data.text);
+	await f.emit("session_start");
+	const first = await f.emit("before_agent_start");
+	assert.deepEqual(first, { systemPrompt: `${closed("Move the block.")}\n\nExplore.` });
+	assert.deepEqual(recorded(), [], "nothing before the turn starts");
+	await f.emit("turn_start");
+	await f.emit("turn_start");
+	prompt = "Move the block carefully.";
+	await f.emit("before_agent_start");
+	await f.emit("turn_start");
+	assert.deepEqual(recorded(), [
+		`${closed("Move the block.")}\n\nExplore.`,
+		`${closed("Move the block carefully.")}\n\nExplore.`,
+	]);
+	// A new session records its prompt again, even an unchanged one.
+	await f.emit("session_start");
+	await f.emit("before_agent_start");
+	await f.emit("turn_start");
+	assert.equal(recorded().length, 3);
+});
+
+test("a robot without a prompt of its own records nothing", async (t) => {
+	const f = fakePi();
+	t.after(f.restore);
+	toy(f.pi, async () => ["move", "finish"]);
+	await f.emit("session_start");
+	await f.emit("before_agent_start");
+	await f.emit("turn_start");
 	assert.deepEqual(
-		f.entries.filter((e) => e.type === SYSTEM_PROMPT_ENTRY).map((e) => e.data),
-		[{ text: closed("Move the block.") }, { text: closed("Move the block carefully.") }],
+		f.entries.filter((e) => e.type === SYSTEM_PROMPT_ENTRY),
+		[],
 	);
 });

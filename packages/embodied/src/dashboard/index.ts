@@ -64,6 +64,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { llmCheck } from "../check.ts";
 import { type Gumi, type GumiState, gumi, observation, type Step as UnitStep } from "../gumi/index.ts";
+import { vlmOperator } from "../gumi/operator.ts";
 import { argumentSkeleton, HUMAN_EVENT, type HumanRequest, parseArguments } from "../human.ts";
 import { encodePng } from "../png.ts";
 import {
@@ -827,6 +828,8 @@ function createHub(server: Server, url: string, page: string, liveFps: number) {
 					if (url.pathname === "/gumi/record")
 						return reply(200, g.record(String(body.action ?? ""), body.success));
 					if (url.pathname === "/gumi/control") return reply(200, g.control(String(body.action ?? "")));
+					if (url.pathname === "/gumi/operator")
+						return reply(200, { ...g.operator(String(body.action ?? "")), state: g.state() });
 				} catch (err) {
 					const status = (err as { status?: number }).status;
 					if (!status) throw err;
@@ -979,6 +982,9 @@ export default function dashboard(pi: ExtensionAPI) {
 				(label === null ? { actor: null } : { actor: "human", action: label }) satisfies VideoNote,
 			),
 	});
+	// The VLM operator (../gumi/operator.ts, --gumi-operator): drives the same teleop path, its state rides in the teleop state.
+	const operator = vlmOperator(pi, teleop, () => teleop.publish());
+	teleop.attachOperator(operator);
 	// The robot in this runtime publishes its status here; it may do so before the hub is attached.
 	pi.events.on(STATUS_EVENT, (data) => {
 		status = data as RobotStatus;

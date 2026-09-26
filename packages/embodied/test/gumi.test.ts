@@ -32,6 +32,7 @@ import {
 	type UnitsHandle,
 	views,
 } from "../src/gumi/index.ts";
+import { normalizeDecision, OPERATOR_ENTRY, oscillates, vlmOperator } from "../src/gumi/operator.ts";
 import { LIBERO_TURNS, rotvecToMatrix, yawOf } from "../src/libero/index.ts";
 import { encodePng } from "../src/png.ts";
 import { STATUS_EVENT } from "../src/robot.ts";
@@ -456,13 +457,18 @@ test("takeover: the agent waits while the operator drives; a decision older than
 // gumi on a fake pi
 
 type Handler = (event: any, ctx: any) => unknown;
-function fakePi(flags: Record<string, unknown>) {
+function fakePi(flags: Record<string, unknown>, vlm: string[] = []) {
 	const handlers = new Map<string, Handler[]>();
 	const listeners = new Map<string, ((d: unknown) => void)[]>();
 	const sent: unknown[] = [];
 	const commands = new Map<string, any>();
+	const entries: { type: string; data: any }[] = [];
+	/** The side model calls (the VLM operator): the prompt text and the image count. */
+	const asked: { text: string; images: number }[] = [];
 	let idle = true;
 	const pi = {
+		appendEntry: (type: string, data: unknown) => entries.push({ type, data }),
+		getThinkingLevel: () => "low",
 		on: (name: string, fn: Handler) => handlers.set(name, [...(handlers.get(name) ?? []), fn]),
 		registerFlag: (name: string, o: { default?: unknown }) => {
 			flags[name] ??= o.default;
@@ -481,6 +487,17 @@ function fakePi(flags: Record<string, unknown>) {
 	const ctx = {
 		isIdle: () => idle,
 		signal: undefined,
+		model: { provider: "relay", id: "planner" },
+		modelRegistry: {
+			find: (provider: string, id: string) => ({ provider, id }),
+			streamSimple: (_m: unknown, c: { messages: { content: any[] }[] }) => ({
+				result: async () => {
+					const content = c.messages[0].content;
+					asked.push({ text: content[0].text, images: content.filter((x) => x.type === "image").length });
+					return { stopReason: "stop", content: [{ type: "text", text: vlm.shift() ?? "" }] };
+				},
+			}),
+		},
 	};
 	const emit = async (name: string, event: Record<string, unknown> = {}) => {
 		let out: unknown;
@@ -492,6 +509,8 @@ function fakePi(flags: Record<string, unknown>) {
 		emit,
 		sent,
 		commands,
+		entries,
+		asked,
 		setIdle: (v: boolean) => {
 			idle = v;
 		},
@@ -1152,4 +1171,109 @@ test("gumi: an operator's manual robot-tool call counts as an operator step for 
 	};
 	assert.equal(blocked?.block, true);
 	assert.match(String(blocked?.reason), /move_to/);
+});
+
+const decision = (o: Record<string, unknown>) =>
+	JSON.stringify({
+		phase: "align",
+		evidence: "cube left of the gripper",
+		next_goal: "center",
+		confidence: 0.9,
+		finish: false,
+		pause: false,
+		command: "",
+		...o,
+	});
+
+test("VLM operator: the decision checks (one unit per arm, repeats, confidence, grammar) and the oscillation guard", () => {
+	const one = { arms: [ARM], vocabulary: SINGLE, threshold: 0.55 };
+	const ok = normalizeDecision(JSON.parse(decision({ command: "MV_LEFT*3" })), one);
+	assert.deepEqual(
+		ok.steps.map((s) => s[ARM]),
+		["MV_LEFT", "MV_LEFT", "MV_LEFT"],
+	);
+	// Descent and the gripper need another image before repeating.
+	assert.equal(normalizeDecision(JSON.parse(decision({ command: "MV_DOWN*3" })), one).steps.length, 1);
+	assert.throws(() => normalizeDecision(JSON.parse(decision({ command: "MV_LEFT MV_UP" })), one), /one unit per arm/);
+	assert.throws(() => normalizeDecision(JSON.parse(decision({ command: "MV_LEFT*4" })), one), /at most 3 repeats/);
+	assert.throws(() => normalizeDecision(JSON.parse(decision({ command: "ROTATE_CW" })), one), /not a unit here/);
+	assert.throws(
+		() => normalizeDecision(JSON.parse(decision({ phase: "dance", command: "MV_UP" })), one),
+		/invalid phase/,
+	);
+	assert.throws(() => normalizeDecision(JSON.parse(decision({})), one), /needs a command/);
+	const low = normalizeDecision(JSON.parse(decision({ command: "MV_UP", confidence: 0.3 })), one);
+	assert.equal(low.decision.pause, true);
+	assert.equal(low.steps.length, 0);
+	const two = normalizeDecision(JSON.parse(decision({ command: "L:MV_UP*2 R:GRASP" })), {
+		arms: DUAL,
+		vocabulary: SINGLE,
+		threshold: 0.55,
+	});
+	assert.deepEqual(two.steps, [
+		{ left: "MV_UP", right: "GRASP" },
+		{ left: "MV_UP", right: "STILL" },
+	]);
+	assert.equal(oscillates([["MV_LEFT"], ["MV_RIGHT"], ["MV_LEFT"], ["MV_RIGHT"]], ["MV_LEFT"]), true);
+	assert.equal(oscillates([["MV_LEFT"], ["MV_RIGHT"], ["MV_LEFT"]], ["MV_RIGHT"]), false);
+});
+
+test("VLM operator: decides from the teleop observation, drives the teleop path as gpt-operator, pauses and saves", async () => {
+	const root = mkdtempSync(join(tmpdir(), "gumi-op-"));
+	const f = fakePi({ "gumi-record": root, "gumi-operator": "session" }, [
+		decision({ command: "MV_FWD*2" }),
+		"not json",
+		decision({ command: "GRASP", confidence: 0.3 }),
+		decision({ finish: true }),
+	]);
+	const g = gumi(f.pi);
+	const op = vlmOperator(f.pi, g, () => g.publish());
+	g.attachOperator(op);
+	const robot = fakeRobot();
+	robot.handle.guide = () => "VIEWS OF THE TOY ROBOT";
+	await f.emit("session_start");
+	f.pi.events.emit(UNITS_EVENT, robot.handle);
+	f.pi.events.emit(STATUS_EVENT, { robot: "libero", task: { task: "3" }, language: "open the drawer", solved: false });
+	assert.equal((g.state().operator as any).mode, "paused");
+	g.operator("step");
+	await op.idle();
+	// Recording started by itself; a STOP looked first; the decision ran through the teleop path.
+	assert.deepEqual(
+		robot.calls.map((c) => c.unit),
+		["STOP", "MV_FWD", "MV_FWD"],
+	);
+	assert.match(f.asked[0].text, /VIEWS OF THE TOY ROBOT/);
+	assert.match(f.asked[0].text, /TASK: open the drawer/);
+	assert.equal(f.asked[0].images, 2);
+	// A non-JSON answer is asked once more; that one is a low-confidence pause: nothing moves.
+	g.operator("step");
+	await op.idle();
+	assert.equal(robot.calls.length, 3);
+	assert.equal(f.asked.length, 3);
+	assert.match((g.state().operator as any).status, /confidence below threshold/);
+	// finish is refused until the robot's success flag is set, then the rollout is saved as a success.
+	f.pi.events.emit(STATUS_EVENT, { robot: "libero", task: { task: "3" }, language: "open the drawer", solved: true });
+	g.operator("step");
+	await op.idle();
+	const outcomes = f.entries.filter((e) => e.type === OPERATOR_ENTRY).map((e) => e.data.outcome);
+	assert.deepEqual(outcomes, ["executed", "paused", "saved"]);
+	const saved = f.entries.find((e) => e.data.outcome === "saved")?.data.dir as string;
+	const lines = readFileSync(join(saved, "actions.jsonl"), "utf8")
+		.trim()
+		.split("\n")
+		.map((l) => JSON.parse(l));
+	assert.deepEqual(
+		lines.map((l) => [l.token, l.src]),
+		[
+			["MV_FWD", "gpt-operator"],
+			["MV_FWD", "gpt-operator"],
+		],
+	);
+	assert.equal(JSON.parse(readFileSync(join(saved, "metadata.json"), "utf8")).success, true);
+	// Off without the flag.
+	const h = fakePi({});
+	const g2 = gumi(h.pi);
+	const off = vlmOperator(h.pi, g2, () => {});
+	g2.attachOperator(off);
+	assert.throws(() => g2.operator("run"), /--gumi-operator/);
 });

@@ -221,6 +221,9 @@ Shared modules:
   (DNS-rebinding defense; `--dashboard-allowed-hosts` adds names); off loopback (`--dashboard-host`)
   every request also needs the token in the printed URL (`--dashboard-token`, else a random one).
   `/gumi-replay <run>` replays a GUMI recording as operator steps (asks first).
+  Its GUMI teleop panel (src/gumi/) drives action units by key, records demonstrations
+  (`--gumi-record`), and with `--gumi-operator <provider/model>` a VLM operator drives the same teleop
+  path (Run / Step once / Pause), recorded as `gpt-operator` (src/gumi/operator.ts).
 - Operator CLIs in `services/` (hardware, unverified on a rig): `robots.dual_franka.manual_call`
   (one facade call, dry-run by default), `robots.franka.capture` (`z-floor`, `pose`),
   `robots.piper.capture_z_floor`, `robots/piper/ros_launch.sh` (`can`, `arms`, `cameras`), and

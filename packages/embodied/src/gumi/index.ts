@@ -26,8 +26,8 @@
  *                     ee_pose, gripper_width and `gripper_closed_measured` / `grip_measured` are what the robot
  *                     measured at obs_t (null when it reports no gripper state)
  *   metadata.json     task, robot, step size, tokens, sources, success; summary.json {success, steps, end_reason, ...}
- * Each record is (obs_t, a_t): the observation the unit was decided on, then the unit. `src` is "human" or
- * "agent"; operator steps taken over from a running agent carry `dagger` (true, or "L|R" on two arms), as
+ * Each record is (obs_t, a_t): the observation the unit was decided on, then the unit. `src` is "human",
+ * "agent" or "gpt-operator" (the VLM operator, ./operator.ts, which drives through the same teleop path); operator steps taken over from a running agent carry `dagger` (true, or "L|R" on two arms), as
  * Show-Harness's runners write it. `rollouts_to_alpaca.py <root>/<MMDD>/task_<id>` converts every run of a task.
  */
 
@@ -374,7 +374,8 @@ const NO_STATE: ArmState = { ee_pose: [], gripper_width: 0, gripper_closed_measu
 // ---------------------------------------------------------------------------
 // the recorder (core/record/episode_logger.py run dirs, with core/teleop/{single,dual}.py actions.jsonl)
 
-export type Src = "human" | "agent";
+/** Who decided a step: a person at the dashboard, the agent, or the VLM operator (./operator.ts). */
+export type Src = "human" | "agent" | "gpt-operator";
 type StepInfo = {
 	src: Src;
 	/** A human step taken over from a running agent (DAgger). */
@@ -444,7 +445,7 @@ export class Recorder {
 			files[view] = file;
 		}
 		const ts = Date.now() / 1000;
-		const human = info.dagger && info.src === "human";
+		const human = info.dagger && info.src !== "agent";
 		const dagger = this.dual
 			? this.arms
 					.filter((a) => step[a] !== STILL)
@@ -678,6 +679,8 @@ export type GumiState = {
 	rt: boolean;
 	/** The key bindings for these arms (`keyMap`): KeyboardEvent.code -> [arm, unit]. */
 	keys: Record<string, [string, string]>;
+	/** The VLM operator (./operator.ts), when mounted. */
+	operator?: unknown;
 };
 
 /**
@@ -726,6 +729,8 @@ export function gumi(
 		const v = pi.getFlag("gumi-record");
 		return typeof v === "string" && v ? v : undefined;
 	};
+	/** The VLM operator's state (./operator.ts), when one is mounted. */
+	let operator: { state: () => unknown; control: (action: string) => Record<string, unknown> } | undefined;
 	const state = (): GumiState => ({
 		available: handle !== undefined,
 		robot: handle ? robotName : null,
@@ -742,6 +747,7 @@ export function gumi(
 		root: root() ?? null,
 		rt: handle?.rt === true,
 		keys: keyMap(arms, handle?.rt ? handle.vocabulary : undefined, handle?.vocabulary),
+		...(operator ? { operator: operator.state() } : {}),
 	});
 	const publish = (msg?: string) => {
 		if (msg !== undefined) message = msg;
@@ -886,8 +892,33 @@ export function gumi(
 	const controller = {
 		state,
 		takeover,
-		/** Parse and run a teleop request: each step records (obs_t, a_t) then executes. */
-		async step(body: Record<string, unknown>) {
+		/** STOP (hold one step and look): the first observation, not a recorded step. */
+		async look() {
+			if (!handle) throw fail(409, "no robot with action units is up (run the robot with --units)");
+			if (ctx && !ctx.isIdle() && !takeover.human) throw fail(409, "the agent is driving: take over first");
+			const why = handle.refuse();
+			if (why) throw fail(409, why);
+			const r = await handle.run(arms[0] === ARM ? { unit: "STOP" } : { unit: "STOP", arm: arms[0] });
+			latest = observation(r) ?? latest;
+			publish();
+		},
+		/** Carry the VLM operator's state in the teleop state, and re-send it. */
+		attachOperator(op: NonNullable<typeof operator>) {
+			operator = op;
+		},
+		/** run | pause | step of the VLM operator (the dashboard's /gumi/operator). */
+		operator(action: string) {
+			if (!operator) throw fail(409, "no VLM operator is mounted");
+			return operator.control(action);
+		},
+		publish: () => publish(),
+		/** What the teleop page shows now: the latest observation, the task and the robot's success flag. */
+		observe: () => ({ obs: latest, task, solved, ctx }),
+		/**
+		 * Parse and run a teleop request: each step records (obs_t, a_t) then executes. `src` names who
+		 * decided it (the dashboard's person, or the VLM operator).
+		 */
+		async step(body: Record<string, unknown>, src: Exclude<Src, "agent"> = "human") {
 			if (!handle || !ctx) throw fail(409, "no robot with action units is up (run the robot with --units)");
 			const steps = (() => {
 				try {
@@ -947,7 +978,7 @@ export function gumi(
 					}
 					const obs = latest;
 					const info: StepInfo = {
-						src: "human",
+						src,
 						dagger: !ctx.isIdle(),
 						closed: { ...closed },
 						state: await stateNow(obs),
@@ -973,7 +1004,7 @@ export function gumi(
 					if (moved) takeover.humanStep(units.filter((u) => u !== STILL));
 					const next = observation(result);
 					if (next) latest = next;
-					last = `human ${label}`;
+					last = `${src} ${label}`;
 					// The robot's gates: a unit it refused or halted, or an arm that stalled against something
 					// (contact, the floor, a workspace limit), ends the batch; a held key or a replay must not push on.
 					const halt = haltReason(result);

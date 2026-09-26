@@ -109,6 +109,13 @@ details.ops > summary { padding: 6px 12px; font-weight: 600; cursor: pointer; }
             <button id="tpSave" data-t="recSave"></button>
             <button id="tpDiscard" data-t="recDiscard"></button>
           </div>
+          <div class="tp-row" id="tpOp" hidden>
+            <b data-t="opTitle"></b>
+            <button id="opRun" data-t="opRun"></button>
+            <button id="opStep" data-t="opStep"></button>
+            <button id="opPause" data-t="opPause"></button>
+            <span id="opStatus" class="meta"></span>
+          </div>
         </div>
         <div class="status" id="tpStatus"></div>
       </div>
@@ -181,6 +188,7 @@ const COPY = {
     taskSent: "Starting a new session…", failed: (e) => `Failed: ${e}`, stepCaption: (s) => `#${s.n} ${s.name}`,
     teleop: "Teleop (GUMI)", keys: "keyboard", run: "Run", recStart: "Start recording", success: "success",
     recSave: "Save", recDiscard: "Discard", seqPlaceholder: "w*3 a g",
+    opTitle: "VLM operator", opRun: "Run", opStep: "Step once", opPause: "Pause",
     seqPlaceholderDual: "L:w*3 R:i g",
     modes: { agent: "agent drives", requested: "takeover requested", human: "operator drives" },
     take: "Take over", release: "Hand back", waiting: "Waiting for the unit…",
@@ -216,6 +224,7 @@ const COPY = {
     taskSent: "正在新建会话…", failed: (e) => `失败:${e}`, stepCaption: (s) => `#${s.n} ${s.name}`,
     teleop: "遥操作 (GUMI)", keys: "键盘", run: "执行", recStart: "开始录制", success: "成功",
     recSave: "保存", recDiscard: "丢弃", seqPlaceholder: "w*3 a g",
+    opTitle: "VLM 操作员", opRun: "运行", opStep: "单步", opPause: "暂停",
     seqPlaceholderDual: "L:w*3 R:i g",
     modes: { agent: "智能体控制", requested: "等待接管", human: "操作员控制" },
     take: "接管", release: "交还智能体", waiting: "等待当前动作结束…",
@@ -491,6 +500,12 @@ function renderGumi(g) {
   $("tpStart").disabled = !G.root || !!G.recording;
   $("tpSave").disabled = $("tpDiscard").disabled = !G.recording;
   $("tpCmd").placeholder = dual() ? T.seqPlaceholderDual : T.seqPlaceholder;
+  const O = G.operator;
+  $("tpOp").hidden = !O?.available;
+  if (O?.available) {
+    $("opRun").disabled = O.mode === "continuous";
+    $("opStatus").textContent = [O.model, O.status, `${O.executed} steps`, O.lastDecision ? `${O.lastDecision.phase}: ${O.lastDecision.command || "-"} (${O.lastDecision.confidence})` : ""].filter(Boolean).join(" · ");
+  }
   $("tpStatus").textContent = [G.message, G.last ? `last: ${G.last}` : "", dual() ? T.helpDual : T.help, turnHelp()].filter(Boolean).join(" · ");
   const key = G.arms.join() + "|" + G.vocabulary.join() + "|" + JSON.stringify(G.keys ?? {});
   if (key === padsKey) return;
@@ -546,6 +561,9 @@ $("tpSeq").onsubmit = async (e) => {
   const command = $("tpCmd").value.trim(); if (!command) return;
   if (await gumiPost("/gumi/step", { command })) $("tpCmd").select();
 };
+$("opRun").onclick = () => gumiPost("/gumi/operator", { action: "run" });
+$("opStep").onclick = () => gumiPost("/gumi/operator", { action: "step" });
+$("opPause").onclick = () => gumiPost("/gumi/operator", { action: "pause" });
 $("tpTake").onclick = () => gumiPost("/gumi/control", { action: G?.mode === "agent" ? "take" : "release" });
 $("tpStart").onclick = () => gumiPost("/gumi/record", { action: "start" });
 $("tpSave").onclick = () => gumiPost("/gumi/record", { action: "save", success: $("tpSuccess").checked });

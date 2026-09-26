@@ -86,7 +86,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type TSchema, Type } from "typebox";
 import { ABLATION_MODES, Ablation, type AblationMode, mcqOptions, symbol, unsymbol } from "./experimental.ts";
-import { renderPrompt } from "./prompt.ts";
+import { DEFAULT_VIEWS, DEFAULT_VIEWS_NO_WRIST, renderPrompt } from "./prompt.ts";
 import {
 	type Result,
 	STATE_ENTRY,
@@ -1007,6 +1007,7 @@ export function units(
 		viewSelect: false,
 		wrist: () => wristView,
 		plugins: effective,
+		guide: () => (spec.views ?? (wristView ? DEFAULT_VIEWS : DEFAULT_VIEWS_NO_WRIST)).trim(),
 		...base,
 	};
 	pi.on("session_start", () =>

@@ -43,6 +43,8 @@ export type UnitsHandle = {
 	wrist?: () => boolean;
 	/** The plugins that run this session (after --units-plugins and the wrist view). */
 	plugins?: () => readonly string[];
+	/** How the images look and which way each MV_* unit moves in them (the robot's VIEWS text). */
+	guide?: () => string;
 	/** The camera images an observation carries and which are wrist views (the robot's `vdm` spec), if it says. */
 	views?: () => { views: number; wrist?: number | readonly number[] } | undefined;
 };

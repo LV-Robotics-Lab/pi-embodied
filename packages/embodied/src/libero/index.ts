@@ -72,6 +72,11 @@ const PRIMITIVES = [
 	"rotate_pitch",
 	"move_pose",
 ];
+/**
+ * The state-advancing tools a solved episode's recipe records (../memory): the always-on primitives
+ * and the planned-grasp executors, which are active with a grasp backend.
+ */
+export const RECIPE_PRIMITIVES = [...PRIMITIVES, "execute_grasp", "execute_place"];
 /** `preview_reach` is served only with --ik (startEpisode filters it out otherwise). */
 const TOOLS = [
 	...PRIMITIVES,
@@ -319,7 +324,7 @@ export default function libero(pi: ExtensionAPI) {
 		keepImages: 4,
 		memory: {
 			cell: () => ({ tag: tag(), reference: tag().replace(/_s\d+$/, "_s0") }),
-			primitives: PRIMITIVES,
+			primitives: RECIPE_PRIMITIVES,
 		},
 		video: true,
 		flywheel: {

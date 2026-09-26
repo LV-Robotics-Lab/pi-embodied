@@ -5,7 +5,8 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import dualFranka from "../src/dual_franka/index.ts";
 import franka from "../src/franka/index.ts";
-import libero, { type Claim, orientationError, runClaim } from "../src/libero/index.ts";
+import libero, { type Claim, orientationError, RECIPE_PRIMITIVES, runClaim } from "../src/libero/index.ts";
+import { recipe } from "../src/memory/index.ts";
 import {
 	attachedPrompt,
 	CHECK_ATTACHED_ENTRY,
@@ -346,4 +347,25 @@ test("the executor's orientation error covers roll and any tilt, the short way r
 	const rolled = [Math.cos(r / 2), -Math.sin(r / 2), 0, 0]; // qx(pi) * qz(r), xyzw
 	const e = orientationError(down, rolled);
 	assert.ok(Math.abs(Math.abs(e[2]) - r) < 1e-9 && Math.abs(e[0]) < 1e-9 && Math.abs(e[1]) < 1e-9, `${e}`);
+});
+
+test("a solved LIBERO recipe keeps its execute_grasp / execute_place steps", () => {
+	const call = (id: string, name: string, args: Record<string, unknown>) => ({
+		type: "message",
+		message: { role: "assistant", content: [{ type: "toolCall", id, name, arguments: args }] },
+	});
+	const result = (id: string, name: string, details: Record<string, unknown>) => ({
+		type: "message",
+		message: { role: "toolResult", toolCallId: id, toolName: name, details, isError: false, content: [] },
+	});
+	const entries = [
+		call("1", "execute_grasp", { grasp_id: "g2" }),
+		result("1", "execute_grasp", { result: {}, terminated: false }),
+		call("2", "execute_place", { place_id: "p5" }),
+		result("2", "execute_place", { result: {}, terminated: true }),
+	];
+	assert.deepEqual(recipe(entries as never, new Set(RECIPE_PRIMITIVES)), [
+		{ action: "execute_grasp", grasp_id: "g2" },
+		{ action: "execute_place", place_id: "p5" },
+	]);
 });

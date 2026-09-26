@@ -119,7 +119,11 @@ RoboTwin episodes also export in joint space (`--space joint`) in XPolicyLab's L
 (its `scripts/transform_lerobot_v30_format.py`): `observation.state` the measured joints and
 `action` the commanded joint targets, both `left_joint_0..6, right_joint_0..6` (6 joints and the
 gripper per arm), channel-first `cam_high` / `cam_left_wrist` / `cam_right_wrist` video,
-`robot_type` `unified_robot`, no `action_source`.
+`robot_type` `unified_robot`, and `action_source` kept as an extra column (XPolicyLab reads its
+features by name), so scripted steps can be filtered out. The joint-space export always encodes
+video: lerobot encodes with PyAV's bundled FFmpeg, but reads it back through `torchcodec` when
+that is installed, which needs FFmpeg's shared libraries (4 to 8, e.g. `libavutil.so.60`) on
+the system; with them missing, uninstall `torchcodec` to read through PyAV, or install FFmpeg.
 
 ```bash
 # Flywheel (LIBERO, RoboCasa, RoboTwin; pi's /flywheel-export runs the same)

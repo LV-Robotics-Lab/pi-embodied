@@ -33,10 +33,12 @@ Tokens:
 - a Flywheel export of a VLA run has no units, only per-step deltas: the eef path
   (``observation.state``'s eef_x/y/z) is quantized onto the 2 cm lattice with real2sim's
   ``manhattan_tokens`` (a sample whenever the eef has moved a whole step from the last lattice
-  point, its frame the observation where that motion began; MV_FWD is +x, MV_LEFT is -y, MV_UP
-  is +z, the units' base frame), and a flip of the ``gripper`` action's sign is GRASP/RELEASE.
-  The remaining frames of the run are not samples; ``metadata.json`` says ``token_source:
-  quantized``.
+  point, its frame the observation where that motion began), each axis named by the robot's
+  own MV_* base-frame vectors (``UNIT_VECTORS``, the ``units.vectors`` of the robot's TS
+  extension: LIBERO's MV_LEFT is -y, RoboCasa's +y), and a flip of the ``gripper`` action's
+  sign is GRASP/RELEASE, sampled on the observation before the command; the samples after it
+  start from the observation after it. The remaining frames of the run are not samples;
+  ``metadata.json`` says ``token_source: quantized``.
 
 Episodes: those with ``success`` set (a GUMI export marks each run; a Flywheel export only holds
 successes) unless ``--include-failures``. ``--prompt v5`` keeps RT_* turns, any other version
@@ -73,6 +75,27 @@ PI_ROOT = Path(__file__).resolve().parents[3]
 TRANSFORM = PI_ROOT / "packages/embodied/src/finetuned/transform.ts"
 #: Show-Harness's lattice (real2sim's step_m, the units' default step).
 STEP_M = 0.02
+#: The MV_* base-frame directions of the robots whose Flywheel exports are quantized, as each
+#: one's TS extension grounds them (packages/embodied/src/<robot>/index.ts ``units.vectors``):
+#: what a unit means on that robot, so a recorded -y move on RoboCasa is its MV_RIGHT.
+UNIT_VECTORS: dict[str, dict[str, tuple[int, int, int]]] = {
+    "libero": {
+        "MV_FWD": (1, 0, 0),
+        "MV_BACK": (-1, 0, 0),
+        "MV_LEFT": (0, -1, 0),
+        "MV_RIGHT": (0, 1, 0),
+        "MV_UP": (0, 0, 1),
+        "MV_DOWN": (0, 0, -1),
+    },
+    "robocasa": {
+        "MV_FWD": (1, 0, 0),
+        "MV_BACK": (-1, 0, 0),
+        "MV_LEFT": (0, 1, 0),
+        "MV_RIGHT": (0, -1, 0),
+        "MV_UP": (0, 0, 1),
+        "MV_DOWN": (0, 0, -1),
+    },
+}
 
 
 def slug(task: str) -> str:
@@ -149,14 +172,32 @@ def recorded_tokens(
     return rows
 
 
+def unit_names(vectors: dict[str, tuple[int, int, int]]) -> dict[tuple[int, int], str]:
+    """``(axis, sign) -> unit`` of a robot's MV_* vectors (each one a signed base axis)."""
+    names: dict[tuple[int, int], str] = {}
+    for unit, v in vectors.items():
+        axes = [k for k in range(3) if v[k]]
+        if len(axes) != 1 or abs(v[axes[0]]) != 1:
+            raise ValueError(f"{unit}: {v} is not a signed base axis")
+        names[(axes[0], v[axes[0]])] = unit
+    if len(names) != 6:
+        raise ValueError(f"the vectors cover {len(names)} of the 6 signed axes")
+    return names
+
+
 def quantized_tokens(
     frames: list[dict[str, Any]],
     state_names: list[str],
     action_names: list[str],
     step_m: float = STEP_M,
+    *,
+    vectors: dict[str, tuple[int, int, int]],
 ) -> list[dict[str, Any]]:
-    """Units read off a VLA run: the eef path on the ``step_m`` lattice, gripper flips as
-    GRASP/RELEASE. Each row's ``step`` is the frame whose observation it samples."""
+    """Units read off a VLA run: the eef path on the ``step_m`` lattice, its axes named by the
+    robot's MV_* ``vectors``, gripper flips as GRASP/RELEASE. Each row's ``step`` is the frame
+    whose observation it samples: a move's the frame the motion began at, a gripper flip's the
+    frame before the command, and what follows the flip starts from the frame after it."""
+    units = unit_names(vectors)
     eef = None
     for prefix in ("eef_", "eef_rel_"):
         names = [f"{prefix}{a}" for a in "xyz"]
@@ -179,12 +220,14 @@ def quantized_tokens(
         # Whole steps since the last lattice point; the residual carries over.
         tokens = manhattan_tokens(xyz[i] - anchor, step_m, step_m)
         for token in tokens:
-            axis, sign = MOVE_DIRS[token]
+            axis, sign = MOVE_DIRS[
+                token
+            ]  # real2sim's names decode manhattan_tokens's axes
             anchor[axis] += sign * step_m
             rows.append(
                 {
                     "step": a_frame,
-                    "token": token,
+                    "token": units[(axis, sign)],
                     "kind": "move",
                     "gripper_closed": closed,
                     "ee_pose": [round(float(v), 4) for v in xyz[a_frame]],
@@ -205,7 +248,10 @@ def quantized_tokens(
                     "src": src(frames[i]),
                 }
             )
-            anchor, a_frame = xyz[i].copy(), i
+            # The gripper command is action i: the next sample sees the observation after it,
+            # not the flip's own frame (two samples of one frame with different labels).
+            a_frame = min(i + 1, len(frames) - 1)
+            anchor = xyz[a_frame].copy()
     return rows
 
 
@@ -273,6 +319,14 @@ def convert(
     robot = robot or manifest.get("robot") or info.get("robot_type") or ""
     action_names = list(features["action"]["names"] or [])
     recorded = bool(action_names) and all("." in n for n in action_names)
+    # Quantized units are named in the recorded robot's frame (the camera transform's --robot
+    # override does not change what the data's MV_LEFT is).
+    data_robot = str(manifest.get("robot") or info.get("robot_type") or "")
+    if not recorded and data_robot not in UNIT_VECTORS:
+        raise ValueError(
+            f"no MV_* vectors for robot {data_robot!r} to name its quantized units; "
+            f"have {', '.join(UNIT_VECTORS)}"
+        )
     out_root = Path(out).expanduser().resolve()
     counters: dict[Path, int] = {}
     summary: dict[str, Any] = {
@@ -303,6 +357,7 @@ def convert(
                 list(features["observation.state"]["names"] or []),
                 action_names,
                 step_m,
+                vectors=UNIT_VECTORS[data_robot],
             )
             token_source = "quantized"
         turns = (

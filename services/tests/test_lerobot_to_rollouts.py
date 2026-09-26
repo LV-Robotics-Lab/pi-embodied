@@ -158,21 +158,47 @@ def test_quantized_tokens_walk_the_2cm_lattice_and_flip_the_gripper():
         frame(0.041, -0.021, 0.545, 1, 0),  # 45 mm up: two MV_UP from the grasp frame
         frame(0.041, -0.021, 0.549, 1),  # 4 mm residual: dropped
     ]
-    rows = l2r.quantized_tokens(frames, state_names, action_names)
+    libero = l2r.UNIT_VECTORS["libero"]
+    rows = l2r.quantized_tokens(frames, state_names, action_names, vectors=libero)
+    # The samples after the GRASP (action 4) see frame 5, the observation after the command:
+    # frame 4 is the GRASP sample's own.
     assert [(r["token"], r["step"], r["gripper_closed"]) for r in rows] == [
         ("MV_FWD", 0, False),
         ("MV_FWD", 2, False),
         ("MV_LEFT", 2, False),
         ("GRASP", 4, True),
-        ("MV_UP", 4, True),
-        ("MV_UP", 4, True),
+        ("MV_UP", 5, True),
+        ("MV_UP", 5, True),
     ]
+    assert len({(r["step"], r["token"]) for r in rows}) == len(rows) - 1
+    assert len({r["step"] for r in rows}) == 4, (
+        "one frame, one label (the two MV_UP apart)"
+    )
     assert rows[0]["ee_pose"] == [0.0, 0.0, 0.5] and rows[3]["kind"] == "gripper"
     assert {r["src"] for r in rows} == {"vla"}
+    # A grasp on the last frame has no frame after it: nothing follows anyway.
+    last = l2r.quantized_tokens(frames[:5], state_names, action_names, vectors=libero)
+    assert [(r["token"], r["step"]) for r in last][-1] == ("GRASP", 4)
+    # RoboCasa's MV_LEFT is +y (its units.vectors), so the same -y motion is its MV_RIGHT.
+    casa = l2r.quantized_tokens(
+        frames, state_names, action_names, vectors=l2r.UNIT_VECTORS["robocasa"]
+    )
+    assert [r["token"] for r in casa] == [
+        "MV_FWD",
+        "MV_FWD",
+        "MV_RIGHT",
+        "GRASP",
+        "MV_UP",
+        "MV_UP",
+    ]
     with pytest.raises(ValueError, match="no eef_x/y/z"):
-        l2r.quantized_tokens(frames, ["a"] * 8, action_names)
+        l2r.quantized_tokens(frames, ["a"] * 8, action_names, vectors=libero)
     with pytest.raises(ValueError, match="no 'gripper'"):
-        l2r.quantized_tokens(frames, state_names, ["dx"] * 7)
+        l2r.quantized_tokens(frames, state_names, ["dx"] * 7, vectors=libero)
+    with pytest.raises(ValueError, match="not a signed base axis"):
+        l2r.unit_names({**libero, "MV_FWD": (1, 1, 0)})
+    with pytest.raises(ValueError, match="cover 5 of the 6"):
+        l2r.unit_names({**libero, "MV_BACK": (1, 0, 0)})
 
 
 def test_slug_is_prepare_ts_task_dir():

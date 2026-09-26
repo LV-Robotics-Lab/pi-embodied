@@ -21,10 +21,11 @@ import io
 
 import numpy as np
 import pytest
-from PIL import Image
 
 from pi_embodied_services.components.unidepth_server import UniDepthFacade, decode_rgb
 from pi_embodied_services.utils.depth import DepthEstimator, fuse_depth
+
+Image = pytest.importorskip("PIL.Image")
 
 
 def _scene(h: int = 40, w: int = 40) -> np.ndarray:

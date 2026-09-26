@@ -24,9 +24,10 @@ import threading
 
 import numpy as np
 import pytest
-from PIL import Image
 
 from pi_embodied_services.components.molmo_server import BACKENDS, MolmoFacade
+
+Image = pytest.importorskip("PIL.Image")
 
 
 def _png_base64(w: int, h: int) -> str:

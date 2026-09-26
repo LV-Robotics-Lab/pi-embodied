@@ -18,6 +18,7 @@ installed: the flywheel extra's own environment)."""
 
 from __future__ import annotations
 
+import importlib
 import json
 from pathlib import Path
 
@@ -28,6 +29,19 @@ from pi_embodied_services.flywheel import cli
 from pi_embodied_services.flywheel.episode import EpisodeWriter, validate_episode
 from pi_embodied_services.flywheel.export import features
 from pi_embodied_services.flywheel.specs import ROBOTS, select, spec
+
+
+def video_decoder_missing() -> str | None:
+    """Why lerobot cannot decode video here: it decodes through torchcodec when installed, whose
+    native library needs FFmpeg's shared libraries (a RuntimeError at import when they are not
+    on the system; lerobot has no fallback once torchcodec is importable by name)."""
+    try:
+        importlib.import_module("torchcodec.decoders")
+    except ImportError:
+        return None  # not installed: lerobot decodes through PyAV's bundled FFmpeg
+    except (OSError, RuntimeError) as exc:
+        return f"torchcodec cannot load FFmpeg's shared libraries: {str(exc).splitlines()[0]}"
+    return None
 
 
 def obs(s: dict, step: int, image: tuple = (6, 8, 3)) -> dict:
@@ -331,6 +345,8 @@ def test_an_episode_without_joint_state_is_refused_by_the_joint_space(tmp_path):
 
 def test_robotwin_joint_space_exports_xpolicylab_lerobot(tmp_path, capsys):
     lerobot = pytest.importorskip("lerobot.datasets.lerobot_dataset")
+    if missing := video_decoder_missing():
+        pytest.skip(missing)
     for seed in (0, 1):
         record(
             tmp_path,
@@ -361,8 +377,10 @@ def test_robotwin_joint_space_exports_xpolicylab_lerobot(tmp_path, capsys):
         for k, v in info["features"].items()
         if k not in ("timestamp", "frame_index", "episode_index", "index", "task_index")
     }
-    assert list(ours) == list(xpolicylab_features(240, 320))
-    assert ours == xpolicylab_features(240, 320)
+    # XPolicyLab's features in its order, then action_source as an extra column.
+    source = {"dtype": "int64", "shape": [1], "names": None}
+    assert ours == {**xpolicylab_features(240, 320), "action_source": source}
+    assert list(ours)[-1] == "action_source"
     ds = lerobot.LeRobotDataset(out["repo_id"], root=root)
     for index in (0, 1):
         item = ds[index]
@@ -373,7 +391,7 @@ def test_robotwin_joint_space_exports_xpolicylab_lerobot(tmp_path, capsys):
         ]
         assert item["action"].tolist() == [float(i + step + 101) for i in range(14)]
         assert tuple(item["observation.images.cam_high"].shape) == (3, 240, 320)
-        assert "action_source" not in item
+        assert int(item["action_source"]) == 1, "the VLA's step, for filtering"
         assert item["task"] == "beat the block"
 
 

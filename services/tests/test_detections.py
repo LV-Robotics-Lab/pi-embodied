@@ -22,7 +22,6 @@ import io
 
 import numpy as np
 import pytest
-from PIL import Image
 
 from pi_embodied_services.utils.detections import (
     DetectionBook,
@@ -37,6 +36,8 @@ from pi_embodied_services.utils.perception import (
     franka_intrinsics,
 )
 from pi_embodied_services.utils.rpc import RpcFacade
+
+Image = pytest.importorskip("PIL.Image")
 
 H, W = 24, 32
 K = np.array([[40.0, 0.0, 16.0], [0.0, 40.0, 12.0], [0.0, 0.0, 1.0]])

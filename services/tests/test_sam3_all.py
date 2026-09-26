@@ -22,10 +22,11 @@ import threading
 
 import numpy as np
 import pytest
-from PIL import Image
 
 from pi_embodied_services.components.sam3_server import Sam3Facade
 from pi_embodied_services.utils.detections import decode_mask_png
+
+Image = pytest.importorskip("PIL.Image")
 
 H, W = 16, 20
 

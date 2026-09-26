@@ -29,10 +29,11 @@ Their lengths and meanings are the robot's: one dataset holds one embodiment and
 
 A spec may derive its state and action from other recorded arrays (``spec["columns"]``), and may
 ask for XPolicyLab's layout (``spec["layout"] == "xpolicylab"``, e.g. RoboTwin's joint space): the
-features of XPolicyLab's scripts/transform_lerobot_v30_format.py exactly, so its training scripts
-read the dataset as one of their own. There the state and action come first, their motor names in
-one nested list, the cameras are channel-first ``(3, H, W)`` mp4 at CRF 18, and there is no
-``action_source``.
+features of XPolicyLab's scripts/transform_lerobot_v30_format.py, so its training scripts read
+the dataset as one of their own. There the state and action come first, their motor names in one
+nested list, and the cameras are channel-first ``(3, H, W)`` mp4 at CRF 18; ``action_source``
+follows as an extra column (its readers take the features by name and ignore the rest), so
+scripted steps can still be told from the VLA's.
 """
 
 from __future__ import annotations
@@ -78,6 +79,7 @@ def features(spec: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 "shape": (channels, height, width),
                 "names": ["channels", "height", "width"],
             }
+        out["action_source"] = {"dtype": "int64", "shape": (1,), "names": None}
         return out
     out: dict[str, dict[str, Any]] = {
         f"observation.images.{camera}": {
@@ -110,7 +112,7 @@ def columns(data: Any, spec: dict[str, Any]) -> tuple[Any, Any]:
 def frame(data: Any, index: int, spec: dict[str, Any], task: str) -> dict[str, Any]:
     """Frame ``index`` of an episode's transitions: the observation before action ``index``."""
     states, actions = columns(data, spec)
-    out = {
+    return {
         **{
             f"observation.images.{camera}": data[key][index]
             for key, camera in spec["cameras"].items()
@@ -120,9 +122,6 @@ def frame(data: Any, index: int, spec: dict[str, Any], task: str) -> dict[str, A
         "action_source": np.array([data["action_source"][index]], dtype=np.int64),
         "task": task,
     }
-    if _xpolicylab(spec):
-        del out["action_source"]
-    return out
 
 
 def _successful_episodes(

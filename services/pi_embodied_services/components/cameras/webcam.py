@@ -27,8 +27,12 @@ component (``enhance_depth``) when a robot needs it. Intrinsics come from the co
 ``opencv-python-headless`` is imported lazily (the services' ``cameras`` extra).
 
 Capture times (``Frame.time_source``): a V4L2 webcam on Linux reports the kernel's
-buffer timestamp (``CAP_PROP_POS_MSEC``, taken on ``CLOCK_MONOTONIC`` when the frame
-started arriving, before it waited in the driver queue): ``backend``. Other webcam
+buffer timestamp (``CAP_PROP_POS_MSEC``, taken when the frame started arriving, before
+it waited in the driver queue): ``backend``. Which clock the driver stamps with is a
+driver setting (uvcvideo's ``clock`` parameter: ``CLOCK_MONOTONIC`` by default, or
+``CLOCK_REALTIME``; others use ``CLOCK_BOOTTIME``) that OpenCV does not expose, so it
+is identified from the first stamps (:func:`stamp_clock`) and frames are aged on that
+clock; stamps on no known clock are not used. Other webcam
 backends report no usable capture time: ``host`` (the dequeue time). An RTSP frame's
 presentation time is mapped to the host clock (:class:`PtsClock`): ``stream_pts``.
 """
@@ -44,6 +48,32 @@ from typing import Any
 import numpy as np
 
 from pi_embodied_services.components.cameras.base import Camera, Frame, capture_times
+
+#: How close a live frame's stamp must be to a clock's "now" to identify that clock, s.
+STAMP_CLOCK_WINDOW_S = 2.0
+
+
+def host_clocks() -> dict[str, float]:
+    """ "Now" on each clock a V4L2 driver may stamp buffers with."""
+    now = {"monotonic": time.monotonic(), "realtime": time.time()}
+    boottime = getattr(time, "CLOCK_BOOTTIME", None)
+    if boottime is not None:
+        now["boottime"] = time.clock_gettime(boottime)
+    return now
+
+
+def stamp_clock(stamp_s: float, now: dict[str, float]) -> str | None:
+    """The clock a driver stamp was taken on: the one on which the (live) frame is
+    between 0 and ``STAMP_CLOCK_WINDOW_S`` old, the youngest if several qualify
+    (monotonic and boottime differ only by time suspended); None when none does."""
+    if not (math.isfinite(stamp_s) and stamp_s > 0.0):
+        return None
+    fits = {
+        name: t - stamp_s
+        for name, t in now.items()
+        if -0.05 <= t - stamp_s <= STAMP_CLOCK_WINDOW_S
+    }
+    return min(fits, key=lambda k: fits[k]) if fits else None
 
 
 def _rgb(frame_bgr: np.ndarray) -> np.ndarray:
@@ -175,9 +205,10 @@ class WebcamRGB(Camera):
             backend = str(cap.getBackendName())
         except Exception:
             backend = ""
-        # Only V4L2 reports the kernel buffer timestamp (CLOCK_MONOTONIC, the clock
-        # time.monotonic reads on Linux) as POS_MSEC.
+        # Only V4L2 reports the kernel buffer timestamp as POS_MSEC; its clock is
+        # identified from the stamps (stamp_clock).
         self._driver_stamps = sys.platform.startswith("linux") and backend == "V4L2"
+        self._stamp_clock: str | None = None
         with self._lock:
             if self._closed:
                 cap.release()
@@ -206,7 +237,11 @@ class WebcamRGB(Camera):
         return dict(self._intrinsics) if self._intrinsics else None
 
     def describe(self) -> dict[str, Any]:
-        return {**super().describe(), "device": str(self.device)}
+        return {
+            **super().describe(),
+            "device": str(self.device),
+            **({"stamp_clock": self._stamp_clock} if self._stamp_clock else {}),
+        }
 
     def _read_once(self, cap: Any) -> Frame | None:
         """Drain the queue, then decode the live frame; None when the device gave
@@ -230,16 +265,22 @@ class WebcamRGB(Camera):
         ok, bgr = cap.retrieve()
         if not ok or bgr is None:
             return None
-        now_wall, now_mono = time.time(), time.monotonic()
-        if stamp is not None and 0.0 < stamp and 0.0 <= now_mono - stamp <= 60.0:
-            age = now_mono - stamp
-            return Frame(
-                rgb=_rgb(bgr),
-                depth=None,
-                timestamp_s=now_wall - age,
-                monotonic_s=stamp,
-                time_source="backend",
-            )
+        now = host_clocks()
+        now_wall, now_mono = now["realtime"], now["monotonic"]
+        if stamp is not None and self._stamp_clock is None:
+            self._stamp_clock = stamp_clock(stamp, now)
+        clock = self._stamp_clock
+        if stamp is not None and clock is not None and clock in now:
+            age = now[clock] - stamp
+            if -0.05 <= age <= 60.0:
+                age = max(0.0, age)
+                return Frame(
+                    rgb=_rgb(bgr),
+                    depth=None,
+                    timestamp_s=now_wall - age,
+                    monotonic_s=now_mono - age,
+                    time_source="backend",
+                )
         wall, mono, source = capture_times(None, "host")
         return Frame(
             rgb=_rgb(bgr),

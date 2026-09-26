@@ -423,6 +423,40 @@ def test_v4l2_frames_are_dated_by_the_driver_timestamp(monkeypatch):
     cam2.close()
 
 
+def test_v4l2_stamps_are_aged_on_the_clock_the_driver_uses(monkeypatch):
+    from pi_embodied_services.components.cameras.webcam import (
+        WebcamRGB,
+        host_clocks,
+        stamp_clock,
+    )
+
+    now = {"monotonic": 5000.0, "realtime": 1.79e9, "boottime": 5003.0}
+    assert stamp_clock(4999.5, now) == "monotonic"
+    assert stamp_clock(1.79e9 - 0.3, now) == "realtime"
+    assert stamp_clock(5002.9, now) == "boottime"  # 3 s of suspend apart
+    assert stamp_clock(123.0, now) is None  # no known clock
+    assert stamp_clock(0.0, now) is None
+    assert set(host_clocks()) >= {"monotonic", "realtime"}
+
+    cap = _FakeCap()
+    _fake_cv2(monkeypatch, cap)
+    monkeypatch.setattr(sys, "platform", "linux")
+    # uvcvideo clock=REALTIME: wall-clock stamps, 0.8 s old (queued in the driver).
+    cap.pos_ms = lambda: (time.time() - 0.8) * 1000.0
+    cam = WebcamRGB("/dev/video0", drain_frames=0)
+    f = cam.read()
+    assert f.time_source == "backend" and 0.75 < f.age_s() < 1.5
+    assert cam.describe()["stamp_clock"] == "realtime"
+    cam.close()
+    # Stamps on a clock the host does not have are not used.
+    cap = _FakeCap()
+    _fake_cv2(monkeypatch, cap)
+    cap.pos_ms = lambda: 42_000.0
+    cam = WebcamRGB("/dev/video0", drain_frames=0)
+    assert cam.read().time_source == "host" and "stamp_clock" not in cam.describe()
+    cam.close()
+
+
 def test_rtsp_close_does_not_release_under_the_reader_and_is_idempotent(monkeypatch):
     from pi_embodied_services.components.cameras.webcam import RtspRGB
 

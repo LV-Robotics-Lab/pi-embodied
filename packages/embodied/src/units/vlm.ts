@@ -86,6 +86,54 @@ export function parseJson(raw: string): unknown {
 }
 
 // ---------------------------------------------------------------------------
+// the affordance self-check (plugins/affordance agent.py _verify, affordance_verify.txt)
+
+/** Draw-and-verify rounds per marked point (configs/robot_franka.yaml affordance_verify_rounds). */
+export const POINT_VERIFY_ROUNDS = 2;
+
+/** One strict check of a marked point: is the part visible, is the dot on it, else where it should be. */
+export function pointVerifyPrompt(task: string, label: string, camera: string) {
+	return [
+		"ROLE: AffordanceVerifier",
+		`TASK: ${task}`,
+		`INTENDED POINT: ${label}`,
+		`CHOSEN PART: ${label}`,
+		"",
+		`You see ONE image: the robot's ${camera} camera view, with a dot drawn where the gripper will aim.`,
+		`First: is ${label} visible in THIS image?`,
+		"- NOT visible (left the frame, hidden, or never here) -> set present=false.",
+		`- Visible -> set present=true, then judge STRICTLY whether the dot's center sits exactly on ${label}:`,
+		"  - ON that part's visible pixels -- not on background, another object, an occluder, the gripper's fingers, or empty space inside a container's opening",
+		"  - Long object: near one end, never the middle. Container or flat object: on the rim edge. Placement: the exact rest spot",
+		"  - Off by even a little -> correct it",
+		"",
+		"COORDINATES: point = [y, x], integers on a 0-1000 grid: y from the TOP edge down, x from the LEFT edge right.",
+		"",
+		"Return JSON only:",
+		'{"present":true|false,"on_target":true|false,"why":"one visual clause","point":[y,x]}',
+		"- present false          -> point = [0,0] (ignored)",
+		"- present true, on_target -> point = the dot's current location",
+		"- present true, off       -> point = the CORRECTED location",
+	].join("\n");
+}
+
+/** The verifier's verdict, or undefined when the reply is not one (the point is kept). */
+export function parsePointVerdict(
+	raw: string,
+): { present: boolean; onTarget: boolean; why: string; point: [number, number] | undefined } | undefined {
+	const j = parseJson(raw) as { present?: unknown; on_target?: unknown; why?: unknown; point?: unknown } | undefined;
+	if (!j || typeof j.on_target !== "boolean") return undefined;
+	const pt = Array.isArray(j.point) && j.point.length === 2 ? j.point.map(Number) : undefined;
+	const ok = pt?.every((v) => Number.isFinite(v));
+	return {
+		present: j.present !== false,
+		onTarget: j.on_target,
+		why: oneLine(j.why ?? ""),
+		point: ok && pt ? [Math.min(1000, Math.max(0, pt[0])), Math.min(1000, Math.max(0, pt[1]))] : undefined,
+	};
+}
+
+// ---------------------------------------------------------------------------
 // the final task check (core/vlm/dual_roles.py verify_task)
 
 /** One strict visual judgment of whole-task completion from the current camera views. */

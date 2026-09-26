@@ -1716,7 +1716,7 @@
 			},
 			{
 				"name": "point",
-				"description": "Affordance: mark the exact gripper contact point(s) in one camera's current image, [y, x] on a 0-1000 grid (y from the top, x from the left). Returns the marked image and the world xyz per point where the robot has depth; later act results report the gripper-to-point offset. A new call with the same label replaces that point.",
+				"description": "Affordance: mark the exact gripper contact point(s) in one camera's current image, [y, x] on a 0-1000 grid (y from the top, x from the left). Each mark is first checked on the marked image by a side vision call (--units-point-verify rounds) that may move it; the result says whether it was verified or corrected. Returns the marked image and the world xyz per point where the robot has depth; later act results report the gripper-to-point offset. A new call with the same label replaces that point.",
 				"parameters": {
 					"type": "object",
 					"required": [

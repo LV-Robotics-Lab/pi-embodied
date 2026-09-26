@@ -147,6 +147,8 @@ async function toyRobot(
 		onStart?: () => void;
 		/** The run was aborted (ctx.signal). */
 		aborted?: boolean;
+		/** UnitsSpec.point. */
+		point?: UnitsSpec["point"];
 	} = {},
 ) {
 	// The Show-Harness step rules: fixed 2 cm steps unless a test turns variable_step on.
@@ -171,6 +173,7 @@ async function toyRobot(
 		...(o.viewSelect !== undefined ? { viewSelect: () => o.viewSelect as boolean } : {}),
 		...(o.wrist !== undefined ? { wrist: o.wrist } : {}),
 		...(o.gripper !== undefined ? { gripper: o.gripper } : {}),
+		...(o.point ? { point: o.point } : {}),
 		apply: async (move) => {
 			if (move.retreat && o.refuseRetreat)
 				return { content: [{ type: "text", text: "Episode already ended." }], details: { terminated: true } };
@@ -1551,4 +1554,81 @@ test("action_ablation (experimental): letters_blind reviews each blind move with
 	const rec = f.entries.filter((e) => e.customType === STATE_ENTRY).at(-1)?.data.ablation;
 	assert.deepEqual(rec.note_history, [{ symbol: "ACT_F", note: "lowered the gripper." }]);
 	assert.equal(rec.symbols, undefined, "the blind record never carries the true mapping");
+});
+
+test("point: each mark is drawn alone, checked by a side VLM call and corrected, at most --units-point-verify rounds", async () => {
+	const located: [number, number][][] = [];
+	const point: UnitsSpec["point"] = {
+		cameras: ["agentview"],
+		locate: async (_camera, pts) => {
+			located.push(pts);
+			return { image: Buffer.from(`img${located.length}`), xyz: pts.map(([y, x]) => [x, y, 0]) };
+		},
+	};
+	const f = await toyRobot(
+		{ "units-plugins": "point" },
+		{
+			point,
+			vlm: [
+				// bowl rim: off, corrected; then on target.
+				'{"present":true,"on_target":false,"why":"on the table","point":[420,610]}',
+				'{"present":true,"on_target":true,"why":"on the rim","point":[420,610]}',
+				// place spot: garbage keeps it.
+				"no idea",
+			],
+		},
+	);
+	const r = await f.run("point", {
+		camera: "agentview",
+		points: [
+			{ label: "bowl rim", yx: [400, 600] },
+			{ label: "place spot", yx: [100, 200] },
+		],
+	});
+	// Each check marks one point; the final call marks them all.
+	assert.deepEqual(located, [
+		[[0.4, 0.6]],
+		[[0.42, 0.61]],
+		[[0.1, 0.2]],
+		[
+			[0.42, 0.61],
+			[0.1, 0.2],
+		],
+	]);
+	assert.match(
+		f.asked[0].content[0].text,
+		/ROLE: AffordanceVerifier\nTASK: put the cube in the bowl\nINTENDED POINT: bowl rim/,
+	);
+	assert.equal(f.asked[0].content[1].data, Buffer.from("img1").toString("base64"));
+	const [rim, spot] = r.details.points;
+	assert.deepEqual(rim.point, [420, 610]);
+	assert.deepEqual(rim.asked, [400, 600]);
+	assert.equal(rim.verified, true);
+	assert.equal(rim.check_calls, 2);
+	assert.deepEqual(spot.point, [100, 200]);
+	assert.equal(spot.verified, false);
+	assert.equal(spot.check_calls, 1);
+	// Two rounds at most: a point corrected twice keeps the last correction, unverified.
+	const g = await toyRobot(
+		{ "units-plugins": "point" },
+		{
+			point,
+			vlm: [
+				'{"present":true,"on_target":false,"why":"a","point":[10,10]}',
+				'{"present":true,"on_target":false,"why":"b","point":[20,20]}',
+				'{"present":true,"on_target":true,"why":"c","point":[20,20]}',
+			],
+		},
+	);
+	const two = await g.run("point", { camera: "agentview", points: [{ label: "cube", yx: [0, 0] }] });
+	assert.deepEqual(two.details.points[0].point, [20, 20]);
+	assert.equal(two.details.points[0].verified, false);
+	assert.equal(g.asked.length, 2);
+	// 0 turns the check off: one locate, no side call.
+	located.length = 0;
+	const h = await toyRobot({ "units-plugins": "point", "units-point-verify": "0" }, { point });
+	const off = await h.run("point", { camera: "agentview", points: [{ label: "cube", yx: [500, 500] }] });
+	assert.equal(located.length, 1);
+	assert.equal(h.asked.length, 0);
+	assert.equal(off.details.points[0].verified, undefined);
 });

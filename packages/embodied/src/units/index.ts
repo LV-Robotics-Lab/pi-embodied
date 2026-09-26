@@ -102,7 +102,10 @@ import { registerVerifier, verifierState } from "./verifier.ts";
 import {
 	askVlm,
 	type DemoBrief,
+	POINT_VERIFY_ROUNDS,
 	parseJson,
+	parsePointVerdict,
+	pointVerifyPrompt,
 	sampleFrames,
 	VIDEO_REF_FRAMES,
 	VLM_COST_EVENT,
@@ -198,6 +201,9 @@ const STAGE_STEPS = 40;
 /** recovery: the note after a GRASP stage's DONE that the gripper does not confirm (plugins/recovery note_unverified_grasp). */
 const UNVERIFIED_GRASP = "Grasp not verified; continue GRASP until width and images show a real hold.";
 
+/** The affordance self-check of one point. */
+type PointCheck = { verified: boolean; calls: number; corrected: boolean; why?: string; error?: string };
+
 /** Plugins that key on the wrist view (`target_in_wrist`): off on a robot configuration without one. */
 const WRIST_PLUGINS: readonly Plugin[] = ["variable_step", "action_chunk"];
 /** Plugins that reopen a gripper: off on a robot without one. */
@@ -246,6 +252,12 @@ export function units(
 		type: "string",
 		default: "",
 		description: `action_ablation (experimental): the action-representation setting (${ABLATION_MODES.join(", ")})`,
+	});
+	pi.registerFlag("units-point-verify", {
+		type: "string",
+		default: String(POINT_VERIFY_ROUNDS),
+		description:
+			"point: draw-and-verify rounds per marked point (a side VLM call judges the marked image and may correct it; 0 = off)",
 	});
 	pi.registerFlag("units-coarse-step", {
 		type: "string",
@@ -1010,7 +1022,7 @@ export function units(
 		const { cameras, locate } = spec.point;
 		tool(
 			"point",
-			"Affordance: mark the exact gripper contact point(s) in one camera's current image, [y, x] on a 0-1000 grid (y from the top, x from the left). Returns the marked image and the world xyz per point where the robot has depth; later act results report the gripper-to-point offset. A new call with the same label replaces that point.",
+			"Affordance: mark the exact gripper contact point(s) in one camera's current image, [y, x] on a 0-1000 grid (y from the top, x from the left). Each mark is first checked on the marked image by a side vision call (--units-point-verify rounds) that may move it; the result says whether it was verified or corrected. Returns the marked image and the world xyz per point where the robot has depth; later act results report the gripper-to-point offset. A new call with the same label replaces that point.",
 			Type.Object({
 				camera: StringEnum(cameras, { description: `Camera (${cameras.join(", ")})` }),
 				points: Type.Array(
@@ -1021,16 +1033,79 @@ export function units(
 					{ minItems: 1, maxItems: 4 },
 				),
 			}),
-			async ({ camera, points }, signal) => {
-				const fr = points.map((q) => [q.yx[0] / 1000, q.yx[1] / 1000] as [number, number]);
-				const { image, xyz } = await locate(camera, fr, signal);
+			async ({ camera, points }, signal, ctx) => {
+				const frac = (yx: readonly number[]) => [yx[0] / 1000, yx[1] / 1000] as [number, number];
+				// The self-check (plugins/affordance draw-and-verify): each point, marked alone, is judged by a
+				// side VLM call on the marked image; a correction is marked and judged again, up to the rounds.
+				const rounds = Math.max(0, Math.floor(Number(pi.getFlag("units-point-verify"))) || 0);
+				const checks: PointCheck[] = [];
+				const yxs = points.map((q) => [Math.round(q.yx[0]), Math.round(q.yx[1])] as [number, number]);
+				for (const [i, q] of points.entries()) {
+					const c: PointCheck = { verified: false, calls: 0, corrected: false };
+					for (let r = 0; r < rounds; r++) {
+						const one = await locate(camera, [frac(yxs[i])], signal);
+						if (!one.image) {
+							c.why = "the robot returned no marked image to check";
+							break;
+						}
+						let verdict: ReturnType<typeof parsePointVerdict>;
+						try {
+							const reply = await askVlm(
+								ctx,
+								String(pi.getFlag("units-vlm-model") ?? ""),
+								pi.getThinkingLevel(),
+								pointVerifyPrompt(instruction(), q.label, camera),
+								[{ type: "image", data: one.image.toString("base64"), mimeType: "image/png" }],
+								signal,
+							);
+							pi.events.emit(VLM_COST_EVENT, reply.cost);
+							verdict = parsePointVerdict(reply.text);
+						} catch (err) {
+							if (signal?.aborted) throw err;
+							c.error = err instanceof Error ? err.message : String(err);
+							break;
+						}
+						c.calls++;
+						// A failed or unparsable check keeps the current point, as upstream.
+						if (!verdict) break;
+						c.why = verdict.why;
+						// Not visible in a view the agent chose to mark: keep it rather than second-guess it.
+						if (!verdict.present) break;
+						if (verdict.onTarget) {
+							c.verified = true;
+							break;
+						}
+						if (!verdict.point) break;
+						// The last correction is adopted even unconfirmed: unverified is better than unmoved.
+						yxs[i] = [Math.round(verdict.point[0]), Math.round(verdict.point[1])];
+						c.corrected = true;
+					}
+					checks.push(c);
+				}
+				const { image, xyz } = await locate(
+					camera,
+					yxs.map((yx) => frac(yx)),
+					signal,
+				);
 				const marked = points.map((q, i) => ({
 					label: q.label,
 					camera,
-					point: [Math.round(q.yx[0]), Math.round(q.yx[1])] as [number, number],
+					point: yxs[i],
 					xyz: xyz[i] ? xyz[i].map(r3) : null,
+					...(rounds
+						? {
+								verified: checks[i].verified,
+								...(checks[i].corrected ? { asked: [Math.round(q.yx[0]), Math.round(q.yx[1])] } : {}),
+								check_calls: checks[i].calls,
+								...(checks[i].why ? { check: checks[i].why } : {}),
+								...(checks[i].error ? { check_error: checks[i].error } : {}),
+							}
+						: {}),
 				}));
-				targets = [...targets.filter((t) => !marked.some((m) => m.label === t.label)), ...marked].slice(-4);
+				targets = [
+					...targets.filter((t) => !marked.some((m) => m.label === t.label)),
+					...marked.map(({ label, camera, point, xyz }) => ({ label, camera, point, xyz })),
+				].slice(-4);
 				save();
 				const content: Result["content"] = [text(JSON.stringify({ points: marked }))];
 				if (image) content.push({ type: "image", data: image.toString("base64"), mimeType: "image/png" });

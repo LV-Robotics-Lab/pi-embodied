@@ -109,6 +109,7 @@ POINT (`point`): mark the exact contact point(s) for the gripper in one camera i
 - On solid, visible material two open fingers can close around, or on the exact spot where a carried object should rest.
 - Long object: near ONE end, never the middle. Hollow container: on the rim. Flat object: on its edge. Compact object: the center of its body.
 - Look-alike objects: choose by the task's spatial words, not by salience. Check the returned mark before relying on it and re-point if it is off.
+- Each mark is checked once more on the marked image (and may be moved); a point the result reports as not verified deserves a second look.
 [/tool:point]
 [tool:plan]
 

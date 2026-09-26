@@ -21,7 +21,9 @@ feature names every pi-embodied dataset shares (flywheel/export.py):
   (1 closed), measured at the observation the unit was decided on;
 - ``action``: per arm a one-hot over the unit vocabulary, dimensions named ``<arm>.<unit>``;
 - ``action_repeat``: how many times the unit ran; ``actor``: 1 for a human's unit, 0 for the
-  agent's; ``dagger``: 1 where the human took over from a running agent.
+  agent's; ``dagger``: 1 where the human took over from a running agent; ``success``: 1 in every
+  frame of a run the operator saved as successful (constant per episode, so a training-set
+  converter can drop failed runs of an ``--include-failed`` export).
 
 One dataset holds one robot's runs of one task with one vocabulary and camera set.
 """
@@ -67,6 +69,12 @@ def _task(meta: dict[str, Any]) -> str:
     raise ValueError(f"run {meta.get('run_dir')} names no task")
 
 
+def _env_id(meta: dict[str, Any]) -> str:
+    """The robot's task env id (ManiSkill's real2sim rigs pick another camera transform)."""
+    task = meta.get("robot_task")
+    return str(task.get("env-id") or "") if isinstance(task, dict) else ""
+
+
 def _image(path: Path) -> np.ndarray:
     from PIL import Image
 
@@ -75,22 +83,39 @@ def _image(path: Path) -> np.ndarray:
 
 
 def load_runs(
-    root: Path | str, *, include_failed: bool = False
+    root: Path | str,
+    *,
+    include_failed: bool = False,
+    vocabulary: list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """The runs to export, each ``{dir, meta, steps}``, all of one robot, task, vocabulary and arms."""
+    """The runs to export, each ``{dir, meta, steps, success}``, all of one robot, task, vocabulary
+    and arms. ``vocabulary`` stands in for runs recorded before the recorder wrote theirs."""
     runs = []
     for run in _runs(Path(root).expanduser().resolve()):
         summary = json.loads((run / "summary.json").read_text(encoding="utf-8"))
         if not summary.get("success") and not include_failed:
             continue
         meta = json.loads((run / "metadata.json").read_text(encoding="utf-8"))
+        if vocabulary and not meta.get("vocabulary"):
+            meta = {**meta, "vocabulary": list(vocabulary)}
         steps = [
             json.loads(line)
             for line in (run / "actions.jsonl").read_text(encoding="utf-8").splitlines()
             if line.strip()
         ]
+        # A step recorded without one of its views has no frame to train on (prepare.ts drops
+        # it too); the dataset holds the others.
+        views = _views(_arms(meta))
+        steps = [s for s in steps if all(isinstance(s.get(v), str) for v in views)]
         if steps:
-            runs.append({"dir": run, "meta": meta, "steps": steps})
+            runs.append(
+                {
+                    "dir": run,
+                    "meta": meta,
+                    "steps": steps,
+                    "success": bool(summary.get("success")),
+                }
+            )
     if not runs:
         raise ValueError(
             f"no {'closed' if include_failed else 'successful'} GUMI runs under {root}"
@@ -98,7 +123,7 @@ def load_runs(
     first = runs[0]["meta"]
     if not first.get("vocabulary"):
         raise ValueError(
-            f"run {runs[0]['dir']} records no unit vocabulary; re-record it"
+            f"run {runs[0]['dir']} records no unit vocabulary; pass --vocabulary"
         )
     for r in runs:
         m = r["meta"]
@@ -109,6 +134,10 @@ def load_runs(
                 )
         if _task(m) != _task(first):
             raise ValueError(f"run {r['dir']} is of another task than {runs[0]['dir']}")
+        if _env_id(m) != _env_id(first):
+            raise ValueError(
+                f"run {r['dir']} is of another env id than {runs[0]['dir']}"
+            )
     return runs
 
 
@@ -137,7 +166,7 @@ def features(runs: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
         "shape": (len(vocabulary) * len(arms),),
         "names": [f"{a}.{u}" for a in arms for u in vocabulary],
     }
-    for name in ("action_repeat", "actor", "dagger"):
+    for name in ("action_repeat", "actor", "dagger", "success"):
         out[name] = {"dtype": "int64", "shape": (1,), "names": None}
     return out
 
@@ -169,6 +198,7 @@ def frame(run: dict[str, Any], step: dict[str, Any]) -> dict[str, Any]:
         "action_repeat": np.array([int(step.get("n", 1))], np.int64),
         "actor": np.array([1 if src == "human" else 0], np.int64),
         "dagger": np.array([1 if step.get("dagger") else 0], np.int64),
+        "success": np.array([1 if run["success"] else 0], np.int64),
         "task": _task(meta),
     }
 
@@ -179,12 +209,13 @@ def export_gumi(
     output_root: Path | str,
     dataset_id: str | None = None,
     include_failed: bool = False,
+    vocabulary: list[str] | None = None,
 ) -> dict[str, Any]:
     """Export the GUMI runs under ``root`` (a run dir or a task dir) to a LeRobot v3.0 dataset."""
     dataset_id = dataset_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     if not _NAME.fullmatch(dataset_id):
         raise ValueError(f"invalid dataset ID: {dataset_id!r}")
-    runs = load_runs(root, include_failed=include_failed)
+    runs = load_runs(root, include_failed=include_failed, vocabulary=vocabulary)
     from lerobot.datasets.lerobot_dataset import CODEBASE_VERSION, LeRobotDataset
 
     parent = Path(output_root).expanduser().resolve()
@@ -218,9 +249,11 @@ def export_gumi(
         "codebase_version": CODEBASE_VERSION,
         "repo_id": repo_id,
         "robot": robot,
+        "env_id": _env_id(runs[0]["meta"]),
         "source": "gumi",
         "task": _task(runs[0]["meta"]),
         "source_runs": [str(r["dir"]) for r in runs],
+        "successes": [r["success"] for r in runs],
         "episode_count": len(runs),
         "frame_count": frames,
     }

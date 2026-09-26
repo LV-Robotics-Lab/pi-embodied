@@ -75,6 +75,10 @@ def main(argv: list[str] | None = None) -> int:
     gumi.add_argument(
         "--include-failed", action="store_true", help="also export unsuccessful runs"
     )
+    gumi.add_argument(
+        "--vocabulary",
+        help="comma-separated units for runs recorded before the recorder wrote theirs",
+    )
 
     args = parser.parse_args(argv)
     if args.command == "export-gumi":
@@ -85,6 +89,7 @@ def main(argv: list[str] | None = None) -> int:
             output_root=args.output_root,
             dataset_id=args.dataset_id,
             include_failed=args.include_failed,
+            vocabulary=args.vocabulary.split(",") if args.vocabulary else None,
         )
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0

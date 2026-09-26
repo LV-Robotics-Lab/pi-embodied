@@ -3,9 +3,14 @@
 #
 #   NAME=pick_cube_gumi \
 #     bash train.sh /root/autodl-tmp/runs/gumi/<session>/rollouts [more GUMI record dirs...]
+#   NAME=pick_cube_lerobot \
+#     bash train.sh --from-lerobot <LeRobot v3.0 dataset dir> [more dataset dirs...]
 #
 # 1. packages/embodied/src/finetuned/prepare.ts: every single-arm GUMI run -> <DATA>/rollouts/<task>/rollout_NNN
 #    with the provider's own camera transform applied (training and inference pixels identical).
+#    --from-lerobot: services/pi_embodied_services/finetuned/lerobot_to_rollouts.py writes the same layout
+#    from the unified LeRobot datasets (flywheel CLI export-lerobot / export-gumi; successful episodes,
+#    --prompt $VERSION), the frames through the same transform (finetuned/transform.ts).
 # 2. Show-Harness train/data_preparation/rollouts_to_alpaca.py --version $VERSION (one Alpaca sample per
 #    step, "<image><image>" + the lite prompt, plus a synthesized DONE per episode; prepare_dataset.sh's
 #    loop), then register_dataset.py into LLaMA-Factory's dataset_info.json.
@@ -22,7 +27,9 @@
 #   BASE_CONFIG=qwen3_5_2b_sim.yaml   MODEL_PATH=/root/autodl-tmp/checkpoints/Qwen3.5-2B   EPOCHS= (keep)
 #   SET="key=value ..." more yaml keys replaced or added, e.g. a smoke run: SET="max_steps=30 save_steps=10"
 #   GPU=1  LOCK=/root/autodl-tmp/locks/gpu1.lock   STEP=all|prepare (stop before registering; no LLaMA-Factory needed)
-#   PREPARE_ARGS= (e.g. --robot maniskill)   PYTHON= (any python3; the converter is stdlib only)
+#   PREPARE_ARGS= (e.g. --robot maniskill; --from-lerobot: e.g. --include-failures)
+#   PYTHON= (any python3; the converter is stdlib only)
+#   LEROBOT_PYTHON= python with pyarrow, numpy and pillow for --from-lerobot (the flywheel venv), default $PYTHON
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PI="${PI:-$(cd "$HERE/../../.." && pwd)}"
@@ -37,13 +44,25 @@ MODEL_PATH="${MODEL_PATH:-/root/autodl-tmp/checkpoints/Qwen3.5-2B}"
 GPU="${GPU:-1}"
 LOCK="${LOCK-/root/autodl-tmp/locks/gpu1.lock}"
 PY="${PYTHON:-$(command -v python3 || echo /root/miniconda3/bin/python)}"
-[ $# -gt 0 ] || { echo "usage: NAME=... bash train.sh <gumi record dir>..." >&2; exit 2; }
+FROM_LEROBOT=0
+[ "${1:-}" = --from-lerobot ] && { FROM_LEROBOT=1; shift; }
+[ $# -gt 0 ] || { echo "usage: NAME=... bash train.sh <gumi record dir>... | --from-lerobot <lerobot dataset dir>..." >&2; exit 2; }
 export PATH=/root/autodl-tmp/tools/node/bin:$PATH
 
-echo "[1/3] GUMI -> rollouts ($DATA/rollouts)"
-rm -rf "$DATA/rollouts"
-# shellcheck disable=SC2086
-node --experimental-strip-types "$PI/packages/embodied/src/finetuned/prepare.ts" --out "$DATA/rollouts" ${PREPARE_ARGS:-} "$@"
+if [ "$FROM_LEROBOT" = 1 ]; then
+  echo "[1/3] LeRobot -> rollouts ($DATA/rollouts)"
+  rm -rf "$DATA/rollouts"
+  for ds in "$@"; do
+    # shellcheck disable=SC2086
+    PYTHONPATH="$PI/services${PYTHONPATH:+:$PYTHONPATH}" "${LEROBOT_PYTHON:-$PY}" -m pi_embodied_services.finetuned.lerobot_to_rollouts \
+      "$ds" --out "$DATA/rollouts" --prompt "$VERSION" ${PREPARE_ARGS:-}
+  done
+else
+  echo "[1/3] GUMI -> rollouts ($DATA/rollouts)"
+  rm -rf "$DATA/rollouts"
+  # shellcheck disable=SC2086
+  node --experimental-strip-types "$PI/packages/embodied/src/finetuned/prepare.ts" --out "$DATA/rollouts" ${PREPARE_ARGS:-} "$@"
+fi
 
 echo "[2/3] rollouts -> $DATA/rollouts.json (Show-Harness rollouts_to_alpaca.py, prompts/$VERSION)"
 # train/scripts/prepare_dataset.sh's loop: one task dir per instruction, its task_text from metadata.json.

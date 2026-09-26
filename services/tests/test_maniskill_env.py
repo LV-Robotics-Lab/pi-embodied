@@ -125,6 +125,8 @@ def test_robot_table_panda_default_and_gripper_mapping():
         1.0,
     )
     assert xarm.wrist["mount"] == "camera_link" and xarm.ee_joints is None
+    # Its last joint's limit is 0: the dense rewards' finger-width divisor; sparse instead.
+    assert xarm.reward_mode == "sparse" and panda.reward_mode is None
     wx = ms.ROBOTS["widowxai"]
     assert wx.wrist is None and wx.ee_joints == tuple(f"joint_{i}" for i in range(6))
     assert (wx.gripper_action(1), wx.gripper_action(-1)) == (1.0, -1.0)

@@ -220,6 +220,9 @@ class RobotSpec:
     envs: tuple[str, ...]
     wrist: Optional[dict]
     ee_joints: Optional[tuple[str, ...]] = None
+    #: The env's reward mode when the task's default cannot be computed for this robot
+    #: (None: the task's default).
+    reward_mode: Optional[str] = None
 
     @property
     def open(self) -> float:
@@ -271,6 +274,10 @@ ROBOTS: dict[str, RobotSpec] = {
             "StackPyramid-v1",
             "PlugCharger-v1",
         ),
+        # The dense rewards of StackCube / PlaceSphere divide by twice the last joint's upper
+        # limit, the Panda's finger width; the Robotiq's last joint is the right inner finger,
+        # limit 0 (measured): the ungrasp term is a division by zero. Success-based instead.
+        reward_mode="sparse",
         wrist={
             "mount": "camera_link",
             "pose": [[0.0, 0.0, -0.05], [0.70710678, 0.0, 0.70710678, 0.0]],
@@ -458,6 +465,11 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
                 obs_mode="rgb+segmentation",
                 control_mode=control_mode,
                 robot_uids=robot_uids,
+                **(
+                    {"reward_mode": self._robot.reward_mode}
+                    if self._robot.reward_mode
+                    else {}
+                ),
                 sim_backend=sim_backend,
                 max_episode_steps=int(max_episode_steps),
                 sensor_configs=self._sensor_configs(
@@ -477,6 +489,7 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
             "robot": robot,
             "robot_uids": robot_uids,
             "control_mode": control_mode,
+            "reward_mode": self._env.unwrapped.reward_mode,
             "sim_backend": sim_backend,
             "agentview": agentview,
             "view_size": self._view_size,

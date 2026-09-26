@@ -1,0 +1,3111 @@
+{
+	"robots": {
+		"dual_franka": [
+			{
+				"name": "request_operator_verdict",
+				"description": "Human feedback gate. Ask the operator to mark the current task state as success, failure, or continue before you finish or start another attempt.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"question": {
+							"type": "string",
+							"description": "Default: does the current scene satisfy the task?"
+						}
+					}
+				}
+			},
+			{
+				"name": "request_scene_reset",
+				"description": "Ask the operator to restore the scene for another attempt (remove/secure held objects), wait for confirmation, then reset the robot.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"reason"
+					],
+					"properties": {
+						"reason": {
+							"type": "string",
+							"description": "Why the scene needs to be restored"
+						},
+						"expected_scene_state": {
+							"type": "string",
+							"description": "The restored layout, for the operator"
+						}
+					}
+				}
+			},
+			{
+				"name": "act",
+				"description": "Execute one action unit (MV_FWD, MV_BACK, MV_LEFT, MV_RIGHT, MV_UP, MV_DOWN, ROTATE_CW, ROTATE_CCW, STOP, GRASP, RELEASE, DONE, STILL), repeated n times. MV_* move the gripper ~2 cm, ROTATE_* turn it ~9 deg; GRASP closes, RELEASE opens, STOP holds one step, DONE means the task is complete (call finish). Returns the new images and state.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"unit",
+						"arm"
+					],
+					"properties": {
+						"unit": {
+							"type": "string",
+							"enum": [
+								"MV_FWD",
+								"MV_BACK",
+								"MV_LEFT",
+								"MV_RIGHT",
+								"MV_UP",
+								"MV_DOWN",
+								"ROTATE_CW",
+								"ROTATE_CCW",
+								"STOP",
+								"GRASP",
+								"RELEASE",
+								"DONE",
+								"STILL"
+							],
+							"description": "The action unit"
+						},
+						"n": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 10,
+							"description": "Repeat count (default 1)"
+						},
+						"target_in_wrist": {
+							"type": "boolean",
+							"description": "WRIST CHECK: is the TARGET visible in the wrist view?"
+						},
+						"plan": {
+							"type": "array",
+							"items": {
+								"type": "string",
+								"enum": [
+									"MV_FWD",
+									"MV_BACK",
+									"MV_LEFT",
+									"MV_RIGHT",
+									"MV_UP",
+									"MV_DOWN"
+								]
+							},
+							"maxItems": 3,
+							"description": "Only with target_in_wrist false: up to 3 MV_* moves run in order (replaces unit and n)"
+						},
+						"arm": {
+							"type": "string",
+							"enum": [
+								"left",
+								"right"
+							],
+							"description": "Which arm the unit drives"
+						}
+					}
+				}
+			},
+			{
+				"name": "plan",
+				"description": "Subgoal plan: `stages` replaces the plan from the current stage on (ordered GRASP/LIFT/MOVE/PLACE/RELEASE/RETREAT/REASON stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"stages": {
+							"type": "array",
+							"items": {
+								"type": "object",
+								"required": [
+									"motion",
+									"target",
+									"completion"
+								],
+								"properties": {
+									"motion": {
+										"type": "string",
+										"description": "GRASP, LIFT, MOVE, PLACE, RELEASE, RETREAT or REASON"
+									},
+									"target": {
+										"type": "string"
+									},
+									"affordance": {
+										"type": "string",
+										"description": "The one visible part to aim at"
+									},
+									"description": {
+										"type": "string",
+										"description": "Visual strategy; for REASON the complete IF ... THEN rule"
+									},
+									"completion": {
+										"type": "string",
+										"description": "DONE WHEN: a condition visible in the images"
+									},
+									"arm": {
+										"type": "string",
+										"description": "Dual-arm robots: the arm of this stage"
+									}
+								}
+							}
+						},
+						"done": {
+							"type": "boolean",
+							"description": "The current stage's DONE WHEN is visible"
+						}
+					}
+				}
+			},
+			{
+				"name": "reset",
+				"description": "Exploration only. Abandon the current episode and restore the same initial scene. Archive the failed attempt first and state which strategy lever changes in the next attempt.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"reason"
+					],
+					"properties": {
+						"reason": {
+							"type": "string",
+							"description": "Why this episode is unrecoverable and what will change"
+						}
+					}
+				}
+			},
+			{
+				"name": "finish",
+				"description": "Call when the task is complete or unrecoverable. Halts the agent loop. Real-robot tasks require request_operator_verdict first so the operator can judge the physical state.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"status",
+						"summary"
+					],
+					"properties": {
+						"status": {
+							"type": "string",
+							"description": "Outcome, e.g. 'success', 'failure', or 'stuck'."
+						},
+						"summary": {
+							"type": "string",
+							"description": "Short natural-language summary of the run."
+						}
+					}
+				}
+			},
+			{
+				"name": "describe_dual_franka_setup",
+				"description": "Read the dual-Franka runtime conventions, camera aliases, VLA policy conditioning text, semantic stop rules, and available primitive names before acting. This is read-only.",
+				"parameters": {
+					"type": "object",
+					"properties": {}
+				}
+			},
+			{
+				"name": "view_env_state",
+				"description": "Read a dual-Franka state snapshot. Configured inline camera views are returned directly; other available views are returned as artifact paths; use read to inspect these artifacts.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"step": {
+							"type": "integer",
+							"description": "State step (default -1 = latest)"
+						}
+					}
+				}
+			},
+			{
+				"name": "view_camera_meta",
+				"description": "Read camera intrinsics, serials, and projection metadata for the dual-Franka rig.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"step": {
+							"type": "integer",
+							"description": "State step (default -1 = latest)"
+						}
+					}
+				}
+			},
+			{
+				"name": "back_project",
+				"description": "Back-project one pixel from a registered RGBD camera view into shared right-base coordinates. Use a camera listed by view_env_state/view_camera_meta; default is the configured primary metric localization camera.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"row",
+						"col"
+					],
+					"properties": {
+						"camera": {
+							"type": "string",
+							"description": "Registered projection view name, e.g. d455 or base (default d455). Valid names come from perception.projection_views and the current state's saved artifacts."
+						},
+						"row": {
+							"type": "integer",
+							"minimum": 0
+						},
+						"col": {
+							"type": "integer",
+							"minimum": 0
+						},
+						"target_name": {
+							"type": "string",
+							"description": "Default 'target'"
+						},
+						"step": {
+							"type": "integer",
+							"description": "State step (default -1 = latest)"
+						},
+						"window_radius": {
+							"type": "integer",
+							"minimum": 0,
+							"description": "Depth median window radius (default 2)"
+						}
+					}
+				}
+			},
+			{
+				"name": "segment",
+				"description": "Use SAM3 on a registered RGB image with either a text prompt or one positive [row, col] point, return a mask overlay for verification, and estimate the mask median point in shared right-base coordinates.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"camera": {
+							"type": "string",
+							"description": "Registered projection view name, e.g. d455 or base (default d455). Valid names come from perception.projection_views and the current state's saved artifacts."
+						},
+						"prompt": {
+							"type": "string",
+							"description": "Text prompt for SAM3. Prefer short object/relation phrases; for the clean-desk box use 'white interior of the black cardboard box' or 'cardboard box'. Avoid over-specific surface words such as 'floor' when grounding is weak. Provide exactly one of prompt or point."
+						},
+						"point": {
+							"type": "array",
+							"items": {
+								"type": "integer"
+							},
+							"minItems": 2,
+							"maxItems": 2,
+							"description": "Positive SAM3 point in camera image coordinates [row, col]. Provide exactly one of prompt or point."
+						},
+						"target_name": {
+							"type": "string",
+							"description": "Default 'target'"
+						},
+						"step": {
+							"type": "integer",
+							"description": "State step (default -1 = latest)"
+						},
+						"min_score": {
+							"type": "number",
+							"minimum": 0,
+							"maximum": 1,
+							"description": "Default 0.2"
+						},
+						"min_valid_depth_pixels": {
+							"type": "integer",
+							"minimum": 1,
+							"description": "Default 25"
+						}
+					}
+				}
+			},
+			{
+				"name": "move_delta",
+				"description": "Move one Franka TCP by a bounded world-frame xyz delta in meters.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"arm",
+						"delta_xyz"
+					],
+					"properties": {
+						"arm": {
+							"type": "string",
+							"enum": [
+								"left",
+								"right"
+							],
+							"description": "Which arm to command; the other arm is left uncommanded."
+						},
+						"delta_xyz": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 3,
+							"maxItems": 3
+						}
+					}
+				}
+			},
+			{
+				"name": "rotate_delta",
+				"description": "Rotate one Franka TCP by a bounded world-frame rpy delta in radians.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"arm",
+						"delta_rpy"
+					],
+					"properties": {
+						"arm": {
+							"type": "string",
+							"enum": [
+								"left",
+								"right"
+							],
+							"description": "Which arm to command; the other arm is left uncommanded."
+						},
+						"delta_rpy": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 3,
+							"maxItems": 3
+						}
+					}
+				}
+			},
+			{
+				"name": "open_gripper",
+				"description": "Open one Franka gripper and wait for the command to settle.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"arm"
+					],
+					"properties": {
+						"arm": {
+							"type": "string",
+							"enum": [
+								"left",
+								"right"
+							],
+							"description": "Which arm to command; the other arm is left uncommanded."
+						}
+					}
+				}
+			},
+			{
+				"name": "close_gripper",
+				"description": "Close one Franka gripper and wait for the command to settle.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"arm"
+					],
+					"properties": {
+						"arm": {
+							"type": "string",
+							"enum": [
+								"left",
+								"right"
+							],
+							"description": "Which arm to command; the other arm is left uncommanded."
+						}
+					}
+				}
+			},
+			{
+				"name": "recover_joint_posture",
+				"description": "Reset both arms to their healthy configured joint posture while preserving each gripper's open/closed state. Closed grippers are re-commanded before/after the joint reset so held objects stay clamped, then both TCPs return near their prior poses.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"reason": {
+							"type": "string",
+							"description": "Default ''"
+						},
+						"return_to_start": {
+							"type": "boolean",
+							"description": "Default true"
+						}
+					}
+				}
+			},
+			{
+				"name": "vla_right_grasp",
+				"description": "Run the learned right-grasp VLA segment. The active task prompt decides which object is currently allowed; this tool only defines the capability boundary: right gripper closes and the right TCP lifts.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"prompt"
+					],
+					"properties": {
+						"prompt": {
+							"type": "string",
+							"description": "Planner-facing segment intent. This is recorded in the tool result; the current live clean-desk checkpoint still receives its fixed training instruction during policy inference."
+						},
+						"max_chunks": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 20,
+							"description": "Default 20"
+						}
+					}
+				}
+			},
+			{
+				"name": "vla_handoff",
+				"description": "Run the learned bimanual handoff VLA segment. The capability boundary is right-gripper release followed by the configured settle delay; do not rule-base pre-position either arm for it.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"prompt"
+					],
+					"properties": {
+						"prompt": {
+							"type": "string",
+							"description": "Planner-facing segment intent. This is recorded in the tool result; the current live clean-desk checkpoint still receives its fixed training instruction during policy inference."
+						},
+						"max_chunks": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 20,
+							"description": "Default 20"
+						}
+					}
+				}
+			},
+			{
+				"name": "vla_left_place",
+				"description": "Run the learned left-placement VLA segment. The active task decides the destination; this tool only defines the capability boundary: left gripper opens and the left TCP lifts.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"prompt"
+					],
+					"properties": {
+						"prompt": {
+							"type": "string",
+							"description": "Planner-facing segment intent. This is recorded in the tool result; the current live clean-desk checkpoint still receives its fixed training instruction during policy inference."
+						},
+						"max_chunks": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 20,
+							"description": "Default 20"
+						}
+					}
+				}
+			}
+		],
+		"franka": [
+			{
+				"name": "request_operator_verdict",
+				"description": "Human feedback gate. Ask the operator to mark the current task state as success, failure, or continue before you finish or start another attempt.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"question": {
+							"type": "string",
+							"description": "Default: does the current scene satisfy the task?"
+						}
+					}
+				}
+			},
+			{
+				"name": "act",
+				"description": "Execute one action unit (MV_FWD, MV_BACK, MV_LEFT, MV_RIGHT, MV_UP, MV_DOWN, ROTATE_CW, ROTATE_CCW, STOP, GRASP, RELEASE, DONE), repeated n times. MV_* move the gripper ~2 cm, ROTATE_* turn it ~9 deg; GRASP closes, RELEASE opens, STOP holds one step, DONE means the task is complete (call finish). Returns the new images and state.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"unit"
+					],
+					"properties": {
+						"unit": {
+							"type": "string",
+							"enum": [
+								"MV_FWD",
+								"MV_BACK",
+								"MV_LEFT",
+								"MV_RIGHT",
+								"MV_UP",
+								"MV_DOWN",
+								"ROTATE_CW",
+								"ROTATE_CCW",
+								"STOP",
+								"GRASP",
+								"RELEASE",
+								"DONE"
+							],
+							"description": "The action unit"
+						},
+						"n": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 10,
+							"description": "Repeat count (default 1)"
+						},
+						"target_in_wrist": {
+							"type": "boolean",
+							"description": "WRIST CHECK: is the TARGET visible in the wrist view?"
+						},
+						"plan": {
+							"type": "array",
+							"items": {
+								"type": "string",
+								"enum": [
+									"MV_FWD",
+									"MV_BACK",
+									"MV_LEFT",
+									"MV_RIGHT",
+									"MV_UP",
+									"MV_DOWN"
+								]
+							},
+							"maxItems": 3,
+							"description": "Only with target_in_wrist false: up to 3 MV_* moves run in order (replaces unit and n)"
+						}
+					}
+				}
+			},
+			{
+				"name": "plan",
+				"description": "Subgoal plan: `stages` replaces the plan from the current stage on (ordered GRASP/LIFT/MOVE/PLACE/RELEASE/RETREAT/REASON stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"stages": {
+							"type": "array",
+							"items": {
+								"type": "object",
+								"required": [
+									"motion",
+									"target",
+									"completion"
+								],
+								"properties": {
+									"motion": {
+										"type": "string",
+										"description": "GRASP, LIFT, MOVE, PLACE, RELEASE, RETREAT or REASON"
+									},
+									"target": {
+										"type": "string"
+									},
+									"affordance": {
+										"type": "string",
+										"description": "The one visible part to aim at"
+									},
+									"description": {
+										"type": "string",
+										"description": "Visual strategy; for REASON the complete IF ... THEN rule"
+									},
+									"completion": {
+										"type": "string",
+										"description": "DONE WHEN: a condition visible in the images"
+									},
+									"arm": {
+										"type": "string",
+										"description": "Dual-arm robots: the arm of this stage"
+									}
+								}
+							}
+						},
+						"done": {
+							"type": "boolean",
+							"description": "The current stage's DONE WHEN is visible"
+						}
+					}
+				}
+			},
+			{
+				"name": "finish",
+				"description": "Call when the task is complete or unrecoverable. Halts the agent loop. Save any artifacts (recipe, audit) BEFORE calling finish.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"status",
+						"summary"
+					],
+					"properties": {
+						"status": {
+							"type": "string",
+							"description": "Outcome, e.g. 'success', 'failure', or 'stuck'."
+						},
+						"summary": {
+							"type": "string",
+							"description": "Short natural-language summary of the run."
+						}
+					}
+				}
+			},
+			{
+				"name": "view_env_state",
+				"description": "Read a Franka state snapshot and its synchronized RGB images.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"step": {
+							"type": "integer",
+							"description": "State step (default -1 = latest)"
+						}
+					}
+				}
+			},
+			{
+				"name": "view_camera_meta",
+				"description": "Read camera intrinsics, crop, depth, and calibration metadata.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"step": {
+							"type": "integer",
+							"description": "State step (default -1 = latest)"
+						}
+					}
+				}
+			},
+			{
+				"name": "view_perception_setup",
+				"description": "Read calibrated camera geometry and projection conventions.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"step": {
+							"type": "integer",
+							"description": "State step (default -1 = latest)"
+						}
+					}
+				}
+			},
+			{
+				"name": "back_project",
+				"description": "Back-project one wrist or external-camera pixel into Franka base coordinates.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"row",
+						"col"
+					],
+					"properties": {
+						"row": {
+							"type": "integer",
+							"minimum": 0
+						},
+						"col": {
+							"type": "integer",
+							"minimum": 0
+						},
+						"step": {
+							"type": "integer",
+							"description": "State step (default -1 = latest)"
+						},
+						"camera": {
+							"type": "string",
+							"enum": [
+								"wrist",
+								"third_person"
+							],
+							"description": "Default wrist"
+						},
+						"debug": {
+							"type": "boolean",
+							"description": "Default false"
+						}
+					}
+				}
+			},
+			{
+				"name": "back_project_correspondence",
+				"description": "Fuse matched wrist and external-camera pixels into a Franka base point.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"third_person_row": {
+							"type": "integer",
+							"minimum": 0,
+							"description": "External-camera row"
+						},
+						"third_person_col": {
+							"type": "integer",
+							"minimum": 0,
+							"description": "External-camera column"
+						},
+						"wrist_row": {
+							"type": "integer",
+							"minimum": 0,
+							"description": "Wrist row"
+						},
+						"wrist_col": {
+							"type": "integer",
+							"minimum": 0,
+							"description": "Wrist column"
+						},
+						"pixels": {
+							"type": "array",
+							"items": {
+								"type": "object",
+								"properties": {},
+								"additionalProperties": true
+							},
+							"description": "Several matches: [{wrist: [row, col], third_person: [row, col]}, ...]"
+						},
+						"step": {
+							"type": "integer",
+							"description": "State step (default -1 = latest)"
+						},
+						"debug": {
+							"type": "boolean",
+							"description": "Default false"
+						}
+					}
+				}
+			},
+			{
+				"name": "move_delta",
+				"description": "Move the Franka TCP by a bounded base-frame xyz delta in meters.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"delta_xyz"
+					],
+					"properties": {
+						"delta_xyz": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 3,
+							"maxItems": 3
+						}
+					}
+				}
+			},
+			{
+				"name": "rotate_delta",
+				"description": "Rotate the Franka TCP by a bounded base-frame rpy delta in radians.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"delta_rpy"
+					],
+					"properties": {
+						"delta_rpy": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 3,
+							"maxItems": 3
+						}
+					}
+				}
+			},
+			{
+				"name": "open_gripper",
+				"description": "Open the Franka gripper and wait for the command to settle.",
+				"parameters": {
+					"type": "object",
+					"properties": {}
+				}
+			},
+			{
+				"name": "close_gripper",
+				"description": "Close the Franka gripper and wait for the command to settle.",
+				"parameters": {
+					"type": "object",
+					"properties": {}
+				}
+			},
+			{
+				"name": "vla_grasp",
+				"description": "Run bounded real-world VLA action chunks for a local grasp attempt.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"prompt"
+					],
+					"properties": {
+						"prompt": {
+							"type": "string"
+						},
+						"max_chunks": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 20,
+							"description": "Default 4"
+						}
+					}
+				}
+			}
+		],
+		"libero": [
+			{
+				"name": "request_operator_verdict",
+				"description": "Human feedback gate. Ask the operator to mark the current task state as success, failure, or continue before you finish or start another attempt.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"question": {
+							"type": "string",
+							"description": "Default: does the current scene satisfy the task?"
+						}
+					}
+				}
+			},
+			{
+				"name": "request_scene_reset",
+				"description": "Ask the operator to restore the scene for another attempt (remove/secure held objects), wait for confirmation, then reset the robot.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"reason"
+					],
+					"properties": {
+						"reason": {
+							"type": "string",
+							"description": "Why the scene needs to be restored"
+						},
+						"expected_scene_state": {
+							"type": "string",
+							"description": "The restored layout, for the operator"
+						}
+					}
+				}
+			},
+			{
+				"name": "act",
+				"description": "Execute one action unit (MV_FWD, MV_BACK, MV_LEFT, MV_RIGHT, MV_UP, MV_DOWN, ROTATE_CW, ROTATE_CCW, STOP, GRASP, RELEASE, DONE), repeated n times. MV_* move the gripper ~2 cm, ROTATE_* turn it ~9 deg; GRASP closes, RELEASE opens, STOP holds one step, DONE means the task is complete (call finish). Returns the new images and state.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"unit"
+					],
+					"properties": {
+						"unit": {
+							"type": "string",
+							"enum": [
+								"MV_FWD",
+								"MV_BACK",
+								"MV_LEFT",
+								"MV_RIGHT",
+								"MV_UP",
+								"MV_DOWN",
+								"ROTATE_CW",
+								"ROTATE_CCW",
+								"STOP",
+								"GRASP",
+								"RELEASE",
+								"DONE"
+							],
+							"description": "The action unit"
+						},
+						"n": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 10,
+							"description": "Repeat count (default 1)"
+						},
+						"target_in_wrist": {
+							"type": "boolean",
+							"description": "WRIST CHECK: is the TARGET visible in the wrist view?"
+						},
+						"plan": {
+							"type": "array",
+							"items": {
+								"type": "string",
+								"enum": [
+									"MV_FWD",
+									"MV_BACK",
+									"MV_LEFT",
+									"MV_RIGHT",
+									"MV_UP",
+									"MV_DOWN"
+								]
+							},
+							"maxItems": 3,
+							"description": "Only with target_in_wrist false: up to 3 MV_* moves run in order (replaces unit and n)"
+						}
+					}
+				}
+			},
+			{
+				"name": "point",
+				"description": "Affordance: mark the exact gripper contact point(s) in one camera's current image, [y, x] on a 0-1000 grid (y from the top, x from the left). Returns the marked image and the world xyz per point where the robot has depth; later act results report the gripper-to-point offset. A new call with the same label replaces that point.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"camera",
+						"points"
+					],
+					"properties": {
+						"camera": {
+							"type": "string",
+							"enum": [
+								"agentview",
+								"wrist"
+							],
+							"description": "Camera (agentview, wrist)"
+						},
+						"points": {
+							"type": "array",
+							"items": {
+								"type": "object",
+								"required": [
+									"label",
+									"yx"
+								],
+								"properties": {
+									"label": {
+										"type": "string",
+										"description": "What the point is, e.g. 'bowl rim' or 'place spot'"
+									},
+									"yx": {
+										"type": "array",
+										"items": {
+											"type": "number",
+											"minimum": 0,
+											"maximum": 1000
+										},
+										"minItems": 2,
+										"maxItems": 2
+									}
+								}
+							},
+							"minItems": 1,
+							"maxItems": 4
+						}
+					}
+				}
+			},
+			{
+				"name": "plan",
+				"description": "Subgoal plan: `stages` replaces the plan from the current stage on (ordered GRASP/LIFT/MOVE/PLACE/RELEASE/RETREAT/REASON stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"stages": {
+							"type": "array",
+							"items": {
+								"type": "object",
+								"required": [
+									"motion",
+									"target",
+									"completion"
+								],
+								"properties": {
+									"motion": {
+										"type": "string",
+										"description": "GRASP, LIFT, MOVE, PLACE, RELEASE, RETREAT or REASON"
+									},
+									"target": {
+										"type": "string"
+									},
+									"affordance": {
+										"type": "string",
+										"description": "The one visible part to aim at"
+									},
+									"description": {
+										"type": "string",
+										"description": "Visual strategy; for REASON the complete IF ... THEN rule"
+									},
+									"completion": {
+										"type": "string",
+										"description": "DONE WHEN: a condition visible in the images"
+									},
+									"arm": {
+										"type": "string",
+										"description": "Dual-arm robots: the arm of this stage"
+									}
+								}
+							}
+						},
+						"done": {
+							"type": "boolean",
+							"description": "The current stage's DONE WHEN is visible"
+						}
+					}
+				}
+			},
+			{
+				"name": "reset",
+				"description": "Exploration only. Abandon the current episode and restore the same initial scene. Archive the failed attempt first and state which strategy lever changes in the next attempt.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"reason"
+					],
+					"properties": {
+						"reason": {
+							"type": "string",
+							"description": "Why this episode is unrecoverable and what will change"
+						}
+					}
+				}
+			},
+			{
+				"name": "finish",
+				"description": "End the episode after checking the latest state. Success is LIBERO's terminated flag, not this call.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"status",
+						"summary"
+					],
+					"properties": {
+						"status": {
+							"type": "string",
+							"enum": [
+								"success",
+								"failure"
+							]
+						},
+						"summary": {
+							"type": "string"
+						}
+					}
+				}
+			},
+			{
+				"name": "view_env_state",
+				"description": "Current state with agentview (global layout) and wrist (close range) 1024x1024 images. Pixel (row, col) in these images feed back_project.",
+				"parameters": {
+					"type": "object",
+					"properties": {}
+				}
+			},
+			{
+				"name": "move_to",
+				"description": "Scripted EEF servo to a world xyz; holds orientation. gripper -1 = open, +1 = close (hold +1 while carrying). Never move more than 0.30 m in xy in one call; split long moves.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"xyz"
+					],
+					"properties": {
+						"xyz": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 3,
+							"maxItems": 3,
+							"description": "World-frame [x, y, z] in meters"
+						},
+						"gripper": {
+							"type": "number",
+							"description": "-1 open (default), +1 close"
+						},
+						"tol": {
+							"type": "number",
+							"description": "Position tolerance, m (default 0.012)"
+						},
+						"step_clip": {
+							"type": "number",
+							"description": "Per-step xyz cap, m (default 0.025)"
+						},
+						"max_steps": {
+							"type": "integer",
+							"description": "Step budget (default 80)"
+						},
+						"action_scale": {
+							"type": "number",
+							"description": "OSC action scale (default 0.05)"
+						},
+						"target_yaw": {
+							"type": "number",
+							"description": "Optional world yaw target, rad"
+						},
+						"yaw_step_clip": {
+							"type": "number",
+							"description": "Per-step yaw clip, rad (default 0.10)"
+						}
+					}
+				}
+			},
+			{
+				"name": "pi0_pick",
+				"description": "Pi0.5 closed-loop grasp. Use it only for the grasp; you do every move_to and release. Success needs a descent then a lift with the gripper partly closed; it is a hint, confirm from gripper opening and the wrist image.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"prompt"
+					],
+					"properties": {
+						"prompt": {
+							"type": "string",
+							"description": "VLA instruction, e.g. 'pick up the black bowl'"
+						},
+						"max_chunks": {
+							"type": "integer",
+							"description": "Action-chunk budget (default 24)"
+						},
+						"lift_thresh": {
+							"type": "number",
+							"description": "Post-descent ascent for success, m (default 0.05)"
+						},
+						"gripper_closed_thresh": {
+							"type": "number",
+							"description": "Finger separation below which the gripper counts as closed (default 0.06)"
+						},
+						"gripper_open_thresh": {
+							"type": "number",
+							"description": "Minimum finger separation accepted as holding (default 0.0)"
+						},
+						"descent_thresh": {
+							"type": "number",
+							"description": "Required descent before lift detection, m (default 0.10)"
+						}
+					}
+				}
+			},
+			{
+				"name": "pi0_doubled",
+				"description": "Pi0.5 closed-loop contact skill for non-pick interactions (knob, stove, drawer, button, short push). success only mirrors task termination; inspect the images for intermediate progress.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"prompt"
+					],
+					"properties": {
+						"prompt": {
+							"type": "string",
+							"description": "e.g. 'turn on the stove'"
+						},
+						"max_chunks": {
+							"type": "integer",
+							"description": "Default 20"
+						}
+					}
+				}
+			},
+			{
+				"name": "release",
+				"description": "Open the gripper in place for up to max_steps; triggers termination when the goal predicate holds.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"max_steps": {
+							"type": "integer",
+							"description": "Default 20"
+						}
+					}
+				}
+			},
+			{
+				"name": "set_gripper",
+				"description": "Hold the pose and drive the gripper for `steps` env steps (e.g. +1 for 8-12 steps to firm a grip).",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"gripper": {
+							"type": "number",
+							"description": "-1 open (default), +1 close"
+						},
+						"steps": {
+							"type": "integer",
+							"description": "Default 5"
+						}
+					}
+				}
+			},
+			{
+				"name": "rotate_wrist",
+				"description": "Rotate the wrist about world z. Give target_yaw (absolute) or delta_yaw (relative), radians. Holds xyz.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"target_yaw": {
+							"type": "number",
+							"description": "rad"
+						},
+						"delta_yaw": {
+							"type": "number",
+							"description": "rad"
+						},
+						"gripper": {
+							"type": "number",
+							"description": "Default +1"
+						},
+						"max_steps": {
+							"type": "integer",
+							"description": "Default 40"
+						},
+						"tol": {
+							"type": "number",
+							"description": "rad, default 0.02"
+						},
+						"step_clip": {
+							"type": "number",
+							"description": "rad, default 0.10"
+						}
+					}
+				}
+			},
+			{
+				"name": "rotate_pitch",
+				"description": "Tilt the gripper about world x (pitch 0 = pointing down, +pi/2 = pointing +y). Give target_pitch or delta_pitch, radians. Holds xyz and yaw. Use before entering a narrow opening facing ±y.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"target_pitch": {
+							"type": "number",
+							"description": "rad"
+						},
+						"delta_pitch": {
+							"type": "number",
+							"description": "rad"
+						},
+						"gripper": {
+							"type": "number",
+							"description": "Default +1"
+						},
+						"max_steps": {
+							"type": "integer",
+							"description": "Default 40"
+						},
+						"tol": {
+							"type": "number",
+							"description": "rad, default 0.02"
+						},
+						"step_clip": {
+							"type": "number",
+							"description": "rad, default 0.10"
+						}
+					}
+				}
+			},
+			{
+				"name": "move_pose",
+				"description": "Servo xyz and pitch/yaw together each step. Use when move_to stalls on deep or low reaches (cabinet fronts, microwave). gripper defaults to -1 (open): pass +1 while holding.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"xyz"
+					],
+					"properties": {
+						"xyz": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 3,
+							"maxItems": 3,
+							"description": "World-frame [x, y, z] in meters"
+						},
+						"target_pitch": {
+							"type": "number",
+							"description": "rad"
+						},
+						"target_yaw": {
+							"type": "number",
+							"description": "rad"
+						},
+						"gripper": {
+							"type": "number",
+							"description": "Default -1"
+						},
+						"step_clip": {
+							"type": "number",
+							"description": "m, default 0.02"
+						},
+						"pitch_step": {
+							"type": "number",
+							"description": "rad, default 0.08"
+						},
+						"yaw_step": {
+							"type": "number",
+							"description": "rad, default 0.08"
+						},
+						"tol": {
+							"type": "number",
+							"description": "m, default 0.012"
+						},
+						"ori_tol": {
+							"type": "number",
+							"description": "rad, default 0.05"
+						},
+						"action_scale": {
+							"type": "number",
+							"description": "Default 0.05"
+						},
+						"max_steps": {
+							"type": "integer",
+							"description": "Default 150"
+						}
+					}
+				}
+			},
+			{
+				"name": "view_camera_meta",
+				"description": "Camera calibration (intrinsic K, cam-to-world extrinsic, depth range) for the current step.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"camera": {
+							"type": "string",
+							"enum": [
+								"agentview",
+								"wrist"
+							],
+							"description": "Default agentview"
+						},
+						"resolution": {
+							"type": "string",
+							"enum": [
+								"high",
+								"low"
+							],
+							"description": "high = 1024 (default), low = 256"
+						}
+					}
+				}
+			},
+			{
+				"name": "segment",
+				"description": "SAM3 segmentation of the current 1024x1024 camera image. Give exactly one of a text prompt or a positive point [row, col]. The top mask is projected through the depth world map; world_xyz is the median over mask pixels. Returns an overlay image.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"prompt": {
+							"type": "string"
+						},
+						"point": {
+							"type": "array",
+							"items": {
+								"type": "integer"
+							},
+							"minItems": 2,
+							"maxItems": 2
+						},
+						"camera": {
+							"type": "string",
+							"enum": [
+								"agentview",
+								"wrist"
+							],
+							"description": "Default agentview"
+						},
+						"min_score": {
+							"type": "number",
+							"description": "Default 0.2"
+						}
+					}
+				}
+			},
+			{
+				"name": "back_project",
+				"description": "World xyz of a pixel (row, col; row 0 = top) in the current camera image, from the depth world map. Region mode: row_range + col_range (+ optional z_min/z_max) returns the midpoint of world xy over that window, e.g. a container's interior center. Pixels from the 1024 images use resolution high (default).",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"row": {
+							"type": "integer",
+							"description": "Pixel row"
+						},
+						"col": {
+							"type": "integer",
+							"description": "Pixel column"
+						},
+						"camera": {
+							"type": "string",
+							"enum": [
+								"agentview",
+								"wrist"
+							],
+							"description": "Default agentview"
+						},
+						"resolution": {
+							"type": "string",
+							"enum": [
+								"high",
+								"low"
+							]
+						},
+						"row_range": {
+							"type": "array",
+							"items": {
+								"type": "integer"
+							},
+							"minItems": 2,
+							"maxItems": 2
+						},
+						"col_range": {
+							"type": "array",
+							"items": {
+								"type": "integer"
+							},
+							"minItems": 2,
+							"maxItems": 2
+						},
+						"z_min": {
+							"type": "number",
+							"description": "Region mode: keep pixels with world z >= z_min"
+						},
+						"z_max": {
+							"type": "number",
+							"description": "Region mode: keep pixels with world z <= z_max"
+						}
+					}
+				}
+			}
+		],
+		"maniskill": [
+			{
+				"name": "act",
+				"description": "Execute one action unit (MV_FWD, MV_BACK, MV_LEFT, MV_RIGHT, MV_UP, MV_DOWN, STOP, GRASP, RELEASE, DONE), repeated n times. MV_* move the gripper ~2 cm; GRASP closes, RELEASE opens, STOP holds one step, DONE means the task is complete (call finish). Returns the new images and state.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"unit"
+					],
+					"properties": {
+						"unit": {
+							"type": "string",
+							"enum": [
+								"MV_FWD",
+								"MV_BACK",
+								"MV_LEFT",
+								"MV_RIGHT",
+								"MV_UP",
+								"MV_DOWN",
+								"STOP",
+								"GRASP",
+								"RELEASE",
+								"DONE"
+							],
+							"description": "The action unit"
+						},
+						"n": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 10,
+							"description": "Repeat count (default 1)"
+						},
+						"target_in_wrist": {
+							"type": "boolean",
+							"description": "WRIST CHECK: is the TARGET visible in the wrist view?"
+						},
+						"plan": {
+							"type": "array",
+							"items": {
+								"type": "string",
+								"enum": [
+									"MV_FWD",
+									"MV_BACK",
+									"MV_LEFT",
+									"MV_RIGHT",
+									"MV_UP",
+									"MV_DOWN"
+								]
+							},
+							"maxItems": 3,
+							"description": "Only with target_in_wrist false: up to 3 MV_* moves run in order (replaces unit and n)"
+						}
+					}
+				}
+			},
+			{
+				"name": "plan",
+				"description": "Subgoal plan: `stages` replaces the plan from the current stage on (ordered GRASP/LIFT/MOVE/PLACE/RELEASE/RETREAT/REASON stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"stages": {
+							"type": "array",
+							"items": {
+								"type": "object",
+								"required": [
+									"motion",
+									"target",
+									"completion"
+								],
+								"properties": {
+									"motion": {
+										"type": "string",
+										"description": "GRASP, LIFT, MOVE, PLACE, RELEASE, RETREAT or REASON"
+									},
+									"target": {
+										"type": "string"
+									},
+									"affordance": {
+										"type": "string",
+										"description": "The one visible part to aim at"
+									},
+									"description": {
+										"type": "string",
+										"description": "Visual strategy; for REASON the complete IF ... THEN rule"
+									},
+									"completion": {
+										"type": "string",
+										"description": "DONE WHEN: a condition visible in the images"
+									},
+									"arm": {
+										"type": "string",
+										"description": "Dual-arm robots: the arm of this stage"
+									}
+								}
+							}
+						},
+						"done": {
+							"type": "boolean",
+							"description": "The current stage's DONE WHEN is visible"
+						}
+					}
+				}
+			},
+			{
+				"name": "finish",
+				"description": "End the episode after checking the latest state. Success is ManiSkill's success flag, not this call.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"status",
+						"summary"
+					],
+					"properties": {
+						"status": {
+							"type": "string",
+							"enum": [
+								"success",
+								"failure"
+							]
+						},
+						"summary": {
+							"type": "string"
+						}
+					}
+				}
+			},
+			{
+				"name": "view_env_state",
+				"description": "Current state with the agentview (third-person) and wrist images.",
+				"parameters": {
+					"type": "object",
+					"properties": {}
+				}
+			},
+			{
+				"name": "move_delta",
+				"description": "Translate the gripper by a base-frame [dx, dy, dz] in metres (+x away from the base, +y toward the robot's left, +z up; at most 0.2 m per call), optionally opening or closing the gripper first (the arm holds still until the fingers settle, then moves). The orientation is locked. Returns the new state and images.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"delta_xyz"
+					],
+					"properties": {
+						"delta_xyz": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 3,
+							"maxItems": 3
+						},
+						"gripper": {
+							"type": "string",
+							"enum": [
+								"open",
+								"close"
+							]
+						}
+					}
+				}
+			}
+		],
+		"piper": [
+			{
+				"name": "request_operator_verdict",
+				"description": "Human feedback gate. Ask the operator to mark the current task state as success, failure, or continue before you finish or start another attempt.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"question": {
+							"type": "string",
+							"description": "Default: does the current scene satisfy the task?"
+						}
+					}
+				}
+			},
+			{
+				"name": "request_scene_reset",
+				"description": "Ask the operator to restore the scene for another attempt (remove/secure held objects), wait for confirmation, then reset the robot.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"reason"
+					],
+					"properties": {
+						"reason": {
+							"type": "string",
+							"description": "Why the scene needs to be restored"
+						},
+						"expected_scene_state": {
+							"type": "string",
+							"description": "The restored layout, for the operator"
+						}
+					}
+				}
+			},
+			{
+				"name": "act",
+				"description": "Execute one action unit (MV_FWD, MV_BACK, MV_LEFT, MV_RIGHT, MV_UP, MV_DOWN, STOP, GRASP, RELEASE, DONE), repeated n times. MV_* move the gripper ~2 cm; GRASP closes, RELEASE opens, STOP holds one step, DONE means the task is complete (call finish). Returns the new images and state.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"unit"
+					],
+					"properties": {
+						"unit": {
+							"type": "string",
+							"enum": [
+								"MV_FWD",
+								"MV_BACK",
+								"MV_LEFT",
+								"MV_RIGHT",
+								"MV_UP",
+								"MV_DOWN",
+								"STOP",
+								"GRASP",
+								"RELEASE",
+								"DONE"
+							],
+							"description": "The action unit"
+						},
+						"n": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 10,
+							"description": "Repeat count (default 1)"
+						},
+						"target_in_wrist": {
+							"type": "boolean",
+							"description": "WRIST CHECK: is the TARGET visible in the wrist view?"
+						},
+						"plan": {
+							"type": "array",
+							"items": {
+								"type": "string",
+								"enum": [
+									"MV_FWD",
+									"MV_BACK",
+									"MV_LEFT",
+									"MV_RIGHT",
+									"MV_UP",
+									"MV_DOWN"
+								]
+							},
+							"maxItems": 3,
+							"description": "Only with target_in_wrist false: up to 3 MV_* moves run in order (replaces unit and n)"
+						}
+					}
+				}
+			},
+			{
+				"name": "plan",
+				"description": "Subgoal plan: `stages` replaces the plan from the current stage on (ordered GRASP/LIFT/MOVE/PLACE/RELEASE/RETREAT/REASON stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"stages": {
+							"type": "array",
+							"items": {
+								"type": "object",
+								"required": [
+									"motion",
+									"target",
+									"completion"
+								],
+								"properties": {
+									"motion": {
+										"type": "string",
+										"description": "GRASP, LIFT, MOVE, PLACE, RELEASE, RETREAT or REASON"
+									},
+									"target": {
+										"type": "string"
+									},
+									"affordance": {
+										"type": "string",
+										"description": "The one visible part to aim at"
+									},
+									"description": {
+										"type": "string",
+										"description": "Visual strategy; for REASON the complete IF ... THEN rule"
+									},
+									"completion": {
+										"type": "string",
+										"description": "DONE WHEN: a condition visible in the images"
+									},
+									"arm": {
+										"type": "string",
+										"description": "Dual-arm robots: the arm of this stage"
+									}
+								}
+							}
+						},
+						"done": {
+							"type": "boolean",
+							"description": "The current stage's DONE WHEN is visible"
+						}
+					}
+				}
+			},
+			{
+				"name": "finish",
+				"description": "Call when the task is complete or unrecoverable. Halts the agent loop. With --operator, the operator gives a verdict first.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"status",
+						"summary"
+					],
+					"properties": {
+						"status": {
+							"type": "string",
+							"description": "Outcome, e.g. 'success', 'failure', or 'stuck'."
+						},
+						"summary": {
+							"type": "string",
+							"description": "Short natural-language summary of the run."
+						}
+					}
+				}
+			},
+			{
+				"name": "view_env_state",
+				"description": "Read a Piper state step (eef pose, gripper, limits) and its front and wrist images.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"step": {
+							"type": "integer",
+							"description": "State step (default -1 = latest)"
+						}
+					}
+				}
+			},
+			{
+				"name": "move_delta",
+				"description": "Move the Piper gripper by a bounded base-frame xyz delta in meters (x forward, y left, z up).",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"delta_xyz"
+					],
+					"properties": {
+						"delta_xyz": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 3,
+							"maxItems": 3
+						}
+					}
+				}
+			},
+			{
+				"name": "rotate_yaw",
+				"description": "Rotate the Piper gripper about the base z axis by a bounded angle in radians.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"yaw"
+					],
+					"properties": {
+						"yaw": {
+							"type": "number"
+						}
+					}
+				}
+			},
+			{
+				"name": "open_gripper",
+				"description": "Open the Piper gripper and wait for it to settle.",
+				"parameters": {
+					"type": "object",
+					"properties": {}
+				}
+			},
+			{
+				"name": "close_gripper",
+				"description": "Close the Piper gripper and wait for it to settle; an empty close reopens and says so in notes.",
+				"parameters": {
+					"type": "object",
+					"properties": {}
+				}
+			}
+		],
+		"piper_dual": [
+			{
+				"name": "request_operator_verdict",
+				"description": "Human feedback gate. Ask the operator to mark the current task state as success, failure, or continue before you finish or start another attempt.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"question": {
+							"type": "string",
+							"description": "Default: does the current scene satisfy the task?"
+						}
+					}
+				}
+			},
+			{
+				"name": "request_scene_reset",
+				"description": "Ask the operator to restore the scene for another attempt (remove/secure held objects), wait for confirmation, then reset the robot.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"reason"
+					],
+					"properties": {
+						"reason": {
+							"type": "string",
+							"description": "Why the scene needs to be restored"
+						},
+						"expected_scene_state": {
+							"type": "string",
+							"description": "The restored layout, for the operator"
+						}
+					}
+				}
+			},
+			{
+				"name": "act",
+				"description": "Execute one action unit (MV_FWD, MV_BACK, MV_LEFT, MV_RIGHT, MV_UP, MV_DOWN, STOP, GRASP, RELEASE, DONE, STILL), repeated n times. MV_* move the gripper ~2 cm; GRASP closes, RELEASE opens, STOP holds one step, DONE means the task is complete (call finish). Returns the new images and state.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"unit",
+						"arm"
+					],
+					"properties": {
+						"unit": {
+							"type": "string",
+							"enum": [
+								"MV_FWD",
+								"MV_BACK",
+								"MV_LEFT",
+								"MV_RIGHT",
+								"MV_UP",
+								"MV_DOWN",
+								"STOP",
+								"GRASP",
+								"RELEASE",
+								"DONE",
+								"STILL"
+							],
+							"description": "The action unit"
+						},
+						"n": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 10,
+							"description": "Repeat count (default 1)"
+						},
+						"target_in_wrist": {
+							"type": "boolean",
+							"description": "WRIST CHECK: is the TARGET visible in the wrist view?"
+						},
+						"plan": {
+							"type": "array",
+							"items": {
+								"type": "string",
+								"enum": [
+									"MV_FWD",
+									"MV_BACK",
+									"MV_LEFT",
+									"MV_RIGHT",
+									"MV_UP",
+									"MV_DOWN"
+								]
+							},
+							"maxItems": 3,
+							"description": "Only with target_in_wrist false: up to 3 MV_* moves run in order (replaces unit and n)"
+						},
+						"arm": {
+							"type": "string",
+							"enum": [
+								"left",
+								"right"
+							],
+							"description": "Which arm the unit drives"
+						}
+					}
+				}
+			},
+			{
+				"name": "plan",
+				"description": "Subgoal plan: `stages` replaces the plan from the current stage on (ordered GRASP/LIFT/MOVE/PLACE/RELEASE/RETREAT/REASON stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"stages": {
+							"type": "array",
+							"items": {
+								"type": "object",
+								"required": [
+									"motion",
+									"target",
+									"completion"
+								],
+								"properties": {
+									"motion": {
+										"type": "string",
+										"description": "GRASP, LIFT, MOVE, PLACE, RELEASE, RETREAT or REASON"
+									},
+									"target": {
+										"type": "string"
+									},
+									"affordance": {
+										"type": "string",
+										"description": "The one visible part to aim at"
+									},
+									"description": {
+										"type": "string",
+										"description": "Visual strategy; for REASON the complete IF ... THEN rule"
+									},
+									"completion": {
+										"type": "string",
+										"description": "DONE WHEN: a condition visible in the images"
+									},
+									"arm": {
+										"type": "string",
+										"description": "Dual-arm robots: the arm of this stage"
+									}
+								}
+							}
+						},
+						"done": {
+							"type": "boolean",
+							"description": "The current stage's DONE WHEN is visible"
+						}
+					}
+				}
+			},
+			{
+				"name": "finish",
+				"description": "Call when the task is complete or unrecoverable. Halts the agent loop. With --operator, the operator gives a verdict first.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"status",
+						"summary"
+					],
+					"properties": {
+						"status": {
+							"type": "string",
+							"description": "Outcome, e.g. 'success', 'failure', or 'stuck'."
+						},
+						"summary": {
+							"type": "string",
+							"description": "Short natural-language summary of the run."
+						}
+					}
+				}
+			},
+			{
+				"name": "view_env_state",
+				"description": "Read a Piper state step (both arms' eef pose, gripper, limits) and its front, left wrist and right wrist images.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"step": {
+							"type": "integer",
+							"description": "State step (default -1 = latest)"
+						}
+					}
+				}
+			},
+			{
+				"name": "move_delta",
+				"description": "Move one Piper arm's gripper by a bounded base-frame xyz delta in meters (x forward, y left, z up, in that arm's own base frame).",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"delta_xyz",
+						"arm"
+					],
+					"properties": {
+						"delta_xyz": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 3,
+							"maxItems": 3
+						},
+						"arm": {
+							"type": "string",
+							"enum": [
+								"left",
+								"right"
+							],
+							"description": "Which arm moves; the other holds still"
+						}
+					}
+				}
+			},
+			{
+				"name": "rotate_yaw",
+				"description": "Rotate one Piper arm's gripper about the base z axis by a bounded angle in radians.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"yaw",
+						"arm"
+					],
+					"properties": {
+						"yaw": {
+							"type": "number"
+						},
+						"arm": {
+							"type": "string",
+							"enum": [
+								"left",
+								"right"
+							],
+							"description": "Which arm moves; the other holds still"
+						}
+					}
+				}
+			},
+			{
+				"name": "open_gripper",
+				"description": "Open one Piper arm's gripper and wait for it to settle.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"arm"
+					],
+					"properties": {
+						"arm": {
+							"type": "string",
+							"enum": [
+								"left",
+								"right"
+							],
+							"description": "Which arm moves; the other holds still"
+						}
+					}
+				}
+			},
+			{
+				"name": "close_gripper",
+				"description": "Close one Piper arm's gripper and wait for it to settle; an empty close reopens and says so in notes.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"arm"
+					],
+					"properties": {
+						"arm": {
+							"type": "string",
+							"enum": [
+								"left",
+								"right"
+							],
+							"description": "Which arm moves; the other holds still"
+						}
+					}
+				}
+			},
+			{
+				"name": "halt_arm",
+				"description": "Stop one arm for the rest of the episode (its part of the task is done, or it is in trouble): the server holds it where it is and refuses its motion until the operator resets it. The other arm keeps working.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"arm",
+						"reason"
+					],
+					"properties": {
+						"arm": {
+							"type": "string",
+							"enum": [
+								"left",
+								"right"
+							],
+							"description": "Which arm moves; the other holds still"
+						},
+						"reason": {
+							"type": "string",
+							"description": "Why the arm stops"
+						}
+					}
+				}
+			}
+		],
+		"robocasa": [
+			{
+				"name": "reset",
+				"description": "Exploration only. Abandon the current episode and restore the same initial scene. Archive the failed attempt first and state which strategy lever changes in the next attempt.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"reason"
+					],
+					"properties": {
+						"reason": {
+							"type": "string",
+							"description": "Why this episode is unrecoverable and what will change"
+						}
+					}
+				}
+			},
+			{
+				"name": "finish",
+				"description": "Declare the task finished: when success (robocasa_terminated) becomes true, or when genuinely stuck after honest exploration. Give a 1-3 sentence summary of what worked and what failed. Success is the env's state.success, not this call.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"status",
+						"summary"
+					],
+					"properties": {
+						"status": {
+							"type": "string",
+							"enum": [
+								"success",
+								"failure",
+								"stuck"
+							]
+						},
+						"summary": {
+							"type": "string"
+						}
+					}
+				}
+			},
+			{
+				"name": "move_to",
+				"description": "Scripted EEF servo to a world-frame XYZ target via the OSC controller. Holds pitch/yaw orientation (use rotate_pitch to reorient). gripper='hold' (default) maintains current finger width: carry-safe without crushing small objects. Pass +1 to close, -1 to open. Never command a single move_to with |dxyz| > 0.30: OSC flips IK; split long traversal into 2-3 waypoints at carry z.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"xyz"
+					],
+					"properties": {
+						"xyz": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 3,
+							"maxItems": 3,
+							"description": "World-frame [x, y, z] in meters"
+						},
+						"gripper": {
+							"anyOf": [
+								{
+									"type": "number"
+								},
+								{
+									"type": "string"
+								}
+							],
+							"description": "+1 close, -1 open, or 'hold' to maintain the current finger width (default 'hold')"
+						},
+						"step_clip": {
+							"type": "number",
+							"description": "Per-step dxyz cap, m (default 0.02)"
+						},
+						"max_steps": {
+							"type": "integer",
+							"description": "Step budget (default 200)"
+						},
+						"tol": {
+							"type": "number",
+							"description": "Position tolerance, m (default 0.012)"
+						}
+					}
+				}
+			},
+			{
+				"name": "move_delta",
+				"description": "Relative EEF displacement: target = current_eef + dxyz, then move_to. Use for small adjustments (micro-align for grasp, approach). gripper='hold' (default) maintains current finger width.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"dxyz"
+					],
+					"properties": {
+						"dxyz": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 3,
+							"maxItems": 3,
+							"description": "Relative [dx, dy, dz], m"
+						},
+						"gripper": {
+							"anyOf": [
+								{
+									"type": "number"
+								},
+								{
+									"type": "string"
+								}
+							],
+							"description": "+1 close, -1 open, or 'hold' (default 'hold')"
+						},
+						"step_clip": {
+							"type": "number",
+							"description": "Per-step dxyz cap, m (default 0.02)"
+						},
+						"max_steps": {
+							"type": "integer",
+							"description": "Step budget (default 80)"
+						}
+					}
+				}
+			},
+			{
+				"name": "rotate_pitch",
+				"description": "Tilt the wrist forward (axis-angle about the control X-axis); pitches the gripper down/up. Holds xyz fixed. Use before threading the gripper into a narrow opening whose front face normal is along world +/-y.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"target_pitch": {
+							"type": "number",
+							"description": "Absolute pitch target, rad (clamped +/-1.5; default 0.6)"
+						},
+						"gripper": {
+							"type": "number",
+							"description": "Gripper command held during rotation (default +1)"
+						},
+						"n": {
+							"type": "integer",
+							"description": "Number of env steps for the rotation (default 12)"
+						}
+					}
+				}
+			},
+			{
+				"name": "set_gripper",
+				"description": "Hold the current EEF pose and drive the gripper command for `steps` env steps. Use to firm up a grip mid-carry or to actively open/close the gripper.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"gripper": {
+							"type": "number",
+							"description": "+1 close, -1 open (default +1)"
+						},
+						"steps": {
+							"type": "integer",
+							"description": "Env steps to hold (default 10)"
+						}
+					}
+				}
+			},
+			{
+				"name": "release",
+				"description": "Open the gripper for `steps` env steps while holding the EEF in place (set_gripper(-1)). Use to drop a grasped object.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"steps": {
+							"type": "integer",
+							"description": "Env steps (default 10)"
+						}
+					}
+				}
+			},
+			{
+				"name": "scripted_grasp",
+				"description": "Coarse scripted grasp: open -> hover above target -> descend -> close -> lift. A fallback when the VLA closed-loop grasp is unavailable; for hard objects prefer rldx_arm. approach_z and grasp_z_offset are offsets from the target xyz.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"xyz"
+					],
+					"properties": {
+						"xyz": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 3,
+							"maxItems": 3,
+							"description": "World-frame [x, y, z] in meters"
+						},
+						"approach_z": {
+							"type": "number",
+							"description": "Z offset above target before descent, m (default 0.10)"
+						},
+						"grasp_z_offset": {
+							"type": "number",
+							"description": "Z offset at grasp point (default 0.0; negative = below target)"
+						},
+						"step_clip": {
+							"type": "number",
+							"description": "Per-step dxyz cap during approach, m (default 0.02)"
+						}
+					}
+				}
+			},
+			{
+				"name": "rldx_skill",
+				"description": "RLDX-1 VLA closed-loop skill with FULL base motion: the VLA drives both arm and mobile base. Use for full-body tasks where the base must reposition. Pass the complete live task_language verbatim; the runtime always uses that environment language. Do NOT interrupt consecutive VLA calls with manual primitives: that breaks VLA frame history continuity (sets vla_desync).",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"prompt"
+					],
+					"properties": {
+						"prompt": {
+							"type": "string",
+							"description": "Complete live task_language, copied verbatim"
+						},
+						"base_clip": {
+							"anyOf": [
+								{
+									"type": "number"
+								},
+								{
+									"type": "null"
+								}
+							],
+							"description": "Base motion cap (default null = no clamp)"
+						},
+						"max_chunks": {
+							"type": "integer",
+							"description": "Action-chunk budget (default 70; RLDX_MAX_CHUNKS overrides)"
+						},
+						"force_reset": {
+							"type": "boolean",
+							"description": "Force VLA frame history reset (default false)"
+						},
+						"n_action_steps": {
+							"type": "integer",
+							"description": "Actions per VLA chunk (default 8)"
+						},
+						"settle_patience": {
+							"type": "integer",
+							"description": "Settle chunk budget before declaring done (default 999; do NOT set small)"
+						},
+						"settle_eps": {
+							"type": "number",
+							"description": "Settle position tolerance, m (default 0.012)"
+						}
+					}
+				}
+			},
+			{
+				"name": "rldx_arm",
+				"description": "RLDX-1 VLA closed-loop skill with the base CLAMPED to small motions (base_clip 0.1): the VLA drives the arm for precise micro-alignment but cannot drive the base away. Pass the complete live task_language verbatim. Do NOT interrupt consecutive VLA calls with manual primitives.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"prompt"
+					],
+					"properties": {
+						"prompt": {
+							"type": "string",
+							"description": "Complete live task_language, copied verbatim"
+						},
+						"base_clip": {
+							"anyOf": [
+								{
+									"type": "number"
+								},
+								{
+									"type": "null"
+								}
+							],
+							"description": "Base motion cap (default 0.1 = small)"
+						},
+						"max_chunks": {
+							"type": "integer",
+							"description": "Action-chunk budget (default 70; RLDX_MAX_CHUNKS overrides)"
+						},
+						"force_reset": {
+							"type": "boolean",
+							"description": "Force VLA frame history reset (default false)"
+						},
+						"n_action_steps": {
+							"type": "integer",
+							"description": "Actions per VLA chunk (default 8)"
+						},
+						"settle_patience": {
+							"type": "integer",
+							"description": "Settle chunk budget before declaring done (default 999; do NOT set small)"
+						},
+						"settle_eps": {
+							"type": "number",
+							"description": "Settle position tolerance, m (default 0.012)"
+						}
+					}
+				}
+			},
+			{
+				"name": "navigate_to",
+				"description": "Drive the mobile base toward a WORLD (x, y) target. Online-calibrates the base forward heading, then turns to face and drives forward closed-loop. Holds the arm in place. gripper='hold' (default) maintains finger width while driving. Use tol = expected approach distance + object radius.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"xy"
+					],
+					"properties": {
+						"xy": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 2,
+							"maxItems": 2,
+							"description": "World-frame [x, y], m"
+						},
+						"tol": {
+							"type": "number",
+							"description": "Distance threshold to stop, m (default 0.20)"
+						},
+						"max_steps": {
+							"type": "integer",
+							"description": "Step budget (default 300)"
+						},
+						"gripper": {
+							"anyOf": [
+								{
+									"type": "number"
+								},
+								{
+									"type": "string"
+								}
+							],
+							"description": "+1 close, -1 open, or 'hold' (default 'hold')"
+						}
+					}
+				}
+			},
+			{
+				"name": "move_base",
+				"description": "Raw base velocity commands in the robot's LOCAL frame: +forward drives forward, +lateral strafes right, +turn rotates CCW (yaw). Values clamped to [-1, 1]. Use for fine base adjustments near a target; navigate_to for long range. gripper='hold' (default) maintains finger width while driving.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"forward": {
+							"type": "number",
+							"description": "Forward velocity, [-1, 1] (default 0)"
+						},
+						"lateral": {
+							"type": "number",
+							"description": "Lateral / strafe velocity, [-1, 1] (default 0)"
+						},
+						"turn": {
+							"type": "number",
+							"description": "Yaw rotation velocity, [-1, 1] (default 0)"
+						},
+						"steps": {
+							"type": "integer",
+							"description": "Env steps (default 10)"
+						},
+						"gripper": {
+							"anyOf": [
+								{
+									"type": "number"
+								},
+								{
+									"type": "string"
+								}
+							],
+							"description": "+1 close, -1 open, or 'hold' (default 'hold')"
+						}
+					}
+				}
+			},
+			{
+				"name": "view_env_state",
+				"description": "Read state NN (default latest): env state, success (robocasa_terminated), task_progress, vla_desync, the command log, and the agentview (calibration frame), navview (base floor view) and wrist images. Use agentview pixels for back-projection, navview for base navigation and floor walkability, wrist for close-range details near the gripper.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"step": {
+							"anyOf": [
+								{
+									"type": "integer"
+								},
+								{
+									"type": "null"
+								}
+							],
+							"description": "0 = initial; null = latest"
+						}
+					}
+				}
+			},
+			{
+				"name": "back_project_batch",
+				"description": "Back-project MULTIPLE pixels [row, col] (row 0 = image top) to world XYZ from one state's world map. Returns each pixel's world_xyz plus summary.median_xyz. For robust localization sample 3-8 pixels on the target and read summary.median_xyz. Max 50 pixels. Pixels from agentview_high need resolution 'high'.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"pixels"
+					],
+					"properties": {
+						"pixels": {
+							"type": "array",
+							"items": {
+								"type": "array",
+								"items": {
+									"type": "integer"
+								},
+								"minItems": 2,
+								"maxItems": 2
+							},
+							"minItems": 1,
+							"maxItems": 50
+						},
+						"step": {
+							"anyOf": [
+								{
+									"type": "integer"
+								},
+								{
+									"type": "null"
+								}
+							],
+							"description": "State to use (default latest)"
+						},
+						"camera": {
+							"type": "string",
+							"enum": [
+								"agentview",
+								"navview",
+								"wrist"
+							],
+							"description": "Camera (default agentview)"
+						},
+						"resolution": {
+							"type": "string",
+							"enum": [
+								"high",
+								"low"
+							],
+							"description": "low = the 256x256 world map (default); high = the --hi-res agentview map"
+						}
+					}
+				}
+			},
+			{
+				"name": "query_world_map",
+				"description": "Query the latest world map by Z band / XY region to find objects at specific heights: keeps pixels with z_min <= z <= z_max (optionally within x_range / y_range) and clusters them on an image grid. Typical: z 0.85-0.95 = countertop objects; z 0.0-0.12 with camera 'navview' = walkable floor.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"z_min": {
+							"type": "number",
+							"description": "Minimum Z, m (default 0.85, counter height)"
+						},
+						"z_max": {
+							"type": "number",
+							"description": "Maximum Z, m (default 0.95)"
+						},
+						"x_range": {
+							"anyOf": [
+								{
+									"type": "array",
+									"items": {
+										"type": "number"
+									},
+									"minItems": 2,
+									"maxItems": 2
+								},
+								{
+									"type": "null"
+								}
+							]
+						},
+						"y_range": {
+							"anyOf": [
+								{
+									"type": "array",
+									"items": {
+										"type": "number"
+									},
+									"minItems": 2,
+									"maxItems": 2
+								},
+								{
+									"type": "null"
+								}
+							]
+						},
+						"camera": {
+							"type": "string",
+							"enum": [
+								"agentview",
+								"navview",
+								"wrist"
+							],
+							"description": "Camera (default agentview)"
+						},
+						"resolution": {
+							"type": "string",
+							"enum": [
+								"high",
+								"low"
+							],
+							"description": "low = the 256x256 world map (default); high = the --hi-res agentview map"
+						},
+						"min_cluster_size": {
+							"type": "integer",
+							"description": "Minimum sampled pixels per cluster (default 10)"
+						}
+					}
+				}
+			}
+		],
+		"robolab": [
+			{
+				"name": "act",
+				"description": "Execute one action unit (MV_FWD, MV_BACK, MV_LEFT, MV_RIGHT, MV_UP, MV_DOWN, STOP, GRASP, RELEASE, DONE), repeated n times. MV_* move the gripper ~2 cm; GRASP closes, RELEASE opens, STOP holds one step, DONE means the task is complete (call finish). Returns the new images and state.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"unit"
+					],
+					"properties": {
+						"unit": {
+							"type": "string",
+							"enum": [
+								"MV_FWD",
+								"MV_BACK",
+								"MV_LEFT",
+								"MV_RIGHT",
+								"MV_UP",
+								"MV_DOWN",
+								"STOP",
+								"GRASP",
+								"RELEASE",
+								"DONE"
+							],
+							"description": "The action unit"
+						},
+						"n": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 10,
+							"description": "Repeat count (default 1)"
+						},
+						"target_in_wrist": {
+							"type": "boolean",
+							"description": "WRIST CHECK: is the TARGET visible in the wrist view?"
+						},
+						"plan": {
+							"type": "array",
+							"items": {
+								"type": "string",
+								"enum": [
+									"MV_FWD",
+									"MV_BACK",
+									"MV_LEFT",
+									"MV_RIGHT",
+									"MV_UP",
+									"MV_DOWN"
+								]
+							},
+							"maxItems": 3,
+							"description": "Only with target_in_wrist false: up to 3 MV_* moves run in order (replaces unit and n)"
+						}
+					}
+				}
+			},
+			{
+				"name": "plan",
+				"description": "Subgoal plan: `stages` replaces the plan from the current stage on (ordered GRASP/LIFT/MOVE/PLACE/RELEASE/RETREAT/REASON stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"stages": {
+							"type": "array",
+							"items": {
+								"type": "object",
+								"required": [
+									"motion",
+									"target",
+									"completion"
+								],
+								"properties": {
+									"motion": {
+										"type": "string",
+										"description": "GRASP, LIFT, MOVE, PLACE, RELEASE, RETREAT or REASON"
+									},
+									"target": {
+										"type": "string"
+									},
+									"affordance": {
+										"type": "string",
+										"description": "The one visible part to aim at"
+									},
+									"description": {
+										"type": "string",
+										"description": "Visual strategy; for REASON the complete IF ... THEN rule"
+									},
+									"completion": {
+										"type": "string",
+										"description": "DONE WHEN: a condition visible in the images"
+									},
+									"arm": {
+										"type": "string",
+										"description": "Dual-arm robots: the arm of this stage"
+									}
+								}
+							}
+						},
+						"done": {
+							"type": "boolean",
+							"description": "The current stage's DONE WHEN is visible"
+						}
+					}
+				}
+			},
+			{
+				"name": "finish",
+				"description": "End the episode after checking the latest state. Success is RoboLab's task predicate, not this call.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"status",
+						"summary"
+					],
+					"properties": {
+						"status": {
+							"type": "string",
+							"enum": [
+								"success",
+								"failure"
+							]
+						},
+						"summary": {
+							"type": "string"
+						}
+					}
+				}
+			},
+			{
+				"name": "view_env_state",
+				"description": "Current state with the front (third-person) and wrist images.",
+				"parameters": {
+					"type": "object",
+					"properties": {}
+				}
+			},
+			{
+				"name": "move_delta",
+				"description": "Translate the gripper by a base-frame [dx, dy, dz] in metres (+x away from the base, +y toward the robot's left, +z up; at most 0.3 m per call), optionally opening or closing the gripper first. The orientation is locked. Returns the new state and images.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"delta_xyz"
+					],
+					"properties": {
+						"delta_xyz": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 3,
+							"maxItems": 3
+						},
+						"gripper": {
+							"type": "string",
+							"enum": [
+								"open",
+								"close"
+							]
+						}
+					}
+				}
+			}
+		],
+		"robotwin": [
+			{
+				"name": "reset",
+				"description": "Exploration only. Abandon the current episode and restore the same initial scene. Archive the failed attempt first and state which strategy lever changes in the next attempt.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"reason"
+					],
+					"properties": {
+						"reason": {
+							"type": "string",
+							"description": "Why this episode is unrecoverable and what will change"
+						}
+					}
+				}
+			},
+			{
+				"name": "finish",
+				"description": "Stop the run after a fresh status check. RoboTwin's eval_success is authoritative; requesting success cannot override it.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"status",
+						"summary"
+					],
+					"properties": {
+						"status": {
+							"type": "string",
+							"description": "success | failure"
+						},
+						"summary": {
+							"type": "string"
+						}
+					}
+				}
+			},
+			{
+				"name": "view_env_state",
+				"description": "Read one recorded state (step -1 = latest, 0 = initial): command, result, native episode status, robot state, and the head, left wrist and right wrist RGB images.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"step": {
+							"type": "integer",
+							"description": "Recorded state; -1 (default) = latest, 0 = initial"
+						}
+					}
+				}
+			},
+			{
+				"name": "render",
+				"description": "Capture a fresh synchronized observation as a new state without moving.",
+				"parameters": {
+					"type": "object",
+					"properties": {}
+				}
+			},
+			{
+				"name": "sample_world_xyz",
+				"description": "Median world xyz (m) around [row, col] pixels of a recorded state's view, from same-step metric depth. Read-only.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"view",
+						"pixels"
+					],
+					"properties": {
+						"view": {
+							"type": "string",
+							"enum": [
+								"head",
+								"left_wrist",
+								"right_wrist"
+							],
+							"description": "View whose RGB supplied the pixels; also the pixel coordinate space"
+						},
+						"pixels": {
+							"type": "array",
+							"items": {
+								"type": "array",
+								"items": {
+									"type": "integer"
+								},
+								"minItems": 2,
+								"maxItems": 2
+							},
+							"minItems": 1,
+							"maxItems": 256
+						},
+						"step": {
+							"type": "integer",
+							"description": "Recorded state; -1 (default) = latest, 0 = initial"
+						},
+						"neighborhood": {
+							"type": "integer",
+							"minimum": 0,
+							"maximum": 32,
+							"description": "Radius in pixels (default 1)"
+						}
+					}
+				}
+			},
+			{
+				"name": "query_world_map",
+				"description": "World-xyz samples and min/max/median stats over a half-open [row_start, col_start, row_end, col_end] box of a recorded state's view. Read-only.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"view",
+						"bbox"
+					],
+					"properties": {
+						"view": {
+							"type": "string",
+							"enum": [
+								"head",
+								"left_wrist",
+								"right_wrist"
+							],
+							"description": "View whose RGB supplied the pixels; also the pixel coordinate space"
+						},
+						"bbox": {
+							"type": "array",
+							"items": {
+								"type": "integer"
+							},
+							"minItems": 4,
+							"maxItems": 4
+						},
+						"step": {
+							"type": "integer",
+							"description": "Recorded state; -1 (default) = latest, 0 = initial"
+						},
+						"max_points": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 4096,
+							"description": "Default 256"
+						}
+					}
+				}
+			},
+			{
+				"name": "lingbot_act",
+				"description": "Run LingBot-VLA eef16 action chunks (50 native actions each) on the native task instruction. The optional prompt is recorded but never sent to the policy.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"chunks": {
+							"type": "integer",
+							"minimum": 1,
+							"description": "Default 4"
+						},
+						"use_length": {
+							"type": "integer",
+							"minimum": 50,
+							"maximum": 50,
+							"description": "Must be 50"
+						},
+						"prompt": {
+							"type": "string"
+						}
+					}
+				}
+			},
+			{
+				"name": "move_to",
+				"description": "Plan (curobo) and move one arm's EEF to a world-frame xyz and wxyz orientation (default: keep current). The planned qpos waypoints are executed from fresh state. EEF is not TCP: do not send a raw object surface point.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"arm",
+						"xyz"
+					],
+					"properties": {
+						"arm": {
+							"type": "string",
+							"enum": [
+								"left",
+								"right"
+							]
+						},
+						"xyz": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 3,
+							"maxItems": 3,
+							"description": "World [x, y, z], m"
+						},
+						"quat": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 4,
+							"maxItems": 4,
+							"description": "[qw, qx, qy, qz]"
+						},
+						"gripper": {
+							"type": "number",
+							"description": "Gripper command held along the path, 0 closed .. 1 open; omit to keep it"
+						},
+						"substeps": {
+							"type": "integer",
+							"minimum": 0,
+							"description": "Planner waypoints executed, evenly subsampled (default 25; 0 = all)"
+						}
+					}
+				}
+			},
+			{
+				"name": "rotate_wrist",
+				"description": "Rotate one EEF about world z by a relative angle in degrees (EEF xyz fixed; the TCP and a held object sweep an arc).",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"arm",
+						"delta_yaw_deg"
+					],
+					"properties": {
+						"arm": {
+							"type": "string",
+							"enum": [
+								"left",
+								"right"
+							]
+						},
+						"delta_yaw_deg": {
+							"type": "number"
+						},
+						"gripper": {
+							"type": "number",
+							"description": "Gripper command held along the path, 0 closed .. 1 open; omit to keep it"
+						},
+						"substeps": {
+							"type": "integer",
+							"minimum": 0,
+							"description": "Planner waypoints executed, evenly subsampled (default 25; 0 = all)"
+						}
+					}
+				}
+			},
+			{
+				"name": "set_gripper",
+				"description": "Linearly move one normalized gripper (0 closed, 1 open) to val over `steps` native actions (default 10).",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"arm",
+						"val"
+					],
+					"properties": {
+						"arm": {
+							"type": "string",
+							"enum": [
+								"left",
+								"right"
+							]
+						},
+						"val": {
+							"type": "number",
+							"minimum": 0,
+							"maximum": 1
+						},
+						"steps": {
+							"type": "integer",
+							"minimum": 1
+						}
+					}
+				}
+			},
+			{
+				"name": "release",
+				"description": "Open one gripper to val (default 1.0) over `steps` native actions (default 10).",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"arm"
+					],
+					"properties": {
+						"arm": {
+							"type": "string",
+							"enum": [
+								"left",
+								"right"
+							]
+						},
+						"val": {
+							"type": "number"
+						},
+						"steps": {
+							"type": "integer",
+							"minimum": 1
+						}
+					}
+				}
+			}
+		]
+	}
+}

@@ -25,6 +25,9 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
 import { encodePng } from "../png.ts";
+import { type MotionRig, moveDelta, rotateDelta, setGripper } from "../primitives/motion.ts";
+import { viewCameraMeta, viewEnvState } from "../primitives/perception.ts";
+import { type Step as BaseStep, getStep, outcome, type StepsIO, stepParam, type ToolDef } from "../primitives/steps.ts";
 import {
 	apply,
 	attach,
@@ -72,7 +75,8 @@ type Setup = {
 	calibration?: { external: Calibration; wrist: Calibration; convention: string };
 	calibration_error?: string;
 };
-type Step = { blob: Json; dir: string; meta: Json | null; images: Record<string, string> };
+/** A recorded step (../primitives/steps.ts) and the saved wrist and external camera images. */
+type Step = BaseStep & { images: Record<string, string> };
 /** env.get_env_meta().capabilities; servers from before it are the RLinf backend. */
 type Caps = {
 	backend: string;
@@ -118,13 +122,6 @@ const TOOLS = [
 ];
 /** Observation camera key -> saved image and depth artifact names. */
 const ARTIFACTS = { main: ["wrist", "wrist_depth"], extra_0: ["camera", "camera_depth"] } as const;
-
-function vec3(v: unknown, name: string): NdArray {
-	const a = vec(v);
-	if (a.length !== 3) throw new Error(`${name} must contain exactly 3 values, got (${a.length},)`);
-	if (!a.every(Number.isFinite)) throw new Error(`${name} must contain only finite values`);
-	return NdArray.f32(a);
-}
 
 /** `[H,W,3]` -> `[1,H,W,3]`, `[N,H,W,3]` -> `[1,N,H,W,3]`. */
 function batchViews(v: unknown): NdArray | null {
@@ -412,13 +409,6 @@ export default function franka(pi: ExtensionAPI) {
 		return step;
 	}
 
-	function getStep(step?: number | null): Step {
-		const i = step === undefined || step === null ? steps.length - 1 : step < 0 ? steps.length + step : step;
-		const s = steps[i];
-		if (!s) throw new Error(`step ${step} is not recorded (have 0..${steps.length - 1})`);
-		return s;
-	}
-
 	/** view_env_state: the step blob plus external then wrist image. */
 	function view(s: Step) {
 		const output: Json = { ...s.blob };
@@ -434,6 +424,19 @@ export default function franka(pi: ExtensionAPI) {
 
 	// ---- tools
 
+	/** The recorded-state layer (../primitives/steps.ts): mutating tools record and return a fresh step. */
+	const io: StepsIO<Step> = {
+		steps,
+		ready: () => env !== undefined,
+		dump: dumpState,
+		view,
+		// A jammed gripper (polymetis: the fingers did not move as commanded, nothing grasped) heads the result.
+		headline: (result) => {
+			const jam = [result, result.gripper].find((r) => r?.gripper_jammed === true);
+			return jam && { gripper_jammed: true, gripper_note: jam.note };
+		},
+	};
+
 	/**
 	 * Register a tool. Mutating tools run, then record a fresh state step and return it (errors
 	 * included); read-only tools return their result or `{error}`,
@@ -447,43 +450,12 @@ export default function franka(pi: ExtensionAPI) {
 		mutating = true,
 	) {
 		robot.tool(name, description, parameters, (params, signal, ctx) =>
-			outcome(name, params as Json, () => run(params, signal, ctx), mutating),
+			outcome(io, name, params as Json, () => run(params, signal, ctx), mutating),
 		);
 	}
-
-	/** Run a tool body; a mutating one then records a fresh state step and returns it (errors included). */
-	async function outcome(name: string, params: Json, run: () => Promise<Json>, mutating = true) {
-		if (!env || !steps.length) return toolResult({ error: "robot not initialized; see the session start error" });
-		const started = performance.now();
-		let result: Json;
-		let failed = false;
-		try {
-			result = await run();
-		} catch (err) {
-			result = { error: message(err) };
-			failed = true;
-		}
-		if (!mutating) {
-			const { _pngs, ...rest } = result;
-			return toolResult(rest, _pngs ?? []);
-		}
-		const elapsed = round((performance.now() - started) / 1000, 2);
-		try {
-			const { output, pngs } = view(await dumpState({ action: name, ...params }, result, elapsed));
-			output.agent_elapsed_s = elapsed;
-			if (failed) for (const [k, v] of Object.entries(result)) output[k] ??= v;
-			// A jammed gripper (polymetis: the fingers did not move as commanded, nothing grasped) heads the result.
-			const jam = [result, result.gripper].find((r) => r?.gripper_jammed === true);
-			if (jam) return toolResult({ gripper_jammed: true, gripper_note: jam.note, ...output }, pngs);
-			return toolResult(output, pngs);
-		} catch (err) {
-			return toolResult({
-				...result,
-				state_capture_error: message(err),
-				error: result.error ?? `failed to capture state after ${name}: ${message(err)}`,
-			});
-		}
-	}
+	/** Mount a shared primitive (../primitives) as one of this robot's tools. */
+	const mount = <P extends TSchema>(d: ToolDef<P>, mutating = true) =>
+		tool(d.name, d.description, d.parameters, d.run, mutating);
 
 	/** Refuse a move whose target leaves the --workspace-xy box or goes below --z-floor (unless it moves back in). */
 	function checkWorkspace(delta: number[]) {
@@ -501,7 +473,7 @@ export default function franka(pi: ExtensionAPI) {
 
 	/** Units mode (../units): one grounded action unit on the existing move primitives. */
 	function unitStep(move: Move, signal: AbortSignal | undefined) {
-		return outcome("act", { move }, async () => {
+		return outcome(io, "act", { move }, async () => {
 			check(signal);
 			const out: Json = {};
 			if (move.gripper) out.gripper = await motion("env.set_gripper", { open: move.gripper === "open" }, signal);
@@ -537,31 +509,10 @@ export default function franka(pi: ExtensionAPI) {
 		};
 	}
 
-	const stepParam = Type.Optional(Type.Integer({ description: "State step (default -1 = latest)" }));
 	const pixel = (description: string) => Type.Optional(Type.Integer({ minimum: 0, description }));
 
-	tool(
-		"view_env_state",
-		"Read a Franka state snapshot and its synchronized RGB images.",
-		Type.Object({ step: stepParam }),
-		async ({ step = -1 }) => {
-			const { output, pngs } = view(getStep(step));
-			return { ...output, _pngs: pngs };
-		},
-		false,
-	);
-
-	tool(
-		"view_camera_meta",
-		"Read camera intrinsics, crop, depth, and calibration metadata.",
-		Type.Object({ step: stepParam }),
-		async ({ step = -1 }) => {
-			const s = getStep(step);
-			if (!s.meta) return { error: "camera metadata is unavailable", step };
-			return { step: s.blob.step_idx, camera_meta: s.meta };
-		},
-		false,
-	);
+	mount(viewEnvState(io, "Read a Franka state snapshot and its synchronized RGB images."), false);
+	mount(viewCameraMeta(io, "Read camera intrinsics, crop, depth, and calibration metadata."), false);
 
 	function calibration() {
 		if (!setup?.calibration) throw new Error(setup?.calibration_error ?? "no hand-eye calibration loaded");
@@ -573,7 +524,7 @@ export default function franka(pi: ExtensionAPI) {
 		"Read calibrated camera geometry and projection conventions.",
 		Type.Object({ step: stepParam }),
 		async ({ step = -1 }) => {
-			const s = getStep(step);
+			const s = getStep(steps, step);
 			if (!s.meta) throw new Error("camera metadata not found in the recorded state");
 			const cal = calibration();
 			const brief = (c: Calibration) => ({
@@ -682,7 +633,7 @@ export default function franka(pi: ExtensionAPI) {
 			debug: Type.Optional(Type.Boolean({ description: "Default false" })),
 		}),
 		async ({ row, col, step, camera = "wrist", debug = false }) => {
-			const s = getStep(step);
+			const s = getStep(steps, step);
 			if (!s.meta) throw new Error("camera metadata not found in the recorded state");
 			calibration();
 			const tcp = tcpPose(s);
@@ -820,7 +771,7 @@ export default function franka(pi: ExtensionAPI) {
 			debug: Type.Optional(Type.Boolean({ description: "Default false" })),
 		}),
 		async ({ third_person_row, third_person_col, wrist_row, wrist_col, pixels, step, debug = false }) => {
-			const s = getStep(step);
+			const s = getStep(steps, step);
 			if (!s.meta) throw new Error("camera metadata not found in the recorded state");
 			calibration();
 			tcpPose(s);
@@ -886,57 +837,19 @@ export default function franka(pi: ExtensionAPI) {
 		false,
 	);
 
-	const xyz = Type.Array(Type.Number(), { minItems: 3, maxItems: 3 });
-
-	tool(
-		"move_delta",
-		"Move the Franka TCP by a bounded base-frame xyz delta in meters.",
-		Type.Object({ delta_xyz: xyz }),
-		async ({ delta_xyz }, signal) => {
-			check(signal);
-			const delta = vec3(delta_xyz, "delta_xyz");
-			checkMove(vec(delta_xyz), maxMove(), setup?.task.constraints);
-			checkWorkspace(vec(delta_xyz));
-			return motion("env.move_delta", { delta_xyz: delta }, signal);
-		},
-	);
-
-	tool(
-		"rotate_delta",
-		"Rotate the Franka TCP by a bounded base-frame rpy delta in radians.",
-		Type.Object({ delta_rpy: xyz }),
-		async ({ delta_rpy }, signal) => {
-			check(signal);
-			const delta = vec3(delta_rpy, "delta_rpy");
-			const limit = maxRotate();
-			const norm = Math.hypot(...numbers(delta));
-			if (!(norm <= limit))
-				throw new Error(
-					`delta_rpy rotates ${round(norm, 4)} rad; the limit is ${limit} rad per call. Split the rotation into smaller calls.`,
-				);
-			return motion("env.rotate_delta", { delta_rpy: delta }, signal);
-		},
-	);
-
-	tool(
-		"open_gripper",
-		"Open the Franka gripper and wait for the command to settle.",
-		Type.Object({}),
-		async (_p, signal) => {
-			check(signal);
-			return motion("env.set_gripper", { open: true }, signal);
-		},
-	);
-
-	tool(
-		"close_gripper",
-		"Close the Franka gripper and wait for the command to settle.",
-		Type.Object({}),
-		async (_p, signal) => {
-			check(signal);
-			return motion("env.set_gripper", { open: false }, signal);
-		},
-	);
+	/** The motion primitives (../primitives/motion.ts) on this arm: its env, limits, workspace and operator gate. */
+	const rig: MotionRig = {
+		check,
+		motion,
+		maxMove,
+		maxRotate,
+		constraints: () => setup?.task.constraints,
+		workspace: (delta) => checkWorkspace(delta),
+	};
+	mount(moveDelta(rig, "Move the Franka TCP by a bounded base-frame xyz delta in meters."));
+	mount(rotateDelta(rig, "Rotate the Franka TCP by a bounded base-frame rpy delta in radians."));
+	mount(setGripper(rig, true, "Open the Franka gripper and wait for the command to settle."));
+	mount(setGripper(rig, false, "Close the Franka gripper and wait for the command to settle."));
 
 	tool(
 		"vla_grasp",

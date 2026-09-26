@@ -26,6 +26,9 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
 import { decodePngChannel, encodePng } from "../png.ts";
+import { checkRotate, type MotionRig, moveDelta, rotateDelta, setGripper } from "../primitives/motion.ts";
+import { viewCameraMeta, viewEnvState } from "../primitives/perception.ts";
+import { type Step as BaseStep, getStep, outcome, type StepsIO, stepParam, type ToolDef } from "../primitives/steps.ts";
 import {
 	apply,
 	attach,
@@ -91,7 +94,8 @@ type Setup = {
 	T_right_base_left_base?: Mat;
 	calibration_error?: string;
 };
-type Step = { blob: Json; dir: string; meta: Json | null; views: string[] };
+/** A recorded step (../primitives/steps.ts) and the camera views it saved. */
+type Step = BaseStep & { views: string[] };
 type Boundary = "grasp" | "handoff" | "place";
 
 /** Task, calibration and perception config from the services (parse_config checks). */
@@ -382,14 +386,6 @@ export default function dualFranka(pi: ExtensionAPI) {
 		if (states !== undefined && states !== null) lastStates = states;
 	};
 	const maxRotate = () => Number(flag("max-rotate", "0.5"));
-	/** Refuse a rotation beyond --max-rotate (norm of delta_rpy, rad). */
-	const checkRotate = (rpy: number[]) => {
-		const norm = Math.hypot(...rpy);
-		if (!(norm <= maxRotate()))
-			throw new Error(
-				`delta_rpy rotates ${round(norm, 4)} rad; the limit is ${maxRotate()} rad per call. Split the rotation into smaller calls.`,
-			);
-	};
 	const check = (signal?: AbortSignal) => {
 		op.check();
 		if (signal?.aborted) throw new Error("tool operation interrupted");
@@ -411,7 +407,7 @@ export default function dualFranka(pi: ExtensionAPI) {
 
 	/** A step to localize in: none from before the last scene reset. */
 	function freshStep(step?: number | null): Step {
-		const s = getStep(step);
+		const s = getStep(steps, step);
 		if (s.blob.step_idx < attemptStart)
 			throw new Error(
 				`localization refused: step ${s.blob.step_idx} predates the last scene reset (step ${attemptStart}); use a fresh observation`,
@@ -529,13 +525,6 @@ export default function dualFranka(pi: ExtensionAPI) {
 		return step;
 	}
 
-	function getStep(step?: number | null): Step {
-		const i = step === undefined || step === null ? steps.length - 1 : step < 0 ? steps.length + step : step;
-		const s = steps[i];
-		if (!s) throw new Error(`step ${step} is not recorded (have 0..${steps.length - 1})`);
-		return s;
-	}
-
 	const loadRgb = (s: Step, name: string): Rgb => ({
 		...JSON.parse(readFileSync(join(s.dir, `${name}.json`), "utf8")),
 		rgb: readFileSync(join(s.dir, `${name}.rgb`)),
@@ -574,6 +563,9 @@ export default function dualFranka(pi: ExtensionAPI) {
 
 	// ---- tools
 
+	/** The recorded-state layer (../primitives/steps.ts): mutating tools record and return a fresh step. */
+	const io: StepsIO<Step> = { steps, ready: () => env !== undefined, dump: dumpState, view };
+
 	/**
 	 * Register a tool. Mutating tools run, then record a fresh state step and return it (errors
 	 * included); read-only tools return their result or `{error}`,
@@ -587,40 +579,11 @@ export default function dualFranka(pi: ExtensionAPI) {
 		mutating = MOTION.includes(name),
 	) {
 		robot.tool(name, description, parameters, (params, signal, ctx) =>
-			outcome(name, params as Json, () => run(params, signal, ctx), mutating),
+			outcome(io, name, params as Json, () => run(params, signal, ctx), mutating),
 		);
 	}
-
-	/** Run a tool body; a mutating one then records a fresh state step and returns it (errors included). */
-	async function outcome(name: string, params: Json, run: () => Promise<Json>, mutating = true) {
-		if (!env || !steps.length) return toolResult({ error: "robot not initialized; see the session start error" });
-		const started = performance.now();
-		let result: Json;
-		let failed = false;
-		try {
-			result = await run();
-		} catch (err) {
-			result = { error: message(err) };
-			failed = true;
-		}
-		if (!mutating) {
-			const { _pngs, ...rest } = result;
-			return toolResult(rest, _pngs ?? []);
-		}
-		const elapsed = round((performance.now() - started) / 1000, 2);
-		try {
-			const { output, pngs } = view(await dumpState({ action: name, ...params }, result, elapsed));
-			output.agent_elapsed_s = elapsed;
-			if (failed) for (const [k, v] of Object.entries(result)) output[k] ??= v;
-			return toolResult(output, pngs);
-		} catch (err) {
-			return toolResult({
-				...result,
-				state_capture_error: message(err),
-				error: result.error ?? `failed to capture state after ${name}: ${message(err)}`,
-			});
-		}
-	}
+	/** Mount a shared primitive (../primitives) as one of this robot's tools. */
+	const mount = <P extends TSchema>(d: ToolDef<P>) => tool(d.name, d.description, d.parameters, d.run);
 
 	/** One arm's state in the latest step (tcp_pose in right_base). */
 	const armState = (arm: string): Json => steps[steps.length - 1]?.blob.state?.[`${arm}_arm`] ?? {};
@@ -642,7 +605,7 @@ export default function dualFranka(pi: ExtensionAPI) {
 
 	/** Units mode (../units): one grounded action unit for one arm on the existing move primitives. */
 	function unitStep(move: Move, signal: AbortSignal | undefined) {
-		return outcome("act", { move }, async () => {
+		return outcome(io, "act", { move }, async () => {
 			check(signal);
 			const arm = armName(move.arm);
 			const out: Json = { arm };
@@ -654,14 +617,13 @@ export default function dualFranka(pi: ExtensionAPI) {
 				out.move = await motion("env.move_delta", { arm, delta_xyz: NdArray.f32(move.delta) }, signal);
 			}
 			if (move.yaw) {
-				checkRotate([0, 0, move.yaw]);
+				checkRotate([0, 0, move.yaw], maxRotate());
 				out.rotate = await motion("env.rotate_delta", { arm, delta_rpy: NdArray.f32([0, 0, move.yaw]) }, signal);
 			}
 			return out;
 		});
 	}
 
-	const stepParam = Type.Optional(Type.Integer({ description: "State step (default -1 = latest)" }));
 	const cameraParam = Type.Optional(
 		Type.String({
 			description:
@@ -671,7 +633,6 @@ export default function dualFranka(pi: ExtensionAPI) {
 	const arm = StringEnum(["left", "right"] as const, {
 		description: "Which arm to command; the other arm is left uncommanded.",
 	});
-	const xyz = Type.Array(Type.Number(), { minItems: 3, maxItems: 3 });
 
 	tool(
 		"describe_dual_franka_setup",
@@ -721,26 +682,13 @@ export default function dualFranka(pi: ExtensionAPI) {
 		},
 	);
 
-	tool(
-		"view_env_state",
-		"Read a dual-Franka state snapshot. Configured inline camera views are returned directly; other available views are returned as artifact paths; use read to inspect these artifacts.",
-		Type.Object({ step: stepParam }),
-		async ({ step = -1 }) => {
-			const { output, pngs } = view(getStep(step));
-			return { ...output, _pngs: pngs };
-		},
+	mount(
+		viewEnvState(
+			io,
+			"Read a dual-Franka state snapshot. Configured inline camera views are returned directly; other available views are returned as artifact paths; use read to inspect these artifacts.",
+		),
 	);
-
-	tool(
-		"view_camera_meta",
-		"Read camera intrinsics, serials, and projection metadata for the dual-Franka rig.",
-		Type.Object({ step: stepParam }),
-		async ({ step = -1 }) => {
-			const s = getStep(step);
-			if (!s.meta) return { error: "camera metadata is unavailable", step };
-			return { step: s.blob.step_idx, camera_meta: s.meta };
-		},
-	);
+	mount(viewCameraMeta(io, "Read camera intrinsics, serials, and projection metadata for the dual-Franka rig."));
 
 	// ---- perception
 
@@ -1166,57 +1114,21 @@ export default function dualFranka(pi: ExtensionAPI) {
 		if (a !== "left" && a !== "right") throw new Error("arm must be exactly 'left' or 'right'");
 		return a;
 	};
-	function vec3(v: unknown, name: string): NdArray {
-		const a = vec(v);
-		if (a.length !== 3) throw new Error(`${name} must contain exactly 3 values, got (${a.length},)`);
-		if (!a.every(Number.isFinite)) throw new Error(`${name} must contain only finite values`);
-		return NdArray.f32(a);
-	}
 
-	tool(
-		"move_delta",
-		"Move one Franka TCP by a bounded world-frame xyz delta in meters.",
-		Type.Object({ arm, delta_xyz: xyz }),
-		async (p, signal) => {
-			check(signal);
-			const delta = vec3(p.delta_xyz, "delta_xyz");
-			checkMove(vec(p.delta_xyz), Number(flag("max-move", "0.1")), setup?.task.constraints);
-			checkWorkspace(armName(p.arm), vec(p.delta_xyz));
-			return motion("env.move_delta", { arm: armName(p.arm), delta_xyz: delta }, signal);
-		},
-	);
-
-	tool(
-		"rotate_delta",
-		"Rotate one Franka TCP by a bounded world-frame rpy delta in radians.",
-		Type.Object({ arm, delta_rpy: xyz }),
-		async (p, signal) => {
-			check(signal);
-			const delta = vec3(p.delta_rpy, "delta_rpy");
-			checkRotate(numbers(delta));
-			return motion("env.rotate_delta", { arm: armName(p.arm), delta_rpy: delta }, signal);
-		},
-	);
-
-	tool(
-		"open_gripper",
-		"Open one Franka gripper and wait for the command to settle.",
-		Type.Object({ arm }),
-		async (p, signal) => {
-			check(signal);
-			return motion("env.set_gripper", { arm: armName(p.arm), open: true }, signal);
-		},
-	);
-
-	tool(
-		"close_gripper",
-		"Close one Franka gripper and wait for the command to settle.",
-		Type.Object({ arm }),
-		async (p, signal) => {
-			check(signal);
-			return motion("env.set_gripper", { arm: armName(p.arm), open: false }, signal);
-		},
-	);
+	/** The motion primitives (../primitives/motion.ts) on either arm: this rig's env, limits, workspace and gate. */
+	const rig: MotionRig = {
+		check,
+		motion,
+		maxMove: () => Number(flag("max-move", "0.1")),
+		maxRotate,
+		constraints: () => setup?.task.constraints,
+		workspace: (delta, a) => checkWorkspace(a!, delta),
+		arm: { schema: arm, name: armName },
+	};
+	mount(moveDelta(rig, "Move one Franka TCP by a bounded world-frame xyz delta in meters."));
+	mount(rotateDelta(rig, "Rotate one Franka TCP by a bounded world-frame rpy delta in radians."));
+	mount(setGripper(rig, true, "Open one Franka gripper and wait for the command to settle."));
+	mount(setGripper(rig, false, "Close one Franka gripper and wait for the command to settle."));
 
 	tool(
 		"recover_joint_posture",

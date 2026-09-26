@@ -29,6 +29,7 @@ when ``--model-path`` is not a directory. Run it in the ``openvla-oft`` venv
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import time
 from collections.abc import Callable
@@ -107,6 +108,17 @@ class OpenVLAOFTFacade(ChunkVLAFacade):
         return libero_gripper(np.asarray(raw, np.float32))
 
 
+def norm_stat_keys(path: str) -> list[str]:
+    """The un-normalisation keys ``get_vla`` will use: an OFT checkpoint's ``config.json`` still
+    carries the OXE pretraining ``norm_stats`` (25 datasets), and ``get_vla`` replaces them with
+    the fine-tune's ``dataset_statistics.json`` (e.g. ``libero_spatial_no_noops``) when present."""
+    stats = os.path.join(path, "dataset_statistics.json")
+    if not os.path.isfile(stats):
+        return []
+    with open(stats) as f:
+        return list(json.load(f))
+
+
 def load_policy(
     path: str, unnorm_key: str | None, center_crop: bool, repo: str | None
 ) -> tuple[Policy, str]:
@@ -132,7 +144,9 @@ def load_policy(
     )
     from transformers import AutoConfig
 
-    keys = list(AutoConfig.from_pretrained(path, trust_remote_code=True).norm_stats)
+    keys = norm_stat_keys(path) or list(
+        AutoConfig.from_pretrained(path, trust_remote_code=True).norm_stats
+    )
     if unnorm_key is None:
         if len(keys) != 1:
             raise ValueError(f"--unnorm-key is required; the checkpoint has {keys}")

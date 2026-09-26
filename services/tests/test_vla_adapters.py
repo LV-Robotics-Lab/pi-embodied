@@ -166,7 +166,7 @@ def test_libero_gripper_binarises_and_inverts():
         1.0,
         0.0,
     ]  # sign(2g-1) flipped: dataset open -> LIBERO -1
-    assert raw[0, 6] == 0.9, "the input is not modified"
+    assert raw[0, 6] == np.float32(0.9), "the input is not modified"
 
 
 def test_resizes():
@@ -266,3 +266,13 @@ def test_gr00t_builds_the_libero_panda_observation():
     # inverts for LIBERO (-1 open), so 0.9 -> -1 and 0.1 -> +1.
     raw = np.asarray(pol.seen_out[-1], np.float32)
     assert np.array_equal(a[0, :, 6], np.where(raw[:, 6] > 0.5, -1.0, 1.0))
+
+
+def test_oft_unnorm_keys_come_from_the_fine_tunes_dataset_statistics(tmp_path):
+    from pi_embodied_services.components.openvla_oft_server import norm_stat_keys
+
+    assert norm_stat_keys(str(tmp_path)) == []
+    (tmp_path / "dataset_statistics.json").write_text(
+        '{"libero_spatial_no_noops": {"action": {}, "proprio": {}}}'
+    )
+    assert norm_stat_keys(str(tmp_path)) == ["libero_spatial_no_noops"]

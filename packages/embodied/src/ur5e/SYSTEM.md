@@ -18,6 +18,13 @@ back_project turns a pixel (row, col) of a camera with depth into a base-frame p
 segment finds an object by text or by a point in a camera image and, on a camera with depth, returns its median base-frame point.
 [/tool:segment]
 
+[tool:detect]
+- `detect` gives SAM3 masks with ids (`d3`) on a camera's current image, drawn on an overlay, each with its `centroid_pixel` and `depth_m`[tool:back_project] (back_project a centroid for its base-frame point)[/tool:back_project]; `all: true` returns every candidate. Ids expire at the next motion.[tool:select_detection] `select_detection` names the target.[/tool:select_detection][tool:reject_detection] `reject_detection` rules one out.[/tool:reject_detection]
+[/tool:detect]
+[tool:enhance_depth]
+- `enhance_depth` fuses a UniDepth estimate into a camera's depth (or supplies depth where it has none, an RGB-only camera) for the latest step[tool:back_project]; back_project then reads it[/tool:back_project].[tool:detect] `detect` then measures through it.[/tool:detect]
+[/tool:enhance_depth]
+
 # Workflow
 1. Read the initial state: TCP position (m), height above the table (z_floor_m), gripper width.
 2. Locate the target in the images[tool:back_project|segment] and in base coordinates[/tool:back_project|segment]; plan an approach from above.

@@ -79,6 +79,12 @@ with `--env` / `--vla` / `--sam3`. Real-arm robots (Franka, dual Franka) stay on
 | Piper / dual Piper (real) | `src/piper` | operator verdict (required) | all below but `--privileged`; explore resets through the operator |
 | UR5e (real) | `src/ur5e` | operator verdict (required) | all below but `--privileged`; explore resets through the operator; bound to one arm (`--arm-id`) |
 
+Every robot but the Frankas (whose `segment` does this with `--robot-sam3` / `--robot-unidepth`) takes
+`--detections` (SAM3 masks with ids on the env server: `detect`, `select_detection`,
+`reject_detection`, through its `--sam3`) and `--unidepth <url>` (`enhance_depth`: UniDepth depth,
+the only depth ManiSkill, RoboLab and the Piper / UR5e webcams have; UR5e's `back_project` then reads
+it); `src/primitives/detections.ts`, the env servers' `env.detect` & co.
+
 ManiSkill's `--robot` picks the arm (ManiSkill 3.0.1 agents the stock table scene places, and the
 robots the other scenes of OpenETA's ManiSkill table are built for), all translation-only with the same
 MV_* vectors, 2 cm step and servo (each measured at 19.5-20.3 mm per unit along its axis). The RLinf

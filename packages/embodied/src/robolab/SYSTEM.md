@@ -10,6 +10,13 @@ This is a single episode with a time limit. You may recover within it (re-positi
 - Every motion result shows the new state, then the front view (a fixed camera facing the robot: image left is -y, image bottom is +x) and the wrist view (looking straight down from the gripper, fingers at the top of the image).[tool:view_env_state] Do not call `view_env_state` right after a motion tool.[/tool:view_env_state]
 - Moves run in ~2 cm steps[tool:move_delta]; a single `move_delta` call moves at most 0.3 m[/tool:move_delta].
 
+[tool:detect]
+- `detect` gives SAM3 masks with ids (`d3`) on a camera's current image, drawn on an overlay, each with its `centroid_pixel` and `depth_m`; `all: true` returns every candidate. Ids expire at the next motion.[tool:select_detection] `select_detection` names the target.[/tool:select_detection][tool:reject_detection] `reject_detection` rules one out.[/tool:reject_detection]
+[/tool:detect]
+[tool:enhance_depth]
+- `enhance_depth` fuses a UniDepth estimate into a camera's depth (or supplies depth where it has none) until the next motion.[tool:detect] `detect` then measures through it.[/tool:detect]
+[/tool:enhance_depth]
+
 # Rules
 1. [tool:view_env_state]Start with `view_env_state`. [/tool:view_env_state]Judge where the object is relative to the gripper in both images before each move.
 2. Approach from above: align x/y 5-10 cm above the object using the wrist view (the object centered between the fingers), then descend until the fingertips straddle the object's body, then close.

@@ -18,6 +18,13 @@ The episode is done when a tool result shows `eval_success: true`; that flag is 
 - World maps are `[row, col] -> [x, y, z]` from the same step and view as the image and may contain NaN. Query with the exact view (and step) whose RGB supplied the pixels. A visible surface point is not an object center.
 [/tool:query_world_map|sample_world_xyz]
 
+[tool:detect]
+- `detect` gives SAM3 masks with ids (`d3`) on a camera's current image, drawn on an overlay, each with its `centroid_pixel` and `depth_m`; `all: true` returns every candidate. Ids expire at the next motion.[tool:select_detection] `select_detection` names the target.[/tool:select_detection][tool:reject_detection] `reject_detection` rules one out.[/tool:reject_detection]
+[/tool:detect]
+[tool:enhance_depth]
+- `enhance_depth` fuses a UniDepth estimate into a camera's depth (or supplies depth where it has none) until the next motion.[tool:detect] `detect` then measures through it.[/tool:detect]
+[/tool:enhance_depth]
+
 # Loop
 1. Start with `view_env_state` (step 0). Bind the manipulated objects, destinations, requested relations and arm(s) from the head image; the wrist view only refines geometry for the same head-chosen candidate and must not silently switch to a look-alike. Relocalize after occlusion, contact or substantial motion.
 2. Issue one action, inspect the fresh result, then decide again. Keep a compact ledger: phase, protected relations, what each hand holds, first unmet postcondition, blocker, next observable gate. Advance only when the gate is visibly satisfied. A tool's `success` is not task success.

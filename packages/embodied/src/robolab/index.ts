@@ -32,6 +32,8 @@ import { template } from "../context-version.ts";
 import { anchorPlane, type CameraMeta, pixelOnPlane } from "../flash/plane.ts";
 import { recipeFlash } from "../flash/recipe.ts";
 import { encodePng } from "../png.ts";
+import { detectionActive, detectionArgs, detectionTools, registerDetectionFlags } from "../primitives/detections.ts";
+import { mountGraspTool } from "../primitives/grasp.ts";
 import { attach, defineRobot, SERVICES } from "../robot.ts";
 import type { NdArray, RpcClient } from "../rpc.ts";
 import type { MoveUnit, Vec3 } from "../units/index.ts";
@@ -98,6 +100,7 @@ type Motion = Obs & {
 type Moved = Motion & { commanded_m: number[] };
 type Rotated = Motion & { requested_yaw: number; commanded_yaw: number; yaw: number; clipped?: boolean };
 type Meta = {
+	capabilities?: { perception?: { segment?: boolean; enhance_depth?: boolean } };
 	task: string;
 	seed: number;
 	instruction: string;
@@ -129,6 +132,8 @@ export default function robolab(pi: ExtensionAPI) {
 		description: "GPU for Isaac Sim (physics, rendering; Vulkan ignores CUDA_VISIBLE_DEVICES)",
 	});
 	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
+	// --detections / --unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
+	registerDetectionFlags(pi, { sam3: true });
 	pi.registerFlag("services", {
 		type: "string",
 		default: process.env.PI_EMBODIED_SERVICES ?? SERVICES,
@@ -401,6 +406,14 @@ export default function robolab(pi: ExtensionAPI) {
 		},
 	);
 
+	// SAM3 masks with ids and UniDepth over the env server's perception (active with --detections / --unidepth).
+	for (const d of detectionTools(pi, {
+		call: (method, kwargs, timeoutMs) =>
+			env.call<Record<string, any>>(method, kwargs, timeoutMs ?? 120_000, [], robot.signal),
+		cameras: ["agentview", "wrist"],
+	}))
+		mountGraspTool(robot.tool, d);
+
 	async function startEpisode() {
 		const { task, seed } = robot.task;
 		const endpoint = pi.getFlag("env") as string | undefined;
@@ -414,6 +427,7 @@ export default function robolab(pi: ExtensionAPI) {
 					...["--task", task, "--seed", seed, "--cuda-device", flag("cuda-device", "0")],
 					...["--instruction-type", flag("instruction-type", "default")],
 					...(pi.getFlag("subtask") ? ["--enable-subtask"] : []),
+					...detectionArgs(pi, flag("sam3", "")),
 				],
 				cwd: services,
 				env: { ...process.env, PYTHONPATH: services, OMNI_KIT_ACCEPT_EULA: "YES" },
@@ -436,6 +450,9 @@ export default function robolab(pi: ExtensionAPI) {
 			);
 		// The server comes up reset; a new session on an attached server resets it again.
 		[obs] = await env.call<[Obs, unknown]>("env.reset", {}, 300_000);
-		return ["view_env_state", "move_delta", "rotate_delta", "finish"];
+		return [
+			...["view_env_state", "move_delta", "rotate_delta", "finish"],
+			...detectionActive(pi, meta.capabilities?.perception),
+		];
 	}
 }

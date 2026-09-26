@@ -36,6 +36,8 @@ import { template } from "../context-version.ts";
 import { anchorPlane, type CameraMeta, pixelOnPlane, unletterbox } from "../flash/plane.ts";
 import { recipeFlash } from "../flash/recipe.ts";
 import { encodePng } from "../png.ts";
+import { detectionActive, detectionArgs, detectionTools, registerDetectionFlags } from "../primitives/detections.ts";
+import { mountGraspTool } from "../primitives/grasp.ts";
 import { attach, defineRobot, SERVICES } from "../robot.ts";
 import { NdArray, type RpcClient } from "../rpc.ts";
 import { MOVE_UNITS, type MoveUnit, type Vec3 } from "../units/index.ts";
@@ -187,6 +189,7 @@ type Meta = {
 	view_size?: number;
 	/** The env server's --robot (absent: a server from before it, a Panda). */
 	robot?: string;
+	capabilities?: { perception?: { segment?: boolean; enhance_depth?: boolean } };
 } & Partial<typeof VIEW_SETUP>;
 /** The raw agentview frame both scene kinds render (env server AGENTVIEW, the rigs' external_cam), letterboxed to view_size. */
 export const AGENTVIEW_PX = { width: 640, height: 480 };
@@ -544,6 +547,8 @@ export default function maniskill(pi: ExtensionAPI) {
 	});
 	pi.registerFlag("seed", { type: "string", default: "0", description: "Reset seed (the object layout)" });
 	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
+	// --detections / --unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
+	registerDetectionFlags(pi, { sam3: true });
 	pi.registerFlag("probe-axes", {
 		type: "boolean",
 		default: false,
@@ -927,6 +932,14 @@ export default function maniskill(pi: ExtensionAPI) {
 		if (file) writeFileSync(join(dirname(file), "calibration.json"), `${JSON.stringify(calibration, null, 2)}\n`);
 	}
 
+	// SAM3 masks with ids and UniDepth over the env server's perception (active with --detections / --unidepth).
+	for (const d of detectionTools(pi, {
+		call: (method, kwargs, timeoutMs) =>
+			env.call<Record<string, any>>(method, kwargs, timeoutMs ?? 120_000, [], robot.signal),
+		cameras: ["agentview", "wrist"],
+	}))
+		mountGraspTool(robot.tool, d);
+
 	async function startEpisode(ctx: ExtensionContext) {
 		const envId = robot.task["env-id"];
 		if (!(ENV_IDS as readonly string[]).includes(envId))
@@ -951,6 +964,7 @@ export default function maniskill(pi: ExtensionAPI) {
 					seed,
 					...(scene ? ["--scene", scene] : []),
 					...(robotId !== "panda" ? ["--robot", robotId] : []),
+					...detectionArgs(pi, flag("sam3", "")),
 				],
 				cwd: services,
 				env: { ...process.env, PYTHONPATH: services },
@@ -980,6 +994,6 @@ export default function maniskill(pi: ExtensionAPI) {
 		const [o, i] = await env.call<[Obs, Info]>("env.reset", {}, 300_000);
 		absorb(o, i);
 		language = await env.call<string>("env.get_task_language");
-		return ["view_env_state", "move_delta", "finish"];
+		return ["view_env_state", "move_delta", "finish", ...detectionActive(pi, meta.capabilities?.perception)];
 	}
 }

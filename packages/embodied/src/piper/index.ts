@@ -42,6 +42,14 @@ import { type TSchema, Type } from "typebox";
 import { template } from "../context-version.ts";
 import { encodePng } from "../png.ts";
 import {
+	detectionActive,
+	detectionArgs,
+	detectionTools,
+	type PerceptionCaps,
+	registerDetectionFlags,
+} from "../primitives/detections.ts";
+import { mountGraspTool } from "../primitives/grasp.ts";
+import {
 	attach,
 	checkMove,
 	defineRobot,
@@ -230,6 +238,8 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 		description:
 			"Colon-separated setup.bash files sourced before the env server starts (e.g. /opt/ros/noetic/setup.bash:~/cobot_magic/Piper_ros_private-ros-noetic/devel/setup.bash); empty = inherit pi's environment",
 	});
+	// --detections / --unidepth: the env server's SAM3 masks with ids and UniDepth depth for the webcams (../primitives/detections.ts).
+	registerDetectionFlags(pi, { sam3: true });
 	pi.registerFlag("services", {
 		type: "string",
 		default: process.env.PI_EMBODIED_SERVICES ?? SERVICES,
@@ -621,6 +631,14 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 		return { ok: true, step: steps.length - 1 };
 	}
 
+	// SAM3 masks with ids and UniDepth over the env server's perception, on its latest frames.
+	for (const d of detectionTools(pi, {
+		call: (method, kwargs, timeoutMs) => call<Json>(method, kwargs, timeoutMs ?? 120_000, robot.signal),
+		cameras: [],
+		defaultCamera: () => cameras()[0] ?? "front",
+	}))
+		mountGraspTool(robot.tool, d);
+
 	async function startRobot(ctx: ExtensionContext): Promise<string[]> {
 		if (!ctx.hasUI)
 			throw new Error("piper drives a real robot: run pi interactively (or over RPC) so an operator is present");
@@ -647,6 +665,7 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 			"-m",
 			"pi_embodied_services.robots.piper.env_server",
 			...(config ? ["--robot-config", config] : []),
+			...detectionArgs(pi, flag("sam3", "")),
 		];
 		// Source the ROS workspaces in a shell that then execs Python; serve appends the transport flags.
 		const sourced = setups.map((f) => `. ${JSON.stringify(f.replace(/^~(?=\/)/, "$HOME"))}`).join(" && ");
@@ -707,6 +726,7 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 		}
 		task = t;
 		ctx.ui.notify(`Piper ready: ${taskName()} (${dual ? "both arms" : `${m.arm} arm`}); steps under ${out}`, "info");
-		return dual ? [...TOOLS, "halt_arm"] : TOOLS;
+		const perception = (m as { capabilities?: { perception?: PerceptionCaps } }).capabilities?.perception;
+		return [...TOOLS, ...(dual ? ["halt_arm"] : []), ...detectionActive(pi, perception)];
 	}
 }

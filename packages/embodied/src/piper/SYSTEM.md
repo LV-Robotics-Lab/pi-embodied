@@ -9,6 +9,13 @@ The runner owns the Piper env server, the ROS arm node and the cameras. Do not s
 4. A note starting with `divergence` or `gripper ... did not move` means commands are not reaching the arm: stop and finish instead of retrying.
 5. If state, images, or motion results are inconsistent, stop instead of guessing.
 
+[tool:detect]
+- `detect` gives SAM3 masks with ids (`d3`) on a camera's current image, drawn on an overlay, each with its `centroid_pixel` and `depth_m`; `all: true` returns every candidate. Ids expire at the next motion.[tool:select_detection] `select_detection` names the target.[/tool:select_detection][tool:reject_detection] `reject_detection` rules one out.[/tool:reject_detection]
+[/tool:detect]
+[tool:enhance_depth]
+- `enhance_depth` fuses a UniDepth estimate into a camera's depth (or supplies depth where it has none) until the next motion.[tool:detect] `detect` then measures through it.[/tool:detect]
+[/tool:enhance_depth]
+
 # Workflow
 1. Read the initial state: eef position (m), height above the table, gripper width.
 2. Move in small purposeful steps toward the object, checking both views after each.

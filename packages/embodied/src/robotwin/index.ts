@@ -21,6 +21,14 @@ import { template } from "../context-version.ts";
 import { recipeFlash } from "../flash/recipe.ts";
 import type { FlywheelObs, FlywheelSpec } from "../flywheel.ts";
 import { encodePng } from "../png.ts";
+import {
+	detectionActive,
+	detectionArgs,
+	detectionTools,
+	type PerceptionCaps,
+	registerDetectionFlags,
+} from "../primitives/detections.ts";
+import { mountGraspTool } from "../primitives/grasp.ts";
 import { attach, defineRobot, median, SERVICES, u8 } from "../robot.ts";
 import { NdArray, type RpcClient } from "../rpc.ts";
 import type { Move } from "../units/index.ts";
@@ -390,6 +398,8 @@ export default function robotwin(pi: ExtensionAPI) {
 	});
 	pi.registerFlag("lingbot", { type: "string", default: "ws://127.0.0.1:18400", description: "LingBot-VLA server" });
 	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
+	// --detections / --unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
+	registerDetectionFlags(pi, { sam3: true });
 	const seeds = vlaSeeds(pi, () => ["robotwin", robot.task]);
 	pi.registerFlag("services", {
 		type: "string",
@@ -1098,6 +1108,14 @@ export default function robotwin(pi: ExtensionAPI) {
 		async (p) => setGripper(p.arm, p.val ?? 1, p.steps ?? 10),
 	);
 
+	// SAM3 masks with ids and UniDepth over the env server's perception (active with --detections / --unidepth).
+	for (const d of detectionTools(pi, {
+		call: (method, kwargs, timeoutMs) =>
+			env.call<Record<string, any>>(method, kwargs, timeoutMs ?? 120_000, [], robot.signal),
+		cameras: ["head", "left_wrist", "right_wrist"],
+	}))
+		mountGraspTool(robot.tool, d);
+
 	async function startEpisode() {
 		snapshots = [];
 		policyActions = nativeActions = 0;
@@ -1115,6 +1133,7 @@ export default function robotwin(pi: ExtensionAPI) {
 					...["-m", "pi_embodied_services.robots.robotwin.env_server"],
 					...["--task-name", task, "--task-config", config, "--seed", seed],
 					...["--max-episode-steps", flag("max-episode-steps", "10000"), "--assets-path", assets],
+					...detectionArgs(pi, flag("sam3", "")),
 				],
 				cwd: services,
 				env: { ...process.env, PYTHONPATH: services, ROBOTWIN_ASSETS_PATH: assets },
@@ -1122,7 +1141,12 @@ export default function robotwin(pi: ExtensionAPI) {
 				readyMs: 900_000,
 			});
 		}
-		const meta = await env.call<{ task_name: string; task_config: string; seed: number }>("env.get_env_meta");
+		const meta = await env.call<{
+			task_name: string;
+			task_config: string;
+			seed: number;
+			capabilities?: { perception?: PerceptionCaps };
+		}>("env.get_env_meta");
 		if (meta.task_name !== task || meta.task_config !== config || meta.seed !== Number(seed))
 			throw new Error(
 				`env server runs ${meta.task_name}/${meta.task_config}/${meta.seed}, not ${task}/${config}/${seed}`,
@@ -1149,6 +1173,7 @@ export default function robotwin(pi: ExtensionAPI) {
 			"set_gripper",
 			"release",
 			"finish",
+			...detectionActive(pi, meta.capabilities?.perception),
 		];
 	}
 }

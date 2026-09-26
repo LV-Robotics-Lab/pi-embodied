@@ -12,6 +12,13 @@ This is a single episode. You may recover within it (re-position, re-grasp, try 
 - When `move_to` stalls on a deep or low reach (final_dist stays large), switch to `move_pose`, which co-varies position and wrist tilt.
 [/tool:move_pose]
 
+[tool:detect]
+- `detect` gives SAM3 masks with ids (`d3`) on a camera's current image, drawn on an overlay, each with its `centroid_pixel` and `depth_m`; `all: true` returns every candidate. Ids expire at the next motion.[tool:select_detection] `select_detection` names the target.[/tool:select_detection][tool:reject_detection] `reject_detection` rules one out.[/tool:reject_detection]
+[/tool:detect]
+[tool:enhance_depth]
+- `enhance_depth` fuses a UniDepth estimate into a camera's depth (or supplies depth where it has none) until the next motion.[tool:detect] `detect` then measures through it.[/tool:detect]
+[/tool:enhance_depth]
+
 # Rules
 1. Inspect, then act. Read memory first (see Memory), then start with `view_env_state`. Obey the task text verbatim; do not infer the task from object names.
 2. Localize before manipulating. For every target and destination: choose the object in the agentview image by color, shape and spatial relation (duplicates are told apart by relation, never by `_1`/`_2` names)[tool:segment|back_project], then get its position with [tool:segment]`segment` (text prompt)[/tool:segment][tool:segment][tool:back_project] or [/tool:back_project][/tool:segment][tool:back_project]`back_project` on 3-8 pixels firmly on its top surface (median them; avoid edges and gaps)[/tool:back_project][/tool:segment|back_project]. Agentview decides WHAT the object is; the wrist camera only refines WHERE, and a wrist estimate more than 5 cm from the agentview one is rejected.[tool:back_project] For containers and flat regions use `back_project` region mode to get the interior center, not the rim.[/tool:back_project]

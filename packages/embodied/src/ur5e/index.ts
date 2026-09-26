@@ -25,7 +25,7 @@
  * reset are exported as the cell's recipe (../memory, cell `ur5e_<arm-id>_<task>`).
  */
 
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
@@ -33,6 +33,14 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { type Static, type TSchema, Type } from "typebox";
 import { template } from "../context-version.ts";
 import { decodePngChannel, encodePng } from "../png.ts";
+import {
+	detectionActive,
+	detectionArgs,
+	detectionTools,
+	type PerceptionCaps,
+	registerDetectionFlags,
+} from "../primitives/detections.ts";
+import { mountGraspTool } from "../primitives/grasp.ts";
 import {
 	apply,
 	attach,
@@ -174,6 +182,9 @@ export default function ur5e(pi: ExtensionAPI) {
 		default: "",
 		description: "SAM3 server (attach-only; enables segment)",
 	});
+	// --detections (the env server's SAM3 masks with ids through --robot-sam3) / --unidepth (enhance_depth:
+	// UniDepth depth for an RGB-only camera, which back_project then reads): ../primitives/detections.ts.
+	registerDetectionFlags(pi);
 	pi.registerFlag("services", {
 		type: "string",
 		default: process.env.PI_EMBODIED_SERVICES ?? SERVICES,
@@ -541,7 +552,8 @@ export default function ur5e(pi: ExtensionAPI) {
 
 	/** A pixel's base-frame point through the step's depth, the camera's K and its hand-eye calibration. */
 	function project(s: Step, cam: CameraMeta, row: number, col: number): Json {
-		if (!cam.has_depth)
+		// An RGB-only camera has depth once enhance_depth stored the estimate for this step.
+		if (!cam.has_depth && !existsSync(join(s.dir, `${cam.name}_depth.f32`)))
 			throw new Error(
 				`camera ${cam.name} has no depth (RGB-only source); pick a camera with depth or enhance its depth first`,
 			);
@@ -616,6 +628,23 @@ export default function ur5e(pi: ExtensionAPI) {
 		},
 		false,
 	);
+
+	// SAM3 masks with ids and UniDepth over the env server's perception, on the latest step's frames.
+	for (const d of detectionTools(pi, {
+		call: (method, kwargs, timeoutMs) => call<Json>(method, kwargs, timeoutMs ?? 120_000, robot.signal),
+		cameras: [],
+		defaultCamera: () => cameras()[0] ?? "",
+		// The fused depth belongs to the latest step (the server's current observation): store it there for back_project.
+		onDepth: (camera, depth) => {
+			const s = getStep(-1);
+			const g = gridOf(depth);
+			writeFileSync(join(s.dir, `${camera}_depth.f32`), Buffer.from(g.data.buffer));
+			writeFileSync(join(s.dir, `${camera}_depth.json`), JSON.stringify({ height: g.height, width: g.width }));
+			if (!s.blob.artifacts.includes(`${camera}_depth.f32`)) s.blob.artifacts.push(`${camera}_depth.f32`);
+			return { step: s.blob.step_idx, depth_path: join(s.dir, `${camera}_depth.f32`) };
+		},
+	}))
+		mountGraspTool(robot.tool, d);
 
 	tool(
 		"segment",
@@ -801,6 +830,7 @@ export default function ur5e(pi: ExtensionAPI) {
 							"pi_embodied_services.robots.ur5e.env_server",
 							...(config ? ["--robot-config", config] : []),
 							...(camerasFlag ? ["--cameras", camerasFlag] : []),
+							...detectionArgs(pi, flag("robot-sam3")),
 						],
 						cwd: r.root,
 						env: servicesEnv(r),
@@ -847,6 +877,7 @@ export default function ur5e(pi: ExtensionAPI) {
 			`UR5e ${m.arm_id} ready: ${taskName()}; cameras ${cameras().join(", ")}; steps under ${out}`,
 			"info",
 		);
-		return sam ? [...TOOLS, "segment"] : TOOLS;
+		const perception = (m as { capabilities?: { perception?: PerceptionCaps } }).capabilities?.perception;
+		return [...TOOLS, ...(sam ? ["segment"] : []), ...detectionActive(pi, perception)];
 	}
 }

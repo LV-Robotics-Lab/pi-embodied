@@ -17,6 +17,12 @@ This is a single episode with a time limit. You may recover within it (re-naviga
 - Perception: [tool:segment]`segment` (SAM3, a text prompt or a point) gives an object's mask, `world_xyz` and `top_xyz`; [/tool:segment][tool:point]`point` (Molmo) finds what a phrase names and gives its pixel and world xyz; [/tool:point][tool:back_project]`back_project` turns pixels (row, col; row 0 = top) into world xyz, region mode gives a surface's centre.[/tool:back_project] All three read the latest images of the camera you name (`head` by default; the wrists see close range). Pixels are only valid for the image they came from: after any motion, look again.
 [/tool:segment|point|back_project]
 
+[tool:detect]
+- `detect` gives SAM3 masks with ids (`d3`) on a camera's current image, drawn on an overlay, each with its `centroid_pixel` and `depth_m`; `all: true` returns every candidate. Ids expire at the next motion.[tool:select_detection] `select_detection` names the target.[/tool:select_detection][tool:reject_detection] `reject_detection` rules one out.[/tool:reject_detection]
+[/tool:detect]
+[tool:enhance_depth]
+- `enhance_depth` fuses a UniDepth estimate into a camera's depth (or supplies depth where it has none) until the next motion.[tool:detect] `detect` then measures through it.[/tool:detect]
+[/tool:enhance_depth]
 {{memory}}
 
 # Rules

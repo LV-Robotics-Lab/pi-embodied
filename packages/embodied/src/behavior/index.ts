@@ -28,6 +28,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { template } from "../context-version.ts";
 import { decodePngChannel, encodePng } from "../png.ts";
+import { detectionActive, detectionArgs, detectionTools, registerDetectionFlags } from "../primitives/detections.ts";
+import { mountGraspTool } from "../primitives/grasp.ts";
 import { attach, defineRobot, type Mat, mark, median, round, SERVICES, toolResult } from "../robot.ts";
 import { type NdArray, RpcClient } from "../rpc.ts";
 
@@ -130,7 +132,14 @@ type Motion = Obs & {
 	cancelled?: boolean;
 	[k: string]: unknown;
 };
-type Meta = { task: string; seed: number; instruction: string; image_size: number; grasping_mode: string };
+type Meta = {
+	task: string;
+	seed: number;
+	instruction: string;
+	image_size: number;
+	grasping_mode: string;
+	capabilities?: { perception?: { segment?: boolean; enhance_depth?: boolean } };
+};
 type CameraMeta = { intrinsic_K: Mat; extrinsic_cam2world: Mat; convention: string; width: number; height: number };
 type WorldMap = { step: number; width: number; height: number; rgb: Buffer; xyz: Float32Array };
 
@@ -177,6 +186,8 @@ export default function behavior(pi: ExtensionAPI) {
 	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
 	pi.registerFlag("sam3", { type: "string", default: "http://127.0.0.1:18300", description: "SAM3 server (segment)" });
 	pi.registerFlag("molmo", { type: "string", default: "http://127.0.0.1:18400", description: "Molmo server (point)" });
+	// --detections / --unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
+	registerDetectionFlags(pi);
 	pi.registerFlag("services", {
 		type: "string",
 		default: process.env.PI_EMBODIED_SERVICES ?? SERVICES,
@@ -624,6 +635,14 @@ export default function behavior(pi: ExtensionAPI) {
 		},
 	);
 
+	// SAM3 masks with ids and UniDepth over the env server's perception (active with --detections / --unidepth).
+	for (const d of detectionTools(pi, {
+		call: (method, kwargs, timeoutMs) =>
+			env.call<Record<string, any>>(method, kwargs, timeoutMs ?? 120_000, [], robot.signal),
+		cameras: ["head", "left_wrist", "right_wrist"],
+	}))
+		mountGraspTool(robot.tool, d);
+
 	async function startEpisode() {
 		const { task, seed } = robot.task;
 		if (!TASKS.includes(task as Task))
@@ -642,6 +661,7 @@ export default function behavior(pi: ExtensionAPI) {
 					...["-m", "pi_embodied_services.robots.behavior.env_server"],
 					...["--task", task, "--seed", seed, "--gpu-id", flag("gpu-id", "0")],
 					...["--image-size", flag("image-size", "480"), "--grasping-mode", flag("grasping-mode", "sticky")],
+					...detectionArgs(pi, flag("sam3", "")),
 				],
 				cwd: services,
 				env: { ...process.env, PYTHONPATH: services, OMNI_KIT_ACCEPT_EULA: "YES" },
@@ -668,6 +688,7 @@ export default function behavior(pi: ExtensionAPI) {
 			"point",
 			"back_project",
 			"finish",
+			...detectionActive(pi, meta.capabilities?.perception),
 		];
 	}
 }

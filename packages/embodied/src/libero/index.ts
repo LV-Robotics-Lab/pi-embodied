@@ -20,6 +20,13 @@ import { ikArgs, type Reach, reachRefusal, registerIkFlag } from "../ik.ts";
 import { decodePngChannel, encodePng } from "../png.ts";
 import { graspAdvisorTool } from "../primitives/advisor.ts";
 import {
+	detectionActive,
+	detectionArgs,
+	detectionTools,
+	type PerceptionCaps,
+	registerDetectionFlags,
+} from "../primitives/detections.ts";
+import {
 	DETECTIONS_EXPIRED_ENTRY,
 	graspActive,
 	graspArgs,
@@ -305,6 +312,8 @@ export default function libero(pi: ExtensionAPI) {
 	});
 	// --graspnet/--graspgenx/--anyplace/--anygrasp: plan_grasp, plan_place, check_attached (../primitives/grasp.ts).
 	registerGraspFlags(pi);
+	// --detections / --unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
+	registerDetectionFlags(pi);
 
 	let env: RpcClient;
 	let vla: RpcClient;
@@ -1250,6 +1259,13 @@ export default function libero(pi: ExtensionAPI) {
 	}))
 		mountGraspTool(robot.tool, d);
 
+	// SAM3 masks with ids and UniDepth over the env server's perception (active with --detections / --unidepth).
+	for (const d of detectionTools(pi, {
+		call: (method, kwargs, timeoutMs) => call(env, method, kwargs, timeoutMs),
+		cameras: ["agentview", "wrist"],
+	}))
+		mountGraspTool(robot.tool, d);
+
 	// A planned grasp or place runs as one tool from one resolution of its id (executePlanned).
 	tool(
 		"execute_grasp",
@@ -1467,6 +1483,8 @@ export default function libero(pi: ExtensionAPI) {
 					...ikArgs(flag("ik", "")),
 					...(cuda ? ["--cuda-device", cuda] : []),
 					...graspArgs(pi),
+					// --sam3 goes to the server already (above).
+					...detectionArgs(pi, ""),
 				],
 				cwd: services,
 				env: {
@@ -1485,10 +1503,13 @@ export default function libero(pi: ExtensionAPI) {
 		const tools = flag("ik", "") ? TOOLS : TOOLS.filter((name) => name !== "preview_reach");
 		const grasp = graspActive(pi);
 		const extra = [...extras.flatMap((on) => on()), ...advisor(grasp.length > 0)];
+		const perception = (await call<{ capabilities?: { perception?: PerceptionCaps } }>(env, "env.get_env_meta"))
+			.capabilities?.perception;
 		return [
 			...tools,
 			...grasp,
 			...(grasp.length ? ["execute_grasp", "execute_place"] : []),
+			...detectionActive(pi, perception),
 			...adapters.keys(),
 			...extra,
 		];

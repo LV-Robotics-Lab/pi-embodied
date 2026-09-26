@@ -39,8 +39,10 @@ export type PerceptionCaps = { segment?: boolean; enhance_depth?: boolean };
 export type DetectionRig = {
 	/** The env RPC call carrying the running tool's abort signal. */
 	call: (method: string, kwargs: Json, timeoutMs?: number) => Promise<Json>;
-	/** The camera names the env server's perception knows, the first the default. */
+	/** The camera names the env server's perception knows, the first the default; empty: any name, `defaultCamera` by default. */
 	cameras: readonly string[];
+	/** Without fixed `cameras`: the camera a call without one means (e.g. the main camera). */
+	defaultCamera?: () => string;
 	/**
 	 * The robot's frame for a detection of `camera`: e.g. its world xyz through the robot's own
 	 * depth (keys merged into the detection). Unset: pixels, depth and the camera-frame point only.
@@ -50,7 +52,14 @@ export type DetectionRig = {
 	onDepth?: (camera: string, depth: NdArray) => Promise<Json | undefined> | Json | undefined;
 };
 
-export function registerDetectionFlags(pi: ExtensionAPI) {
+/** The flags; `sam3` also registers `--sam3` for a robot that has no SAM3 flag of its own. */
+export function registerDetectionFlags(pi: ExtensionAPI, o: { sam3?: boolean } = {}) {
+	if (o.sam3)
+		pi.registerFlag("sam3", {
+			type: "string",
+			default: "http://127.0.0.1:18300",
+			description: "SAM3 server for --detections",
+		});
 	pi.registerFlag("detections", {
 		type: "boolean",
 		default: false,
@@ -85,9 +94,12 @@ const r3 = (v: unknown) => (typeof v === "number" ? round(v, 3) : (v ?? null));
 
 /** Build the four tools for one robot (mount them read-only, e.g. with ./grasp.ts `mountGraspTool`). */
 export function detectionTools(pi: ExtensionAPI, rig: DetectionRig): GraspToolDef[] {
-	const [first] = rig.cameras;
+	const fixed = rig.cameras.length > 0;
+	const defaultCamera = () => (fixed ? rig.cameras[0] : (rig.defaultCamera?.() ?? ""));
 	const camera = Type.Optional(
-		StringEnum(rig.cameras as unknown as [string, ...string[]], { description: `Default ${first}` }),
+		fixed
+			? StringEnum(rig.cameras as unknown as [string, ...string[]], { description: `Default ${rig.cameras[0]}` })
+			: Type.String({ description: "Camera name (default: the main camera)" }),
 	);
 	const id = Type.String({ description: "A detection id of the current observation (d3)" });
 	/** Ids the server dropped since the last perception call, and a refused stale id, as session entries. */
@@ -126,7 +138,7 @@ export function detectionTools(pi: ExtensionAPI, rig: DetectionRig): GraspToolDe
 			all: Type.Optional(Type.Boolean({ description: "Every mask, not only the best (default false)" })),
 		}) as TSchema,
 		run: async (p) => {
-			const { prompt, point, camera: c = first, min_score = 0.2, all = false } = p as Json;
+			const { prompt, point, camera: c = defaultCamera(), min_score = 0.2, all = false } = p as Json;
 			// Models often fill both optional fields; a non-empty prompt wins.
 			const text = String(prompt ?? "").trim();
 			if (!text && !point) return { error: "give a text prompt or a point [row, col]" };
@@ -161,7 +173,7 @@ export function detectionTools(pi: ExtensionAPI, rig: DetectionRig): GraspToolDe
 			if (!res.ok) return { error: res.error, ...book };
 			if (name === "reject_detection") return book;
 			const d = res.detection as Json;
-			return { ...book, detection: await plainDetection(String(d.camera ?? first), d) };
+			return { ...book, detection: await plainDetection(String(d.camera ?? defaultCamera()), d) };
 		};
 	const select: GraspToolDef = {
 		name: "select_detection",
@@ -182,7 +194,7 @@ export function detectionTools(pi: ExtensionAPI, rig: DetectionRig): GraspToolDe
 			"Fill the holes of a camera's current depth with a UniDepth estimate scaled to the sensor, or supply depth where the camera has none. detect then measures through it until the next motion.",
 		parameters: Type.Object({ camera }),
 		run: async (p) => {
-			const c = String((p as Json).camera ?? first);
+			const c = String((p as Json).camera ?? defaultCamera());
 			const res = await rig.call(METHODS.enhance_depth, { camera: c }, 180_000);
 			expired("enhance_depth", res);
 			const stored = res.depth instanceof NdArray ? await rig.onDepth?.(c, res.depth) : undefined;

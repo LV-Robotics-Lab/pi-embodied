@@ -297,6 +297,93 @@
 						}
 					}
 				}
+			},
+			{
+				"name": "detect",
+				"description": "SAM3 masks on a camera's current image, each with a short id (d3) drawn on the returned overlay in rank order (red, blue, green, yellow, ...). Give exactly one of a text prompt or a positive point [row, col]. all=true returns every candidate instead of only the best; then choose one with select_detection or rule one out with reject_detection. Ids die with the observation: detect again after any motion.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"prompt": {
+							"type": "string"
+						},
+						"point": {
+							"type": "array",
+							"items": {
+								"type": "integer"
+							},
+							"minItems": 2,
+							"maxItems": 2
+						},
+						"camera": {
+							"type": "string",
+							"enum": [
+								"head",
+								"left_wrist",
+								"right_wrist"
+							],
+							"description": "Default head"
+						},
+						"min_score": {
+							"type": "number",
+							"description": "Default 0.2"
+						},
+						"all": {
+							"type": "boolean",
+							"description": "Every mask, not only the best (default false)"
+						}
+					}
+				}
+			},
+			{
+				"name": "select_detection",
+				"description": "Choose one detect mask (by id) as the target of the current observation, after checking the overlay.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"id"
+					],
+					"properties": {
+						"id": {
+							"type": "string",
+							"description": "A detection id of the current observation (d3)"
+						}
+					}
+				}
+			},
+			{
+				"name": "reject_detection",
+				"description": "Rule out one detect mask (by id) of the current observation; it stays listed as rejected.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"id"
+					],
+					"properties": {
+						"id": {
+							"type": "string",
+							"description": "A detection id of the current observation (d3)"
+						}
+					}
+				}
+			},
+			{
+				"name": "enhance_depth",
+				"description": "Fill the holes of a camera's current depth with a UniDepth estimate scaled to the sensor, or supply depth where the camera has none. detect then measures through it until the next motion.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"camera": {
+							"type": "string",
+							"enum": [
+								"head",
+								"left_wrist",
+								"right_wrist"
+							],
+							"description": "Default head"
+						}
+					}
+				}
 			}
 		],
 		"dual_franka": [
@@ -2264,6 +2351,91 @@
 				}
 			},
 			{
+				"name": "detect",
+				"description": "SAM3 masks on a camera's current image, each with a short id (d3) drawn on the returned overlay in rank order (red, blue, green, yellow, ...). Give exactly one of a text prompt or a positive point [row, col]. all=true returns every candidate instead of only the best; then choose one with select_detection or rule one out with reject_detection. Ids die with the observation: detect again after any motion.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"prompt": {
+							"type": "string"
+						},
+						"point": {
+							"type": "array",
+							"items": {
+								"type": "integer"
+							},
+							"minItems": 2,
+							"maxItems": 2
+						},
+						"camera": {
+							"type": "string",
+							"enum": [
+								"agentview",
+								"wrist"
+							],
+							"description": "Default agentview"
+						},
+						"min_score": {
+							"type": "number",
+							"description": "Default 0.2"
+						},
+						"all": {
+							"type": "boolean",
+							"description": "Every mask, not only the best (default false)"
+						}
+					}
+				}
+			},
+			{
+				"name": "select_detection",
+				"description": "Choose one detect mask (by id) as the target of the current observation, after checking the overlay.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"id"
+					],
+					"properties": {
+						"id": {
+							"type": "string",
+							"description": "A detection id of the current observation (d3)"
+						}
+					}
+				}
+			},
+			{
+				"name": "reject_detection",
+				"description": "Rule out one detect mask (by id) of the current observation; it stays listed as rejected.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"id"
+					],
+					"properties": {
+						"id": {
+							"type": "string",
+							"description": "A detection id of the current observation (d3)"
+						}
+					}
+				}
+			},
+			{
+				"name": "enhance_depth",
+				"description": "Fill the holes of a camera's current depth with a UniDepth estimate scaled to the sensor, or supply depth where the camera has none. detect then measures through it until the next motion.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"camera": {
+							"type": "string",
+							"enum": [
+								"agentview",
+								"wrist"
+							],
+							"description": "Default agentview"
+						}
+					}
+				}
+			},
+			{
 				"name": "execute_grasp",
 				"description": "Execute one planned grasp (a g id of the current observation, from plan_grasp) in one call: open to the pre-grasp standoff back along its approach, descend to it with its pitch and yaw, close, lift straight up. Returns each leg's final_dist_m and gripper_width (0.01-0.05 holding, near 0 missed); error and stalled when a leg stopped short. The id is spent either way; afterwards plan_place with this grasp_id plans from the held object.",
 				"parameters": {
@@ -2490,6 +2662,91 @@
 								"open",
 								"close"
 							]
+						}
+					}
+				}
+			},
+			{
+				"name": "detect",
+				"description": "SAM3 masks on a camera's current image, each with a short id (d3) drawn on the returned overlay in rank order (red, blue, green, yellow, ...). Give exactly one of a text prompt or a positive point [row, col]. all=true returns every candidate instead of only the best; then choose one with select_detection or rule one out with reject_detection. Ids die with the observation: detect again after any motion.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"prompt": {
+							"type": "string"
+						},
+						"point": {
+							"type": "array",
+							"items": {
+								"type": "integer"
+							},
+							"minItems": 2,
+							"maxItems": 2
+						},
+						"camera": {
+							"type": "string",
+							"enum": [
+								"agentview",
+								"wrist"
+							],
+							"description": "Default agentview"
+						},
+						"min_score": {
+							"type": "number",
+							"description": "Default 0.2"
+						},
+						"all": {
+							"type": "boolean",
+							"description": "Every mask, not only the best (default false)"
+						}
+					}
+				}
+			},
+			{
+				"name": "select_detection",
+				"description": "Choose one detect mask (by id) as the target of the current observation, after checking the overlay.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"id"
+					],
+					"properties": {
+						"id": {
+							"type": "string",
+							"description": "A detection id of the current observation (d3)"
+						}
+					}
+				}
+			},
+			{
+				"name": "reject_detection",
+				"description": "Rule out one detect mask (by id) of the current observation; it stays listed as rejected.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"id"
+					],
+					"properties": {
+						"id": {
+							"type": "string",
+							"description": "A detection id of the current observation (d3)"
+						}
+					}
+				}
+			},
+			{
+				"name": "enhance_depth",
+				"description": "Fill the holes of a camera's current depth with a UniDepth estimate scaled to the sensor, or supply depth where the camera has none. detect then measures through it until the next motion.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"camera": {
+							"type": "string",
+							"enum": [
+								"agentview",
+								"wrist"
+							],
+							"description": "Default agentview"
 						}
 					}
 				}
@@ -2731,6 +2988,83 @@
 				"parameters": {
 					"type": "object",
 					"properties": {}
+				}
+			},
+			{
+				"name": "detect",
+				"description": "SAM3 masks on a camera's current image, each with a short id (d3) drawn on the returned overlay in rank order (red, blue, green, yellow, ...). Give exactly one of a text prompt or a positive point [row, col]. all=true returns every candidate instead of only the best; then choose one with select_detection or rule one out with reject_detection. Ids die with the observation: detect again after any motion.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"prompt": {
+							"type": "string"
+						},
+						"point": {
+							"type": "array",
+							"items": {
+								"type": "integer"
+							},
+							"minItems": 2,
+							"maxItems": 2
+						},
+						"camera": {
+							"type": "string",
+							"description": "Camera name (default: the main camera)"
+						},
+						"min_score": {
+							"type": "number",
+							"description": "Default 0.2"
+						},
+						"all": {
+							"type": "boolean",
+							"description": "Every mask, not only the best (default false)"
+						}
+					}
+				}
+			},
+			{
+				"name": "select_detection",
+				"description": "Choose one detect mask (by id) as the target of the current observation, after checking the overlay.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"id"
+					],
+					"properties": {
+						"id": {
+							"type": "string",
+							"description": "A detection id of the current observation (d3)"
+						}
+					}
+				}
+			},
+			{
+				"name": "reject_detection",
+				"description": "Rule out one detect mask (by id) of the current observation; it stays listed as rejected.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"id"
+					],
+					"properties": {
+						"id": {
+							"type": "string",
+							"description": "A detection id of the current observation (d3)"
+						}
+					}
+				}
+			},
+			{
+				"name": "enhance_depth",
+				"description": "Fill the holes of a camera's current depth with a UniDepth estimate scaled to the sensor, or supply depth where the camera has none. detect then measures through it until the next motion.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"camera": {
+							"type": "string",
+							"description": "Camera name (default: the main camera)"
+						}
+					}
 				}
 			}
 		],
@@ -3045,6 +3379,83 @@
 						"reason": {
 							"type": "string",
 							"description": "Why the arm stops"
+						}
+					}
+				}
+			},
+			{
+				"name": "detect",
+				"description": "SAM3 masks on a camera's current image, each with a short id (d3) drawn on the returned overlay in rank order (red, blue, green, yellow, ...). Give exactly one of a text prompt or a positive point [row, col]. all=true returns every candidate instead of only the best; then choose one with select_detection or rule one out with reject_detection. Ids die with the observation: detect again after any motion.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"prompt": {
+							"type": "string"
+						},
+						"point": {
+							"type": "array",
+							"items": {
+								"type": "integer"
+							},
+							"minItems": 2,
+							"maxItems": 2
+						},
+						"camera": {
+							"type": "string",
+							"description": "Camera name (default: the main camera)"
+						},
+						"min_score": {
+							"type": "number",
+							"description": "Default 0.2"
+						},
+						"all": {
+							"type": "boolean",
+							"description": "Every mask, not only the best (default false)"
+						}
+					}
+				}
+			},
+			{
+				"name": "select_detection",
+				"description": "Choose one detect mask (by id) as the target of the current observation, after checking the overlay.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"id"
+					],
+					"properties": {
+						"id": {
+							"type": "string",
+							"description": "A detection id of the current observation (d3)"
+						}
+					}
+				}
+			},
+			{
+				"name": "reject_detection",
+				"description": "Rule out one detect mask (by id) of the current observation; it stays listed as rejected.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"id"
+					],
+					"properties": {
+						"id": {
+							"type": "string",
+							"description": "A detection id of the current observation (d3)"
+						}
+					}
+				}
+			},
+			{
+				"name": "enhance_depth",
+				"description": "Fill the holes of a camera's current depth with a UniDepth estimate scaled to the sensor, or supply depth where the camera has none. detect then measures through it until the next motion.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"camera": {
+							"type": "string",
+							"description": "Camera name (default: the main camera)"
 						}
 					}
 				}
@@ -3624,6 +4035,93 @@
 						}
 					}
 				}
+			},
+			{
+				"name": "detect",
+				"description": "SAM3 masks on a camera's current image, each with a short id (d3) drawn on the returned overlay in rank order (red, blue, green, yellow, ...). Give exactly one of a text prompt or a positive point [row, col]. all=true returns every candidate instead of only the best; then choose one with select_detection or rule one out with reject_detection. Ids die with the observation: detect again after any motion.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"prompt": {
+							"type": "string"
+						},
+						"point": {
+							"type": "array",
+							"items": {
+								"type": "integer"
+							},
+							"minItems": 2,
+							"maxItems": 2
+						},
+						"camera": {
+							"type": "string",
+							"enum": [
+								"agentview",
+								"navview",
+								"wrist"
+							],
+							"description": "Default agentview"
+						},
+						"min_score": {
+							"type": "number",
+							"description": "Default 0.2"
+						},
+						"all": {
+							"type": "boolean",
+							"description": "Every mask, not only the best (default false)"
+						}
+					}
+				}
+			},
+			{
+				"name": "select_detection",
+				"description": "Choose one detect mask (by id) as the target of the current observation, after checking the overlay.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"id"
+					],
+					"properties": {
+						"id": {
+							"type": "string",
+							"description": "A detection id of the current observation (d3)"
+						}
+					}
+				}
+			},
+			{
+				"name": "reject_detection",
+				"description": "Rule out one detect mask (by id) of the current observation; it stays listed as rejected.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"id"
+					],
+					"properties": {
+						"id": {
+							"type": "string",
+							"description": "A detection id of the current observation (d3)"
+						}
+					}
+				}
+			},
+			{
+				"name": "enhance_depth",
+				"description": "Fill the holes of a camera's current depth with a UniDepth estimate scaled to the sensor, or supply depth where the camera has none. detect then measures through it until the next motion.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"camera": {
+							"type": "string",
+							"enum": [
+								"agentview",
+								"navview",
+								"wrist"
+							],
+							"description": "Default agentview"
+						}
+					}
+				}
 			}
 		],
 		"robolab": [
@@ -3817,6 +4315,91 @@
 					"properties": {
 						"yaw": {
 							"type": "number"
+						}
+					}
+				}
+			},
+			{
+				"name": "detect",
+				"description": "SAM3 masks on a camera's current image, each with a short id (d3) drawn on the returned overlay in rank order (red, blue, green, yellow, ...). Give exactly one of a text prompt or a positive point [row, col]. all=true returns every candidate instead of only the best; then choose one with select_detection or rule one out with reject_detection. Ids die with the observation: detect again after any motion.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"prompt": {
+							"type": "string"
+						},
+						"point": {
+							"type": "array",
+							"items": {
+								"type": "integer"
+							},
+							"minItems": 2,
+							"maxItems": 2
+						},
+						"camera": {
+							"type": "string",
+							"enum": [
+								"agentview",
+								"wrist"
+							],
+							"description": "Default agentview"
+						},
+						"min_score": {
+							"type": "number",
+							"description": "Default 0.2"
+						},
+						"all": {
+							"type": "boolean",
+							"description": "Every mask, not only the best (default false)"
+						}
+					}
+				}
+			},
+			{
+				"name": "select_detection",
+				"description": "Choose one detect mask (by id) as the target of the current observation, after checking the overlay.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"id"
+					],
+					"properties": {
+						"id": {
+							"type": "string",
+							"description": "A detection id of the current observation (d3)"
+						}
+					}
+				}
+			},
+			{
+				"name": "reject_detection",
+				"description": "Rule out one detect mask (by id) of the current observation; it stays listed as rejected.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"id"
+					],
+					"properties": {
+						"id": {
+							"type": "string",
+							"description": "A detection id of the current observation (d3)"
+						}
+					}
+				}
+			},
+			{
+				"name": "enhance_depth",
+				"description": "Fill the holes of a camera's current depth with a UniDepth estimate scaled to the sensor, or supply depth where the camera has none. detect then measures through it until the next motion.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"camera": {
+							"type": "string",
+							"enum": [
+								"agentview",
+								"wrist"
+							],
+							"description": "Default agentview"
 						}
 					}
 				}
@@ -4233,6 +4816,93 @@
 						"steps": {
 							"type": "integer",
 							"minimum": 1
+						}
+					}
+				}
+			},
+			{
+				"name": "detect",
+				"description": "SAM3 masks on a camera's current image, each with a short id (d3) drawn on the returned overlay in rank order (red, blue, green, yellow, ...). Give exactly one of a text prompt or a positive point [row, col]. all=true returns every candidate instead of only the best; then choose one with select_detection or rule one out with reject_detection. Ids die with the observation: detect again after any motion.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"prompt": {
+							"type": "string"
+						},
+						"point": {
+							"type": "array",
+							"items": {
+								"type": "integer"
+							},
+							"minItems": 2,
+							"maxItems": 2
+						},
+						"camera": {
+							"type": "string",
+							"enum": [
+								"head",
+								"left_wrist",
+								"right_wrist"
+							],
+							"description": "Default head"
+						},
+						"min_score": {
+							"type": "number",
+							"description": "Default 0.2"
+						},
+						"all": {
+							"type": "boolean",
+							"description": "Every mask, not only the best (default false)"
+						}
+					}
+				}
+			},
+			{
+				"name": "select_detection",
+				"description": "Choose one detect mask (by id) as the target of the current observation, after checking the overlay.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"id"
+					],
+					"properties": {
+						"id": {
+							"type": "string",
+							"description": "A detection id of the current observation (d3)"
+						}
+					}
+				}
+			},
+			{
+				"name": "reject_detection",
+				"description": "Rule out one detect mask (by id) of the current observation; it stays listed as rejected.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"id"
+					],
+					"properties": {
+						"id": {
+							"type": "string",
+							"description": "A detection id of the current observation (d3)"
+						}
+					}
+				}
+			},
+			{
+				"name": "enhance_depth",
+				"description": "Fill the holes of a camera's current depth with a UniDepth estimate scaled to the sensor, or supply depth where the camera has none. detect then measures through it until the next motion.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"camera": {
+							"type": "string",
+							"enum": [
+								"head",
+								"left_wrist",
+								"right_wrist"
+							],
+							"description": "Default head"
 						}
 					}
 				}

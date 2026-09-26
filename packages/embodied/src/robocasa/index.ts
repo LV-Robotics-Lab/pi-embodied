@@ -22,6 +22,14 @@ import { template } from "../context-version.ts";
 import { recipeFlash } from "../flash/recipe.ts";
 import type { FlywheelObs, FlywheelSpec } from "../flywheel.ts";
 import { encodePng } from "../png.ts";
+import {
+	detectionActive,
+	detectionArgs,
+	detectionTools,
+	type PerceptionCaps,
+	registerDetectionFlags,
+} from "../primitives/detections.ts";
+import { mountGraspTool } from "../primitives/grasp.ts";
 import { attach, defineRobot, median, round, SERVICES } from "../robot.ts";
 import { NdArray, RpcClient } from "../rpc.ts";
 import type { Move } from "../units/index.ts";
@@ -154,6 +162,8 @@ export default function robocasa(pi: ExtensionAPI) {
 	pi.registerFlag("hi-res", { type: "string", default: "0", description: "Hi-res agentview resolution (0 = off)" });
 	pi.registerFlag("rldx", { type: "string", default: "http://127.0.0.1:18500", description: "RLDX-1 VLA server" });
 	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
+	// --detections / --unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
+	registerDetectionFlags(pi, { sam3: true });
 	const seeds = vlaSeeds(pi, () => ["robocasa", robot.task]);
 	pi.registerFlag("services", {
 		type: "string",
@@ -1194,6 +1204,14 @@ export default function robocasa(pi: ExtensionAPI) {
 		vla = undefined;
 	}
 
+	// SAM3 masks with ids and UniDepth over the env server's perception (active with --detections / --unidepth).
+	for (const d of detectionTools(pi, {
+		call: (method, kwargs, timeoutMs) =>
+			env.call<Record<string, any>>(method, kwargs, timeoutMs ?? 120_000, [], robot.signal),
+		cameras: ["agentview", "navview", "wrist"],
+	}))
+		mountGraspTool(robot.tool, d);
+
 	async function startEpisode() {
 		states = [];
 		envSteps = 0;
@@ -1221,6 +1239,7 @@ export default function robocasa(pi: ExtensionAPI) {
 							...["--task-name", task, "--split", split, "--seed", seed],
 							...(scene === "" ? [] : ["--scene", scene]),
 							...(cuda ? ["--cuda-device", cuda] : []),
+							...detectionArgs(pi, flag("sam3", "")),
 						],
 						cwd: services,
 						// RLDX_RESET_SEED would replay a legacy paired scene instead of --seed.
@@ -1254,6 +1273,10 @@ export default function robocasa(pi: ExtensionAPI) {
 			.catch((e) => `(unavailable: ${e})`);
 		await capture(null, null, null);
 		fly.reset(flyObs(await frame()), flyMeta());
-		return [...PRIMITIVES, "view_env_state", "back_project_batch", "query_world_map", "finish"];
+		const perception = (meta.capabilities as { perception?: PerceptionCaps } | undefined)?.perception;
+		return [
+			...[...PRIMITIVES, "view_env_state", "back_project_batch", "query_world_map", "finish"],
+			...detectionActive(pi, perception),
+		];
 	}
 }

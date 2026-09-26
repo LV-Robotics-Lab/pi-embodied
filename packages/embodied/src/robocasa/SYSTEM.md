@@ -14,6 +14,13 @@ Cell: {{task_name}} / {{split}} / seed {{seed}}
 {{memory}}
 
 [tool:back_project_batch|query_world_map]
+[tool:detect]
+- `detect` gives SAM3 masks with ids (`d3`) on a camera's current image, drawn on an overlay, each with its `centroid_pixel` and `depth_m`; `all: true` returns every candidate. Ids expire at the next motion.[tool:select_detection] `select_detection` names the target.[/tool:select_detection][tool:reject_detection] `reject_detection` rules one out.[/tool:reject_detection]
+[/tool:detect]
+[tool:enhance_depth]
+- `enhance_depth` fuses a UniDepth estimate into a camera's depth (or supplies depth where it has none) until the next motion.[tool:detect] `detect` then measures through it.[/tool:detect]
+[/tool:enhance_depth]
+
 # Localization
 [tool:back_project_batch]
 - `back_project_batch` is the primary tool: pass 3-8 [row, col] pixels firmly on the object's top surface in the agentview image and use `summary.median_xyz`. Avoid thin rims, edges and gaps. Pixels picked in agentview_high need `resolution: "high"`.

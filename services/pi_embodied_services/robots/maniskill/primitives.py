@@ -43,6 +43,7 @@ MANISKILL_PRIMITIVES = (
             "tol_m": Param("number", "stop below this error (default 0.002)", False),
             "min_steps": Param("integer", "default 2", False),
             "max_steps": Param("integer", "default 8", False),
+            "arm": Param("string", "two-arm robots: left or right", False),
         },
         mutating=True,
     ),
@@ -63,8 +64,8 @@ MANISKILL_PRIMITIVES = (
     Primitive(
         "step",
         "env.step",
-        "One pd_ee_delta_pos action [dx, dy, dz, gripper] (gripper > 0 open, < 0 close on every robot).",
-        {"action": Param("array", "4 floats")},
+        "One pd_ee_delta_pos action [dx, dy, dz, gripper] (gripper > 0 open, < 0 close on every robot; [dx, dy, dz] without a gripper; two arms: both concatenated).",
+        {"action": Param("array", "4 floats (3 without a gripper)")},
         mutating=True,
         tiers=("low",),
     ),
@@ -73,7 +74,7 @@ MANISKILL_PRIMITIVES = (
         "env.chunk_step",
         "Run actions [N, 4] in one call; stops early on termination or success.",
         {
-            "actions": Param("array", "N x 4 floats"),
+            "actions": Param("array", "N x 4 floats (N x 3 without a gripper)"),
             "return_all_frames": Param("boolean", "one observation per action", False),
         },
         mutating=True,

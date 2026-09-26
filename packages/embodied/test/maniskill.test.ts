@@ -11,8 +11,10 @@ import maniskill, {
 	GAIN,
 	GRIPPER_STEPS,
 	grasped,
+	hasGripper,
 	hasWrist,
 	type ManiskillRobot,
+	OTHER_ROBOT_ENVS,
 	phases,
 	ROBOT_IDS,
 	ROBOTS,
@@ -125,6 +127,17 @@ test("--env-id: the RLinf rigs first (BlockPAP-v1 the default), the eight origin
 		"PegInsertionSide-v1",
 		"PlugCharger-v1",
 		"PickSingleYCB-v1",
+		"FMBAssembly1Easy-v1",
+		"PickCubeWidowXAI-v1",
+		"PushT-v1",
+		"DrawTriangle-v1",
+		"DrawSVG-v1",
+		"TwoRobotPickCube-v1",
+		"TwoRobotStackCube-v1",
+		"PutCarrotOnPlateInScene-v1",
+		"PutEggplantInBasketScene-v1",
+		"StackGreenCubeOnYellowCubeBakedTexInScene-v1",
+		"PutSpoonOnTableClothInScene-v1",
 	]);
 	// The same list as the env server's ENV_IDS (its INSTRUCTIONS keys after the rigs).
 	const py = readFileSync(
@@ -154,15 +167,22 @@ function serverRobots(): Record<string, string> {
 test("--robot: the same arms as the env server's ROBOTS, each with the env ids, wrist camera and view transform it measured", () => {
 	const rows = serverRobots();
 	assert.deepEqual(Object.keys(rows), ROBOT_IDS);
-	assert.deepEqual(ROBOT_IDS, ["panda", "xarm6_robotiq", "widowxai"]);
+	assert.deepEqual(ROBOT_IDS, ["panda", "xarm6_robotiq", "widowxai", "panda_stick", "panda_pair", "widowx250s"]);
 	for (const id of ROBOT_IDS) {
 		const r: ManiskillRobot = ROBOTS[id];
 		const row = rows[id];
+		const bridge = SERVER.slice(SERVER.indexOf("BRIDGE_ENVS = ("), SERVER.indexOf("#: Env ids whose registration"));
 		const envs = row.includes("envs=_ALL_STOCK")
-			? ENV_IDS.slice(2)
-			: [.../envs=\(([^)]*)\)/.exec(row)![1].matchAll(/"([A-Za-z0-9-]+)"/g)].map((m) => m[1]);
+			? ENV_IDS.slice(2).filter((e) => !OTHER_ROBOT_ENVS[e])
+			: [
+					...(row.includes("envs=BRIDGE_ENVS") ? bridge : /envs=\(([^)]*)\)/.exec(row)![1]).matchAll(
+						/"([A-Za-z0-9-]+)"/g,
+					),
+				].map((m) => m[1]);
 		assert.deepEqual([...r.envs], envs, id);
 		// No wrist camera on the server (wrist=None) is `wrist_mount: "none"` here; otherwise mount and transform agree.
+		// No gripper on the server (gripper=None) is `gripper: false` here.
+		assert.equal(hasGripper(r), !row.includes("gripper=None"), id);
 		if (row.includes("wrist=None")) assert.equal(hasWrist(r), false, id);
 		else {
 			assert.ok(hasWrist(r), id);
@@ -175,7 +195,8 @@ test("--robot: the same arms as the env server's ROBOTS, each with the env ids, 
 				id,
 			);
 		}
-		assert.equal(r.setup.agentview, "oblique");
+		// The scene's own camera (agentview="...") or the shared oblique one.
+		assert.equal(r.setup.agentview, /agentview="([a-z0-9_]+)"/.exec(row)?.[1] ?? "oblique", id);
 	}
 	// The default keeps every Panda constant the robot had before --robot.
 	const panda = ROBOTS.panda;
@@ -187,7 +208,18 @@ test("--robot: the same arms as the env server's ROBOTS, each with the env ids, 
 });
 
 test("--robot is checked against the env id: a rig runs its own Panda, a stock scene must be one the arm was measured on", () => {
-	for (const envId of ENV_IDS) assert.equal(robotFor("panda", envId), ROBOTS.panda);
+	for (const envId of ENV_IDS) if (!OTHER_ROBOT_ENVS[envId]) assert.equal(robotFor("panda", envId), ROBOTS.panda);
+	// A task built for another robot names it; that robot runs it.
+	for (const [envId, owner] of Object.entries(OTHER_ROBOT_ENVS)) {
+		assert.throws(() => robotFor("panda", envId), new RegExp(`${envId} runs on --robot ${owner}`));
+		assert.equal(robotFor(owner!, envId), ROBOTS[owner as keyof typeof ROBOTS]);
+	}
+	// The server's own table of them is the same.
+	const other = SERVER.slice(SERVER.indexOf("_OTHER_ROBOT = {"), SERVER.indexOf("#: The stock env ids the Panda"));
+	assert.deepEqual(
+		Object.fromEntries([...other.matchAll(/"([A-Za-z0-9-]+)": "([a-z0-9_]+)"/g)].map((m) => [m[1], m[2]])),
+		OTHER_ROBOT_ENVS,
+	);
 	assert.equal(robotFor("xarm6_robotiq", "StackCube-v1"), ROBOTS.xarm6_robotiq);
 	assert.throws(() => robotFor("xarm6_robotiq", "BlockPAP-v1"), /real2sim rig .*--robot panda only/);
 	assert.throws(() => robotFor("widowxai", "BlockStack-v1"), /--robot panda only/);
@@ -195,8 +227,11 @@ test("--robot is checked against the env id: a rig runs its own Panda, a stock s
 	assert.throws(() => robotFor("xarm6_robotiq", "PushCube-v1"), /runs PickCube-v1, .*not PushCube-v1/);
 	// PullCubeTool's "within 0.6 m of the base" holds at reset on ~8 % of seeds with the nearer xArm6 base.
 	assert.throws(() => robotFor("xarm6_robotiq", "PullCubeTool-v1"), /not PullCubeTool-v1/);
-	assert.throws(() => robotFor("widowxai", "StackCube-v1"), /runs PickCube-v1, not StackCube-v1/);
-	assert.throws(() => robotFor("ur5", "PickCube-v1"), /unknown --robot ur5; one of panda, xarm6_robotiq, widowxai/);
+	assert.throws(() => robotFor("widowxai", "StackCube-v1"), /runs PickCube-v1, PickCubeWidowXAI-v1, not StackCube-v1/);
+	assert.throws(
+		() => robotFor("ur5", "PickCube-v1"),
+		/unknown --robot ur5; one of panda, xarm6_robotiq, widowxai, panda_stick, panda_pair, widowx250s/,
+	);
 	assert.throws(() => robotFor("toString", "PickCube-v1"), /unknown --robot/);
 });
 
@@ -274,7 +309,13 @@ function stubPi(values: Record<string, unknown> = {}) {
 }
 
 /** A fake ManiSkill env server (the wire protocol of ../src/rpc.ts) running `robot`, with or without a wrist view. */
-async function fakeEnv(robot: string | undefined, setup: Record<string, unknown>, wrist: boolean) {
+async function fakeEnv(
+	robot: string | undefined,
+	setup: Record<string, unknown>,
+	wrist: boolean,
+	envId = "PickCube-v1",
+	arms?: string[],
+) {
 	const calls: { method: string; args: unknown[]; kwargs: Record<string, unknown> }[] = [];
 	const nd = (dtype: string, shape: number[], data: Buffer) => ({
 		__ndarray__: data.toString("base64"),
@@ -283,13 +324,19 @@ async function fakeEnv(robot: string | undefined, setup: Record<string, unknown>
 	});
 	const f32 = (v: number[]) => nd("float32", [v.length], Buffer.from(Float32Array.from(v).buffer));
 	let tcp = [-0.4, 0, 0.08];
-	const obs = () => ({
-		agentview: nd("uint8", [2, 2, 3], Buffer.alloc(12)),
-		...(wrist ? { wrist: nd("uint8", [2, 2, 3], Buffer.alloc(12)) } : {}),
-		tcp_pos: f32(tcp),
+	const armTcp: Record<string, number[]> = Object.fromEntries(
+		(arms ?? []).map((a, i) => [a, [0, i ? 0.12 : -0.12, 0.18]]),
+	);
+	const one = (p: number[]) => ({
+		tcp_pos: f32(p),
 		tcp_quat_wxyz: f32([0.7, 0, 0.7, 0]),
 		gripper_width: 0.08,
 		qpos: f32([0, 0]),
+	});
+	const obs = () => ({
+		agentview: nd("uint8", [2, 2, 3], Buffer.alloc(12)),
+		...(wrist ? { wrist: nd("uint8", [2, 2, 3], Buffer.alloc(12)) } : {}),
+		...(arms ? { arms: Object.fromEntries(arms.map((a) => [a, one(armTcp[a])])) } : one(tcp)),
 	});
 	const server = createServer((req, res) => {
 		let body = "";
@@ -303,7 +350,7 @@ async function fakeEnv(robot: string | undefined, setup: Record<string, unknown>
 			if (method === "code.api") result = { tier: null, primitives: [], digest: "d" };
 			else if (method === "env.get_env_meta")
 				result = {
-					env_id: "PickCube-v1",
+					env_id: envId,
 					seed: 0,
 					scene: null,
 					table_z: 0,
@@ -314,7 +361,8 @@ async function fakeEnv(robot: string | undefined, setup: Record<string, unknown>
 			else if (method === "env.reset") result = [obs(), {}];
 			else if (method === "env.get_task_language") result = "pick up the red cube";
 			else if (method === "env.servo") {
-				tcp = args[0] as number[];
+				if (kwargs.arm) armTcp[kwargs.arm as string] = args[0] as number[];
+				else tcp = args[0] as number[];
 				result = [[obs()], { is_grasped: false }];
 			}
 			res.end(JSON.stringify({ ok: true, result }));
@@ -367,6 +415,115 @@ test("--robot widowxai: a wrist-less arm starts on its own server, observes the 
 	const result = s.entries.find((e) => e.type === "robot_result")?.data;
 	assert.equal(result?.robot, "maniskill");
 	assert.equal(result?.maniskill_robot, "widowxai");
+});
+
+test("--robot panda_stick: no gripper, so move_delta refuses `gripper`, the state has no gripper fields, the prompt says stick", async (t) => {
+	const env = await fakeEnv("panda_stick", ROBOTS.panda_stick.setup, false, "PushT-v1");
+	t.after(env.close);
+	const s = stubPi({ env: env.url, "env-id": "PushT-v1", robot: "panda_stick" });
+	maniskill(s.pi);
+	await s.emit("session_start");
+	process.exitCode = undefined;
+	const prompt = (await s.emit("before_agent_start")).systemPrompt as string;
+	assert.match(prompt, /^You control a Franka Panda arm holding a stick \(no gripper\) in the ManiSkill simulator/);
+	assert.match(prompt, /`tcp_pos` is the stick's tip\. There is no gripper: never pass `gripper`\./);
+	assert.match(prompt, /PushT's T block is about 4 cm tall/);
+	assert.doesNotMatch(prompt, /\[\/?(gripper|stick)\]|\{\{|fingertips straddle|`gripper: "close"`/);
+	await assert.rejects(s.run("move_delta", { delta_xyz: [0, 0, -0.02], gripper: "close" }), /has no gripper/);
+	const r = await s.run("move_delta", { delta_xyz: [0, 0, -0.04] });
+	assert.deepEqual(Object.keys(r.details.state), ["tcp_pos"]);
+	// Two 2 cm waypoints, no gripper hold phase; the command stays "open" (the server drops it).
+	const servos = env.calls.filter((c) => c.method === "env.servo");
+	assert.deepEqual(
+		servos.map((c) => [c.kwargs.min_steps, c.args[1]]),
+		[
+			[SERVO.minSteps, 1],
+			[SERVO.minSteps, 1],
+		],
+	);
+	// The Panda cannot run it.
+	assert.throws(() => robotFor("panda", "DrawTriangle-v1"), /runs on --robot panda_stick/);
+});
+
+test("--units on --robot panda_stick: act has no GRASP / RELEASE and the units state no gripper", async (t) => {
+	const env = await fakeEnv("panda_stick", ROBOTS.panda_stick.setup, false, "DrawTriangle-v1");
+	t.after(env.close);
+	const s = stubPi({ env: env.url, "env-id": "DrawTriangle-v1", robot: "panda_stick", units: "true" });
+	maniskill(s.pi);
+	const units = s.tools.get("act").parameters.properties.unit.enum as string[];
+	assert.ok(!units.includes("GRASP") && !units.includes("RELEASE") && units.includes("MV_DOWN"));
+	await s.emit("session_start");
+	process.exitCode = undefined;
+	const prompt = (await s.emit("before_agent_start")).systemPrompt as string;
+	assert.match(prompt, /This robot has NO gripper/);
+	assert.doesNotMatch(prompt, /GRIPPER:/);
+	const r = await s.run("act", { unit: "MV_DOWN" });
+	assert.doesNotMatch(r.content[0].text as string, /gripper_width|is_grasped/);
+});
+
+test("--robot panda_pair: move_delta takes `arm`, moves that arm alone in the world frame, and the state is per arm", async (t) => {
+	const env = await fakeEnv("panda_pair", ROBOTS.panda_pair.setup, false, "TwoRobotStackCube-v1", ["left", "right"]);
+	t.after(env.close);
+	const s = stubPi({ env: env.url, "env-id": "TwoRobotStackCube-v1", robot: "panda_pair" });
+	maniskill(s.pi);
+	const tool = s.tools.get("move_delta");
+	assert.deepEqual(tool.parameters.properties.arm.enum, ["left", "right"]);
+	assert.match(tool.description, /ONE arm's gripper .*world-frame/);
+	await s.emit("session_start");
+	process.exitCode = undefined;
+	const prompt = (await s.emit("before_agent_start")).systemPrompt as string;
+	assert.match(prompt, /^You control a pair of Franka Panda arms \(left and right\)/);
+	assert.match(prompt, /There are two arms, `left` and `right`/);
+	assert.doesNotMatch(prompt, /\[\/?\w+\]|base-frame|\{\{/);
+	await assert.rejects(s.run("move_delta", { delta_xyz: [0, 0, -0.02] }), /arm must be one of left, right/);
+	const r = await s.run("move_delta", { delta_xyz: [0, 0.02, -0.02], gripper: "close", arm: "right" });
+	const servos = env.calls.filter((c) => c.method === "env.servo");
+	assert.ok(servos.every((c) => c.kwargs.arm === "right"));
+	assert.deepEqual(
+		(servos.at(-1)?.args[0] as number[]).map((v) => Number(v.toFixed(4))),
+		[0, 0.14, 0.16],
+	);
+	assert.equal(servos.at(-1)?.args[1], -1);
+	assert.equal(r.details.result.arm, "right");
+	assert.deepEqual(r.details.state.arms.right.tcp_pos, [0, 0.14, 0.16]);
+	assert.equal(r.details.state.arms.right.gripper_command, "close");
+	assert.equal(r.details.state.arms.left.gripper_command, "open");
+	assert.deepEqual(r.details.state.arms.left.tcp_pos, [0, -0.12, 0.18]);
+	// One-arm robots take no arm.
+	assert.equal((ROBOTS.panda as ManiskillRobot).arms, undefined);
+});
+
+test("--units on --robot panda_pair: act takes `arm` and drives that arm", async (t) => {
+	const env = await fakeEnv("panda_pair", ROBOTS.panda_pair.setup, false, "TwoRobotPickCube-v1", ["left", "right"]);
+	t.after(env.close);
+	const s = stubPi({ env: env.url, "env-id": "TwoRobotPickCube-v1", robot: "panda_pair", units: "true" });
+	maniskill(s.pi);
+	assert.ok("arm" in s.tools.get("act").parameters.properties);
+	await s.emit("session_start");
+	process.exitCode = undefined;
+	await s.run("act", { unit: "MV_RIGHT", arm: "left" });
+	const servo = env.calls.filter((c) => c.method === "env.servo").at(-1);
+	assert.equal(servo?.kwargs.arm, "left");
+	assert.deepEqual(
+		(servo?.args[0] as number[]).map((v) => Number(v.toFixed(4))),
+		[0, -0.1, 0.18],
+	);
+});
+
+test("--robot widowx250s: the bridge twin's own camera and a world-frame move, stated in the prompt and move_delta", async (t) => {
+	const env = await fakeEnv("widowx250s", ROBOTS.widowx250s.setup, false, "PutCarrotOnPlateInScene-v1");
+	t.after(env.close);
+	const s = stubPi({ env: env.url, "env-id": "PutCarrotOnPlateInScene-v1", robot: "widowx250s" });
+	maniskill(s.pi);
+	assert.match(s.tools.get("move_delta").description, /world-frame \[dx, dy, dz\] in metres: \+x toward the camera/);
+	await s.emit("session_start");
+	process.exitCode = undefined;
+	const prompt = (await s.emit("before_agent_start")).systemPrompt as string;
+	assert.match(prompt, /^You control a WidowX 250 S arm \(a BridgeData V2 real-to-sim scene\)/);
+	assert.match(prompt, /`move_delta` takes a world-frame `\[dx, dy, dz\]` in metres: \+x toward the camera/);
+	assert.match(prompt, /The table top is at about z = 0\.87/);
+	assert.doesNotMatch(prompt, /\{\{|away from the robot base/);
+	assert.throws(() => robotFor("panda", "PutSpoonOnTableClothInScene-v1"), /runs on --robot widowx250s/);
 });
 
 test("the Panda's prompt is unchanged by --robot, and a server running another arm than --robot is refused", async (t) => {

@@ -84,6 +84,19 @@ _ADDED = [
     "PegInsertionSide-v1",
     "PlugCharger-v1",
     "PickSingleYCB-v1",
+    # The rest of that table: the Panda's FMB assembly, then the tasks built for another
+    # robot (_OTHER_ROBOT: the WidowX AI's fixed PickCube, the panda_stick scenes).
+    "FMBAssembly1Easy-v1",
+    "PickCubeWidowXAI-v1",
+    "PushT-v1",
+    "DrawTriangle-v1",
+    "DrawSVG-v1",
+    "TwoRobotPickCube-v1",
+    "TwoRobotStackCube-v1",
+    "PutCarrotOnPlateInScene-v1",
+    "PutEggplantInBasketScene-v1",
+    "StackGreenCubeOnYellowCubeBakedTexInScene-v1",
+    "PutSpoonOnTableClothInScene-v1",
 ]
 
 
@@ -111,10 +124,20 @@ def test_the_eight_existing_env_ids_are_unchanged_and_openeta_tasks_are_complete
 def test_robot_table_panda_default_and_gripper_mapping():
     """The Panda is the default arm with the uid, gripper and every env id it always had;
     each robot maps pi's open (> 0) / close (<= 0) to its own gripper action."""
-    assert list(ms.ROBOTS) == ["panda", "xarm6_robotiq", "widowxai"]
+    assert list(ms.ROBOTS) == [
+        "panda",
+        "xarm6_robotiq",
+        "widowxai",
+        "panda_stick",
+        "panda_pair",
+        "widowx250s",
+    ]
     panda = ms.ROBOTS["panda"]
     assert panda.uid == "panda_wristcam"
-    assert panda.envs == tuple(ms.INSTRUCTIONS)
+    assert panda.envs == tuple(e for e in ms.INSTRUCTIONS if e not in ms._OTHER_ROBOT)
+    # Every other-robot task is its owner's, and only its owner's.
+    for env_id, owner in ms._OTHER_ROBOT.items():
+        assert [r for r, spec in ms.ROBOTS.items() if env_id in spec.envs] == [owner]
     assert panda.wrist == {"mount": "centered", "rotation": 270, "flip": "none"}
     assert (panda.gripper_action(1.0), panda.gripper_action(-1.0)) == (1.0, -1.0)
     # The Robotiq runs in delta mode: +1 closes, -1 opens.
@@ -247,12 +270,17 @@ def test_prepare_robot_adds_the_ee_mode_and_the_wrist_camera(monkeypatch):
     assert centred == [1]
 
 
-def _facade(robot: str, wrist: bool = True):
+def _facade(robot: str, wrist: bool = True, root_q=(1.0, 0.0, 0.0, 0.0)):
     facade = object.__new__(ms.ManiskillEnvFacade)
     facade._robot = ms.ROBOTS[robot]
     facade._rig = None
     facade._cameras = ms.CAMERAS
     facade._meta = {"robot": robot, "wrist": wrist, "env_id": "PickCube-v1"}
+    pose = type("P", (), {"q": np.array([root_q])})()
+    tcp = type("T", (), {"pose": type("P", (), {"p": np.zeros((1, 3))})()})()
+    agent = type("A", (), {"robot": type("R", (), {"pose": pose})(), "tcp": tcp})()
+    facade._grip = [1.0]
+    facade._env = type("E", (), {"unwrapped": type("U", (), {"agent": agent})()})()
     return facade
 
 
@@ -293,23 +321,147 @@ def test_servo_holds_the_robots_gripper_action_and_the_width_is_its_own():
     assert xarm._gripper_width(qpos) == 0.0  # closed on nothing
 
 
+def _servo_actions(f, target, command=1.0):
+    sent = []
+    f.stop_requested = lambda: False
+    f._state = lambda: {"tcp_pos": np.zeros(3)}
+    f._pack = lambda obs: obs
+    f._step = lambda a: (sent.append(a) or "obs", 0.0, False, False, {})
+    f.servo(target, command, min_steps=1, max_steps=1)
+    return sent
+
+
+def test_a_robot_without_a_gripper_sends_the_translation_alone():
+    """panda_stick's pd_ee_delta_pos takes [dx, dy, dz]: no gripper element, whatever the
+    command; its width is always 0 and the reset hold is three zeros."""
+    stick = ms.ROBOTS["panda_stick"]
+    assert stick.gripper is None and stick.wrist is None and stick.open is None
+    assert stick.gripper_action(1.0) is None and stick.gripper_action(-1.0) is None
+    (a,) = _servo_actions(_facade("panda_stick", wrist=False), [0.0, 0.01, 0.0], -1.0)
+    assert a.shape == (3,) and np.allclose(a, [0, 0.13, 0])
+    assert list(stick.action(np.zeros(3), 1.0)) == [0.0, 0.0, 0.0]
+    assert list(ms.ROBOTS["panda"].action(np.zeros(3), 1.0)) == [0.0, 0.0, 0.0, 1.0]
+    assert _facade("panda_stick")._gripper_width(np.array([0.1, 0.2])) == 0.0
+
+
+def test_the_servo_commands_in_the_robot_base_frame():
+    """pd_ee_delta_pos acts in the robot base's frame: a base at the identity rotation gets
+    the world error as is (every Panda table scene); one turned about z (RollBall's, the
+    two-robot scenes', the SO100's) gets it rotated into its frame."""
+    (a,) = _servo_actions(_facade("panda"), [0.01, 0.0, 0.0])
+    assert np.array_equal(a[:3], np.array([0.01 * 1.3 / ms.DELTA_BOUND_M, 0.0, 0.0]))
+    # A base turned -90 deg about z (RollBall: q = [0.707, 0, 0, -0.707]) faces world -y:
+    # world +x is its +y.
+    s = np.sqrt(0.5)
+    (a,) = _servo_actions(_facade("panda", root_q=(s, 0, 0, -s)), [0.01, 0.0, 0.0])
+    assert np.allclose(a[:3], [0.0, 0.13, 0.0]), a
+
+
+class _Pose:
+    def __init__(self, p, q=(1.0, 0.0, 0.0, 0.0)):
+        self.p, self.q = np.array([p]), np.array([q])
+
+
+def _pair_facade():
+    """A panda_pair facade whose two arms face each other (left turned +90 deg about z,
+    right -90 deg), with a two-agent action space."""
+    f = object.__new__(ms.ManiskillEnvFacade)
+    f._robot = ms.ROBOTS["panda_pair"]
+    f._rig = None
+    f._cameras = ms.CAMERAS
+    f._meta = {"robot": "panda_pair", "wrist": False, "env_id": "TwoRobotPickCube-v1"}
+    f._grip = [1.0, 1.0]
+    s = np.sqrt(0.5)
+    agents = []
+    for y, q in [(-0.12, (s, 0, 0, s)), (0.12, (s, 0, 0, -s))]:
+        robot = type("R", (), {"pose": _Pose([0, 0, 0], q)})()
+        agents.append(
+            type(
+                "A",
+                (),
+                {"robot": robot, "tcp": type("T", (), {"pose": _Pose([0, y, 0.18])})()},
+            )()
+        )
+    multi = type("M", (), {"agents": agents})()
+    space = type("S", (), {"spaces": {"panda-0": None, "panda-1": None}})()
+    f._env = type(
+        "E", (), {"unwrapped": type("U", (), {"agent": multi})(), "action_space": space}
+    )()
+    return f
+
+
+def test_a_two_arm_robot_drives_one_arm_and_holds_the_other():
+    """panda_pair: the servo moves the named arm in its own base frame; the other gets a
+    zero move with its last gripper command; the action is keyed by the env's agent ids."""
+    f = _pair_facade()
+    sent = []
+    f.stop_requested = lambda: False
+    f._pack = lambda obs: obs
+    f._step = lambda a: (sent.append(a) or "obs", 0.0, False, False, {})
+    f.servo([0.01, -0.12, 0.18], -1.0, arm="left", min_steps=1, max_steps=1)
+    (a,) = sent
+    assert list(a) == ["panda-0", "panda-1"]
+    # World +x is the left arm's (turned +90 deg) -y.
+    assert np.allclose(a["panda-0"], [0, -0.13, 0, -1.0], atol=1e-6), a
+    assert np.allclose(a["panda-1"], [0, 0, 0, 1.0])
+    f.servo([0.0, 0.12, 0.19], 1.0, arm="right", min_steps=1, max_steps=1)
+    assert np.allclose(
+        sent[-1]["panda-0"], [0, 0, 0, -1.0]
+    )  # left keeps its closed gripper
+    assert np.allclose(sent[-1]["panda-1"], [0, 0, 0.13, 1.0], atol=1e-6)
+    for bad in [None, "middle"]:
+        try:
+            f.servo([0, 0, 0], 1.0, arm=bad)
+            raise AssertionError(f"arm {bad!r} passed")
+        except ValueError as e:
+            assert "left" in str(e)
+    try:
+        _facade("panda").servo([0, 0, 0], 1.0, arm="left")
+        raise AssertionError("an arm on one arm passed")
+    except ValueError as e:
+        assert "one arm" in str(e)
+    # A flat code-mode action is split per arm.
+    split = f._split(np.arange(8))
+    assert list(split["panda-1"]) == [4, 5, 6, 7]
+
+
 def test_code_mode_raw_actions_use_pis_gripper_sign_on_every_robot():
     """step / chunk_step take [dx, dy, dz, gripper] with > 0 open on every robot: the
     Panda's passes through unchanged (continuous values too), the Robotiq's gripper sign
-    is flipped (its +1 closes)."""
-    panda = _facade("panda")
+    is flipped (its +1 closes), a stick sends the translation alone."""
+    f = _facade("panda")
+    f._robot = ms.ROBOTS["panda"]
     assert np.array_equal(
-        panda._native([0.1, -0.2, 0.3, 0.5]), np.float32([0.1, -0.2, 0.3, 0.5])
+        f._split([0.1, -0.2, 0.3, 0.5]), np.float32([0.1, -0.2, 0.3, 0.5])
     )
     x = _facade("xarm6_robotiq")
-    assert np.allclose(x._native([0.1, 0, 0, 1.0]), [0.1, 0, 0, -1.0])
-    assert np.allclose(x._native([0, 0, 0, -0.4]), [0, 0, 0, 0.4])
-    sent = []
-    x._step = lambda a: (sent.append(a) or "obs", 0.0, False, False, {})
-    x._pack = lambda obs: obs
-    x.stop_requested = lambda: False
-    x.chunk_step([[0, 0, 0, 1.0], [0, 0, 0, -1.0]])
-    assert [float(a[-1]) for a in sent] == [-1.0, 1.0]
+    assert np.allclose(x._split([0.1, 0, 0, 1.0]), [0.1, 0, 0, -1.0])
+    assert np.allclose(x._split([0, 0, 0, -0.4]), [0, 0, 0, 0.4])
+    assert np.allclose(_facade("panda_stick")._split([0.1, 0.2, 0.3]), [0.1, 0.2, 0.3])
+
+
+def test_the_bridge_widowx_takes_an_unnormalised_pose_action_and_objs_actors():
+    """The bridge twins' WidowX 250 S: its pose controller takes [dx, dy, dz] in m, three
+    zero rotations, then the gripper (+1 open); its actors live in ``objs`` by model id,
+    and every bridge scene reports its table height."""
+    wx = ms.ROBOTS["widowx250s"]
+    a = wx.action(np.array([0.5, 0.0, -1.0]), -1.0)
+    assert np.allclose(a, [0.05, 0.0, -0.1, 0, 0, 0, -1.0])
+    assert wx.control_mode.startswith("arm_pd_ee_target_delta_pose")
+    assert (wx.tcp_link, wx.agentview) == ("ee_gripper_link", "3rd_view_camera")
+    assert set(wx.envs) == set(ms.BRIDGE_ENVS) == set(ms.TABLE_Z)
+    assert set(ms.BRIDGE_ENVS) <= set(ms.FIXED_ROBOT_ENVS)
+    env = type("E", (), {"objs": {"eggplant": "EGG"}, "sink": "SINK"})()
+    assert ms._actor(env, "objs/eggplant") == "EGG" and ms._actor(env, "sink") == "SINK"
+    for env_id in ms.BRIDGE_ENVS:
+        assert ms.TASK_ACTORS[env_id][0].startswith("objs/")
+    # The Panda's action is unchanged by the pose-controller fields.
+    assert list(ms.ROBOTS["panda"].action(np.array([0.5, 0, 0]), 1.0)) == [
+        0.5,
+        0,
+        0,
+        1.0,
+    ]
 
 
 def test_a_robot_without_a_wrist_camera_observes_the_agentview_alone():

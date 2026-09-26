@@ -44,14 +44,17 @@ const read = (name: string) => template(new URL(name, import.meta.url));
 const SYSTEM = read("./SYSTEM.md");
 const MEMORY = read("./memory.md");
 const EXPLORE = read("./explore.md");
+/** Keep (`on`) or drop a `[name]...[/name]` block of SYSTEM.md; the markers themselves always go. */
+const section = (text: string, name: string, on: boolean) =>
+	text.replace(new RegExp(`\\[${name}\\]\\n([\\s\\S]*?)\\[/${name}\\]\\n`, "g"), on ? "$1" : "");
 /** A memory cell tag part: the scene options (`table_tex=white`) with the characters a tag may not hold replaced. */
 const tagPart = (s: string) => s.replace(/[^\w.-]+/g, "-");
 
 /**
  * `--env-id` takes one of these: the RLinf rigs (BlockPAP-v1 default, BlockStack-v1) and the stock
  * ManiSkill tabletop tasks the env server has a task text and a visibility list for (its INSTRUCTIONS
- * / TASK_ACTORS; the last six are OpenETA's ManiSkill table, sim/envs/maniskill at 7d4a0a1, minus
- * what a one-arm translation-only Panda cannot attempt). The same list, in the same order.
+ * / TASK_ACTORS; from PlaceSphere-v1 on, OpenETA's ManiSkill table, sim/envs/maniskill at 7d4a0a1: the
+ * Panda's, then those another `--robot` owns, OTHER_ROBOT_ENVS). The same list, in the same order.
  */
 export const ENV_IDS = [
 	"BlockPAP-v1",
@@ -68,10 +71,34 @@ export const ENV_IDS = [
 	"PegInsertionSide-v1",
 	"PlugCharger-v1",
 	"PickSingleYCB-v1",
+	"FMBAssembly1Easy-v1",
+	"PickCubeWidowXAI-v1",
+	"PushT-v1",
+	"DrawTriangle-v1",
+	"DrawSVG-v1",
+	"TwoRobotPickCube-v1",
+	"TwoRobotStackCube-v1",
+	"PutCarrotOnPlateInScene-v1",
+	"PutEggplantInBasketScene-v1",
+	"StackGreenCubeOnYellowCubeBakedTexInScene-v1",
+	"PutSpoonOnTableClothInScene-v1",
 ] as const;
 export type EnvId = (typeof ENV_IDS)[number];
 /** The RLinf rigs among ENV_IDS: they fix their own robot (a Panda). */
 const RIGS: readonly string[] = ENV_IDS.slice(0, 2);
+/** Stock tasks built for another robot than the Panda (env server _OTHER_ROBOT): only that `--robot` runs them. */
+export const OTHER_ROBOT_ENVS: Partial<Record<EnvId, string>> = {
+	"PickCubeWidowXAI-v1": "widowxai",
+	"PushT-v1": "panda_stick",
+	"DrawTriangle-v1": "panda_stick",
+	"DrawSVG-v1": "panda_stick",
+	"TwoRobotPickCube-v1": "panda_pair",
+	"TwoRobotStackCube-v1": "panda_pair",
+	"PutCarrotOnPlateInScene-v1": "widowx250s",
+	"PutEggplantInBasketScene-v1": "widowx250s",
+	"StackGreenCubeOnYellowCubeBakedTexInScene-v1": "widowx250s",
+	"PutSpoonOnTableClothInScene-v1": "widowx250s",
+};
 
 /** configs/robot_maniskill.yaml `move_vectors`: +x away from the base, -y = MV_LEFT, +z up. */
 export const VECTORS: Record<MoveUnit, Vec3> = {
@@ -114,15 +141,15 @@ export const VIEWS = `Each result shows the third-person view, then the wrist vi
 - Third-person view: it looks at the robot from in front of the table, slightly from the robot's left side, so the robot base is at the top and the directions above are tilted about 15 degrees; judge the gripper against the target directly.
 - Wrist view: it looks straight down; the two fingertips stay fixed at the left edge (one near the top, one near the bottom), and the grasp point is between them, at mid-height, about a third of the width from the left edge. A target right of the grasp point needs MV_RIGHT, left of it MV_LEFT, below it MV_FWD, above it MV_BACK; a target on the grasp point is under the gripper: MV_DOWN. The camera moves with the gripper, so after MV_RIGHT the scene shifts left.`;
 
+/** One arm's proprioception. */
+type ArmObs = { tcp_pos: NdArray; tcp_quat_wxyz: NdArray; gripper_width: number; qpos: NdArray };
 type Obs = {
 	agentview: NdArray;
 	/** Absent on a robot without a wrist camera (ManiskillRobot.setup.wrist_mount "none"). */
 	wrist?: NdArray;
-	tcp_pos: NdArray;
-	tcp_quat_wxyz: NdArray;
-	gripper_width: number;
-	qpos: NdArray;
-};
+	/** A two-arm robot's arms (ManiskillRobot.arms), in place of the one arm's fields. */
+	arms?: Record<string, ArmObs>;
+} & Partial<ArmObs>;
 type Info = Record<string, unknown>;
 type ServoReturn = [Obs[], Info];
 /**
@@ -224,7 +251,7 @@ ${THIRD_PERSON}
 - With no wrist view, judge alignment from the gripper's position against the target in the third-person view, and descend in small steps.`;
 const WIDOWXAI: ManiskillRobot = {
 	arm: "Trossen WidowX AI arm",
-	envs: ["PickCube-v1"],
+	envs: ["PickCube-v1", "PickCubeWidowXAI-v1"],
 	vectors: VECTORS,
 	stepM: STEP_M,
 	gain: GAIN,
@@ -236,6 +263,94 @@ const WIDOWXAI: ManiskillRobot = {
 		table: SCENE_TEXT.stock.table,
 		object: "a 3.6 cm cube's centre is at z = 0.018",
 		views: "the agentview alone (third-person, 256x256 with black padding bars: it looks at the robot from in front of the table, turned about 15 degrees toward the robot's left; the robot base is at the top, image right is roughly +y, image bottom roughly +x). This robot has no wrist camera, so there is no wrist view",
+	},
+};
+
+/**
+ * The Panda with a stick (env server ROBOTS["panda_stick"]): ManiSkill's panda_stick in its own pd_ee_delta_pos,
+ * no gripper and no camera link, on the pushing and drawing scenes built for it. `tcp_pos` is the stick's tip.
+ */
+export const PANDA_STICK_VIEWS = `Each result shows the third-person view (256x256, black bars are padding); this robot has NO wrist camera and NO gripper: it holds a stick pointing straight down. MV_LEFT / MV_RIGHT move the stick's tip toward the image left / right, MV_FWD toward the image bottom, MV_BACK toward the image top.
+${THIRD_PERSON}
+- With no wrist view, judge the tip's position against the target in the third-person view, and descend in small steps.`;
+const PANDA_STICK: ManiskillRobot = {
+	arm: "Franka Panda arm holding a stick (no gripper)",
+	envs: ["PushT-v1", "DrawTriangle-v1", "DrawSVG-v1"],
+	vectors: VECTORS,
+	stepM: STEP_M,
+	gain: GAIN,
+	gripperSteps: 0,
+	emptyWidthM: EMPTY_WIDTH_M,
+	gripper: false,
+	setup: { agentview: "oblique", wrist_mount: "none", wrist_rotation: 0, wrist_flip: "none" },
+	views: PANDA_STICK_VIEWS,
+	scene: {
+		table: SCENE_TEXT.stock.table,
+		object:
+			"PushT's T block is about 4 cm tall; the drawing canvas's top is at z = 0.02 and the stick paints a dot there whenever its tip is below z = 0.028",
+		views: "the agentview alone (third-person, 256x256 with black padding bars: it looks at the robot from in front of the table, turned about 15 degrees toward the robot's left; the robot base is at the top, image right is roughly +y, image bottom roughly +x). This robot has no wrist camera, so there is no wrist view",
+	},
+};
+
+/**
+ * Two Pandas facing each other across the table (env server ROBOTS["panda_pair"], the two-robot scenes): the
+ * left arm's base at y = -0.75 (the agentview's left), the right arm's at y = +0.75, each in its own
+ * pd_ee_delta_pos (the server turns the world-frame move into each base's frame). No wrist cameras.
+ */
+export const PANDA_PAIR_VIEWS = `Each result shows the third-person view (256x256, black bars are padding); there is no wrist view. The left arm stands at the image left, the right arm at the image right, facing each other across the table. MV_LEFT / MV_RIGHT move the chosen arm's gripper toward the image left / right (toward the left / right arm's base), MV_FWD toward the image bottom, MV_BACK toward the image top, for either arm.
+- Third-person view: it looks at the table from in front of it, turned about 15 degrees; judge each gripper against its target directly, and descend in small steps.`;
+const PANDA_PAIR: ManiskillRobot = {
+	arm: "pair of Franka Panda arms (left and right)",
+	envs: ["TwoRobotPickCube-v1", "TwoRobotStackCube-v1"],
+	vectors: VECTORS,
+	stepM: STEP_M,
+	gain: GAIN,
+	gripperSteps: GRIPPER_STEPS,
+	emptyWidthM: EMPTY_WIDTH_M,
+	arms: ["left", "right"],
+	setup: { agentview: "oblique", wrist_mount: "none", wrist_rotation: 0, wrist_flip: "none" },
+	views: PANDA_PAIR_VIEWS,
+	scene: {
+		table: SCENE_TEXT.stock.table,
+		object: SCENE_TEXT.stock.object,
+		views: "the agentview alone (third-person, 256x256 with black padding bars: it looks at the table from in front, turned about 15 degrees; the left arm stands at the image left, the right arm at the image right; image right is +y, image bottom roughly +x). There are no wrist cameras",
+	},
+};
+
+/** The move frame SYSTEM.md and `move_delta` state for a one-arm robot standing at the table's -x end. */
+export const BASE_FRAME =
+	"a base-frame `[dx, dy, dz]` in metres: +x away from the robot base, +y toward the robot's left, +z up";
+
+/**
+ * The BridgeData V2 twins' WidowX 250 S (env server ROBOTS["widowx250s"], SIMPLER's scenes): the scene's own
+ * robot, controller and 3rd_view_camera (a real photo composited behind the objects), no wrist camera. Its base
+ * stands at the table's +x end facing -x, so moves are world-frame: measured on the four scenes, each MV_* 19.5-
+ * 20.3 mm per unit along the world axis (cos 1.000), and the camera shows +x toward the image bottom, +y to the
+ * right. The mimic gripper closes from 74 mm (the fingers' joint sum) to 30 mm on nothing in 3-4 control steps
+ * (5 Hz) and reads 50 mm closed on the 3 cm cube.
+ */
+export const WIDOWX250S_VIEWS = `Each result shows the third-person view (256x256, black bars are padding): the scene's own camera beside the robot, looking over the gripper at the table (a real photo behind the simulated objects); there is no wrist view. The gripper hangs down from the top of the image; MV_FWD moves it toward the image bottom (toward the camera), MV_BACK toward the image top, MV_LEFT / MV_RIGHT toward the image left / right.
+- Judge the gripper against the target directly in this view, and descend in small steps: nearer objects appear lower in the image.`;
+const WIDOWX250S: ManiskillRobot = {
+	arm: "WidowX 250 S arm (a BridgeData V2 real-to-sim scene)",
+	envs: [
+		"PutCarrotOnPlateInScene-v1",
+		"PutEggplantInBasketScene-v1",
+		"StackGreenCubeOnYellowCubeBakedTexInScene-v1",
+		"PutSpoonOnTableClothInScene-v1",
+	],
+	vectors: VECTORS,
+	stepM: STEP_M,
+	gain: GAIN,
+	gripperSteps: 4,
+	emptyWidthM: 0.031,
+	frame: "a world-frame `[dx, dy, dz]` in metres: +x toward the camera and the robot base (the image bottom), +y toward the image right, +z up",
+	setup: { agentview: "3rd_view_camera", wrist_mount: "none", wrist_rotation: 0, wrist_flip: "none" },
+	views: WIDOWX250S_VIEWS,
+	scene: {
+		table: "The table top is at about z = 0.87 (the sink's floor at about z = 0.91 in the eggplant scene)",
+		object: "a 3 cm block's centre is about 1.5 cm above the table",
+		views: "the agentview alone (third-person, 256x256 with black padding bars: the scene's camera beside the robot looking over the gripper at the table; image bottom is +x, toward the camera, image right is +y). This robot has no wrist camera, so there is no wrist view",
 	},
 };
 
@@ -252,6 +367,12 @@ export type ManiskillRobot = {
 	/** Control steps a gripper toggle holds still; the closed-and-empty gripper width, m. */
 	gripperSteps: number;
 	emptyWidthM: number;
+	/** `false`: no gripper (a stick): the action is the translation alone and `gripper` commands are refused. */
+	gripper?: false;
+	/** Two arms (the server's RobotSpec.arms): `move_delta` and `act` take `arm`; moves are world-frame. */
+	arms?: readonly string[];
+	/** The move frame a one-arm robot states (default BASE_FRAME): a scene whose base faces another way moves in the world frame. */
+	frame?: string;
 	/** The env server's camera setup (VIEW_SETUP); `wrist_mount: "none"`: no wrist camera, the agentview alone. */
 	setup: { agentview: string; wrist_mount: string; wrist_rotation: number; wrist_flip: string };
 	/** The units `views` text, and SYSTEM.md's scene sentences (SCENE_TEXT.stock with this robot's views and object). */
@@ -272,7 +393,7 @@ const TWO_VIEWS = { images: "both images", grasp_view: "wrist image" };
 export const ROBOTS = {
 	panda: {
 		arm: "Franka Panda arm",
-		envs: ENV_IDS.slice(2),
+		envs: ENV_IDS.slice(2).filter((e) => !OTHER_ROBOT_ENVS[e]),
 		vectors: VECTORS,
 		stepM: STEP_M,
 		gain: GAIN,
@@ -284,11 +405,16 @@ export const ROBOTS = {
 	},
 	xarm6_robotiq: XARM6_ROBOTIQ,
 	widowxai: WIDOWXAI,
+	panda_stick: PANDA_STICK,
+	panda_pair: PANDA_PAIR,
+	widowx250s: WIDOWX250S,
 } satisfies Record<string, ManiskillRobot>;
 export type RobotId = keyof typeof ROBOTS;
 export const ROBOT_IDS = Object.keys(ROBOTS) as RobotId[];
 /** Whether a robot's observations carry a wrist view. */
 export const hasWrist = (r: ManiskillRobot) => r.setup.wrist_mount !== "none";
+/** Whether a robot has a gripper (the stick has none). */
+export const hasGripper = (r: ManiskillRobot) => r.gripper !== false;
 
 /**
  * The robot an episode runs: `--robot` checked against ROBOTS and the env id (a rig runs its own Panda; a stock
@@ -299,8 +425,12 @@ export function robotFor(robot: string, envId: string): ManiskillRobot {
 	const spec: ManiskillRobot = ROBOTS[robot as RobotId];
 	if (RIGS.includes(envId)) {
 		if (robot !== "panda") throw new Error(`${envId} is a real2sim rig with its own Panda; --robot panda only`);
-	} else if (!spec.envs.includes(envId as EnvId))
-		throw new Error(`--robot ${robot} runs ${spec.envs.join(", ")}, not ${envId}`);
+	} else if (!spec.envs.includes(envId as EnvId)) {
+		const owner = OTHER_ROBOT_ENVS[envId as EnvId];
+		throw new Error(
+			`--robot ${robot} runs ${spec.envs.join(", ")}, not ${envId}${owner ? ` (${envId} runs on --robot ${owner})` : ""}`,
+		);
+	}
 	return spec;
 }
 
@@ -437,8 +567,9 @@ export default function maniskill(pi: ExtensionAPI) {
 	let success = false;
 	let everGrasped = false;
 	let envStep = 0;
-	/** pi's gripper command: +1 open, -1 close; the server maps it to the robot's action. */
-	let gripper = 1;
+	/** pi's gripper command per arm ("" = the one arm): +1 open, -1 close; the server maps it to each robot's action. */
+	let grippers: Record<string, number> = {};
+	const gripOf = (a?: string) => grippers[a ?? ""] ?? 1;
 	let language = "";
 	/** The server runs an RLinf rig (BlockPAP-v1 / BlockStack-v1). */
 	let rig = false;
@@ -450,6 +581,20 @@ export default function maniskill(pi: ExtensionAPI) {
 	const arm = (): ManiskillRobot => ROBOTS[robotId];
 	const text = () => (rig ? SCENE_TEXT.rig : arm().scene);
 	const wrist = () => rig || hasWrist(arm());
+	const gripping = () => rig || hasGripper(arm());
+	/** The --robot flag's arm, read at load (the `move_delta` schema, units' arms) before the robot starts. */
+	const flagRobot = (): ManiskillRobot | undefined => ROBOTS[String(pi.getFlag("robot") ?? "panda") as RobotId];
+	/** A two-arm robot's arm names (undefined: one arm). */
+	const arms = () => (rig ? undefined : arm().arms);
+	/** One arm's proprioception (`a` undefined: the one arm). */
+	const armObs = (a?: string): ArmObs => (a ? obs.arms![a] : (obs as ArmObs));
+	/** `a` names an arm of a two-arm robot and is absent on one arm. */
+	function checkArm(a: string | undefined) {
+		const names = arms();
+		if (names && !(a && names.includes(a)))
+			throw new Error(`this robot has two arms; arm must be one of ${names.join(", ")}`);
+		if (!names && a) throw new Error("this robot has one arm; leave `arm` out");
+	}
 	/** The --probe-axes vectors (undefined: VECTORS) and their calibration record. */
 	let vectors: Record<MoveUnit, Vec3> | undefined;
 	let calibration: Record<string, unknown> | undefined;
@@ -510,7 +655,7 @@ export default function maniskill(pi: ExtensionAPI) {
 				const [o, i] = await env.call<[Obs, Info]>("env.reset", {}, 300_000, [], signal);
 				success = everGrasped = false;
 				envStep = 0;
-				gripper = 1;
+				grippers = {};
 				absorb(o, i);
 				return observe({ ...result, reset: true });
 			},
@@ -528,7 +673,17 @@ export default function maniskill(pi: ExtensionAPI) {
 		},
 		start: startEpisode,
 		prompt: () =>
-			SYSTEM.replaceAll("{{task_language}}", language)
+			(
+				[
+					["gripper", gripping()],
+					["stick", !gripping()],
+					["one_arm", !arms()],
+					["two_arms", Boolean(arms())],
+				] as [string, boolean][]
+			)
+				.reduce((t, [name, on]) => section(t, name, on), SYSTEM)
+				.replaceAll("{{task_language}}", language)
+				.replaceAll("{{frame}}", (rig ? undefined : arm().frame) ?? BASE_FRAME)
 				.replaceAll("{{arm}}", rig ? ROBOTS.panda.arm : arm().arm)
 				.replaceAll("{{images}}", (wrist() ? TWO_VIEWS : ONE_VIEW).images)
 				.replaceAll("{{grasp_view}}", (wrist() ? TWO_VIEWS : ONE_VIEW).grasp_view)
@@ -579,15 +734,26 @@ export default function maniskill(pi: ExtensionAPI) {
 				const r = ROBOTS[String(pi.getFlag("robot") ?? "panda") as RobotId];
 				return !r || hasWrist(r);
 			},
+			// The same for the gripper: the stick has none (no GRASP / RELEASE units).
+			gripper: () => {
+				const r = flagRobot();
+				return !r || hasGripper(r);
+			},
+			// Two arms (panda_pair): `act` takes `arm`, read at load like the wrist view.
+			get arms() {
+				return flagRobot()?.arms;
+			},
 			apply: async (m, signal) => {
 				if (m.yaw) throw new Error("this robot has no yaw (pd_ee_delta_pos holds the orientation)");
-				return observe(await move(m.delta, m.gripper, signal));
+				return observe(await move(m.delta, m.gripper, signal, m.arm));
 			},
-			state: async () => ({
-				eef_xyz: obs.tcp_pos.toArray().map((v) => round(v)),
-				gripper_width: round(obs.gripper_width),
+			state: async (a) => ({
+				eef_xyz: armObs(a)
+					.tcp_pos!.toArray()
+					.map((v) => round(v)),
+				...(gripping() ? { gripper_width: round(armObs(a).gripper_width!) } : {}),
 				table_z: tableZ,
-				is_grasped: grasped(info),
+				...(gripping() ? { is_grasped: grasped(info) } : {}),
 			}),
 		},
 	});
@@ -607,21 +773,27 @@ export default function maniskill(pi: ExtensionAPI) {
 		everGrasped ||= grasped(i);
 	}
 
-	/** Run one base-frame move (m) with an optional gripper command; every control step goes to the video. */
-	async function move(delta: Vec3, grip: "open" | "close" | null, signal: AbortSignal | undefined) {
+	/**
+	 * Run one base-frame move (m) with an optional gripper command; every control step goes to the video.
+	 * A two-arm robot moves `a` (world frame), the other arm holding still.
+	 */
+	async function move(delta: Vec3, grip: "open" | "close" | null, signal: AbortSignal | undefined, a?: string) {
 		const norm = Math.hypot(...delta);
 		if (!(norm <= MAX_MOVE_M))
 			throw new Error(`delta moves ${round(norm)} m; the limit is ${MAX_MOVE_M} m per call. Split the motion.`);
-		const before = gripper;
-		if (grip) gripper = grip === "open" ? 1 : -1;
-		const start = obs.tcp_pos.toArray();
+		if (grip && !gripping()) throw new Error("this robot holds a stick and has no gripper; leave `gripper` out");
+		checkArm(a);
+		const before = gripOf(a);
+		if (grip) grippers[a ?? ""] = grip === "open" ? 1 : -1;
+		const gripper = gripOf(a);
+		const start = armObs(a).tcp_pos!.toArray();
 		let steps = 0;
 		const r = arm();
 		for (const { target, minSteps, maxSteps } of phases(start, delta, gripper !== before, r.gripperSteps, r.stepM)) {
 			if (success) break;
 			const [frames, i] = await call<ServoReturn>(
 				"env.servo",
-				{ gain: r.gain, tol_m: SERVO.tolM, min_steps: minSteps, max_steps: maxSteps },
+				{ gain: r.gain, tol_m: SERVO.tolM, min_steps: minSteps, max_steps: maxSteps, ...(a ? { arm: a } : {}) },
 				[target, gripper],
 				signal,
 			);
@@ -631,8 +803,9 @@ export default function maniskill(pi: ExtensionAPI) {
 			absorb(frames[frames.length - 1], i);
 			if (i.cancelled) break;
 		}
-		const end = obs.tcp_pos.toArray();
+		const end = armObs(a).tcp_pos!.toArray();
 		return {
+			...(a ? { arm: a } : {}),
 			commanded_m: delta.map((v) => round(v)),
 			moved_m: end.map((v, k) => round(v - start[k])),
 			gripper: gripper > 0 ? "open" : "close",
@@ -650,12 +823,33 @@ export default function maniskill(pi: ExtensionAPI) {
 			success,
 			terminated: success,
 			task_language: language,
-			state: {
-				tcp_pos: obs.tcp_pos.toArray().map((v) => round(v)),
-				gripper_width: round(obs.gripper_width),
-				gripper_command: gripper > 0 ? "open" : "close",
-				is_grasped: grasped(info),
-			},
+			state: arms()
+				? {
+						arms: Object.fromEntries(
+							arms()!.map((a) => [
+								a,
+								{
+									tcp_pos: armObs(a)
+										.tcp_pos!.toArray()
+										.map((v) => round(v)),
+									gripper_width: round(armObs(a).gripper_width!),
+									gripper_command: gripOf(a) > 0 ? "open" : "close",
+								},
+							]),
+						),
+						is_grasped: grasped(info),
+					}
+				: {
+						tcp_pos: obs.tcp_pos!.toArray().map((v) => round(v)),
+						// A stick has no gripper to report.
+						...(gripping()
+							? {
+									gripper_width: round(obs.gripper_width!),
+									gripper_command: gripOf() > 0 ? "open" : "close",
+									is_grasped: grasped(info),
+								}
+							: {}),
+					},
 			images: [
 				`agentview ${obs.agentview.shape[1]}x${obs.agentview.shape[0]}`,
 				...(obs.wrist ? [`wrist ${obs.wrist.shape[1]}x${obs.wrist.shape[0]}`] : []),
@@ -678,16 +872,25 @@ export default function maniskill(pi: ExtensionAPI) {
 	);
 
 	const xyz = Type.Array(Type.Number(), { minItems: 3, maxItems: 3 });
+	// A two-arm --robot (read at load) moves one arm per call, in the world frame both arms share.
+	const pair = flagRobot()?.arms;
+	const worldFrame = flagRobot()?.frame;
 	robot.tool(
 		"move_delta",
-		`Translate the gripper by a base-frame [dx, dy, dz] in metres (+x away from the base, +y toward the robot's left, +z up; at most ${MAX_MOVE_M} m per call), optionally opening or closing the gripper first (the arm holds still until the fingers settle, then moves). The orientation is locked. Returns the new state and images.`,
+		pair
+			? `Translate ONE arm's gripper (\`arm\`: ${pair.join(" or ")}; the other holds still) by a world-frame [dx, dy, dz] in metres (+x toward the camera, +y toward the right arm's base, +z up; at most ${MAX_MOVE_M} m per call), optionally opening or closing that gripper first (the arm holds still until the fingers settle, then moves). The orientation is locked. Returns the new state and images.`
+			: worldFrame
+				? `Translate the gripper by ${worldFrame.replaceAll("`", "")} (at most ${MAX_MOVE_M} m per call), optionally opening or closing the gripper first (the arm holds still until the fingers settle, then moves). The orientation is locked. Returns the new state and images.`
+				: `Translate the gripper by a base-frame [dx, dy, dz] in metres (+x away from the base, +y toward the robot's left, +z up; at most ${MAX_MOVE_M} m per call), optionally opening or closing the gripper first (the arm holds still until the fingers settle, then moves). The orientation is locked. Returns the new state and images.`,
 		Type.Object({
 			delta_xyz: xyz,
 			gripper: Type.Optional(StringEnum(["open", "close"] as const)),
+			...(pair ? { arm: StringEnum([...pair], { description: "The arm this call moves" }) } : {}),
 		}),
-		async ({ delta_xyz, gripper: g }, signal) => {
+		async ({ delta_xyz, gripper: g, ...rest }, signal) => {
 			if (success) return observe({ error: "the task is already solved; call finish" });
-			return observe(await move(delta_xyz as Vec3, g ?? null, signal));
+			const a = (rest as { arm?: string }).arm;
+			return observe(await move(delta_xyz as Vec3, g ?? null, signal, a));
 		},
 	);
 
@@ -695,9 +898,10 @@ export default function maniskill(pi: ExtensionAPI) {
 	async function probeAxes(ctx: ExtensionContext) {
 		const probes: Probe[] = [];
 		const r = arm();
+		if (arms()) throw new Error("--probe-axes measures one arm; not on a two-arm --robot");
 		for (const unit of MOVE_UNITS) {
 			const [o] = await env.call<[Obs, Info]>("env.reset", {}, 300_000);
-			const start = o.tcp_pos.toArray();
+			const start = o.tcp_pos!.toArray();
 			let end = start;
 			const delta = r.vectors[unit].map((x) => x * r.stepM * PROBE_UNITS) as Vec3;
 			for (const target of waypoints(start, delta, r.stepM)) {
@@ -706,7 +910,7 @@ export default function maniskill(pi: ExtensionAPI) {
 					{ gain: r.gain, tol_m: SERVO.tolM, min_steps: SERVO.minSteps, max_steps: SERVO.maxSteps },
 					[target, 1],
 				);
-				end = frames[frames.length - 1].tcp_pos.toArray();
+				end = frames[frames.length - 1].tcp_pos!.toArray();
 			}
 			probes.push({ unit, n: PROBE_UNITS, moved: end.map((v, k) => v - start[k]) as Vec3 });
 		}
@@ -770,7 +974,7 @@ export default function maniskill(pi: ExtensionAPI) {
 			);
 		success = everGrasped = false;
 		envStep = 0;
-		gripper = 1;
+		grippers = {};
 		vectors = calibration = undefined;
 		if (pi.getFlag("probe-axes") === true) await probeAxes(ctx);
 		const [o, i] = await env.call<[Obs, Info]>("env.reset", {}, 300_000);

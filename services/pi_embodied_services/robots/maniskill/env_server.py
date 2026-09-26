@@ -20,7 +20,8 @@
 
 Action ``[dx, dy, dz, gripper]`` in [-1, 1]: a base-frame position delta normalised by
 the arm's 0.1 m bound, and the gripper in pi's convention (> 0 open, < 0 close) whatever
-the ``--robot``; the server gives it the robot's sign (the Robotiq's +1 closes). Observations
+the ``--robot``; ``RobotSpec.action`` turns it into the robot's own action (the Robotiq's
++1 closes). Observations
 carry the agentview (``base_camera``; ``external_cam`` on the RLinf rigs) and, on a robot
 with a wrist camera, the wrist (``hand_camera``) RGB, the TCP pose and the gripper
 opening; ``info`` is flattened to plain scalars (``success``, ``is_grasped``, ...). An env id of ./scenes.py (BlockPAP-v1,
@@ -70,6 +71,32 @@ INSTRUCTIONS = {
     "PlugCharger-v1": "pick up the charger and plug its two prongs into the receptacle",
     # PickSingleYCB samples one YCB object per episode (ycb assets); the goal sphere is SHOW_GOALS.
     "PickSingleYCB-v1": "pick up the object on the table and move it into the green goal sphere",
+    # FMBAssembly1Easy: success is the bridge's centre within 5 mm of its slot on the board
+    # (position only); it starts lying on its side next to the reorienting fixture.
+    "FMBAssembly1Easy-v1": "pick up the green bridge piece and assemble it onto the board so it straddles the yellow peg between the purple and blue pieces; the grey fixture can help stand it upright",
+    # PickCubeWidowXAI registers PickCube with the WidowX AI fixed (--robot widowxai only).
+    "PickCubeWidowXAI-v1": "pick up the red cube and move it into the green goal sphere",
+    # The panda_stick tasks (--robot panda_stick: a stick instead of a gripper). PushT
+    # succeeds when the T covers >= 90 % of the goal outline (position and turn).
+    "PushT-v1": "push the red T-shaped block with the stick so it lies exactly on the grey T-shaped outline",
+    # Drawing: the stick paints a red dot at every control step its tip is within ~8 mm
+    # of the canvas; success is a dot within 2.5 cm (triangle) / 10 cm (svg) of every
+    # point of the outline.
+    "DrawTriangle-v1": "draw the outlined triangle on the white canvas: trace all three edges with the stick's tip touching the canvas",
+    "DrawSVG-v1": "draw the outlined shape on the white canvas: trace its whole outline with the stick's tip touching the canvas",
+    # The two-robot scenes (--robot panda_pair). TwoRobotPickCube: the cube starts on the
+    # left arm's side, the goal on the right's; success is the cube inside the goal
+    # sphere (2.5 cm) with the right arm still.
+    "TwoRobotPickCube-v1": "pick up the red cube with the left arm, hand it over to the right arm, and hold it still with the right arm inside the green goal sphere",
+    # TwoRobotStackCube: the green cube inside the target, the blue cube on it, neither held.
+    "TwoRobotStackCube-v1": "with the right arm, place the green cube on the red-and-white target; with the left arm, stack the blue cube on top of the green cube; then release both",
+    # The BridgeData V2 digital twins (--robot widowx250s, SIMPLER's scenes): their own
+    # WidowX 250 S, camera and real-image background; the texts are the scenes' own
+    # instructions. Success is the source object resting on the target.
+    "PutCarrotOnPlateInScene-v1": "put carrot on plate",
+    "PutEggplantInBasketScene-v1": "put eggplant into yellow basket",
+    "StackGreenCubeOnYellowCubeBakedTexInScene-v1": "stack the green block on the yellow block",
+    "PutSpoonOnTableClothInScene-v1": "put the spoon on the towel",
 }
 #: --env-id accepts these: the RLinf rigs (./scenes.py) and the stock tasks above.
 ENV_IDS = ["BlockPAP-v1", "BlockStack-v1", *INSTRUCTIONS]
@@ -89,11 +116,55 @@ TASK_ACTORS = {
     "PegInsertionSide-v1": ["peg", "box"],
     "PlugCharger-v1": ["charger", "receptacle"],
     "PickSingleYCB-v1": ["obj", "goal_site"],
+    "FMBAssembly1Easy-v1": ["bridge", "board", "peg"],
+    "PickCubeWidowXAI-v1": ["cube", "goal_site"],
+    "PushT-v1": ["tee", "goal_tee"],
+    "DrawTriangle-v1": ["canvas", "goal_tri"],
+    "DrawSVG-v1": ["canvas", "goal_outline"],
+    "TwoRobotPickCube-v1": ["cube", "goal_site"],
+    "TwoRobotStackCube-v1": ["cubeA", "cubeB", "goal_region"],
+    # The bridge scenes keep their objects in ``objs`` (by model id): ``objs/<id>``. The
+    # eggplant's target is an invisible plane in the sink's basket: the sink stands in.
+    "PutCarrotOnPlateInScene-v1": [
+        "objs/bridge_carrot_generated_modified",
+        "objs/bridge_plate_objaverse_larger",
+    ],
+    "PutEggplantInBasketScene-v1": ["objs/eggplant", "sink"],
+    "StackGreenCubeOnYellowCubeBakedTexInScene-v1": [
+        "objs/baked_green_cube_3cm",
+        "objs/baked_yellow_cube_3cm",
+    ],
+    "PutSpoonOnTableClothInScene-v1": [
+        "objs/bridge_spoon_generated_modified",
+        "objs/table_cloth_generated_shorter",
+    ],
 }
 #: Success markers a task keeps in ``_hidden_objects`` (drawn for the human viewer only, never
 #: in the sensor cameras) although its success depends on them: shown to the cameras at every
 #: reset, so the model can see the goal (and ``check_visible`` can require it).
-SHOW_GOALS = {"PickCube-v1": ["goal_site"], "PickSingleYCB-v1": ["goal_site"]}
+SHOW_GOALS = {
+    "PickCube-v1": ["goal_site"],
+    "PickSingleYCB-v1": ["goal_site"],
+    "PickCubeWidowXAI-v1": ["goal_site"],
+    "TwoRobotPickCube-v1": ["goal_site"],
+}
+#: The bridge digital twins (their robot, camera and control mode are the scene's).
+BRIDGE_ENVS = (
+    "PutCarrotOnPlateInScene-v1",
+    "PutEggplantInBasketScene-v1",
+    "StackGreenCubeOnYellowCubeBakedTexInScene-v1",
+    "PutSpoonOnTableClothInScene-v1",
+)
+#: Env ids whose registration fixes the robot (``gym.make`` must not pass ``robot_uids``).
+FIXED_ROBOT_ENVS = ("PickCubeWidowXAI-v1", *BRIDGE_ENVS)
+#: The table top of a scene not at z = 0 (meta ``table_z``): the bridge twins' table
+#: (measured: the plate rests at 0.870), and the sink's floor under the eggplant.
+TABLE_Z = {
+    "PutCarrotOnPlateInScene-v1": 0.87,
+    "PutEggplantInBasketScene-v1": 0.91,
+    "StackGreenCubeOnYellowCubeBakedTexInScene-v1": 0.87,
+    "PutSpoonOnTableClothInScene-v1": 0.87,
+}
 #: Fewest agentview pixels (640x480 sensor) a task actor may show; a 4 cm cube at the far
 #: edge of the workspace covers ~60.
 MIN_VISIBLE_PX = 20
@@ -118,6 +189,14 @@ def show_goals(env, names: list[str]) -> None:
     ]
     for g in goals:
         g.show_visual()
+
+
+def _actor(env, name: str):
+    """A TASK_ACTORS entry of ``env``: an attribute, or ``objs/<model id>`` in its
+    ``objs`` dict (the bridge twins)."""
+    if name.startswith("objs/"):
+        return env.objs[name[len("objs/") :]]
+    return getattr(env, name)
 
 
 def _letterbox(image: np.ndarray, size: int) -> np.ndarray:
@@ -201,41 +280,81 @@ class RobotSpec:
     """One ``--robot``: a ManiSkill agent with a parallel gripper, driven in
     ``pd_ee_delta_pos`` (base-frame TCP translation, orientation held by the IK).
 
-    ``gripper`` is the (open, close) gripper action held while the command lasts;
-    ``width`` how ``gripper_width`` is measured: ``("qpos",)`` the sum of the last two
-    joint positions (two prismatic fingers), ``("pads", link_a, link_b, offset)`` the
-    distance between two finger links minus their distance when closed on nothing.
+    ``gripper`` is the (open, close) gripper action held while the command lasts, None
+    for a tool without one (the action is the translation alone); ``width`` how
+    ``gripper_width`` is measured: ``("qpos",)`` the sum of the last two joint positions
+    (two prismatic fingers), ``("pads", link_a, link_b, offset)`` the distance between two
+    finger links minus their distance when closed on nothing, ``("none",)`` always 0.
     ``envs`` are the stock env ids its reset, visibility gate and reach were checked on
     (the rigs fix their own Panda). ``wrist`` is the hand camera: ``mount`` ("centered":
     the Panda's patched D415 mount; otherwise the agent's own link it is added on, with
     ``pose`` [p, q wxyz] from ManiSkill's ``*_wristcam`` variant), and the view transform;
     None: the robot has no camera link, and observations carry the agentview alone.
     ``ee_joints`` adds a ``pd_ee_delta_pos`` mode (ManiSkill's PDEEPosController on these
-    joints and the agent's TCP link) to an agent that ships joint control only."""
+    joints and the agent's TCP link) to an agent that ships joint control only. ``arms``
+    names the agents of a multi-robot uid (a tuple), in ManiSkill's agent order: each
+    servo call drives one arm while the others hold still with their last gripper
+    command."""
 
-    uid: str
+    uid: str | tuple[str, ...]
     name: str
-    gripper: tuple[float, float]
+    gripper: Optional[tuple[float, float]]
     width: tuple
     envs: tuple[str, ...]
     wrist: Optional[dict]
     ee_joints: Optional[tuple[str, ...]] = None
+    arms: Optional[tuple[str, ...]] = None
+    #: The scene's own controller when it ships one (the bridge twins): ``pos_scale`` m per
+    #: normalised unit (an unnormalised controller) and ``rot_dims`` zero rotation entries
+    #: between the translation and the gripper (a pose controller held at its orientation).
+    control_mode: str = "pd_ee_delta_pos"
+    pos_scale: float = 1.0
+    rot_dims: int = 0
+    #: The TCP link of an agent without a ``tcp`` attribute.
+    tcp_link: Optional[str] = None
+    #: The agent's own camera used as the agentview (no oblique camera is added).
+    agentview: Optional[str] = None
     #: The env's reward mode when the task's default cannot be computed for this robot
     #: (None: the task's default).
     reward_mode: Optional[str] = None
 
     @property
-    def open(self) -> float:
-        return self.gripper[0]
+    def open(self) -> Optional[float]:
+        return self.gripper[0] if self.gripper else None
 
-    def gripper_action(self, command: float) -> float:
-        """``command`` > 0 opens, <= 0 closes (the servo's and pi's convention)."""
+    def gripper_action(self, command: float) -> Optional[float]:
+        """``command`` > 0 opens, <= 0 closes (the servo's and pi's convention); None
+        without a gripper."""
+        if not self.gripper:
+            return None
         return self.gripper[0] if command > 0 else self.gripper[1]
 
+    def action(self, delta: np.ndarray, command: float) -> np.ndarray:
+        """One control action: the normalised translation, then the gripper action (a
+        robot with one)."""
+        g = self.gripper_action(command)
+        if self.pos_scale != 1.0 or self.rot_dims:
+            delta = np.concatenate([delta * self.pos_scale, np.zeros(self.rot_dims)])
+        return delta if g is None else np.append(delta, g)
 
-#: The stock env ids every robot's reset was checked on; PickCube-v1 has a per-robot
+
+#: Stock tasks another robot owns: registered with it fixed (FIXED_ROBOT_ENVS) or built for
+#: it alone (the panda_stick scenes: no gripper).
+_OTHER_ROBOT = {
+    "PickCubeWidowXAI-v1": "widowxai",
+    "PushT-v1": "panda_stick",
+    "DrawTriangle-v1": "panda_stick",
+    "DrawSVG-v1": "panda_stick",
+    "TwoRobotPickCube-v1": "panda_pair",
+    "TwoRobotStackCube-v1": "panda_pair",
+    "PutCarrotOnPlateInScene-v1": "widowx250s",
+    "PutEggplantInBasketScene-v1": "widowx250s",
+    "StackGreenCubeOnYellowCubeBakedTexInScene-v1": "widowx250s",
+    "PutSpoonOnTableClothInScene-v1": "widowx250s",
+}
+#: The stock env ids the Panda's reset was checked on; PickCube-v1 has a per-robot
 #: layout (ManiSkill's PICK_CUBE_CONFIGS: cube size, spawn area, goal height).
-_ALL_STOCK = tuple(INSTRUCTIONS)
+_ALL_STOCK = tuple(e for e in INSTRUCTIONS if e not in _OTHER_ROBOT)
 #: ``--robot``: the ManiSkill 3.0.1 agents with a parallel gripper that the stock table
 #: scene places (TableSceneBuilder) and that reach the tasks' objects in
 #: ``pd_ee_delta_pos``. Measured on the box (reset, visibility gate, reach, MV_* probe):
@@ -299,9 +418,50 @@ ROBOTS: dict[str, RobotSpec] = {
         # With the gripper held pointing down its reach ends ~0.37 m from the base (the
         # wrist pitch hits its limit): only PickCube's own layout (cube at x -0.25, goal up
         # to 0.2 m) is within it; the other scenes' objects sit at x ~ 0, 0.6 m away.
-        envs=("PickCube-v1",),
+        envs=("PickCube-v1", "PickCubeWidowXAI-v1"),
         wrist=None,
         ee_joints=tuple(f"joint_{i}" for i in range(6)),
+    ),
+    # A Panda holding a stick (ManiSkill's panda_stick: pd_ee_delta_pos on the arm, no
+    # gripper, no camera link): the pushing and drawing scenes built for it.
+    "panda_stick": RobotSpec(
+        uid="panda_stick",
+        name="Franka Panda with a stick",
+        gripper=None,
+        width=("none",),
+        envs=("PushT-v1", "DrawTriangle-v1", "DrawSVG-v1"),
+        wrist=None,
+    ),
+    # Two Pandas facing each other across the table (the two-robot scenes): agent 0 at
+    # y = -0.75 (the agentview's left), agent 1 at y = +0.75. The plain panda uid: the
+    # table scene places ("panda", "panda") like the scenes' wristcam pair, and the
+    # agentview shows both arms.
+    "panda_pair": RobotSpec(
+        uid=("panda", "panda"),
+        name="two Franka Pandas",
+        gripper=(1.0, -1.0),
+        width=("qpos",),
+        envs=("TwoRobotPickCube-v1", "TwoRobotStackCube-v1"),
+        wrist=None,
+        arms=("left", "right"),
+    ),
+    # The bridge twins' WidowX 250 S (the scene picks its flat-table or sink variant): its
+    # arm_pd_ee_target_delta_pose_align2 controller takes an unnormalised [dx, dy, dz] in
+    # m and a rotation (held at zero), then the normalised mimic gripper (+1 open); the TCP
+    # is ee_gripper_link; the agentview is the scene's 3rd_view_camera (with the real
+    # background composited behind the objects).
+    "widowx250s": RobotSpec(
+        uid="widowx250s",
+        name="WidowX 250 S",
+        gripper=(1.0, -1.0),
+        width=("qpos",),
+        envs=BRIDGE_ENVS,
+        wrist=None,
+        control_mode="arm_pd_ee_target_delta_pose_align2_gripper_pd_joint_pos",
+        pos_scale=DELTA_BOUND_M,
+        rot_dims=3,
+        tcp_link="ee_gripper_link",
+        agentview="3rd_view_camera",
     ),
 }
 
@@ -379,6 +539,8 @@ def prepare_robot(spec: RobotSpec, wrist_mount: str) -> None:
     """Patch the agent class before ``gym.make``: the wrist camera and the EE mode."""
     from mani_skill.agents.registration import REGISTERED_AGENTS
 
+    if spec.arms or (spec.wrist is None and not spec.ee_joints):
+        return  # the agent as it is: no wrist camera, its own EE mode
     cls = REGISTERED_AGENTS[spec.uid].agent_cls
     if spec.ee_joints:
         add_ee_control(cls, spec.ee_joints)
@@ -458,13 +620,22 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         else:
             if scene:
                 raise ValueError(f"--scene options apply to {list(scenes.SCENES)} only")
+            table_z = TABLE_Z.get(env_id, 0.0)
             prepare_robot(self._robot, wrist_mount)
+            if self._robot.control_mode != "pd_ee_delta_pos":
+                control_mode = self._robot.control_mode
+            if self._robot.agentview:
+                # The scene's own camera is the agentview; no camera is added.
+                agentview = self._robot.agentview
+                self._cameras = {"agentview": agentview}
+            # An env id that fixes its robot (FIXED_ROBOT_ENVS) takes no robot_uids.
+            fixed = env_id in FIXED_ROBOT_ENVS
             self._env = gym.make(
                 env_id,
                 num_envs=1,
                 obs_mode="rgb+segmentation",
                 control_mode=control_mode,
-                robot_uids=robot_uids,
+                **({} if fixed else {"robot_uids": robot_uids}),
                 **(
                     {"reward_mode": self._robot.reward_mode}
                     if self._robot.reward_mode
@@ -472,8 +643,12 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
                 ),
                 sim_backend=sim_backend,
                 max_episode_steps=int(max_episode_steps),
-                sensor_configs=self._sensor_configs(
-                    agentview, wrist=self._robot.wrist is not None
+                sensor_configs=(
+                    {}
+                    if self._robot.agentview
+                    else self._sensor_configs(
+                        agentview, wrist=self._robot.wrist is not None
+                    )
                 ),
             )
         self._seed = int(seed)
@@ -499,13 +674,24 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
             "wrist_flip": wrist_flip,
             "scene": self._scene,
             "table_z": table_z,
-            "action_space": list(self._env.action_space.shape),
-            "gripper_action": {
-                "open": self._robot.gripper[0],
-                "close": self._robot.gripper[1],
-            },
+            # A multi-robot env's action space is a dict: its per-agent shapes.
+            "action_space": (
+                list(self._env.action_space.shape)
+                if self._env.action_space.shape is not None
+                else {
+                    k: list(v.shape) for k, v in self._env.action_space.spaces.items()
+                }
+            ),
+            "gripper_action": (
+                {"open": self._robot.gripper[0], "close": self._robot.gripper[1]}
+                if self._robot.gripper
+                else None
+            ),
             "wrist": self._robot.wrist is not None or bool(self._rig),
+            "arms": list(self._robot.arms) if self._robot.arms else None,
         }
+        #: The last gripper command of each arm (> 0 open), held while another arm moves.
+        self._grip = [1.0] * len(self._robot.arms or [None])
 
     def _register_rpc(self) -> None:
         super()._register_rpc()
@@ -536,6 +722,36 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
     def _agent(self):
         return self._env.unwrapped.agent
 
+    @property
+    def _agents(self) -> list:
+        """The arm agents, in ``RobotSpec.arms`` order (the one agent of a single arm)."""
+        agent = self._agent
+        return list(agent.agents) if self._robot.arms else [agent]
+
+    def _arm(self, arm: Optional[str]) -> int:
+        """The index of ``arm`` (required on a multi-arm robot, refused on one arm)."""
+        arms = self._robot.arms
+        if not arms:
+            if arm is not None:
+                raise ValueError(f"--robot {self._meta['robot']} has one arm; no arm")
+            return 0
+        if arm not in arms:
+            raise ValueError(f"arm must be one of {list(arms)}, not {arm!r}")
+        return arms.index(arm)
+
+    def _env_action(self, actions: list) -> Any:
+        """Per-arm actions as the env takes them: the array (one arm) or a dict keyed by
+        the multi-agent action space's agent ids, in agent order."""
+        if not self._robot.arms:
+            return actions[0]
+        return dict(zip(self._env.action_space.spaces.keys(), actions))
+
+    def _hold(self) -> Any:
+        """Every arm still, each with its last gripper command."""
+        return self._env_action(
+            [self._robot.action(np.zeros(3), g).astype(np.float32) for g in self._grip]
+        )
+
     def _rgb(self, obs: dict, name: str) -> np.ndarray:
         """One view through Show-Harness's transform: orient (wrist only) -> letterbox.
 
@@ -553,12 +769,14 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
             rgb = _orient(rgb, self._wrist_rotation, self._wrist_flip)
         return _letterbox(rgb, self._view_size) if self._view_size else rgb
 
-    def _gripper_width(self, qpos: np.ndarray) -> float:
+    def _gripper_width(self, qpos: np.ndarray, agent=None) -> float:
         """The finger opening, m (``RobotSpec.width``); about 0 closed on nothing."""
         width = self._robot.width
+        if width[0] == "none":
+            return 0.0
         if width[0] == "qpos":
             return float(qpos[-1] + qpos[-2])
-        links = self._agent.robot.links_map
+        links = (agent or self._agent).robot.links_map
         a, b = (_np(links[n].pose.p).reshape(-1) for n in width[1:3])
         return max(0.0, float(np.linalg.norm(a - b)) - width[3])
 
@@ -566,14 +784,32 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
     def _has_wrist(self) -> bool:
         return self._meta["wrist"]
 
-    def _state(self) -> dict:
-        tcp = self._agent.tcp.pose
-        qpos = _np(self._agent.robot.get_qpos()).reshape(-1)
+    def _tcp(self, agent):
+        """The agent's TCP pose (``RobotSpec.tcp_link`` for an agent without ``tcp``)."""
+        if self._robot.tcp_link:
+            return agent.robot.links_map[self._robot.tcp_link].pose
+        return agent.tcp.pose
+
+    def _arm_state(self, agent) -> dict:
+        tcp = self._tcp(agent)
+        qpos = _np(agent.robot.get_qpos()).reshape(-1)
         return {
             "tcp_pos": _np(tcp.p).reshape(-1).astype(np.float32),
             "tcp_quat_wxyz": _np(tcp.q).reshape(-1).astype(np.float32),
-            "gripper_width": self._gripper_width(qpos),
+            "gripper_width": self._gripper_width(qpos, agent),
             "qpos": qpos.astype(np.float32),
+        }
+
+    def _state(self) -> dict:
+        """The arm's TCP pose, gripper opening and joints; a multi-arm robot's per arm
+        under ``arms``."""
+        if not self._robot.arms:
+            return self._arm_state(self._agent)
+        return {
+            "arms": {
+                name: self._arm_state(agent)
+                for name, agent in zip(self._robot.arms, self._agents)
+            }
         }
 
     def _pack(self, obs: dict) -> dict:
@@ -598,7 +834,13 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         return out
 
     def _step(self, action) -> tuple:
-        a = np.asarray(action, dtype=np.float32).reshape(1, -1)
+        if isinstance(action, dict):
+            a = {
+                k: np.asarray(v, dtype=np.float32).reshape(1, -1)
+                for k, v in action.items()
+            }
+        else:
+            a = np.asarray(action, dtype=np.float32).reshape(1, -1)
         obs, rew, term, trunc, info = self._env.step(a)
         info = self._info(info)
         if self._rig:
@@ -621,7 +863,8 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         """Reset to ``seed`` (default: the launch seed), then hold still with the gripper
         open for ``settle_steps`` (Show-Harness ``reset_maniskill``); an RLinf rig resets
         like its training episodes (``scenes.reset``)."""
-        hold = np.array([0.0, 0.0, 0.0, self._robot.open], dtype=np.float32)
+        self._grip = [1.0] * len(self._grip)
+        hold = self._hold()
         if self._rig:
             from pi_embodied_services.robots.maniskill import scenes
 
@@ -655,7 +898,7 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         out = {}
         actors = [self._rig.carried, self._rig.target] if self._rig else None
         for name in actors or TASK_ACTORS.get(self._meta["env_id"], []):
-            ids = _np(getattr(env, name).per_scene_id).reshape(-1)
+            ids = _np(_actor(env, name).per_scene_id).reshape(-1)
             out[name] = int(np.isin(seg, ids).sum())
         return out
 
@@ -672,16 +915,24 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
                 f"(need >= {MIN_VISIBLE_PX}); refusing the episode"
             )
 
-    def _native(self, action) -> np.ndarray:
-        """A code-mode action ``[dx, dy, dz, gripper]`` in pi's convention (> 0 open) with
-        the robot's gripper sign: the value's magnitude kept, negated on a robot whose
-        open action is negative (the Robotiq's +1 closes). The Panda's is unchanged."""
-        a = np.asarray(action, dtype=np.float32).reshape(-1).copy()
-        a[-1] *= self._robot.gripper[0]
-        return a
+    def _split(self, action) -> Any:
+        """A flat code-mode action in pi's convention, ``[dx, dy, dz, gripper]`` per arm
+        (``[dx, dy, dz]`` without a gripper; arms concatenated in arm order), as the env
+        takes it: the gripper value keeps its magnitude with the robot's sign (the
+        Robotiq's +1 closes, so pi's +1 open becomes -1), the translation the robot's
+        scale and zero rotation (``RobotSpec.action``). The Panda's is unchanged."""
+        a = np.asarray(action, dtype=np.float32).reshape(-1)
+        n = len(self._robot.arms or [None])
+        out = []
+        for arm in a.reshape(n, -1):
+            native = self._robot.action(arm[:3], 1.0).astype(np.float32)
+            if self._robot.gripper:
+                native[-1] = arm[3] * self._robot.gripper[0]
+            out.append(native)
+        return self._env_action(out)
 
     def step(self, action):
-        obs, rew, term, trunc, info = self._step(self._native(action))
+        obs, rew, term, trunc, info = self._step(self._split(action))
         return self._pack(obs), rew, term, trunc, info
 
     def chunk_step(self, actions, *, return_all_frames: bool = False):
@@ -689,11 +940,12 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         truncation or success. Arrays hold one entry per executed action."""
         frames, rews, terms, truncs = [], [], [], []
         info: dict = {}
-        for action in np.asarray(actions, dtype=np.float32).reshape(-1, 4):
+        dim = (3 + (self._robot.gripper is not None)) * len(self._robot.arms or [None])
+        for action in np.asarray(actions, dtype=np.float32).reshape(-1, dim):
             if self.stop_requested():
                 info["cancelled"] = True
                 break
-            obs, rew, term, trunc, info = self._step(self._native(action))
+            obs, rew, term, trunc, info = self._step(self._split(action))
             frames.append(obs)
             rews.append(rew)
             terms.append(term)
@@ -722,27 +974,37 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         tol_m: float = 0.002,
         min_steps: int = 2,
         max_steps: int = 8,
+        arm: Optional[str] = None,
     ):
         """Drive the TCP to ``target_xyz`` (world, m) with the gripper command held (> 0
         open, <= 0 close; the robot's gripper action, ``RobotSpec.gripper``): each
         control step commands ``clip(error * gain / 0.1)``, until the error is below
         ``tol_m`` (after ``min_steps``), ``max_steps``, success or ``stop``. The closed-loop
         2 cm execution of Show-Harness's real2sim tokenizer; open-loop steps fall short when
-        the arm reverses (PD lag). Returns ``[frames, info]`` with one frame per step."""
+        the arm reverses (PD lag). A multi-arm robot drives ``arm``; the others hold still
+        with their last gripper command. Returns ``[frames, info]`` with one frame per step."""
         target = np.asarray(target_xyz, dtype=np.float64).reshape(3)
+        idx = self._arm(arm)
+        agent = self._agents[idx]
+        self._grip[idx] = float(gripper)
         frames: list = []
         info: dict = {}
         for k in range(int(max_steps)):
             if self.stop_requested():
                 info["cancelled"] = True
                 break
-            err = target - self._state()["tcp_pos"]
+            err = target - _np(self._tcp(agent).p).reshape(-1).astype(np.float32)
             if k >= int(min_steps) and np.linalg.norm(err) < tol_m:
                 break
-            a = np.append(
-                np.clip(err * gain / DELTA_BOUND_M, -1, 1),
-                self._robot.gripper_action(float(gripper)),
+            actions = [
+                self._robot.action(np.zeros(3), g).astype(np.float32)
+                for g in self._grip
+            ]
+            actions[idx] = self._robot.action(
+                np.clip(self._to_root(err, agent) * gain / DELTA_BOUND_M, -1, 1),
+                float(gripper),
             )
+            a = self._env_action(actions)
             obs, _rew, term, trunc, info = self._step(a)
             frames.append(self._pack(obs))
             if term or trunc or info.get("success"):
@@ -750,6 +1012,18 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         if not frames:
             frames.append(self._pack(self._obs))
         return frames, info
+
+    def _to_root(self, vec: np.ndarray, agent=None) -> np.ndarray:
+        """A world-frame vector in the robot base's frame, where ``pd_ee_delta_pos``
+        acts: unchanged for a base at the identity rotation (the one-arm table scenes),
+        rotated for a base turned about z (the two-robot scenes' arms)."""
+        q = _np((agent or self._agent).robot.pose.q).reshape(-1)
+        if np.allclose(q, [1.0, 0.0, 0.0, 0.0]):
+            return vec
+        from scipy.spatial.transform import Rotation
+
+        r = Rotation.from_quat([q[1], q[2], q[3], q[0]])  # xyzw
+        return r.inv().apply(vec)
 
     def state(self) -> dict:
         """TCP pose, gripper opening and the current success flags (no stepping)."""
@@ -761,12 +1035,14 @@ class ManiskillEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         (``--privileged``): its actors (goal markers included) and its articulations other
         than the robot."""
         env = self._env.unwrapped
+        # A multi-robot scene's agent holds its arms in ``agents``.
+        robots = [a.robot for a in getattr(env.agent, "agents", [env.agent])]
         objects = {
             **env.scene.actors,
             **{
                 k: a
                 for k, a in env.scene.articulations.items()
-                if a is not env.agent.robot
+                if not any(a is r for r in robots)
             },
         }
         return ground_truth.respond(

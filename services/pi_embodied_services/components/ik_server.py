@@ -33,7 +33,7 @@ Methods (``ik.*``): ``solve`` (one pose -> one joint vector), ``plan`` (a joint 
 from a start configuration to a goal pose or configuration, refusing paths that hit
 the given obstacles; ``tcp_path`` carries the TCP pose of every waypoint), ``check``
 (clearance of configurations to obstacles: the env servers' execution-time check
-before each servo segment) and ``robots`` (the robot models this process knows).
+before each servo segment), ``fk`` (the TCP pose of a configuration) and ``robots`` (the robot models this process knows).
 Obstacles are ``utils/collision.py``'s boxes, spheres, capsules and halfspaces, plus
 ``{"type": "robot", "robot", "q", "base_pose"}``: another arm at its joints, expanded
 into its collision spheres (cuRobo backend only; the dual Franka's arm-arm check). Poses are
@@ -859,6 +859,31 @@ class PyrokiBackend:
 # ---------------------------------------------------------------------------
 
 
+def _curobo_deterministic() -> None:
+    """Make cuRobo's plans repeat bitwise for the same start, goal and world, as the RoboTwin
+    env server does (robots/robotwin/env_server.py, which measured both effects): torch's
+    deterministic CUDA algorithms, and cuRobo's L-BFGS step computed with torch ops instead of
+    its fused kernel (whose block reduction reads unwritten lanes when the variable count is
+    not a multiple of 32; about 100 ms more per plan). Runs before any planner is built:
+    cuRobo captures the step into CUDA graphs during warmup."""
+    import torch
+    from curobo.opt.newton.lbfgs import LBFGSOpt
+
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    torch.use_deterministic_algorithms(True, warn_only=True)
+    torch.backends.cudnn.benchmark = False
+    if getattr(LBFGSOpt, "_pi_torch_step", False):
+        return
+    init = LBFGSOpt.__init__
+
+    def torch_step_init(self, *args, **kwargs):
+        init(self, *args, **kwargs)
+        self.use_cuda_kernel = False
+
+    LBFGSOpt.__init__ = torch_step_init
+    LBFGSOpt._pi_torch_step = True
+
+
 class CuroboBackend:
     """IK with self-collision checks and collision-free planning with cuRobo (GPU).
 
@@ -898,6 +923,7 @@ class CuroboBackend:
                     "cuRobo is missing; install the services' `ik-curobo` extra "
                     "(torch first, then `nvidia-curobo` with --no-build-isolation)"
                 ) from exc
+            _curobo_deterministic()
 
     # -- models -----------------------------------------------------------
 
@@ -1251,7 +1277,10 @@ class IkFacade(RpcFacade):
         self._rpc["ik.plan"] = self.plan
         self._rpc["ik.robots"] = self.robots
         self._rpc["ik.check"] = self.check
-        self._readonly_methods.update({"ik.solve", "ik.plan", "ik.robots", "ik.check"})
+        self._rpc["ik.fk"] = self.fk
+        self._readonly_methods.update(
+            {"ik.solve", "ik.plan", "ik.robots", "ik.check", "ik.fk"}
+        )
 
     def robots(self) -> dict[str, Any]:
         return {"backend": self.backend.name, "robots": self.backend.robots()}
@@ -1260,6 +1289,13 @@ class IkFacade(RpcFacade):
         if not isinstance(robot, str) or not robot:
             raise ValueError("robot must be a robot model name (see ik.robots)")
         return self.backend.solve(robot, target_pose, seed_q)
+
+    def fk(self, robot: str, q: Any) -> dict[str, Any]:
+        """The TCP pose of arm joints ``q`` (``{"pos", "quat_xyzw"}``, base frame)."""
+        if not isinstance(robot, str) or not robot:
+            raise ValueError("robot must be a robot model name (see ik.robots)")
+        pose = np.asarray(self.backend.tcp_poses(robot, [q]), dtype=float)[0]
+        return {"robot": robot, **pose_dict(pose[:3], pose[3:])}
 
     def _obstacles(self, obstacles: Any) -> list[dict[str, Any]]:
         """The obstacle list with each ``robot`` obstacle (another arm: ``robot``, ``q`` and

@@ -1,7 +1,10 @@
 /**
  * The `--ik <url>` flag: an IK service (services/pi_embodied_services/components/ik_server.py) the
- * env server asks whether a target is reachable before it moves (`env.preview_reach`). Off when
- * empty; the robot then behaves as before.
+ * env server asks whether a target is reachable (`env.preview_reach`), plans collision-free paths
+ * with (`env.plan_motion`, refused when none exists) and checks the arm against the scene with
+ * before each servo segment (`env.check_motion`, utils/motion.py). The ik server's `--backend`
+ * (pyroki, or curobo for collision-free trajectory optimisation) is chosen where it is started.
+ * Off when empty; the robot then behaves as before.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -19,12 +22,28 @@ export type Reach = {
 	target: { frame: string; pos: number[]; quat_xyzw: number[] } | null;
 };
 
+/** `env.plan_motion`: `unknown` means no ik service answered (the move runs unplanned). */
+export type MotionPlan = {
+	status: "planned" | "blocked" | "unknown";
+	message: string;
+	/** World TCP poses (xyz + xyzw) to servo through, the goal last. */
+	waypoints: number[][];
+	path_m: number | null;
+};
+
+/** `env.check_motion`: `contact` means stop before the next segment. */
+export type MotionCheck = {
+	status: "clear" | "contact" | "unknown";
+	message: string;
+	min_clearance_m: number | null;
+};
+
 export function registerIkFlag(pi: ExtensionAPI) {
 	pi.registerFlag("ik", {
 		type: "string",
 		default: "",
 		description:
-			"IK server (components/ik_server.py): env.preview_reach and a reach check before each move; off when empty",
+			"IK server (components/ik_server.py): reach checks, collision-free planned moves and a collision check before each segment; off when empty",
 	});
 }
 
@@ -53,4 +72,9 @@ export function previewReachTool(call: (kwargs: Json) => Promise<Reach>, frame: 
 			return (await call({ pos: xyz, quat_xyzw: quat_xyzw ?? null })) as unknown as Json;
 		},
 	};
+}
+
+/** The refusal a planned move returns instead of moving (no collision-free path), or undefined. */
+export function planRefusal(plan: MotionPlan): string | undefined {
+	return plan.status === "blocked" ? `refused: ${plan.message}` : undefined;
 }

@@ -16,7 +16,15 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
 import { template } from "../context-version.ts";
 import { type FlywheelObs, type FlywheelSpec, flywheelSuite } from "../flywheel.ts";
-import { ikArgs, type Reach, reachRefusal, registerIkFlag } from "../ik.ts";
+import {
+	ikArgs,
+	type MotionCheck,
+	type MotionPlan,
+	planRefusal,
+	type Reach,
+	reachRefusal,
+	registerIkFlag,
+} from "../ik.ts";
 import { decodePngChannel, encodePng } from "../png.ts";
 import { graspAdvisorTool } from "../primitives/advisor.ts";
 import {
@@ -839,32 +847,57 @@ export default function libero(pi: ExtensionAPI) {
 		}) => {
 			const far = xyRefusal(eef(), target, "move_to");
 			if (far) return { name: "move_to", refused: far, final_eef_pos: eef().map((v) => round(v)), steps_used: 0 };
+			// --ik: the env server plans a collision-free path through the scene (refused when none
+			// exists) and checks the arm against it before each segment; predicted contact stops the move.
+			let waypoints: number[][] = [target];
+			let pathPlanned = false;
 			if (flag("ik", "")) {
-				// --ik: the env server solves IK from the current joints; an unreachable target is refused unmoved.
-				const refusal = reachRefusal(await call<Reach>(env, "env.preview_reach", { pos: target }));
+				const plan = await call<MotionPlan>(env, "env.plan_motion", {
+					pos: target,
+					target_yaw: target_yaw ?? null,
+				});
+				const refusal = planRefusal(plan);
 				if (refusal)
 					return { name: "move_to", refused: refusal, final_eef_pos: eef().map((v) => round(v)), steps_used: 0 };
+				if (plan.status === "planned") {
+					waypoints = plan.waypoints.map((w) => w.slice(0, 3));
+					pathPlanned = true;
+				}
 			}
 			let steps = 0;
-			for (; steps < max_steps && !terminated && !truncated; steps++) {
-				const diff = target.map((v: number, i: number) => v - eef()[i]);
-				if (Math.hypot(...diff) < tol) break;
-				const a = [
-					...diff.map((d: number) => clip(clip(d, -step_clip, step_clip) / action_scale, -1, 1)),
-					0,
-					0,
-					0,
-					g,
-				];
-				if (target_yaw !== undefined)
-					a[5] = clip(clip(wrap(target_yaw - yawOf(await quat())), -yaw_step_clip, yaw_step_clip) / 0.1, -1, 1);
-				await step(a);
+			let stopped: string | undefined;
+			for (let i = 0; i < waypoints.length && !stopped; i++) {
+				if (pathPlanned) {
+					const check = await call<MotionCheck>(env, "env.check_motion", { segment: i });
+					if (check.status === "contact") {
+						stopped = check.message;
+						break;
+					}
+				}
+				const wp = waypoints[i];
+				const wtol = i === waypoints.length - 1 ? tol : Math.max(tol, 0.02);
+				for (; steps < max_steps && !terminated && !truncated; steps++) {
+					const diff = wp.map((v: number, k: number) => v - eef()[k]);
+					if (Math.hypot(...diff) < wtol) break;
+					const a = [
+						...diff.map((d: number) => clip(clip(d, -step_clip, step_clip) / action_scale, -1, 1)),
+						0,
+						0,
+						0,
+						g,
+					];
+					if (target_yaw !== undefined)
+						a[5] = clip(clip(wrap(target_yaw - yawOf(await quat())), -yaw_step_clip, yaw_step_clip) / 0.1, -1, 1);
+					await step(a);
+				}
 			}
 			return {
 				name: "move_to",
 				final_eef_pos: eef().map((v) => round(v)),
 				final_dist_m: round(Math.hypot(...target.map((v: number, i: number) => v - eef()[i]))),
 				steps_used: steps,
+				...(pathPlanned ? { planned_segments: waypoints.length } : {}),
+				...(stopped ? { stopped: `collision check: ${stopped}` } : {}),
 			};
 		},
 	);

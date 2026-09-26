@@ -233,6 +233,10 @@ def test_curobo_check_uses_its_collision_spheres_and_reports_tcp_poses(monkeypat
     assert clear[1] > clear[0] and list(which) == [0, 0]
     spheres = backend.robot_spheres("panda", q)
     assert spheres.shape == (2, 4)
+    fk = IkFacade(backend)._dispatch("ik.fk", (), {"robot": "panda", "q": q})
+    assert fk["pos"] == pytest.approx(tcp[0][:3]) and fk["quat_xyzw"] == pytest.approx(
+        [1, 0, 0, 0]
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { ikArgs, type Reach, reachRefusal, registerIkFlag } from "../src/ik.ts";
+import { ikArgs, type MotionPlan, planRefusal, type Reach, reachRefusal, registerIkFlag } from "../src/ik.ts";
 
 test("--ik is off by default and only then adds nothing to the env server arguments", () => {
 	const flags: Record<string, unknown> = {};
@@ -32,5 +32,20 @@ test("only an unreachable preview refuses a move; unknown is not approval but do
 	assert.equal(
 		reachRefusal(reach("unreachable", "unreachable: misses by 120.0 mm")),
 		"refused: target is out of reach (unreachable: misses by 120.0 mm)",
+	);
+});
+
+test("only a blocked plan refuses a move; an unknown plan runs the move unplanned", () => {
+	const plan = (status: MotionPlan["status"], message: string): MotionPlan => ({
+		status,
+		message,
+		waypoints: status === "planned" ? [[0.1, 0, 1, 0, 0, 0, 1]] : [],
+		path_m: null,
+	});
+	assert.equal(planRefusal(plan("planned", "collision-free path, 1 segment(s)")), undefined);
+	assert.equal(planRefusal(plan("unknown", "IK service unavailable")), undefined);
+	assert.equal(
+		planRefusal(plan("blocked", "no collision-free path: cuRobo found no collision-free path (IK_FAIL)")),
+		"refused: no collision-free path: cuRobo found no collision-free path (IK_FAIL)",
 	);
 });

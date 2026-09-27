@@ -225,6 +225,7 @@ export default function robosuite(pi: ExtensionAPI) {
 				grip.clear();
 				const [o] = await env.call<[Obs, unknown]>("env.reset", {}, 600_000, [], signal);
 				absorb(o);
+				await flyReset(o, signal);
 				return observe({ ...result, reset: true });
 			},
 			prompt: () => EXPLORE.replaceAll("{{task}}", robot.task.task).replaceAll("{{seed}}", robot.task.seed),
@@ -294,6 +295,26 @@ export default function robosuite(pi: ExtensionAPI) {
 	});
 	const { video } = robot;
 	const fly = robot.fly!;
+	/**
+	 * Start a Flywheel episode at a reset (raw/robosuite/<task>/seed_NNN, services robots/robosuite/flywheel.py):
+	 * the reset rendered at 256 px. Only under --collect-flywheel-data.
+	 */
+	async function flyReset(o: Obs, signal?: AbortSignal) {
+		if (!pi.getFlag("collect-flywheel-data")) return;
+		const { task, seed } = robot.task;
+		const shot = (camera: string) =>
+			call<NdArray>(
+				"env.render_camera",
+				{ camera_name: camera, height: RECORD_SIZE, width: RECORD_SIZE },
+				[],
+				signal ?? robot.signal,
+			);
+		const first = { ...o, agentview: await shot("agentview"), wrist: await shot("wrist") };
+		fly.reset(flyObs(first), {
+			path: [task, `seed_${seed.padStart(3, "0")}`],
+			metadata: { task, seed: Number(seed), space: flywheelSpace(task), task_language: language },
+		});
+	}
 
 	/** Every robot RPC carries the running tool's abort signal, so an abort stops motion between calls. */
 	const call = <T = unknown>(
@@ -808,16 +829,7 @@ export default function robosuite(pi: ExtensionAPI) {
 		const [o] = await env.call<[Obs, unknown]>("env.reset", {}, 600_000);
 		absorb(o);
 		language = await env.call<string>("env.get_task_language");
-		// raw/robosuite/<task>/seed_NNN (services robots/robosuite/flywheel.py): the reset at 256 px.
-		if (pi.getFlag("collect-flywheel-data")) {
-			const shot = (camera: string) =>
-				call<NdArray>("env.render_camera", { camera_name: camera, height: RECORD_SIZE, width: RECORD_SIZE });
-			const first = { ...o, agentview: await shot("agentview"), wrist: await shot("wrist") };
-			fly.reset(flyObs(first), {
-				path: [task, `seed_${seed.padStart(3, "0")}`],
-				metadata: { task, seed: Number(seed), space: flywheelSpace(task), task_language: language },
-			});
-		}
+		await flyReset(o);
 		return [
 			"view_env_state",
 			"view_camera_meta",

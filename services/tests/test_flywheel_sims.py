@@ -269,3 +269,25 @@ def test_ur5e_spec_validates_an_episode_built_from_its_steps(tmp_path):
         )
     meta = validate_episode(writer.finalize(), spec=s)
     assert (meta["step_count"], meta["training_step_count"]) == (2, 2)
+
+
+def test_every_maniskill_robot_has_a_space_with_its_action_width():
+    """One space per ``--robot`` of the env server's table, each with the width of the flat
+    action its servo reports (the pair: both arms, left then right)."""
+    from pi_embodied_services.robots.maniskill import env_server as ms
+
+    assert set(spec("maniskill", r)["robot_type"] for r in ms.ROBOTS) == set(ms.ROBOTS)
+    widths = {r: spec("maniskill", r)["arrays"]["actions"]["shape"] for r in ms.ROBOTS}
+    assert widths == {
+        "panda": (4,),
+        "xarm6_robotiq": (4,),
+        "widowxai": (4,),
+        "panda_stick": (3,),
+        "panda_pair": (8,),
+        "widowx250s": (7,),
+    }
+    pair = spec("maniskill", "panda_pair")
+    assert pair["arrays"]["states"]["shape"] == (16,)
+    assert pair["state_names"][8] == "right_tcp_x" and pair["cameras"] == {
+        "agentview_images": "agentview"
+    }

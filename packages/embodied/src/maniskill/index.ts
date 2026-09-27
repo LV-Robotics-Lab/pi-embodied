@@ -446,6 +446,19 @@ export function robotFor(robot: string, envId: string): ManiskillRobot {
 
 const round = (v: number, d = 4) => Number(v.toFixed(d));
 
+/**
+ * The env action width of each `--robot` (services robots/maniskill/flywheel.py SPACES): pd_ee_delta_pos and
+ * the gripper, the stick's translation alone, the WidowX 250 S's pose action, the pair's two arms.
+ */
+export const FLYWHEEL_ACTION: Record<RobotId, number> = {
+	panda: 4,
+	xarm6_robotiq: 4,
+	widowxai: 4,
+	panda_stick: 3,
+	panda_pair: 8,
+	widowx250s: 7,
+};
+
 /** One arm's TCP pose and finger opening. */
 const armState = (a: Partial<ArmObs>): number[] => [
 	...(a.tcp_pos?.toArray() ?? []),
@@ -642,7 +655,9 @@ export default function maniskill(pi: ExtensionAPI) {
 		get state() {
 			return 8 * (arms()?.length ?? 1);
 		},
-		action: 4,
+		get action() {
+			return FLYWHEEL_ACTION[robotId];
+		},
 	};
 	/** raw/maniskill/<robot>/<env-id>/<scene>/seed_NNN (services robots/maniskill/flywheel.py). */
 	const flyMeta = () => ({

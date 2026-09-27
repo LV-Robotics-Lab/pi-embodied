@@ -13,7 +13,7 @@ import { test } from "node:test";
 import { inflateRawSync } from "node:zlib";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import genesis from "../src/genesis/index.ts";
-import maniskill, { ROBOTS, VIEW_SETUP } from "../src/maniskill/index.ts";
+import maniskill, { FLYWHEEL_ACTION, ROBOT_IDS, ROBOTS, VIEW_SETUP } from "../src/maniskill/index.ts";
 import metaworld from "../src/metaworld/index.ts";
 import robosuite from "../src/robosuite/index.ts";
 
@@ -388,4 +388,8 @@ test("ManiSkill: each servo step is a transition; the arm is the raw path's firs
 			arm,
 		]);
 	}
+});
+
+test("ManiSkill: every --robot has a Flywheel action width", () => {
+	assert.deepEqual(Object.keys(FLYWHEEL_ACTION).sort(), [...ROBOT_IDS].sort());
 });

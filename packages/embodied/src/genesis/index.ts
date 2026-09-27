@@ -221,6 +221,7 @@ export default function genesis(pi: ExtensionAPI) {
 				everGrasped = false;
 				const [o] = await env.call<[Obs, unknown]>("env.reset", {}, 300_000, [], signal);
 				absorb(o);
+				fly.reset(flyObs(o), flyMeta());
 				return observe({ ...result, reset: true });
 			},
 			prompt: () => EXPLORE.replaceAll("{{task}}", robot.task.task).replaceAll("{{seed}}", robot.task.seed),
@@ -280,6 +281,11 @@ export default function genesis(pi: ExtensionAPI) {
 	});
 	const { video } = robot;
 	const fly = robot.fly!;
+	/** raw/genesis/<task>/seed_NNN (services robots/genesis/flywheel.py). */
+	const flyMeta = () => ({
+		path: [robot.task.task, `seed_${robot.task.seed.padStart(3, "0")}`],
+		metadata: { task: robot.task.task, seed: Number(robot.task.seed), task_language: meta.instruction },
+	});
 	let everGrasped = false;
 
 	const call = <T = unknown>(
@@ -577,11 +583,7 @@ export default function genesis(pi: ExtensionAPI) {
 		everGrasped = false;
 		const [o] = await env.call<[Obs, unknown]>("env.reset", {}, 300_000);
 		absorb(o);
-		// raw/genesis/<task>/seed_NNN (services robots/genesis/flywheel.py).
-		fly.reset(flyObs(o), {
-			path: [task, `seed_${seed.padStart(3, "0")}`],
-			metadata: { task, seed: Number(seed), task_language: meta.instruction },
-		});
+		fly.reset(flyObs(o), flyMeta());
 		return [
 			...["view_env_state", "view_camera_meta", "segment", "back_project", "move_delta", "gripper", "finish"],
 			...detectionActive(pi, meta.capabilities?.perception),

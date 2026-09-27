@@ -262,6 +262,7 @@ export default function metaworld(pi: ExtensionAPI) {
 				const [o, i] = await env.call<[Obs, Info]>("env.reset", {}, 300_000, [], signal);
 				absorb(o, i);
 				workspace = (await env.call<Meta>("env.get_env_meta", {}, 30_000, [], signal)).workspace;
+				fly.reset(flyObs(o), flyMeta());
 				return observe({ ...result, reset: true });
 			},
 			prompt: () => EXPLORE.replaceAll("{{task}}", robot.task.task).replaceAll("{{seed}}", robot.task.seed),
@@ -321,6 +322,11 @@ export default function metaworld(pi: ExtensionAPI) {
 	});
 	const { video } = robot;
 	const fly = robot.fly!;
+	/** raw/metaworld/<task>/seed_NNN (services robots/metaworld/flywheel.py). */
+	const flyMeta = () => ({
+		path: [robot.task.task, `seed_${robot.task.seed.padStart(3, "0")}`],
+		metadata: { task: robot.task.task, seed: Number(robot.task.seed), task_language: language },
+	});
 
 	const call = <T = unknown>(
 		method: string,
@@ -700,11 +706,7 @@ export default function metaworld(pi: ExtensionAPI) {
 		absorb(o, i);
 		workspace = (await env.call<Meta>("env.get_env_meta")).workspace;
 		language = await env.call<string>("env.get_task_language");
-		// raw/metaworld/<task>/seed_NNN (services robots/metaworld/flywheel.py).
-		fly.reset(flyObs(o), {
-			path: [task, `seed_${seed.padStart(3, "0")}`],
-			metadata: { task, seed: Number(seed), task_language: language },
-		});
+		fly.reset(flyObs(o), flyMeta());
 		return [
 			...["view_env_state", "view_camera_meta", "segment", "back_project", "move_delta", "gripper", "finish"],
 			...detectionActive(pi, meta.capabilities?.perception),

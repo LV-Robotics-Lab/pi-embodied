@@ -19,10 +19,13 @@ robot shows (letterboxed to the server's view size), the TCP pose and the finger
 ``pd_ee_delta_pos`` action the servo sent: ``[dx, dy, dz]`` in [-1, 1] (1.0 = 0.1 m, base frame)
 and the arm's own gripper action.
 
-Every ``--robot`` has the same action width, but not the same meaning (the Robotiq's gripper
-action is the Panda's negated) nor the same cameras (the WidowX AI has no wrist camera), so
-``SPACES`` has one spec per arm (``--space``, pi's /flywheel-export passes the episode's arm),
-the raw path starts with the arm, and a dataset holds one arm, env id and scene (``group``)."""
+The ``--robot`` arms differ in action meaning (the Robotiq's gripper action is the Panda's
+negated), width (the stick has no gripper element; the bridge WidowX 250 S takes an unnormalised
+``[dx, dy, dz]`` in m, three zero rotations and the gripper; the Panda pair one action per arm,
+left then right) and cameras (the WidowX AI, the stick, the pair and the WidowX 250 S have no
+wrist camera), so ``SPACES`` has one spec per arm (``--space``, pi's /flywheel-export passes the
+episode's arm), the raw path starts with the arm, and a dataset holds one arm, env id and scene
+(``group``). A two-arm robot's state is each arm's, in the same order as its actions."""
 
 from __future__ import annotations
 
@@ -37,8 +40,31 @@ def success_mask(transitions: Any) -> Any:
     return transitions["terminated"]
 
 
-def _spec(robot_type: str, wrist: bool) -> dict[str, Any]:
+#: One arm's state, and the delta-position action with the arm's own gripper action.
+_ARM_STATE = (
+    "tcp_x",
+    "tcp_y",
+    "tcp_z",
+    "tcp_qw",
+    "tcp_qx",
+    "tcp_qy",
+    "tcp_qz",
+    "gripper_width",
+)
+_DELTA_POS = ("ee_dx", "ee_dy", "ee_dz", "gripper")
+
+
+def _spec(
+    robot_type: str,
+    wrist: bool,
+    *,
+    action: tuple[str, ...] = _DELTA_POS,
+    arms: tuple[str, ...] = (),
+) -> dict[str, Any]:
     images = ("agentview_images", "wrist_images") if wrist else ("agentview_images",)
+    prefixes = [f"{a}_" for a in arms] or [""]
+    state_names = [p + n for p in prefixes for n in _ARM_STATE]
+    action_names = [p + n for p in prefixes for n in action]
     return {
         "robot": "maniskill",
         "robot_type": robot_type,
@@ -46,16 +72,13 @@ def _spec(robot_type: str, wrist: bool) -> dict[str, Any]:
         "fps": 20,
         "arrays": {
             **{key: _IMAGE for key in images},
-            "states": {"shape": (8,), "dtype": "float32"},
-            "actions": {"shape": (4,), "dtype": "float32"},
+            "states": {"shape": (len(state_names),), "dtype": "float32"},
+            "actions": {"shape": (len(action_names),), "dtype": "float32"},
         },
         "image_fields": images,
         "cameras": {key: key.removesuffix("_images") for key in images},
-        "state_names": [
-            *("tcp_x", "tcp_y", "tcp_z", "tcp_qw", "tcp_qx", "tcp_qy", "tcp_qz"),
-            "gripper_width",
-        ],
-        "action_names": ["ee_dx", "ee_dy", "ee_dz", "gripper"],
+        "state_names": state_names,
+        "action_names": action_names,
         "success_mask": success_mask,
         #: What one dataset shares: one arm, env id and scene (a rig's cam_t moves its camera).
         "group": ("maniskill_robot", "env_id", "scene"),
@@ -70,4 +93,14 @@ SPACES = {
     "panda": SPEC,
     "xarm6_robotiq": _spec("xarm6_robotiq", wrist=True),
     "widowxai": _spec("widowxai", wrist=False),
+    "panda_stick": _spec("panda_stick", wrist=False, action=_DELTA_POS[:3]),
+    "panda_pair": _spec("panda_pair", wrist=False, arms=("left", "right")),
+    "widowx250s": _spec(
+        "widowx250s",
+        wrist=False,
+        action=(
+            *("ee_dx_m", "ee_dy_m", "ee_dz_m", "ee_droll", "ee_dpitch", "ee_dyaw"),
+            "gripper",
+        ),
+    ),
 }

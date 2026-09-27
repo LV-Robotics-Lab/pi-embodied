@@ -21,7 +21,7 @@ import { type Static, type TSchema, Type } from "typebox";
 import { template } from "../context-version.ts";
 import { recipeFlash } from "../flash/recipe.ts";
 import type { FlywheelObs, FlywheelSpec } from "../flywheel.ts";
-import { MOLMO, type ModelService } from "../model-services.ts";
+import { MOLMO, type ModelService, SAM3 } from "../model-services.ts";
 import { encodePng } from "../png.ts";
 import {
 	detectionActive,
@@ -280,7 +280,7 @@ export default function robocasa(pi: ExtensionAPI) {
 	const robot = defineRobot(pi, {
 		name: "robocasa",
 		// RLDX-1 reads its checkpoint from RLDX_MODEL_PATH, as robocasa/serve.sh does.
-		services: { models: [RLDX, MOLMO], python: () => flag("robocasa-python", "python") },
+		services: { models: [RLDX, SAM3, MOLMO], python: () => flag("robocasa-python", "python") },
 		task: ["task-name", "split", "seed", "scene"],
 		// The env server's primitive registry (code.api), recorded per episode.
 		codeApi: () => env,

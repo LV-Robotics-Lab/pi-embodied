@@ -28,7 +28,7 @@ import { Type } from "typebox";
 import { template } from "../context-version.ts";
 import type { FlywheelObs, FlywheelSpec } from "../flywheel.ts";
 import { ikArgs, previewReachTool, type Reach, registerIkFlag } from "../ik.ts";
-import { SAM3 } from "../model-services.ts";
+import { MOLMO, SAM3 } from "../model-services.ts";
 import { decodePngChannel, encodePng } from "../png.ts";
 import { detectionActive, detectionArgs, detectionTools, registerDetectionFlags } from "../primitives/detections.ts";
 import { graspActive, graspArgs, graspTools, mountGraspTool, registerGraspFlags } from "../primitives/grasp.ts";
@@ -199,7 +199,7 @@ export default function genesis(pi: ExtensionAPI) {
 	const tag = (seed: string) => `genesis_${robot.task.task}_s${seed}`;
 	const robot = defineRobot(pi, {
 		name: "genesis",
-		services: { models: [SAM3] },
+		services: { models: [SAM3, MOLMO] },
 		task: ["task", "seed"],
 		keepImages: 4,
 		video: true,

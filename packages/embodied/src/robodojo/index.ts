@@ -27,6 +27,7 @@ import { Type } from "typebox";
 import { template } from "../context-version.ts";
 import { recipeFlash } from "../flash/recipe.ts";
 import type { FlywheelObs, FlywheelSpec } from "../flywheel.ts";
+import { MOLMO, SAM3 } from "../model-services.ts";
 import { encodePng } from "../png.ts";
 import {
 	detectionActive,
@@ -192,6 +193,7 @@ export default function robodojo(pi: ExtensionAPI) {
 
 	const robot = defineRobot(pi, {
 		name: "robodojo",
+		services: { models: [SAM3, MOLMO] },
 		task: ["task", "seed"],
 		codeApi: () => env,
 		keepImages: 6,

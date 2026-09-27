@@ -110,8 +110,30 @@ async function fakeEnv(
 			};
 			let result: unknown = { status: "ok" };
 			const perceived = o.perception ? perceptionAnswers({ method, args, kwargs }) : undefined;
-			if (method === "code.api") result = { tier: null, primitives: [], digest: "d" };
-			else if (perceived !== undefined) result = perceived;
+			if (method === "code.api") result = { tier: kwargs.tier ?? null, primitives: [], digest: "d" };
+			else if (method === "code.run") {
+				// A program that solved the task in 12 control steps.
+				motions = o.solveAfter ?? motions;
+				steps += 12;
+				result = {
+					status: "ran",
+					stdout: "",
+					stderr: "",
+					traceback: null,
+					error: null,
+					result: null,
+					calls: [],
+					n_calls: 1,
+					move_m: 0.05,
+					ms: 5,
+					steps: 12,
+					success: solved(),
+					ended: solved(),
+					truncated: false,
+					obs: obs(),
+					frames: [img(), img()],
+				};
+			} else if (perceived !== undefined) result = perceived;
 			else if (method === "env.get_env_meta") result = meta;
 			else if (method === "env.reset")
 				result = [obs(), { instruction: meta.instruction, ...(o.resetError ? { error: o.resetError } : {}) }];
@@ -315,4 +337,31 @@ test("--detections / --unidepth / --point: the env server's perception and Molmo
 		cameras: ["head", "left_wrist"],
 	});
 	assert.deepEqual(one.details.world_xyz, [0.01, 0.01, 0.75]);
+});
+
+test("--code=true: run_code runs on the env server; its observation and success come back, then it refuses", async (t) => {
+	const env = await fakeEnv({ solveAfter: 1 });
+	t.after(env.close);
+	const s = await start({ code: "true", "code-api": "low" }, env);
+	assert.deepEqual(s.errors, []);
+	assert.deepEqual(s.active(), ["run_code", "finish"]);
+	assert.deepEqual(
+		env.calls.filter((c) => c.method === "code.api").map((c) => c.kwargs.tier),
+		[undefined, "low"],
+		"the episode's registry, then code mode's tier",
+	);
+	await s.emit("agent_start");
+	const r = await s.run("run_code", { code: "move_delta('left', [0, 0, 0.05])" });
+	assert.equal(env.calls.find((c) => c.method === "code.run")?.kwargs.tier, "low");
+	assert.equal(r.details.status, "ran");
+	assert.equal(r.details.success, true);
+	assert.equal(r.details.step, 12, "the server's step count, absorbed from the run's obs");
+	assert.deepEqual(
+		r.content.map((c: { type: string }) => c.type),
+		["text", "text", "image", "image", "image"],
+	);
+	assert.doesNotMatch(r.content[1].text, /"score"/, "the evaluator's score stays out of the planner's text");
+	const again = await s.run("run_code", { code: "state()" });
+	assert.match(again.content[0].text, /solved/);
+	assert.equal(env.calls.filter((c) => c.method === "code.run").length, 1);
 });

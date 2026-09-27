@@ -3,6 +3,7 @@
  *
  *   pi -e packages/embodied/src/robodojo --task stack_bowls --seed 0 --cuda-device 1
  *   pi -e packages/embodied/src/robodojo --units --task push_T --seed 3     (Show-Harness action units, per arm)
+ *   pi -e packages/embodied/src/robodojo --task stack_bowls --code=true --code-api=low   (run_code, CaP-X's S3)
  *
  * Starts one RoboDojo env server per session (services/.../robots/robodojo/env_server.py, the venv from
  * robots/robodojo/install_isaac61.sh: Isaac Sim 6.1 / Isaac Lab 3.0 with RoboDojo patched by
@@ -196,6 +197,29 @@ export default function robodojo(pi: ExtensionAPI) {
 		services: { models: [SAM3, MOLMO] },
 		task: ["task", "seed"],
 		codeApi: () => env,
+		// Code mode (../code): the env server runs the program against that registry; the result carries the
+		// control steps, success, the new observation (the tools' Obs) and the run's video frames.
+		code: {
+			rpc: () => env,
+			instruction: () => meta.instruction,
+			refuse: () =>
+				obs?.ended
+					? obs.success
+						? "the task is solved; call finish"
+						: "the episode is over; call finish"
+					: // The Flywheel records the tools' control steps; a program's would be missing from the episode.
+						robot.fly?.recording
+						? "run_code is off while --collect-flywheel-data records the episode"
+						: undefined,
+			observe: async (r) => {
+				for (const f of (r.frames as NdArray[] | undefined) ?? []) video.frame(f);
+				if (r.obs) {
+					const { policy_frames: _p, ...o } = r.obs as Obs & { policy_frames?: unknown };
+					obs = o;
+				}
+				return observe({ name: "run_code", status: r.status, control_steps: Number(r.steps) || 0 });
+			},
+		},
 		keepImages: 6,
 		video: true,
 		// Observations carry the head, left wrist and right wrist images.

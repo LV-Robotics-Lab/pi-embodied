@@ -221,14 +221,15 @@ docs without their examples). pi's `--code-oracle <file>` sends a ported CaP-X h
 (`packages/embodied/src/<robot>/oracle/`) as one `code.run` instead of asking the model.
 
 The servers with `code.run`: libero-env, robosuite-env, metaworld-env, maniskill-env, genesis-env,
-behavior-env, robocasa-env, robolab-env, robotwin-env, and, only when started with `--code` (pi
+behavior-env, robocasa-env, robolab-env, robotwin-env, robodojo-env, and, only when started with `--code` (pi
 passes it with `--code-real`), franka-env, franka-polymetis-env, dual-franka-env, piper-env and
 ur5e-env. Each one's run fields are what its pi robot absorbs: the steps the run took, the
 episode's (latched) success or termination flags, the new observation in the shape its tools
 return, and a bounded video (`frames`; real robots record the run as their next state step).
 What a program receives of a primitive is that facade method's result minus object state (e.g.
 MetaWorld's 39-D observation and its reward metrics, Genesis' `lift_m`, BEHAVIOR's `privileged`
-block, RoboCasa's object observations, ManiSkill's dense rewards) and minus bulk (motion video
+block, RoboCasa's object observations, ManiSkill's dense rewards, RoboDojo's partial-credit
+`score`) and minus bulk (motion video
 frames, observation images). A real-robot server also takes `code.set_limits` (kw: the robot's
 pi-side per-call limits, e.g. `max_move_m`, `max_yaw_rad` / `max_rotate_rad`, Franka's workspace
 box and z floor): pi sends it when code mode starts, the server refuses every program motion until
@@ -486,6 +487,7 @@ of `robots/robodojo/primitives.py`.
 | `env.state` | - | the observation without images |
 | `env.set_recording` | `on` | the current Flywheel frame (`{head, left_wrist, right_wrist, state, action}`, 14-vectors) or null; while on, every result carries `policy_frames` |
 | `env.ground_truth_poses` | `names` | `{"frame": "env", "poses": {label: {pos, quat_xyzw}}}` of the layout's labelled objects |
+| `code.run`, `code.helpers` | as libero-env (Code mode, above) | robodojo-env's run fields: `steps` (control steps), `success`, `ended`, `truncated`, `obs`, `frames` (head images, at most 128); a program never receives images or `score`; the server requires its RPC token |
 
 ### robolab-env (`robots/robolab/env_server.py`)
 

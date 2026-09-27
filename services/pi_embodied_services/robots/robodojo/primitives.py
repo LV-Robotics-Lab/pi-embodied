@@ -33,6 +33,7 @@ ROBODOJO_PRIMITIVES = (
         "state",
         "env.state",
         "Both arms' end-effector poses (env frame), joints and grippers; success, score and step count.",
+        example='st = state()\nprint(st["arms"]["left"]["tcp_pos"], st["arms"]["right"]["gripper"], st["env_steps"])',
     ),
     Primitive(
         "move_to",
@@ -46,6 +47,7 @@ ROBODOJO_PRIMITIVES = (
             "return_frames": _FRAMES,
         },
         mutating=True,
+        example='r = move_to("left", [-0.3, -0.2, 0.9], gripper=1)  # open, then go\nprint(r["final_error_m"], r.get("stopped"))',
     ),
     Primitive(
         "move_delta",
@@ -58,6 +60,7 @@ ROBODOJO_PRIMITIVES = (
             "return_frames": _FRAMES,
         },
         mutating=True,
+        example='r = move_delta("right", [0, 0, -0.05])  # down 5 cm\nprint(r["moved_m"], r["arms"]["right"]["tcp_pos"])',
     ),
     Primitive(
         "rotate_delta",
@@ -107,6 +110,7 @@ ROBODOJO_PRIMITIVES = (
             )
         },
         tiers=("low",),
+        example='rgb = render_camera("head")  # uint8 [H, W, 3]',
     ),
     Primitive(
         "get_camera_meta",
@@ -114,6 +118,7 @@ ROBODOJO_PRIMITIVES = (
         "The head camera's OpenCV intrinsics and camera-to-env extrinsic.",
         {"camera_name": Param("string", "'head'", False)},
         tiers=("low",),
+        example='meta = get_camera_meta("head")\nK, T = meta["intrinsic_K"], meta["extrinsic_cam2world"]',
     ),
     Primitive(
         "get_obs",
@@ -121,6 +126,7 @@ ROBODOJO_PRIMITIVES = (
         "RoboDojo's native observation dict (vision, state, action, instruction).",
         {"depth": Param("boolean", "include metric depth", False)},
         tiers=("low",),
+        example='obs = get_obs()\nprint(obs["state"].keys(), obs["instruction"])',
     ),
     Primitive(
         "step",
@@ -129,6 +135,7 @@ ROBODOJO_PRIMITIVES = (
         {"action": Param("object", "RoboDojo action dict")},
         mutating=True,
         tiers=("low",),
+        example='q = state()["arms"]["left"]["joints_command"]\nr = step({"left_arm_joint_state": list(q), "left_ee_joint_state": [0.0]})  # close left\nprint(r["terminated"], r["state"]["arms"]["left"]["gripper"])',
     ),
     Primitive(
         "chunk_step",
@@ -140,6 +147,7 @@ ROBODOJO_PRIMITIVES = (
         },
         mutating=True,
         tiers=("low",),
+        example='r = chunk_step([{"right_ee_joint_state": [1.0]}] * 8)  # open right, 8 control steps\nprint(r["info"]["executed"], r["terminated"])',
     ),
     GROUND_TRUTH,
 )

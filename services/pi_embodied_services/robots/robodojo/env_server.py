@@ -36,6 +36,13 @@ judges them like any policy's actions.
 
 Isaac Sim starts in ``main`` before the server binds; every call runs on the main thread (Kit is
 not thread-safe).
+
+Code mode (``code.run``, utils/code_exec.py ``CodeRunMixin``): a program calls the registry's
+primitives in a sandboxed subprocess, so the server requires its RPC token and refuses other
+business calls while a program runs. What a program receives drops the images (a motion's head
+frames and a raw step's head image go to the run's video) and RoboDojo's partial-credit score (the
+evaluator's, never the planner's); the run reports its control steps, success and the episode
+flags, the new observation and its video (``_finish_run``).
 """
 
 from __future__ import annotations
@@ -55,6 +62,7 @@ from pi_embodied_services.components.env_facade_base import BaseEnvFacade
 from pi_embodied_services.robots.robodojo import sim
 from pi_embodied_services.robots.robodojo.primitives import ROBODOJO_PRIMITIVES
 from pi_embodied_services.utils import ground_truth
+from pi_embodied_services.utils.code_exec import CodeRunMixin
 from pi_embodied_services.utils.perception import (
     add_perception_arguments,
     install_perception,
@@ -87,6 +95,14 @@ VIEWS = {
 }
 #: A video frame (head view) every this many control steps with return_frames (5 fps).
 FRAME_EVERY = 5
+#: Code mode: video frames one run hands back (halved, every other one kept, when full), the most
+#: native actions one ``chunk_step`` runs, and the end-effector travel one radian of joint change
+#: may cause (an upper bound over the X5's links, for a joint action's translation estimate).
+CODE_MAX_FRAMES = 128
+CODE_MAX_CHUNK = 64
+CODE_M_PER_RAD = 0.7
+#: What a program never receives: images, video and Flywheel frames, and the evaluator's score.
+CODE_HIDDEN = ("head", "left_wrist", "right_wrist", "frames", "policy_frames", "score")
 
 
 def arm_key(arm: str, suffix: str) -> str:
@@ -95,7 +111,7 @@ def arm_key(arm: str, suffix: str) -> str:
     return f"{arm}_{suffix}"
 
 
-class RobodojoEnvFacade(MainThreadServeMixin, BaseEnvFacade):
+class RobodojoEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
     """One RoboDojo ``EvalEnv`` (``num_envs=1``) and the agent's motion primitives."""
 
     SERVICE_NAME = "robodojo-env"
@@ -118,6 +134,9 @@ class RobodojoEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         #: (and cleared) with the next observation.
         self._recording = False
         self._frames: list[dict] = []
+        # Code mode: the control steps before the run, and the run's video frames.
+        self._run_start = 0
+        self._run_frames: list[np.ndarray] = []
 
     def _register_rpc(self) -> None:
         super()._register_rpc()
@@ -135,7 +154,125 @@ class RobodojoEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         ):
             self._rpc[f"env.{name}"] = getattr(self, name)
         self._readonly_methods.add("env.state")
-        register_code_api(self, ROBODOJO_PRIMITIVES)
+        api = register_code_api(self, ROBODOJO_PRIMITIVES)
+        self._install_code_run(
+            api,
+            move_m=self._code_move_m,
+            check=self._code_check,
+            reply=self._code_reply,
+            begin=self._begin_run,
+            finish=self._finish_run,
+        )
+
+    # ---- code mode (run_code) ----
+
+    def _begin_run(self) -> None:
+        self._run_start = int(self._env.take_action_cnt[0])
+        self._run_frames = []
+
+    def _finish_run(self) -> dict:
+        """The run's effect for pi: control steps taken, success and the episode flags, the new
+        observation (the tools' ``Obs``) and the run's video frames."""
+        return {
+            "steps": int(self._env.take_action_cnt[0]) - self._run_start,
+            "success": self._success(),
+            "ended": self._ended(),
+            "truncated": self._truncated(),
+            "obs": self._pack(),
+            "frames": list(self._run_frames),
+        }
+
+    def _keep_frames(self, frames) -> None:
+        for f in frames:
+            if len(self._run_frames) >= CODE_MAX_FRAMES:
+                self._run_frames = self._run_frames[::2]
+            self._run_frames.append(f)
+
+    @staticmethod
+    def _program_state(out: dict) -> dict:
+        """A result as a program receives it: without images, frames and the score."""
+        return {k: v for k, v in out.items() if k not in CODE_HIDDEN}
+
+    def _code_reply(self, method: str, out: Any) -> Any:
+        """What a program receives: a motion's report and state without images (its head frames,
+        or its last head image, go to the run's video) and without the score; a raw step's
+        state and flags, not its images."""
+        if method in (
+            "env.move_to",
+            "env.move_delta",
+            "env.rotate_delta",
+            "env.set_gripper",
+            "env.go_home",
+        ):
+            self._keep_frames(out.get("frames") or [out["head"]])
+            return self._program_state(out)
+        if method == "env.state":
+            return self._program_state(out)
+        if method == "env.step":
+            obs, _score, terminated, truncated, info = out
+            self._keep_frames([obs["head"]])
+            return {
+                "state": self._program_state(obs),
+                "terminated": terminated,
+                "truncated": truncated,
+                "info": info,
+            }
+        if method == "env.chunk_step":
+            obs, terminated, truncated, info = out
+            self._keep_frames(obs.get("frames") or [obs["head"]])
+            return {
+                "state": self._program_state(obs),
+                "terminated": terminated,
+                "truncated": truncated,
+                "info": info,
+            }
+        return out
+
+    def _action_move_m(self, action: dict, held: dict[str, np.ndarray]) -> float:
+        """How far one native action may move the end effectors: an ``ee_pose`` target's distance
+        from the arm's current one; a joint target's largest joint change times
+        ``CODE_M_PER_RAD`` (from the last commanded joints, updated in ``held``)."""
+        total = 0.0
+        for a in sim.ARMS:
+            pose = action.get(arm_key(a, "ee_pose"))
+            if pose is not None:
+                p = np.asarray(pose, dtype=np.float64).reshape(-1)[:3]
+                total += float(np.linalg.norm(p - self._ee_pose(a)[:3]))
+            q = action.get(arm_key(a, "arm_joint_state"))
+            if q is not None:
+                q = np.asarray(q, dtype=np.float64).reshape(-1)
+                total += float(np.max(np.abs(q - held[a]))) * CODE_M_PER_RAD
+                held[a] = q
+        return total
+
+    def _code_move_m(self, method: str, kwargs: dict) -> float:
+        """How far a program's call may move the end effectors (the run's translation cap)."""
+        if method == "env.move_to":
+            xyz = np.asarray(kwargs["xyz"], dtype=np.float64).reshape(3)
+            return float(np.linalg.norm(xyz - self._ee_pose(kwargs["arm"])[:3]))
+        if method == "env.move_delta":
+            d = np.asarray(kwargs["delta_xyz"], dtype=np.float64).reshape(3)
+            return float(np.linalg.norm(d))
+        if method == "env.go_home":
+            # Both arms back to their reset joints.
+            return sum(
+                float(np.max(np.abs(self._home[a] - self._q[a]))) * CODE_M_PER_RAD
+                for a in sim.ARMS
+                if a in self._home and a in self._q
+            )
+        if method in ("env.step", "env.chunk_step"):
+            held = {a: np.asarray(self._q.get(a, self._joints(a))) for a in sim.ARMS}
+            actions = [kwargs["action"]] if method == "env.step" else kwargs["actions"]
+            return sum(self._action_move_m(dict(a), held) for a in actions)
+        # rotate_delta turns about the vertical through the end effector; set_gripper holds it.
+        return 0.0
+
+    def _code_check(self, method: str, kwargs: dict) -> None:
+        """Refuse a program's call that the run's wall clock could not bound."""
+        if method == "env.chunk_step" and len(kwargs["actions"]) > CODE_MAX_CHUNK:
+            raise ValueError(
+                f"chunk_step runs at most {CODE_MAX_CHUNK} actions per call, got {len(kwargs['actions'])}"
+            )
 
     # ---- RoboDojo accessors ----
 

@@ -193,7 +193,10 @@ for (const [robot, positional, cell] of [
 	});
 }
 
-for (const [robot, positional, cell] of CELLS.filter(([r]) => r === "genesis" || r === "behavior")) {
+for (const [robot, positional, cell] of [
+	...CELLS.filter(([r]) => r === "genesis" || r === "behavior"),
+	["robodojo", ["stack_bowls", "0"], "stack_bowls_s0"] as [string, string[], string],
+]) {
 	test(`${robot}/eval.sh records --code, --code-api and --code-oracle and never mixes code mode with tool runs`, () => {
 		const run1 = (args: string[]) => run(robot, positional, cell, args);
 		const plain = run1([]).result;

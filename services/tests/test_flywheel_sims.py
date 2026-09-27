@@ -291,3 +291,28 @@ def test_every_maniskill_robot_has_a_space_with_its_action_width():
     assert pair["state_names"][8] == "right_tcp_x" and pair["cameras"] == {
         "agentview_images": "agentview"
     }
+
+
+def test_an_arm_space_refuses_another_arms_episodes_of_the_same_shape(tmp_path):
+    """The Panda's and the xArm6's episodes have the same arrays; exporting one under the
+    other's space would label its columns wrongly, so the space's arm must match."""
+    from pi_embodied_services.flywheel.export import _successful_episodes
+
+    meta = {"maniskill_robot": "xarm6_robotiq", "env_id": "PickCube-v1", "scene": ""}
+    xarm = record(
+        tmp_path,
+        "maniskill",
+        "xarm6_robotiq",
+        ["xarm6_robotiq", "PickCube-v1", "default"],
+        meta,
+    )
+    panda = spec("maniskill", "panda")
+    assert validate_episode(xarm, spec=panda)["step_count"] > 0
+    with pytest.raises(
+        ValueError, match="maniskill_robot='xarm6_robotiq'; this space is for 'panda'"
+    ):
+        _successful_episodes([xarm], spec=panda, group=tuple(panda["group"]))
+    own = spec("maniskill", "xarm6_robotiq")
+    assert len(_successful_episodes([xarm], spec=own, group=tuple(own["group"]))) == 1
+    for robot in ("panda_stick", "panda_pair", "widowx250s"):
+        assert spec("maniskill", robot)["metadata"] == {"maniskill_robot": robot}

@@ -218,3 +218,91 @@ test(
 		await assert.rejects(new RpcClient(sam3).call("healthz", {}, 3_000));
 	},
 );
+
+/** ManiSkill's newer robots, each on one of its own scenes; the pair moves its left arm. */
+const FLYWHEEL_ROBOTS = [
+	{ robot: "panda_stick", envId: "PushT-v1", move: { delta_xyz: [0, 0, 0.02] }, action: 3, state: 8 },
+	{
+		robot: "panda_pair",
+		envId: "TwoRobotPickCube-v1",
+		move: { arm: "left", delta_xyz: [0, 0, 0.02] },
+		action: 8,
+		state: 16,
+	},
+	{ robot: "widowx250s", envId: "PutCarrotOnPlateInScene-v1", move: { delta_xyz: [0, 0, 0.02] }, action: 7, state: 8 },
+];
+
+for (const c of FLYWHEEL_ROBOTS)
+	test(
+		`maniskill --robot ${c.robot}: a Flywheel episode records every control step and validates in its space`,
+		{ skip: skip("maniskill-flywheel") },
+		async () => {
+			const root = mkdtempSync(join(tmpdir(), "gpu-e2e-fly-"));
+			const r = load(
+				maniskill,
+				flags({
+					robot: c.robot,
+					"env-id": c.envId,
+					seed: "0",
+					"collect-flywheel-data": true,
+					"flywheel-root": root,
+				}),
+			);
+			try {
+				await r.emit("session_start", { reason: "startup" });
+				assert.deepEqual(r.errors, [], `${c.robot} did not start`);
+				for (let k = 0; k < 2; k++) {
+					await r.emit("tool_execution_start", { toolName: "move_delta" });
+					const moved = await r.call("move_delta", c.move);
+					assert.ok(!moved.isError, text(moved));
+					await r.emit("tool_execution_end", { toolName: "move_delta" });
+				}
+			} finally {
+				await r.emit("session_shutdown", { reason: "quit" });
+			}
+			const written = r.entries.find((e) => e.type === "flywheel_episode")?.data;
+			assert.ok(written?.path, `no flywheel_episode entry: ${JSON.stringify(r.entries.map((e) => e.type))}`);
+			assert.ok(written.path.includes(`/raw/maniskill/${c.robot}/${c.envId}/`), written.path);
+			assert.ok(written.step_count >= 2, JSON.stringify(written));
+			// The services' own validator, in the robot's space: shapes, names, the arm pin.
+			const out = execFileSync(
+				String(process.env.PI_EMBODIED_PYTHON),
+				[
+					"-m",
+					"pi_embodied_services.flywheel.cli",
+					"validate",
+					written.path,
+					"--robot",
+					"maniskill",
+					"--space",
+					c.robot,
+				],
+				{ cwd: flags({}).services, env: { ...process.env, PYTHONPATH: flags({}).services }, encoding: "utf8" },
+			);
+			const meta = JSON.parse(out);
+			assert.equal(meta.maniskill_robot, c.robot);
+			const shapes = execFileSync(
+				String(process.env.PI_EMBODIED_PYTHON),
+				[
+					"-c",
+					"import json, sys, numpy as np; t = np.load(sys.argv[1] + '/transitions.npz'); print(json.dumps({k: list(t[k].shape) for k in ('actions', 'states')} | {'actions_rows': t['actions'].tolist(), 'states_rows': t['states'].tolist()}))",
+					written.path,
+				],
+				{ encoding: "utf8" },
+			);
+			const s = JSON.parse(shapes);
+			assert.equal(s.actions[1], c.action, JSON.stringify(s));
+			assert.equal(s.states[1], c.state, JSON.stringify(s));
+			if (c.robot === "panda_pair") {
+				// Left then right: the moved left arm's actions are in dims 0-3 and its TCP rose; the
+				// right arm held still with its own open command (+1).
+				const [first, last] = [s.states_rows[0], s.states_rows.at(-1)];
+				assert.ok(last[2] - first[2] > 0.01, `left z ${first[2]} -> ${last[2]}`);
+				assert.ok(Math.abs(last[10] - first[10]) < 0.005, `right z ${first[10]} -> ${last[10]}`);
+				for (const a of s.actions_rows) assert.deepEqual(a.slice(4), [0, 0, 0, 1]);
+			}
+			console.log(
+				`${c.robot}: ${JSON.stringify({ steps: written.step_count, actions: s.actions, states: s.states, first_actions: s.actions_rows.slice(0, 2) })}`,
+			);
+		},
+	);

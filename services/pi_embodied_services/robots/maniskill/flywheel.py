@@ -82,6 +82,8 @@ def _spec(
         "success_mask": success_mask,
         #: What one dataset shares: one arm, env id and scene (a rig's cam_t moves its camera).
         "group": ("maniskill_robot", "env_id", "scene"),
+        #: The arm this space describes: an export under it refuses another arm's episodes.
+        "metadata": {"maniskill_robot": robot_type},
     }
 
 

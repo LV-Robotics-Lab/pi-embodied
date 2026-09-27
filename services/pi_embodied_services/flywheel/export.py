@@ -136,6 +136,14 @@ def _successful_episodes(
             episodes.append((path, metadata))
     if not episodes:
         raise ValueError("no successful episodes found")
+    # A space made for one embodiment (ManiSkill's per-arm SPACES) exports only its episodes:
+    # two arms may share the shapes but not the meaning of the columns.
+    for path, metadata in episodes:
+        for key, want in spec.get("metadata", {}).items():
+            if metadata.get(key) != want:
+                raise ValueError(
+                    f"episode {path} has {key}={metadata.get(key)!r}; this space is for {want!r}"
+                )
     first = episodes[0][1]
     for path, metadata in episodes:
         if any(metadata.get(key) != first.get(key) for key in group):

@@ -185,8 +185,6 @@ export default function robosuite(pi: ExtensionAPI) {
 	const grip = new Map<string, "open" | "close">();
 	const worldMaps = new Map<string, WorldMap>();
 
-	/** The task the flags name at load: units reads `arms` once, so the arm set is fixed here (startEpisode checks it). */
-	const loadedTask = flag("task", "Lift");
 	/** The memory cell of this task at `seed`. */
 	const tag = (seed: string) => `robosuite_${robot.task.task}_s${seed}`;
 	const twoArm = () => TWO_ARM.includes(robot.task.task as Task);
@@ -278,7 +276,8 @@ export default function robosuite(pi: ExtensionAPI) {
 			vectors: VECTORS,
 			stepM: STEP_M,
 			yawStepRad: YAW_STEP_RAD,
-			arms: TWO_ARM.includes(loadedTask as Task) ? ARMS : undefined,
+			// Read at session start, after pi has set --task: the two-arm tasks give `act` its `arm`.
+			arms: () => (twoArm() ? ARMS : undefined),
 			maxMoveM: () => Number(flag("max-move", String(MAX_MOVE_M))),
 			apply: (move, signal) => unitStep(move, signal),
 			state: async (arm) => {
@@ -868,10 +867,6 @@ export default function robosuite(pi: ExtensionAPI) {
 	async function startEpisode() {
 		const { task, seed } = robot.task;
 		if (!TASKS.includes(task as Task)) throw new Error(`unknown --task ${task}: ${TASKS.join(", ")}`);
-		if (TWO_ARM.includes(task as Task) !== TWO_ARM.includes(loadedTask as Task))
-			throw new Error(
-				`${task} has ${arms(task).length} arm(s) but pi was started for ${loadedTask}; restart with --task ${task}`,
-			);
 		if (TWO_ARM.includes(task as Task) && pi.getFlag("geometry") === true)
 			throw new Error(`--geometry needs a one-arm task; ${task} has two arms`);
 		sam3 = new RpcClient(flag("sam3", ""));

@@ -467,7 +467,7 @@ test("--point: Molmo on the current images; the pixel's world xyz through the wo
 });
 
 /** A fake robosuite env server (`--env`): Lift seed 0, and a `code.run` that reports `run`'s fields. */
-async function fakeCodeEnv(run: Record<string, unknown>) {
+async function fakeCodeEnv(run: Record<string, unknown>, task = "Lift") {
 	const calls: { method: string; kwargs: Record<string, unknown> }[] = [];
 	const nd = (dtype: string, shape: number[], data: Buffer) => ({
 		__ndarray__: data.toString("base64"),
@@ -496,7 +496,7 @@ async function fakeCodeEnv(run: Record<string, unknown>) {
 			calls.push({ method, kwargs });
 			let result: unknown = { ok: true };
 			if (method === "code.api") result = { tier: kwargs.tier ?? null, primitives: [], digest: "d" };
-			else if (method === "env.get_env_meta") result = { task: "Lift", seed: 0, table_z: 0.8 };
+			else if (method === "env.get_env_meta") result = { task, seed: 0, table_z: 0.8 };
 			else if (method === "env.reset") result = [obs(false, 0), {}];
 			else if (method === "env.get_task_language") result = "lift the red cube";
 			else if (method === "code.run")
@@ -614,4 +614,33 @@ test("--code-oracle refuses a tier or task the program was not written for", asy
 		assert.match(errors.join("\n"), why);
 		assert.deepEqual(s.active(), []);
 	}
+});
+
+test("a two-arm task starts: --task is read at session start, after pi has set the flags", async (t) => {
+	const env = await fakeCodeEnv({}, "TwoArmLift");
+	t.after(env.close);
+	// pi sets CLI flag values only after every extension has loaded: at load getFlag answers the defaults.
+	const late: Record<string, unknown> = {};
+	const s = stubPi(late);
+	robosuite(s.pi);
+	Object.assign(late, { env: env.url, task: "TwoArmLift", units: "true" });
+	const errors: string[] = [];
+	const log = console.error;
+	console.error = (m: string) => errors.push(m);
+	try {
+		await s.emit("session_start");
+	} finally {
+		console.error = log;
+		process.exitCode = undefined;
+	}
+	assert.deepEqual(errors, [], "not refused as a one-arm session");
+	assert.ok(s.active().includes("act"));
+	assert.deepEqual(s.tools.get("act")!.parameters.properties.arm.enum, [...ARMS], "act names the arm on two arms");
+	// A one-arm task on the same load keeps `act` without `arm`.
+	const one = await fakeCodeEnv({}, "Lift");
+	t.after(one.close);
+	Object.assign(late, { env: one.url, task: "Lift" });
+	await s.emit("session_start");
+	process.exitCode = undefined;
+	assert.equal(s.tools.get("act")!.parameters.properties.arm, undefined);
 });

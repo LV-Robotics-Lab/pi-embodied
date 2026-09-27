@@ -123,8 +123,11 @@ export type UnitsSpecCommon = {
 	instruction?: () => string;
 	/** How the camera images look and which way each MV_* unit moves in them (default: DEFAULT_VIEWS). */
 	views?: string;
-	/** Dual-arm robots: the arm names `act` chooses between. */
-	arms?: readonly string[];
+	/**
+	 * Dual-arm robots: the arm names `act` chooses between. A function is read when the session starts
+	 * (after pi has set the flags), for a robot whose arm set depends on a flag such as the task.
+	 */
+	arms?: readonly string[] | (() => readonly string[] | undefined);
 	/** A closed gripper at or below this width (m) holds nothing (recovery, auto_release). */
 	emptyWidthM?: number;
 	/** Default of --units-plugins. */

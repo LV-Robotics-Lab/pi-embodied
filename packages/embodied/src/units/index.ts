@@ -361,7 +361,10 @@ export function units(
 		!(custom && ARM_PLUGINS.includes(name));
 	/** The plugins that run this session (`units_state`, the robot result). */
 	const effective = () => PLUGINS.filter(plugin);
-	const armNames = spec.arms ?? [];
+	/** The arms `act` chooses between; a function is read at every session start. */
+	const readArms = () => (typeof spec.arms === "function" ? spec.arms() : spec.arms) ?? [];
+	// At load a function is not read yet: the robot (and its flags) are not set up.
+	let armNames: readonly string[] = typeof spec.arms === "function" ? [] : readArms();
 	/** --units-verify: on, off, or auto (Show-Harness's dual runner verifies, its single-arm runners do not). */
 	const verifying = () => {
 		const v = String(pi.getFlag("units-verify") ?? "auto");
@@ -483,6 +486,7 @@ export function units(
 		reset();
 		wristView = readWrist();
 		gripperOn = readGripper();
+		armNames = readArms();
 		demoError = undefined;
 		const branch = ctx.sessionManager.getBranch();
 		const custom = (type: string) =>
@@ -1385,6 +1389,7 @@ export function units(
 	function started(ctx: Pick<ExtensionContext, "hasUI" | "ui">) {
 		wristView = readWrist();
 		gripperOn = readGripper();
+		armNames = readArms();
 		saved = snapshot();
 		registerAct();
 		if (custom || wristView || !mode()) return;

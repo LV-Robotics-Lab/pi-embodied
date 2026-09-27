@@ -218,6 +218,7 @@ test("motion classification over every robot's tools", () => {
 		"lingbot_act",
 		"move_base",
 		"move_delta",
+		"move_grip",
 		"move_hand",
 		"move_pose",
 		"move_to",

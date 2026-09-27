@@ -46,6 +46,7 @@ export const NON_MOTION: ReadonlySet<string> = new Set([
 	"back_project_correspondence",
 	"sample_world_xyz",
 	"query_world_map",
+	"detect",
 	"select_detection",
 	"reject_detection",
 	"enhance_depth",
@@ -54,6 +55,9 @@ export const NON_MOTION: ReadonlySet<string> = new Set([
 	"plan_place",
 	"preview_reach",
 	"check_attached",
+	// The geometric toolset's views and marks (./primitives/geometry.ts); its move_grip moves.
+	"view_points",
+	"mark_point",
 	"ground_truth_poses",
 	"halt_arm",
 ]);

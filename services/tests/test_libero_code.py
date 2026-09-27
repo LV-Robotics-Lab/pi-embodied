@@ -631,22 +631,27 @@ def test_a_reset_expires_the_plan_and_a_replan_renders_afresh():
 def test_a_place_that_stalls_before_opening_keeps_the_held_grasp():
     """Audit: execute_place dropped the held record at its claim, so a place stuck above the
     target left an object in hand that plan_place refused. It ends only once the hand opened."""
-    from test_grasp import FakeAnyPlace
-
     f, G = grasp_facade()
     gid = f._rpc["env.plan_grasp"](object="bowl")["active"]
     assert "error" not in f._rpc["env.execute_grasp"](grasp_id=gid)
-    T = np.eye(4)
-    T[:3, 3] = [0.0, 0.0, 0.35]  # camera +z is world -z: 5 cm under the table
-    f._grasp._anyplace = FakeAnyPlace([T])
     region = f._rpc["env.segment_mask"]("plate")["id"]
     pid = f._rpc["env.plan_place"](region, gid)["active"]
+    servo = f._servo_pose
+
+    def blocked(
+        target, *args, **kwargs
+    ):  # something under the pre-place stops the descent
+        if target[2] < 0.35:
+            return 1, False
+        return servo(target, *args, **kwargs)
+
+    f._servo_pose = blocked
     out = f._rpc["env.execute_place"](place_id=pid)
     assert out.get("stalled") == "place", out
     assert f._grasp.held()["grasp_id"] == gid
+    f._servo_pose = servo
+    f._rpc["env.move_to"]([0.05, 0.0, 0.3], gripper=1)  # back down, still holding
     region = f._rpc["env.segment_mask"]("plate")["id"]
-    T[:3, 3] = [0.1, 0.0, 0.0]
-    f._grasp._anyplace = FakeAnyPlace([T])
     place = f._rpc["env.plan_place"](region, gid)
     assert place["held"] is True, "the object is still in hand: plan again"
     done = f._rpc["env.execute_place"](place_id=place["active"])

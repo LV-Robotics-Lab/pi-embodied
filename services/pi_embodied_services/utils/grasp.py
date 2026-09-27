@@ -81,6 +81,14 @@ DEFAULT_MAX_CANDIDATES = 10
 DEFAULT_STANDOFF_M = 0.10
 #: How far straight up the arm lifts after closing on a claimed grasp.
 DEFAULT_LIFT_M = 0.10
+#: A place pose must approach from above: its approach at most this far from straight down.
+MAX_PLACE_TILT_RAD = math.radians(45)
+#: Where the placed object may end up relative to the region's points: its centroid over the
+#: region's xy extent (grown by the margin) and between the region's lowest point less the
+#: margin and its top plus the clearance.
+PLACE_XY_MARGIN_M = 0.03
+PLACE_Z_MARGIN_M = 0.05
+PLACE_MAX_CLEARANCE_M = 0.25
 #: The longest standoff or lift a claim accepts.
 MAX_WAYPOINT_OFFSET_M = 0.30
 
@@ -1571,6 +1579,10 @@ class GraspPlanner:
                 "object_mask": np.ascontiguousarray(object_mask, dtype=np.uint8),
                 "region_mask": np.ascontiguousarray(region_mask, dtype=np.uint8),
                 "max_candidates": n,
+                # AnyPlace predicts in a gravity-aligned frame; it converts back to the camera's.
+                "extrinsic_cam2world": np.asarray(
+                    view["extrinsic_cam2world"], dtype=np.float64
+                ),
             },
             timeout_s=600.0,
         )
@@ -1579,14 +1591,25 @@ class GraspPlanner:
             raise GraspError(f"anyplace server returned no placements field: {res!r}")
         T_cw = np.asarray(view["extrinsic_cam2world"], dtype=np.float64)
         cal = self._calibration_for(arm)
+        obj_cam, _ = object_points(
+            view["depth"], view["intrinsic_K"], object_mask, depth_max=self._depth_max
+        )
+        reg_cam, _ = object_points(
+            view["depth"], view["intrinsic_K"], region_mask, depth_max=self._depth_max
+        )
+        region_w = reg_cam.astype(np.float64) @ T_cw[:3, :3].T + T_cw[:3, 3]
         ids: list[str] = []
         cands: list[dict[str, Any]] = []
+        refused: list[dict[str, Any]] = []
         for i, pl in enumerate(list(res["placements"])[:n]):
-            R_c, t_c = compose_placement(
-                np.asarray(pl["transform_matrix"]), grasp_R_camera, grasp_t_camera
-            )
+            T_place = np.asarray(pl["transform_matrix"], dtype=np.float64)
+            R_c, t_c = compose_placement(T_place, grasp_R_camera, grasp_t_camera)
             R = T_cw[:3, :3] @ R_c
             t = T_cw[:3, :3] @ t_c + T_cw[:3, 3]
+            why = self._place_refusal(R, T_place, T_cw, obj_cam, region_w)
+            if why:
+                refused.append({"rank": i, "reason": why})
+                continue
             item = {
                 "kind": "placement",
                 "camera": snap.camera,
@@ -1616,6 +1639,11 @@ class GraspPlanner:
             id = self._book.add(item, "p")
             ids.append(id)
             cands.append(self._public(self._book.get(id)))
+        if not ids and refused:
+            raise GraspError(
+                f"none of AnyPlace's {len(refused)} placements can be executed from above "
+                f"onto the region: {refused}; segment the region again or place by hand"
+            )
         for id in ids:
             self._rankings[id] = ids
         return {
@@ -1623,6 +1651,7 @@ class GraspPlanner:
             "camera": snap.camera,
             "grasp_id": grasp_id,
             "held": held,
+            "refused": refused,
             "object_mask_id": object_mask_id,
             "region_mask_id": region_mask_id,
             "candidate_count": len(cands),
@@ -1632,6 +1661,41 @@ class GraspPlanner:
             "server": {k: v for k, v in res.items() if k != "placements"},
             "expired_ids": self._expired(),
         }
+
+    @staticmethod
+    def _place_refusal(
+        R_world: np.ndarray,
+        T_place_camera: np.ndarray,
+        cam2world: np.ndarray,
+        object_camera: np.ndarray,
+        region_world: np.ndarray,
+    ) -> str | None:
+        """Why a composed place pose cannot be executed, or None: the gripper must approach
+        from above (within ``MAX_PLACE_TILT_RAD`` of straight down), and the placed object's
+        centroid must land over the region, not beside it or high above it."""
+        approach = np.asarray(R_world, dtype=np.float64)[:, 0]
+        tilt = math.acos(float(np.clip(-approach[2], -1.0, 1.0)))
+        if tilt > MAX_PLACE_TILT_RAD:
+            return (
+                f"approach {[round(float(v), 2) for v in approach]} is "
+                f"{math.degrees(tilt):.0f} deg from straight down"
+            )
+        if len(object_camera) == 0 or len(region_world) == 0:
+            return None
+        T = np.asarray(T_place_camera, dtype=np.float64)
+        placed_cam = object_camera.astype(np.float64) @ T[:3, :3].T + T[:3, 3]
+        c = cam2world[:3, :3] @ placed_cam.mean(axis=0) + cam2world[:3, 3]
+        lo, hi = region_world.min(axis=0), region_world.max(axis=0)
+        if np.any(c[:2] < lo[:2] - PLACE_XY_MARGIN_M) or np.any(
+            c[:2] > hi[:2] + PLACE_XY_MARGIN_M
+        ):
+            return f"the object would land at {[round(float(v), 3) for v in c]}, off the region"
+        if not (lo[2] - PLACE_Z_MARGIN_M <= c[2] <= hi[2] + PLACE_MAX_CLEARANCE_M):
+            return (
+                f"the object would land at z {c[2]:.3f}, not on the region "
+                f"(z {lo[2]:.3f}-{hi[2]:.3f})"
+            )
+        return None
 
     # -- attachment probe ------------------------------------------------------
 

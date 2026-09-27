@@ -861,9 +861,95 @@ def test_plan_place_after_the_grasp_segments_the_held_object_not_its_twin():
     gid = planner.plan_grasp(object="bowl")["active"]
     planner.claim_waypoints(gid)
     planner.invalidate()  # the grasp's motions
-    planner._sam3 = FakeSam3All([far, near])
+    planner._sam3 = FakeSam3(np.ones((H, W), bool))  # the plate: the whole table
     region = planner.segment_mask("plate")["id"]
+    planner._sam3 = FakeSam3All([far, near])
     place = planner.plan_place(region, gid)
     held = planner._book.get(place["object_mask_id"])
     assert held["mask"][6, 6] and not held["mask"][1, 1], "the mask at the gripper"
     assert planner._sam3.calls[-1]["all"] is True
+
+
+def test_anyplace_sees_a_gravity_aligned_cloud_and_answers_in_the_camera_frame():
+    """Box run (LIBERO spatial t0): fed OpenCV camera-frame clouds, AnyPlace 'placed' the held
+    bowl along the camera's axes, so the composed place approached almost horizontally,
+    about (0.95, -0.1, -0.3), and the arm drove up to z 1.5 m. The server now hands the model
+    world-frame clouds and converts its transforms back to the camera frame."""
+    import threading
+
+    from pi_embodied_services.components import anyplace_server as A
+
+    seen = {}
+
+    class Stub(A.AnyPlaceFacade):
+        def __init__(self):  # no model: record what it would see
+            self._depth_max = 2.0
+            self._lock = threading.Lock()
+
+        def _predict(self, obj, region):
+            seen["obj"], seen["region"] = obj, region
+            lift = np.eye(4)
+            lift[:3, 3] = [0.1, 0.0, 0.05]  # world: 10 cm along +x, 5 cm up
+            return np.stack([lift])
+
+        def info(self):
+            return {}
+
+    depth = np.full((H, W), 0.9, dtype=np.float32)
+    depth[4:12, 4:12] = 0.8
+    obj = _block_mask()
+    region = np.zeros((H, W), bool)
+    region[12:16, :] = True
+    A.MIN_POINTS = 1  # a 16x16 test frame
+    try:
+        out = Stub().plan(
+            np.zeros((H, W, 3), np.uint8), depth, K, obj, region, 1, CAM2WORLD
+        )
+    finally:
+        A.MIN_POINTS = 1024
+    assert out["model_frame"] == "world"
+    # The camera is 1 m up looking down: the model sees the block top at world z 0.2, the
+    # table at 0.1, not at camera depths 0.8 / 0.9.
+    assert np.allclose(seen["obj"][:, 2], 0.2, atol=1e-5)
+    assert np.allclose(seen["region"][:, 2], 0.1, atol=1e-5)
+    T_cam = np.asarray(out["placements"][0]["transform_matrix"])
+    p_cam = np.array([0.0, 0.0, 0.8, 1.0])
+    moved_world = CAM2WORLD @ (T_cam @ p_cam)
+    assert np.allclose(moved_world[:3], (CAM2WORLD @ p_cam)[:3] + [0.1, 0.0, 0.05])
+
+
+class _RecordingAnyPlace(FakeAnyPlace):
+    def call(self, method, args=(), kwargs=None, *, timeout_s=None):
+        self.kwargs = kwargs
+        return super().call(method, args, kwargs, timeout_s=timeout_s)
+
+
+def test_a_place_that_would_approach_from_the_side_or_off_the_region_is_refused():
+    """The composed place must come from above (within 45 deg of straight down) and land
+    the object over the region; a transform like the box run's is refused, clearly."""
+    region = np.ones((H, W), bool)  # the whole table as the region
+    # Camera frame: the object tipped about camera x by 70 deg and moved toward the camera.
+    a = np.deg2rad(70)
+    tipped = np.eye(4)
+    tipped[:3, :3] = [[1, 0, 0], [0, np.cos(a), -np.sin(a)], [0, np.sin(a), np.cos(a)]]
+    tipped[:3, 3] = [0.0, 0.3, -0.5]
+    beside = np.eye(4)
+    beside[:3, 3] = [0.6, 0.0, 0.0]  # 60 cm off the table's edge
+    good = np.eye(4)
+    good[:3, 3] = [0.0, 0.05, 0.0]
+    anyplace = _RecordingAnyPlace([tipped, beside, good])
+    planner, _ = _planner(sam3=FakeSam3(_block_mask()), anyplace=anyplace)
+    obj = planner.segment_mask("block")["id"]
+    planner._sam3 = FakeSam3(region)
+    reg = planner.segment_mask("table")["id"]
+    gid = planner.plan_grasp(mask_id=obj)["active"]
+    place = planner.plan_place(reg, gid)
+    assert np.allclose(anyplace.kwargs["extrinsic_cam2world"], CAM2WORLD)
+    assert place["candidate_count"] == 1
+    assert [r["rank"] for r in place["refused"]] == [0, 1]
+    assert "from straight down" in place["refused"][0]["reason"]
+    assert "off the region" in place["refused"][1]["reason"]
+    assert place["candidates"][0]["approach"][2] == pytest.approx(-1.0)
+    anyplace.transforms = [tipped]
+    with pytest.raises(G.GraspError, match="can be executed from above"):
+        planner.plan_place(reg, gid)

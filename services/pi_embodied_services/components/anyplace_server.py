@@ -23,7 +23,13 @@ Runs in its own venv (the AnyPlace checkout with its torch/CUDA dependencies and
 multi-task checkpoint the config points at). Serves ``anyplace.plan``: from one aligned RGB-D
 frame, the object mask (the Placement Object) and the placement-region mask, the model predicts
 Object Placement Transforms ``p_placed = R @ p_current + t`` in the camera frame, several
-candidates best first. The env server composes them with the pick grasp
+candidates best first.
+
+AnyPlace was trained on gravity-aligned scenes (world +z up): fed the OpenCV camera frame
+(+y down, +z into the scene) it "places" the object along the camera's axes, lifting it
+toward the camera and tipping it over. With ``extrinsic_cam2world`` the clouds go to the
+world frame for the model and its transforms come back to the camera frame
+(``T_cam = inv(T_cw) @ T_world @ T_cw``); env servers always send it. The env server composes them with the pick grasp
 (``utils/grasp.compose_placement``). The model loading follows OpenETA's
 ``tools/anyplace_core.py`` (the official internal policy function, no CLI scripts).
 """
@@ -69,6 +75,36 @@ class _NoOpVisualizer:
 
     def set_transform(self, *_a: Any, **_k: Any) -> None:
         return None
+
+
+def world_clouds(cam2world: np.ndarray, *clouds: np.ndarray) -> tuple[np.ndarray, ...]:
+    """Camera-frame point clouds [N, 3] in the world frame of ``cam2world`` (4x4)."""
+    T = np.asarray(cam2world, dtype=np.float64)
+    return tuple(
+        (np.asarray(c, dtype=np.float64) @ T[:3, :3].T + T[:3, 3]).astype(np.float32)
+        for c in clouds
+    )
+
+
+def camera_transforms(world: np.ndarray, cam2world: np.ndarray) -> np.ndarray:
+    """World-frame placement transforms [N, 4, 4] as camera-frame ones: the same motion of
+    the object, ``T_cam = inv(T_cw) @ T_world @ T_cw``."""
+    T = np.asarray(cam2world, dtype=np.float64)
+    return np.einsum("ij,njk,kl->nil", np.linalg.inv(T), np.asarray(world), T)
+
+
+def validate_cam2world(raw: Any) -> np.ndarray:
+    T = np.asarray(raw, dtype=np.float64)
+    R = T[:3, :3] if T.shape == (4, 4) else None
+    if (
+        R is None
+        or not np.isfinite(T).all()
+        or not np.allclose(T[3], [0, 0, 0, 1], atol=1e-6)
+        or not np.allclose(R.T @ R, np.eye(3), atol=1e-5)
+        or not np.isclose(np.linalg.det(R), 1, atol=1e-5)
+    ):
+        raise ValueError("extrinsic_cam2world must be a rigid 4x4 transform")
+    return T
 
 
 def validate_placements(raw: Any) -> np.ndarray:
@@ -273,6 +309,7 @@ class AnyPlaceFacade(RpcFacade):
         object_mask: Any,
         region_mask: Any,
         max_candidates: int = 5,
+        extrinsic_cam2world: Any = None,
     ) -> dict[str, Any]:
         started = time.perf_counter()
         depth_arr = np.asarray(depth, dtype=np.float32)
@@ -303,8 +340,18 @@ class AnyPlaceFacade(RpcFacade):
                 raise ValueError(
                     f"the {name} mask has {len(pts)} points; at most {cap}"
                 )
+        cam2world = (
+            None
+            if extrinsic_cam2world is None
+            else validate_cam2world(extrinsic_cam2world)
+        )
+        if cam2world is not None:
+            # The model's frame: gravity-aligned, as it was trained (see the module doc).
+            obj, region = world_clouds(cam2world, obj, region)
         with self._lock:
             preds = validate_placements(self._predict(obj, region))
+        if cam2world is not None:
+            preds = validate_placements(camera_transforms(preds, cam2world))
         n = max(1, int(max_candidates))
         return {
             **self.info(),
@@ -313,6 +360,7 @@ class AnyPlaceFacade(RpcFacade):
                 for i, T in enumerate(preds[:n])
             ],
             "model_candidate_count": int(len(preds)),
+            "model_frame": "world" if cam2world is not None else "camera",
             "latency_s": round(time.perf_counter() - started, 4),
             "metadata": {
                 "object_points": int(len(obj)),

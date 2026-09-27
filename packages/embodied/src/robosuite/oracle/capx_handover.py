@@ -241,7 +241,9 @@ def _move_both(targets):
     legs = max(1, max(math.ceil(np.linalg.norm(ends[a] - starts[a]) / BOTH_LEG_M) for a in ends))
     for k in range(1, legs + 1):
         for arm, _, q in targets:
-            leg = starts[arm] + (ends[arm] - starts[arm]) * k / legs
+            # From where this arm's last leg really ended, never more than BOTH_LEG_M per call.
+            here = _EEF[arm]
+            leg = here + (ends[arm] - here) / max(legs - k + 1, math.ceil(np.linalg.norm(ends[arm] - here) / BOTH_LEG_M))
             r = move_to(leg.tolist(), quat_xyzw=_site_xyzw(q), max_steps=MOVE_STEPS, **_kw(arm))
             _EEF[arm] = np.asarray(r.get("final_eef_pos", leg), dtype=np.float64)
 

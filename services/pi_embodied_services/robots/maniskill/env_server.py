@@ -244,6 +244,25 @@ IK_MODELS = {"panda": "panda", "xarm6_robotiq": "xarm6"}
 IK_JOINTS = {"panda": 7, "xarm6": 6}
 
 
+#: The observation the env server renders: the views, metric depth and segmentation.
+OBS_MODE = "rgb+depth+segmentation"
+
+
+def obs_mode_for(env_id: str) -> str:
+    """``OBS_MODE`` where the env id accepts it, else ``rgb+segmentation``: the BridgeData
+    digital twins (the widowx250s scenes) composite a real background behind the render and
+    accept no depth (their ``SUPPORTED_OBS_MODES``); their views then have none."""
+    from mani_skill.utils.registration import REGISTERED_ENVS
+
+    entry = REGISTERED_ENVS.get(env_id)
+    supported = getattr(entry.cls, "SUPPORTED_OBS_MODES", None) if entry else None
+    # ManiSkill's own rule (sapien_env): a listed mode, or any texture combination where the
+    # class lists "any_textures".
+    if not supported or OBS_MODE in supported or "any_textures" in supported:
+        return OBS_MODE
+    return "rgb+segmentation"
+
+
 def _place_depth(depth: np.ndarray, nh: int, nw: int, size: int) -> np.ndarray:
     """``depth`` resized to ``nh`` x ``nw`` (nearest: no depth is blended across an edge) and
     centred in a ``size`` square of zeros (no depth), as the letterboxes place the image."""
@@ -688,6 +707,7 @@ class ManiskillEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         robot_uids = self._robot.uid
         self._scene = None
         self._cameras = CAMERAS
+        self._obs_mode = OBS_MODE
         table_z = 0.0
         if self._rig:
             # The rig fixes the robot, both cameras and the view transform (its training
@@ -696,7 +716,7 @@ class ManiskillEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
             self._env = scenes.make_env(
                 env_id,
                 self._scene,
-                obs_mode="rgb+depth+segmentation",
+                obs_mode=OBS_MODE,
                 control_mode=control_mode,
                 sim_backend=sim_backend,
                 max_episode_steps=int(max_episode_steps),
@@ -720,10 +740,11 @@ class ManiskillEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
                 self._cameras = {"agentview": agentview}
             # An env id that fixes its robot (FIXED_ROBOT_ENVS) takes no robot_uids.
             fixed = env_id in FIXED_ROBOT_ENVS
+            self._obs_mode = obs_mode_for(env_id)
             self._env = gym.make(
                 env_id,
                 num_envs=1,
-                obs_mode="rgb+depth+segmentation",
+                obs_mode=self._obs_mode,
                 control_mode=control_mode,
                 **({} if fixed else {"robot_uids": robot_uids}),
                 **(
@@ -1319,7 +1340,10 @@ class ManiskillEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         ``[rgb, depth_m]`` (float32 metres, 0 = none: the letterbox bars) on the same pixels."""
         self._camera(camera_name)
         rgb = self._rgb(self._obs, camera_name)
-        return [rgb, self._depth(self._obs, camera_name)] if depth else rgb
+        # A scene without depth (obs_mode_for) answers with the image alone.
+        if not depth or "depth" not in self._obs_mode:
+            return rgb
+        return [rgb, self._depth(self._obs, camera_name)]
 
     def get_camera_meta(self, camera_name: str = "agentview", **_: Any) -> dict:
         """OpenCV intrinsics and camera-to-world extrinsic of a sensor camera (raw sensor

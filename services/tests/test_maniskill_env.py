@@ -276,6 +276,7 @@ def _facade(robot: str, wrist: bool = True, root_q=(1.0, 0.0, 0.0, 0.0)):
     facade._robot = ms.ROBOTS[robot]
     facade._rig = None
     facade._cameras = ms.CAMERAS
+    facade._obs_mode = ms.OBS_MODE
     facade._meta = {"robot": robot, "wrist": wrist, "env_id": "PickCube-v1"}
     pose = type("P", (), {"q": np.array([root_q])})()
     tcp = type("T", (), {"pose": type("P", (), {"p": np.zeros((1, 3))})()})()
@@ -561,3 +562,26 @@ def test_depth_takes_the_views_orientation_and_letterbox_pixel_for_pixel():
         assert (d == 0).sum() > 0 and name
     # Without depth the rgb alone, as before.
     assert f.render_camera("agentview").shape == (64, 64, 3)
+    # A scene that renders no depth (the bridge twins) answers a depth request with the rgb.
+    f._obs_mode = "rgb+segmentation"
+    assert f.render_camera("agentview", depth=True).shape == (64, 64, 3)
+
+
+def test_the_bridge_twins_render_without_depth_and_the_rest_with_it(monkeypatch):
+    """obs_mode_for reads the env class's SUPPORTED_OBS_MODES: the BridgeData scenes take
+    rgb+segmentation only (asking for depth made the widowx250s env server exit at start)."""
+    registration = pytest.importorskip("mani_skill.utils.registration")
+    bridge = type("Bridge", (), {"SUPPORTED_OBS_MODES": ["rgb+segmentation"]})
+    stock = type(
+        "Stock",
+        (),
+        {"SUPPORTED_OBS_MODES": ("state", "sensor_data", "any_textures", "pointcloud")},
+    )
+    envs = {
+        "PutCarrotOnPlateInScene-v1": type("S", (), {"cls": bridge})(),
+        "PickCube-v1": type("S", (), {"cls": stock})(),
+    }
+    monkeypatch.setattr(registration, "REGISTERED_ENVS", envs)
+    assert ms.obs_mode_for("PutCarrotOnPlateInScene-v1") == "rgb+segmentation"
+    assert ms.obs_mode_for("PickCube-v1") == ms.OBS_MODE
+    assert ms.obs_mode_for("NotRegistered-v1") == ms.OBS_MODE

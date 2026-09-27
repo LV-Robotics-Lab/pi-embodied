@@ -383,7 +383,7 @@ handover task renders no instance segmentation.
 | `env.get_task_language` | - | str |
 | `env.ground_truth_poses` | kw `names=null` | poses of robosuite's task objects (`cube`; `cubeA`, `cubeB`; `SquareNut`, `RoundNut`, `peg1`, `peg2`; `pot` + `pot_handle0` / `pot_handle1`; `hammer` + `hammer_handle`; Wipe's dirt markers) |
 | `env.preview_reach` | `pos`, `quat_xyzw=null`, kw `arm` | the `--ik` reach preview (robot model `panda_libero`), or the `unknown` answer without it |
-| `code.api` | kw `tier=null` | the primitive registry (`robots/robosuite/primitives.py`): high = `get_state`, `get_observation`, `segment`, `back_project`, `preview_reach`, `move_to`, `set_gripper`; low = `get_state`, `get_observation`, `move_delta`, `set_gripper`, `raw_obs`, `render_camera`, `get_camera_meta`, `step`; privileged adds `ground_truth_poses`; a grasp server (`--graspnet` ...) adds its planner's |
+| `code.api` | kw `tier=null` | the primitive registry (`robots/robosuite/primitives.py`): high = `get_state`, `get_observation`, `segment`, `back_project`, `preview_reach`, `move_to`, `set_gripper`; low = `get_state`, `get_observation`, `move_delta`, `set_gripper`, `raw_obs`, `render_camera`, `get_camera_meta`, `step`; privileged adds `ground_truth_poses`; a grasp server (`--contact-graspnet` ...) adds its planner's |
 
 `stop` interrupts `env.move_to` / `env.move_delta` / `env.set_gripper` between control steps
 (`info.cancelled`) and `env.chunk_step` between actions.

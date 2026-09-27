@@ -187,7 +187,7 @@ test("--point: Molmo on the current images; the pixel's world xyz where the robo
 	assert.deepEqual(one.details.world_xyz, [0.4, 0, 0.02]);
 });
 
-test("--graspnet: plan_grasp and execute_grasp, the claimed path run as move_delta calls of at most 0.2 m", async (t) => {
+test("--contact-graspnet: plan_grasp and execute_grasp, the claimed path run as move_delta calls of at most 0.2 m", async (t) => {
 	let tcp = [0.4, 0, 0.3];
 	const moves: number[][] = [];
 	const env = await fakeEnv((c) => {
@@ -240,7 +240,7 @@ test("--graspnet: plan_grasp and execute_grasp, the claimed path run as move_del
 		return undefined;
 	});
 	t.after(env.close);
-	const s = simPi({ env: env.url, graspnet: "http://127.0.0.1:1" });
+	const s = simPi({ env: env.url, "contact-graspnet": "http://127.0.0.1:1" });
 	genesis(s.pi);
 	await s.emit("session_start");
 	process.exitCode = undefined;

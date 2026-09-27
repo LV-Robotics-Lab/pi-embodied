@@ -265,7 +265,9 @@ export function graspAdvisorTool(pi: ExtensionAPI, rig: AdvisorRig, mount: (d: G
 	return (graspOn: boolean) => {
 		if (pi.getFlag("grasp-advisor") !== true) return [];
 		if (!graspOn)
-			throw new Error("--grasp-advisor needs a plan_grasp backend (--graspnet, --graspgenx or --anygrasp)");
+			throw new Error(
+				"--grasp-advisor needs a plan_grasp backend (--contact-graspnet, --graspgenx, --anygrasp or --graspnet1b)",
+			);
 		if (!names) {
 			mount(suggestGrasp(pi, rig, plans));
 			names = ["suggest_grasp"];

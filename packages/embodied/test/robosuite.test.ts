@@ -181,7 +181,7 @@ test("the frame text matches robosuite's cameras and the opposed two-arm layout"
 test("grasp tools: plan_grasp, plan_place and check_attached are registered over the env server's planner", () => {
 	const f = stubPi();
 	robosuite(f.pi);
-	for (const name of ["graspnet", "graspgenx", "anyplace", "anygrasp", "attach-vlm-model"])
+	for (const name of ["contact-graspnet", "graspgenx", "anyplace", "anygrasp", "graspnet1b", "attach-vlm-model"])
 		assert.ok(name in f.flags, name);
 	for (const name of ["plan_grasp", "plan_place", "check_attached"]) assert.ok(f.tools.has(name), name);
 	const props = (name: string) => f.tools.get(name)!.parameters.properties;
@@ -236,12 +236,12 @@ export async function fakeRobosuite(task = "Lift", answer: (c: Call) => unknown 
 	});
 }
 
-test("--graspnet activates plan_grasp / plan_place / check_attached; plan_grasp reaches env.plan_grasp with the arm", async (t) => {
+test("--contact-graspnet activates plan_grasp / plan_place / check_attached; plan_grasp reaches env.plan_grasp with the arm", async (t) => {
 	const env = await fakeRobosuite("Lift", (c) =>
 		c.method === "env.plan_grasp" ? { active: "g1", candidates: [{ id: "g1" }], expired_ids: [] } : undefined,
 	);
 	t.after(env.close);
-	const s = simPi({ env: env.url, task: "Lift", graspnet: "http://127.0.0.1:1" });
+	const s = simPi({ env: env.url, task: "Lift", "contact-graspnet": "http://127.0.0.1:1" });
 	robosuite(s.pi);
 	await s.emit("session_start");
 	process.exitCode = undefined;
@@ -266,7 +266,7 @@ test("--graspnet activates plan_grasp / plan_place / check_attached; plan_grasp 
 test("Wipe's sponge has no fingers: no grasp tools even with a backend", async (t) => {
 	const env = await fakeRobosuite("Wipe");
 	t.after(env.close);
-	const s = simPi({ env: env.url, task: "Wipe", graspnet: "http://127.0.0.1:1" });
+	const s = simPi({ env: env.url, task: "Wipe", "contact-graspnet": "http://127.0.0.1:1" });
 	robosuite(s.pi);
 	await s.emit("session_start");
 	process.exitCode = undefined;

@@ -150,7 +150,7 @@ export default function genesis(pi: ExtensionAPI) {
 	// --ik: preview_reach over the env server's IK check (../ik.ts).
 	registerIkFlag(pi);
 	registerDetectionFlags(pi);
-	// --graspnet & co: plan_grasp and friends, and execute_grasp / execute_place (../primitives/grasp-chain.ts).
+	// --contact-graspnet & co: plan_grasp and friends, and execute_grasp / execute_place (../primitives/grasp-chain.ts).
 	registerGraspFlags(pi);
 	// --point: Molmo's point over its --molmo server (../primitives/pointing.ts).
 	registerPointFlags(pi, { molmo: true });
@@ -473,7 +473,7 @@ export default function genesis(pi: ExtensionAPI) {
 	}))
 		mountGraspTool(robot.tool, d);
 
-	// plan_grasp / plan_place / check_attached over the env server's planner (--graspnet & co), and
+	// plan_grasp / plan_place / check_attached over the env server's planner (--contact-graspnet & co), and
 	// execute_grasp / execute_place running a planned id as bounded move_delta legs (../primitives/grasp-chain.ts).
 	for (const d of graspTools(pi, {
 		call: (method, kwargs, timeoutMs) => env.call<Json>(method, kwargs, timeoutMs ?? 120_000, [], robot.signal),

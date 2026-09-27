@@ -84,7 +84,7 @@ Every robot but the Frankas (whose `segment` does this with `--robot-sam3` / `--
 `reject_detection`, through its `--sam3`) and `--unidepth <url>` (`enhance_depth`: UniDepth depth,
 the only depth ManiSkill, RoboLab and the Piper / UR5e webcams have; UR5e's `back_project` then reads
 it); `src/primitives/detections.ts`, the env servers' `env.detect` & co.
-Metaworld and Genesis take the grasp flags too (`--graspnet` & co): `plan_grasp`, `plan_place`,
+Metaworld and Genesis take the grasp flags too (`--contact-graspnet` & co): `plan_grasp`, `plan_place`,
 `check_attached` over their env server's planner, and `execute_grasp` / `execute_place`, which run a
 planned id's claimed path as bounded `move_delta` legs (`src/primitives/grasp-chain.ts`; a candidate
 more than 20 deg from straight down is refused, the grippers cannot turn).
@@ -274,7 +274,7 @@ in a new session. Boolean flags take the next word as their value; write them as
 - Robosuite: the services' `[robosuite]` extra (Python 3.11, robosuite 1.5 in its own venv: LIBERO and
   RoboCasa pin 1.4 forks); CaP-X's seven tasks (`--task Lift --seed 0`, two-arm tasks take `arm`),
   closed-loop `move_to` / `move_delta` under `--max-move`, `gripper`, depth tools, planned grasps
-  (`plan_grasp` / `plan_place` / `check_attached` with `--graspnet` & co), `preview_reach` with `--ik`,
+  (`plan_grasp` / `plan_place` / `check_attached` with `--contact-graspnet` & co), `preview_reach` with `--ik`,
   units mode and `--privileged`; `src/robosuite/eval.sh`.
 - Genesis: the services' `[genesis]` extra (Python 3.11, Genesis 1.4, a GPU for rendering, no assets);
   OpenETA's Franka `cube_pick` (`--task cube_pick --seed 0`), a base-frame `move_delta` plus `gripper`,

@@ -743,7 +743,7 @@ def main():
     perception = install_perception(
         facade, args, cameras=["agentview", "wrist"], view=view
     )
-    # --graspnet & co: env.plan_grasp, env.claim_waypoints and friends over the same views
+    # --contact-graspnet & co: env.plan_grasp, env.claim_waypoints and friends over the same views
     # (the hand's quaternion as xyzw); pi's execute_grasp splits the claimed path into move_delta calls.
     install_grasp_planner(
         facade,

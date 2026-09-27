@@ -192,7 +192,7 @@ export default function metaworld(pi: ExtensionAPI) {
 	pi.registerFlag("sam3", { type: "string", default: "http://127.0.0.1:18300", description: "SAM3 server (segment)" });
 	// --detections / --unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
 	registerDetectionFlags(pi);
-	// --graspnet & co: plan_grasp and friends, and execute_grasp / execute_place (../primitives/grasp-chain.ts).
+	// --contact-graspnet & co: plan_grasp and friends, and execute_grasp / execute_place (../primitives/grasp-chain.ts).
 	registerGraspFlags(pi);
 	// --point: Molmo's point over its --molmo server (../primitives/pointing.ts).
 	registerPointFlags(pi, { molmo: true });
@@ -614,7 +614,7 @@ export default function metaworld(pi: ExtensionAPI) {
 		},
 	);
 
-	// plan_grasp / plan_place / check_attached over the env server's planner (--graspnet & co), and
+	// plan_grasp / plan_place / check_attached over the env server's planner (--contact-graspnet & co), and
 	// execute_grasp / execute_place running a planned id as bounded move_delta legs (../primitives/grasp-chain.ts).
 	for (const d of graspTools(pi, {
 		call: (method, kwargs, timeoutMs) => env.call<Json>(method, kwargs, timeoutMs ?? 120_000, [], robot.signal),

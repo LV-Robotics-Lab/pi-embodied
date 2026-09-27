@@ -1408,6 +1408,7 @@ class LiberoEnvFacade(BaseEnvFacade):
         """Servo the grip site to ``position`` and the eef frame to ``tool_R`` together (OSC
         deltas: world-frame translation and rotation vector), holding the gripper command."""
         target = np.asarray(position, dtype=np.float64).reshape(3)
+        self._check_xy(target, "move_grip")
         goal = np.asarray(tool_R, dtype=np.float64)
         steps = 0
         cancelled = False

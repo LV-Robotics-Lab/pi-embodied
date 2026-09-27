@@ -1616,6 +1616,11 @@ export default function libero(pi: ExtensionAPI) {
 					? `Episode already ended (terminated=${terminated}, truncated=${truncated}).`
 					: undefined,
 			execute: async (plan) => {
+				// The same xy bound as move_to: a longer grip move is refused unmoved.
+				const far = plan.motion
+					? xyRefusal(plan.current.grip_xyz_m, plan.target.grip_xyz_m, "move_grip")
+					: undefined;
+				if (far) return observe({ name: "move_grip", refused: far, steps_used: 0 });
 				const { result, pngs } = await runGripPlan(
 					plan,
 					{

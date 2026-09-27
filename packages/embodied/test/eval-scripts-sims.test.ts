@@ -233,3 +233,13 @@ for (const [robot, positional, cell] of [
 		assert.equal(result.code_oracle, "x");
 	});
 }
+
+for (const [robot, positional, cell] of CELLS) {
+	test(`${robot}/eval.sh records --vdm-video as its frame count and refuses a value pi would ignore`, () => {
+		const run1 = (args: string[]) => run(robot, positional, cell, args);
+		assert.equal(run1(["--vdm-video=false"]).status, 2);
+		assert.equal(run1([]).result?.vdm_video, null);
+		assert.equal(run1(["--vdm-video"]).result?.vdm_video, 8);
+		assert.equal(run1(["--vdm-video=true", "--vdm-video-frames=4"]).result?.vdm_video, 4);
+	});
+}

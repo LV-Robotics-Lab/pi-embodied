@@ -90,6 +90,16 @@ for (const [robot, positional, cell, env] of CELLS) {
 }
 
 for (const [robot, positional, cell, env] of CELLS) {
+	test(`${robot}/eval.sh records --vdm-video as its frame count and refuses a value pi would ignore`, () => {
+		const run1 = (args: string[]) => run(robot, positional, cell, args, env);
+		assert.equal(run1(["--vdm-video=false"]).status, 2);
+		assert.equal(run1([]).result?.vdm_video, null);
+		assert.equal(run1(["--vdm-video"]).result?.vdm_video, 8);
+		assert.equal(run1(["--vdm-video", "--vdm-video-frames", "4"]).result?.vdm_video, 4);
+	});
+}
+
+for (const [robot, positional, cell, env] of CELLS) {
 	test(`${robot}/eval.sh records --vdm, --vdm-model and --vdm-wrist and refuses a value pi would ignore`, () => {
 		const run1 = (args: string[]) => run(robot, positional, cell, args, env);
 		for (const args of [["--vdm=false"], ["--vdm", "false"], ["--vdm-wrist=0"]]) {

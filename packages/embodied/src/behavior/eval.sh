@@ -13,7 +13,7 @@
 # did not fail (`env_error`, `planner_error` and a missing result are invalid), whatever the
 # outcome. Rerunning retries exactly the invalid episodes; valid ones are kept. Each result records
 # the model, thinking level, --max-turns, --time-limit, the units mode (--units, --units-plugins, --stateless), visual
-# differencing (--vdm, --vdm-model, --vdm-wrist) and --anchor-image, and the summary covers only the requested cells and refuses to mix configurations.
+# differencing (--vdm, --vdm-model, --vdm-wrist, --vdm-video, --vdm-video-frames) and --anchor-image, and the summary covers only the requested cells and refuses to mix configurations.
 # A --privileged run (simulator ground truth) is recorded as such and never shares an out dir with one without.
 # The fallback planner (--fallback-model, --fallback-after, --fallback-retry-primary; src/fallback.ts) is part of the
 # configuration too, and the summary totals the turns each planner model planned (planner_models).
@@ -31,7 +31,7 @@ model="" thinking="" turns=0 limit=${TIME_LIMIT:-1800} limited="" units=false st
 anchor=false
 approval=standard max_tool_calls=0 max_tokens=0
 code=false code_api=high code_oracle=""
-vdm=false vdm_model="" vdm_wrist=false
+vdm=false vdm_model="" vdm_wrist=false vdm_video=false vdm_video_frames=8
 privileged=false
 fallback_model="" fallback_after=2 fallback_retry=0
 grasping_mode=sticky
@@ -63,12 +63,15 @@ for ((i = 0; i < ${#args[@]}; i++)); do
 		echo "${args[i]}: pi ignores a boolean flag's value and would run stateless; omit --stateless for a stateful run" >&2
 		exit 2
 		;;
-	--vdm | --vdm-wrist) case ${args[i + 1]:-} in "" | -* | @* | true) [ "${args[i]}" = --vdm ] && vdm=true || vdm_wrist=true ;; *)
+	--vdm | --vdm-wrist | --vdm-video) case ${args[i + 1]:-} in "" | -* | @* | true) case ${args[i]} in --vdm) vdm=true ;; --vdm-wrist) vdm_wrist=true ;; *) vdm_video=true ;; esac ;; *)
 		echo "${args[i]} takes no value: pi would turn it on and swallow '${args[i + 1]}'" >&2 && exit 2 ;;
 	esac ;;
 	--vdm=true) vdm=true ;;
 	--vdm-wrist=true) vdm_wrist=true ;;
-	--vdm=* | --vdm-wrist=*)
+	--vdm-video=true) vdm_video=true ;;
+	--vdm-video-frames) vdm_video_frames=${args[i + 1]:-8} ;;
+	--vdm-video-frames=*) vdm_video_frames=${args[i]#*=} ;;
+	--vdm=* | --vdm-wrist=* | --vdm-video=*)
 		echo "${args[i]}: pi ignores a boolean flag's value and would turn it on; omit it to leave it off" >&2
 		exit 2
 		;;
@@ -120,6 +123,8 @@ done
 [ "$code" = pure ] && code=true
 # --units-plugins is part of the units mode: a result with other plugins is another configuration.
 [ "$units" != false ] && [ -n "${units_plugins+x}" ] && units="$units+plugins=$units_plugins"
+# --vdm-video (CaP-X video differencing, src/vdm.ts) is recorded as its sampled frame count.
+[ "$vdm_video" = true ] && vdm_video=$vdm_video_frames || vdm_video=""
 [ "$units" != false ] && units="$units${units_opts-}"
 # --time-limit (default $TIME_LIMIT, 1800 s; 0 = none) ends the planner gracefully, as a failure;
 # `timeout` is only the backstop for a hung process, and a killed episode is invalid.
@@ -127,12 +132,12 @@ done
 backstop=()
 [ "$limit" -gt 0 ] && command -v timeout >/dev/null && backstop=(timeout -k 30 $((limit + 1800)))
 mkdir -p "$out"
-config=("$model" "$thinking" "$turns" "$limit" "$units" "$stateless" "$anchor" "$vdm" "$vdm_model" "$vdm_wrist" "$privileged" "$fallback_model" "$fallback_after" "$fallback_retry" "$grasping_mode" "$approval" "$max_tool_calls" "$max_tokens" "$code" "$code_api" "$code_oracle")
+config=("$model" "$thinking" "$turns" "$limit" "$units" "$stateless" "$anchor" "$vdm" "$vdm_model" "$vdm_wrist" "$privileged" "$fallback_model" "$fallback_after" "$fallback_retry" "$grasping_mode" "$approval" "$max_tool_calls" "$max_tokens" "$code" "$code_api" "$code_oracle" "$vdm_video")
 
 record() { # <dir> <exit code>: write result.json from the episode's session
 	node --input-type=module -e '
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
-const [dir, code, model, thinking, turns, limit, units, stateless, anchor, vdm, vdmModel, vdmWrist, privileged, fallbackModel, fallbackAfter, fallbackRetry, graspingMode, approval, maxToolCalls, maxTokens, codeMode, codeApi, codeOracle] = process.argv.slice(1);
+const [dir, code, model, thinking, turns, limit, units, stateless, anchor, vdm, vdmModel, vdmWrist, privileged, fallbackModel, fallbackAfter, fallbackRetry, graspingMode, approval, maxToolCalls, maxTokens, codeMode, codeApi, codeOracle, vdmVideo] = process.argv.slice(1);
 const results = [];
 for (const f of readdirSync(dir).filter((f) => f.endsWith(".jsonl"))) {
 	for (const line of readFileSync(`${dir}/${f}`, "utf8").split("\n")) {
@@ -154,7 +159,7 @@ const status = Number(code) === 124 ? "timeout" : results.length > 1 ? "duplicat
 	: last.env_error ? "env_error" : last.planner_error ? "planner_error" : last.success ? "success" : "failure";
 const result = { ...(last ?? {}), status, exit_code: Number(code), model: model || null, thinking: thinking || null,
 	max_turns: Number(turns), time_limit: Number(limit), units, anchor_image: anchor === "true", approval, max_tool_calls: Number(maxToolCalls), max_tokens: Number(maxTokens),
-	vdm: vdm === "true", vdm_model: vdmModel || null, vdm_wrist: vdmWrist === "true", privileged: privileged === "true",
+	vdm: vdm === "true", vdm_model: vdmModel || null, vdm_wrist: vdmWrist === "true", vdm_video: vdmVideo ? Number(vdmVideo) : null, privileged: privileged === "true",
 	stateless: stateless === "true",
 	fallback_model: fallbackModel || null, fallback_after: fallbackModel ? Number(fallbackAfter) : null, fallback_retry_primary: fallbackModel ? Number(fallbackRetry) : null,
 	grasping_mode: String(graspingMode),
@@ -166,7 +171,7 @@ console.log(JSON.stringify({ status, success: result.success, q_score: result.q_
 
 valid() { # <dir>: 0 = a valid result of this configuration, 2 = a valid result of another one, 1 = none
 	node -e '
-const [path, model, thinking, turns, limit, units, stateless, anchor, vdm, vdmModel, vdmWrist, privileged, fallbackModel, fallbackAfter, fallbackRetry, graspingMode, approval, maxToolCalls, maxTokens, codeMode, codeApi, codeOracle] = process.argv.slice(1);
+const [path, model, thinking, turns, limit, units, stateless, anchor, vdm, vdmModel, vdmWrist, privileged, fallbackModel, fallbackAfter, fallbackRetry, graspingMode, approval, maxToolCalls, maxTokens, codeMode, codeApi, codeOracle, vdmVideo] = process.argv.slice(1);
 const r = JSON.parse(require("fs").readFileSync(path, "utf8"));
 if (r.status !== "success" && r.status !== "failure") process.exit(1);
 const same = r.model === (model || null) && r.thinking === (thinking || null) && r.max_turns === Number(turns)
@@ -178,6 +183,8 @@ const same = r.model === (model || null) && r.thinking === (thinking || null) &&
 	// Results written before --vdm existed ran without it.
 	&& (r.vdm ?? false) === (vdm === "true") && (r.vdm_model ?? null) === (vdmModel || null)
 	&& (r.vdm_wrist ?? false) === (vdmWrist === "true")
+	// Results written before --vdm-video existed ran without it.
+	&& (r.vdm_video ?? null) === (vdmVideo ? Number(vdmVideo) : null)
 	// Results written before --privileged existed ran without it.
 	&& (r.privileged ?? false) === (privileged === "true")
 	// Results written before --fallback-model existed ran without a fallback planner.
@@ -223,7 +230,7 @@ const rows = cells.map((c) => {
 });
 const scoredRows = rows.filter((r) => r.status === "success" || r.status === "failure");
 const configs = new Set(scoredRows
-	.map((r) => `${r.model}/${r.thinking}/turns=${r.max_turns}/limit=${r.time_limit}/units=${r.units}${r.units_wrist_view === false ? `/no-wrist:${(r.units_plugins ?? []).join("+")}` : ""}${r.stateless ? "/stateless" : ""}${r.anchor_image ? "/anchor" : ""}${(r.approval ?? "standard") !== "standard" ? `/approval=${r.approval}` : ""}${r.max_tool_calls ? `/tool_calls=${r.max_tool_calls}` : ""}${r.max_tokens ? `/tokens=${r.max_tokens}` : ""}${r.vdm ? `/vdm=${r.vdm_model ?? "default"}${r.vdm_wrist ? "+wrist" : ""}` : ""}${r.privileged ? "/privileged" : ""}${r.fallback_model ? `/fallback=${r.fallback_model}:${r.fallback_after}:${r.fallback_retry_primary}` : ""}/grasp=${r.grasping_mode ?? "sticky"}${r.code && r.code !== "false" ? `/code=${r.code}:${r.code_api}${r.code_oracle ? `:oracle=${r.code_oracle}` : ""}` : ""}`));
+	.map((r) => `${r.model}/${r.thinking}/turns=${r.max_turns}/limit=${r.time_limit}/units=${r.units}${r.units_wrist_view === false ? `/no-wrist:${(r.units_plugins ?? []).join("+")}` : ""}${r.stateless ? "/stateless" : ""}${r.anchor_image ? "/anchor" : ""}${(r.approval ?? "standard") !== "standard" ? `/approval=${r.approval}` : ""}${r.max_tool_calls ? `/tool_calls=${r.max_tool_calls}` : ""}${r.max_tokens ? `/tokens=${r.max_tokens}` : ""}${r.vdm ? `/vdm=${r.vdm_model ?? "default"}${r.vdm_wrist ? "+wrist" : ""}` : ""}${r.vdm_video ? `/vdm_video=${r.vdm_video}:${r.vdm_model ?? "default"}` : ""}${r.privileged ? "/privileged" : ""}${r.fallback_model ? `/fallback=${r.fallback_model}:${r.fallback_after}:${r.fallback_retry_primary}` : ""}/grasp=${r.grasping_mode ?? "sticky"}${r.code && r.code !== "false" ? `/code=${r.code}:${r.code_api}${r.code_oracle ? `:oracle=${r.code_oracle}` : ""}` : ""}`));
 if (configs.size > 1) {
 	console.log(`refusing to summarize: ${out} mixes configurations ${[...configs].join(", ")}`);
 	process.exit(1);

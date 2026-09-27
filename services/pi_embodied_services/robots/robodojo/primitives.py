@@ -32,7 +32,7 @@ ROBODOJO_PRIMITIVES = (
     Primitive(
         "state",
         "env.state",
-        "Both arms' end-effector poses (env frame), joints and grippers; success, score and step count.",
+        "Both arms' end-effector poses (env frame), joints and grippers; success and step count (the partial-credit score is the evaluator's).",
         example='st = state()\nprint(st["arms"]["left"]["tcp_pos"], st["arms"]["right"]["gripper"], st["env_steps"])',
     ),
     Primitive(

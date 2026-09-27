@@ -174,7 +174,8 @@ Shared modules:
   runs the paper's action-representation ablation (src/units/experimental.ts).
 - `src/code/`: code mode (CaP-X's run_code). `--code=true` hides the robot's tools: the model
   writes Python programs that `run_code` executes on the env server against its primitive registry
-  (`code.api`; `--code-api=high|low`, CaP-X's S2/S3; `--privileged` runs the privileged tier, S1),
+  (`code.api`; `--code-api=high|low|low-noexamples`, CaP-X's S2/S3/S4; `--privileged` runs the
+  privileged tier, S1),
   in a spawned subprocess with no env object whose calls the server resolves through the registry
   (JSON over the pipe, never pickle; the child starts without the server's secret-looking
   environment variables, in its own process group, with no new processes or threads allowed;
@@ -184,7 +185,12 @@ Shared modules:
   helpers. `--code=both` adds
   `run_code` to the robot's tools. Mutually exclusive with `--units`; `--stateless` applies. Real
   robots need `--code-real` and `--operator`, and every program is confirmed by the operator.
-  LIBERO today (services/PROTOCOL.md, code mode).
+  `--code-oracle <file>` runs a human reference program once instead of the model (CaP-X's 17 oracles,
+  ported in `src/robosuite/oracle/` and `src/libero/oracle/`; the result records `code_oracle`).
+  Every simulator serves it (LIBERO, Robosuite, MetaWorld, ManiSkill, Genesis, BEHAVIOR, RoboCasa,
+  RoboLab, RoboTwin, RoboDojo), and the real robots (Franka, dual Franka, Piper, UR5e) when their
+  server runs with `--code`; eval.sh records `--code`, `--code-api` and `--code-oracle`
+  (services/PROTOCOL.md, code mode).
 - `src/xpolicy.ts`: XPolicyLab policies (github.com/XPolicyLab/XPolicyLab, pinned `d6332bf`).
   pi-embodied is only the environment client: start the policy server the XPolicyLab way
   (`policy/<name>/setup_eval_policy_server.sh`) and pass `--xpolicy ws://host:port`

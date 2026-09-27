@@ -534,8 +534,8 @@ def test_a_planned_grasp_and_place_run_end_to_end_from_one_resolution_each():
     assert place["held"] is True
     pid = place["active"]
     assert place["candidates"][0]["eef_position"] == pytest.approx(
-        [0.15, 0, 0.3], abs=0.013
-    ), "10 cm along +x from where the gripper actually holds it"
+        [0.15, 0, 0.21], abs=0.013
+    ), "10 cm along +x from where the gripper holds it, set down on the table's top"
     out = rpc["env.execute_place"](place_id=pid)
     assert "error" not in out, out
     assert [leg.get("to") for leg in out["legs"]] == [
@@ -641,7 +641,7 @@ def test_a_place_that_stalls_before_opening_keeps_the_held_grasp():
     def blocked(
         target, *args, **kwargs
     ):  # something under the pre-place stops the descent
-        if target[2] < 0.35:
+        if target[2] < 0.25:
             return 1, False
         return servo(target, *args, **kwargs)
 

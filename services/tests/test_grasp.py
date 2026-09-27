@@ -518,8 +518,12 @@ def test_plan_place_after_the_grasp_uses_the_held_pose_and_refuses_an_empty_grip
     assert place["held"] is True and place["grasp_id"] == gid
     assert place["object_mask_id"] != region, "the held block was segmented again"
     p = place["candidates"][0]
-    # The composition starts from the gripper's actual pose (0.3 up), not the planned 0.2.
-    assert np.allclose(p["eef_position"], [-0.05, 0, 0.3], atol=1e-6)
+    # The composition starts from the gripper's actual pose (x, y and orientation), and the
+    # block is set down on the region: the grasp was at the block's top (0.2, its support
+    # read from the mask's lowest points is 0.2 too), so the EEF goes to the region's top
+    # (0.2) plus the 1 cm clearance, not the 0.3 it is held at.
+    assert np.allclose(p["eef_position"], [-0.05, 0, 0.21], atol=1e-6)
+    assert p["settled_m"] == pytest.approx(-0.09)
     assert np.allclose(p["eef_quat_xyzw"], [1, 0, 0, 0], atol=1e-6)
     claim = planner.claim_waypoints(place["active"])
     assert claim["kind"] == "placement" and [s.get("to") for s in claim["steps"]] == [
@@ -924,20 +928,24 @@ class _RecordingAnyPlace(FakeAnyPlace):
         return super().call(method, args, kwargs, timeout_s=timeout_s)
 
 
-def test_a_place_that_would_approach_from_the_side_or_off_the_region_is_refused():
-    """The composed place must come from above (within 45 deg of straight down) and land
-    the object over the region; a transform like the box run's is refused, clearly."""
+def test_a_place_is_kept_upright_and_refused_off_the_region():
+    """The box run's AnyPlace transforms tipped the held bowl 50-60 deg (the composed place
+    then approached from the side). A place keeps only the model's turn about the vertical
+    and its landing point, and is refused when the object would land off or high above the
+    region; every candidate refused is an error that says why."""
     region = np.ones((H, W), bool)  # the whole table as the region
-    # Camera frame: the object tipped about camera x by 70 deg and moved toward the camera.
     a = np.deg2rad(70)
-    tipped = np.eye(4)
-    tipped[:3, :3] = [[1, 0, 0], [0, np.cos(a), -np.sin(a)], [0, np.sin(a), np.cos(a)]]
-    tipped[:3, 3] = [0.0, 0.3, -0.5]
+    tip = np.eye(4)
+    tip[:3, :3] = [[1, 0, 0], [0, np.cos(a), -np.sin(a)], [0, np.sin(a), np.cos(a)]]
+    toward_camera = tip.copy()
+    toward_camera[:3, 3] = [0.0, 0.3, -0.5]  # tipped and lifted half a metre
     beside = np.eye(4)
     beside[:3, 3] = [0.6, 0.0, 0.0]  # 60 cm off the table's edge
-    good = np.eye(4)
-    good[:3, 3] = [0.0, 0.05, 0.0]
-    anyplace = _RecordingAnyPlace([tipped, beside, good])
+    # Tipped 70 deg about the block's own centre, landing 5 cm over: kept, upright.
+    centre = np.array([-0.02, -0.02, 0.8])  # the block mask's centroid (pixels 4-11)
+    in_place = tip.copy()
+    in_place[:3, 3] = centre - tip[:3, :3] @ centre + [0.0, 0.05, 0.0]
+    anyplace = _RecordingAnyPlace([toward_camera, beside, in_place])
     planner, _ = _planner(sam3=FakeSam3(_block_mask()), anyplace=anyplace)
     obj = planner.segment_mask("block")["id"]
     planner._sam3 = FakeSam3(region)
@@ -945,11 +953,44 @@ def test_a_place_that_would_approach_from_the_side_or_off_the_region_is_refused(
     gid = planner.plan_grasp(mask_id=obj)["active"]
     place = planner.plan_place(reg, gid)
     assert np.allclose(anyplace.kwargs["extrinsic_cam2world"], CAM2WORLD)
-    assert place["candidate_count"] == 1
     assert [r["rank"] for r in place["refused"]] == [0, 1]
-    assert "from straight down" in place["refused"][0]["reason"]
-    assert "off the region" in place["refused"][1]["reason"]
-    assert place["candidates"][0]["approach"][2] == pytest.approx(-1.0)
-    anyplace.transforms = [tipped]
+    assert all(
+        "off the region" in r["reason"] or "not on the region" in r["reason"]
+        for r in place["refused"]
+    )
+    kept = place["candidates"][0]
+    assert kept["rank"] == 2 and kept["model_tilt_deg"] == pytest.approx(70, abs=0.5)
+    assert kept["approach"] == pytest.approx([0, 0, -1], abs=1e-6), (
+        "upright: from above"
+    )
+    # Camera +y is world -x: the block's grasp lands 5 cm along -x, at its own height.
+    assert kept["eef_position"] == pytest.approx([-0.05, 0.0, 0.2], abs=1e-3)
+    anyplace.transforms = [toward_camera]
     with pytest.raises(G.GraspError, match="can be executed from above"):
+        planner.plan_place(reg, gid)
+
+
+def test_a_place_from_a_tilted_grasp_is_refused():
+    """The approach check stays for the grasp itself: held 60 deg off vertical, a place would
+    come in from the side."""
+    b = np.deg2rad(60)
+    tilt = np.array([[np.cos(b), 0, np.sin(b)], [0, 1, 0], [-np.sin(b), 0, np.cos(b)]])
+    side = G.make_candidate(
+        score=0.9,
+        rotation=tilt @ G.ZX_NATIVE_TO_GRASPNET,
+        center=[0.0, 0.0, 0.8],
+        width=0.04,
+        depth=0.0,
+        source_model="fake",
+    )
+    planner = G.GraspPlanner(
+        _view,
+        cameras=["agentview"],
+        backends={"contact_graspnet": FakeServer([side])},
+        sam3=FakeSam3(np.ones((H, W), bool)),
+        anyplace=FakeAnyPlace([np.eye(4)]),
+    )
+    gid = planner.plan_grasp(object="block")["active"]
+    reg = planner.segment_mask("table")["id"]
+    with pytest.raises(G.GraspError, match="from straight down"):
         planner.plan_place(reg, gid)

@@ -89,6 +89,8 @@ MAX_PLACE_TILT_RAD = math.radians(45)
 PLACE_XY_MARGIN_M = 0.03
 PLACE_Z_MARGIN_M = 0.05
 PLACE_MAX_CLEARANCE_M = 0.25
+#: A held object is set down this far above the region's top surface, then released.
+PLACE_SETTLE_CLEARANCE_M = 0.01
 #: The longest standoff or lift a claim accepts.
 MAX_WAYPOINT_OFFSET_M = 0.30
 
@@ -409,6 +411,40 @@ def transform_candidate(
     R = T[:3, :3] @ np.asarray(cand["rotation_matrix"], dtype=np.float64)
     t = T[:3, :3] @ np.asarray(cand["translation_xyz"], dtype=np.float64) + T[:3, 3]
     return R, t
+
+
+def upright_placement(
+    T_place_camera: np.ndarray, cam2world: np.ndarray, object_camera: np.ndarray
+) -> tuple[np.ndarray, float]:
+    """AnyPlace's placement kept upright: the same landing point of the object's centroid,
+    but only its turn about world +z (the yaw nearest the model's rotation). Returns the
+    camera-frame transform and the tilt (rad) the model's rotation had.
+
+    A gripper that approaches from above can only turn a held object about the vertical, and
+    the model's tilt is not trustworthy outside its training objects (on the box, LIBERO's
+    bowl came back tipped 50-60 deg even in the gravity-aligned frame). The object then rests
+    as it was held, turned and moved onto the region."""
+    T_cw = np.asarray(cam2world, dtype=np.float64)
+    T_wc = np.linalg.inv(T_cw)
+    T_w = T_cw @ np.asarray(T_place_camera, dtype=np.float64) @ T_wc
+    R = T_w[:3, :3]
+    tilt = math.acos(float(np.clip(R[2, 2], -1.0, 1.0)))
+    yaw = math.atan2(R[1, 0] - R[0, 1], R[0, 0] + R[1, 1])
+    Rz = np.array(
+        [
+            [math.cos(yaw), -math.sin(yaw), 0.0],
+            [math.sin(yaw), math.cos(yaw), 0.0],
+            [0.0, 0.0, 1.0],
+        ]
+    )
+    if len(object_camera):
+        c = T_cw[:3, :3] @ np.asarray(object_camera, dtype=np.float64).mean(axis=0)
+        c = c + T_cw[:3, 3]
+    else:
+        c = np.zeros(3)
+    landed = R @ c + T_w[:3, 3]
+    upright = rigid(Rz, landed - Rz @ c)
+    return T_wc @ upright @ T_cw, tilt
 
 
 def compose_placement(T_place: np.ndarray, R_grasp: np.ndarray, t_grasp: np.ndarray):
@@ -1159,11 +1195,24 @@ class GraspPlanner:
                 f"{name} server answered in frame {res.get('grasp_frame')!r}, not {GRASP_FRAME!r}"
             )
         ranked = rank(list(res["candidates"]), n)
+        # Where the object rests: its lowest points (the support under it), so a place can
+        # set it down at the same height above its new support (claim_waypoints / plan_place).
+        T_cw = np.asarray(view["extrinsic_cam2world"], dtype=np.float64)
+        support_z = float(
+            np.percentile(obj_pts.astype(np.float64) @ T_cw[2, :3] + T_cw[2, 3], 5)
+        )
         ids: list[str] = []
         out_cands: list[dict[str, Any]] = []
         for i, cand in enumerate(ranked):
             item = self._world_candidate(snap, cand, arm)
-            item.update({"rank": i, "mask_id": mask_id, "rejected": False})
+            item.update(
+                {
+                    "rank": i,
+                    "mask_id": mask_id,
+                    "rejected": False,
+                    "_support_z": support_z,
+                }
+            )
             id = self._book.add(item, "g")
             ids.append(id)
             out_cands.append(self._public(self._book.get(id)))
@@ -1327,6 +1376,12 @@ class GraspPlanner:
                 "mask_id": item.get("mask_id"),
                 "prompt": self._prompt_of(item.get("mask_id")),
                 "width_m": item["width_m"],
+                # How high the EEF holds it above the surface it rested on.
+                "eef_above_support_m": (
+                    None
+                    if item.get("_support_z") is None
+                    else float(at[2]) - float(item["_support_z"])
+                ),
             }
         else:
             waypoints = {"pre_place": pre, "place": at, "retreat": pre}
@@ -1548,6 +1603,7 @@ class GraspPlanner:
             arm=arm,
             max_candidates=max_candidates,
             held=True,
+            eef_above_support=held.get("eef_above_support_m"),
         )
 
     def _place(
@@ -1565,7 +1621,12 @@ class GraspPlanner:
         arm: str | None,
         max_candidates: int | None,
         held: bool,
+        eef_above_support: float | None = None,
     ) -> dict:
+        """AnyPlace's placements composed with the grasp, kept upright, refused when not
+        executable; with ``eef_above_support`` (the executed grasp's EEF height above the
+        surface the object rested on) each is set down onto the region's top surface under
+        its landing point instead of the model's landing height."""
         view = snap.view
         n = int(max_candidates or self._max)
         started = time.perf_counter()
@@ -1602,7 +1663,8 @@ class GraspPlanner:
         cands: list[dict[str, Any]] = []
         refused: list[dict[str, Any]] = []
         for i, pl in enumerate(list(res["placements"])[:n]):
-            T_place = np.asarray(pl["transform_matrix"], dtype=np.float64)
+            T_model = np.asarray(pl["transform_matrix"], dtype=np.float64)
+            T_place, tilt = upright_placement(T_model, T_cw, obj_cam)
             R_c, t_c = compose_placement(T_place, grasp_R_camera, grasp_t_camera)
             R = T_cw[:3, :3] @ R_c
             t = T_cw[:3, :3] @ t_c + T_cw[:3, 3]
@@ -1610,6 +1672,18 @@ class GraspPlanner:
             if why:
                 refused.append({"rank": i, "reason": why})
                 continue
+            settled = None
+            if eef_above_support is not None and len(obj_cam) and len(region_w):
+                landed = T_place[:3, :3] @ obj_cam.astype(np.float64).mean(axis=0)
+                landed = T_cw[:3, :3] @ (landed + T_place[:3, 3]) + T_cw[:3, 3]
+                near = np.linalg.norm(region_w[:, :2] - landed[:2], axis=1) < 0.08
+                top = float(
+                    np.percentile(region_w[near if near.any() else ...][:, 2], 90)
+                )
+                eef_z = cal.eef_pose(R, t)["eef_position"][2]
+                settled = top + eef_above_support + PLACE_SETTLE_CLEARANCE_M - eef_z
+                t = t + np.array([0.0, 0.0, settled])
+                t_c = t_c + T_cw[:3, :3].T @ np.array([0.0, 0.0, settled])
             item = {
                 "kind": "placement",
                 "camera": snap.camera,
@@ -1619,6 +1693,8 @@ class GraspPlanner:
                 if pl.get("score") is None
                 else round(float(pl["score"]), 4),
                 "backend": "anyplace",
+                "model_tilt_deg": round(math.degrees(tilt), 1),
+                "settled_m": None if settled is None else round(settled, 4),
                 "source_grasp_id": grasp_id,
                 "object_mask_id": object_mask_id,
                 "region_mask_id": region_mask_id,
@@ -1771,6 +1847,7 @@ __all__ = [
     "rotvec_of",
     "rank",
     "transform_candidate",
+    "upright_placement",
     "yaw_of",
 ]
 

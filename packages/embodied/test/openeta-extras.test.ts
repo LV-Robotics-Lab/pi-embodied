@@ -277,21 +277,36 @@ test("wristAlignment moves the gripper centre's pixel onto the target at the tar
 	assert.deepEqual(shifted[0], [1, 0, 0, 0.1]);
 });
 
-test("align_wrist returns the aligned position and the marked wrist image; it moves nothing", async () => {
-	const rgb = Buffer.alloc(640 * 480 * 3);
+test("align_wrist asks the server, scales pixels, marks the image, and moves only with execute", async () => {
+	const asked: number[][] = [];
+	const moved: Json[] = [];
 	const t = alignWrist({
-		moveWith: "move_to xyz",
-		gripper: () => [0, 0, 0.3],
-		view: async (row, col) => {
-			assert.deepEqual([row, col], [215, 333]);
-			return { K, cam2world: DOWN, target: [0.01, 0.02, 0.1], image: { width: 640, height: 480, rgb } };
+		align: async (row, col, max) => {
+			asked.push([row, col, max]);
+			return {
+				desired_pixel: [240, 320],
+				target_pixel: [row, col],
+				delta_world: [0.01, 0.02, 0],
+				aligned_xyz: [0.01, 0.02, 0.3],
+			};
 		},
+		move: async (a) => {
+			moved.push(a);
+			return { reached: true };
+		},
+		scale: 2,
+		image: async () => ({ width: 1280, height: 960, rgb: Buffer.alloc(1280 * 960 * 3) }),
+		moveWith: "move_to",
 	});
-	const r = await t.run({ point: [215, 333] }, undefined);
-	assert.deepEqual(r.aligned_xyz, [0.01, 0.02, 0.3]);
-	assert.equal(r.max_correction_m, 0.03);
+	const r = await t.run({ point: [430, 666] }, undefined);
+	assert.deepEqual(asked, [[215, 333, 0.03]]);
+	assert.deepEqual(r.desired_pixel, [480, 640]);
 	assert.equal(r._pngs.length, 1);
-	assert.ok(t.description.includes("move_to xyz"));
+	assert.equal(moved.length, 0);
+	const ex = await t.run({ point: [430, 666], execute: true, max_correction_m: 0.05 }, undefined);
+	assert.deepEqual(moved[0].delta_world, [0.01, 0.02, 0]);
+	assert.deepEqual(ex.moved, { reached: true });
+	assert.equal(asked[1][2], 0.05);
 });
 
 // ---------------------------------------------------------------------------

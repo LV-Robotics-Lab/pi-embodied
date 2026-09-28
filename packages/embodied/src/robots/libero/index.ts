@@ -1559,6 +1559,19 @@ export default function libero(pi: ExtensionAPI) {
 	// (--align-wrist), suggest_grasp (--grasp-advisor) over ../primitives/{waypoints,wrist,advisor}.ts.
 	const cameraMeta = (c: Camera) =>
 		call<CameraMeta>(env, "env.get_camera_meta", { camera_name: CAMERAS[c], height: 1024, width: 1024 });
+	/** Servo the EEF to `to` holding gripper `g` (move_to's loop, 80-step budget, 12 mm tolerance). */
+	async function servoTo(to: number[], g: number) {
+		const dist = () => Math.hypot(...to.map((v, i) => v - eef()[i]));
+		let steps = 0;
+		for (; steps < 80 && !terminated && !truncated && dist() >= 0.012; steps++)
+			await step([...to.map((v, i) => clip(clip(v - eef()[i], -0.025, 0.025) / 0.05, -1, 1)), 0, 0, 0, g]);
+		return {
+			reached: dist() < 0.012,
+			ended: terminated || truncated,
+			final_dist_m: round(dist()),
+			steps_used: steps,
+		};
+	}
 	const extras = [
 		waypointsTool(
 			pi,
@@ -1566,36 +1579,21 @@ export default function libero(pi: ExtensionAPI) {
 				current: eef,
 				maxSegment: () => 0.3,
 				maxPath: () => 0.6,
-				segment: async (_from, to, g) => {
-					const dist = () => Math.hypot(...to.map((v, i) => v - eef()[i]));
-					let steps = 0;
-					for (; steps < 80 && !terminated && !truncated && dist() >= 0.012; steps++)
-						await step([...to.map((v, i) => clip(clip(v - eef()[i], -0.025, 0.025) / 0.05, -1, 1)), 0, 0, 0, g]);
-					return {
-						reached: dist() < 0.012,
-						ended: terminated || truncated,
-						final_dist_m: round(dist()),
-						steps_used: steps,
-					};
-				},
+				segment: (_from, to, g) => servoTo(to, g),
 			},
 			(d) => tool(d.name, d.description, d.parameters, (p) => d.run(p, robot.signal)),
 		),
 		alignWristTool(
 			pi,
 			{
-				moveWith: "move_to with xyz = aligned_xyz",
-				gripper: eef,
-				view: async (row, col) => {
-					const map = await worldMap("wrist", 1024);
-					const i = (clip(row, 0, 1023) * 1024 + clip(col, 0, 1023)) * 3;
-					const target = [map.xyz[i], map.xyz[i + 1], map.xyz[i + 2]];
-					if (!target.every(Number.isFinite) || !target.some((v) => Math.abs(v) > 1e-6))
-						throw new Error(`no valid depth at wrist pixel (${row},${col}); pick another pixel`);
-					const meta = await cameraMeta("wrist");
-					const image = { width: 1024, height: 1024, rgb: map.rgb };
-					return { K: meta.intrinsic_K, cam2world: meta.extrinsic_cam2world, target, image };
-				},
+				// The env server's env.align_wrist (utils/wrist_alignment.py) on its 512x512 wrist view.
+				align: (row, col, max, signal) =>
+					env.call("env.align_wrist", { row, col, max_correction_m: max, execute: false }, 60_000, [], signal),
+				scale: 2,
+				image: async () => ({ width: 1024, height: 1024, rgb: (await render("wrist", 1024, false)).rgb }),
+				// Applied like move_to: the TS servo, keeping the fingers as they are (open reads about 0.08).
+				move: (a) => servoTo(a.aligned_xyz as number[], gripper() < 0.075 ? 1 : -1),
+				moveWith: "the move_to servo to aligned_xyz",
 			},
 			(d) =>
 				tool(
@@ -1763,6 +1761,7 @@ export default function libero(pi: ExtensionAPI) {
 					...ikArgs(flag("ik", "")),
 					...(cuda ? ["--cuda-device", cuda] : []),
 					...graspArgs(pi),
+					...(pi.getFlag("align-wrist") === true ? ["--align-wrist"] : []),
 					// --sam3 goes to the server already (above).
 					...detectionArgs(pi, ""),
 					...geometryArgs(pi),

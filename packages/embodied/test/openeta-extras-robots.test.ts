@@ -149,6 +149,16 @@ async function fakeLibero() {
 				robot0_gripper_qpos: f32([0.02, -0.02]),
 			};
 		if (method === "env.get_camera_meta") return meta(kwargs.camera_name);
+		// utils/wrist_alignment.py, on the server's 512x512 wrist view: 2 cm +x, 4 cm +y.
+		if (method === "env.align_wrist")
+			return {
+				desired_pixel: [256, 256],
+				target_pixel: [kwargs.row, kwargs.col],
+				delta_world: [0.02, 0.04, 0],
+				aligned_xyz: [eef[0] + 0.02, eef[1] + 0.04, eef[2]],
+				clamped: false,
+				executed: kwargs.execute,
+			};
 		if (method === "env.render_camera") {
 			const n = kwargs.height as number;
 			const rgb = nd("uint8", [n, n, 3], Buffer.alloc(n * n * 3));
@@ -186,7 +196,7 @@ test("LIBERO registers none of the OpenETA extras at default flags", async (t) =
 	}
 });
 
-test("LIBERO --waypoints --align-wrist --object-memory: the route servos through each waypoint; the wrist alignment reads the wrist depth", async (t) => {
+test("LIBERO --waypoints --align-wrist --object-memory: the route servos through each waypoint; the wrist alignment is the server's", async (t) => {
 	const env = await fakeLibero();
 	t.after(env.close);
 	const s = stubPi(liberoFlags(env.url, { waypoints: true, "align-wrist": true, "object-memory": true }));
@@ -214,17 +224,22 @@ test("LIBERO --waypoints --align-wrist --object-memory: the route servos through
 	const refused = await s.run("follow_waypoints", { waypoints: [[0.6, 0.05, 0.9]], gripper: 1 });
 	assert.match(refused.content[0].text, /segment 0/);
 	assert.equal(env.calls.filter((c) => c.method === "env.step").length, before);
-	// The target 2 cm along +x and 4 cm along +y of the gripper, seen 0.4 m below the wrist camera.
+	// The server computes the correction on its 512 wrist view: the tool's 1024 pixels are halved there and doubled back.
 	const eef = env.eef();
 	const a = await s.run("align_wrist", { point: [462, 537], max_correction_m: 0.05 });
-	const al = a.details;
-	assert.deepEqual(al.desired_pixel, [512, 512]);
-	assert.equal(al.clamped, false);
-	assert.ok(
-		al.aligned_xyz.every((v: number, i: number) => Math.abs(v - (eef[i] + [0.02, 0.04, 0][i])) < 1e-3),
-		JSON.stringify(al.aligned_xyz),
+	const asked = env.calls.filter((c) => c.method === "env.align_wrist");
+	assert.deepEqual(
+		[asked[0].kwargs.row, asked[0].kwargs.col, asked[0].kwargs.execute, asked[0].kwargs.max_correction_m],
+		[231, 269, false, 0.05],
 	);
+	assert.deepEqual(a.details.desired_pixel, [512, 512]);
+	assert.deepEqual(a.details.target_pixel, [462, 538]);
 	assert.equal(a.content[1].type, "image");
+	assert.ok(Math.hypot(...env.eef().map((v, i) => v - eef[i])) < 1e-9, "nothing moved");
+	// execute: the move_to servo takes the EEF to aligned_xyz.
+	const ex = await s.run("align_wrist", { point: [462, 537], execute: true });
+	assert.equal(ex.details.moved.reached, true, JSON.stringify(ex.details));
+	assert.ok(Math.hypot(...env.eef().map((v, i) => v - (eef[i] + [0.02, 0.04, 0][i]))) < 0.012);
 	await s.run("remember_object", { name: "bowl", position: [0.1, 0.05, 0.85] });
 	// A person answered as the model for a turn: the result says planner human.
 	await s.emit("agent_start");
@@ -235,7 +250,7 @@ test("LIBERO --waypoints --align-wrist --object-memory: the route servos through
 	await s.emit("agent_end", { messages: [] });
 	assert.equal(s.entries.find((e) => e.type === "robot_result")?.data.planner, "human");
 	const rec = (await s.run("recall_objects", {})).details;
-	assert.equal(rec.objects[0].last_seen_step, steps.length);
+	assert.equal(rec.objects[0].last_seen_step, env.calls.filter((c) => c.method === "env.step").length);
 });
 
 test("LIBERO --grasp-advisor without a grasp backend fails the start with the reason", async (t) => {
@@ -296,6 +311,13 @@ async function fakeFranka(scale = 1) {
 					},
 				},
 			};
+		if (method === "env.align_wrist")
+			return {
+				desired_pixel: [24, 32],
+				target_pixel: [kwargs.row, kwargs.col],
+				delta_world: [0.016, 0.04, 0],
+				aligned_xyz: [tcp[0] + 0.016, tcp[1] + 0.04, tcp[2]],
+			};
 		if (method === "env.move_delta") {
 			const d = Buffer.from(kwargs.delta_xyz.__ndarray__, "base64");
 			const delta = Array.from(new Float32Array(d.buffer, d.byteOffset, 3));
@@ -346,7 +368,7 @@ function setupStub() {
 	return path;
 }
 
-test("Franka --waypoints sends each segment as one bounded move_delta; --align-wrist goes through the wrist hand-eye calibration", async (t) => {
+test("Franka --waypoints sends each segment as one bounded move_delta; --align-wrist asks the server and executes through move_delta", async (t) => {
 	const env = await fakeFranka();
 	t.after(env.close);
 	const s = stubPi(
@@ -391,13 +413,17 @@ test("Franka --waypoints sends each segment as one bounded move_delta; --align-w
 	await s.run("follow_waypoints", { waypoints: [[0.55, 0, 0.45]] });
 	await s.run("follow_waypoints", { waypoints: [[0.55, 0, 0.31]] });
 	assert.equal(env.calls.filter((c) => c.method === "env.move_delta").length, 2);
-	// Pixel (19, 34) of the wrist image, 0.4 m deep: 1.6 cm along +x and 4 cm along +y of the TCP.
+	// The server's correction; execute sends it as one bounded move_delta.
 	const a = (await s.run("align_wrist", { point: [19, 34], max_correction_m: 0.05 })).details;
-	assert.deepEqual(a.desired_pixel, [24, 32]);
-	const tcp = env.tcp();
-	assert.ok(
-		a.aligned_xyz.every((v: number, i: number) => Math.abs(v - (tcp[i] + [0.016, 0.04, 0][i])) < 1e-3),
-		JSON.stringify(a),
+	assert.deepEqual(a.desired_pixel ?? a.result?.desired_pixel, [24, 32], JSON.stringify(a));
+	const before = env.calls.filter((c) => c.method === "env.move_delta").length;
+	await s.run("align_wrist", { point: [19, 34], execute: true });
+	const aligned = env.calls.filter((c) => c.method === "env.move_delta");
+	assert.equal(aligned.length, before + 1);
+	const d = Buffer.from(aligned.at(-1)?.kwargs.delta_xyz.__ndarray__, "base64");
+	assert.deepEqual(
+		Array.from(new Float32Array(d.buffer, d.byteOffset, 3)).map((v) => Number(v.toFixed(3)) + 0),
+		[0.016, 0.04, 0],
 	);
 	await s.emit("session_shutdown");
 });

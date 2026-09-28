@@ -41,9 +41,9 @@ robot has; skip a step whose tool is not active.
    (`follow_waypoints`, --waypoints: lift, carry, descend as separate segments) and look again from
    where the robot actually stopped before extending it.
 9. Near the object, when the wrist view shows a small sideways offset and the depth and orientation
-   are right, `align_wrist` (LIBERO / Franka, `--align-wrist`) on the target's wrist pixel: it moves
-   nothing and returns the correction, then move by it (LIBERO: `move_to` `aligned_xyz`; Franka:
-   `move_delta` by `delta_world`). When the target is clipped or the orientation is doubtful, move
+   are right, `align_wrist` (LIBERO / Franka, `--align-wrist`) on the target's wrist pixel: look at the
+   returned correction first, then call it again with `execute: true` to move by it (or move
+   yourself: LIBERO `move_to` `aligned_xyz`; Franka `move_delta` by `delta_world`). When the target is clipped or the orientation is doubtful, move
    for a better wrist view or plan again.
 
 ## Close and confirm

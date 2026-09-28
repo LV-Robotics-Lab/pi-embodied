@@ -54,6 +54,10 @@ from pi_embodied_services.utils.perception import (
     franka_intrinsics,
 )
 from pi_embodied_services.utils.serialization import to_numpy_tree
+from pi_embodied_services.utils.wrist_alignment import (
+    WristAligner,
+    add_align_wrist_argument,
+)
 
 logger = get_logger("franka_env_server")
 
@@ -102,10 +106,14 @@ class FrankaEnvFacade(FrankaCodeMode, BaseEnvFacade):
         geometry: bool = False,
         code: bool = False,
         limits: dict[str, Any] | None = None,
+        align_wrist: bool = False,
     ) -> None:
         self._backend = backend
         # pi's --max-move / --max-rotate / --workspace-xy / --z-floor (code_mode.py).
         self._set_limits(limits)
+        # --align-wrist: env.align_wrist (utils/wrist_alignment.py) over the calibrated wrist
+        # view; execute=True moves by the correction through env.move_delta (its limits apply).
+        self._align_wrist_on = align_wrist
         # --geometry: env.point_views, env.mark_point, env.grip_target, env.grip_state
         # (utils/geometry.py via grasp_views.franka_geometry); the client executes the targets.
         self._geometry_on = geometry
@@ -160,11 +168,36 @@ class FrankaEnvFacade(FrankaCodeMode, BaseEnvFacade):
             franka_geometry(self._backend, state_digest=self._state_digest).install(
                 self
             )
+        if getattr(self, "_align_wrist_on", False):
+            self._wrist_aligner().install(self)
         self._grasp = self._grasp_planner()
         if self._grasp is not None:
             self._grasp.install(self)
         # The manifest's methods, then code.api (with the startup self-check) and --code's code.run.
         self._install_franka()
+
+    def _wrist_aligner(self) -> WristAligner:
+        """env.align_wrist on the single arm: the wrist camera rides on the TCP (its hand-eye
+        calibration), the gripper centre is the TCP, the move is this server's env.move_delta."""
+        from pi_embodied_services.robots.franka import perception as franka_perception
+        from pi_embodied_services.robots.franka.grasp_views import franka_view
+
+        cache: dict[str, Any] = {}
+
+        def calibration() -> dict[str, Any]:
+            if "bundle" not in cache:
+                cache["bundle"] = franka_perception.load_calibration_bundle()
+            return cache["bundle"]
+
+        view = franka_view(self._backend, calibration)
+        return WristAligner(
+            lambda: view("wrist"),
+            lambda: np.asarray(self._tcp_state()[0], dtype=float)[:3],
+            lambda _xyz, delta: self._rpc["env.move_delta"](
+                np.asarray(delta, dtype=np.float32)
+            ),
+            move_with="env.move_delta by delta_world",
+        )
 
     def _state_digest(self) -> tuple:
         """The arm's TCP pose and gripper, rounded (``utils/detections.state_digest``)."""
@@ -881,6 +914,7 @@ def main(
     reach.add_ik_argument(parser)
     motion.add_unplanned_argument(parser)
     hardware_lock.add_lock_arguments(parser)
+    add_align_wrist_argument(parser)
     add_code_argument(parser)
     add_limit_arguments(parser, FrankaCodeMode._LIMIT_DEFAULTS)
     parser.add_argument(
@@ -948,6 +982,7 @@ def main(
         **({"geometry": True} if args.geometry else {}),
         code=args.code,
         limits=limits_from_args(args, FrankaCodeMode._LIMIT_DEFAULTS),
+        **({"align_wrist": True} if args.align_wrist else {}),
     )
     try:
         facade.serve(

@@ -202,6 +202,7 @@ class FrankaCodeMode(RealCodeMode):
             "grasp": grasp is not None,
             "place": grasp is not None and bool(grasp.capabilities().get("place")),
             "geometry": bool(getattr(self, "_geometry_on", False)),
+            "align_wrist": bool(getattr(self, "_align_wrist_on", False)),
             "joints": self._joint_mover() is not None,
             "vla": bool(getattr(self, "_has_vla", False)),
         }.get(capability, False)

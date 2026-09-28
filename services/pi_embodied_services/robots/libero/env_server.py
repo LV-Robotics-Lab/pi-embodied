@@ -62,6 +62,10 @@ from pi_embodied_services.utils.perception import (
     install_perception,
 )
 from pi_embodied_services.utils.serialization import to_numpy_tree
+from pi_embodied_services.utils.wrist_alignment import (
+    WristAligner,
+    add_align_wrist_argument,
+)
 
 # MuJoCo env vars must be set BEFORE importing anything that touches MuJoCo.
 os.environ.setdefault("MUJOCO_GL", "egl")
@@ -362,6 +366,7 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
     _record: list | None = None
     #: The gripper's reset pose (position, xyzw), home_pose's target.
     _home: tuple | None = None
+    _aligner: WristAligner | None = None
 
     def __init__(
         self,
@@ -373,6 +378,7 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
         ik_reach: reach.ReachPreview | None = None,
         ik_motion: motion.MotionPlanner | None = None,
         geometry: bool = False,
+        align_wrist: bool = False,
     ):
         self._env = env
         self._env_idx = 0
@@ -432,6 +438,18 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
                 move=self._move_grip,
                 gripper=lambda close: self._actuate(1.0 if close else -1.0),
             )
+        # --align-wrist: env.align_wrist (utils/wrist_alignment.py) on the 512x512 wrist view;
+        # execute=True moves to the aligned position through env.move_to.
+        self._aligner = (
+            WristAligner(
+                lambda: self._view("wrist"),
+                self._eef,
+                lambda xyz, _delta: self.move_to(xyz.tolist()),
+                move_with="env.move_to to aligned_xyz",
+            )
+            if align_wrist
+            else None
+        )
         super().__init__()
 
     def _register_rpc(self) -> None:
@@ -489,6 +507,9 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
                 name.removeprefix("env."), self._rpc[name]
             )
         self._readonly_methods.add("env.get_task_language")
+        if self._aligner is not None:
+            # --align-wrist: env.align_wrist (utils/wrist_alignment.py).
+            self._aligner.install(self)
         if self._geometry is not None:
             # Before the grasp planner, which wraps env.move_grip with its id invalidation.
             self._geometry.install(self)
@@ -521,6 +542,7 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
             "grasp": grasp is not None,
             "place": grasp is not None and bool(grasp.capabilities().get("place")),
             "geometry": self._geometry is not None,
+            "align_wrist": self._aligner is not None,
             "unidepth": "env.enhance_depth" in self._rpc,
             "privileged": True,
         }.get(capability, False)
@@ -2029,6 +2051,7 @@ def main():
         help="SAM3 server URL: lets plan_grasp / segment_mask and code mode's `segment` segment objects by text",
     )
     add_grasp_arguments(p)
+    add_align_wrist_argument(p)
     p.add_argument(
         "--geometry",
         action="store_true",
@@ -2079,6 +2102,7 @@ def main():
         sam3=args.sam3,
         grasp=urls_from_args(args),
         geometry=args.geometry,
+        align_wrist=args.align_wrist,
     )
     # --sam3 / --unidepth: env.detect, env.select_detection, env.reject_detection, env.enhance_depth,
     # on the views the grasp planner and code mode read (its own env.segment stays).

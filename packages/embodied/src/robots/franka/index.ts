@@ -1209,24 +1209,29 @@ export default function franka(pi: ExtensionAPI) {
 		alignWristTool(
 			pi,
 			{
-				moveWith: "move_delta with delta_xyz = delta_world",
-				gripper: tcpXyz,
-				view: async (row, col) => {
-					const s = getStep(steps, -1);
-					const p = projectView(s, "wrist", row, col);
-					if (p.error) throw new Error(p.error);
-					const [key, name] = resolveCamera(s.meta ?? {}, "wrist");
-					const K = (s.meta?.cameras?.[name ?? ""] ?? s.meta?.cameras?.[key])?.intrinsic_K as Mat;
-					let image: Rgb | undefined;
+				// The env server's env.align_wrist (utils/wrist_alignment.py) over its calibrated wrist view.
+				align: (row, col, max, signal) =>
+					call("env.align_wrist", { row, col, max_correction_m: max, execute: false }, 60_000, signal),
+				image: async () => {
 					try {
+						const s = getStep(steps, -1);
 						const shape = JSON.parse(readFileSync(join(s.dir, `${ARTIFACTS.main[0]}.json`), "utf8"));
-						image = { ...shape, rgb: readFileSync(join(s.dir, `${ARTIFACTS.main[0]}.rgb`)) };
-					} catch {}
-					const cam2world = compose(pose7(tcpPose(s)), calibration().wrist.matrix);
-					return { K, cam2world, target: p.point_base as number[], image };
+						return { ...shape, rgb: readFileSync(join(s.dir, `${ARTIFACTS.main[0]}.rgb`)) } as Rgb;
+					} catch {
+						return undefined;
+					}
 				},
+				// Applied like move_delta: the operator gate, the per-call limit, the workspace, env.move_delta.
+				move: async (a, signal) => {
+					check(signal);
+					const delta = (a.delta_world as number[]).map(Number);
+					checkMove(delta, maxMove(), setup?.task.constraints);
+					checkWorkspace(delta);
+					return motion("env.move_delta", { delta_xyz: NdArray.f32(delta) }, signal);
+				},
+				moveWith: "move_delta by delta_world, with its per-call limit and workspace check",
 			},
-			(d) => mount(d, false),
+			(d) => mount(d, true),
 		),
 	];
 
@@ -1384,6 +1389,7 @@ export default function franka(pi: ExtensionAPI) {
 							...(flag("robot-sam3") ? ["--sam3", flag("robot-sam3")] : []),
 							...(flag("robot-unidepth") ? ["--unidepth", flag("robot-unidepth")] : []),
 							...graspArgs(pi),
+							...(pi.getFlag("align-wrist") === true ? ["--align-wrist"] : []),
 							...geometryArgs(pi),
 							...(coding() ? ["--code"] : []),
 							// pi's per-call limits: the server enforces them for every caller.

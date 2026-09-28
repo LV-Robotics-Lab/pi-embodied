@@ -14,7 +14,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { encodePng } from "../infra/png.ts";
-import { type Mat, mark, type Rgb, round, roundAll } from "../robot.ts";
+import { type Json, type Mat, mark, type Rgb, round, roundAll } from "../robot.ts";
 import { optionalTools } from "./optional.ts";
 import { type ToolDef, toolDef } from "./steps.ts";
 
@@ -97,10 +97,30 @@ export function wristAlignment(o: {
 	};
 }
 
-export function alignWrist(rig: WristRig): ToolDef {
+/** What differs per robot: the server's `env.align_wrist` and the robot's own move. */
+export type ServerWristRig = {
+	/** `env.align_wrist(row, col, max_correction_m)` of the robot's env server, reporting only (execute false). */
+	align: (row: number, col: number, maxCorrection: number, signal?: AbortSignal) => Promise<Json>;
+	/** Apply the correction with the robot's own motion tool path (LIBERO: servo to aligned_xyz; Franka: env.move_delta). */
+	move: (a: Json, signal?: AbortSignal) => Promise<Json>;
+	/** Tool pixels per server pixel (LIBERO: the tools' 1024 image vs the server's 512 wrist view). */
+	scale?: number;
+	/** The current wrist image at the tool's resolution, for the overlay. */
+	image?: () => Promise<Rgb | undefined>;
+	/** How the correction is applied, for the description. */
+	moveWith: string;
+};
+
+/**
+ * `align_wrist` over the server primitive (utils/wrist_alignment.py `env.align_wrist`, also in
+ * code.api): the server computes the correction from its calibrated wrist view; `execute` applies
+ * it through the robot's own motion path (the one its motion tools use).
+ */
+export function alignWrist(rig: ServerWristRig): ToolDef {
+	const scale = rig.scale ?? 1;
 	return toolDef(
 		"align_wrist",
-		`Wrist-view alignment near a grasp: give the target's pixel [row, col] in the current wrist image. Returns the lateral EEF correction (in the camera's image plane, at the target's depth, at most max_correction_m) that puts the target under the gripper centre (delta_world) and the EEF position after it (aligned_xyz). Nothing moves: then ${rig.moveWith}; approach depth and orientation are unchanged. The returned wrist image marks the gripper-centre pixel (green) and the target (red).`,
+		`Wrist-view alignment near a grasp: give the target's pixel [row, col] in the current wrist image. Returns the lateral EEF correction (in the camera's image plane, at the target's depth, at most max_correction_m) that puts the target under the gripper centre (delta_world) and the EEF position after it (aligned_xyz). execute=true also applies it (${rig.moveWith}); by default nothing moves. Approach depth and orientation are unchanged. The returned wrist image marks the gripper-centre pixel (green) and the target (red).`,
 		Type.Object({
 			point: Type.Array(Type.Integer(), {
 				minItems: 2,
@@ -110,33 +130,34 @@ export function alignWrist(rig: WristRig): ToolDef {
 			max_correction_m: Type.Optional(
 				Type.Number({ minimum: 0.005, maximum: 0.05, description: "Largest correction, m (default 0.03)" }),
 			),
+			execute: Type.Optional(Type.Boolean({ description: "Also move by the correction (default false)" })),
 		}),
-		async (p) => {
+		async (p, signal) => {
 			const [row, col] = (p.point as number[]).map(Number);
 			const maxCorrection = Math.min(0.05, Math.max(0.005, Number(p.max_correction_m ?? 0.03)));
-			const view = await rig.view(row, col);
-			const a = wristAlignment({ ...view, gripper: [...(await rig.gripper())], maxCorrection });
-			const pngs: Buffer[] = [];
-			if (view.image) {
-				const marked = {
-					...view.image,
-					rgb: mark(view.image, a.desired_pixel[0], a.desired_pixel[1], [0, 220, 0]),
-				};
-				pngs.push(encodePng(mark(marked, row, col, [255, 32, 32]), view.image.width, view.image.height));
-			}
-			return {
+			const a = await rig.align(Math.round(row / scale), Math.round(col / scale), maxCorrection, signal);
+			const px = (v: unknown) => (Array.isArray(v) ? v.map((x) => Math.round(Number(x) * scale)) : v);
+			const out: Json = {
 				name: "align_wrist",
 				...a,
-				target_world: roundAll(view.target),
-				max_correction_m: maxCorrection,
-				...(pngs.length ? { _pngs: pngs } : {}),
+				desired_pixel: px(a.desired_pixel),
+				target_pixel: px(a.target_pixel),
+				executed: p.execute === true,
 			};
+			const img = await rig.image?.();
+			if (img) {
+				const d = out.desired_pixel as number[];
+				const green = { ...img, rgb: mark(img, d[0], d[1], [0, 220, 0]) };
+				out._pngs = [encodePng(mark(green, row, col, [255, 32, 32]), img.width, img.height)];
+			}
+			if (p.execute === true) out.moved = await rig.move(a, signal);
+			return out;
 		},
 	);
 }
 
 /** --align-wrist: `align_wrist` on this robot, mounted through `mount` at the first start with the flag on. */
-export function alignWristTool(pi: ExtensionAPI, rig: WristRig, mount: (d: ToolDef) => void) {
+export function alignWristTool(pi: ExtensionAPI, rig: ServerWristRig, mount: (d: ToolDef) => void) {
 	return optionalTools(
 		pi,
 		"align-wrist",

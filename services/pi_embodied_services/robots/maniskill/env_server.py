@@ -893,7 +893,10 @@ class ManiskillEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         """How far a program's call may move the TCP (the run's translation cap)."""
         if method == "env.servo":
             target = np.asarray(kwargs["target_xyz"], dtype=np.float64).reshape(3)
-            return float(np.linalg.norm(target - self._state()["tcp_pos"]))
+            # The arm the call drives (a two-arm robot's state has no top-level tcp_pos).
+            agent = self._agents[self._arm(kwargs.get("arm"))]
+            tcp = _np(self._tcp(agent).p).reshape(-1)
+            return float(np.linalg.norm(target - tcp))
         if method in ("env.step", "env.chunk_step"):
             a = kwargs["action"] if method == "env.step" else kwargs["actions"]
             # pi's convention, per arm: [dx, dy, dz, gripper], or [dx, dy, dz] without a gripper.

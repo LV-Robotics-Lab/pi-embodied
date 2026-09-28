@@ -610,3 +610,22 @@ def test_drawing_scenes_end_at_their_dot_limit_instead_of_stepping_past_it():
     f._obs, f._last_info = "last", {"success": False}
     obs, rew, term, trunc, info = f._step([0.0, 0.0, 0.0])
     assert (obs, trunc, info["step_limit"], stepped) == ("last", True, True, [])
+
+
+def test_code_move_m_reads_the_driven_arms_tcp_on_two_arms():
+    """A program's servo on panda_pair is capped by the distance from the arm it drives."""
+    f = _pair_facade()
+    assert (
+        abs(
+            f._code_move_m("env.servo", {"target_xyz": [0, 0.12, 0.28], "arm": "right"})
+            - 0.1
+        )
+        < 1e-6
+    )
+    assert (
+        abs(
+            f._code_move_m("env.servo", {"target_xyz": [0, 0.12, 0.18], "arm": "left"})
+            - 0.24
+        )
+        < 1e-6
+    )

@@ -11,6 +11,7 @@ import {
 	actSteps,
 	armState,
 	DUAL,
+	executedStep,
 	gumi,
 	haltReason,
 	KEYS,
@@ -1330,4 +1331,12 @@ test("dashboard keys: a robot's own units bound with their parameter match by na
 	assert.equal(baseUnit("MV_FWD"), "MV_FWD");
 	assert.match(page, /G\.vocabulary\.includes\(baseUnit\(hit\[1\]\)\)/);
 	assert.match(page, /baseUnit\(G\.keys\[k\]\[1\]\) === unit/);
+});
+
+test("gumi records the unit as it ran: a clamped parameter replaces the typed one (#25)", () => {
+	assert.deepEqual(executedStep({ [ARM]: "TURN(500)" }, { executed: "TURN(120)" }), { [ARM]: "TURN(120)" });
+	const same = { [ARM]: "MV_FWD" };
+	assert.equal(executedStep(same, {}), same);
+	const pair = { left: "MV_UP", right: "STILL" };
+	assert.equal(executedStep(pair, { executed: "X" }), pair);
 });

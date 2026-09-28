@@ -668,6 +668,17 @@ export function actSteps(
 	return { step: Object.fromEntries(arms.map((a) => [a, a === arm ? unit : other])), n };
 }
 
+/**
+ * A one-arm step as it actually ran: a robot's own unit reports `executed` ("TURN(120)" for a typed
+ * TURN(500), clamped), which replaces the typed label; anything else is returned unchanged.
+ */
+export function executedStep(step: Step, details: unknown): Step {
+	const ran = (details as { executed?: unknown } | undefined)?.executed;
+	const keys = Object.keys(step);
+	if (typeof ran !== "string" || keys.length !== 1 || step[keys[0]] === ran) return step;
+	return { [keys[0]]: ran };
+}
+
 // ---------------------------------------------------------------------------
 // the controller the dashboard drives
 
@@ -874,6 +885,7 @@ export function gumi(
 			const p = pending;
 			pending = undefined;
 			if (p && !event.isError) {
+				p.step = executedStep(p.step, event.details);
 				if (recorder?.active && p.obs)
 					recorder.add(p.obs, p.step, { src: "agent", dagger: false, closed: p.closed, state: p.state, n: p.n });
 				track(p.step);
@@ -967,7 +979,7 @@ export function gumi(
 			publish();
 			const results: { step: Step; ok: boolean; error?: string }[] = [];
 			try {
-				for (const step of steps) {
+				for (let step of steps) {
 					const label =
 						arms.length > 1 ? arms.map((a) => `${a[0].toUpperCase()}:${step[a]}`).join(" ") : step[ARM];
 					const why = signal.aborted ? "stopped" : handle.refuse();
@@ -1007,6 +1019,10 @@ export function gumi(
 						publish(`${label} failed: ${error}`);
 						break;
 					}
+					// Record what ran (a clamped or defaulted parameter), not what was typed.
+					const typed = step;
+					step = executedStep(step, result.details);
+					if (step !== typed) o.onAction?.(arms.length > 1 ? label : step[ARM]);
 					// STOP (hold and look) only refreshes the observation: not a training step.
 					const moved = arms.some((a) => step[a] !== STILL && step[a] !== "STOP");
 					if (recorder?.active && moved) {

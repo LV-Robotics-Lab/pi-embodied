@@ -1103,8 +1103,13 @@ export function units(
 		}
 		lines.unshift(`units: ${label} x${ran}${ran < n ? ` of ${n} (stopped early)` : ""}`);
 		if (unit.terminal) lines.push(`${name} ended the episode: call finish.`);
-		if (!last) return { content: [await header(lines, undefined)], details: { unit: name } };
-		return { ...last, content: [await header(lines, undefined), ...last.content] };
+		// `executed`: the unit with the parameter it ran with (clamped, defaulted), which GUMI records.
+		if (!last) return { content: [await header(lines, undefined)], details: { unit: name, executed: label } };
+		return {
+			...last,
+			details: { ...((last.details as Record<string, unknown>) ?? {}), executed: label },
+			content: [await header(lines, undefined), ...last.content],
+		};
 	}
 
 	// The robot's unit layer for ../gumi, published every session (the dashboard operator drives through it).

@@ -1697,7 +1697,9 @@ test("custom vocabulary: act's schema, parameter checks (enum, clamp, default, r
 	);
 	assert.equal(params.target_in_wrist, undefined);
 	assert.match(head(await f.run("act", { unit: "WALK", param: "fast", n: 2 })), /^units: WALK\(fast\) x2\n/);
-	const clamped = head(await f.run("act", { unit: "TURN", param: 200 }));
+	const turned = await f.run("act", { unit: "TURN", param: 200 });
+	assert.equal(turned.details.executed, "TURN(120)", "the unit as it ran, for GUMI's record");
+	const clamped = head(turned);
 	assert.match(clamped, /^units: TURN\(120\) x1\nTURN: degree 200 clamped to 120 deg \(-120\.\.120\)/);
 	assert.match(head(await f.run("act", { unit: "WALK" })), /speed defaulted to normal/);
 	assert.match(head(await f.run("act", { unit: "TURN(-45)" })), /^units: TURN\(-45\) x1/, "GUMI's NAME(param) form");

@@ -30,7 +30,9 @@ An env server started with ``--ik <url>`` builds a :class:`MotionPlanner` next t
 2. execute the waypoints one servo segment at a time within the primitive's own limits
    (step budget, per-step clip), and before each segment :meth:`MotionPlanner.check` the
    current joints and the next planned configuration against the world: predicted contact
-   stops the move (``stopped: "contact"``).
+   stops the move (``stopped: "contact"``). Checks run at the waypoints only: between two of
+   them the arm follows a Cartesian servo (the Franka servers' move_delta / rotate_delta,
+   LIBERO's OSC), not the planned joint trajectory, and is not checked.
 
 A planner that answers with an error (for instance PyRoKi given the dual rig's ``robot``
 obstacle) or an invalid result refuses the move, and an unchecked segment stops it: ``--ik``

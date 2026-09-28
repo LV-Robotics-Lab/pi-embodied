@@ -208,7 +208,11 @@ or without `--privileged`, never returned (results carry counts, clearances and 
 obstacle's name). A planner error or invalid answer refuses the move (an unchecked segment
 stops it); an unreachable ik service refuses too, unless `--ik-allow-unplanned` lets the move run
 unplanned (`unknown`). The dual Franka server refuses to start with `--ik` on an ik server whose
-backend is not `curobo` (the arm-arm check needs cuRobo's collision spheres).
+backend is not `curobo` (the arm-arm check needs cuRobo's collision spheres). Execution-time checks run at
+the waypoints only (the current joints and the next planned configuration, before each segment):
+the Franka servers follow the plan's TCP waypoints with their Cartesian primitives, so the arm
+between two waypoints is not checked, and its joints may leave the planned path there (at most 10
+segments, each at least 2 cm).
 
 `env.reset` reseeds the env worker's global numpy and Python RNGs with the episode seed, so every
 reset restores the same state and the same actions give bitwise-identical transitions in any process.

@@ -1175,8 +1175,20 @@ export function gumi(
 				c.ui.notify("gumi-replay: a replay is already running", "error");
 				return;
 			}
+			// It must be stoppable midway: Esc in the TUI, or the dashboard's Interrupt. An idle agent has no
+			// abort signal, so elsewhere (RPC, print mode) only a running dashboard can stop it.
+			const tui = c.mode === "tui";
+			const dashboard = (globalThis as Record<symbol, unknown>)[Symbol.for("pi-embodied.dashboard")] !== undefined;
+			if (!tui && !dashboard) {
+				c.ui.notify(
+					"gumi-replay refused: nothing could stop it midway; run it in the TUI (Esc stops it) or with --dashboard (Interrupt stops it)",
+					"error",
+				);
+				return;
+			}
+			const stopHow = [tui ? "Esc" : "", dashboard ? "the dashboard's Interrupt" : ""].filter(Boolean).join(" or ");
 			// The robot moves: the operator confirms the run first (without a UI, only with --yes).
-			const summary = `Replay ${dir} on the robot: ${plan.length} record(s), first ${replayLabel(plan[0], arms)}. Moves are relative to the arm's pose now; the dashboard's Interrupt stops it.`;
+			const summary = `Replay ${dir} on the robot: ${plan.length} record(s), first ${replayLabel(plan[0], arms)}. Moves are relative to the arm's pose now; ${stopHow} stops it.`;
 			if (c.hasUI ? !(await c.ui.confirm("Replay the GUMI recording?", summary)) : !yes) {
 				c.ui.notify(
 					c.hasUI
@@ -1191,6 +1203,14 @@ export function gumi(
 			// An abort of the agent (Esc, the dashboard's Interrupt) stops the replay too.
 			const onAbort = () => stop.abort();
 			c.signal?.addEventListener("abort", onAbort, { once: true });
+			// Esc in the TUI (raw input, since an idle agent has no abort for it to trigger).
+			const offEsc = tui
+				? c.ui.onTerminalInput((data) => {
+						if (data !== "\x1b") return undefined;
+						controller.stop();
+						return { consume: true };
+					})
+				: undefined;
 			try {
 				for (const [i, r] of plan.entries()) {
 					if (stop.signal.aborted) {
@@ -1222,6 +1242,7 @@ export function gumi(
 				c.ui.notify(`gumi-replay: ${plan.length} record(s) executed`, "info");
 			} finally {
 				c.signal?.removeEventListener("abort", onAbort);
+				offEsc?.();
 				if (replaying === stop) replaying = undefined;
 				publish();
 			}

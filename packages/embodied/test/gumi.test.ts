@@ -1032,13 +1032,21 @@ test("replay: a recording's units in order (actions.jsonl, else steps.jsonl), re
 });
 
 /** A command context: `ui` with a confirm answering `yes` (recorded), or none without a UI. */
-function commandCtx(o: { ui: boolean; yes?: boolean }) {
+function commandCtx(o: { ui: boolean; yes?: boolean; mode?: string }) {
 	const notes: string[] = [];
 	const asked: string[] = [];
+	const keys: ((data: string) => unknown)[] = [];
 	const c = {
 		hasUI: o.ui,
+		mode: o.mode ?? "tui",
 		signal: undefined,
+		/** Press a key in the TUI. */
+		press: (data: string) => keys.map((k) => k(data)),
 		ui: {
+			onTerminalInput: (k: (data: string) => unknown) => {
+				keys.push(k);
+				return () => keys.splice(keys.indexOf(k), 1);
+			},
 			notify: (m: string) => notes.push(m),
 			confirm: async (_title: string, message: string) => {
 				asked.push(message);
@@ -1339,4 +1347,36 @@ test("gumi records the unit as it ran: a clamped parameter replaces the typed on
 	assert.equal(executedStep(same, {}), same);
 	const pair = { left: "MV_UP", right: "STILL" };
 	assert.equal(executedStep(pair, { executed: "X" }), pair);
+});
+
+test("/gumi-replay must be stoppable: Esc in the TUI; elsewhere only with the dashboard running", async () => {
+	const r = replayRig();
+	await r.f.emit("session_start");
+	r.f.pi.events.emit(UNITS_EVENT, r.robot.handle);
+	// RPC / print mode without a dashboard: nothing could stop it, so it does not start.
+	const rpc = commandCtx({ ui: false, mode: "rpc" });
+	await r.replay(`${r.dir} --yes --pause 0`, rpc.c);
+	assert.deepEqual(r.robot.calls, []);
+	assert.match(rpc.notes.at(-1) as string, /nothing could stop it midway/);
+	const slot = globalThis as Record<symbol, unknown>;
+	slot[Symbol.for("pi-embodied.dashboard")] = Promise.resolve();
+	try {
+		await r.replay(`${r.dir} --yes --pause 0`, commandCtx({ ui: false, mode: "rpc" }).c);
+		assert.equal(r.robot.calls.length, 3);
+	} finally {
+		delete slot[Symbol.for("pi-embodied.dashboard")];
+	}
+	// The TUI: Esc stops it between records, even with the agent idle (no abort signal).
+	r.robot.calls.length = 0;
+	const tui = commandCtx({ ui: true, yes: true });
+	const done = r.replay(r.dir, tui.c);
+	while (r.robot.calls.length < 2) await new Promise((res) => setTimeout(res, 1));
+	await new Promise((res) => setTimeout(res, 5));
+	assert.deepEqual(tui.c.press("\x1b"), [{ consume: true }]);
+	await done;
+	assert.equal(r.robot.calls.length, 2);
+	assert.match(tui.asked[0], /Esc stops it/);
+	assert.match(tui.notes.at(-1) as string, /stopped before record 1 of 2/);
+	// Once it ended, Esc is the TUI's again.
+	assert.deepEqual(tui.c.press("\x1b"), []);
 });

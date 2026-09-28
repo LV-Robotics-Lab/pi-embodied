@@ -20,7 +20,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Type } from "typebox";
 import { encodePng } from "../infra/png.ts";
 import { askVlm, parseJson, VLM_COST_EVENT } from "../modes/units/vlm.ts";
-import { type Json, message, type Rgb, round } from "../robot.ts";
+import { type Json, mark, message, type Rgb, round } from "../robot.ts";
 import type { GraspToolDef } from "./grasp.ts";
 
 export const GRASP_SUGGESTION_ENTRY = "grasp_suggestion";
@@ -44,8 +44,16 @@ Return exactly one JSON object:
 {"decision":"recommend|abstain","recommended_candidate_id":"exact id or empty","alternatives":["exact id"],"confidence":0.0,"reasons":["short visual reason"],"rejected":{"exact id":"short reason"}}
 When abstaining, leave recommended_candidate_id empty and keep confidence at most 0.5.`;
 
+/** The point mode's extras (no grasp backend): the camera and its back-projection. */
+export type PointExtras = Pick<PointRig, "camera" | "backProject"> & {
+	/** The camera's position in the world (a side approach comes from it). */
+	cameraPosition?: (camera: string) => Promise<number[] | undefined>;
+};
+
 /** What differs per robot. */
 export type AdvisorRig = {
+	/** The no-backend point mode (7.2): mounted instead of the ranking when no grasp backend is configured. */
+	point?: PointExtras;
 	/** The current image of `camera` (the camera plan_grasp planned from). */
 	image: (camera: string) => Promise<Rgb>;
 	/** Pixel [row, col] of each world point in that image, null when behind the camera. */
@@ -247,6 +255,182 @@ export function suggestGrasp(pi: ExtensionAPI, rig: AdvisorRig, plans: ReturnTyp
 	};
 }
 
+export const POINT_SYSTEM = `You propose where a robot's parallel-jaw gripper should grasp one object, from a single camera image. Choose a point on a broad, load-bearing part of the object where the two fingers can close on opposite sides (not a rim, cap, handle tip or thin edge), and how the gripper should come in. Judge only what is visible; if the object is not visible or you cannot tell, say so.
+
+Return exactly one JSON object:
+{"found": true|false, "point": [y, x], "jaw": [[y1, x1], [y2, x2]], "approach": "top"|"side", "confidence": 0.0-1.0, "reason": "one visual sentence"}
+point, jaw: coordinates normalized to 0-1 of the image height (y) and width (x). point is the grasp centre on the object; jaw the two finger contacts on either side of it. approach: top = straight down, side = horizontally toward the object from the camera's side.`;
+
+export type PointProposal = {
+	found: boolean;
+	point?: [number, number];
+	jaw?: [[number, number], [number, number]];
+	approach?: "top" | "side";
+	confidence: number;
+	reason: string;
+};
+
+/** Parse the point proposal; anything malformed is `found: false`. */
+export function parsePointProposal(raw: string): PointProposal {
+	const j = parseJson(raw) as Json | undefined;
+	const unit = (v: unknown): [number, number] | undefined =>
+		Array.isArray(v) &&
+		v.length === 2 &&
+		v.every((x) => Number.isFinite(Number(x)) && Number(x) >= 0 && Number(x) <= 1)
+			? [Number(v[0]), Number(v[1])]
+			: undefined;
+	const reason = String(j?.reason ?? "").slice(0, 300);
+	const point = unit(j?.point);
+	if (!j || j.found === false || !point)
+		return { found: false, confidence: 0, reason: reason || `no usable proposal: ${raw.trim().slice(0, 120)}` };
+	const jaw = Array.isArray(j.jaw) ? [unit(j.jaw[0]), unit(j.jaw[1])] : [];
+	return {
+		found: true,
+		point,
+		...(jaw[0] && jaw[1] ? { jaw: [jaw[0], jaw[1]] as [[number, number], [number, number]] } : {}),
+		approach: j.approach === "side" ? "side" : "top",
+		// Never above 0.5: a point from one image is weaker evidence than a grasp planner's candidate.
+		confidence: Math.min(0.5, Math.max(0, Number(j.confidence) || 0)),
+		reason,
+	};
+}
+
+/** What the point mode needs besides the advisor rig: the world point under a pixel of a camera image. */
+export type PointRig = AdvisorRig & {
+	/** The camera the VLM looks at (the robot's overview camera). */
+	camera: string;
+	/** World xyz of pixel (row, col) of `camera`'s current image, or null without depth there. */
+	backProject: (camera: string, row: number, col: number) => Promise<number[] | null>;
+	cameraPosition?: (camera: string) => Promise<number[] | undefined>;
+};
+
+/**
+ * suggest_grasp without a grasp backend (7.2): the VLM proposes a grasp point, the two jaw
+ * contacts and an approach on the camera image; the point is back-projected through depth to a
+ * world position, the jaw line to a yaw about world z, the approach to a direction. It is a
+ * low-confidence candidate (no width, collision or reachability check), marked as such.
+ */
+export function suggestGraspPoint(pi: ExtensionAPI, rig: PointRig): GraspToolDef {
+	return {
+		name: "suggest_grasp",
+		description:
+			"No grasp planner here: a separate vision model proposes where to grasp an object on the camera image (the grasp centre, the two jaw contacts, top or side approach), back-projected through depth to a world grasp: position, approach, eef_yaw and a pre-grasp point 10 cm back along the approach. Low confidence by construction (one image, no width or collision check): look at the marked image before moving, approach through pregrasp_xyz, and confirm the grasp in the wrist view.",
+		parameters: Type.Object({
+			object: Type.String({ description: "The object to grasp, e.g. 'black bowl'" }),
+		}),
+		run: async (p, signal, ctx: ExtensionContext) => {
+			const object = String((p as Json).object ?? "").trim();
+			if (!object) return { error: "object must be non-empty" };
+			const started = Date.now();
+			const img = await rig.image(rig.camera);
+			const images: ImageContent[] = [
+				{
+					type: "image",
+					data: encodePng(img.rgb, img.width, img.height).toString("base64"),
+					mimeType: "image/png",
+				},
+			];
+			const modelRef = String(
+				pi.getFlag("grasp-advisor-model") || pi.getFlag("attach-vlm-model") || pi.getFlag("units-vlm-model") || "",
+			);
+			let proposal: PointProposal;
+			let model = "";
+			let cost = 0;
+			try {
+				const reply = await askVlm(
+					ctx,
+					modelRef,
+					pi.getThinkingLevel(),
+					{
+						system: POINT_SYSTEM,
+						content: [{ type: "text", text: `TASK: ${rig.task()}\nOBJECT TO GRASP: ${object}` }],
+					},
+					images,
+					signal,
+				);
+				pi.events.emit(VLM_COST_EVENT, reply.cost);
+				proposal = parsePointProposal(reply.text);
+				model = reply.model;
+				cost = reply.cost;
+			} catch (err) {
+				return {
+					mode: "vlm_point",
+					confidence_level: "low",
+					found: false,
+					error: `grasp point proposal unavailable: ${message(err)}`,
+				};
+			}
+			const px = (u: [number, number]) => [
+				Math.min(img.height - 1, Math.round(u[0] * (img.height - 1))),
+				Math.min(img.width - 1, Math.round(u[1] * (img.width - 1))),
+			];
+			const base: Json = {
+				name: "suggest_grasp",
+				mode: "vlm_point",
+				confidence_level: "low",
+				object,
+				camera: rig.camera,
+				model,
+				cost_usd: cost,
+			};
+			let out: Json;
+			if (!proposal.found || !proposal.point) out = { ...base, found: false, reason: proposal.reason };
+			else {
+				const [row, col] = px(proposal.point);
+				const position = await rig.backProject(rig.camera, row, col);
+				if (!position)
+					out = {
+						...base,
+						found: false,
+						pixel: [row, col],
+						reason: "no depth at the proposed point; ask again or segment",
+					};
+				else {
+					let approach = [0, 0, -1];
+					const approachKind = proposal.approach === "side" ? "side" : "top";
+					// A side approach comes horizontally from the camera's side toward the point.
+					const eye = proposal.approach === "side" ? await rig.cameraPosition?.(rig.camera) : undefined;
+					if (eye) {
+						const h = [position[0] - eye[0], position[1] - eye[1], 0];
+						const n = Math.hypot(...h);
+						if (n > 1e-6) approach = h.map((v) => v / n);
+					}
+					let eef_yaw: number | undefined;
+					const jawPx = proposal.jaw?.map(px);
+					if (jawPx) {
+						const [a, b] = await Promise.all(jawPx.map(([r, c]) => rig.backProject(rig.camera, r, c)));
+						if (a && b && Math.hypot(b[0] - a[0], b[1] - a[1]) > 1e-3)
+							// The fingers close along the jaw line; the gripper's yaw is that line's direction about world z.
+							eef_yaw = round(Math.atan2(b[1] - a[1], b[0] - a[0]), 4);
+					}
+					out = {
+						...base,
+						found: true,
+						confidence: proposal.confidence,
+						reason: proposal.reason,
+						pixel: [row, col],
+						...(jawPx ? { jaw_pixels: jawPx } : {}),
+						candidate: {
+							approach_kind: approach[2] === -1 ? "top" : approachKind,
+							position: position.map((v) => round(v, 4)),
+							approach: approach.map((v) => round(v, 4)),
+							pregrasp_xyz: position.map((v, i) => round(v - 0.1 * approach[i], 4)),
+							...(eef_yaw === undefined ? {} : { eef_yaw }),
+						},
+						note: "VLM-proposed from one image, not a grasp planner's candidate: no width, collision or reachability check.",
+					};
+					let marked = mark(img, row, col, [255, 32, 32]);
+					for (const [r, c] of jawPx ?? []) marked = mark({ ...img, rgb: marked }, r, c, [0, 220, 0]);
+					out._pngs = [encodePng(marked, img.width, img.height)];
+				}
+			}
+			const { _pngs, ...entry } = out;
+			pi.appendEntry(GRASP_SUGGESTION_ENTRY, { ...entry, ms: Date.now() - started });
+			return out;
+		},
+	};
+}
+
 /** Register --grasp-advisor and --grasp-advisor-model; the returned function mounts and names the tool when on. */
 export function graspAdvisorTool(pi: ExtensionAPI, rig: AdvisorRig, mount: (d: GraspToolDef) => void) {
 	pi.registerFlag("grasp-advisor-model", {
@@ -262,15 +446,23 @@ export function graspAdvisorTool(pi: ExtensionAPI, rig: AdvisorRig, mount: (d: G
 		default: false,
 		description: "Add suggest_grasp (a separate VLM picks among plan_grasp's candidates); needs a grasp backend",
 	});
+	let mode: "rank" | "point" | undefined;
 	return (graspOn: boolean) => {
 		if (pi.getFlag("grasp-advisor") !== true) return [];
-		if (!graspOn)
+		const want = graspOn ? "rank" : "point";
+		if (!graspOn && !rig.point)
 			throw new Error(
-				"--grasp-advisor needs a plan_grasp backend (--contact-graspnet, --graspgenx, --anygrasp or --graspnet1b)",
+				"--grasp-advisor needs a plan_grasp backend (--contact-graspnet, --graspgenx, --anygrasp or --graspnet1b) on this robot",
 			);
+		if (mode && mode !== want)
+			throw new Error("--grasp-advisor: the grasp backend changed between sessions; restart pi");
 		if (!names) {
-			mount(suggestGrasp(pi, rig, plans));
+			// With a backend: rank plan_grasp's candidates; without one: propose a grasp point (low confidence).
+			mount(
+				graspOn ? suggestGrasp(pi, rig, plans) : suggestGraspPoint(pi, { ...rig, ...(rig.point as PointExtras) }),
+			);
 			names = ["suggest_grasp"];
+			mode = want;
 		}
 		return names;
 	};

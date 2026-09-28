@@ -1618,6 +1618,18 @@ export default function libero(pi: ExtensionAPI) {
 			},
 			stamp: () => envStep,
 			task: () => language,
+			// Without a grasp backend: the VLM's grasp point on the agentview, through its depth world map.
+			point: {
+				camera: "agentview",
+				backProject: async (c, row, col) => {
+					const map = await worldMap(c as Camera, 1024);
+					const i = (row * 1024 + col) * 3;
+					const p = [map.xyz[i], map.xyz[i + 1], map.xyz[i + 2]];
+					return p.every(Number.isFinite) && p.some((v) => Math.abs(v) > 1e-6) ? p : null;
+				},
+				cameraPosition: async (c) =>
+					(await cameraMeta(c as Camera)).extrinsic_cam2world.slice(0, 3).map((r) => r[3]),
+			},
 		},
 		(d) => mountGraspTool(robot.tool, d),
 	);

@@ -32,6 +32,7 @@ import { type Static, type TSchema, Type } from "typebox";
 import { encodePng } from "../../infra/png.ts";
 import { NdArray, type RpcClient } from "../../infra/rpc.ts";
 import type { Move } from "../../modes/units/index.ts";
+import { graspAdvisorTool } from "../../primitives/advisor.ts";
 import { eulerXyz, geometryArgs, geometryTools, planRotation, splitImages } from "../../primitives/geometry.ts";
 import { graspActive, graspArgs, graspTools, registerGraspFlags } from "../../primitives/grasp.ts";
 import { ikArgs, registerIkFlag } from "../../primitives/ik.ts";
@@ -57,7 +58,7 @@ import {
 	type ToolDef,
 } from "../../primitives/steps.ts";
 import { MAX_WAYPOINTS, waypointsTool } from "../../primitives/waypoints.ts";
-import { alignWristTool, compose } from "../../primitives/wrist.ts";
+import { alignWristTool, projectPoints } from "../../primitives/wrist.ts";
 import {
 	apply,
 	attach,
@@ -1317,6 +1318,39 @@ export default function franka(pi: ExtensionAPI) {
 		task: () => setup?.task.instruction ?? "",
 	}))
 		tool(d.name, d.description, d.parameters, d.run, false);
+	// suggest_grasp (--grasp-advisor, ../../primitives/advisor.ts) on the third-person camera of the latest step:
+	// it ranks plan_grasp's candidates with a grasp backend, else the VLM proposes a (low-confidence) grasp point.
+	const externalImage = (): Rgb => {
+		const s = getStep(steps, -1);
+		const shape = JSON.parse(readFileSync(join(s.dir, `${ARTIFACTS.extra_0[0]}.json`), "utf8"));
+		return { ...shape, rgb: readFileSync(join(s.dir, `${ARTIFACTS.extra_0[0]}.rgb`)) };
+	};
+	const externalK = (): Mat => {
+		const s = getStep(steps, -1);
+		const [key, name] = resolveCamera(s.meta ?? {}, "third_person");
+		return (s.meta?.cameras?.[name ?? ""] ?? s.meta?.cameras?.[key])?.intrinsic_K as Mat;
+	};
+	const advisor = graspAdvisorTool(
+		pi,
+		{
+			image: async () => externalImage(),
+			project: async (_c, points) => projectPoints(externalK(), calibration().external.matrix, points),
+			stamp: () => steps.length,
+			task: () => setup?.task.instruction ?? "",
+			point: {
+				camera: "third_person",
+				backProject: async (_c, row, col) => {
+					const p = projectView(getStep(steps, -1), "third_person", row, col);
+					return p.error ? null : (p.point_base as number[]);
+				},
+				cameraPosition: async () =>
+					calibration()
+						.external.matrix.slice(0, 3)
+						.map((r) => r[3]),
+			},
+		},
+		(d) => tool(d.name, d.description, d.parameters, d.run, false),
+	);
 
 	// --geometry (../primitives/geometry.ts): the env server plans over its calibrated cameras; move_grip
 	// runs the target through the bounded rotate_delta (about the TCP) then move_delta, under this arm's
@@ -1433,6 +1467,7 @@ export default function franka(pi: ExtensionAPI) {
 			...graspActive(pi),
 			...extras.flatMap((on) => on()),
 			...pointActive(pi),
+			...advisor(graspActive(pi).length > 0),
 			...geometry(),
 		];
 	}

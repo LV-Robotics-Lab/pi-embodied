@@ -17,7 +17,12 @@ import {
 	humanRequested,
 	parseArguments,
 } from "../src/planner/human.ts";
-import { GRASP_SUGGESTION_ENTRY, graspAdvisorTool, parseAdvice } from "../src/primitives/advisor.ts";
+import {
+	GRASP_SUGGESTION_ENTRY,
+	graspAdvisorTool,
+	parseAdvice,
+	parsePointProposal,
+} from "../src/primitives/advisor.ts";
 import { checkRoute, followWaypoints, type WaypointRig, waypointsTool } from "../src/primitives/waypoints.ts";
 import { alignWrist, compose, projectPoints, wristAlignment } from "../src/primitives/wrist.ts";
 import type { Json, Mat } from "../src/robot.ts";
@@ -686,4 +691,78 @@ test("retrieve_asset_reference resolves a name as OpenETA's bank does, from file
 	const unknown = await exec("orange juice");
 	assert.equal(unknown.details.found, false);
 	assert.match(unknown.details.reason, /low_confidence|no_candidates/);
+});
+
+test("parsePointProposal caps confidence at 0.5 and treats anything malformed as not found", () => {
+	const p = parsePointProposal(
+		'{"found":true,"point":[0.5,0.25],"jaw":[[0.5,0.2],[0.5,0.3]],"approach":"side","confidence":0.9,"reason":"mid body"}',
+	);
+	assert.deepEqual([p.found, p.point, p.approach, p.confidence], [true, [0.5, 0.25], "side", 0.5]);
+	assert.equal(parsePointProposal('{"found":true,"point":[1.5,0.2]}').found, false);
+	assert.equal(parsePointProposal("I cannot see it").found, false);
+	assert.equal(parsePointProposal('{"found":false,"reason":"occluded"}').reason, "occluded");
+});
+
+test("without a grasp backend suggest_grasp proposes a VLM grasp point, back-projected, marked low confidence", async () => {
+	const f = fakePi({ "grasp-advisor": true, "grasp-advisor-model": "vlm/judge" });
+	const asked: any[] = [];
+	f.ctx.modelRegistry = {
+		find: (provider: string, id: string) => ({ provider, id, api: "x", reasoning: false }),
+		streamSimple(_model: any, context: any) {
+			asked.push(context);
+			const s = createAssistantMessageEventStream();
+			const text =
+				'{"found":true,"point":[0.5,0.5],"jaw":[[0.5,0.25],[0.5,0.75]],"approach":"top","confidence":0.8,"reason":"broad body"}';
+			s.push({
+				type: "done",
+				reason: "stop",
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text }],
+					usage: { cost: { total: 0.001 } },
+					stopReason: "stop",
+				} as unknown as AssistantMessage,
+			});
+			s.end();
+			return s;
+		},
+	};
+	const mounted: any[] = [];
+	const rig = {
+		image: async () => ({ width: 101, height: 101, rgb: Buffer.alloc(101 * 101 * 3) }),
+		project: async () => [],
+		stamp: () => 0,
+		task: () => "pick up the mug",
+	};
+	// Without a backend and without a point mode on the robot, the flag fails the start.
+	assert.throws(
+		() => graspAdvisorTool(fakePi({ "grasp-advisor": true }).pi, rig, () => {})(false),
+		/needs a plan_grasp backend/,
+	);
+	const activate = graspAdvisorTool(
+		f.pi,
+		{
+			...rig,
+			point: {
+				camera: "agentview",
+				// Pixel (row, col) -> world: 1 cm per pixel along +x (cols) and -y (rows), on a table at z 0.8.
+				backProject: async (_c, row, col) => [col * 0.01, -row * 0.01, 0.8],
+			},
+		},
+		(d) => mounted.push(d),
+	);
+	assert.deepEqual(activate(false), ["suggest_grasp"]);
+	const r = await mounted[0].run({ object: "mug" }, undefined, f.ctx);
+	assert.equal(r.mode, "vlm_point");
+	assert.equal(r.confidence_level, "low", JSON.stringify(r));
+	assert.equal(r.confidence, 0.5);
+	assert.deepEqual(r.pixel, [50, 50]);
+	assert.deepEqual(r.candidate.position, [0.5, -0.5, 0.8]);
+	assert.deepEqual(r.candidate.approach, [0, 0, -1]);
+	assert.deepEqual(r.candidate.pregrasp_xyz, [0.5, -0.5, 0.9]);
+	// The jaw runs along the image row: world +x, yaw 0.
+	assert.equal(r.candidate.eef_yaw, 0);
+	assert.equal(r._pngs.length, 1);
+	assert.match(JSON.stringify(asked[0].messages[0].content[0]), /OBJECT TO GRASP: mug/);
+	assert.equal(f.entries.find((e) => e.customType === GRASP_SUGGESTION_ENTRY)?.data.mode, "vlm_point");
 });

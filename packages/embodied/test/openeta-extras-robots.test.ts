@@ -253,22 +253,16 @@ test("LIBERO --waypoints --align-wrist --object-memory: the route servos through
 	assert.equal(rec.objects[0].last_seen_step, env.calls.filter((c) => c.method === "env.step").length);
 });
 
-test("LIBERO --grasp-advisor without a grasp backend fails the start with the reason", async (t) => {
+test("LIBERO --grasp-advisor without a grasp backend mounts the VLM grasp-point mode of suggest_grasp", async (t) => {
 	const env = await fakeLibero();
 	t.after(env.close);
 	const s = stubPi(liberoFlags(env.url, { "grasp-advisor": true }));
 	libero(s.pi);
-	const log = console.error;
-	const lines: string[] = [];
-	console.error = (l: string) => lines.push(l);
-	try {
-		await s.emit("session_start");
-	} finally {
-		console.error = log;
-		process.exitCode = undefined;
-	}
-	assert.deepEqual(s.active(), []);
-	assert.match(lines.join("\n"), /--grasp-advisor needs a plan_grasp backend/);
+	await s.emit("session_start");
+	process.exitCode = undefined;
+	assert.ok(s.active().includes("suggest_grasp"));
+	assert.match(s.tools.get("suggest_grasp").description, /No grasp planner here/);
+	assert.ok(!s.active().includes("plan_grasp"));
 });
 
 // ---------------------------------------------------------------------------

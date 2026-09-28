@@ -8,7 +8,7 @@ license: Apache-2.0 (adapted from OpenETA agent/skills/pick.md)
 
 **Robots:** LIBERO, Franka, dual Franka (grasp planning, check_attached), ManiSkill, RoboCasa, RoboTwin, RoboLab, Piper, UR5e (motion and images only).
 **Needs:** `view_env_state`, a motion tool (`move_to` / `move_delta` / `move_pose`) and a gripper tool (`set_gripper`, `open_gripper` / `close_gripper`, a motion tool's gripper parameter, or a VLA grasp: LIBERO `pi0_pick`, Franka `vla_grasp`).
-**Uses when present:** `segment`, `back_project`; `plan_grasp`, `check_attached` (a grasp backend flag, LIBERO / Franka / dual Franka); `execute_grasp` (LIBERO); `suggest_grasp` (LIBERO with `--grasp-advisor`); `follow_waypoints` (LIBERO / Franka with `--waypoints`); `align_wrist` (LIBERO / Franka with `--align-wrist`); `recall_objects` (`--object-memory`).
+**Uses when present:** `segment`, `back_project`; `plan_grasp`, `check_attached` (a grasp backend flag, LIBERO / Franka / dual Franka); `execute_grasp` (LIBERO); `suggest_grasp` (LIBERO / Franka with `--grasp-advisor`: ranks plan_grasp's candidates, or without a grasp backend proposes a low-confidence grasp point); `follow_waypoints` (LIBERO / Franka with `--waypoints`); `align_wrist` (LIBERO / Franka with `--align-wrist`); `recall_objects` (`--object-memory`).
 
 Guidance, not a macro: the robot's tool descriptions define the exact parameters. Use the tools your
 robot has; skip a step whose tool is not active.
@@ -26,8 +26,9 @@ robot has; skip a step whose tool is not active.
 
 4. With a grasp backend, `plan_grasp` the target. Choose for holding through lift and transport, not
    for the highest score alone: aperture, contact depth, clearance, where the contacts land on the object.
-5. On LIBERO with `--grasp-advisor`, `suggest_grasp` gives a second opinion from a separate vision
-   model on the latest `plan_grasp` candidates. Treat it as evidence. Contacts on a rim, cap, neck,
+5. With `--grasp-advisor` (LIBERO, Franka), `suggest_grasp` gives a second opinion from a separate
+   vision model on the latest `plan_grasp` candidates; without a grasp backend it proposes a grasp
+   point itself (low confidence: approach through its `pregrasp_xyz` and check the wrist view). Treat it as evidence. Contacts on a rim, cap, neck,
    thin edge or barely on the object slip; if every candidate looks like that, get another view or
    plan again instead of taking the least bad one. Run the chosen id with `execute_grasp`.
 6. A candidate that fails for a structural reason (unreachable, collision, empty close):

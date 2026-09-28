@@ -37,7 +37,7 @@ time.sleep(a.load)
 class H(BaseHTTPRequestHandler):
     def do_POST(self):
         req = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-        body = json.dumps({"ok": True, "result": {"argv": sys.argv[1:], "env": os.environ.get("FAKE_ENV")}}).encode()
+        body = json.dumps({"ok": True, "result": {"argv": sys.argv[1:], "env": os.environ.get("FAKE_ENV"), "pid": int(os.environ.get("FAKE_PID", os.getpid()))}}).encode()
         self.send_response(200)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -263,12 +263,48 @@ test("--serve-min-free waits for the GPU's free memory and gives up at --serve-t
 		await assert.rejects(short.start(), /GPU 1 has 2607 MiB free, not 8000/);
 		assert.deepEqual(short.running(), []);
 		report(1000);
-		const roomy = modelServices(stubPi(flags).pi, { models: [fake("sam3")] });
+		// Its own timeout: this one also waits for the stand-in server to start.
+		const roomy = modelServices(stubPi({ ...flags, "serve-timeout": "120" }).pi, { models: [fake("sam3")] });
 		await roomy.start();
 		assert.deepEqual(roomy.running(), ["sam3"]);
 		await roomy.stop();
 	} finally {
 		process.env.PATH = path;
+	}
+});
+
+test("a port answered by another process is not taken for the started service, and is never shut down (audit #17)", async () => {
+	// The race: this pi's SAM3 still loads its model when another process binds the port and answers.
+	let shutdowns = 0;
+	const other = createHttpServer((req, res) => {
+		let body = "";
+		req.on("data", (c) => {
+			body += c;
+		});
+		req.on("end", () => {
+			if (JSON.parse(body).method === "shutdown") shutdowns++;
+			res.end(JSON.stringify({ ok: true, result: { status: "ok", pid: 1 } }));
+		});
+	});
+	const port = await freePort();
+	const { pi } = stubPi({
+		services: servicesDir(),
+		python: PYTHON,
+		sam3: `http://127.0.0.1:${port}`,
+		"serve-models": "sam3",
+		"serve-log-dir": mkdtempSync(join(tmpdir(), "model-services-logs-")),
+	});
+	// The started server loads for 2 s; the other process takes the port after the free-port probe.
+	const ms = modelServices(pi, { models: [fake("sam3", ["--load", "2"])] });
+	const starting = ms.start();
+	await new Promise((r) => setTimeout(r, 300));
+	await new Promise<void>((r) => other.listen(port, "127.0.0.1", r));
+	try {
+		await assert.rejects(starting, /answered by another process \(pid 1\)/);
+		assert.deepEqual(ms.running(), []);
+		assert.equal(shutdowns, 0);
+	} finally {
+		other.close();
 	}
 });
 

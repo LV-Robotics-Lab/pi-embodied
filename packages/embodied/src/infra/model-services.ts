@@ -157,6 +157,14 @@ async function waitForMemory(gpu: string, mib: number, deadline: number, pollMs 
 	}
 }
 
+/** The pid a service's healthz reports (services/PROTOCOL.md), or undefined when nothing answers. */
+async function answeringPid(rpc: RpcClient): Promise<number | null | undefined> {
+	return rpc.call<{ pid?: number }>("healthz", {}, 3_000).then(
+		(h) => (typeof h?.pid === "number" ? h.pid : null),
+		() => undefined,
+	);
+}
+
 /** Start `python -m module` on `port` and wait for healthz; rejects when it exits or `deadline` passes. */
 async function startOne(o: {
 	python: string;
@@ -186,11 +194,14 @@ async function startOne(o: {
 	for (;;) {
 		if (gone) throw gone;
 		if (Date.now() > o.deadline) throw new Error(`not ready by --serve-timeout; ${o.log}:\n${tail(o.log)}`);
-		const up = await rpc.call("healthz", {}, 3_000).then(
-			() => true,
-			() => false,
-		);
-		if (up) return;
+		// Ready means OUR process answers: another pi's server on the same port (bound while this one
+		// was still loading its model) must not be taken for it.
+		const pid = await answeringPid(rpc);
+		if (pid === proc.pid) return;
+		if (pid !== undefined)
+			throw new Error(
+				`:${o.port} is answered by another process (pid ${pid}), not the one started here (pid ${proc.pid})`,
+			);
 		await new Promise((r) => setTimeout(r, 500));
 	}
 }
@@ -243,11 +254,13 @@ export function modelServices(pi: ExtensionAPI, spec: ModelServicesSpec) {
 	let lock: { release: () => void } | undefined;
 
 	/**
-	 * A ready service gets the env server's orderly shutdown; one still loading its model neither
-	 * answers RPC nor watches stdin yet, so it gets SIGTERM, and SIGKILL 5 s later.
+	 * A ready service whose healthz still reports its pid gets the env server's orderly shutdown;
+	 * any other (still loading, or its port answered by someone else) is signalled directly, never
+	 * over the port: SIGTERM, and SIGKILL 5 s later.
 	 */
 	async function stopOne(s: (typeof running)[number]) {
-		if (s.ready) return shutdown(s.proc, s.rpc);
+		// The orderly shutdown goes over the port: only while our own process still answers there.
+		if (s.ready && (await answeringPid(s.rpc)) === s.proc.pid) return shutdown(s.proc, s.rpc);
 		if (s.proc.exitCode !== null || s.proc.signalCode !== null) return;
 		const exited = new Promise<boolean>((resolve) => s.proc.once("exit", () => resolve(true)));
 		s.proc.kill("SIGTERM");

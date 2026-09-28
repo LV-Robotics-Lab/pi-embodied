@@ -62,7 +62,7 @@ Every service except the LingBot-VLA launcher speaks the same JSON-over-HTTP RPC
 
 | method | args | result |
 |---|---|---|
-| `healthz` | - | `{"status": "ok", "version": "<pi-embodied-services version>", "service": "<name>"}` |
+| `healthz` | - | `{"status": "ok", "version": "<pi-embodied-services version>", "service": "<name>", "pid": <server pid>}` (the pid lets a client that started the server tell it from another process on the port) |
 | `stop` / `cancel` | - | `{"ok": true, "stop_generation": int, "call_in_progress": bool}` |
 | `shutdown` | - | `{"ok": true}`; the process exits after answering |
 

@@ -67,6 +67,7 @@ Usage::
 from __future__ import annotations
 
 import hmac
+import os
 import secrets
 import threading
 import time
@@ -163,6 +164,8 @@ class RpcFacade:
                 "status": "ok",
                 "version": __version__,
                 "service": self.service_name,
+                # Who answers: a client that started this server checks it is its own process.
+                "pid": os.getpid(),
             }
         if method in ("stop", "cancel"):
             return self.request_stop()

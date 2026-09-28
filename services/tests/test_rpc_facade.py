@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 
@@ -158,7 +159,13 @@ def test_healthz_reports_version_and_bypasses_lock(served):
     t0 = time.monotonic()
     health = client.call("healthz", timeout_s=5)
     assert time.monotonic() - t0 < 0.4
-    assert health == {"status": "ok", "version": __version__, "service": "dummy"}
+    # The pid names the answering process (a client that started it checks it is its own).
+    assert health == {
+        "status": "ok",
+        "version": __version__,
+        "service": "dummy",
+        "pid": os.getpid(),
+    }
     thread.join(timeout=10)
 
 

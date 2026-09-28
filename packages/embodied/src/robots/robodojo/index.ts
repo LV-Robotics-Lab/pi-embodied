@@ -133,6 +133,8 @@ type Obs = {
 	success: boolean;
 	ended: boolean;
 	truncated: boolean;
+	/** RoboDojo discards this episode (unstable layout or scene): counted neither as success nor as failure. */
+	unstable: boolean;
 	/** RoboDojo's episode score (1 on success, else its partial-credit tiers / 100): the evaluator's, never the planner's. */
 	score: number;
 	env_steps: number;
@@ -313,6 +315,7 @@ export default function robodojo(pi: ExtensionAPI) {
 			success: obs?.success ?? false,
 			score: obs?.score ?? 0,
 			truncated: obs?.truncated ?? false,
+			unstable: obs?.unstable ?? false,
 			env_steps: obs?.env_steps ?? 0,
 			step_lim: obs?.step_lim ?? null,
 		}),
@@ -407,13 +410,27 @@ export default function robodojo(pi: ExtensionAPI) {
 			success,
 			ended,
 			truncated,
+			unstable,
 			score,
 			env_steps,
 			step_lim,
 			seed,
 			...report
 		} = r;
-		obs = { head, left_wrist, right_wrist, arms, success, ended, truncated, score, env_steps, step_lim, seed };
+		obs = {
+			head,
+			left_wrist,
+			right_wrist,
+			arms,
+			success,
+			ended,
+			truncated,
+			unstable,
+			score,
+			env_steps,
+			step_lim,
+			seed,
+		};
 		return report;
 	}
 

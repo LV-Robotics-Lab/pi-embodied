@@ -303,6 +303,14 @@ class RobodojoEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
     def _success(self) -> bool:
         return bool(self._env.end_flag[0] and self._env.success[0])
 
+    def _unstable(self) -> bool:
+        """RoboDojo discards this episode: its layout did not settle at reset, or the task flagged it
+        during the episode (``EvalEnv.mark_env_unstable``, e.g. make_kong's support arm). run_eval
+        counts such an episode neither as success nor as failure and evaluates another layout."""
+        return self._layout_error is not None or 0 in getattr(
+            self._env, "unstable_envs", ()
+        )
+
     def _truncated(self) -> bool:
         return (
             int(self._env.take_action_cnt[0]) >= int(self._env.step_lim)
@@ -365,6 +373,7 @@ class RobodojoEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
             "success": self._success(),
             "ended": self._ended(),
             "truncated": self._truncated(),
+            "unstable": self._unstable(),
             "score": round(self._score(), 4),
             "env_steps": int(self._env.take_action_cnt[0]),
             "step_lim": int(self._env.step_lim),
@@ -457,6 +466,8 @@ class RobodojoEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
     def _refuse(self) -> str | None:
         if self._layout_error:
             return self._layout_error
+        if self._unstable():
+            return "RoboDojo discarded this episode as unstable (the task flagged it); reset another seed"
         if self._ended():
             return "the episode is over"
         return None

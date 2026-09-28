@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { chmodSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -473,4 +474,47 @@ test("the Flywheel takes success per control step: a success midway through go_h
 	const meta = JSON.parse(readFileSync(join(dir, episode, "episode.json"), "utf8"));
 	// Stamped with the call's final success, every step would be terminated and training would keep one.
 	assert.deepEqual([meta.step_count, meta.training_step_count, meta.is_success], [3, 3, true]);
+});
+
+/** eval.sh with a stand-in pi: layout 1 does not settle, the task has layouts 0..3, every other episode succeeds. */
+function evalRun(seeds: string) {
+	const dir = mkdtempSync(join(tmpdir(), "robodojo-eval-"));
+	const pi = join(dir, "pi");
+	writeFileSync(
+		pi,
+		`#!/usr/bin/env bash
+while [ $# -gt 0 ]; do case $1 in --seed) seed=$2 ;; --session-dir) sd=$2 ;; esac; shift; done
+if [ "$seed" = 1 ]; then echo "[robodojo] unavailable: RoboDojo reset: layout 1 is unstable in simulation (RoboDojo skips it); reset another seed" >&2; exit 1; fi
+if [ "$seed" -ge 4 ]; then echo "[robodojo] unavailable: --seed $seed: stack_bowls has eval layouts 0..3" >&2; exit 1; fi
+echo '{"type":"custom","customType":"robot_result","data":{"robot":"robodojo","success":true,"score":1,"env_steps":10}}' > "$sd/s.jsonl"
+`,
+	);
+	chmodSync(pi, 0o755);
+	const script = new URL("../src/robodojo/eval.sh", import.meta.url).pathname;
+	const r = spawnSync("bash", [script, join(dir, "out"), "stack_bowls", seeds], {
+		env: { ...process.env, PI: pi, TIME_LIMIT: "0" },
+		encoding: "utf8",
+	});
+	const status = (seed: number) => {
+		try {
+			return JSON.parse(readFileSync(join(dir, "out", `stack_bowls_s${seed}`, "result.json"), "utf8")).status;
+		} catch {
+			return undefined;
+		}
+	};
+	return { r, status };
+}
+
+test("eval.sh follows RoboDojo's SeedManager: an unstable layout is not scored and the next one replaces it", () => {
+	const { r, status } = evalRun("0-2");
+	assert.equal(r.status, 0, r.stdout + r.stderr);
+	assert.deepEqual([0, 1, 2, 3].map(status), ["success", "unstable", "success", "success"]);
+	assert.match(r.stderr, /seed 1 is unstable .* layout 3 replaces it/);
+	assert.match(r.stdout, /success 3\/3 \(100.0%\).*unstable 1 \(replaced\), invalid 0/);
+	// When the task has no layout left to draw, the selection ends one short, and nothing is invalid.
+	const short = evalRun("0-3");
+	assert.equal(short.r.status, 0, short.r.stdout + short.r.stderr);
+	assert.deepEqual([0, 1, 2, 3, 4].map(short.status), ["success", "unstable", "success", "success", undefined]);
+	assert.match(short.r.stderr, /no layout after 3 to replace an unstable one/);
+	assert.match(short.r.stdout, /success 3\/3 .*unstable 1 \(replaced\), invalid 0/);
 });

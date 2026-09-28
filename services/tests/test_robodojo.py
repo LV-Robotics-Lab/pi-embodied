@@ -329,6 +329,7 @@ class FakeEvalEnv:
         self.run_reward_calls = 0
 
     def reset(self, seed):
+        self.unstable_envs = set()
         self.resets.append(list(seed))
         self.take_action_cnt = [0]
         self.end_flag = [False]
@@ -699,3 +700,16 @@ def test_policy_frames_carry_robodojos_judgement_per_control_step(facade):
     assert flags[0] is False and flags[-1] is True and flags.index(True) > 0
     assert all(f["ended"] == f["success"] for f in r["policy_frames"])
     assert not any(f["truncated"] for f in r["policy_frames"])
+
+
+def test_an_episode_the_task_flags_unstable_is_reported_and_stops(facade):
+    env = facade._env
+    assert facade.state()["unstable"] is False
+    facade.move_delta("left", [0.0, 0.0, 0.02])
+    env.unstable_envs.add(
+        0
+    )  # EvalEnv.mark_env_unstable(0), e.g. make_kong's support arm missed
+    r = facade.move_delta("left", [0.0, 0.0, 0.02])
+    assert r["unstable"] is True and "unstable" in r["error"]
+    facade.reset(seed=1)
+    assert facade.state()["unstable"] is False

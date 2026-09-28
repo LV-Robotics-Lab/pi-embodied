@@ -5,9 +5,15 @@
 #   eval.sh runs/rd stack_bowls,push_T 0-4 --cuda-device 1 --model <provider/model> --thinking low
 #   eval.sh runs/rd-units stack_bowls 0-2 --units=true --cuda-device 1 --model <provider/model> --thinking low
 #
-# <seeds> are RoboDojo eval layout ids; the benchmark's own sweep is layouts 0..eval_nums-1 (25 or 50
-# per task, _task.yml). Every episode starts its own Isaac Sim env server (minutes of cold start, one env
-# per process); on a shared GPU run the whole script under that GPU's lock.
+# <seeds> are RoboDojo eval layout ids (Assets/Eval_Layout/RoboDojo/arx_x5/<eval-seed>/<task>_<n>.json).
+# RoboDojo's own sweep (SeedManager) walks a task's layouts in order and evaluates eval_nums episodes (25
+# or 50, _task.yml), skipping a layout that proves unstable and drawing the next one: 0-24 is the
+# benchmark's selection for a 25-episode task only when none of those layouts is unstable. Likewise here
+# an unstable episode (the layout did not settle at reset, or the task flagged the scene during the
+# episode) is recorded as `unstable`, counted neither as success nor as failure, and replaced by the next
+# layout id after the selection's largest, until the task has no more layouts. Every episode starts its
+# own Isaac Sim env server (minutes of cold start, one env per process); on a shared GPU run the whole
+# script under that GPU's lock.
 #
 # Each episode runs in <out>/<task>_s<seed>/ and ends with a result.json taken from the session's
 # `robot_result` entry. An episode is valid when the environment produced a result and the planner
@@ -156,7 +162,14 @@ if (!results.length && codeOracle && codeMode !== "false")
 			if (line.startsWith("[robodojo] {")) results.push(JSON.parse(line.slice("[robodojo] ".length)));
 	} catch {}
 const last = results.length === 1 ? results[0] : undefined;
-const status = Number(code) === 124 ? "timeout" : results.length > 1 ? "duplicate_result"
+// RoboDojo discards an unstable episode: its layout did not settle at reset (the robot fails to start,
+// naming it) or the task flagged the scene (the result says so).
+let stderr = "";
+try {
+	stderr = readFileSync(`${dir}/stderr.log`, "utf8");
+} catch {}
+const unstable = /is unstable in simulation/.test(stderr) || (results.length === 1 && results[0].unstable === true);
+const status = unstable ? "unstable" : Number(code) === 124 ? "timeout" : results.length > 1 ? "duplicate_result"
 	: !last ? (Number(code) ? "env_error" : "missing")
 	: last.env_error ? "env_error" : last.planner_error ? "planner_error" : last.success ? "success" : "failure";
 const result = { ...(last ?? {}), status, exit_code: Number(code), model: model || null, thinking: thinking || null,
@@ -174,7 +187,7 @@ valid() { # <dir>: 0 = a valid result of this configuration, 2 = a valid result 
 	node -e '
 const [path, model, thinking, turns, limit, units, stateless, anchor, vdm, vdmModel, vdmWrist, privileged, evalSeed, fallbackModel, fallbackAfter, fallbackRetry, approval, maxToolCalls, maxTokens, codeMode, codeApi, codeOracle, vdmVideo] = process.argv.slice(1);
 const r = JSON.parse(require("fs").readFileSync(path, "utf8"));
-if (r.status !== "success" && r.status !== "failure") process.exit(1);
+if (r.status !== "success" && r.status !== "failure" && r.status !== "unstable") process.exit(1);
 const same = r.model === (model || null) && r.thinking === (thinking || null) && r.max_turns === Number(turns)
 	&& r.time_limit === Number(limit) && r.units === units && r.stateless === (stateless === "true")
 	// Results written before --anchor-image existed ran without it.
@@ -200,21 +213,42 @@ process.exit(same ? 0 : 2);
 }
 
 cells=()
+# run_cell <task> <seed>: one episode (kept when a valid result of this configuration exists); prints its status.
+run_cell() {
+	local task=$1 seed=$2 dir="$out/$1_s$2"
+	valid "$dir"
+	case $? in
+	0) node -p 'require(process.argv[1]).status' "$dir/result.json" && return ;;
+	2) echo "$dir holds a result of another model, thinking level, --max-turns, --time-limit, units mode, code mode, vdm, --eval-seed (or an older result without them), fallback, --privileged, --anchor-image, --approval, --max-tool-calls or --max-tokens; use another out dir" >&2 && exit 1 ;;
+	esac
+	rm -rf "$dir" && mkdir -p "$dir"
+	echo "== $task seed $seed" >&2
+	# The prompt precedes the user's args: a bare boolean flag at their end would take it as its value.
+	${backstop[@]+"${backstop[@]}"} $PI -p --session-dir "$dir" -e "$here" --task "$task" --seed "$seed" "Solve the task." "$@" \
+		</dev/null >"$dir/stdout.log" 2>"$dir/stderr.log"
+	record "$dir" "$?" >&2
+	node -p 'require(process.argv[1]).status' "$dir/result.json"
+}
 for task in ${tasks//,/ }; do
-	for seed in $(expand "$seeds"); do
+	queue=($(expand "$seeds"))
+	next=$(printf '%s\n' "${queue[@]}" | sort -n | tail -1)
+	for ((q = 0; q < ${#queue[@]}; q++)); do
+		seed=${queue[q]}
+		# run_cell runs in a subshell: its refusal of another configuration's out dir must stop the script.
+		st=$(run_cell "$task" "$seed" "$@") || exit 1
+		# A replacement layout beyond the task's last one: the task has no more layouts to draw.
+		if [ "$st" = env_error ] && [ "$q" -ge "$(expand "$seeds" | wc -l)" ] &&
+			grep -q "has eval layouts 0\.\." "$out/${task}_s$seed/stderr.log" 2>/dev/null; then
+			rm -rf "${out:?}/${task}_s$seed"
+			echo "== $task: no layout after $((seed - 1)) to replace an unstable one" >&2
+			break
+		fi
 		cells+=("${task}_s${seed}")
-		dir="$out/${task}_s${seed}"
-		valid "$dir"
-		case $? in
-		0) continue ;;
-		2) echo "$dir holds a result of another model, thinking level, --max-turns, --time-limit, units mode, code mode, vdm, --eval-seed (or an older result without them), fallback, --privileged, --anchor-image, --approval, --max-tool-calls or --max-tokens; use another out dir" >&2 && exit 1 ;;
-		esac
-		rm -rf "$dir" && mkdir -p "$dir"
-		echo "== $task seed $seed"
-		# The prompt precedes the user's args: a bare boolean flag at their end would take it as its value.
-		${backstop[@]+"${backstop[@]}"} $PI -p --session-dir "$dir" -e "$here" --task "$task" --seed "$seed" "Solve the task." "$@" \
-			</dev/null >"$dir/stdout.log" 2>"$dir/stderr.log"
-		record "$dir" "$?"
+		if [ "$st" = unstable ]; then
+			next=$((next + 1))
+			queue+=("$next")
+			echo "== $task seed $seed is unstable (RoboDojo discards it); layout $next replaces it" >&2
+		fi
 	done
 done
 
@@ -228,7 +262,7 @@ const rows = cells.map((c) => {
 		return { status: "missing" };
 	}
 });
-const configs = new Set(rows.filter((r) => r.status === "success" || r.status === "failure")
+const configs = new Set(rows.filter((r) => r.status === "success" || r.status === "failure" || r.status === "unstable")
 	.map((r) => `${r.model}/${r.thinking}/turns=${r.max_turns}/limit=${r.time_limit}/units=${r.units}${r.units_wrist_view === false ? `/no-wrist:${(r.units_plugins ?? []).join("+")}` : ""}${r.stateless ? "/stateless" : ""}${r.anchor_image ? "/anchor" : ""}${(r.approval ?? "standard") !== "standard" ? `/approval=${r.approval}` : ""}${r.max_tool_calls ? `/tool_calls=${r.max_tool_calls}` : ""}${r.max_tokens ? `/tokens=${r.max_tokens}` : ""}${r.vdm ? `/vdm=${r.vdm_model ?? "default"}${r.vdm_wrist ? "+wrist" : ""}` : ""}${r.vdm_video ? `/vdm_video=${r.vdm_video}:${r.vdm_model ?? "default"}` : ""}${r.privileged ? "/privileged" : ""}${r.fallback_model ? `/fallback=${r.fallback_model}:${r.fallback_after}:${r.fallback_retry_primary}` : ""}/eval_seed=${r.eval_seed}${r.code && r.code !== "false" ? `/code=${r.code}:${r.code_api}${r.code_oracle ? `:oracle=${r.code_oracle}` : ""}` : ""}`));
 if (configs.size > 1) {
 	console.log(`refusing to summarize: ${out} mixes configurations ${[...configs].join(", ")}`);
@@ -242,12 +276,12 @@ const lies = rows.filter((r) => r.status === "failure" && r.claimed === "success
 const rate = scored ? ((100 * n("success")) / scored).toFixed(1) : "-";
 const valid = rows.filter((r) => r.status === "success" || r.status === "failure");
 const score = valid.length ? (valid.reduce((a, r) => a + (r.score ?? 0), 0) / valid.length).toFixed(3) : "-";
-const invalid = rows.length - scored;
+const invalid = rows.length - scored - n("unstable");
 const tasks = [...new Set(cells.map((c) => c.replace(/_s\d+$/, "")))];
 const per = tasks.length > 1 ? ` [${tasks.map((e) => {
 	const mine = rows.filter((r, i) => cells[i].replace(/_s\d+$/, "") === e);
 	return `${e} ${mine.filter((r) => r.status === "success").length}/${mine.filter((r) => r.status === "success" || r.status === "failure").length}`;
 }).join(", ")}]` : "";
-console.log(`${[...configs][0] ?? "-"}: success ${n("success")}/${scored} (${rate}%), mean score ${score}${per}, claimed-but-failed ${lies}, invalid ${invalid} (env_error ${n("env_error")}, planner_error ${n("planner_error")}, timeout ${n("timeout")}, missing ${n("missing")}, duplicate ${n("duplicate_result")}) of ${rows.length}${planned}`);
+console.log(`${[...configs][0] ?? "-"}: success ${n("success")}/${scored} (${rate}%), mean score ${score}${per}, claimed-but-failed ${lies}, unstable ${n("unstable")} (replaced), invalid ${invalid} (env_error ${n("env_error")}, planner_error ${n("planner_error")}, timeout ${n("timeout")}, missing ${n("missing")}, duplicate ${n("duplicate_result")}) of ${rows.length}${planned}`);
 if (invalid) process.exit(1);
 ' "$out" "${cells[@]}"

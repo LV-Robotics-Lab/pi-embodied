@@ -1190,7 +1190,9 @@ export default function franka(pi: ExtensionAPI) {
 			{
 				check,
 				gripper: false,
-				current: tcpXyz,
+				// Each leg from the measured TCP, and reached when the measured TCP is within 5 mm (§7.3).
+				current: async () => vec((await call<Json>("env.get_robot_state")).raw_base_state?.tcp_pose).slice(0, 3),
+				tolerance: () => 0.005,
 				maxSegment: maxMove,
 				maxPath: () => maxMove() * MAX_WAYPOINTS,
 				constraints: () => setup?.task.constraints,
@@ -1199,7 +1201,7 @@ export default function franka(pi: ExtensionAPI) {
 				segment: async (from, to, _gripper, signal) => {
 					const delta = NdArray.f32(to.map((v, i) => v - from[i]));
 					const r = await motion("env.move_delta", { delta_xyz: delta }, signal);
-					return { reached: !r.error, ...(r.error ? { error: String(r.error) } : {}) };
+					return { reached: false, ...(r.error ? { error: String(r.error) } : {}) };
 				},
 			},
 			(d) => mount(d),

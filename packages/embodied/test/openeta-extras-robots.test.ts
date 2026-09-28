@@ -251,7 +251,7 @@ test("LIBERO --grasp-advisor without a grasp backend fails the start with the re
 // ---------------------------------------------------------------------------
 // Franka (mocked hardware): the TCP points down (180° about x); the wrist camera sits 0.2 m up the tool axis
 
-async function fakeFranka() {
+async function fakeFranka(scale = 1) {
 	let tcp = [0.5, 0, 0.3];
 	const [w, h] = [64, 48];
 	const env = await fakeServer((method, _args, kwargs) => {
@@ -291,7 +291,7 @@ async function fakeFranka() {
 		if (method === "env.move_delta") {
 			const d = Buffer.from(kwargs.delta_xyz.__ndarray__, "base64");
 			const delta = Array.from(new Float32Array(d.buffer, d.byteOffset, 3));
-			tcp = tcp.map((v, i) => v + delta[i]);
+			tcp = tcp.map((v, i) => v + delta[i] * scale);
 			return { ok: true, states: f32([...tcp, 0]) };
 		}
 		return undefined;
@@ -373,7 +373,7 @@ test("Franka --waypoints sends each segment as one bounded move_delta; --align-w
 		.filter((c) => c.method === "env.move_delta")
 		.map((c) => {
 			const d = Buffer.from(c.kwargs.delta_xyz.__ndarray__, "base64");
-			return Array.from(new Float32Array(d.buffer, d.byteOffset, 3)).map((v) => Number(v.toFixed(4)));
+			return Array.from(new Float32Array(d.buffer, d.byteOffset, 3)).map((v) => Number(v.toFixed(4)) + 0);
 		});
 	assert.deepEqual(moves, [
 		[0, 0, 0.05],
@@ -391,5 +391,39 @@ test("Franka --waypoints sends each segment as one bounded move_delta; --align-w
 		a.aligned_xyz.every((v: number, i: number) => Math.abs(v - (tcp[i] + [0.016, 0.04, 0][i])) < 1e-3),
 		JSON.stringify(a),
 	);
+	await s.emit("session_shutdown");
+});
+
+test("Franka waypoints: each leg starts from the measured TCP and reports whether the measured TCP reached it", async (t) => {
+	// The arm stops 1 cm short on a 5 cm leg: that leg is not reached and the route stops there.
+	const env = await fakeFranka(0.8);
+	t.after(env.close);
+	const s = stubPi(
+		{
+			"robot-env": env.url,
+			python: setupStub(),
+			services: tmpdir(),
+			out: mkdtempSync(join(tmpdir(), "franka-out-")),
+			"z-floor": "0.1",
+			"max-move": "0.06",
+			"memory-profile": "local",
+			"memory-dir": corpus(),
+			waypoints: true,
+		},
+		{ confirm: async () => true },
+	);
+	franka(s.pi);
+	await s.emit("session_start");
+	const r = await s.run("follow_waypoints", {
+		waypoints: [
+			[0.5, 0, 0.35],
+			[0.55, 0, 0.35],
+		],
+	});
+	const out = r.details.result ?? r.details;
+	assert.equal(out.stop_reason, "not_reached", JSON.stringify(out));
+	assert.equal(out.segments.length, 1);
+	assert.deepEqual(out.segments[0].measured_xyz, [0.5, 0, 0.34]);
+	assert.equal(out.segments[0].final_dist_m, 0.01);
 	await s.emit("session_shutdown");
 });

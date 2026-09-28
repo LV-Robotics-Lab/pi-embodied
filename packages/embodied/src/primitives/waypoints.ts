@@ -33,6 +33,12 @@ export type WaypointRig = {
 	constraints?: () => string[] | undefined;
 	/** Refuse a waypoint outside the workspace (throws). */
 	workspace?: (target: number[]) => void;
+	/**
+	 * Measure every leg (a real arm): each leg is sent from the pose `current` measures before it,
+	 * re-checked against the per-segment limit, and counts as reached when the pose measured after it
+	 * is within this many m of the waypoint (the leg's own `reached` is ignored).
+	 */
+	tolerance?: () => number;
 	/** false: the gripper keeps its last command (a real arm; open/close are their own tools), so no `gripper` parameter. */
 	gripper?: false;
 	/** Move from `from` to `to` holding `gripper` (-1 open, +1 closed); `reached` says whether it got there. */
@@ -113,7 +119,25 @@ export function followWaypoints(rig: WaypointRig): ToolDef {
 				rig.check?.(signal);
 				let r: Awaited<ReturnType<WaypointRig["segment"]>>;
 				try {
+					if (rig.tolerance) {
+						from = [...(await rig.current())];
+						checkMove(
+							w.map((v, k) => v - from[k]),
+							rig.maxSegment(),
+							rig.constraints?.() ?? [],
+						);
+					}
 					r = await rig.segment(from, w, gripper, signal);
+					if (rig.tolerance && !r.error) {
+						const at = [...(await rig.current())];
+						const dist = Math.hypot(...w.map((v, k) => v - at[k]));
+						r = {
+							...r,
+							reached: dist <= rig.tolerance(),
+							measured_xyz: roundAll(at),
+							final_dist_m: round(dist, 4),
+						};
+					}
 				} catch (err) {
 					r = { reached: false, error: message(err) };
 				}

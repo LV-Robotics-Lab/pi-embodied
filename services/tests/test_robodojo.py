@@ -670,3 +670,9 @@ def test_object_poses_read_the_layout_and_fall_back_to_the_prim_for_dynamic_obje
     assert poses["bowl0"]["pos"] == [0.1, 0.2, 0.79]
     # The dynamic item's world pose, in the env frame (minus the env origin).
     assert poses["item0"] == {"pos": [0.5, 1.0, 0.8], "quat_xyzw": [0.0, 0.0, 0.0, 1.0]}
+
+
+def test_xpolicy_env_cfg_names_the_dual_x5():
+    from pi_embodied_services.components.xpolicy_bridge import action_dims
+
+    assert action_dims("arx_x5") == {"robot": "dual_x5", "arm_dim": [6, 6], "ee_dim": [1, 1]}

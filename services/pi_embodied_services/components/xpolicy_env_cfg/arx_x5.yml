@@ -1,0 +1,6 @@
+# RoboDojo's two ARX X5 arms (pi-embodied's robodojo robot), as RoboDojo's env_cfg/arx_x5.yml.
+config:
+  robot: dual_x5
+
+observation:
+  collect_freq: 25

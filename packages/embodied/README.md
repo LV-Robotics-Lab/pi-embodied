@@ -82,7 +82,7 @@ Source layout (`src/`, one directory per layer; `src/robot.ts`, the `defineRobot
 | RoboTwin | `src/robots/robotwin` | `eval_success` | all below, plus flywheel, recipe Flash (Molmo re-anchoring), XPolicyLab (`aloha_agilex`, joint and ee) |
 | ManiSkill (`--robot`, below) | `src/robots/maniskill` | ManiSkill `success` | all below, plus flywheel, recipe Flash (Molmo + ray-plane re-anchoring of delta waypoints) |
 | RoboLab | `src/robots/robolab` | RoboLab's task predicate | all below, plus recipe Flash (Molmo + ray-plane re-anchoring of delta waypoints) |
-| RoboDojo (two ARX X5) | `src/robots/robodojo` | RoboDojo's `is_episode_end` (`score` = partial credit) | all below, plus flywheel (joint space), recipe Flash (Molmo + depth back-projection) |
+| RoboDojo (two ARX X5) | `src/robots/robodojo` | RoboDojo's `is_episode_end` (`score` = partial credit) | all below, plus flywheel (joint space), recipe Flash (Molmo + depth back-projection), XPolicyLab (`arx_x5`, joint and ee) |
 | Robosuite | `src/robots/robosuite` | robosuite `_check_success` (Restack adds CaP-X's off-table rule), latched | memory, explore, video, units, VDM, code.api, `--privileged`, flywheel |
 | Metaworld | `src/robots/metaworld` | Metaworld `info["success"]`, latched | memory, explore, video, units, VDM, code.api, `--privileged`, flywheel |
 | Genesis | `src/robots/genesis` | the task predicate (cube_pick: an 8 cm lift) | memory, explore, video, units, VDM, code.api, `--privileged`, flywheel |

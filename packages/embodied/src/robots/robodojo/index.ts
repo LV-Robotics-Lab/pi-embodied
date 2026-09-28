@@ -12,6 +12,10 @@
  * layout id (layouts are pre-generated per task; 25 or 50 of them). Isaac Sim takes a minute or more to
  * come up.
  *
+ * With `--xpolicy <ws url>`, `xpolicy_act` runs an XPolicyLab policy (../xpolicy.ts, env_cfg arx_x5, joint or
+ * ee actions) on RoboDojo's native observation, one native action per step, as RoboDojo's own
+ * eval_one_episode does.
+ *
  * Every motion goes through RoboDojo's own `take_action` (one 25 Hz control step each, counted against
  * the task's `step_lim`): `move_to` / `move_delta` interpolate one arm's end effector in the env frame
  * through RoboDojo's cuRobo IK while the other arm holds, `rotate_delta` turns a gripper about the
@@ -42,6 +46,7 @@ import {
 import { mountGraspTool } from "../../primitives/grasp.ts";
 import { pointActive, pointTool, registerPointFlags } from "../../primitives/pointing.ts";
 import { attach, defineRobot, type Json, rgbOf, SERVICES, u8 } from "../../robot.ts";
+import type { XPolicyAction, XPolicyObs } from "../../primitives/xpolicy.ts";
 
 const read = (name: string) => template(new URL(name, import.meta.url));
 const SYSTEM = read("./SYSTEM.md");
@@ -226,6 +231,17 @@ export default function robodojo(pi: ExtensionAPI) {
 		vdm: { views: VIEWS.length, wrist: [1, 2] },
 		groundTruth: (names) => env.call("env.ground_truth_poses", { names: names ?? null }, READ_MS, [], robot.signal),
 		flywheel: { spec: FLYWHEEL, select: () => robot.task.task },
+		// XPolicyLab policies (--xpolicy): RoboDojo's own observation and native action dicts (its arx_x5 profile).
+		xpolicy: {
+			envCfgType: "arx_x5",
+			actions: ["joint", "ee"],
+			observe: xpolicyObs,
+			act: xpolicyAct,
+			over: () => obs.ended,
+			caseMeta: () => ({ task_name: robot.task.task, seed: Number(robot.task.seed), instruction: meta.instruction }),
+			trialResult: () => ({ task_name: robot.task.task, seed: Number(robot.task.seed), success: obs.success }),
+			present: async (run) => observe(run),
+		},
 		// No corpus is published for RoboDojo: memory is what exploration writes locally.
 		memory: {
 			cell: () => ({ tag: tag(robot.task.seed), reference: tag("0") }),
@@ -571,9 +587,49 @@ export default function robodojo(pi: ExtensionAPI) {
 		}),
 	);
 
-	// TODO(xpolicy): mount `xpolicy_act` (../xpolicy.ts, env_cfg_type "arx_x5") once that module is on main;
-	// the server side is ready (`env.get_obs` is RoboDojo's native observation, `env.step` / `env.chunk_step`
-	// take native action dicts).
+	/**
+	 * XPolicyLab's observation as RoboDojo's EvalEnv.get_obs builds it for its arx_x5 profile: the three
+	 * cameras' RGB, the joint states, normalized grippers and end-effector poses ([x, y, z, qw, qx, qy, qz]).
+	 */
+	async function xpolicyObs(): Promise<XPolicyObs> {
+		type Native = {
+			instruction: string;
+			vision: Record<string, { color: NdArray }>;
+			state: Record<string, NdArray | number[]>;
+		};
+		const n = await env.call<Native>("env.get_obs", {}, READ_MS, [], robot.signal);
+		const vec = (v: NdArray | number[]) => (Array.isArray(v) ? v.map(Number) : v.toArray());
+		return {
+			instruction: n.instruction,
+			vision: Object.fromEntries(Object.entries(n.vision).map(([cam, v]) => [cam, { color: v.color }])),
+			state: Object.fromEntries(Object.entries(n.state).map(([k, v]) => [k, vec(v)])),
+			info: { frequency: 25 },
+		};
+	}
+
+	/** One XPolicyLab action as one native RoboDojo action; an arm or gripper it leaves out keeps its command. */
+	async function xpolicyAct(a: XPolicyAction) {
+		const action: Record<string, number[]> = {};
+		for (const arm of ARMS) {
+			const part = a.arms[`${arm}_`] ?? {};
+			const s = obs.arms[arm];
+			if (a.type === "joint") action[`${arm}_arm_joint_state`] = part.joints ?? s.joints_command.toArray();
+			else action[`${arm}_ee_pose`] = part.pose ?? [...s.eef_pos.toArray(), ...s.eef_quat_wxyz.toArray()];
+			action[`${arm}_ee_joint_state`] = part.ee ?? [s.gripper_command];
+		}
+		const [o] = await env.call<[Motion, number, boolean, boolean, Record<string, unknown>]>(
+			"env.step",
+			{ action },
+			MUTATE_MS,
+			[],
+			robot.signal,
+		);
+		video.frame(o.head);
+		for (const f of o.policy_frames ?? [])
+			fly.transition(f.action.toArray(), flyObs(f), o.success ? 1 : 0, o.success, o.truncated);
+		const { policy_frames: _p, frames: _f, ...rest } = o;
+		obs = rest;
+	}
 
 	async function startEpisode() {
 		const { task, seed } = robot.task;

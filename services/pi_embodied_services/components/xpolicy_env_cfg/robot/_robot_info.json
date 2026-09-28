@@ -10,5 +10,9 @@
     "franka": {
         "arm_dim": [7],
         "ee_dim": [1]
+    },
+    "dual_x5": {
+        "arm_dim": [6, 6],
+        "ee_dim": [1, 1]
     }
 }

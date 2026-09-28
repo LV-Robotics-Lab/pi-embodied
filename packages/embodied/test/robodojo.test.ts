@@ -365,3 +365,70 @@ test("--code=true: run_code runs on the env server; its observation and success 
 	assert.match(again.content[0].text, /solved/);
 	assert.equal(env.calls.filter((c) => c.method === "code.run").length, 1);
 });
+
+/** A fake xpolicy bridge (`POST /call`, ../src/xpolicy.ts): `chunks` are get_action's replies in order. */
+async function fakeBridge(chunks: unknown[][]) {
+	const calls: { method: string; kwargs: Record<string, any> }[] = [];
+	const server = createServer((req, res) => {
+		let body = "";
+		req.on("data", (c) => {
+			body += c;
+		});
+		req.on("end", () => {
+			const { method, kwargs } = JSON.parse(body);
+			if (method !== "healthz") calls.push({ method, kwargs });
+			const reply = (result: unknown) => res.end(JSON.stringify({ ok: true, result }));
+			if (method === "healthz") return reply({ status: "ok" });
+			if (method === "xpolicy.action_dims") return reply({ robot: "dual_x5", arm_dim: [6, 6], ee_dim: [1, 1] });
+			if (method === "xpolicy.connect") return reply({ server_instance_id: "s", xpolicylab_rev: "d6332bf", ms: 1 });
+			if (method === "xpolicy.get_action") return reply({ actions: chunks.shift() ?? [], ms: 5 });
+			reply({ result: null, ms: 1 });
+		});
+	});
+	await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+	const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+	const close = () => {
+		server.closeAllConnections();
+		server.close();
+	};
+	return { url, calls, close };
+}
+
+test("xpolicy_act sends RoboDojo's native observation and runs each action as one native action dict", async (t) => {
+	const env = await fakeEnv();
+	t.after(env.close);
+	const q = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6];
+	const bridge = await fakeBridge([
+		[
+			{ left_arm_joint_state: q, left_ee_joint_state: [0.2] },
+			{ action_type: "ee", right_ee_pose: [0.3, 0, 0.9, 1, 0, 0, 0] },
+		],
+	]);
+	t.after(bridge.close);
+	const s = await start(
+		{ xpolicy: "ws://policy:19000", "xpolicy-bridge": bridge.url, "xpolicy-action": "joint" },
+		env,
+	);
+	assert.ok(s.active().includes("xpolicy_act"), s.errors.join("\n"));
+	assert.equal(bridge.calls.find((c) => c.method === "xpolicy.action_dims")?.kwargs.env_cfg_type, "arx_x5");
+	await s.run("xpolicy_act", { chunks: 1 });
+	const obs = bridge.calls.find((c) => c.method === "xpolicy.update_obs")!.kwargs.obs;
+	assert.deepEqual(Object.keys(obs.vision).sort(), ["cam_head", "cam_left_wrist", "cam_right_wrist"]);
+	assert.ok("left_ee_pose" in obs.state && "right_arm_joint_state" in obs.state);
+	const steps = env.calls
+		.filter((c) => c.method === "env.step")
+		.map((c) => c.kwargs.action as Record<string, number[]>);
+	assert.equal(steps.length, 2);
+	// A joint action: the arm the policy left out holds its commanded joints and gripper.
+	assert.deepEqual(steps[0], {
+		left_arm_joint_state: q,
+		left_ee_joint_state: [0.2],
+		right_arm_joint_state: [0, 0, 0, 0, 0, 0],
+		right_ee_joint_state: [1],
+	});
+	// An ee action: the other arm holds its current end-effector pose ([x, y, z, qw, qx, qy, qz]).
+	const round = (v: number[]) => v.map((x) => Number(x.toFixed(4)));
+	assert.deepEqual(round(steps[1].left_ee_pose), [-0.3, -0.15, 0.97, 0, 0.6, 0.8, 0]);
+	assert.deepEqual(steps[1].right_ee_pose, [0.3, 0, 0.9, 1, 0, 0, 0]);
+	assert.deepEqual([steps[1].left_ee_joint_state, steps[1].right_ee_joint_state], [[1], [1]]);
+});

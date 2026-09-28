@@ -286,7 +286,8 @@ export function human(pi: ExtensionAPI, argv: readonly string[] = process.argv) 
 		out.push({ type: "start", partial });
 		content.forEach((part, i) => {
 			if (part.type === "toolCall") {
-				out.push({ type: "toolcall_start", contentIndex: i, partial });
+				// The call is whole at its start: pi's JSON/RPC stream reads its id and name from the partial.
+				out.push({ type: "toolcall_start", contentIndex: i, partial: final });
 				out.push({ type: "toolcall_end", contentIndex: i, toolCall: part, partial: final });
 			} else if (part.type === "text") {
 				out.push({ type: "text_start", contentIndex: i, partial });

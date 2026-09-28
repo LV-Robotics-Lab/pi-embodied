@@ -537,7 +537,13 @@ test("the operator answers through pi's UI dialogs; an invalid answer is asked a
 		},
 	};
 	await f.emit("session_start");
-	const m = await turn(f.providers[0]);
+	const stream = f.providers[0].streamSimple(f.providers[0].getModels()[0], CONTEXT, {});
+	const starts: any[] = [];
+	for await (const e of stream) if (e.type === "toolcall_start") starts.push(e);
+	const m = (await stream.result()) as AssistantMessage;
+	// pi's JSON/RPC modes read the call's id and name from toolcall_start's partial.
+	assert.equal(starts.length, 1);
+	assert.equal(starts[0].partial.content[starts[0].contentIndex].type, "toolCall");
 	assert.equal(m.stopReason, "toolUse");
 	assert.deepEqual(m.content[0], {
 		...m.content[0],

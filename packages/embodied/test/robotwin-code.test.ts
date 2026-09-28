@@ -273,3 +273,32 @@ test("the motion tools are the env server's methods: manifest schemas, params pa
 	assert.equal(env.calls.length, before);
 	await s.emit("session_shutdown");
 });
+
+test("LingBot is optional: without it lingbot_act stays inactive and the result notes it; --require-skills lingbot refuses", async (t) => {
+	const env = await fakeEnv();
+	t.after(env.close);
+	const base = mkdtempSync(join(tmpdir(), "robotwin-skill-"));
+	t.after(() => rmSync(base, { recursive: true, force: true }));
+	const memory = join(base, "robotwin");
+	mkdirSync(memory);
+	writeFileSync(join(memory, "MEMORY.md"), "# RoboTwin\n");
+	const values = { env: env.url, "memory-profile": "local", "memory-dir": memory };
+	const s = stubPi({ ...values, lingbot: "off" });
+	robotwin(s.pi);
+	await s.emit("session_start");
+	process.exitCode = undefined;
+	assert.ok(s.active().includes("move_to"), "the robot started");
+	assert.ok(!s.active().includes("lingbot_act"));
+	await s.emit("agent_start");
+	await s.run("finish", { status: "failure", summary: "x" });
+	await s.emit("agent_end", { messages: [] });
+	assert.deepEqual(s.entries.find((e) => e.type === "robot_result")?.data.skills_off, { lingbot: "switched off" });
+	await s.emit("session_shutdown");
+
+	const r = stubPi({ ...values, lingbot: "ws://127.0.0.1:9", "require-skills": "lingbot" });
+	robotwin(r.pi);
+	await r.emit("session_start");
+	process.exitCode = undefined;
+	assert.deepEqual(r.active(), [], "a run that needs LingBot does not start without it");
+	await r.emit("session_shutdown");
+});

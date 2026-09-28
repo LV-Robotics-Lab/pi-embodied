@@ -137,7 +137,10 @@
 			"doc": {
 				"tool": "Run LingBot-VLA eef16 action chunks (50 native actions each) on the native task instruction. The optional prompt is recorded but never sent to the policy."
 			},
-			"result": "motion"
+			"result": "motion",
+			"requires": [
+				"lingbot"
+			]
 		},
 		{
 			"name": "move_to",

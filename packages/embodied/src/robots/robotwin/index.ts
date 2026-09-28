@@ -23,6 +23,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
 import { recipeFlash } from "../../capabilities/flash/recipe.ts";
 import type { FlywheelObs, FlywheelSpec } from "../../capabilities/flywheel.ts";
+import { probeSkill, registerSkillFlags, type SkillState, skillsOff } from "../../capabilities/skills.ts";
 import { MOLMO, SAM3 } from "../../infra/model-services.ts";
 import { encodePng } from "../../infra/png.ts";
 import { NdArray, type RpcClient } from "../../infra/rpc.ts";
@@ -407,6 +408,8 @@ export default function robotwin(pi: ExtensionAPI) {
 	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
 	// --detections / --unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
 	registerDetectionFlags(pi, { sam3: true });
+	// --require-skills: LingBot is optional unless named (../../capabilities/skills.ts).
+	registerSkillFlags(pi);
 	// --point: Molmo's point over --molmo (../primitives/pointing.ts).
 	registerPointFlags(pi);
 	const seeds = vlaSeeds(pi, () => ["robotwin", robot.task]);
@@ -459,6 +462,8 @@ export default function robotwin(pi: ExtensionAPI) {
 		return present(await capture({ action: "act", arm, delta: m.delta, yaw: m.yaw, gripper: m.gripper }, result));
 	}
 
+	/** Optional VLA skills at this session's start (LingBot). */
+	const skills: Record<string, SkillState> = {};
 	const robot = defineRobot(pi, {
 		name: "robotwin",
 		// Tools and code primitives: ../../primitives/manifests/robotwin.json (the env server reads it too).
@@ -469,6 +474,8 @@ export default function robotwin(pi: ExtensionAPI) {
 			({
 				sam3: pi.getFlag("detections") === true && Boolean(flag("sam3", "")),
 				unidepth: Boolean(String(pi.getFlag("unidepth") ?? "").trim()),
+				// lingbot_act: the LingBot server answered at session start (or --xpolicy stands in).
+				lingbot: skills.lingbot?.on === true,
 			})[c] ?? false,
 		services: { models: [SAM3, MOLMO] },
 		task: ["task-name", "task-config", "seed"],
@@ -607,6 +614,7 @@ export default function robotwin(pi: ExtensionAPI) {
 			return SYSTEM.replace(/\{\{(\w+)\}\}/g, (_, k: string) => vars[k] ?? "");
 		},
 		result: () => ({
+			...skillsOff(skills),
 			task_name: cell().task,
 			task_config: cell().config,
 			seed: Number(cell().seed),
@@ -1203,7 +1211,10 @@ export default function robotwin(pi: ExtensionAPI) {
 			throw new Error(`reset used seed ${status().actual_seed}, not ${seed}`);
 		language = reset.instruction ?? (await env.call<string>("env.get_task_language"));
 		// With --xpolicy the policy is XPolicyLab's; LingBot connects on the first lingbot_act.
-		if (!pi.getFlag("xpolicy")) await vla();
+		// LingBot is optional: without it lingbot_act stays inactive and the result notes it.
+		skills.lingbot = pi.getFlag("xpolicy")
+			? { on: true }
+			: await probeSkill(pi, "lingbot", flag("lingbot", ""), () => vla());
 		await capture(
 			{ action: "reset" },
 			{ success: true, instruction: language, instruction_source: reset.instruction_source ?? null },

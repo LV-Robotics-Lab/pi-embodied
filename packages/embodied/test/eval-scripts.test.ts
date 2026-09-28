@@ -557,3 +557,22 @@ test("libero/eval.sh records --libero-prompt (rpent by default) and never mixes 
 	assert.equal(again([]).status, 1);
 	assert.match(again(["--libero-prompt", "compact"]).stdout, /\/prompt=compact: success 1\/1/);
 });
+
+for (const [robot, positional, , env] of CELLS)
+	test(`${robot}/eval.sh never mixes runs with other OpenETA extras (result extras) in one out dir`, () => {
+		const extras = ["object-memory", "waypoints"];
+		const [a, b] = rerun(robot, positional, env ?? {}, ["--waypoints", "--object-memory=true"], [], { extras });
+		assert.equal(a.status, 0, a.stderr);
+		assert.equal(b.status, 1, "a run without the extras refuses the out dir");
+		const [, same] = rerun(
+			robot,
+			positional,
+			env ?? {},
+			["--object-memory", "--waypoints"],
+			["--waypoints", "--object-memory"],
+			{
+				extras,
+			},
+		);
+		assert.equal(same.status, 0, same.stderr);
+	});

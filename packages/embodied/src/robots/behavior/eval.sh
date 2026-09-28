@@ -46,7 +46,7 @@ eval_normalize_options
 backstop=()
 [ "$limit" -gt 0 ] && command -v timeout >/dev/null && backstop=(timeout -k 30 $((limit + 1800)))
 mkdir -p "$out"
-config=("$model" "$thinking" "$turns" "$limit" "$units" "$stateless" "$anchor" "$vdm" "$vdm_model" "$vdm_wrist" "$privileged" "$fallback_model" "$fallback_after" "$fallback_retry" "$grasping_mode" "$approval" "$max_tool_calls" "$max_tokens" "$code" "$code_api" "$code_oracle" "$vdm_video")
+config=("$model" "$thinking" "$turns" "$limit" "$units" "$stateless" "$anchor" "$vdm" "$vdm_model" "$vdm_wrist" "$privileged" "$fallback_model" "$fallback_after" "$fallback_retry" "$grasping_mode" "$approval" "$max_tool_calls" "$max_tokens" "$code" "$code_api" "$code_oracle" "$vdm_video" "$extras")
 
 record() { # <dir> <exit code>: write result.json from the episode's session
 	node --input-type=module -e '
@@ -85,7 +85,7 @@ console.log(JSON.stringify({ status, success: result.success, q_score: result.q_
 
 valid() { # <dir>: 0 = a valid result of this configuration, 2 = a valid result of another one, 1 = none
 	node -e '
-const [path, model, thinking, turns, limit, units, stateless, anchor, vdm, vdmModel, vdmWrist, privileged, fallbackModel, fallbackAfter, fallbackRetry, graspingMode, approval, maxToolCalls, maxTokens, codeMode, codeApi, codeOracle, vdmVideo] = process.argv.slice(1);
+const [path, model, thinking, turns, limit, units, stateless, anchor, vdm, vdmModel, vdmWrist, privileged, fallbackModel, fallbackAfter, fallbackRetry, graspingMode, approval, maxToolCalls, maxTokens, codeMode, codeApi, codeOracle, vdmVideo, extras] = process.argv.slice(1);
 const r = JSON.parse(require("fs").readFileSync(path, "utf8"));
 if (r.status !== "success" && r.status !== "failure") process.exit(1);
 const same = r.model === (model || null) && r.thinking === (thinking || null) && r.max_turns === Number(turns)
@@ -111,7 +111,7 @@ const same = r.model === (model || null) && r.thinking === (thinking || null) &&
 	&& (r.code_oracle ?? null) === (codeMode === "false" ? null : codeOracle || null)
 	// Results written before the code budget was recorded ran the default one.
 	&& (codeMode === "false" || (r.code_budget_flags ?? "timeout=+max_calls=+max_move=+helpers=false") === process.env.CODE_BUDGET_FLAGS);
-process.exit(same ? 0 : 2);
+process.exit(same && [...(r.extras ?? [])].sort().join(",") === (extras ?? "") ? 0 : 2);
 ' "$1/result.json" "${config[@]}" 2>/dev/null
 }
 

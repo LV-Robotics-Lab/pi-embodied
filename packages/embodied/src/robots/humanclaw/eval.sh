@@ -68,7 +68,9 @@ extra=""
 [ "$approval" != off ] && extra+="/approval=$approval"
 [ "$max_tool_calls" != 0 ] && extra+="/tool_calls=$max_tool_calls"
 [ "$max_tokens" != 0 ] && extra+="/tokens=$max_tokens"
-config="mode=$mode/preset=$preset/model=$model/metrics=$metrics/video=$video/verify=$verify/vdm=$vdm/stateless=$stateless/proprioception=$proprioception${reasoning:+/reasoning=$reasoning}$extra"
+# The OpenETA extras this run turns on (robot.ts records them as `extras`): part of the configuration.
+extras=$(for a in "${pass[@]}"; do case $a in (--waypoints | --waypoints=true | --align-wrist | --align-wrist=true | --grasp-advisor | --grasp-advisor=true | --object-memory | --object-memory=true | --web-tools | --web-tools=true) a=${a#--} && echo "${a%=true}" ;; esac; done | sort -u | paste -sd, -)
+config="mode=$mode/preset=$preset/model=$model/metrics=$metrics/video=$video/verify=$verify/vdm=$vdm/stateless=$stateless/proprioception=$proprioception${reasoning:+/reasoning=$reasoning}$extra${extras:+/extras=$extras}"
 mkdir -p "$out"
 if [[ $episodes == *_ep*_* ]]; then list=$episodes; else list=$(cd "$out" && "$PY" -c '
 import sys

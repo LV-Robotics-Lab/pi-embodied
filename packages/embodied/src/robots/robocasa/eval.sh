@@ -92,7 +92,7 @@ if (found.size) {
 
 if [ "$mode" = robocasa365 ]; then
 	limit=${TIME_LIMIT:-1800}
-	config=("$model" "$thinking" "$turns" "$limit" "$units" "$stateless" "$privileged" "$fallback_model" "$fallback_after" "$fallback_retry" "$code" "$code_api" "$code_oracle")
+	config=("$model" "$thinking" "$turns" "$limit" "$units" "$stateless" "$privileged" "$fallback_model" "$fallback_after" "$fallback_retry" "$code" "$code_api" "$code_oracle" "$extras")
 	unset RLDX_RESET_SEED
 
 	record365() { # <dir> <exit code> <split> <task> <scene> <elapsed s>: write result.json (robocasa365 schema)
@@ -169,7 +169,7 @@ console.log(JSON.stringify({ status, termination_reason: result.termination_reas
 
 	valid365() { # <dir>: 0 = a valid result of this configuration, 2 = a valid result of another one, 1 = none
 		node -e '
-const [path, model, thinking, turns, limit, units, stateless, privileged, fallbackModel, fallbackAfter, fallbackRetry, codeMode, codeApi, codeOracle] = process.argv.slice(1);
+const [path, model, thinking, turns, limit, units, stateless, privileged, fallbackModel, fallbackAfter, fallbackRetry, codeMode, codeApi, codeOracle, extras] = process.argv.slice(1);
 const r = JSON.parse(require("fs").readFileSync(path, "utf8"));
 if (r.status !== "success" && r.status !== "failure") process.exit(1);
 const same = r.protocol === "robocasa365" && r.model === (model || null) && r.thinking === (thinking || null) && r.max_turns === Number(turns)
@@ -182,7 +182,7 @@ const same = r.protocol === "robocasa365" && r.model === (model || null) && r.th
 	&& (r.code_oracle ?? null) === (codeMode === "false" ? null : codeOracle || null)
 	// Results written before the code budget was recorded ran the default one.
 	&& (codeMode === "false" || (r.code_budget_flags ?? "timeout=+max_calls=+max_move=+helpers=false") === process.env.CODE_BUDGET_FLAGS);
-process.exit(same ? 0 : 2);
+process.exit(same && [...(r.extras ?? [])].sort().join(",") === (extras ?? "") ? 0 : 2);
 ' "$1/result.json" "${config[@]}" 2>/dev/null
 	}
 
@@ -285,7 +285,7 @@ export RLDX_MAX_CHUNKS=$(protocol m.runtime_protocol.rldx_max_chunks)
 export RLDX_SETTLE_PATIENCE=$(protocol m.runtime_protocol.rldx_settle_patience)
 export RLDX_ACTION_STEPS_PER_CHUNK=$(protocol m.runtime_protocol.rldx_action_steps_per_chunk)
 unset RLDX_RESET_SEED
-config=("$model" "$thinking" "$turns" "$units" "$stateless" "$privileged" "$anchor" "$vdm" "$vdm_model" "$vdm_wrist" "$fallback_model" "$fallback_after" "$fallback_retry" "$approval" "$max_tool_calls" "$max_tokens" "$code" "$code_api" "$code_oracle" "$vdm_video")
+config=("$model" "$thinking" "$turns" "$units" "$stateless" "$privileged" "$anchor" "$vdm" "$vdm_model" "$vdm_wrist" "$fallback_model" "$fallback_after" "$fallback_retry" "$approval" "$max_tool_calls" "$max_tokens" "$code" "$code_api" "$code_oracle" "$vdm_video" "$extras")
 # The protocol pins the task-memory snapshot (hf profile); PI_EMBODIED_MEMORY_REVISION overrides it.
 export PI_EMBODIED_MEMORY_REVISION=${PI_EMBODIED_MEMORY_REVISION:-$(protocol m.dependencies.task_memory.revision)}
 
@@ -363,7 +363,7 @@ console.log(JSON.stringify({ status, termination_reason: result.termination_reas
 
 valid() { # <dir>: 0 = a valid result of this configuration, 2 = a valid result of another one, 1 = none
 	node -e '
-const [path, protocolId, model, thinking, turns, units, stateless, privileged, anchor, vdm, vdmModel, vdmWrist, fallbackModel, fallbackAfter, fallbackRetry, approval, maxToolCalls, maxTokens, codeMode, codeApi, codeOracle, vdmVideo] = process.argv.slice(1);
+const [path, protocolId, model, thinking, turns, units, stateless, privileged, anchor, vdm, vdmModel, vdmWrist, fallbackModel, fallbackAfter, fallbackRetry, approval, maxToolCalls, maxTokens, codeMode, codeApi, codeOracle, vdmVideo, extras] = process.argv.slice(1);
 const r = JSON.parse(require("fs").readFileSync(path, "utf8"));
 if (r.status !== "success" && r.status !== "failure") process.exit(1);
 const same = r.protocol_id === protocolId && r.model === (model || null) && r.thinking === (thinking || null) && r.max_turns === Number(turns)
@@ -385,7 +385,7 @@ const same = r.protocol_id === protocolId && r.model === (model || null) && r.th
 	&& (r.code_oracle ?? null) === (codeMode === "false" ? null : codeOracle || null)
 	// Results written before the code budget was recorded ran the default one.
 	&& (codeMode === "false" || (r.code_budget_flags ?? "timeout=+max_calls=+max_move=+helpers=false") === process.env.CODE_BUDGET_FLAGS);
-process.exit(same ? 0 : 2);
+process.exit(same && [...(r.extras ?? [])].sort().join(",") === (extras ?? "") ? 0 : 2);
 ' "$1/result.json" "$(protocol m.protocol_id)" "${config[@]}" 2>/dev/null
 }
 

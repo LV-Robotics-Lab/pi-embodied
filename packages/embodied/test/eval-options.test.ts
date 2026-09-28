@@ -102,7 +102,16 @@ test("explicit planner options override protocol defaults and repeated scalar fl
 });
 
 test("boolean values that pi would interpret differently are rejected before running a task", () => {
-	for (const flag of ["stateless", "privileged", "anchor-image", "vdm", "vdm-wrist", "vdm-video"]) {
+	for (const flag of [
+		"stateless",
+		"privileged",
+		"anchor-image",
+		"vdm",
+		"vdm-wrist",
+		"vdm-video",
+		"waypoints",
+		"object-memory",
+	]) {
 		for (const args of [[`--${flag}=false`], [`--${flag}`, "false"]]) {
 			const result = parse(args);
 			assert.equal(result.status, 2, `${args.join(" ")}: ${result.stderr}`);

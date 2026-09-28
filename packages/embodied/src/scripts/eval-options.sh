@@ -16,12 +16,13 @@ eval_options_defaults() {
 	code=false code_api="" code_oracle="" code_timeout="" code_max_calls="" code_max_move="" code_helpers=false
 	units_opts=""
 	unset units_plugins
+	extras="" eval_extras=()
 	return 0
 }
 
 eval_parse_options() {
 	local args=("$@")
-	local i
+	local i a
 	for ((i = 0; i < ${#args[@]}; i++)); do
 		case ${args[i]} in
 		--model) model=${args[i + 1]:-} ;;
@@ -109,6 +110,16 @@ eval_parse_options() {
 			echo "${args[i]}: pi ignores a boolean flag's value and would turn it on; omit --anchor-image to leave it off" >&2
 			exit 2
 			;;
+		# The OpenETA extras (src/primitives/optional.ts, capabilities/objects.ts, capabilities/web.ts) are booleans like --stateless;
+		# robot.ts records the ones that were on as `extras`, and a result with other extras is another configuration.
+		--waypoints | --align-wrist | --grasp-advisor | --object-memory | --web-tools) case ${args[i + 1]:-} in "" | -* | @* | true) eval_extras+=("${args[i]#--}") ;; *)
+			echo "${args[i]} takes no value: pi would turn it on and swallow '${args[i + 1]}'" >&2 && exit 2 ;;
+		esac ;;
+		--waypoints=true | --align-wrist=true | --grasp-advisor=true | --object-memory=true | --web-tools=true) a=${args[i]#--} && eval_extras+=("${a%=true}") ;;
+		--waypoints=* | --align-wrist=* | --grasp-advisor=* | --object-memory=* | --web-tools=*)
+			echo "${args[i]}: pi ignores a boolean flag's value and would turn it on; omit it to leave it off" >&2
+			exit 2
+			;;
 		*) if declare -F eval_robot_option >/dev/null; then eval_robot_option "${args[i]}" "${args[i + 1]-}"; fi ;;
 		esac
 	done
@@ -121,6 +132,7 @@ eval_normalize_options() {
 	[ "$units" != false ] && [ -n "${units_plugins+x}" ] && units="$units+plugins=$units_plugins"
 	[ "$units" != false ] && units="$units${units_opts-}"
 	[ "$vdm_video" = true ] && vdm_video=$vdm_video_frames || vdm_video=""
+	extras=$(printf '%s\n' ${eval_extras[@]+"${eval_extras[@]}"} | sort -u | paste -sd, -)
 	export CODE_BUDGET_FLAGS="timeout=$code_timeout+max_calls=$code_max_calls+max_move=$code_max_move+helpers=$code_helpers${code_oracle:++oracle}"
 	return 0
 }

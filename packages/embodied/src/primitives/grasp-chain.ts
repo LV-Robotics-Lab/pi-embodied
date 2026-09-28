@@ -110,6 +110,8 @@ export function chainTools(rig: ChainRig): GraspToolDef[] {
 			if (!step.to) {
 				const r = await rig.gripper(g, signal);
 				legs.push({ gripper: g, ...(r.error ? { error: r.error } : {}) });
+				// Closed: the env server measures the grasp's height above its support now.
+				if (g === "close" && !r.error) await rig.call("env.note_grasp_closed", {}).catch(() => undefined);
 				if (r.error) {
 					stalled = true;
 					break;

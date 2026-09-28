@@ -1228,6 +1228,9 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
                 legs.append(
                     {"gripper": int(grip), "gripper_width": out["gripper_width"]}
                 )
+                if grip > 0:
+                    # Closed: the grasp's height above its support is measured here.
+                    self._grasp.note_grasp_closed(claim.get("arm"))
                 if grip < 0:
                     # The hand opened: the held grasp ends once the fingers hold nothing.
                     self._grasp.release_held(

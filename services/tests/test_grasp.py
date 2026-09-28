@@ -1032,3 +1032,42 @@ def test_a_perception_installed_after_the_planner_shares_its_ids():
     planner.invalidate()
     with pytest.raises(G.GraspError, match="stale"):
         planner.plan_grasp(mask_id=theirs)
+
+
+def test_the_support_is_the_surface_around_the_object_not_its_lowest_visible_point():
+    """Audit 55d8d9a: the place height took the object's lowest visible point as its support,
+    but the bottom is usually occluded (reads high: the object gets pressed into its new
+    support), and used the planned grasp height instead of the measured one."""
+    # World frame via CAM2WORLD (camera 1 m up, looking down). A bowl whose visible points
+    # start 4 cm above the table (its bottom hidden), on a table at z 0.1.
+    obj = np.array(
+        [
+            [x, y, 1.0 - z]
+            for x in (-0.02, 0.0, 0.02)
+            for y in (-0.02, 0.0, 0.02)
+            for z in (0.14, 0.18)
+        ]
+    )
+    table = np.array(
+        [
+            [x, y, 0.9]
+            for x in np.linspace(-0.05, 0.05, 11)
+            for y in np.linspace(-0.05, 0.05, 11)
+        ]
+    )
+    far = np.array([[0.5, 0.5, 0.95]] * 30)  # another surface, outside the footprint
+    assert G.support_height(
+        obj, np.concatenate([table, far]), CAM2WORLD
+    ) == pytest.approx(0.1)
+    assert G.support_height(obj, np.zeros((0, 3)), CAM2WORLD) == pytest.approx(0.14)
+    # The measured TCP at the close replaces the planned grasp height.
+    eef = {"xyz": np.array([0.0, 0.0, 0.2]), "quat": np.array([1.0, 0, 0, 0])}
+    planner, _ = _planner(
+        sam3=FakeSam3(_block_mask()), eef_pose=lambda arm: (eef["xyz"], eef["quat"])
+    )
+    gid = planner.plan_grasp(object="block")["active"]
+    planner.claim_waypoints(gid)
+    planned = planner.held()["eef_above_support_m"]
+    eef["xyz"] = np.array([0.0, 0.0, 0.185])  # the fingers stopped 1.5 cm lower
+    assert planner.note_grasp_closed()["noted"] is True
+    assert planner.held()["eef_above_support_m"] == pytest.approx(planned - 0.015)

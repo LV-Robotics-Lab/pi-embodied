@@ -455,6 +455,31 @@ def upright_placement(
     return T_wc @ upright @ T_cw, tilt
 
 
+def support_height(
+    object_camera: np.ndarray, scene_camera: np.ndarray, cam2world: np.ndarray
+) -> float:
+    """World z of the surface an object rests on: the scene's points around the object's
+    footprint (within 3 cm of its xy extent, below its middle), where its bottom touches the
+    support. The object's own lowest visible point is not it: its bottom is usually occluded,
+    so that reads high and a place would press the object into its new support. Falls back to
+    that point when too few scene points surround the object."""
+    T = np.asarray(cam2world, dtype=np.float64)
+    obj = np.asarray(object_camera, dtype=np.float64) @ T[:3, :3].T + T[:3, 3]
+    lowest = float(np.percentile(obj[:, 2], 5))
+    if len(scene_camera) == 0:
+        return lowest
+    scene = np.asarray(scene_camera, dtype=np.float64) @ T[:3, :3].T + T[:3, 3]
+    lo, hi = obj[:, :2].min(axis=0) - 0.03, obj[:, :2].max(axis=0) + 0.03
+    ring = scene[
+        np.all(scene[:, :2] >= lo, axis=1)
+        & np.all(scene[:, :2] <= hi, axis=1)
+        & (scene[:, 2] < float(np.median(obj[:, 2])))
+    ]
+    if len(ring) < 20:
+        return lowest
+    return float(np.median(ring[:, 2]))
+
+
 def compose_placement(T_place: np.ndarray, R_grasp: np.ndarray, t_grasp: np.ndarray):
     """Placement Grasp Composition: the pick grasp pose after the object placement transform
     (``p_placed = R @ p_current + t``, same frame): ``R_place = R_T R_g``, ``t_place = R_T t_g + t_T``."""
@@ -702,6 +727,7 @@ class GraspPlanner:
             rpc["env.reset"] = reset_and_forget
         rpc["env.claim_waypoints"] = self.claim_waypoints
         rpc["env.release_held"] = self.release_held
+        rpc["env.note_grasp_closed"] = self.note_grasp_closed
         rpc["env.plan_grasp"] = self.plan_grasp
         rpc["env.next_grasp"] = self.next_grasp
         rpc["env.resolve_grasp"] = self.resolve_grasp
@@ -1214,12 +1240,10 @@ class GraspPlanner:
                 f"{name} server answered in frame {res.get('grasp_frame')!r}, not {GRASP_FRAME!r}"
             )
         ranked = rank(list(res["candidates"]), n)
-        # Where the object rests: its lowest points (the support under it), so a place can
-        # set it down at the same height above its new support (claim_waypoints / plan_place).
+        # Where the object rests (the support under it), so a place can set it down at the
+        # same height above its new support (claim_waypoints / plan_place).
         T_cw = np.asarray(view["extrinsic_cam2world"], dtype=np.float64)
-        support_z = float(
-            np.percentile(obj_pts.astype(np.float64) @ T_cw[2, :3] + T_cw[2, 3], 5)
-        )
+        support_z = support_height(obj_pts, _scene, T_cw)
         ids: list[str] = []
         out_cands: list[dict[str, Any]] = []
         for i, cand in enumerate(ranked):
@@ -1396,6 +1420,8 @@ class GraspPlanner:
                 "prompt": self._prompt_of(item.get("mask_id")),
                 "width_m": item["width_m"],
                 # How high the EEF holds it above the surface it rested on.
+                # (planned; note_grasp_closed replaces it with the TCP measured at the close)
+                "support_z": item.get("_support_z"),
                 "eef_above_support_m": (
                     None
                     if item.get("_support_z") is None
@@ -1429,6 +1455,20 @@ class GraspPlanner:
             "standoff_m": offsets["standoff"],
             "lift_m": offsets["lift"] if item["kind"] == "grasp" else None,
             "expired_ids": self._expired(),
+        }
+
+    def note_grasp_closed(self, arm: str | None = None) -> dict:
+        """The executor closed the fingers on ``arm``'s claimed grasp: the EEF height above the
+        object's support is measured now (the TCP where it closed), not the planned grasp's."""
+        record = self._held.get(arm)
+        pose = self._eef_pose(arm) if self._eef_pose is not None else None
+        if record is None or pose is None or record.get("support_z") is None:
+            return {"noted": False}
+        z = float(np.asarray(pose[0], dtype=np.float64)[2])
+        record["eef_above_support_m"] = z - float(record["support_z"])
+        return {
+            "noted": True,
+            "eef_above_support_m": round(record["eef_above_support_m"], 4),
         }
 
     def release_held(self, arm: str | None = None, opened: bool = False) -> dict:

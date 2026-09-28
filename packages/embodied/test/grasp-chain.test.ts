@@ -66,6 +66,8 @@ test("execute_grasp resolves, claims once and runs pre-grasp, grasp, close, lift
 		[
 			["env.resolve_grasp", { grasp_id: "g1" }],
 			["env.claim_waypoints", { grasp_id: "g1", standoff: 0.1 }],
+			// After the close: the server measures the grasp height above its support.
+			["env.note_grasp_closed", {}],
 		],
 	);
 	const moves = r.calls.filter(([m]) => m === "move").map(([, a]) => a as [number[], string]);

@@ -255,6 +255,11 @@ def test_merge_shards_renumbers_and_traces(tmp_path):
     assert n == 4
     meta = json.loads((tmp_path / "all/rollout_003/metadata.json").read_text())
     assert (meta["shard"], meta["shard_rollout"]) == ("s1", "rollout_001")
+    # a re-run adds nothing; a new shard is appended after the existing ones
+    assert merge_shards.merge([tmp_path / "s0", tmp_path / "s1"], tmp_path / "all") == 4
+    fake_rollout(tmp_path / "s2/rollout_000", GOOD)
+    n = merge_shards.merge([tmp_path / "s0", tmp_path / "s2"], tmp_path / "all")
+    assert n == 5 and len(list((tmp_path / "all").glob("rollout_*"))) == 5
 
 
 def test_make_dataset_runs_the_vendored_converter(tmp_path):

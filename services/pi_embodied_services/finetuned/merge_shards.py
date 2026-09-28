@@ -34,13 +34,23 @@ from pathlib import Path
 
 def merge(shards: list[Path], out: Path, move: bool = False) -> int:
     out.mkdir(parents=True, exist_ok=True)
-    n = len([d for d in out.glob("rollout_*") if d.is_dir()])
+    # Idempotent: an episode already merged (same shard, same rollout) is not copied again,
+    # so re-running a merge -- or adding one more shard to it -- never duplicates data.
+    done = set()
+    n = 0
+    for d in sorted(out.glob("rollout_*")):
+        meta = d / "metadata.json"
+        if d.is_dir() and meta.exists():
+            m = json.loads(meta.read_text())
+            done.add((m.get("shard"), m.get("shard_rollout")))
+            n = max(n, int(d.name.split("_")[-1]) + 1)
     for sd in shards:
         eps = sorted(
             d
             for d in Path(sd).iterdir()
             if d.is_dir() and (d / "actions.jsonl").exists()
         )
+        eps = [ep for ep in eps if (Path(sd).name, ep.name) not in done]
         for ep in eps:
             dst = out / f"rollout_{n:03d}"
             (shutil.move if move else shutil.copytree)(str(ep), str(dst))
@@ -50,7 +60,7 @@ def merge(shards: list[Path], out: Path, move: bool = False) -> int:
             meta["shard_rollout"] = ep.name
             meta_path.write_text(json.dumps(meta, indent=2, sort_keys=True))
             n += 1
-        print(f"[merge] {Path(sd).name}: {len(eps)} episodes", flush=True)
+        print(f"[merge] {Path(sd).name}: {len(eps)} new episodes", flush=True)
     return n
 
 
@@ -63,7 +73,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = ap.parse_args(argv)
     n = merge([Path(s) for s in args.shards], Path(args.out), args.move)
-    print(f"[merge] total {n} episodes -> {args.out}")
+    print(f"[merge] {n} episodes in {args.out}")
     return 0
 
 

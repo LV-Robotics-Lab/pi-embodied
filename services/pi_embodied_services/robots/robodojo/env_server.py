@@ -303,6 +303,11 @@ class RobodojoEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
     def _success(self) -> bool:
         return bool(self._env.end_flag[0] and self._env.success[0])
 
+    def _terminated(self) -> bool:
+        """The episode ended on RoboDojo's judgement (success, or a failure a task check declared),
+        not on the step limit: gym's terminated, the complement of ``_truncated`` among ended episodes."""
+        return self._ended() and not self._truncated()
+
     def _unstable(self) -> bool:
         """RoboDojo discards this episode: its layout did not settle at reset, or the task flagged it
         during the episode (``EvalEnv.mark_env_unstable``, e.g. make_kong's support arm). run_eval
@@ -517,21 +522,23 @@ class RobodojoEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         return self._pack(), info
 
     def step(self, action: dict):
-        """One native RoboDojo action (``take_action``); returns (obs, score, terminated, truncated, info)."""
+        """One native RoboDojo action (``take_action``); returns (obs, score, terminated, truncated, info):
+        terminated when RoboDojo ended the episode (success or failure), truncated on the step limit,
+        ``info.success`` whether it succeeded."""
         why = self._refuse()
         if why:
             return (
                 self._pack(),
                 self._score(),
-                self._success(),
+                self._terminated(),
                 self._truncated(),
-                {"error": why},
+                {"error": why, "success": self._success()},
             )
         self._native(action)
         return (
             self._pack(),
             self._score(),
-            self._success(),
+            self._terminated(),
             self._truncated(),
             {"success": self._success()},
         )
@@ -557,7 +564,7 @@ class RobodojoEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         obs = self._pack()
         if return_all_frames:
             obs["frames"] = frames
-        return obs, self._success(), self._truncated(), info
+        return obs, self._terminated(), self._truncated(), info
 
     def _native(self, action: dict) -> None:
         """One RoboDojo action dict through ``validate_action_dict`` and ``take_action``; its

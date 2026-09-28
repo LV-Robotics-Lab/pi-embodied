@@ -713,3 +713,30 @@ def test_an_episode_the_task_flags_unstable_is_reported_and_stops(facade):
     assert r["unstable"] is True and "unstable" in r["error"]
     facade.reset(seed=1)
     assert facade.state()["unstable"] is False
+
+
+def test_step_reports_terminated_on_a_judged_end_and_truncated_on_the_step_limit(
+    facade,
+):
+    env = facade._env
+    act = {
+        "left_arm_joint_state": [0.0, 0.3, 0.2, 0.0, 0.0, 0.0],
+        "left_ee_joint_state": [1.0],
+    }
+    _, _, term, trunc, info = facade.step(act)
+    assert (term, trunc, info["success"]) == (False, False, False)
+    # A task check declared failure before the step limit (is_episode_end: end_flag, not success).
+    env.end_flag[0], env.success[0] = True, False
+    _, _, term, trunc, info = facade.step(act)
+    assert (term, trunc, info["success"]) == (True, False, False)
+    facade.reset()
+    env.step_lim = 2
+    facade.step(act)
+    _, _, term, trunc, info = facade.step(act)
+    assert (term, trunc, info["success"]) == (False, True, False)
+    facade.reset()
+    env.step_lim, env.solve_when = 200, lambda rm: True
+    _, _, term, trunc, info = facade.step(act)
+    assert (term, trunc, info["success"]) == (True, False, True)
+    _, term, trunc, info = facade.chunk_step([act])
+    assert (term, trunc) == (True, False) and "episode is over" in info["error"]

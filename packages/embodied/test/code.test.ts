@@ -438,7 +438,8 @@ test("a real robot registers nothing without --code-real and --operator, and con
 	assert.deepEqual(off.active(), ["move_to", "segment"], "code off on a real robot: the robot's own tools");
 	let yes = true;
 	const on = await toyRobot(
-		{ code: true, "code-real": true, operator: true },
+		// --approval off: code mode's own confirmation (with --approval human the gate asks instead, runtime-mech.test.ts).
+		{ code: true, "code-real": true, operator: true, approval: "off" },
 		{ real: true, confirm: async () => yes },
 	);
 	assert.deepEqual(on.active(), ["run_code", "finish", "request_operator_verdict"]);

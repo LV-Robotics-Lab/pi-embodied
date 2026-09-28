@@ -289,7 +289,7 @@ test("--approval standard asks only about high-risk motions in simulation", asyn
 	assert.equal(highRisk("run_code", { code: "" }, false, 0.1), true);
 });
 
-test("a real robot defaults to --approval human", async (t) => {
+test("a real robot defaults to --approval human; one prompt covers a real-robot program", async (t) => {
 	const f = fakePi({}, { hasUI: true, confirm: true });
 	t.after(f.restore);
 	toy(f, ["move", "view_env_state"], { explore: undefined, code: undefined });
@@ -310,6 +310,13 @@ test("a real robot defaults to --approval human", async (t) => {
 	await h.emit("session_start");
 	await h.emit("session_shutdown");
 	assert.match(result(h)?.error ?? "", /real robot defaults to human, pass --approval off/);
+	// run_code: the gate shows the program under code mode's title; code mode then asks no more.
+	const k = fakePi({ approval: "human" }, { hasUI: true, confirm: false });
+	t.after(k.restore);
+	toyWith(k, ["run_code"], { code: real as RobotSpec["code"] });
+	await k.emit("session_start");
+	await call(k, "run_code", { code: "move_to([0, 0, 0.3])" });
+	assert.deepEqual(k.confirms, ["Run this program on the robot?"]);
 });
 
 test("--approval off (the simulation default) reviews nothing and leaves the result without approval fields", async (t) => {

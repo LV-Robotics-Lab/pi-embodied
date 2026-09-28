@@ -450,7 +450,9 @@ type ApprovalRobot = {
  *             execution, resets, run_code, moves to an absolute target, relative moves over
  *             --approval-large-move; on a real robot every motion)
  *   human     the operator confirms every motion call (`ui.confirm`); a declined call is blocked.
- *   Both need a UI: a run without one does not start
+ *   Both need a UI: a run without one does not start. One prompt per call: code mode's own
+ *   real-robot program confirmation is skipped when this gate asked (`confirms`), and the prompt
+ *   shows the program itself
  *   reviewed  every motion call first goes to a reviewer model (`--approval-model`, default
  *             --units-vlm-model, else the session's model) with the task, the call and the latest
  *             camera images (../units/vlm.ts askVlm); anything but an approval (a rejection, an
@@ -536,10 +538,12 @@ export function approval(pi: ExtensionAPI, robot: ApprovalRobot) {
 		let allowed = false;
 		let reason: string;
 		if (m === "human" || m === "standard") {
+			// run_code: the program itself, as code mode's own confirmation showed it (one prompt, not two).
+			const code = event.toolName === "run_code" ? event.input?.code : undefined;
 			const go = ctx.hasUI
 				? await ctx.ui.confirm(
-						`Approve ${event.toolName}?`,
-						`${event.toolName} ${JSON.stringify(event.input ?? {}, null, 1)}`,
+						event.toolName === "run_code" ? "Run this program on the robot?" : `Approve ${event.toolName}?`,
+						typeof code === "string" ? code : `${event.toolName} ${JSON.stringify(event.input ?? {}, null, 1)}`,
 						{ signal: ctx.signal },
 					)
 				: false;
@@ -622,6 +626,11 @@ export function approval(pi: ExtensionAPI, robot: ApprovalRobot) {
 			if ((m === "human" || m === "standard") && !hasUI)
 				return `--approval ${m} needs an operator UI (interactive or RPC mode)${robot.real() && !pi.getFlag("approval") ? "; a real robot defaults to human, pass --approval off to run without one" : ""}`;
 			return undefined;
+		},
+		/** Whether this gate already asked the operator about a call to `tool` (code mode then asks no second time). */
+		confirms: (tool: string) => {
+			const m = mode();
+			return (m === "human" || m === "standard") && asksOperator(tool);
 		},
 		/** The robot result's approval summary (none when off). */
 		result: () =>

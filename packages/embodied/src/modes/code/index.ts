@@ -31,7 +31,8 @@
  * latest observation turn.
  *
  * Real robots refuse code mode unless `--code-real` and `--operator` are both on, and every program
- * is confirmed by the operator (`ui.confirm`) before it runs.
+ * is confirmed by the operator (`ui.confirm`) before it runs: by the --approval gate when it asks
+ * about run_code (human, or standard), else here; never twice.
  *
  * `--code-oracle <file>` (simulators, with `--code=true`) runs a human-written reference program
  * instead of asking the model: CaP-X's oracles (`env_configs/human_oracle_code`), ported onto the
@@ -220,6 +221,8 @@ export function code(
 		has?: (capability: string) => boolean;
 		/** The robot's manifest variables (`{{name}}` in the code docs). */
 		vars?: () => Vars;
+		/** --approval already asked the operator about each run_code (../../capabilities/operator.ts): skip the real-robot prompt. */
+		confirmed?: () => boolean;
 	} = { unitsOn: () => false, privileged: () => false },
 ) {
 	pi.registerFlag("code", {
@@ -351,7 +354,7 @@ export function code(
 		if (refused) return { content: [text(refused)], details: { status: "error", error: refused } };
 		const cap = timeoutCap();
 		const timeout_s = Math.min(params.timeout_s ?? Math.min(defaultTimeout, cap), cap);
-		if (spec.real) {
+		if (spec.real && !(base.confirmed?.() ?? false)) {
 			// A real robot: the operator reads the program before it moves anything.
 			const go = ctx.hasUI ? await ctx.ui.confirm("Run this program on the robot?", params.code) : false;
 			if (!go) {

@@ -1611,6 +1611,7 @@ def main():
         args,
         cameras=["agentview", "wrist"],
         view=facade._view,
+        grasp=facade._grasp,
     )
     try:
         facade.serve(

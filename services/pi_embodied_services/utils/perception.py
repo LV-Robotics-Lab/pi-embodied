@@ -201,6 +201,7 @@ class Perception:
         intrinsics: Callable[[str], np.ndarray | None] = lambda key: None,
         view: View | None = None,
         names: dict[str, str] | None = None,
+        epoch: Epoch | None = None,
     ) -> Perception | None:
         """A Perception for the given service URLs, or None when both are empty."""
         if not sam3 and not unidepth:
@@ -214,6 +215,7 @@ class Perception:
             intrinsics=intrinsics,
             view=view,
             names=names,
+            epoch=epoch,
         )
 
     # -- wiring ----------------------------------------------------------------
@@ -569,11 +571,15 @@ def install_perception(
     intrinsics: Callable[[str], np.ndarray | None] = lambda key: None,
     mutating: tuple[str, ...] = (),
     names: dict[str, str] | None = None,
+    grasp: Any | None = None,
 ) -> Perception | None:
     """Install a :class:`Perception` for ``args.sam3`` / ``args.unidepth`` on a constructed
     facade (nothing without either): the primitives under ``names`` (default
     :data:`SIM_NAMES`), ids expiring on :data:`MOTION_METHODS` plus the robot's own
-    ``mutating`` motions."""
+    ``mutating`` motions. With ``grasp`` (a facade's :class:`GraspPlanner` built before the
+    perception) the two share one id counter and observation clock, and the planner accepts
+    the detection ids as ``mask_id``: two books minting ``d1`` for two objects would let
+    ``plan_grasp(mask_id="d1")`` grasp the other one."""
     perception = Perception.from_urls(
         sam3=getattr(args, "sam3", None) or None,
         unidepth=getattr(args, "unidepth", None) or None,
@@ -581,9 +587,12 @@ def install_perception(
         intrinsics=intrinsics,
         view=view,
         names=SIM_NAMES if names is None else names,
+        epoch=grasp.epoch if grasp is not None else None,
     )
     if perception is not None:
         perception.install(facade, mutating=MOTION_METHODS + tuple(mutating))
+        if grasp is not None:
+            grasp.attach_masks(perception.book)
     return perception
 
 

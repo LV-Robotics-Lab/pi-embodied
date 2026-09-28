@@ -812,6 +812,17 @@ class GraspPlanner:
     # -- snapshots -------------------------------------------------------------
 
     @property
+    def epoch(self) -> Epoch:
+        return self._epoch
+
+    def attach_masks(self, book: DetectionBook) -> None:
+        """Accept ``book``'s mask ids as ``mask_id`` (a perception installed after the planner,
+        on the planner's epoch: one id counter, one observation clock)."""
+        if book.epoch is not self._epoch:
+            raise ValueError("the mask book must share the planner's epoch")
+        self._external = book
+
+    @property
     def observation(self) -> int:
         return self._epoch.observation
 

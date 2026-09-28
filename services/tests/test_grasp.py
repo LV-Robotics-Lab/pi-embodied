@@ -994,3 +994,36 @@ def test_a_place_from_a_tilted_grasp_is_refused():
     reg = planner.segment_mask("table")["id"]
     with pytest.raises(G.GraspError, match="from straight down"):
         planner.plan_place(reg, gid)
+
+
+def test_a_perception_installed_after_the_planner_shares_its_ids():
+    """Audit a2c880c #1: Robosuite and LIBERO built the planner first and the perception
+    later on a second Epoch, so both minted d1 and plan_grasp(mask_id="d1") could grasp the
+    other object. The perception now runs on the planner's epoch and its book is accepted."""
+    from pi_embodied_services.utils.perception import install_perception
+
+    planner, _ = _planner(sam3=FakeSam3(_block_mask()))
+    mine = planner.segment_mask("block")["id"]
+
+    class Facade:
+        def __init__(self):
+            self._rpc = {
+                "env.get_observation": lambda: {},
+                "env.get_env_meta": lambda: {},
+            }
+            self._readonly_methods = set()
+
+    class Args:
+        sam3 = "http://127.0.0.1:1"
+        unidepth = None
+
+    perception = install_perception(
+        Facade(), Args(), cameras=["agentview"], view=_view, grasp=planner
+    )
+    assert perception.epoch is planner.epoch
+    theirs = perception.book.add({"mask": _block_mask(), "camera": "agentview"})
+    assert theirs != mine, "one id counter"
+    assert planner.plan_grasp(mask_id=theirs)["mask_id"] == theirs
+    planner.invalidate()
+    with pytest.raises(G.GraspError, match="stale"):
+        planner.plan_grasp(mask_id=theirs)

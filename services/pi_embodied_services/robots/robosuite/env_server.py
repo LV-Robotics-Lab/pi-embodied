@@ -1304,6 +1304,7 @@ def main():
         args,
         cameras=["agentview", "wrist"],
         view=facade._view,
+        grasp=facade._grasp,
         mutating=("env.move_to",),
     )
     try:

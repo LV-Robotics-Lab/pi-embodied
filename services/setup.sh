@@ -21,6 +21,8 @@
 #   robolab         Isaac Sim 6.1 venv + patched RoboLab (robots/robolab/install_isaac61.sh)
 #   robodojo        Isaac Sim 6.1 venv + patched RoboDojo + its cuRobo v2 fork (robots/robodojo/install_isaac61.sh);
 #                   Assets/ (~41 GB) under the weights dir unless --no-assets
+#   humanclaw       HumanCLAW venv (py3.10, torch 2.6 cu124 + its constraints; HUMANCLAW_TORCH on sm_120), patched
+#                   Habitat-Sim, paper_fullval_v1 weights, HSSD val41 (gated; robots/humanclaw/install.sh)
 #   behavior        Isaac Sim + OmniGibson/BDDL venv from a BEHAVIOR-1K checkout (robots/behavior/install.sh)
 #   franka          [franka,sam3] py3.11 (real arm; RLinf controller stack and Ray on the box)
 #   franka-polymetis [franka-polymetis] py3.10 (real arm on a Polymetis NUC)
@@ -81,7 +83,7 @@ graspnet1b) extra=graspnet1b py=3.11 ;;
 franka | dual-franka) extra=franka,sam3 py=3.11 ;;
 franka-polymetis) extra=franka-polymetis py=3.10 ;;
 piper) extra=piper py=system ;;
-robolab | robodojo | behavior | finetuned | llamafactory) extra="" py="" ;;
+robolab | robodojo | behavior | finetuned | llamafactory | humanclaw) extra="" py="" ;;
 *) die "unknown target '$target' (see --help)" ;;
 esac
 venv=${venv:-$SERVICES/.venv-$target}
@@ -202,6 +204,12 @@ shutil.rmtree(os.path.dirname(z))' "$wdir/liberoplus-zip/assets.zip" "$dir" \
 
 note "target $target, services $SERVICES, venv $venv$($dry && echo ' (dry run)')"
 case $target in
+humanclaw)
+	root=${HUMANCLAW_ROOT:-$HOME/HumanCLAW}
+	run bash "$SERVICES/pi_embodied_services/robots/humanclaw/install.sh" "$venv" "$root" ${HSSD_ROOT:-}
+	export_env HUMANCLAW_PYTHON "$venv/bin/python"
+	export_env PI_EMBODIED_PYTHON "$venv/bin/python"
+	;;
 robolab)
 	root=${ROBOLAB_ROOT:-$HOME/RoboLab}
 	run bash "$SERVICES/pi_embodied_services/robots/robolab/install_isaac61.sh" "$venv" "$root"

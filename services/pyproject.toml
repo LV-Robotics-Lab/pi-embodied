@@ -196,6 +196,9 @@ robolab = []
 # RoboDojo needs Isaac Sim + Isaac Lab from NVIDIA's index and its cuRobo v2 fork; its venv is
 # built by robots/robodojo/install_isaac61.sh, so this extra only marks the robot.
 robodojo = []
+# HumanCLAW needs its own venv (torch 2.6 cu124, patched Habitat-Sim); robots/humanclaw/install.sh
+# builds it, so this extra only marks the robot.
+humanclaw = []
 # BEHAVIOR-1K (OmniGibson + BDDL) needs Isaac Sim from NVIDIA's index and OmniGibson from
 # the BEHAVIOR-1K checkout; its venv is built by robots/behavior/install.sh, so this extra
 # only marks the robot.

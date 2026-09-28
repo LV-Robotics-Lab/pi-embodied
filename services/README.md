@@ -90,6 +90,16 @@ bash services/pi_embodied_services/robots/behavior/install.sh services/.venv-beh
 # ROBODOJO_CACHE to keep Kit's, the GL shader and warp caches off a small system disk.
 bash services/pi_embodied_services/robots/robodojo/install_isaac61.sh services/.venv-robodojo ~/RoboDojo ~/.cache/pi-embodied/robodojo-assets
 
+# HumanCLAW (Human-CLAW/HumanCLAW @c4f9351, HumanClawBench: 1,218 find-navigate-sit episodes in 41 HSSD
+# homes): its own venv (Python 3.10, torch 2.6.0 cu124 with constraints/eval-cu124.txt; on sm_120 set
+# HUMANCLAW_TORCH=torch==2.7.1+cu128 and a cu128 HUMANCLAW_TORCH_INDEX, a recorded deviation), Habitat-Sim
+# acbe6f49 patched with humanclaw_halfphysics.patch and built --headless --with-cuda --bullet
+# (robots/humanclaw/build_habitat.sh; needs the GL/EGL dev headers and nvcc), the paper_fullval_v1 motion
+# weights (sha256-checked), and HSSD: request access on huggingface.co to BOTH gated datasets
+# hssd/hssd-hab and HumanCLAW/HumanCLAW-HSSD first (a login alone gets HTTP 403); fetch_hssd.py downloads
+# only the ~3.8 GB of official files the 41 scenes use, then `humanclaw-bench prepare-hssd`.
+HSSD_ROOT=~/data/hssd-hab services/setup.sh humanclaw   # HUMANCLAW_ROOT defaults to ~/HumanCLAW
+
 # Metaworld (Sawyer MT50; metaworld==3.1.1 pins mujoco==3.3.0, no assets; MUJOCO_GL=egl)
 uv venv services/.venv-metaworld --python 3.11 && source services/.venv-metaworld/bin/activate
 uv pip install -e "services[metaworld]"

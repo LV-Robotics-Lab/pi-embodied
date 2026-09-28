@@ -1051,3 +1051,27 @@ def test_unsafe_config_values_refuse_to_start(tmp_path, key, value, match):
     path.write_text(yaml.safe_dump(cfg))
     with pytest.raises(ValueError, match=match):
         load_config(path)
+
+
+def test_step_pair_expires_the_detection_ids():
+    """Audit a2c880c (low): step_pair moved both arms without expiring the detection ids."""
+    from pi_embodied_services.robots.piper.env_server import PIPER_MOTIONS
+    from pi_embodied_services.utils.perception import Perception
+
+    class Facade:
+        def __init__(self):
+            self._rpc = {
+                "env.get_observation": lambda: {},
+                "env.get_env_meta": lambda: {},
+                "env.step_pair": lambda steps: {"ok": True},
+            }
+            self._readonly_methods = set()
+
+    f = Facade()
+    perception = Perception(
+        sam3=object(), cameras={"left": ("images", "depths", "left")}
+    )
+    perception.install(f, mutating=PIPER_MOTIONS)
+    before = perception.epoch.observation
+    f._rpc["env.step_pair"]([])
+    assert perception.epoch.observation == before + 1

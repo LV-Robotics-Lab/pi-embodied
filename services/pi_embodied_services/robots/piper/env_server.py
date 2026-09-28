@@ -741,6 +741,11 @@ def build(cfg: dict[str, Any]) -> tuple[Any, dict[str, Any]]:
     return (robots if is_dual(cfg) else next(iter(robots.values()))), cameras
 
 
+#: The Piper server's own motions beyond MOTION_METHODS: each expires the detection ids
+#: (``step_pair`` moves both arms at once).
+PIPER_MOTIONS = ("env.move_joints", "env.halt_arm", "env.step_pair")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--transport", choices=["http"], default="http")
@@ -797,7 +802,7 @@ def main() -> int:
         facade,
         args,
         cameras={name: ("images", "depths", name) for name in cameras},
-        mutating=("env.move_joints", "env.halt_arm"),
+        mutating=PIPER_MOTIONS,
     )
     try:
         facade.serve(

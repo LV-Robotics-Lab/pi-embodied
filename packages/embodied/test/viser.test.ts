@@ -6,9 +6,9 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { RpcClient } from "../src/infra/rpc.ts";
+import { parsePorts } from "../src/observation/viser.ts";
 import { defineRobot, type RobotStatus, STATUS_EVENT } from "../src/robot.ts";
-import { RpcClient } from "../src/rpc.ts";
-import { parsePorts } from "../src/viser.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 

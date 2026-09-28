@@ -13,7 +13,7 @@
 # limitations under the License.
 #
 # Modified by pi-embodied: scripts/trajectory/rebuild_video.py and step_timing.py for
-# pi-embodied's GUMI run dirs (packages/embodied/src/gumi: images/agentview, images/wrist
+# pi-embodied's GUMI run dirs (packages/embodied/src/capabilities/gumi: images/agentview, images/wrist
 # or images/wrist_left + wrist_right, steps.jsonl with per-arm records on two arms);
 # the annotated header is drawn with PIL instead of core.record's renderer, the video
 # is encoded by piping RGB into ffmpeg (on PATH, else imageio-ffmpeg's), and the

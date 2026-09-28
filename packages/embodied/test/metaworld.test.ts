@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { ground, MOVE_UNITS } from "../src/modes/units/index.ts";
 import metaworld, {
 	backProject,
 	EMPTY_WIDTH_M,
@@ -12,8 +13,7 @@ import metaworld, {
 	VECTORS,
 	VIEW_SETUP,
 	VIEW_SIZE,
-} from "../src/metaworld/index.ts";
-import { ground, MOVE_UNITS } from "../src/units/index.ts";
+} from "../src/robots/metaworld/index.ts";
 import {
 	checkDetections,
 	checkPoint,

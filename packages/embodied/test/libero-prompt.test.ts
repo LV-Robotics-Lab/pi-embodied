@@ -6,13 +6,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { generateFlashPlan } from "../src/libero/flash-generate.ts";
-import libero, { GUIDES, packDepth, renderRpent, unpackDepth } from "../src/libero/index.ts";
-import { encodePng } from "../src/png.ts";
+import { encodePng } from "../src/infra/png.ts";
 import { RESULT_ENTRY, toolSections } from "../src/robot.ts";
+import { generateFlashPlan } from "../src/robots/libero/flash-generate.ts";
+import libero, { GUIDES, packDepth, renderRpent, unpackDepth } from "../src/robots/libero/index.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
-const src = (path: string) => readFileSync(new URL(`../src/libero/${path}`, import.meta.url), "utf8");
+const src = (path: string) => readFileSync(new URL(`../src/robots/libero/${path}`, import.meta.url), "utf8");
 const FIXTURE = JSON.parse(readFileSync(new URL("./fixtures/libero-rpent-prompt.json", import.meta.url), "utf8"));
 
 /** A stub pi that runs handlers in registration order; like pi, it activates only registered tools. */

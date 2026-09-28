@@ -5,7 +5,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { runSucceeded } from "../src/finetuned/prepare.ts";
 import {
 	ALIASES,
 	ARM,
@@ -31,12 +30,13 @@ import {
 	UNITS_EVENT,
 	type UnitsHandle,
 	views,
-} from "../src/gumi/index.ts";
-import { normalizeDecision, OPERATOR_ENTRY, oscillates, vlmOperator } from "../src/gumi/operator.ts";
-import { LIBERO_TURNS, rotvecToMatrix, yawOf } from "../src/libero/index.ts";
-import { encodePng } from "../src/png.ts";
+} from "../src/capabilities/gumi/index.ts";
+import { normalizeDecision, OPERATOR_ENTRY, oscillates, vlmOperator } from "../src/capabilities/gumi/operator.ts";
+import { encodePng } from "../src/infra/png.ts";
+import { runSucceeded } from "../src/modes/finetuned/prepare.ts";
+import { ground, RT_UNITS, type Unit } from "../src/modes/units/index.ts";
 import { STATUS_EVENT } from "../src/robot.ts";
-import { ground, RT_UNITS, type Unit } from "../src/units/index.ts";
+import { LIBERO_TURNS, rotvecToMatrix, yawOf } from "../src/robots/libero/index.ts";
 
 const SINGLE = ["MV_FWD", "MV_BACK", "MV_LEFT", "MV_RIGHT", "MV_UP", "MV_DOWN", "STOP", "GRASP", "RELEASE", "DONE"];
 const WITH_YAW = [...SINGLE, "ROTATE_CW", "ROTATE_CCW"];
@@ -878,7 +878,7 @@ test("prepare converts only runs saved as successful, unless --include-failures"
 			process.execPath,
 			[
 				"--experimental-strip-types",
-				join(import.meta.dirname, "../src/finetuned/prepare.ts"),
+				join(import.meta.dirname, "../src/modes/finetuned/prepare.ts"),
 				"--out",
 				out,
 				"--agentview",
@@ -954,7 +954,7 @@ test("gumi: RT_* keys with --units-rt; recorded token unchanged; prepare keeps t
 			process.execPath,
 			[
 				"--experimental-strip-types",
-				join(import.meta.dirname, "../src/finetuned/prepare.ts"),
+				join(import.meta.dirname, "../src/modes/finetuned/prepare.ts"),
 				"--out",
 				out,
 				"--agentview",
@@ -985,7 +985,7 @@ test("gumi: RT_* keys with --units-rt; recorded token unchanged; prepare keeps t
 		process.execPath,
 		[
 			"--experimental-strip-types",
-			join(import.meta.dirname, "../src/finetuned/prepare.ts"),
+			join(import.meta.dirname, "../src/modes/finetuned/prepare.ts"),
 			"--out",
 			root,
 			"--prompt",

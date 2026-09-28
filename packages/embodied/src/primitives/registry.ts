@@ -10,7 +10,7 @@
  * robot's tools reach.
  */
 
-import type { RpcClient } from "../rpc.ts";
+import type { RpcClient } from "../infra/rpc.ts";
 
 /** `pi.events` channel on which ../robot.ts publishes the episode's `CodeApi` (undefined: none). */
 export const CODE_API_EVENT = "pi-embodied:code-api";

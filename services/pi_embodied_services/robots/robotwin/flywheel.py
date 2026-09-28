@@ -13,7 +13,7 @@
 # limitations under the License.
 
 """RoboTwin's Flywheel data rules: what the LingBot VLA reads and emits, the eef16 layout (the TS
-recorder's FLYWHEEL in packages/embodied/src/robotwin). A scripted qpos step is recorded as the
+recorder's FLYWHEEL in packages/embodied/src/robots/robotwin). A scripted qpos step is recorded as the
 eef16 pose it reached, so every action of an episode is in the one policy action space.
 
 Every observation also records the joint state (``joint_states``: measured, ``joint_targets``:

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""CaP-X's ported human oracles (packages/embodied/src/<robot>/oracle/, ``--code-oracle``): each
+"""CaP-X's ported human oracles (packages/embodied/src/robots/<robot>/oracle/, ``--code-oracle``): each
 program runs as ``code.run`` would run it (its prelude, then the file) against fake primitives
 that check every call against the robot's registry for the oracle's tier, the way
 ``CodeApi.resolve`` does on the server. No simulator: the fakes keep a tiny world (TCPs, a few
@@ -32,7 +32,7 @@ from pi_embodied_services.robots.libero.primitives import libero_primitives
 from pi_embodied_services.robots.robosuite.primitives import ROBOSUITE_PRIMITIVES
 from pi_embodied_services.utils.grasp import GraspPlanner
 
-SRC = Path(__file__).resolve().parents[2] / "packages" / "embodied" / "src"
+SRC = Path(__file__).resolve().parents[2] / "packages" / "embodied" / "src" / "robots"
 MARK = "# ---- CaP-X's program, verbatim ----\n"
 
 

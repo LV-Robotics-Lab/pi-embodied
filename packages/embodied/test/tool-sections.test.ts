@@ -4,22 +4,22 @@ import { tmpdir } from "node:os";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import dualFranka from "../src/dual_franka/index.ts";
-import franka from "../src/franka/index.ts";
-import libero from "../src/libero/index.ts";
-import maniskill from "../src/maniskill/index.ts";
-import metaworld from "../src/metaworld/index.ts";
-import piperDual from "../src/piper/dual.ts";
-import piper from "../src/piper/index.ts";
 import { GEOMETRY_TOOLS } from "../src/primitives/geometry.ts";
-import robocasa from "../src/robocasa/index.ts";
-import robodojo from "../src/robodojo/index.ts";
-import robolab from "../src/robolab/index.ts";
-import robosuite from "../src/robosuite/index.ts";
+import { VLA_ADAPTERS } from "../src/primitives/vla-adapters.ts";
 import { defineRobot, toolSections } from "../src/robot.ts";
-import robotwin from "../src/robotwin/index.ts";
-import ur5e from "../src/ur5e/index.ts";
-import { VLA_ADAPTERS } from "../src/vla-adapters.ts";
+import dualFranka from "../src/robots/dual_franka/index.ts";
+import franka from "../src/robots/franka/index.ts";
+import libero from "../src/robots/libero/index.ts";
+import maniskill from "../src/robots/maniskill/index.ts";
+import metaworld from "../src/robots/metaworld/index.ts";
+import piperDual from "../src/robots/piper/dual.ts";
+import piper from "../src/robots/piper/index.ts";
+import robocasa from "../src/robots/robocasa/index.ts";
+import robodojo from "../src/robots/robodojo/index.ts";
+import robolab from "../src/robots/robolab/index.ts";
+import robosuite from "../src/robots/robosuite/index.ts";
+import robotwin from "../src/robots/robotwin/index.ts";
+import ur5e from "../src/robots/ur5e/index.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
@@ -65,7 +65,7 @@ function fakePi(exclude: string[] = [], preset: Record<string, string> = {}) {
 	return { pi, tools, emit };
 }
 
-const read = (path: string) => readFileSync(new URL(`../src/${path}`, import.meta.url), "utf8");
+const read = (path: string) => readFileSync(new URL(`../src/robots/${path}`, import.meta.url), "utf8");
 const markers = (text: string) =>
 	[...text.matchAll(/\[\/?tool:([\w|!]+)\]/g)].flatMap((m) => m[1].split("|").map((n) => n.replace(/^!/, "")));
 /** Whether the text still names the tool: bare words (`release`, `render`) only count in backticks. */

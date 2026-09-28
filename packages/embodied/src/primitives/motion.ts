@@ -7,8 +7,8 @@
  */
 
 import { type TSchema, Type } from "typebox";
+import { NdArray } from "../infra/rpc.ts";
 import { checkMove, type Json, numbers, round, vec } from "../robot.ts";
-import { NdArray } from "../rpc.ts";
 import { toolDef } from "./steps.ts";
 
 export const xyz = Type.Array(Type.Number(), { minItems: 3, maxItems: 3 });

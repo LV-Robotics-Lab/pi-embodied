@@ -16,7 +16,7 @@
 
 XPolicyLab (github.com/XPolicyLab/XPolicyLab, pinned ``d6332bf``) serves one policy per
 process over websocket + msgpack (``client_server/ws``). pi-embodied is only the
-environment client: ``packages/embodied/src/xpolicy.ts`` builds the observation and
+environment client: ``packages/embodied/src/primitives/xpolicy.ts`` builds the observation and
 executes the action chunk, and calls this bridge over the usual ``POST /call``
 (PROTOCOL.md). The bridge holds XPolicyLab's own client,
 ``client_server.ws.WsModelClient``, imported from an XPolicyLab checkout

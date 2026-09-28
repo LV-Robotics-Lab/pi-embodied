@@ -4,11 +4,11 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { loadOracle, TIERS } from "../src/code/index.ts";
-import { TASKS } from "../src/robosuite/index.ts";
+import { loadOracle, TIERS } from "../src/modes/code/index.ts";
+import { TASKS } from "../src/robots/robosuite/index.ts";
 
 const MARK = "# ---- CaP-X's program, verbatim ----\n";
-const dir = (robot: string) => fileURLToPath(new URL(`../src/${robot}/oracle/`, import.meta.url));
+const dir = (robot: string) => fileURLToPath(new URL(`../src/robots/${robot}/oracle/`, import.meta.url));
 const programs = (robot: string) =>
 	readdirSync(dir(robot))
 		.filter((f) => f.endsWith(".py") && !f.startsWith("capx_"))

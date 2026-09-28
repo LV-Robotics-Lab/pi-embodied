@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { ikArgs, type MotionPlan, planRefusal, type Reach, reachRefusal, registerIkFlag } from "../src/ik.ts";
+import {
+	ikArgs,
+	type MotionPlan,
+	planRefusal,
+	type Reach,
+	reachRefusal,
+	registerIkFlag,
+} from "../src/primitives/ik.ts";
 
 test("--ik is off by default and only then adds nothing to the env server arguments", () => {
 	const flags: Record<string, unknown> = {};

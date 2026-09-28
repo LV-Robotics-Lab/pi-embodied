@@ -4,8 +4,8 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import robodojo, { ARMS, FLYWHEEL, MAX_MOVE_M, STEP_M, VECTORS, YAW_STEP_RAD } from "../src/robodojo/index.ts";
-import { ground, MOVE_UNITS } from "../src/units/index.ts";
+import { ground, MOVE_UNITS } from "../src/modes/units/index.ts";
+import robodojo, { ARMS, FLYWHEEL, MAX_MOVE_M, STEP_M, VECTORS, YAW_STEP_RAD } from "../src/robots/robodojo/index.ts";
 import { checkDetections, checkPoint, perceptionAnswers } from "./sim-stub.ts";
 
 type Handler = (event: any, ctx: any) => unknown;

@@ -21,7 +21,7 @@ Writes the layout ``finetuned/prepare.ts`` writes from GUMI recordings and ``tra
 Show-Harness's ``rollouts_to_alpaca.py``: ``<out>/<task>/rollout_NNN/{agentview,wrist}/NNNN.png``,
 ``actions.jsonl`` ({step, token, gripper_closed, agentview, wrist, ...}) and ``metadata.json``
 (``task_text``, the source dataset and episode). The frames are the dataset's PNG bytes put
-through the provider's own camera transform by ``packages/embodied/src/finetuned/transform.ts``
+through the provider's own camera transform by ``packages/embodied/src/modes/finetuned/transform.ts``
 (one node call per episode), so a training frame here is byte for byte what ``prepare.ts`` would
 have written from the recording and what the provider sends at inference.
 
@@ -72,11 +72,11 @@ RT_UNITS = (
 #: finetuned/index.ts PRESETS: the prompt versions, and the one whose vocabulary has turns.
 PROMPT_VERSIONS = ("v3", "v4-franka", "v4-piper", "v5")
 PI_ROOT = Path(__file__).resolve().parents[3]
-TRANSFORM = PI_ROOT / "packages/embodied/src/finetuned/transform.ts"
+TRANSFORM = PI_ROOT / "packages/embodied/src/modes/finetuned/transform.ts"
 #: Show-Harness's lattice (real2sim's step_m, the units' default step).
 STEP_M = 0.02
 #: The MV_* base-frame directions of the robots whose Flywheel exports are quantized, as each
-#: one's TS extension grounds them (packages/embodied/src/<robot>/index.ts ``units.vectors``):
+#: one's TS extension grounds them (packages/embodied/src/robots/<robot>/index.ts ``units.vectors``):
 #: what a unit means on that robot, so a recorded -y move on RoboCasa is its MV_RIGHT.
 UNIT_VECTORS: dict[str, dict[str, tuple[int, int, int]]] = {
     "libero": {

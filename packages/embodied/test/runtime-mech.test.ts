@@ -5,13 +5,13 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import "../src/libero/index.ts";
-import { CLOSED_LOOP, CLOSED_LOOP_ENTRY, NON_MOTION, unknownOutcome } from "../src/closed-loop.ts";
-import { CONTEXT_VERSION_ENTRY, gitCommit, sha256, usedTemplates } from "../src/context-version.ts";
-import { memory } from "../src/memory/index.ts";
-import { APPROVAL_ENTRY, parseReview, reviewPrompt } from "../src/operator.ts";
+import "../src/robots/libero/index.ts";
+import { memory } from "../src/capabilities/memory/index.ts";
+import { APPROVAL_ENTRY, parseReview, reviewPrompt } from "../src/capabilities/operator.ts";
+import { VLM_COST_EVENT } from "../src/modes/units/vlm.ts";
+import { CLOSED_LOOP, CLOSED_LOOP_ENTRY, NON_MOTION, unknownOutcome } from "../src/planner/closed-loop.ts";
+import { CONTEXT_VERSION_ENTRY, gitCommit, sha256, usedTemplates } from "../src/planner/context-version.ts";
 import { defineRobot, RESULT_ENTRY, type RobotSpec } from "../src/robot.ts";
-import { VLM_COST_EVENT } from "../src/units/vlm.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
@@ -399,8 +399,11 @@ test("the result and a session entry record the context version", async (t) => {
 	const r = await end(f);
 	const v = r.context_version;
 	assert.equal(v.system_prompt_sha256, sha256("the system prompt"));
-	assert.equal(v.templates["closed-loop.md"], sha256(readFileSync(new URL("../src/closed-loop.md", import.meta.url))));
-	assert.equal(v.templates["libero/explore.md"], undefined, "not exploring");
+	assert.equal(
+		v.templates["planner/closed-loop.md"],
+		sha256(readFileSync(new URL("../src/planner/closed-loop.md", import.meta.url))),
+	);
+	assert.equal(v.templates["robots/libero/explore.md"], undefined, "not exploring");
 	assert.deepEqual(v.memory_files, {});
 	assert.equal(v.code_api_digest, null);
 	assert.match(v.git_commit, /^([0-9a-f]{40}|unknown)$/);
@@ -410,21 +413,26 @@ test("the result and a session entry record the context version", async (t) => {
 
 test("usedTemplates keeps the templates this mode uses", () => {
 	const plain = usedTemplates({ explore: false, memoryProfile: "hf", code: false, units: false });
-	assert.ok(plain["libero/SYSTEM.md"]);
-	assert.ok(plain["libero/compact/memory-hf.md"]);
+	assert.ok(plain["robots/libero/SYSTEM.md"]);
+	assert.ok(plain["robots/libero/compact/memory-hf.md"]);
 	for (const unused of [
-		"libero/compact/memory-local.md",
-		"libero/explore.md",
-		"libero/distil.md",
-		"libero/compact/explore.md",
-		"code/SYSTEM.md",
-		"units/SYSTEM.md",
+		"robots/libero/compact/memory-local.md",
+		"robots/libero/explore.md",
+		"robots/libero/distil.md",
+		"robots/libero/compact/explore.md",
+		"modes/code/SYSTEM.md",
+		"modes/units/SYSTEM.md",
 	])
 		assert.equal(plain[unused], undefined, unused);
 	const exploring = usedTemplates({ explore: true, memoryProfile: "local", code: true, units: false });
-	for (const used of ["libero/compact/memory-local.md", "libero/explore.md", "libero/distil.md", "code/SYSTEM.md"])
+	for (const used of [
+		"robots/libero/compact/memory-local.md",
+		"robots/libero/explore.md",
+		"robots/libero/distil.md",
+		"modes/code/SYSTEM.md",
+	])
 		assert.ok(exploring[used], used);
-	assert.equal(exploring["libero/compact/memory-hf.md"], undefined);
+	assert.equal(exploring["robots/libero/compact/memory-hf.md"], undefined);
 });
 
 test("memory records the corpus files the agent read, with their digest", async (t) => {

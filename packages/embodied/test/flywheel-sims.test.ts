@@ -12,10 +12,10 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { inflateRawSync } from "node:zlib";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import genesis from "../src/genesis/index.ts";
-import maniskill, { FLYWHEEL_ACTION, ROBOT_IDS, ROBOTS, VIEW_SETUP } from "../src/maniskill/index.ts";
-import metaworld from "../src/metaworld/index.ts";
-import robosuite from "../src/robosuite/index.ts";
+import genesis from "../src/robots/genesis/index.ts";
+import maniskill, { FLYWHEEL_ACTION, ROBOT_IDS, ROBOTS, VIEW_SETUP } from "../src/robots/maniskill/index.ts";
+import metaworld from "../src/robots/metaworld/index.ts";
+import robosuite from "../src/robots/robosuite/index.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 

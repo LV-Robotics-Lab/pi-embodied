@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { ground, MOVE_UNITS } from "../src/modes/units/index.ts";
 import robosuite, {
 	ARMS,
 	arms,
@@ -19,8 +20,7 @@ import robosuite, {
 	VECTORS,
 	VIEWS,
 	YAW_STEP_RAD,
-} from "../src/robosuite/index.ts";
-import { ground, MOVE_UNITS } from "../src/units/index.ts";
+} from "../src/robots/robosuite/index.ts";
 import {
 	type Call,
 	checkPoint,
@@ -177,7 +177,7 @@ test("units grounding: each MV_* is a 2 cm world-frame step, ROTATE_* a 0.15 rad
 });
 
 test("SYSTEM.md wraps the optional tools in [tool:...] blocks and carries the fill-ins", () => {
-	const text = readFileSync(new URL("../src/robosuite/SYSTEM.md", import.meta.url), "utf8");
+	const text = readFileSync(new URL("../src/robots/robosuite/SYSTEM.md", import.meta.url), "utf8");
 	for (const key of ["{{task_language}}", "{{arms}}", "{{table_z}}", "{{max_move}}"])
 		assert.ok(text.includes(key), key);
 	for (const tool of ["gripper", "segment", "back_project", "view_camera_meta"])
@@ -202,7 +202,7 @@ test("the frame text matches robosuite's cameras and the opposed two-arm layout"
 	assert.match(VIEWS, /robot0 stands at the image LEFT and robot1 at the image RIGHT/);
 	assert.match(VIEWS, /for robot0 MV_RIGHT moves away from its base/);
 	assert.doesNotMatch(VIEWS, /image bottom and robot1 at the top/);
-	const text = readFileSync(new URL("../src/robosuite/SYSTEM.md", import.meta.url), "utf8");
+	const text = readFileSync(new URL("../src/robots/robosuite/SYSTEM.md", import.meta.url), "utf8");
 	assert.match(text, /robot0 stands at -y facing \+y and robot1 at \+y facing -y/);
 	assert.match(text, /\+x runs toward the image bottom/);
 	assert.doesNotMatch(text, /\+x points away from robot0 across the table, \+y to robot0's left/);
@@ -218,7 +218,7 @@ test("grasp tools: plan_grasp, plan_place and check_attached are registered over
 	assert.deepEqual(props("plan_grasp").camera.enum, ["agentview", "wrist"]);
 	assert.deepEqual(props("plan_grasp").arm.enum, [...ARMS]);
 	assert.deepEqual(props("check_attached").arm.enum, [...ARMS]);
-	const text = readFileSync(new URL("../src/robosuite/SYSTEM.md", import.meta.url), "utf8");
+	const text = readFileSync(new URL("../src/robots/robosuite/SYSTEM.md", import.meta.url), "utf8");
 	assert.ok(text.includes("[tool:plan_grasp]") && text.includes("[tool:check_attached]"));
 });
 

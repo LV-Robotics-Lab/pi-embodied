@@ -2,7 +2,7 @@
  * The geometric toolset (OpenETA `openeta-for-codex`: `mark_point` and the approach/jaw `move_to`)
  * over the env servers' `utils/geometry.py`: `view_points`, `mark_point` and `move_grip`.
  *
- *   pi -e packages/embodied/src/libero --geometry
+ *   pi -e packages/embodied/src/robots/libero --geometry
  *
  * `--geometry` (off: nothing is registered and the env server is started without it; `optionalTools`
  * mounts the tools at the first start with it on) starts the env server with its geometry primitives (`env.point_views`, `env.mark_point`, `env.grip_target`,

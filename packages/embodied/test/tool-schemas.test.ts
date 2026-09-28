@@ -3,18 +3,18 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import behavior from "../src/behavior/index.ts";
-import dualFranka, { DUAL_FRANKA_UNITS } from "../src/dual_franka/index.ts";
-import franka from "../src/franka/index.ts";
-import libero from "../src/libero/index.ts";
-import maniskill from "../src/maniskill/index.ts";
-import piperDual from "../src/piper/dual.ts";
-import piper from "../src/piper/index.ts";
+import { units } from "../src/modes/units/index.ts";
 import { geometryDefs } from "../src/primitives/geometry.ts";
-import robocasa from "../src/robocasa/index.ts";
-import robolab from "../src/robolab/index.ts";
-import robotwin from "../src/robotwin/index.ts";
-import { units } from "../src/units/index.ts";
+import behavior from "../src/robots/behavior/index.ts";
+import dualFranka, { DUAL_FRANKA_UNITS } from "../src/robots/dual_franka/index.ts";
+import franka from "../src/robots/franka/index.ts";
+import libero from "../src/robots/libero/index.ts";
+import maniskill from "../src/robots/maniskill/index.ts";
+import piperDual from "../src/robots/piper/dual.ts";
+import piper from "../src/robots/piper/index.ts";
+import robocasa from "../src/robots/robocasa/index.ts";
+import robolab from "../src/robots/robolab/index.ts";
+import robotwin from "../src/robots/robotwin/index.ts";
 
 /**
  * Snapshot of what every robot registers with pi at default flags: each tool's name, description

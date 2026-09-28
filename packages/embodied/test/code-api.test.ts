@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import type { RpcClient } from "../src/infra/rpc.ts";
 import {
 	CODE_API_ENTRY,
 	CODE_API_EVENT,
@@ -10,7 +11,6 @@ import {
 	renderCodeApi,
 } from "../src/primitives/registry.ts";
 import { defineRobot, RESULT_ENTRY, type RobotSpec } from "../src/robot.ts";
-import type { RpcClient } from "../src/rpc.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 

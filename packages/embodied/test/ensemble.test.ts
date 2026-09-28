@@ -6,9 +6,9 @@ import { test } from "node:test";
 import { type AssistantMessage, createAssistantMessageEventStream, type Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { API_GATE_EVENT } from "../src/api-gate.ts";
-import { candidates, ENSEMBLE_ENTRY, ensemble, ensembleArgs } from "../src/ensemble.ts";
-import { FALLBACK_ENTRY, fallback } from "../src/fallback.ts";
+import { API_GATE_EVENT } from "../src/planner/api-gate.ts";
+import { candidates, ENSEMBLE_ENTRY, ensemble, ensembleArgs } from "../src/planner/ensemble.ts";
+import { FALLBACK_ENTRY, fallback } from "../src/planner/fallback.ts";
 import { defineRobot, RESULT_ENTRY } from "../src/robot.ts";
 
 type Handler = (event: any, ctx: any) => unknown;

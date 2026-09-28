@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { flywheelSuite } from "../src/flywheel.ts";
-import { latchSuccess, memoryTag } from "../src/libero/index.ts";
-import { NdArray } from "../src/rpc.ts";
-import { finishMove } from "../src/units/index.ts";
+import { flywheelSuite } from "../src/capabilities/flywheel.ts";
+import { NdArray } from "../src/infra/rpc.ts";
+import { finishMove } from "../src/modes/units/index.ts";
+import { latchSuccess, memoryTag } from "../src/robots/libero/index.ts";
 
 test("LIBERO success is latched at its first env step; later steps cannot undo it", () => {
 	assert.equal(latchSuccess(undefined, false, 10), undefined);

@@ -6,7 +6,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { syncMemory } from "../src/memory/sync.ts";
+import { syncMemory } from "../src/capabilities/memory/sync.ts";
 
 const blob = (text: string) =>
 	createHash("sha1")

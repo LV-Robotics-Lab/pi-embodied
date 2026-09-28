@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""GUMI rollouts (packages/embodied/src/gumi's recorder) as a LeRobot v3.0 dataset, with the
+"""GUMI rollouts (packages/embodied/src/capabilities/gumi's recorder) as a LeRobot v3.0 dataset, with the
 feature names every pi-embodied dataset shares (flywheel/export.py):
 
 - ``observation.images.<view>``: ``agentview`` and ``wrist`` (two arms: ``wrist_left``,

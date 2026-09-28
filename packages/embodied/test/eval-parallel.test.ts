@@ -13,9 +13,9 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { acquire, release } from "../src/api-gate.ts";
+import { acquire, release } from "../src/planner/api-gate.ts";
 
-const RUNNER = new URL("../src/eval-parallel.sh", import.meta.url).pathname;
+const RUNNER = new URL("../src/scripts/eval-parallel.sh", import.meta.url).pathname;
 
 /**
  * A stand-in pi for the real eval.sh scripts: it logs each call (session dir and GPU environment),

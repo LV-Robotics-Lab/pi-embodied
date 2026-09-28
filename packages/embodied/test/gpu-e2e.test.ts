@@ -17,13 +17,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import genesis from "../src/genesis/index.ts";
-import libero from "../src/libero/index.ts";
-import maniskill from "../src/maniskill/index.ts";
-import metaworld from "../src/metaworld/index.ts";
-import robosuite from "../src/robosuite/index.ts";
+import { RpcClient } from "../src/infra/rpc.ts";
 import { RESULT_ENTRY, SERVICES, STATUS_EVENT } from "../src/robot.ts";
-import { RpcClient } from "../src/rpc.ts";
+import genesis from "../src/robots/genesis/index.ts";
+import libero from "../src/robots/libero/index.ts";
+import maniskill from "../src/robots/maniskill/index.ts";
+import metaworld from "../src/robots/metaworld/index.ts";
+import robosuite from "../src/robots/robosuite/index.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 

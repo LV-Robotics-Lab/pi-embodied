@@ -4,7 +4,7 @@ A robot is two halves that talk over the services' RPC (`POST /call`, services/P
 
 - a Python env server in `services/pi_embodied_services/robots/<robot>/`, which owns the simulator
   or the arm, every motion limit, and the primitive registry;
-- a pi extension in `packages/embodied/src/<robot>/`, which registers the robot's flags and tools with
+- a pi extension in `packages/embodied/src/robots/<robot>/`, which registers the robot's flags and tools with
   `defineRobot` (`src/robot.ts`) and nothing else.
 
 The agent loop, models, sessions, modes, `/export`, compaction and the message queue are pi's. Before
@@ -12,7 +12,7 @@ building anything that is not robot-specific, check pi core (`packages/coding-ag
 shared modules below; a feature a robot needs is a flag, a tool, a hook (`pi.on`), a `pi.events`
 message or a session entry, and a feature that is off registers no tool.
 
-Genesis is the smallest complete robot to copy from: `src/genesis/index.ts` (one file, 420 lines),
+Genesis is the smallest complete robot to copy from: `src/robots/genesis/index.ts` (one file, 420 lines),
 `services/.../robots/genesis/{env_server,primitives}.py`, `test/genesis.test.ts`.
 
 ## 1. The env server
@@ -63,18 +63,18 @@ methods in `services/PROTOCOL.md` under "Env servers".
 
 | Spec field | Module | What it adds |
 | --- | --- | --- |
-| `units` | `src/units` | Show-Harness `act` (`--units`), GUMI, the fine-tuned provider |
-| `code` / `codeApi` | `src/code`, `src/primitives/registry.ts` | `run_code` (`--code`), the recorded `code.api` |
+| `units` | `src/modes/units` | Show-Harness `act` (`--units`), GUMI, the fine-tuned provider |
+| `code` / `codeApi` | `src/modes/code`, `src/primitives/registry.ts` | `run_code` (`--code`), the recorded `code.api` |
 | `groundTruth` | `src/robot.ts` | `--privileged` and `ground_truth_poses` (simulators only) |
-| `memory`, `explore` | `src/memory`, `src/explore.ts` | memory corpus, `--explore` |
-| `operator` | `src/operator.ts` | `--operator` verdicts and scene resets (real robots) |
-| `video`, `vdm` | `src/video.ts`, `src/vdm.ts` | episode video, `--vdm` |
-| `flywheel` | `src/flywheel.ts` | `--collect-flywheel-data` (needs `robots/<robot>/flywheel.py`) |
-| `flash` | `src/flash` | `--model flash/replay` |
-| `services` | `src/model-services.ts` | `--serve-models`: start its model servers itself |
+| `memory`, `explore` | `src/capabilities/memory`, `src/capabilities/explore.ts` | memory corpus, `--explore` |
+| `operator` | `src/capabilities/operator.ts` | `--operator` verdicts and scene resets (real robots) |
+| `video`, `vdm` | `src/observation/video.ts`, `src/observation/vdm.ts` | episode video, `--vdm` |
+| `flywheel` | `src/capabilities/flywheel.ts` | `--collect-flywheel-data` (needs `robots/<robot>/flywheel.py`) |
+| `flash` | `src/capabilities/flash` | `--model flash/replay` |
+| `services` | `src/infra/model-services.ts` | `--serve-models`: start its model servers itself |
 
 `services` lists the model servers the robot attaches to (`SAM3`, `MOLMO`, `pi05("<embodiment>")`
-from `src/model-services.ts`, or the robot's own `ModelService`); each one's `flag` is the endpoint
+from `src/infra/model-services.ts`, or the robot's own `ModelService`); each one's `flag` is the endpoint
 flag the robot already reads, so nothing else changes.
 
 Shared tools live in `src/primitives/` (motion, perception, grasp); mount them instead of writing a
@@ -82,11 +82,11 @@ second `move_delta`.
 
 ## 3. Wiring and docs
 
-- `src/check.ts` `SPECS`: the imports, paths and endpoints `/robot-check` and `node src/check.ts
+- `src/infra/check.ts` `SPECS`: the imports, paths and endpoints `/robot-check` and `node src/infra/check.ts
   <robot>` verify.
-- `src/<robot>/eval.sh` for the eval matrix, and its case in `src/eval-parallel.sh` (light or heavy
+- `src/<robot>/eval.sh` for the eval matrix, and its case in `src/scripts/eval-parallel.sh` (light or heavy
   job: see the GPU lock note there).
-- The robot table in `README.md`, the setup target in `src/setup` (`/embodied-setup`).
+- The robot table in `README.md`, the setup target in `src/infra/setup` (`/embodied-setup`).
 - `test/tool-schemas.test.ts`: add the robot to `ROBOTS` and regenerate the snapshot with
   `UPDATE_TOOL_SCHEMAS=1 node --test --experimental-strip-types test/tool-schemas.test.ts`; the diff
   must show only the new robot.

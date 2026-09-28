@@ -211,7 +211,7 @@ def test_export_takes_open_image_sizes_from_the_episodes(tmp_path, capsys):
 
 
 def gumi_run(root, name: str, success: bool, tokens: list[str], vocabulary: list[str]):
-    """A single-arm GUMI run as packages/embodied/src/gumi's Recorder writes it."""
+    """A single-arm GUMI run as packages/embodied/src/capabilities/gumi's Recorder writes it."""
     from PIL import Image
 
     run = root / "0926" / "task_0" / name

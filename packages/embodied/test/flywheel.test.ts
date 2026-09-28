@@ -5,8 +5,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { inflateRawSync } from "node:zlib";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { type FlywheelSpec, flywheel } from "../src/flywheel.ts";
-import { NdArray } from "../src/rpc.ts";
+import { type FlywheelSpec, flywheel } from "../src/capabilities/flywheel.ts";
+import { NdArray } from "../src/infra/rpc.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 

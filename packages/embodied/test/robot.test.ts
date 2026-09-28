@@ -5,7 +5,9 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { CLOSED_LOOP } from "../src/closed-loop.ts";
+import { RpcUnavailable } from "../src/infra/rpc.ts";
+import { UNITS_EVENT, type UnitsHandle, type UnitsSpec } from "../src/modes/units/index.ts";
+import { CLOSED_LOOP } from "../src/planner/closed-loop.ts";
 import {
 	defineRobot,
 	RESULT_ENTRY,
@@ -15,8 +17,6 @@ import {
 	TASK_ENTRY,
 	toolSections,
 } from "../src/robot.ts";
-import { RpcUnavailable } from "../src/rpc.ts";
-import { UNITS_EVENT, type UnitsHandle, type UnitsSpec } from "../src/units/index.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 

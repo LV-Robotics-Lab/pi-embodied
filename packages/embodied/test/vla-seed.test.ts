@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { vlaSeeds } from "../src/vla-seed.ts";
+import { vlaSeeds } from "../src/planner/vla-seed.ts";
 
 /** A stub pi holding flags like pi's runner: registered defaults, overridden by `values`. */
 function fakePi(values: Record<string, unknown> = {}) {

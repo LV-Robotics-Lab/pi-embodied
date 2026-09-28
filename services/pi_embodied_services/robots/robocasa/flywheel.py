@@ -13,7 +13,7 @@
 # limitations under the License.
 
 """RoboCasa's Flywheel data rules: what the RLDX-1 VLA reads and what the env runs (the TS
-recorder's FLYWHEEL in packages/embodied/src/robocasa)."""
+recorder's FLYWHEEL in packages/embodied/src/robots/robocasa)."""
 
 from __future__ import annotations
 

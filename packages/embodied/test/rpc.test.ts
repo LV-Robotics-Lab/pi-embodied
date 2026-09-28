@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { test } from "node:test";
-import { forgetUnresponsive, parseJson, RpcClient, RpcUnavailable } from "../src/rpc.ts";
+import { forgetUnresponsive, parseJson, RpcClient, RpcUnavailable } from "../src/infra/rpc.ts";
 
 /**
  * A fake robot server: `slow` answers after 300 ms; it records every call's start and end, and the

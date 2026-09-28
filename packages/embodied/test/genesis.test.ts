@@ -4,8 +4,8 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import genesis, { CAMERAS, maskPixels, medianPoint, STEP_M, TASKS, VECTORS } from "../src/genesis/index.ts";
-import { ground, MOVE_UNITS } from "../src/units/index.ts";
+import { ground, MOVE_UNITS } from "../src/modes/units/index.ts";
+import genesis, { CAMERAS, maskPixels, medianPoint, STEP_M, TASKS, VECTORS } from "../src/robots/genesis/index.ts";
 import {
 	checkDetections,
 	checkPoint,

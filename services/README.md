@@ -122,7 +122,7 @@ uv pip install -e "services[openvla]"       # or [openvla-oft] (Python 3.10/3.11
 # directory: set HF_ENDPOINT=https://hf-mirror.com (never a gateway proxy) where huggingface.co is
 # unreachable, or snapshot_download them yourself and pass the directory.
 
-# XPolicyLab policies (pi's --xpolicy; packages/embodied/src/xpolicy.ts). The policy runs the
+# XPolicyLab policies (pi's --xpolicy; packages/embodied/src/primitives/xpolicy.ts). The policy runs the
 # XPolicyLab way, in its own env; pi-embodied only runs the bridge (components/xpolicy_bridge.py),
 # which uses XPolicyLab's own websocket client from a checkout pinned at d6332bf:
 git clone https://github.com/XPolicyLab/XPolicyLab.git ~/xpolicy/XPolicyLab && git -C ~/xpolicy/XPolicyLab checkout d6332bf
@@ -137,7 +137,7 @@ uv pip install -e "services[xpolicy]"       # pi: --xpolicy-python services/.ven
 # wheel exists: build flash-attn 2.8.3 from source (FLASH_ATTN_CUDA_ARCHS=120, CUDA 12.8, MAX_JOBS<=8).
 cd ~/xpolicy/XPolicyLab/policy/Evo_1 && bash setup_eval_policy_server.sh RoboTwin beat_block_hammer \
   Evo1_RoboTwin2_datascale aloha_agilex joint 0 <gpu> <env> 19101 127.0.0.1   # deploy.yml: dataset_key_suffix: _rand
-# then: pi -e packages/embodied/src/robotwin --xpolicy ws://127.0.0.1:19101 --task-config demo_randomized ...
+# then: pi -e packages/embodied/src/robots/robotwin --xpolicy ws://127.0.0.1:19101 --task-config demo_randomized ...
 
 # GraspNet-1Billion grasp detectors (components/graspnet1b_server.py, pi: --graspnet1b URL):
 # graspnet-baseline (--model baseline, checkpoint-rs.tar / checkpoint-kn.tar) or GSNet (--model
@@ -270,11 +270,11 @@ default `services/`).
 
 From pi, the robots in `packages/embodied` start the env servers themselves (`--services` /
 `PI_EMBODIED_SERVICES`, default this directory; `--python` / `PI_EMBODIED_PYTHON` for the venv),
-and `packages/embodied/src/<robot>/serve.sh` starts the shared model servers the same way.
+and `packages/embodied/src/robots/<robot>/serve.sh` starts the shared model servers the same way.
 
 ## Fine-tuned mode
 
-Show-Harness's fine-tuned mode (`packages/embodied/src/finetuned`: a small VLM + LoRA picks one
+Show-Harness's fine-tuned mode (`packages/embodied/src/modes/finetuned`: a small VLM + LoRA picks one
 action unit per step) uses the scripts in `pi_embodied_services/finetuned/`. Training needs
 LLaMA-Factory in its own venv; install it once on the box with
 [`setup_llamafactory.sh`](pi_embodied_services/finetuned/setup_llamafactory.sh) (pinned

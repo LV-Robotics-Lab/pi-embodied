@@ -82,5 +82,5 @@ a new mutating primitive also needs:
   test/tool-schemas.test.ts`, and check the diff is only the new tool.
 - `services/PROTOCOL.md`: the method's row in the robot's table.
 - If the primitive needs a model server, add it to the robot's `services` spec
-  (`src/model-services.ts`) so `--serve-models` can start it, and a case to `test/gpu-e2e.test.ts`
+  (`src/infra/model-services.ts`) so `--serve-models` can start it, and a case to `test/gpu-e2e.test.ts`
   when it only runs on a GPU.

@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import { request } from "node:http";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import dashboard from "../src/dashboard/index.ts";
-import { NdArray } from "../src/rpc.ts";
-import { UNITS_EVENT, type UnitsHandle } from "../src/units/index.ts";
-import { FRAME_EVENT, NOTE_EVENT, type VideoNote } from "../src/video.ts";
+import dashboard from "../src/capabilities/dashboard/index.ts";
+import { NdArray } from "../src/infra/rpc.ts";
+import { UNITS_EVENT, type UnitsHandle } from "../src/modes/units/index.ts";
+import { FRAME_EVENT, NOTE_EVENT, type VideoNote } from "../src/observation/video.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 

@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { encodePng } from "../src/infra/png.ts";
 import finetuned, {
 	activeSubgoal,
 	allowedTokens,
@@ -20,11 +21,10 @@ import finetuned, {
 	recentText,
 	STEP_ENTRY,
 	V5_ACTIONS,
-} from "../src/finetuned/index.ts";
-import { convertRun, findRuns, trainedTokens } from "../src/finetuned/prepare.ts";
-import { decodePng, fingerprint, parseView, prepareView } from "../src/finetuned/views.ts";
-import { encodePng } from "../src/png.ts";
-import { RT_UNITS, UNITS, UNITS_EVENT, type UnitsHandle } from "../src/units/index.ts";
+} from "../src/modes/finetuned/index.ts";
+import { convertRun, findRuns, trainedTokens } from "../src/modes/finetuned/prepare.ts";
+import { decodePng, fingerprint, parseView, prepareView } from "../src/modes/finetuned/views.ts";
+import { RT_UNITS, UNITS, UNITS_EVENT, type UnitsHandle } from "../src/modes/units/index.ts";
 
 /**
  * The reference: Show-Harness @137d571's own MvTokenController + VLMClient.complete_action_token

@@ -18,7 +18,7 @@ import {
 	type RobotCheckSpec,
 	runChecks,
 	SPECS,
-} from "../src/check.ts";
+} from "../src/infra/check.ts";
 
 /** A services-style RPC server answering healthz with `ok`. */
 async function rpcServer(ok: boolean) {

@@ -10,9 +10,9 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import dashboard, { checkAccess, dashboardAccess, MANUAL_ENTRY } from "../src/dashboard/index.ts";
+import dashboard, { checkAccess, dashboardAccess, MANUAL_ENTRY } from "../src/capabilities/dashboard/index.ts";
+import { NOTE_EVENT, VIDEO_DIR_EVENT, type VideoNote } from "../src/observation/video.ts";
 import { defineRobot } from "../src/robot.ts";
-import { NOTE_EVENT, VIDEO_DIR_EVENT, type VideoNote } from "../src/video.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 

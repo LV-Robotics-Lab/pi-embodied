@@ -4,9 +4,28 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
-import { anchorPlan, firstView, generate, parseTargets, pathOf, sessionPlan } from "../src/flash/generate.ts";
-import { type FlashCall, type FlashHook, type FlashReply, type FlashRobot, runFlash } from "../src/flash/index.ts";
-import { anchorPlane, HALF_HEIGHT_M, pixelOnPlane, projectPixel, unletterbox } from "../src/flash/plane.ts";
+import {
+	anchorPlan,
+	firstView,
+	generate,
+	parseTargets,
+	pathOf,
+	sessionPlan,
+} from "../src/capabilities/flash/generate.ts";
+import {
+	type FlashCall,
+	type FlashHook,
+	type FlashReply,
+	type FlashRobot,
+	runFlash,
+} from "../src/capabilities/flash/index.ts";
+import {
+	anchorPlane,
+	HALF_HEIGHT_M,
+	pixelOnPlane,
+	projectPixel,
+	unletterbox,
+} from "../src/capabilities/flash/plane.ts";
 import {
 	type AnchoredEntry,
 	loadProgram,
@@ -16,9 +35,9 @@ import {
 	splitAngle,
 	splitMove,
 	startRecipe,
-} from "../src/flash/recipe.ts";
-import { encodePng } from "../src/png.ts";
-import { NdArray, type RpcClient } from "../src/rpc.ts";
+} from "../src/capabilities/flash/recipe.ts";
+import { encodePng } from "../src/infra/png.ts";
+import { NdArray, type RpcClient } from "../src/infra/rpc.ts";
 
 const RECIPE = [
 	{ action: "move_to", xyz: [0.5, 0.1, 0.9], gripper: "open" },

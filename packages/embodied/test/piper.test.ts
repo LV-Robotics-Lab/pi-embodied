@@ -7,12 +7,12 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import piperDual from "../src/piper/dual.ts";
-import piper, { chains, headingToBase, motionFrame, PIPER_UNITS, piperViews } from "../src/piper/index.ts";
+import type { NdArray } from "../src/infra/rpc.ts";
+import { type Move, UNITS_EVENT, type Vec3 } from "../src/modes/units/index.ts";
+import { FRAME_EVENT } from "../src/observation/video.ts";
 import { defineRobot } from "../src/robot.ts";
-import type { NdArray } from "../src/rpc.ts";
-import { type Move, UNITS_EVENT, type Vec3 } from "../src/units/index.ts";
-import { FRAME_EVENT } from "../src/video.ts";
+import piperDual from "../src/robots/piper/dual.ts";
+import piper, { chains, headingToBase, motionFrame, PIPER_UNITS, piperViews } from "../src/robots/piper/index.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
@@ -475,7 +475,7 @@ test("the entry and the server config must agree on one or two arms", async () =
 		await start(g);
 		assert.match(
 			g.notes.join("\n"),
-			/the env server drives both arms .*use packages\/embodied\/src\/piper\/dual\.ts/,
+			/the env server drives both arms .*use packages\/embodied\/src\/robots\/piper\/dual\.ts/,
 		);
 		assert.equal(m2.calls.filter((c) => c.method === "env.reset").length, 0, "nothing moved");
 		const one = fakePi({ operator: true });

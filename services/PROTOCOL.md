@@ -2,7 +2,7 @@
 
 Every service except the LingBot-VLA launcher speaks the same JSON-over-HTTP RPC
 (`pi_embodied_services/utils/rpc/http_rpc.py`, `rpc_facade.py`). pi-embodied's client is
-`packages/embodied/src/rpc.ts`.
+`packages/embodied/src/infra/rpc.ts`.
 
 ## Transport
 
@@ -219,7 +219,7 @@ answers `{reward, success, truncated, state}`; its run fields are `steps` (contr
 run), `success`, `success_step` (the episode's), `obs` (the tools' observation) and `frames` (at
 most 128, halved when full)). `tier` also accepts `low-noexamples` (the low tier's primitives,
 docs without their examples). pi's `--code-oracle <file>` sends a ported CaP-X human oracle
-(`packages/embodied/src/<robot>/oracle/`) as one `code.run` instead of asking the model.
+(`packages/embodied/src/robots/<robot>/oracle/`) as one `code.run` instead of asking the model.
 
 The servers with `code.run`: libero-env, robosuite-env, metaworld-env, maniskill-env, genesis-env,
 behavior-env, robocasa-env, robolab-env, robotwin-env, robodojo-env, and, only when started with `--code` (pi
@@ -731,5 +731,5 @@ int `seed` key in the observation is removed before the policy sees it and seeds
 A VLA `seed` (int in [0, 2^32)) makes that one inference a function of its inputs: the server
 seeds torch (CPU and every CUDA device), numpy and Python `random` for the call and restores
 their previous states afterwards. Without it, sampling is unseeded as before. The robots send one
-per call (`--vla-seed`, see `packages/embodied/src/vla-seed.ts`) and record it as `vla_seeds` in
+per call (`--vla-seed`, see `packages/embodied/src/planner/vla-seed.ts`) and record it as `vla_seeds` in
 the tool result.

@@ -5,6 +5,8 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { NdArray } from "../src/infra/rpc.ts";
+import { ground, MOVE_UNITS } from "../src/modes/units/index.ts";
 import maniskill, {
 	calibrate,
 	ENV_IDS,
@@ -26,9 +28,7 @@ import maniskill, {
 	VIEW_SETUP,
 	VIEWS,
 	waypoints,
-} from "../src/maniskill/index.ts";
-import { NdArray } from "../src/rpc.ts";
-import { ground, MOVE_UNITS } from "../src/units/index.ts";
+} from "../src/robots/maniskill/index.ts";
 
 const close = (a: number[], b: number[]) => a.every((x, k) => Math.abs(x - b[k]) < 1e-9);
 
@@ -557,7 +557,7 @@ test("the Panda's prompt is unchanged by --robot, and a server running another a
 	// The robot's tools, then memory's read-only file tools.
 	assert.deepEqual(s.active().slice(0, 3), ["view_env_state", "move_delta", "finish"]);
 	const prompt = (await s.emit("before_agent_start")).systemPrompt as string;
-	const system = readFileSync(new URL("../src/maniskill/SYSTEM.md", import.meta.url), "utf8");
+	const system = readFileSync(new URL("../src/robots/maniskill/SYSTEM.md", import.meta.url), "utf8");
 	assert.match(system, /\{\{arm\}\}/);
 	assert.match(prompt, /^You control a Franka Panda arm in the ManiSkill simulator/);
 	assert.match(prompt, /relative to the gripper in both images before each move\./);

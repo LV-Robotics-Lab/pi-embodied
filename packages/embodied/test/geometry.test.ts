@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import franka from "../src/franka/index.ts";
-import libero from "../src/libero/index.ts";
 import {
 	eulerXyz,
 	GEOMETRY_TOOLS,
@@ -17,7 +15,9 @@ import {
 	type ServoIo,
 	servoGrip,
 } from "../src/primitives/geometry.ts";
-import robosuite from "../src/robosuite/index.ts";
+import franka from "../src/robots/franka/index.ts";
+import libero from "../src/robots/libero/index.ts";
+import robosuite from "../src/robots/robosuite/index.ts";
 
 type Json = Record<string, any>;
 

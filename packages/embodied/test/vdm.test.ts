@@ -6,13 +6,13 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { API_GATE_EVENT } from "../src/api-gate.ts";
-import { decodePngChannel } from "../src/png.ts";
+import { decodePngChannel } from "../src/infra/png.ts";
+import { NdArray } from "../src/infra/rpc.ts";
+import type { UnitsSpec } from "../src/modes/units/index.ts";
+import { HEADERS, sampleIndices, VDM_ENTRY } from "../src/observation/vdm.ts";
+import { FRAME_EVENT } from "../src/observation/video.ts";
+import { API_GATE_EVENT } from "../src/planner/api-gate.ts";
 import { defineRobot, RESULT_ENTRY, type RobotSpec } from "../src/robot.ts";
-import { NdArray } from "../src/rpc.ts";
-import type { UnitsSpec } from "../src/units/index.ts";
-import { HEADERS, sampleIndices, VDM_ENTRY } from "../src/vdm.ts";
-import { FRAME_EVENT } from "../src/video.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 /** A faux VLM reply: its text and cost, an error, or "hang" (answers only when the call's signal aborts). */

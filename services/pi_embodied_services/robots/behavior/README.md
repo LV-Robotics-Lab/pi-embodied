@@ -3,7 +3,7 @@
 One 2025-challenge activity on the R1Pro in OmniGibson (Isaac Sim), served over the HTTP RPC of
 the other env servers (`env_server.py`); `sim.py` is the OmniGibson glue, `tasks.py` the 50
 activities and their text, `primitives.py` the `code.api` registry. The pi robot is
-`packages/embodied/src/behavior`.
+`packages/embodied/src/robots/behavior`.
 
 ## Install
 
@@ -30,8 +30,8 @@ OmniGibson. Mirrors: `PIP_INDEX`, `NVIDIA_INDEX`, `TORCH_INDEX`.
 
 ```bash
 source services/.venv-behavior/pi-embodied.env
-pi -e packages/embodied/src/behavior --task turning_on_radio --seed 0 --gpu-id 1
-packages/embodied/src/behavior/eval.sh runs/b1k turning_on_radio,picking_up_trash 0-4 --model <provider/model> --gpu-id 1
+pi -e packages/embodied/src/robots/behavior --task turning_on_radio --seed 0 --gpu-id 1
+packages/embodied/src/robots/behavior/eval.sh runs/b1k turning_on_radio,picking_up_trash 0-4 --model <provider/model> --gpu-id 1
 ```
 
 `--seed` is the task's pre-sampled instance id (the server lists the instances it finds and

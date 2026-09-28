@@ -5,9 +5,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { NdArray } from "../src/rpc.ts";
-import { UNITS_EVENT } from "../src/units/index.ts";
-import { annotate, drawText, episodeVideo, FRAME_EVENT, NOTE_EVENT, type Note, noteLines } from "../src/video.ts";
+import { NdArray } from "../src/infra/rpc.ts";
+import { UNITS_EVENT } from "../src/modes/units/index.ts";
+import {
+	annotate,
+	drawText,
+	episodeVideo,
+	FRAME_EVENT,
+	NOTE_EVENT,
+	type Note,
+	noteLines,
+} from "../src/observation/video.ts";
 
 const ffmpeg = (() => {
 	try {

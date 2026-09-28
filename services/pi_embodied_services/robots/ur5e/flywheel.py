@@ -15,7 +15,7 @@
 """UR5e data rules for its offline session data. Not a Flywheel robot: nothing records it for
 the Flywheel, and the export CLI does not know it (``flywheel/specs.py`` ROBOTS).
 
-What a UR5e session already persists (packages/embodied/src/ur5e, ``--out``): one state step
+What a UR5e session already persists (packages/embodied/src/robots/ur5e, ``--out``): one state step
 per mutating tool call, step 0 the operator-confirmed reset. ``states.jsonl`` holds a line per
 step with ``state.raw_base_state`` (the controller's ``state()``: ``tcp_pose`` ``[x, y, z, qx,
 qy, qz, qw]`` in the base frame, ``gripper_position`` ``[width_m]``, ``gripper_commanded_open``,

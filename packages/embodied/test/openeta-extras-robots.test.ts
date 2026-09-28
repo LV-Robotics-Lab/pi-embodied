@@ -6,8 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import franka from "../src/franka/index.ts";
-import libero from "../src/libero/index.ts";
+import franka from "../src/robots/franka/index.ts";
+import libero from "../src/robots/libero/index.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 

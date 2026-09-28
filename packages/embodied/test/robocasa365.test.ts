@@ -7,11 +7,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import robocasa from "../src/robocasa/index.ts";
-import { envId, loadTable, nearMatches, resolveCell } from "../src/robocasa/tasks.ts";
+import robocasa from "../src/robots/robocasa/index.ts";
+import { envId, loadTable, nearMatches, resolveCell } from "../src/robots/robocasa/tasks.ts";
 
 const SERVICES = new URL("../../../services", import.meta.url).pathname;
-const SCRIPT = new URL("../src/robocasa/eval.sh", import.meta.url).pathname;
+const SCRIPT = new URL("../src/robots/robocasa/eval.sh", import.meta.url).pathname;
 const table = loadTable(SERVICES);
 
 test("the RoboCasa365 table has 317 tasks in two splits with 50 distinct manifest scenes each", () => {

@@ -5,8 +5,8 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import behavior, { CODE_MAX_MOVE_M, project, STEP_M, TASKS, VECTORS } from "../src/behavior/index.ts";
 import { RESULT_ENTRY, toolSections } from "../src/robot.ts";
+import behavior, { CODE_MAX_MOVE_M, project, STEP_M, TASKS, VECTORS } from "../src/robots/behavior/index.ts";
 import { checkSimExplore } from "./sim-stub.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
@@ -409,7 +409,7 @@ test("attaching to a server with another task or instance fails closed", async (
 });
 
 test("the system prompt describes only the active tools", () => {
-	const prompt = readFileSync(new URL("../src/behavior/SYSTEM.md", import.meta.url), "utf8");
+	const prompt = readFileSync(new URL("../src/robots/behavior/SYSTEM.md", import.meta.url), "utf8");
 	const all = toolSections(prompt, [
 		"view_env_state",
 		"navigate_to_pose",

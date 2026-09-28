@@ -6,9 +6,6 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import dualFranka from "../src/dual_franka/index.ts";
-import franka from "../src/franka/index.ts";
-import { defineRobot, RESULT_ENTRY } from "../src/robot.ts";
 import {
 	type CustomUnit,
 	compensate,
@@ -23,8 +20,11 @@ import {
 	type UnitsSpec,
 	VERIFY_ENTRY,
 	VIDEO_REF_ENTRY,
-} from "../src/units/index.ts";
-import { parseVerdict, renderBrief, validateBrief } from "../src/units/vlm.ts";
+} from "../src/modes/units/index.ts";
+import { parseVerdict, renderBrief, validateBrief } from "../src/modes/units/vlm.ts";
+import { defineRobot, RESULT_ENTRY } from "../src/robot.ts";
+import dualFranka from "../src/robots/dual_franka/index.ts";
+import franka from "../src/robots/franka/index.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 

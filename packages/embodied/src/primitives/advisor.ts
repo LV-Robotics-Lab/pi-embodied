@@ -18,9 +18,9 @@
 import type { ImageContent } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { encodePng } from "../png.ts";
+import { encodePng } from "../infra/png.ts";
+import { askVlm, parseJson, VLM_COST_EVENT } from "../modes/units/vlm.ts";
 import { type Json, message, type Rgb, round } from "../robot.ts";
-import { askVlm, parseJson, VLM_COST_EVENT } from "../units/vlm.ts";
 import type { GraspToolDef } from "./grasp.ts";
 
 export const GRASP_SUGGESTION_ENTRY = "grasp_suggestion";

@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
-import { mergeMemory, renderLeaf, splitFrontmatter, validateMemory } from "../src/memory/corpus.ts";
-import { canonicalPath, denied, memory, recipe } from "../src/memory/index.ts";
+import { mergeMemory, renderLeaf, splitFrontmatter, validateMemory } from "../src/capabilities/memory/corpus.ts";
+import { canonicalPath, denied, memory, recipe } from "../src/capabilities/memory/index.ts";
 
 const leaf = (meta: string, body: string) => `---\n${meta}\n---\n${body}`;
 const globalDraft = (cells: string, body: string) =>

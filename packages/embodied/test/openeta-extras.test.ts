@@ -5,7 +5,9 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { type AssistantMessage, createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import dashboard from "../src/dashboard/index.ts";
+import dashboard from "../src/capabilities/dashboard/index.ts";
+import { OBJECT_ENTRY, objectMemory, replay } from "../src/capabilities/objects.ts";
+import { webTools } from "../src/capabilities/web.ts";
 import {
 	argumentSkeleton,
 	checkReply,
@@ -14,13 +16,11 @@ import {
 	human,
 	humanRequested,
 	parseArguments,
-} from "../src/human.ts";
-import { OBJECT_ENTRY, objectMemory, replay } from "../src/objects.ts";
+} from "../src/planner/human.ts";
 import { GRASP_SUGGESTION_ENTRY, graspAdvisorTool, parseAdvice } from "../src/primitives/advisor.ts";
 import { checkRoute, followWaypoints, type WaypointRig, waypointsTool } from "../src/primitives/waypoints.ts";
 import { alignWrist, compose, projectPoints, wristAlignment } from "../src/primitives/wrist.ts";
 import type { Json, Mat } from "../src/robot.ts";
-import { webTools } from "../src/web.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 

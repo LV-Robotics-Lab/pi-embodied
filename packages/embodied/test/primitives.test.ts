@@ -3,13 +3,13 @@ import { test } from "node:test";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Static, TSchema } from "typebox";
-import dualFranka from "../src/dual_franka/index.ts";
-import franka from "../src/franka/index.ts";
+import { NdArray } from "../src/infra/rpc.ts";
 import { checkRotate, type MotionRig, moveDelta, rotateDelta, setGripper } from "../src/primitives/motion.ts";
 import { viewCameraMeta, viewEnvState } from "../src/primitives/perception.ts";
 import { getStep, outcome, type Step, type StepsIO, type ToolDef } from "../src/primitives/steps.ts";
 import type { Json } from "../src/robot.ts";
-import { NdArray } from "../src/rpc.ts";
+import dualFranka from "../src/robots/dual_franka/index.ts";
+import franka from "../src/robots/franka/index.ts";
 
 /** A rig whose env is a recorder: every motion call lands in `calls` tagged with this rig's name. */
 function rig(name: string, o: Partial<MotionRig> = {}) {

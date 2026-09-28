@@ -33,7 +33,7 @@
 terminal only ``--yes`` writes); the previous file is kept as ``<file>.bak``.
 
 The z is ``raw_base_state.tcp_pose[2]``, the value pi's franka robot compares --z-floor with
-(src/franka/index.ts checkWorkspace). ``reset_ee_pose`` is RLinf's reset target: xyz plus
+(src/robots/franka/index.ts checkWorkspace). ``reset_ee_pose`` is RLinf's reset target: xyz plus
 extrinsic xyz euler angles (rad) of the TCP quaternion.
 """
 

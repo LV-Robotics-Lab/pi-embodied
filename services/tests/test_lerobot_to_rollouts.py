@@ -14,7 +14,7 @@
 
 """LeRobot v3.0 datasets -> Show-Harness rollouts (finetuned/lerobot_to_rollouts.py). The
 dataset-backed tests need lerobot 0.4 (the flywheel extra's environment) and node (the frames go
-through packages/embodied/src/finetuned/transform.ts)."""
+through packages/embodied/src/modes/finetuned/transform.ts)."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ from pi_embodied_services.flywheel import cli
 from pi_embodied_services.flywheel.episode import EpisodeWriter
 from pi_embodied_services.flywheel.specs import spec
 
-PREPARE = l2r.PI_ROOT / "packages/embodied/src/finetuned/prepare.ts"
+PREPARE = l2r.PI_ROOT / "packages/embodied/src/modes/finetuned/prepare.ts"
 VOCABULARY = ["MV_FWD", "MV_DOWN", "ROTATE_CW", "RT_YAW_CW", "GRASP", "RELEASE", "DONE"]
 
 
@@ -56,7 +56,7 @@ def gumi_run(
     robot="maniskill",
     env_id: str | None = None,
 ):
-    """A single-arm GUMI run (packages/embodied/src/gumi's Recorder), frames 64x48 / 48x64."""
+    """A single-arm GUMI run (packages/embodied/src/capabilities/gumi's Recorder), frames 64x48 / 48x64."""
     from PIL import Image
 
     run = root / "0926" / "task_0" / name

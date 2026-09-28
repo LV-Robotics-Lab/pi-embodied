@@ -14,21 +14,21 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import behavior from "../src/behavior/index.ts";
-import dualFranka from "../src/dual_franka/index.ts";
-import franka from "../src/franka/index.ts";
-import genesis from "../src/genesis/index.ts";
-import libero from "../src/libero/index.ts";
-import maniskill from "../src/maniskill/index.ts";
-import metaworld from "../src/metaworld/index.ts";
-import piper from "../src/piper/index.ts";
-import robocasa from "../src/robocasa/index.ts";
-import robodojo from "../src/robodojo/index.ts";
-import robolab from "../src/robolab/index.ts";
-import robosuite from "../src/robosuite/index.ts";
 import { SERVICES } from "../src/robot.ts";
-import robotwin from "../src/robotwin/index.ts";
-import ur5e from "../src/ur5e/index.ts";
+import behavior from "../src/robots/behavior/index.ts";
+import dualFranka from "../src/robots/dual_franka/index.ts";
+import franka from "../src/robots/franka/index.ts";
+import genesis from "../src/robots/genesis/index.ts";
+import libero from "../src/robots/libero/index.ts";
+import maniskill from "../src/robots/maniskill/index.ts";
+import metaworld from "../src/robots/metaworld/index.ts";
+import piper from "../src/robots/piper/index.ts";
+import robocasa from "../src/robots/robocasa/index.ts";
+import robodojo from "../src/robots/robodojo/index.ts";
+import robolab from "../src/robots/robolab/index.ts";
+import robosuite from "../src/robots/robosuite/index.ts";
+import robotwin from "../src/robots/robotwin/index.ts";
+import ur5e from "../src/robots/ur5e/index.ts";
 
 const PYTHON = process.env.PYTHON ?? "python3";
 
@@ -172,7 +172,7 @@ test(
 );
 
 test("every robot that records a code.api has a registry here, and every registry has a robot", () => {
-	const src = new URL("../src/", import.meta.url);
+	const src = new URL("../src/robots/", import.meta.url);
 	for (const robot of Object.keys(ROBOTS)) {
 		const text = readFileSync(new URL(`${robot}/index.ts`, src), "utf8");
 		assert.match(text, /codeApi:/, `${robot} declares no codeApi but has a registry`);

@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { type Helper, type RunResult, renderHelpers, renderPrimitives } from "../src/code/index.ts";
+import { type Helper, type RunResult, renderHelpers, renderPrimitives } from "../src/modes/code/index.ts";
+import type { UnitsSpec } from "../src/modes/units/index.ts";
 import type { CodeApiPrimitive } from "../src/primitives/registry.ts";
 import { defineRobot, RESULT_ENTRY } from "../src/robot.ts";
-import type { UnitsSpec } from "../src/units/index.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 

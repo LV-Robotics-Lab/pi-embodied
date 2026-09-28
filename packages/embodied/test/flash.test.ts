@@ -7,9 +7,9 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { type FlashCall, type FlashHook, type FlashProgram, flash } from "../src/flash/index.ts";
-import { liberoFlash } from "../src/libero/flash.ts";
+import { type FlashCall, type FlashHook, type FlashProgram, flash } from "../src/capabilities/flash/index.ts";
 import { defineRobot, type RobotSpec } from "../src/robot.ts";
+import { liberoFlash } from "../src/robots/libero/flash.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 type Result = { json?: unknown; text?: string; isError?: boolean };

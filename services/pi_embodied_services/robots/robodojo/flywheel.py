@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""RoboDojo's Flywheel data rules (the TS recorder's FLYWHEEL in packages/embodied/src/robodojo):
+"""RoboDojo's Flywheel data rules (the TS recorder's FLYWHEEL in packages/embodied/src/robots/robodojo):
 every 25 Hz control step in RoboDojo's joint space, which is XPolicyLab's arx_x5 layout: state and
 action ``[left joints6, left gripper, right joints6, right gripper]`` with the gripper normalized
 (1 open .. 0 closed), and the head and two wrist cameras."""

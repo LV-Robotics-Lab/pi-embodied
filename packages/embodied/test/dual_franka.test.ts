@@ -7,9 +7,9 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { inlineWrist } from "../src/dual_franka/config.ts";
-import dualFranka from "../src/dual_franka/index.ts";
 import { defineRobot } from "../src/robot.ts";
+import { inlineWrist } from "../src/robots/dual_franka/config.ts";
+import dualFranka from "../src/robots/dual_franka/index.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 

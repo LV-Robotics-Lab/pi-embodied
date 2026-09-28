@@ -17,7 +17,7 @@ experiment directory's `.pi/settings.json`: the robot extension, the dashboard, 
 without its onboarding extension. A robot extension replaces the coding tools, so start pi for the
 robot only in that directory. Settings cannot hold flags; the task and mode go on the command line.
 
-Modes: tools (default), units (`--units=true`), fine-tuned (`src/finetuned` extension,
+Modes: tools (default), units (`--units=true`), fine-tuned (`src/modes/finetuned` extension,
 `--model finetuned/<adapter>`), flash (`--model flash/replay`, LIBERO only).
 
 Fine-tuned mode needs two more steps after the install: `FT_ADAPTER=<adapter> services/setup.sh
@@ -45,14 +45,14 @@ fetches assets, and with `--weights` the checkpoints into `$PI_EMBODIED_WEIGHTS`
 `serve.sh` and `eval.sh`. Mirrors: `HF_ENDPOINT=https://hf-mirror.com`, `UV_INDEX_URL` /
 `PIP_INDEX_URL`. Gated weights (SAM3) need `HF_TOKEN` with the license accepted.
 
-Tools mode also needs the shared model servers: `packages/embodied/src/<robot>/serve.sh`
+Tools mode also needs the shared model servers: `packages/embodied/src/robots/<robot>/serve.sh`
 (LIBERO: Pi0.5 + SAM3; RoboCasa: RLDX-1; RoboTwin: LingBot). Units mode does not.
 
 ## 3. Preflight
 
 ```bash
 source services/.venv-<target>/pi-embodied.env
-node packages/embodied/src/check.ts <robot> --python "$PI_EMBODIED_PYTHON" --services services [--units]
+node packages/embodied/src/infra/check.ts <robot> --python "$PI_EMBODIED_PYTHON" --services services [--units]
 ```
 
 Fix every FAIL before running. Inside a robot session the same check is `/robot-check`.
@@ -67,7 +67,7 @@ pi <task flags> [--units=true] --dashboard=true
 The first pi in the experiment directory asks whether to trust the project: its `.pi/settings.json`
 loads the robot extension, so the user answers yes (`/trust` saves it); declined, pi starts without
 the robot. The dashboard URL is shown at startup. Boolean flags take the next word: write `--flag=true`.
-Without the experiment settings: `pi -e packages/embodied/src/<robot> ...`.
+Without the experiment settings: `pi -e packages/embodied/src/robots/<robot> ...`.
 
 Optional, per launch (each registers nothing when off): `--web-tools` keeps web search and page
 fetch for the robot, from pi packages installed once in the experiment directory
@@ -82,7 +82,7 @@ a robot's system prompt replaces pi's, so the model does not see the skill list 
 ## 5. Evaluate
 
 ```bash
-packages/embodied/src/<robot>/eval.sh <out-dir> <cells...> --model <provider/model> --thinking low
+packages/embodied/src/robots/<robot>/eval.sh <out-dir> <cells...> --model <provider/model> --thinking low
 ```
 
 Each robot's `eval.sh` header gives its cells (LIBERO: suite, tasks, seeds). Run it from a directory

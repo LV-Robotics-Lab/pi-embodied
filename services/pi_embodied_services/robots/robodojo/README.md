@@ -4,7 +4,7 @@ One RoboDojo task (robodojo-benchmark/RoboDojo @726e9aa) on its two ARX X5 arms,
 Isaac Lab 3.0 with `robodojo-isaac61.patch`, served over the HTTP RPC of the other env servers
 (`env_server.py`, methods in services/PROTOCOL.md); `sim.py` is the RoboDojo glue (config assembly as
 RoboDojo's main.py, Kit launch, readers), `primitives.py` the `code.api` registry, `flywheel.py` the
-Flywheel data rules. The pi robot is `packages/embodied/src/robodojo`.
+Flywheel data rules. The pi robot is `packages/embodied/src/robots/robodojo`.
 
 ## Install
 

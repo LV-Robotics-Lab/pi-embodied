@@ -4,7 +4,7 @@
  * The Franka robots serve the same primitives under their own names (../franka: `segment`);
  * every other robot's env server serves them as `env.detect` & co.
  *
- *   pi -e packages/embodied/src/metaworld --detections [--sam3 URL] [--unidepth URL]
+ *   pi -e packages/embodied/src/robots/metaworld --detections [--sam3 URL] [--unidepth URL]
  *
  * `--detections` passes the robot's SAM3 server to its env server and activates the three mask
  * tools; `--unidepth <url>` passes the UniDepth server and activates `enhance_depth`. Without
@@ -17,9 +17,9 @@
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type TSchema, Type } from "typebox";
-import { encodePng } from "../png.ts";
+import { encodePng } from "../infra/png.ts";
+import { NdArray } from "../infra/rpc.ts";
 import { type Json, message, rgbOf, round } from "../robot.ts";
-import { NdArray } from "../rpc.ts";
 import { DETECTIONS_EXPIRED_ENTRY, type GraspToolDef } from "./grasp.ts";
 
 export const MASK_TOOLS = ["detect", "select_detection", "reject_detection"] as const;

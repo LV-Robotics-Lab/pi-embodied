@@ -8,7 +8,7 @@
 #   NAME=blockpap_real2sim \
 #     bash train.sh --from-rollouts <dir of rollout_NNN> [more...]
 #
-# 1. packages/embodied/src/finetuned/prepare.ts: every single-arm GUMI run -> <DATA>/rollouts/<task>/rollout_NNN
+# 1. packages/embodied/src/modes/finetuned/prepare.ts: every single-arm GUMI run -> <DATA>/rollouts/<task>/rollout_NNN
 #    with the provider's own camera transform applied (training and inference pixels identical).
 #    --from-lerobot: services/pi_embodied_services/finetuned/lerobot_to_rollouts.py writes the same layout
 #    from the unified LeRobot datasets (flywheel CLI export-lerobot / export-gumi; successful episodes,
@@ -74,7 +74,7 @@ else
   echo "[1/3] GUMI -> rollouts ($DATA/rollouts)"
   rm -rf "$DATA/rollouts"
   # shellcheck disable=SC2086
-  node --experimental-strip-types "$PI/packages/embodied/src/finetuned/prepare.ts" --out "$DATA/rollouts" ${PREPARE_ARGS:-} "$@"
+  node --experimental-strip-types "$PI/packages/embodied/src/modes/finetuned/prepare.ts" --out "$DATA/rollouts" ${PREPARE_ARGS:-} "$@"
 fi
 
 echo "[2/3] rollouts -> $DATA/rollouts.json (Show-Harness rollouts_to_alpaca.py, prompts/$VERSION)"

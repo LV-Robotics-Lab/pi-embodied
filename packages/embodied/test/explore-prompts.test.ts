@@ -14,7 +14,7 @@ const FILLED = new Set([
 	"session_max",
 	"session_number",
 ]);
-const src = new URL("../src/", import.meta.url);
+const src = new URL("../src/robots/", import.meta.url);
 
 test("every robot fills the placeholders of its exploration prompt that the shared modules do not", () => {
 	const robots = readdirSync(src).filter((d) => {

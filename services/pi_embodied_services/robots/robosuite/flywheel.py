@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Robosuite's Flywheel data rules (the TS recorder's FLYWHEEL in packages/embodied/src/robosuite).
+"""Robosuite's Flywheel data rules (the TS recorder's FLYWHEEL in packages/embodied/src/robots/robosuite).
 
 One transition per robosuite control step of a motion (``env.move_to`` / ``env.move_delta`` /
 ``env.set_gripper`` with ``record``): the task camera and the wrist view at 256 px, robomimic's

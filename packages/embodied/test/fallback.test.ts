@@ -8,7 +8,7 @@ import {
 } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { FALLBACK_ENTRY, fallback, fallbackArgs } from "../src/fallback.ts";
+import { FALLBACK_ENTRY, fallback, fallbackArgs } from "../src/planner/fallback.ts";
 import { defineRobot, RESULT_ENTRY } from "../src/robot.ts";
 
 type Handler = (event: any, ctx: any) => unknown;

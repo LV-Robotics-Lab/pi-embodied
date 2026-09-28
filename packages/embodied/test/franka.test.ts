@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import franka, { DETECTIONS_ENTRY } from "../src/franka/index.ts";
+import franka, { DETECTIONS_ENTRY } from "../src/robots/franka/index.ts";
 
 /** A stub pi that only records registrations (no robot starts: tools are inspected, not run). */
 function fakePi() {

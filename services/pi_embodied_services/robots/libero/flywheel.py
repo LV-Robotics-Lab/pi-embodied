@@ -39,7 +39,7 @@ def success_mask(transitions: Any) -> Any:
     return transitions["terminated"]
 
 
-#: The Pi0.5 policy's input and output (the TS recorder's FLYWHEEL in packages/embodied/src/libero).
+#: The Pi0.5 policy's input and output (the TS recorder's FLYWHEEL in packages/embodied/src/robots/libero).
 SPEC = {
     "robot": "libero",
     "robot_type": "panda",

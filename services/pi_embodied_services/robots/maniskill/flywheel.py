@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""ManiSkill's Flywheel data rules (the TS recorder's FLYWHEEL in packages/embodied/src/maniskill).
+"""ManiSkill's Flywheel data rules (the TS recorder's FLYWHEEL in packages/embodied/src/robots/maniskill).
 
 One transition per ManiSkill control step of a motion (``env.servo``'s frames): the views the
 robot shows (letterboxed to the server's view size), the TCP pose and the finger opening, and the

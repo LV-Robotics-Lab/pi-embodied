@@ -8,7 +8,7 @@ import { join } from "node:path";
 import type { Duplex } from "node:stream";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import robotwin from "../src/robotwin/index.ts";
+import robotwin from "../src/robots/robotwin/index.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 

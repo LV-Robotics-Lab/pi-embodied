@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import setup, { COMMAND, NOTICE, NOTICE_ENTRY, PKG } from "../src/setup/index.ts";
+import setup, { COMMAND, NOTICE, NOTICE_ENTRY, PKG } from "../src/infra/setup/index.ts";
 
 type Handler = (event: unknown, ctx: unknown) => unknown;
 type Answers = { select?: string[]; input?: (string | undefined)[]; confirm?: boolean[] };
@@ -138,8 +138,8 @@ test("/embodied-setup writes the experiment settings and hands the install to th
 	const settings = JSON.parse(readFileSync(join(dir, ".pi/settings.json"), "utf8"));
 	assert.deepEqual(settings, {
 		theme: "dark",
-		packages: [{ source: PKG, autoload: false, extensions: ["-src/setup/index.ts"] }],
-		extensions: ["/other/ext.ts", `${PKG}/src/libero/index.ts`, `${PKG}/src/dashboard/index.ts`],
+		packages: [{ source: PKG, autoload: false, extensions: ["-src/infra/setup/index.ts"] }],
+		extensions: ["/other/ext.ts", `${PKG}/src/robots/libero/index.ts`, `${PKG}/src/capabilities/dashboard/index.ts`],
 		defaultProvider: "openai",
 		defaultModel: "gpt-6",
 	});
@@ -190,7 +190,7 @@ test("a remote box writes nothing locally and gives the agent the settings for t
 	const text = p.sent[0]?.text ?? "";
 	assert.match(text, /ssh me@gpu/);
 	assert.match(text, /\/data\/pi-embodied\/services\/setup\.sh maniskill`/);
-	assert.match(text, /"\/data\/pi-embodied\/packages\/embodied\/src\/finetuned\/index\.ts"/);
+	assert.match(text, /"\/data\/pi-embodied\/packages\/embodied\/src\/modes\/finetuned\/index\.ts"/);
 	assert.match(text, /--units=true --model finetuned\/qwen3_5_2b_showharness_sim/);
 	// Fine-tuned mode: the adapter download and the vLLM server are part of the handoff.
 	assert.match(text, /FT_ADAPTER=qwen3_5_2b_sim \/data\/pi-embodied\/services\/setup\.sh finetuned/);

@@ -25,7 +25,7 @@ robot state, and redraws.
     PYTHONPATH=services python -m pi_embodied_services.components.viser_view \\
         --robot libero --env http://127.0.0.1:PORT --viser-port 8080
 
-pi starts it with ``--viser`` (``packages/embodied/src/viser.ts``), which also pushes each
+pi starts it with ``--viser`` (``packages/embodied/src/observation/viser.ts``), which also pushes each
 ``plan_grasp`` / ``plan_place`` result here (``viser.grasps``): every candidate as a frame,
 the active one larger. Sources:
 
@@ -464,7 +464,7 @@ def main() -> None:
     server = viser.ViserServer(host=args.viser_host, port=args.viser_port)
     port = server.get_port()
     url = f"http://{args.viser_host}:{port}"
-    # pi (src/viser.ts) reads this line for the port it links to.
+    # pi (src/observation/viser.ts) reads this line for the port it links to.
     print(f"viser listening on {url}", flush=True)
     facade = ViserViewFacade(
         Scene(server, stride=args.stride, max_depth=args.max_depth),

@@ -8,9 +8,9 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { gpuFreeMiB, lockFile, type ModelService, modelServices, servicePort } from "../src/model-services.ts";
+import { gpuFreeMiB, lockFile, type ModelService, modelServices, servicePort } from "../src/infra/model-services.ts";
+import { RpcClient } from "../src/infra/rpc.ts";
 import { defineRobot } from "../src/robot.ts";
-import { RpcClient } from "../src/rpc.ts";
 
 const PYTHON = process.env.PYTHON ?? "python3";
 

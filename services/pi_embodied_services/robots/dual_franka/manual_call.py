@@ -54,7 +54,7 @@ import numpy as np
 
 READ_ONLY = ("get_env_meta", "get_robot_state", "get_camera_meta")
 MOTION = ("move_delta", "rotate_delta", "set_gripper", "recover_joint_posture", "reset")
-# Timeouts the pi tools use for the same calls (src/dual_franka/index.ts).
+# Timeouts the pi tools use for the same calls (src/robots/dual_franka/index.ts).
 TIMEOUT_S = {"recover_joint_posture": 240.0, "reset": 180.0}
 DEFAULT_WORKSPACE_XY = "0.1,1.15,-0.85,0.85"
 
@@ -123,7 +123,7 @@ def check_rotate(rpy: list[float], cap: float) -> None:
 def check_workspace(
     tcp: list[float], delta: list[float], box: list[float] | None, floor: float
 ) -> None:
-    """src/dual_franka/index.ts checkWorkspace: refuse a target outside, unless it moves back in."""
+    """src/robots/dual_franka/index.ts checkWorkspace: refuse a target outside, unless it moves back in."""
 
     def outside(p: list[float]) -> float:
         out = max(0.0, floor - p[2])

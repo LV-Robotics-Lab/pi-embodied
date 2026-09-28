@@ -4,9 +4,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import libero from "../src/libero/index.ts";
-import { toolSections } from "../src/robot.ts";
-import { RpcClient } from "../src/rpc.ts";
+import { RpcClient } from "../src/infra/rpc.ts";
 import {
 	baseSuite,
 	PICK_PARAMETERS,
@@ -15,7 +13,9 @@ import {
 	VLA_ADAPTERS,
 	vlaIdentity,
 	vlaInfo,
-} from "../src/vla-adapters.ts";
+} from "../src/primitives/vla-adapters.ts";
+import { toolSections } from "../src/robot.ts";
+import libero from "../src/robots/libero/index.ts";
 
 type Tool = { name: string; description: string; parameters: unknown };
 
@@ -70,7 +70,7 @@ test("every adapter's grasp tool is registered at load with pi0_pick's parameter
 
 for (const file of ["SYSTEM.md", "compact/SYSTEM.md"])
 	test(`the LIBERO prompt (${file}) describes an adapter only when its tool is active`, () => {
-		const text = readFileSync(new URL(`../src/libero/${file}`, import.meta.url), "utf8");
+		const text = readFileSync(new URL(`../src/robots/libero/${file}`, import.meta.url), "utf8");
 		const base = ["move_to", "pi0_pick", "release", "finish"];
 		assert.doesNotMatch(toolSections(text, base), /openvla|gr00t/i);
 		const withOft = toolSections(text, [...base, "openvla_oft_act"]);

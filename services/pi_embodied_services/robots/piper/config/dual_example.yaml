@@ -1,7 +1,7 @@
 # AgileX Piper dual-arm rig (Cobot Magic), both arms from one env server:
 # Show-Harness configs/robot_piper.yaml + configs/site/piper_arms.yaml.
 #
-#   pi -e packages/embodied/src/piper/dual.ts --operator --robot-config my_dual.yaml
+#   pi -e packages/embodied/src/robots/piper/dual.ts --operator --robot-config my_dual.yaml
 #
 # Everything outside `arms:` is shared; `arms.left` / `arms.right` override the
 # shared calibration / limits / gripper / motion / ros / cameras keys for that arm.

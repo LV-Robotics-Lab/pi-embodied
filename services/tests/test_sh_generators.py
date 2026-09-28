@@ -213,9 +213,9 @@ def test_conditioned_templates_format_with_the_converter_fields():
         recent_moves="none",
     )
     assert "Grasp first: banana, at left end\n" in text
-    # The provider renders the same text (packages/embodied/src/finetuned/templates).
+    # The provider renders the same text (packages/embodied/src/modes/finetuned/templates).
     tpl = (
         Path(__file__).resolve().parents[2]
-        / "packages/embodied/src/finetuned/templates/v3_mvtoken_generator_subgoal.txt"
+        / "packages/embodied/src/modes/finetuned/templates/v3_mvtoken_generator_subgoal.txt"
     )
     assert tpl.read_text() == subgoal

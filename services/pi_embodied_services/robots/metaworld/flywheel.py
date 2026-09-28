@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Metaworld's Flywheel data rules (the TS recorder's FLYWHEEL in packages/embodied/src/metaworld).
+"""Metaworld's Flywheel data rules (the TS recorder's FLYWHEEL in packages/embodied/src/robots/metaworld).
 
 One transition per Metaworld control step of a motion (``env.move_delta``'s frames): the two
 views the robot shows, the TCP and the finger opening, and the env's own ``[dx, dy, dz,

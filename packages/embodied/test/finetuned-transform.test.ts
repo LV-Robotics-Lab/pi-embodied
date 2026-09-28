@@ -4,11 +4,11 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { ROBOT_VIEWS } from "../src/finetuned/index.ts";
-import { convertRun } from "../src/finetuned/prepare.ts";
-import { resolveViews, transformAll } from "../src/finetuned/transform.ts";
-import { decodePng, fingerprint, formatView, parseView } from "../src/finetuned/views.ts";
-import { encodePng } from "../src/png.ts";
+import { encodePng } from "../src/infra/png.ts";
+import { ROBOT_VIEWS } from "../src/modes/finetuned/index.ts";
+import { convertRun } from "../src/modes/finetuned/prepare.ts";
+import { resolveViews, transformAll } from "../src/modes/finetuned/transform.ts";
+import { decodePng, fingerprint, formatView, parseView } from "../src/modes/finetuned/views.ts";
 
 /** The synthetic frames of finetuned.test.ts's reference: (x*3+y+seed, x*y+seed, x^y) mod 256. */
 function pattern(h: number, w: number, seed: number) {
@@ -26,7 +26,7 @@ const agentRaw = pattern(512, 512, 7);
 const wristRaw = pattern(480, 640, 11);
 const VIEWS = { agentview: "square=256", wrist: "rot=90,flip=vertical,crop=1.3333,square=256" };
 const png = (img: { width: number; height: number; rgb: Buffer }) => encodePng(img.rgb, img.width, img.height);
-const TRANSFORM = new URL("../src/finetuned/transform.ts", import.meta.url).pathname;
+const TRANSFORM = new URL("../src/modes/finetuned/transform.ts", import.meta.url).pathname;
 
 test("transform.ts writes the provider's pixels: the reference fingerprints, byte-identical to prepare.ts", () => {
 	const dir = mkdtempSync(join(tmpdir(), "transform-"));

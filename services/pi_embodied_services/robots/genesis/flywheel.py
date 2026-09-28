@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Genesis's Flywheel data rules (the TS recorder's FLYWHEEL in packages/embodied/src/genesis).
+"""Genesis's Flywheel data rules (the TS recorder's FLYWHEEL in packages/embodied/src/robots/genesis).
 
 One transition per Genesis control step of a motion (``env.move_delta`` / ``env.set_gripper``
 with ``record``): the front and wrist views, the TCP pose and the finger opening, and the step

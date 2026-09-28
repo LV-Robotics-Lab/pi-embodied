@@ -5,8 +5,7 @@ import type { AddressInfo } from "node:net";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { defineRobot, RESULT_ENTRY, type RobotSpec } from "../src/robot.ts";
-import { NdArray } from "../src/rpc.ts";
+import { NdArray } from "../src/infra/rpc.ts";
 import {
 	gripperCommand,
 	parseAction,
@@ -17,7 +16,8 @@ import {
 	XPOLICY_ENTRY,
 	type XPolicyAction,
 	type XPolicySpec,
-} from "../src/xpolicy.ts";
+} from "../src/primitives/xpolicy.ts";
+import { defineRobot, RESULT_ENTRY, type RobotSpec } from "../src/robot.ts";
 
 const DUAL = { arm_dim: [6, 6], ee_dim: [1, 1] };
 const SINGLE = { arm_dim: [7], ee_dim: [1] };

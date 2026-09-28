@@ -23,7 +23,7 @@ function run(robot: string, positional: string[], cell: string, args: string[]) 
 	const pi = join(dir, "pi");
 	writeFileSync(pi, `#!/usr/bin/env bash\nprintf '%s\\n' "$@" > "$(dirname "$0")/argv"\nexit 1\n`);
 	chmodSync(pi, 0o755);
-	const script = new URL(`../src/${robot}/eval.sh`, import.meta.url).pathname;
+	const script = new URL(`../src/robots/${robot}/eval.sh`, import.meta.url).pathname;
 	const r = spawnSync("bash", [script, join(dir, "out"), ...positional, ...args], {
 		env: { ...process.env, PI: pi, TIME_LIMIT: "0" },
 		encoding: "utf8",
@@ -64,7 +64,7 @@ function rerun(
 		`#!/usr/bin/env bash\nwhile [ $# -gt 0 ]; do [ "$1" = --session-dir ] && dir=$2; shift; done\necho '${entry}' > "$dir/s.jsonl"\n`,
 	);
 	chmodSync(pi, 0o755);
-	const script = new URL(`../src/${robot}/eval.sh`, import.meta.url).pathname;
+	const script = new URL(`../src/robots/${robot}/eval.sh`, import.meta.url).pathname;
 	const once = (args: string[]) =>
 		spawnSync("bash", [script, join(dir, "out"), ...positional, ...args], {
 			env: { ...process.env, PI: pi, TIME_LIMIT: "0" },
@@ -87,7 +87,7 @@ for (const [robot, positional, cell] of CELLS) {
 			["selfhost/muse", 3, 5],
 		);
 		assert.ok(on.argv?.includes("--fallback-model") && on.argv?.includes("selfhost/muse"), String(on.argv));
-		// The defaults of src/fallback.ts are recorded when only the model is given; without a model the rest is moot.
+		// The defaults of src/planner/fallback.ts are recorded when only the model is given; without a model the rest is moot.
 		const defaults = run1(["--fallback-model=selfhost/muse"]).result;
 		assert.deepEqual([defaults?.fallback_after, defaults?.fallback_retry_primary], [2, 0]);
 		assert.equal(run1(["--fallback-after", "3"]).result?.fallback_after, null);
@@ -174,7 +174,7 @@ for (const [robot, positional, cell] of [
 		const line = JSON.stringify({ robot, success: true, terminated: true, env_error: false, planner_error: null });
 		writeFileSync(pi, `#!/usr/bin/env bash\necho '[code-oracle] ran' >&2\necho '[${robot}] ${line}' >&2\n`);
 		chmodSync(pi, 0o755);
-		const script = new URL(`../src/${robot}/eval.sh`, import.meta.url).pathname;
+		const script = new URL(`../src/robots/${robot}/eval.sh`, import.meta.url).pathname;
 		const once = (args: string[]) =>
 			spawnSync("bash", [script, join(dir, "out"), ...positional, ...args], {
 				env: { ...process.env, PI: pi, TIME_LIMIT: "0" },
@@ -223,7 +223,7 @@ for (const [robot, positional, cell] of [
 		const line = JSON.stringify({ robot, terminated: true, success: true, env_error: false, planner_error: null });
 		writeFileSync(pi, `#!/usr/bin/env bash\necho '[${robot}] ${line}' >&2\n`);
 		chmodSync(pi, 0o755);
-		const script = new URL(`../src/${robot}/eval.sh`, import.meta.url).pathname;
+		const script = new URL(`../src/robots/${robot}/eval.sh`, import.meta.url).pathname;
 		spawnSync("bash", [script, join(dir, "out"), ...positional, "--code=true", "--code-oracle", "x"], {
 			env: { ...process.env, PI: pi, TIME_LIMIT: "0" },
 			encoding: "utf8",

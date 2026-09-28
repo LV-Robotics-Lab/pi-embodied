@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import ur5e, { cameraMount, hasWristCamera, UR5E_UNITS } from "../src/ur5e/index.ts";
+import ur5e, { cameraMount, hasWristCamera, UR5E_UNITS } from "../src/robots/ur5e/index.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 

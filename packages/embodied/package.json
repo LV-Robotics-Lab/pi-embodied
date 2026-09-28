@@ -22,7 +22,7 @@
 	],
 	"pi": {
 		"extensions": [
-			"src/setup/index.ts"
+			"src/infra/setup/index.ts"
 		],
 		"skills": [
 			"skills"

@@ -11,7 +11,7 @@ function run(robot: string, positional: string[], cell: string, args: string[], 
 	const pi = join(dir, "pi");
 	writeFileSync(pi, `#!/usr/bin/env bash\nprintf '%s\\n' "$@" > "$(dirname "$0")/argv"\nexit 1\n`);
 	chmodSync(pi, 0o755);
-	const script = new URL(`../src/${robot}/eval.sh`, import.meta.url).pathname;
+	const script = new URL(`../src/robots/${robot}/eval.sh`, import.meta.url).pathname;
 	const r = spawnSync("bash", [script, join(dir, "out"), ...positional, ...args], {
 		env: { ...process.env, PI: pi, TIME_LIMIT: "0", ...env },
 		encoding: "utf8",
@@ -160,7 +160,7 @@ test("robotwin/eval.sh records the env server's planner and never mixes results 
 				...old,
 			}),
 		);
-		const script = new URL("../src/robotwin/eval.sh", import.meta.url).pathname;
+		const script = new URL("../src/robots/robotwin/eval.sh", import.meta.url).pathname;
 		const r = spawnSync("bash", [script, join(dir, "out"), ...positional], {
 			env: { ...process.env, PI: "false", TIME_LIMIT: "0" },
 			encoding: "utf8",
@@ -283,7 +283,7 @@ function rerun(
 		`#!/usr/bin/env bash\nwhile [ $# -gt 0 ]; do [ "$1" = --session-dir ] && dir=$2; shift; done\necho '${entry}' > "$dir/s.jsonl"\n`,
 	);
 	chmodSync(pi, 0o755);
-	const script = new URL(`../src/${robot}/eval.sh`, import.meta.url).pathname;
+	const script = new URL(`../src/robots/${robot}/eval.sh`, import.meta.url).pathname;
 	const once = (args: string[]) =>
 		spawnSync("bash", [script, join(dir, "out"), ...positional, ...args], {
 			env: { ...process.env, PI: pi, TIME_LIMIT: "0", ...env },
@@ -354,7 +354,7 @@ for (const [robot, positional, cell, env] of CELLS) {
 	});
 }
 
-// The five scripts that record the fallback planner (src/fallback.ts); newer robots' scripts are their own.
+// The five scripts that record the fallback planner (src/planner/fallback.ts); newer robots' scripts are their own.
 const FALLBACK_ROBOTS = ["libero", "robocasa", "robotwin", "maniskill", "robolab", "robodojo"];
 for (const [robot, positional, cell, env] of CELLS.filter(([r]) => FALLBACK_ROBOTS.includes(r))) {
 	test(`${robot}/eval.sh records the fallback planner, never mixes it with runs without it, and totals planner_models`, () => {
@@ -372,7 +372,7 @@ for (const [robot, positional, cell, env] of CELLS.filter(([r]) => FALLBACK_ROBO
 			"--fallback-retry-primary=5",
 		]).result;
 		assert.deepEqual([on?.fallback_model, on?.fallback_after, on?.fallback_retry_primary], ["selfhost/muse", 3, 5]);
-		// The defaults of src/fallback.ts are recorded when only the model is given; without a model the rest is moot.
+		// The defaults of src/planner/fallback.ts are recorded when only the model is given; without a model the rest is moot.
 		const defaults = run1(["--fallback-model=selfhost/muse"]).result;
 		assert.deepEqual([defaults?.fallback_after, defaults?.fallback_retry_primary], [2, 0]);
 		assert.equal(run1(["--fallback-after", "3"]).result?.fallback_after, null);
@@ -491,7 +491,7 @@ test("eval.sh keys the units mode on --units-plugins and the summary on a no-wri
 		mkdirSync(join(dir, "out", `PickCube-v1_s${seed}`), { recursive: true });
 		writeFileSync(join(dir, "out", `PickCube-v1_s${seed}`, "result.json"), result(extra));
 	}
-	const script = new URL("../src/maniskill/eval.sh", import.meta.url).pathname;
+	const script = new URL("../src/robots/maniskill/eval.sh", import.meta.url).pathname;
 	const r = spawnSync("bash", [script, join(dir, "out"), "PickCube-v1", "0-1", "--units"], {
 		env: { ...process.env, PI: "false", TIME_LIMIT: "0" },
 		encoding: "utf8",
@@ -536,7 +536,7 @@ test("libero/eval.sh records --libero-prompt (rpent by default) and never mixes 
 		stateless: false,
 	};
 	writeFileSync(join(dir, "out", "libero_10_task_t0_s0", "result.json"), JSON.stringify(old));
-	const script = new URL("../src/libero/eval.sh", import.meta.url).pathname;
+	const script = new URL("../src/robots/libero/eval.sh", import.meta.url).pathname;
 	const again = (args: string[]) =>
 		spawnSync("bash", [script, join(dir, "out"), ...positional, ...args], {
 			env: { ...process.env, PI: "false", TIME_LIMIT: "0" },

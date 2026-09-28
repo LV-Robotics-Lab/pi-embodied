@@ -5,7 +5,7 @@
  * the ordered image set (OpenETA's Pointing Image Set: "Image 1" is the first camera), and every
  * point carries the camera it lies in.
  *
- *   pi -e packages/embodied/src/metaworld --point [--molmo http://127.0.0.1:18400]
+ *   pi -e packages/embodied/src/robots/metaworld --point [--molmo http://127.0.0.1:18400]
  *
  * `--point` activates `point` over the robot's --molmo server (off by default; a robot without
  * that flag gets it here, and --molmo off disables pointing too); a set of cameras needs a server
@@ -16,9 +16,9 @@
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type TSchema, Type } from "typebox";
-import { encodePng } from "../png.ts";
+import { encodePng } from "../infra/png.ts";
+import { RpcClient } from "../infra/rpc.ts";
 import { type Json, mark, message, round } from "../robot.ts";
-import { RpcClient } from "../rpc.ts";
 import type { GraspToolDef } from "./grasp.ts";
 
 /** The most images one `molmo.ground_set` takes (MolmoPoint's MAX_IMAGES). */

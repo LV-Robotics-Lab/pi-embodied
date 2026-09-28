@@ -3,10 +3,8 @@ import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import dualFranka from "../src/dual_franka/index.ts";
-import franka from "../src/franka/index.ts";
-import libero, { type Claim, orientationError, RECIPE_PRIMITIVES, runClaim, xyRefusal } from "../src/libero/index.ts";
-import { recipe } from "../src/memory/index.ts";
+import { recipe } from "../src/capabilities/memory/index.ts";
+import { VLM_COST_EVENT } from "../src/modes/units/vlm.ts";
 import {
 	attachedPrompt,
 	CHECK_ATTACHED_ENTRY,
@@ -19,7 +17,15 @@ import {
 	parseAttached,
 	registerGraspFlags,
 } from "../src/primitives/grasp.ts";
-import { VLM_COST_EVENT } from "../src/units/vlm.ts";
+import dualFranka from "../src/robots/dual_franka/index.ts";
+import franka from "../src/robots/franka/index.ts";
+import libero, {
+	type Claim,
+	orientationError,
+	RECIPE_PRIMITIVES,
+	runClaim,
+	xyRefusal,
+} from "../src/robots/libero/index.ts";
 
 type Json = Record<string, any>;
 

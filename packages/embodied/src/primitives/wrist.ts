@@ -13,7 +13,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { encodePng } from "../png.ts";
+import { encodePng } from "../infra/png.ts";
 import { type Mat, mark, type Rgb, round, roundAll } from "../robot.ts";
 import { optionalTools } from "./optional.ts";
 import { type ToolDef, toolDef } from "./steps.ts";

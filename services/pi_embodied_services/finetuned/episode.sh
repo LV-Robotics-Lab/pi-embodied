@@ -32,14 +32,14 @@ run() {
   done
   echo "$(date +%T) vLLM ready on :$PORT ($ADAPTER) after ${t}s"
   local dash=()
-  [ -n "$DASHBOARD_PORT" ] && dash=(-e packages/embodied/src/dashboard --dashboard=true --dashboard-port "$DASHBOARD_PORT")
+  [ -n "$DASHBOARD_PORT" ] && dash=(-e packages/embodied/src/capabilities/dashboard --dashboard=true --dashboard-port "$DASHBOARD_PORT")
   cd "$PI" || return 1
   for seed in ${SEEDS:-0}; do
     local d="$out/s$seed"
     mkdir -p "$d"
     echo "$(date +%T) episode $robot ${SEED_FLAG:---seed} $seed -> $d"
     node packages/coding-agent/dist/cli.js -p --session-dir "$d" \
-      -e "packages/embodied/src/$robot" -e packages/embodied/src/finetuned "${dash[@]}" \
+      -e "packages/embodied/src/$robot" -e packages/embodied/src/modes/finetuned "${dash[@]}" \
       --units=true --model finetuned/local --ft-model "$ADAPTER" --ft-endpoint "http://127.0.0.1:$PORT/v1" \
       "${SEED_FLAG:---seed}" "$seed" "$@" "${PROMPT:-Solve the task.}" \
       < /dev/null > "$d/stdout.log" 2> "$d/stderr.log"

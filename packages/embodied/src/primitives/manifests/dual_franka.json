@@ -548,6 +548,9 @@
 			"use": "modules/plan"
 		},
 		{
+			"use": "modules/point"
+		},
+		{
 			"use": "modules/reset"
 		},
 		{

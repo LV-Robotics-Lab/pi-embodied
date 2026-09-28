@@ -51,6 +51,7 @@ import {
 	reachRefusal,
 	registerIkFlag,
 } from "../../primitives/ik.ts";
+import { pointActive, pointTool, registerPointFlags } from "../../primitives/pointing.ts";
 import {
 	PICK_PARAMETERS,
 	type PickParams,
@@ -63,7 +64,7 @@ import {
 } from "../../primitives/vla-adapters.ts";
 import { waypointsTool } from "../../primitives/waypoints.ts";
 import { alignWristTool, projectPoints } from "../../primitives/wrist.ts";
-import { defineRobot, mark, median, message, SERVICES } from "../../robot.ts";
+import { defineRobot, mark, median, message, rgbOf, SERVICES } from "../../robot.ts";
 import { liberoFlash } from "./flash.ts";
 
 const read = (name: string) => template(new URL(name, import.meta.url));
@@ -427,6 +428,8 @@ export default function libero(pi: ExtensionAPI) {
 	});
 	// --contact-graspnet/--graspgenx/--anyplace/--anygrasp/--graspnet1b: plan_grasp, plan_place, check_attached (../primitives/grasp.ts).
 	registerGraspFlags(pi);
+	// --point: Molmo's point as molmo_point (the units' point plugin owns `point`); LIBERO's Flash registers --molmo.
+	registerPointFlags(pi);
 	// --detections / --unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
 	registerDetectionFlags(pi);
 
@@ -1418,6 +1421,21 @@ export default function libero(pi: ExtensionAPI) {
 		false,
 	);
 
+	// Molmo pointing on the latest 256 px images (active with --point).
+	mountGraspTool(
+		robot.tool,
+		pointTool(pi, {
+			name: "molmo_point",
+			cameras: ["agentview", "wrist"],
+			frame: async (c) => {
+				const a = c === "wrist" ? obs.wrist_images : obs.main_images;
+				if (!a) throw new Error(`no ${c} image in the latest observation`);
+				return rgbOf(a);
+			},
+			signal: () => robot.signal,
+		}),
+	);
+
 	// plan_grasp / plan_place / check_attached over the env server's grasp primitives (active with a backend flag).
 	for (const d of graspTools(pi, {
 		call: (method, kwargs, timeoutMs) => call(env, method, kwargs, timeoutMs),
@@ -1717,6 +1735,7 @@ export default function libero(pi: ExtensionAPI) {
 			...grasp,
 			...(grasp.length ? ["execute_grasp", "execute_place"] : []),
 			...detectionActive(pi, perception),
+			...pointActive(pi, "molmo_point"),
 			...geometry(),
 			...adapters.keys(),
 			...extra,

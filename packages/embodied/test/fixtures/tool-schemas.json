@@ -1002,6 +1002,35 @@
 				}
 			},
 			{
+				"name": "point",
+				"description": "Molmo points at what a short noun phrase names ('the red mug handle') in a camera's current image and returns the pixel [row, col], its world point where the robot has depth, and the image with the point marked. With cameras (up to 4) it asks once over that ordered set (the query may say \"Image 1\" for the first) and every point names its camera.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"query"
+					],
+					"properties": {
+						"query": {
+							"type": "string"
+						},
+						"camera": {
+							"type": "string",
+							"description": "Camera name (default: the main camera)"
+						},
+						"cameras": {
+							"type": "array",
+							"items": {
+								"type": "string",
+								"description": "Camera name"
+							},
+							"minItems": 2,
+							"maxItems": 4,
+							"description": "Several cameras at once (MolmoPoint)"
+						}
+					}
+				}
+			},
+			{
 				"name": "plan_grasp",
 				"description": "Predict grasps for one object from the current RGB-D observation, ranked best first, in the world frame. Give the object as text (segmented with SAM3) or a mask_id of this observation. Each candidate has a short id (g3) and its EEF pose (eef_position, eef_quat_xyzw, approach, width_m), valid until the robot moves or the scene changes; drive the arm to that pose with the motion tools. Try `active` first; when it is refused before the robot moves (unreachable), call again with next_after=<that id> to get the next rank without re-planning; after a failed motion, plan again.",
 				"parameters": {
@@ -1571,6 +1600,42 @@
 							"description": "Default 4",
 							"minimum": 1,
 							"maximum": 20
+						}
+					}
+				}
+			},
+			{
+				"name": "point",
+				"description": "Molmo points at what a short noun phrase names ('the red mug handle') in a camera's current image and returns the pixel [row, col], its world point where the robot has depth, and the image with the point marked. With cameras (up to 4) it asks once over that ordered set (the query may say \"Image 1\" for the first) and every point names its camera.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"query"
+					],
+					"properties": {
+						"query": {
+							"type": "string"
+						},
+						"camera": {
+							"type": "string",
+							"enum": [
+								"wrist",
+								"third_person"
+							],
+							"description": "Default wrist"
+						},
+						"cameras": {
+							"type": "array",
+							"items": {
+								"type": "string",
+								"enum": [
+									"wrist",
+									"third_person"
+								]
+							},
+							"minItems": 2,
+							"maxItems": 4,
+							"description": "Several cameras at once (MolmoPoint)"
 						}
 					}
 				}
@@ -3165,6 +3230,42 @@
 						"step": {
 							"type": "integer",
 							"description": "State record (a result's state_step): 0 = initial, -1 = latest (default)"
+						}
+					}
+				}
+			},
+			{
+				"name": "molmo_point",
+				"description": "Molmo points at what a short noun phrase names ('the red mug handle') in a camera's current image and returns the pixel [row, col], its world point where the robot has depth, and the image with the point marked. With cameras (up to 4) it asks once over that ordered set (the query may say \"Image 1\" for the first) and every point names its camera.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"query"
+					],
+					"properties": {
+						"query": {
+							"type": "string"
+						},
+						"camera": {
+							"type": "string",
+							"enum": [
+								"agentview",
+								"wrist"
+							],
+							"description": "Default agentview"
+						},
+						"cameras": {
+							"type": "array",
+							"items": {
+								"type": "string",
+								"enum": [
+									"agentview",
+									"wrist"
+								]
+							},
+							"minItems": 2,
+							"maxItems": 4,
+							"description": "Several cameras at once (MolmoPoint)"
 						}
 					}
 				}

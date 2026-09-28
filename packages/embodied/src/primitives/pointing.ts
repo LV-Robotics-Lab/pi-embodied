@@ -28,6 +28,8 @@ export type Frame = { width: number; height: number; rgb: Buffer };
 
 /** What differs per robot. */
 export type PointRig = {
+	/** The tool name (default `point`; LIBERO's units already own `point`). */
+	name?: string;
 	/** The camera names `point` takes, the first the default; empty: any name, `defaultCamera` by default. */
 	cameras: readonly string[];
 	defaultCamera?: () => string;
@@ -60,8 +62,8 @@ const molmoUrl = (pi: ExtensionAPI) => {
 };
 
 /** `point` with --point and a Molmo server, else nothing. */
-export function pointActive(pi: ExtensionAPI): string[] {
-	return pi.getFlag("point") === true && molmoUrl(pi) ? ["point"] : [];
+export function pointActive(pi: ExtensionAPI, name = "point"): string[] {
+	return pi.getFlag("point") === true && molmoUrl(pi) ? [name] : [];
 }
 
 type Ground = { point_xy?: number[] | null; answer?: string; image_size?: number[] };
@@ -83,7 +85,7 @@ export function pointTool(pi: ExtensionAPI, rig: PointRig): GraspToolDef {
 		return { camera, pixel: [row, col], ...(located ?? {}) };
 	};
 	return {
-		name: "point",
+		name: rig.name ?? "point",
 		description: `Molmo points at what a short noun phrase names ('the red mug handle') in a camera's current image and returns the pixel [row, col], its world point where the robot has depth, and the image with the point marked. With cameras (up to ${MAX_SET}) it asks once over that ordered set (the query may say "Image 1" for the first) and every point names its camera.`,
 		parameters: Type.Object({
 			query: Type.String(),

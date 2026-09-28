@@ -1056,6 +1056,9 @@
 			"use": "modules/point"
 		},
 		{
+			"use": "modules/molmo_point"
+		},
+		{
 			"use": "modules/reset"
 		},
 		{

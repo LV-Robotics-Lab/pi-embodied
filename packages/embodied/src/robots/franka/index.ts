@@ -47,6 +47,7 @@ import {
 	setGripper,
 } from "../../primitives/motion.ts";
 import { viewCameraMeta, viewEnvState } from "../../primitives/perception.ts";
+import { pointActive, pointTool, registerPointFlags } from "../../primitives/pointing.ts";
 import {
 	type Step as BaseStep,
 	getStep,
@@ -317,6 +318,8 @@ export default function franka(pi: ExtensionAPI) {
 	});
 	// --contact-graspnet/--graspgenx/--anyplace/--anygrasp/--graspnet1b: plan_grasp, plan_place, check_attached (../primitives/grasp.ts).
 	registerGraspFlags(pi);
+	// --point: Molmo's point over --molmo (../../primitives/pointing.ts).
+	registerPointFlags(pi, { molmo: true });
 	registerIkFlag(pi);
 
 	let env: RpcClient | undefined;
@@ -1280,6 +1283,28 @@ export default function franka(pi: ExtensionAPI) {
 		},
 	);
 
+	// Molmo pointing on the latest step's images; the pixel's base-frame point through its depth and calibration.
+	{
+		const d = pointTool(pi, {
+			cameras: ["wrist", "third_person"],
+			frame: async (c) => {
+				const s = getStep(steps, -1);
+				const name = ARTIFACTS[c === "wrist" ? "main" : "extra_0"][0];
+				return {
+					...JSON.parse(readFileSync(join(s.dir, `${name}.json`), "utf8")),
+					rgb: readFileSync(join(s.dir, `${name}.rgb`)),
+				};
+			},
+			locate: async (c, row, col) => {
+				const p = projectView(getStep(steps, -1), cameraAlias(c), row, col);
+				return p.point_base
+					? { world_xyz: p.point_base, coordinate_frame: "franka_base" }
+					: { locate_error: p.error };
+			},
+		});
+		tool(d.name, d.description, d.parameters, d.run, false);
+	}
+
 	// plan_grasp / plan_place / check_attached (../primitives/grasp.ts): the env server plans over its
 	// calibrated RGB-D cameras; active with --contact-graspnet/--graspgenx/--anyplace/--anygrasp/--graspnet1b.
 	for (const d of graspTools(pi, {
@@ -1458,6 +1483,7 @@ export default function franka(pi: ExtensionAPI) {
 			),
 			...graspActive(pi),
 			...extras.flatMap((on) => on()),
+			...pointActive(pi),
 			...geometry(),
 		];
 	}

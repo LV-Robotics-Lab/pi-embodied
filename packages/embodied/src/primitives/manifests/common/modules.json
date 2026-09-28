@@ -38,6 +38,15 @@
 			}
 		},
 		{
+			"name": "molmo_point",
+			"side": "ts",
+			"tier": "low",
+			"module": "pointing",
+			"doc": {
+				"tool": "Molmo pointing under another name, where the units' point plugin owns `point` (primitives/pointing.ts)."
+			}
+		},
+		{
 			"name": "reset",
 			"side": "ts",
 			"tier": "low",

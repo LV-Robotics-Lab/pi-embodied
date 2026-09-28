@@ -44,6 +44,7 @@ import {
 	setGripper,
 } from "../../primitives/motion.ts";
 import { viewCameraMeta, viewEnvState } from "../../primitives/perception.ts";
+import { pointActive, pointTool, registerPointFlags } from "../../primitives/pointing.ts";
 import { getStep, outcome, type StepsIO, type ToolDef } from "../../primitives/steps.ts";
 import {
 	attach,
@@ -168,6 +169,8 @@ export default function dualFranka(pi: ExtensionAPI) {
 	});
 	// --contact-graspnet/--graspgenx/--anyplace/--anygrasp/--graspnet1b: plan_grasp, plan_place, check_attached (../primitives/grasp.ts).
 	registerGraspFlags(pi);
+	// --point: Molmo's point over --molmo (../../primitives/pointing.ts).
+	registerPointFlags(pi, { molmo: true });
 
 	let env: RpcClient | undefined;
 	let vla: RpcClient | undefined;
@@ -654,6 +657,16 @@ export default function dualFranka(pi: ExtensionAPI) {
 
 	// plan_grasp / plan_place / check_attached (../primitives/grasp.ts): the env server plans over its
 	// calibrated RGB-D cameras; active with --contact-graspnet/--graspgenx/--anyplace/--anygrasp/--graspnet1b.
+	// Molmo pointing on the latest step's images (pixels; back_project gives their right_base point).
+	{
+		const d = pointTool(pi, {
+			cameras: [],
+			defaultCamera: () => steps.at(-1)?.views[0] ?? "",
+			frame: async (c) => loadRgb(freshStep(-1), c),
+		});
+		tool(d.name, d.description, d.parameters, d.run, false);
+	}
+
 	for (const d of graspTools(pi, {
 		call: (method, kwargs, timeoutMs) => call(method, kwargs, timeoutMs ?? 120_000),
 		task: () => setup?.task.instruction ?? "",
@@ -723,6 +736,6 @@ export default function dualFranka(pi: ExtensionAPI) {
 		sam3 = sam3Rpc;
 		attemptStart = (await dumpState(null, null, null)).blob.step_idx;
 		ctx.ui.notify(`Dual Franka ready: task ${task()} (${setup.task.name}); steps under ${out}`, "info");
-		return [...TOOLS, "finish", ...graspActive(pi)];
+		return [...TOOLS, "finish", ...graspActive(pi), ...pointActive(pi)];
 	}
 }

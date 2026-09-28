@@ -44,6 +44,7 @@ export const NON_MOTION: ReadonlySet<string> = new Set([
 	"describe_dual_franka_setup",
 	"segment",
 	"point",
+	"molmo_point",
 	"back_project",
 	"back_project_batch",
 	"back_project_correspondence",

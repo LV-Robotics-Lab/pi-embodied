@@ -1528,6 +1528,7 @@ def main():
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--max-episode-steps", type=int, default=10000)
     reach.add_ik_argument(p)
+    motion.add_unplanned_argument(p)
     p.add_argument(
         "--sam3",
         type=str,

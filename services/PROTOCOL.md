@@ -205,7 +205,10 @@ geoms (one box per movable object, oriented boxes per fixture geom), a Franka ce
 dual rig the other arm at its current joints. Obstacles within 4 cm of the start or goal TCP (the
 object being grasped, held or placed on) are left out. The geometry is infrastructure: used with
 or without `--privileged`, never returned (results carry counts, clearances and the nearest
-obstacle's name). An unreachable ik service gives `unknown` and the move runs unplanned.
+obstacle's name). A planner error or invalid answer refuses the move (an unchecked segment
+stops it); an unreachable ik service refuses too, unless `--ik-allow-unplanned` lets the move run
+unplanned (`unknown`). The dual Franka server refuses to start with `--ik` on an ik server whose
+backend is not `curobo` (the arm-arm check needs cuRobo's collision spheres).
 
 `env.reset` reseeds the env worker's global numpy and Python RNGs with the episode seed, so every
 reset restores the same state and the same actions give bitwise-identical transitions in any process.

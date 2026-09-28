@@ -869,6 +869,7 @@ def main(
     )
     add_grasp_arguments(parser)
     reach.add_ik_argument(parser)
+    motion.add_unplanned_argument(parser)
     hardware_lock.add_lock_arguments(parser)
     add_code_argument(parser)
     parser.add_argument(
@@ -883,6 +884,18 @@ def main(
     if args.geometry and facade_class is not FrankaEnvFacade:
         parser.error("--geometry is only supported by the single-arm franka env server")
 
+    if args.ik and facade_class._ARMED:
+        # The arm-arm check needs the other arm as collision spheres, which only cuRobo has:
+        # the dual rig refuses to start rather than move its arms unchecked.
+        try:
+            backend_name = motion.ik_backend(args.ik)
+        except Exception as exc:  # noqa: BLE001 - any failure means it cannot be verified
+            parser.error(f"--ik {args.ik}: cannot read the ik backend ({exc})")
+        if backend_name != "curobo":
+            parser.error(
+                f"--ik on the dual rig needs the ik server's --backend curobo for the arm-arm "
+                f"collision check; {args.ik} runs {backend_name}"
+            )
     runtime = load_runtime_config(
         args.robot_config,
         task_description=args.task_description,

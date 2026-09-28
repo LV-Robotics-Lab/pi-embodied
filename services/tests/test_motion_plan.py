@@ -352,13 +352,52 @@ def test_plan_refuses_blocked_and_detouring_paths_and_is_unknown_without_a_servi
         [0.1, 0, 0.1, 0, 0, 0, 0], [0.1, 0, 0.1], [0.5, 0, 0.1], UP, [WALL]
     )
     assert detour["status"] == "blocked" and "detours" in detour["message"]
+    args = ([0.1, 0, 0.1, 0, 0, 0, 0], [0.1, 0, 0.1], [0.5, 0, 0.1], UP, [])
+    # A planner that answers with an error refuses the move, flag or not, and an unchecked
+    # segment stops it (the dual rig's robot obstacle on PyRoKi was let through this way).
+    errored = RpcError("ik.plan", "ValueError: robot obstacles need collision spheres")
+    for allow in (False, True):
+        bad = motion.MotionPlanner(
+            "http://ik", "panda", client=PointIk(fail=errored), allow_unplanned=allow
+        )
+        out = bad.plan(*args)
+        assert out["status"] == "blocked" and "collision spheres" in out["message"]
+        with pytest.raises(ValueError, match="move_to refused: path not planned"):
+            motion.require_planned(out, "move_to")
+        assert bad.check([[0] * 7], [WALL])["status"] == "contact"
+    # An unreachable service refuses by default ...
+    down_exc = RpcError("ik.plan", "HTTP request failed: refused")
+    down_exc.__cause__ = ConnectionRefusedError("refused")
     down = motion.MotionPlanner(
-        "http://ik", "panda_libero", client=PointIk(fail=RpcError("ik.plan", "down"))
+        "http://ik", "panda_libero", client=PointIk(fail=down_exc)
     )
-    unknown = down.plan([0.1, 0, 0.1, 0, 0, 0, 0], [0.1, 0, 0.1], [0.5, 0, 0.1], UP, [])
+    assert down.plan(*args)["status"] == "blocked"
+    assert down.check([[0] * 7], [WALL])["status"] == "contact"
+    # ... and runs unplanned only with --ik-allow-unplanned.
+    lenient = motion.MotionPlanner(
+        "http://ik", "panda_libero", client=PointIk(fail=down_exc), allow_unplanned=True
+    )
+    unknown = lenient.plan(*args)
     assert unknown["status"] == "unknown"
     motion.require_planned(unknown, "move_to")  # not a refusal: the move runs unplanned
-    assert down.check([[0] * 7], [WALL])["status"] == "unknown"
+    assert lenient.check([[0] * 7], [WALL])["status"] == "unknown"
+
+
+def test_the_unplanned_flag_is_off_by_default():
+    import argparse
+
+    p = argparse.ArgumentParser()
+    p.add_argument("--ik")
+    motion.add_unplanned_argument(p)
+    assert motion.planner_from_args(p.parse_args([]), "panda") is None
+    assert (
+        motion.planner_from_args(
+            p.parse_args(["--ik", "http://ik:1"]), "panda"
+        ).allow_unplanned
+        is False
+    )
+    on = p.parse_args(["--ik", "http://ik:1", "--ik-allow-unplanned"])
+    assert motion.planner_from_args(on, "panda").allow_unplanned is True
 
 
 def test_plan_and_check_convert_the_scene_into_the_base_frame():
@@ -771,3 +810,43 @@ def test_dual_franka_refuses_a_move_into_the_other_arm_and_stops_when_it_comes_c
         out["ok"] is False
         and out["planned"]["segments_done"] < out["planned"]["segments"]
     )
+
+
+def test_the_dual_rig_refuses_to_start_with_ik_on_a_backend_without_arm_spheres(
+    monkeypatch, capsys
+):
+    pytest.importorskip("omegaconf")
+    import sys
+
+    from pi_embodied_services.robots.dual_franka.env_server import DualFrankaEnvFacade
+    from pi_embodied_services.robots.franka import env_server as franka
+
+    def run(backend_or_exc):
+        def fake(url, **kw):
+            if isinstance(backend_or_exc, Exception):
+                raise backend_or_exc
+            return backend_or_exc
+
+        monkeypatch.setattr(motion, "ik_backend", fake)
+        monkeypatch.setattr(
+            sys, "argv", ["x", "--task-description", "t", "--ik", "http://ik:1"]
+        )
+
+        def no_config(*a, **k):
+            raise RuntimeError("started past the ik check")
+
+        return franka.main(
+            create_worker_class=lambda: None,
+            load_runtime_config=no_config,
+            facade_class=DualFrankaEnvFacade,
+        )
+
+    for answer, why in (
+        ("pyroki", "needs the ik server's --backend curobo"),
+        (OSError("refused"), "cannot read the ik backend"),
+    ):
+        with pytest.raises(SystemExit):
+            run(answer)
+        assert why in capsys.readouterr().err
+    with pytest.raises(RuntimeError, match="started past the ik check"):
+        run("curobo")

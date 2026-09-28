@@ -32,8 +32,11 @@ An env server started with ``--ik <url>`` builds a :class:`MotionPlanner` next t
    current joints and the next planned configuration against the world: predicted contact
    stops the move (``stopped: "contact"``).
 
-``unknown`` (the ik service is down or errored) is not approval, as for the reach check:
-the move runs unplanned, with a warning, as it did before ``--ik``.
+A planner that answers with an error (for instance PyRoKi given the dual rig's ``robot``
+obstacle) or an invalid result refuses the move, and an unchecked segment stops it: ``--ik``
+never falls back to unplanned motion by itself. Only while the ik service is unreachable,
+and only with ``--ik-allow-unplanned``, is the plan ``unknown`` and the move runs unplanned
+with a warning, as it did before ``--ik``; without the flag it is refused too.
 
 The planning world
 ------------------
@@ -102,10 +105,37 @@ def static_world() -> list[dict[str, Any]]:
     return [collision.to_wire(collision.parse_obstacle(o)) for o in data]
 
 
+def add_unplanned_argument(parser: Any) -> None:
+    """``--ik-allow-unplanned``: with ``--ik``, let a move run unplanned while the ik service
+    is unreachable (default: refuse it). A planner that answers with an error always refuses."""
+    parser.add_argument(
+        "--ik-allow-unplanned",
+        action="store_true",
+        help="with --ik, run moves unplanned while the ik service is unreachable "
+        "(default: refuse them); planner errors always refuse",
+    )
+
+
 def planner_from_args(args: Any, robot: str) -> "MotionPlanner | None":
     """The env server's :class:`MotionPlanner` for ``--ik``, or None without it."""
     url = getattr(args, "ik", None)
-    return MotionPlanner(url, robot) if url else None
+    allow = bool(getattr(args, "ik_allow_unplanned", False))
+    return MotionPlanner(url, robot, allow_unplanned=allow) if url else None
+
+
+def ik_backend(url: str, *, client: Any = None, timeout_s: float = 30.0) -> str:
+    """The backend the ik service at ``url`` runs (``ik.robots``); raises when it cannot say."""
+    client = client or make_rpc_client(url)
+    return str(client.call("ik.robots", (), {}, timeout_s=timeout_s)["backend"])
+
+
+def _unreachable(exc: BaseException) -> bool:
+    """Whether a call failed because the ik service could not be reached (connection refused,
+    timeout), as opposed to the service answering with an error."""
+    import urllib.error
+
+    cause = exc.__cause__ if isinstance(exc, RpcError) else exc
+    return isinstance(cause, OSError) and not isinstance(cause, urllib.error.HTTPError)
 
 
 def _pose7(pos: Any, quat: Any) -> np.ndarray:
@@ -167,6 +197,7 @@ class MotionPlanner:
         min_segment_m: float = MIN_SEGMENT_M,
         max_detour_m: float = MAX_DETOUR_M,
         margin: float = CHECK_MARGIN_M,
+        allow_unplanned: bool = False,
     ) -> None:
         if client is None:
             if not url:
@@ -180,6 +211,8 @@ class MotionPlanner:
         self.min_segment_m = float(min_segment_m)
         self.max_detour_m = float(max_detour_m)
         self.margin = float(margin)
+        #: Only while the service is unreachable: run moves unplanned instead of refusing them.
+        self.allow_unplanned = bool(allow_unplanned)
         self._client = client
 
     def _call(self, method: str, **kwargs: Any) -> Any:
@@ -276,11 +309,17 @@ class MotionPlanner:
                 waypoints=48,
             )
         except (RpcError, OSError, ValueError, KeyError, TypeError) as exc:
-            logger.warning("motion plan unavailable: %s", exc)
-            out["message"] = f"IK service unavailable, path not planned: {exc}"
+            logger.warning("motion plan failed: %s", exc)
+            if _unreachable(exc) and self.allow_unplanned:
+                out["message"] = f"IK service unreachable, path not planned: {exc}"
+            else:
+                out.update(status="blocked", message=f"path not planned: {exc}")
             return out
         if not isinstance(result, dict) or "ok" not in result:
-            out["message"] = f"IK service returned an invalid plan: {result!r}"
+            out.update(
+                status="blocked",
+                message=f"path not planned: invalid ik.plan result {result!r}",
+            )
             return out
         out["backend"] = result.get("backend")
         if not result["ok"]:
@@ -292,7 +331,10 @@ class MotionPlanner:
         path = np.asarray(result.get("path") or [], dtype=np.float64)
         tcp = np.asarray(result.get("tcp_path") or [], dtype=np.float64)
         if len(path) < 1 or tcp.shape != (len(path), 7):
-            out["message"] = "IK service plan lacks path / tcp_path"
+            out.update(
+                status="blocked",
+                message="path not planned: ik.plan lacks path / tcp_path",
+            )
             return out
         tcp_scene = np.stack([_apply(scene_from_base, p) for p in tcp])
         tcp_scene[-1, :3] = goal[:3]  # the servo aims at the requested target itself
@@ -354,11 +396,18 @@ class MotionPlanner:
                 margin=self.margin,
             )
         except (RpcError, OSError, ValueError, KeyError, TypeError) as exc:
-            logger.warning("collision check unavailable: %s", exc)
-            out["message"] = f"IK service unavailable, collision not checked: {exc}"
+            logger.warning("collision check failed: %s", exc)
+            if _unreachable(exc) and self.allow_unplanned:
+                out["message"] = f"IK service unreachable, collision not checked: {exc}"
+            else:
+                # An unchecked segment is not a clear one: stop as for predicted contact.
+                out.update(status="contact", message=f"collision not checked: {exc}")
             return out
         if not isinstance(result, dict) or "collision_free" not in result:
-            out["message"] = f"IK service returned an invalid check: {result!r}"
+            out.update(
+                status="contact",
+                message=f"collision not checked: invalid ik.check result {result!r}",
+            )
             return out
         clear = result.get("min_clearance_m")
         nearest = result.get("nearest")
@@ -378,8 +427,10 @@ class MotionPlanner:
 
 
 def require_planned(plan: dict[str, Any], action: str) -> dict[str, Any]:
-    """Refuse ``action`` (raise ``ValueError``) when no collision-free path exists;
-    ``unknown`` passes with a warning (the move runs unplanned, as without ``--ik``)."""
+    """Refuse ``action`` (raise ``ValueError``) unless a collision-free path was planned. Only
+    ``unknown`` passes (with a warning; the move runs unplanned), and :meth:`MotionPlanner.plan`
+    returns it only while the service is unreachable under ``--ik-allow-unplanned``: a planner
+    error or an invalid answer is ``blocked``."""
     if plan.get("status") == "blocked":
         raise ValueError(f"{action} refused: {plan.get('message')}")
     if plan.get("status") != "planned":

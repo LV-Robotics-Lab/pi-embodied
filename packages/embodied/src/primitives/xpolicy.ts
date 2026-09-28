@@ -519,6 +519,7 @@ export function xpolicy(
 						xpolicy_action: session.type,
 						xpolicy_server_instance_id: session.info.server_instance_id ?? null,
 						xpolicylab_rev: session.info.xpolicylab_rev ?? null,
+						xpolicy_precision: session.info.precision ?? null,
 						xpolicy_chunks: session.chunks,
 						xpolicy_actions: session.actions,
 					}

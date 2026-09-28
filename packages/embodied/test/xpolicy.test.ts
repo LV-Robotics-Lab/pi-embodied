@@ -157,7 +157,7 @@ async function fakeBridge(chunks: unknown[][], failOn?: string) {
 			if (method === "healthz") return reply({ status: "ok" });
 			if (method === "xpolicy.action_dims") return reply({ robot: "toy", ...DUAL });
 			if (method === "xpolicy.connect")
-				return reply({ server_instance_id: "srv-1", xpolicylab_rev: "d6332bf10b15", ms: 1 });
+				return reply({ server_instance_id: "srv-1", xpolicylab_rev: "d6332bf10b15", precision: "bf16", ms: 1 });
 			if (method === "xpolicy.get_action") return reply({ actions: chunks.shift() ?? [], ms: 5 });
 			reply({ result: null, ms: 1 });
 		});
@@ -348,6 +348,7 @@ test("xpolicy_act runs XPolicyLab's deploy loop: case, reset, then update_obs / 
 	const r = f.entries.find((e) => e.type === RESULT_ENTRY)?.data;
 	assert.equal(r.xpolicy, "ws://policy:19000");
 	assert.equal(r.xpolicy_server_instance_id, "srv-1");
+	assert.equal(r.xpolicy_precision, "bf16");
 	assert.equal(r.xpolicy_chunks, 2, "the empty chunk of the second call raised before it counted");
 	assert.equal(r.xpolicy_actions, 5);
 	assert.deepEqual(

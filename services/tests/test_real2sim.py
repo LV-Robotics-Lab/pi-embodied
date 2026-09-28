@@ -43,6 +43,8 @@ class FakeSim:
         self.grip = 1.0
         self.held = False
         self.lag = lag
+        #: where a held block sits relative to the TCP (a grasp off the block's centre)
+        self.grasp_offset = np.zeros(3)
         self.steps = 0
         self.frozen_flag = False
         self.env = SimpleNamespace(
@@ -89,7 +91,7 @@ class FakeSim:
         self.tcp = self.tcp + d
         self.tcp[2] = max(self.tcp[2], TABLE - 0.005)
         if self.held:
-            self.block = self.tcp.copy()
+            self.block = self.tcp + self.grasp_offset
 
     def grab_frames(self):
         img = np.zeros((8, 8, 3), np.uint8)
@@ -402,3 +404,23 @@ def test_suspended_termination_is_evaluated_on_demand():
     assert backend.success() is False
     done.params["flag"]["v"] = 1
     assert backend.success() is True
+
+
+def test_scheme_d_follower_with_a_grasp_offset_ends_straight_up(tmp_path):
+    """The follower holds the block 1.2 cm off-centre (the demo held it centred): it re-aims
+    the placement, and after RELEASE only rises -- the demo's parked x/y are ignored."""
+    backend = FakeFacadeBackend(FakeSim())
+    rec = atomic.DemoRecorder(backend)
+    rec.capture()
+    assert ms_follow.scripted_demo(rec, backend, hover=0.06)
+    track = {"task": "t", **rec.track()}
+    sim = FakeSim()
+    sim.grasp_offset = np.array([0.012, 0.0, 0.0])
+    result = ms_follow.follow_track(
+        FakeFacadeBackend(sim), track, tmp_path / "rollout_000", 0.02
+    )
+    writer = result.pop("writer")
+    assert result["success"], result
+    toks = writer.tokens
+    after = toks[len(toks) - 1 - toks[::-1].index("RELEASE") + 1 :]
+    assert after and set(after) == {"MV_UP"}

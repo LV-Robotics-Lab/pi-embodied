@@ -171,10 +171,17 @@ def follow_track(backend, track: dict, out_dir: Path, step_m: float) -> dict:
             if b > a:
                 seg = tcp[a : b + 1]
                 corners = rdp(seg)
+                released = si > 0 and events[si - 1][1] == RELEASE
                 for k, ci in enumerate(corners[1:], 1):
                     last = si == len(bounds) - 2 and k == len(corners) - 1
                     tight = (last or si < len(events)) and k == len(corners) - 1
-                    ep.chase(seg[ci], tol=0.008 if tight else 0.012)
+                    goal = seg[ci]
+                    if released:
+                        # after RELEASE only the demo's height: its x/y were above the
+                        # demo's placement, not the follower's re-aimed one
+                        t = backend.tcp_pos()
+                        goal = np.array([t[0], t[1], max(goal[2], t[2])])
+                    ep.chase(goal, tol=0.008 if tight else 0.012)
             if si < len(events):
                 tok = events[si][1]
                 if tok == RELEASE:
@@ -182,10 +189,15 @@ def follow_track(backend, track: dict, out_dir: Path, step_m: float) -> dict:
                 ep.emit(tok, "grasp" if tok == GRASP else "release")
         success = ep.settle(16)
         if not success and len(tcp) > 1:
-            ep.chase(tcp[-1], tol=0.011)  # one corrective round
+            # one corrective round, vertical only (never drag the open hand sideways)
+            t = backend.tcp_pos()
+            ep.chase(np.array([t[0], t[1], max(tcp[-1][2], t[2])]), tol=0.011)
             success = ep.settle(16)
     except TokenBudgetExceeded as exc:
         return {"success": False, "reason": str(exc), "writer": writer}
+    last = writer.tokens[-1] if writer.tokens else None
+    if success and last != "MV_UP":  # the last frame is also the synthesized DONE
+        return {"success": False, "reason": f"bad_ending:{last}", "writer": writer}
     return {"success": bool(success), "reason": "", "writer": writer}
 
 

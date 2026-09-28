@@ -454,6 +454,7 @@ def record(args, backend) -> tuple[int, int]:
             "task_key": args.task,
             "plan": plan,
             "layout": layout,
+            "randomize_xy_m": args.randomize_xy,
             **rec.track(),
         }
         name = f"track_ep{kept:03d}.json"
@@ -714,8 +715,8 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument(
             "--randomize-xy",
             type=float,
-            default=RANDOMIZE_XY_M,
-            help="0 = authored layout",
+            default=None if name == "follow" else RANDOMIZE_XY_M,
+            help="layout jitter, m (0 = authored layout); follow: the tracks' own value",
         )
         p.add_argument("--cuda-device", type=int, default=0)
         p.add_argument("--isaac-assets", default=os.environ.get("ROBOLAB_ISAAC_ASSETS"))
@@ -735,6 +736,15 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit(f"no tracks under {args.tracks}")
         first = json.loads(files[0].read_text())
         args.task, args.seed0 = first["task_key"], int(first["seed"])
+        # The layout is reproduced by the seed only under the recorder's randomisation.
+        recorded = float(first.get("randomize_xy_m", RANDOMIZE_XY_M))
+        if args.randomize_xy is None:
+            args.randomize_xy = recorded
+        elif args.randomize_xy != recorded:
+            raise SystemExit(
+                f"--randomize-xy {args.randomize_xy} differs from the tracks' {recorded}: "
+                "the reset would not reproduce the recorded layouts"
+            )
 
     facade = None
     try:

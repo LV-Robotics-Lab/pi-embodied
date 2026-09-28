@@ -429,3 +429,20 @@ def test_scheme_d_follower_with_a_grasp_offset_ends_straight_up(tmp_path):
     toks = writer.tokens
     after = toks[len(toks) - 1 - toks[::-1].index("RELEASE") + 1 :]
     assert after and set(after) == {"MV_UP"}
+
+
+def test_robolab_follow_takes_the_tracks_randomize_xy(tmp_path, monkeypatch):
+    (tmp_path / "track_ep000.json").write_text(
+        json.dumps({"task_key": "T", "seed": 3, "randomize_xy_m": 0.0})
+    )
+    seen = {}
+
+    def fake_build(args):
+        seen["xy"] = args.randomize_xy
+        raise rl.UnsupportedTask("stop here")
+
+    monkeypatch.setattr(rl, "build", fake_build)
+    base = ["follow", "--tracks", str(tmp_path), "--out", str(tmp_path / "o")]
+    assert rl.main(base) == 2 and seen["xy"] == 0.0
+    with pytest.raises(SystemExit, match="differs"):
+        rl.main([*base, "--randomize-xy", "0.08"])

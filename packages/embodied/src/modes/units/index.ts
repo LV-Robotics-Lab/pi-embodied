@@ -657,6 +657,7 @@ export function units(
 							? `The option letter of the action unit: ${mcqOptions(vocab()).block}`
 							: "The action unit",
 					}),
+					custom.targetVisible,
 				),
 			);
 		const props: Record<string, TSchema> = {
@@ -731,6 +732,7 @@ export function units(
 		arm?: string;
 		other?: string;
 		target_in_wrist?: boolean;
+		target_visible?: boolean;
 		plan?: string[];
 		operator?: boolean;
 		view?: string;
@@ -1114,7 +1116,7 @@ export function units(
 		let ran = 0;
 		for (let i = 0; i < n; i++) {
 			if (!advanceCapped(lines)) break;
-			last = await vocabulary.run(name, param, signal);
+			last = await vocabulary.run(name, param, signal, { target_visible: params.target_visible });
 			ran++;
 			countStep(undefined);
 			remember(label);

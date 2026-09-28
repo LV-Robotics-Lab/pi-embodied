@@ -88,8 +88,17 @@ export function customUnitsText(units: readonly CustomUnit[]): string {
 }
 
 /** `act`'s parameter schema over a custom vocabulary. */
-export function customSchema(units: readonly CustomUnit[], names: readonly string[], unitSchema: TSchema) {
+export function customSchema(
+	units: readonly CustomUnit[],
+	names: readonly string[],
+	unitSchema: TSchema,
+	targetVisible = false,
+) {
 	const props: Record<string, TSchema> = { unit: unitSchema };
+	if (targetVisible)
+		props.target_visible = Type.Optional(
+			Type.Boolean({ description: "TARGET CHECK: is the task's target visible in the current image?" }),
+		);
 	if (units.some((u) => u.param))
 		props.param = Type.Optional(
 			Type.Union([Type.String(), Type.Number()], {

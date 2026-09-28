@@ -88,7 +88,14 @@ export type CustomUnit = {
 export type CustomVocabulary = {
 	units: readonly CustomUnit[];
 	/** Run one unit with its checked parameter through the robot's own safety checks; the new observation. */
-	run: (unit: string, param: string | number | undefined, signal: AbortSignal | undefined) => Promise<Result>;
+	run: (
+		unit: string,
+		param: string | number | undefined,
+		signal: AbortSignal | undefined,
+		extra?: { target_visible?: boolean },
+	) => Promise<Result>;
+	/** `act` also takes `target_visible` (is the TARGET in the image?), passed to `run` (HumanCLAW's FindSR acknowledgement). */
+	targetVisible?: boolean;
 	/**
 	 * The current observation without acting (GUMI's first look). Without it GUMI cannot take an
 	 * observation before the first step: a terminal unit is never used to look.

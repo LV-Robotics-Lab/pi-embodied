@@ -80,6 +80,8 @@ fi
 echo "[2/3] rollouts -> $DATA/rollouts.json (Show-Harness rollouts_to_alpaca.py, prompts/$VERSION)"
 # train/scripts/prepare_dataset.sh's loop: one task dir per instruction, its task_text from metadata.json.
 dirs=(); maps=()
+compgen -G "$DATA/rollouts/*/rollout_000/metadata.json" > /dev/null ||
+  { echo "no rollouts under $DATA/rollouts (step 1 converted none; see its skip lines)" >&2; exit 2; }
 for d in "$DATA/rollouts"/*/; do
   T="$(basename "$d")"
   TT="$("$PY" -c "import json,sys;print(json.load(open(sys.argv[1]))['task_text'])" "$d/rollout_000/metadata.json")"

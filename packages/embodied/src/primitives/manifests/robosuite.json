@@ -831,6 +831,12 @@
 		},
 		{
 			"use": "modules/retrieve_asset_reference"
+		},
+		{
+			"use": "modules/web_search"
+		},
+		{
+			"use": "modules/web_fetch"
 		}
 	]
 }

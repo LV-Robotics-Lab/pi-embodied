@@ -147,6 +147,30 @@
 			"doc": {
 				"tool": "Reference views and facts of a kind of object from the memory corpus (capabilities/assets.ts, --object-memory)."
 			}
+		},
+		{
+			"name": "web_search",
+			"side": "ts",
+			"tier": "low",
+			"module": "web",
+			"requires": [
+				"web"
+			],
+			"doc": {
+				"tool": "Web search from the pi package npm:pi-web-search@1.6.0 (capabilities/web.ts keeps it active, --web-tools); untrusted text."
+			}
+		},
+		{
+			"name": "web_fetch",
+			"side": "ts",
+			"tier": "low",
+			"module": "web",
+			"requires": [
+				"web"
+			],
+			"doc": {
+				"tool": "A public web page as Markdown from the pi package npm:@zeldrisho/pi-web-fetch@0.9.2 (capabilities/web.ts, --web-tools); untrusted text."
+			}
 		}
 	]
 }

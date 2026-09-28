@@ -337,3 +337,39 @@ def test_a_program_moves_through_the_motion_methods_under_the_move_cap():
     assert out["status"] == "error" and out["limit"] == "max_move_m", out
     out = f._rpc["code.run"]("goto_pose([0.5, 0.0, 1.0])\n", timeout_s=30, tier="high")
     assert out["status"] == "ran", out
+
+
+def test_a_success_reached_mid_run_is_latched_even_if_undone_later():
+    """Audit a2c880c #9: success was checked once at the end of the run, so a program that
+    solved the task and then knocked the object away was scored a failure."""
+    f = facade()
+    out = f._rpc["code.run"](
+        "for _ in range(3):\n"
+        "    step([0, 0, 1, 0, 0, 0, -1, 0, 0, 0, 0, -1])\n"  # up: solved at step 2
+        "for _ in range(3):\n"
+        "    step([0, 0, -1, 0, 0, 0, -1, 0, 0, 0, 0, -1])\n",  # back down: unsolved
+        timeout_s=30,
+        tier="raw",
+    )
+    assert out["status"] == "ran", out
+    assert f.check_success() is False, "solved no longer at the end"
+    assert out["success"] is True and out["success_step"] == 2, out
+    again = f._rpc["code.run"]("pass\n", timeout_s=30, tier="raw")
+    assert again["success"] is False and again["success_step"] is None, (
+        "a new run starts over"
+    )
+
+
+def test_a_success_inside_a_motion_is_latched_too():
+    """A server-side motion steps the env many times: success reached on any of them counts."""
+    f = facade()
+    start = f.env.eef.copy()
+    out = f._rpc["code.run"](
+        f"move_to([{start[0]}, {start[1]}, 1.1])\n"  # through the success height
+        f"move_to([{start[0]}, {start[1]}, 1.0])\n",  # and back below it
+        timeout_s=60,
+        tier="low",
+    )
+    assert out["status"] == "ran", out
+    assert f.check_success() is False
+    assert out["success"] is True and out["success_step"] is not None, out

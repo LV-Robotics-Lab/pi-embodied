@@ -224,6 +224,7 @@ class RoboCasaEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         # observation and its video frames.
         self._steps = 0
         self._run_start = 0
+        self._run_success_step: int | None = None
         self._run_obs: dict | None = None
         self._run_frames: list[np.ndarray] = []
         # The motion methods: the latest observation, the arm servo's calibration (world dpos per
@@ -347,14 +348,20 @@ class RoboCasaEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         self._run_start = self._steps
         self._run_obs = None
         self._run_frames = []
+        # The env step (within the run) at which the task was first solved: latched, so a
+        # program that solves it and then knocks the object away still succeeded.
+        self._run_success_step: int | None = None
 
     def _finish_run(self) -> dict:
-        """The run's effect for pi: env steps taken, the success, the robot's observation after
-        its last step (the ``robot0_*`` arrays pi's ``obs`` reads; None when it took none) and
-        the run's video frames (top-down agentview)."""
+        """The run's effect for pi: env steps taken, the success (latched: solved at any step
+        of the run, ``success_step`` the first such step within it, or solved now), the robot's
+        observation after its last step (the ``robot0_*`` arrays pi's ``obs`` reads; None when
+        it took none) and the run's video frames (top-down agentview)."""
+        latched = self._run_success_step
         return {
             "steps": self._steps - self._run_start,
-            "success": self.check_success(),
+            "success": latched is not None or self.check_success(),
+            "success_step": latched,
             "obs": self._run_obs,
             "frames": list(self._run_frames),
         }
@@ -476,6 +483,15 @@ class RoboCasaEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         obs, reward, done, info = self.env.step(a)
         self._steps += 1
         self._obs = obs
+        code = getattr(self, "_code", None)
+        if (
+            code is not None
+            and code.active
+            and self._run_success_step is None
+            and self.check_success()
+        ):
+            # Latched at every env step of a program, raw steps and the motions' own steps alike.
+            self._run_success_step = self._steps - self._run_start
         if a.shape[0] >= 10 and a[9] != 0:
             # The base turned: the arm action's world directions changed.
             self._pos_jac = None

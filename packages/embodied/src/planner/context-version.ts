@@ -14,6 +14,8 @@
  *   memory_files          { "<path under the memory corpus>": sha256 } of the memory files the agent read
  *   code_api_digest       the primitive registry's digest (../primitives/registry.ts), or null
  *   git_commit            `git rev-parse HEAD` of the package's checkout, "unknown" outside one
+ *   git_dirty             whether that checkout has uncommitted changes to tracked files (null outside one)
+ *   planner_models        the "provider/id" of every model that answered the planner, in order of first use
  */
 
 import { execFileSync } from "node:child_process";
@@ -77,4 +79,22 @@ export function gitCommit(): string {
 		}
 	}
 	return commit;
+}
+
+let dirty: boolean | null | undefined;
+/** Whether the checkout holding this package has uncommitted changes to tracked files (resolved once); null outside one. */
+export function gitDirty(): boolean | null {
+	if (dirty === undefined) {
+		try {
+			const out = execFileSync("git", ["-C", SRC, "status", "--porcelain", "--untracked-files=no"], {
+				encoding: "utf8",
+				timeout: 5_000,
+				stdio: ["ignore", "pipe", "ignore"],
+			});
+			dirty = out.trim().length > 0;
+		} catch {
+			dirty = null;
+		}
+	}
+	return dirty;
 }

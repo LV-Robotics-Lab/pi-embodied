@@ -31,7 +31,7 @@ import { type VdmSpec, vdm } from "./observation/vdm.ts";
 import { episodeVideo } from "./observation/video.ts";
 import { type ViserSpec, viserView } from "./observation/viser.ts";
 import { CLOSED_LOOP, closedLoop, NON_MOTION, OBSERVE, RESETS } from "./planner/closed-loop.ts";
-import { CONTEXT_VERSION_ENTRY, gitCommit, sha256, usedTemplates } from "./planner/context-version.ts";
+import { CONTEXT_VERSION_ENTRY, gitCommit, gitDirty, sha256, usedTemplates } from "./planner/context-version.ts";
 import { ensemble } from "./planner/ensemble.ts";
 import { fallback } from "./planner/fallback.ts";
 import { human } from "./planner/human.ts";
@@ -287,6 +287,8 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	let tokens = { input: 0, output: 0 };
 	/** SHA-256 of each distinct system prompt the episode's agent starts ran with (./context-version.ts). */
 	let prompts: string[] = [];
+	/** "provider/id" of each model that answered the planner this episode. */
+	const plannerModels = new Set<string>();
 	/** USD of this episode's model replies, as pi prices them from models.json. */
 	let cost = 0;
 	let plannerError: string | undefined;
@@ -355,6 +357,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		turns = cost = toolCalls = 0;
 		tokens = { input: 0, output: 0 };
 		prompts = [];
+		plannerModels.clear();
 		pi.setActiveTools([]);
 		const picked = ctx.sessionManager
 			.getBranch()
@@ -772,6 +775,9 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		const m = event.message;
 		if (m.role !== "assistant") return;
 		cost += m.usage?.cost?.total ?? 0;
+		// The model that actually answered (a fallback or a switch mid-episode shows here).
+		// responseModel: the concrete model the provider reports when it differs from the requested one.
+		if (m.provider && m.model) plannerModels.add(`${m.provider}/${m.responseModel ?? m.model}`);
 		tokens.input += (m.usage?.input ?? 0) + (m.usage?.cacheRead ?? 0) + (m.usage?.cacheWrite ?? 0);
 		tokens.output += m.usage?.output ?? 0;
 		finishing = m.content.some((c) => c.type === "toolCall" && c.name === "finish");
@@ -895,6 +901,8 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 			memory_files: mem?.loaded() ?? {},
 			code_api_digest: api?.digest ?? null,
 			git_commit: gitCommit(),
+			git_dirty: gitDirty(),
+			planner_models: [...plannerModels],
 		};
 		const r =
 			failed !== undefined

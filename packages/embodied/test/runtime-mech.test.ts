@@ -10,7 +10,7 @@ import { memory } from "../src/capabilities/memory/index.ts";
 import { APPROVAL_ENTRY, highRisk, parseReview, reviewPrompt } from "../src/capabilities/operator.ts";
 import { VLM_COST_EVENT } from "../src/modes/units/vlm.ts";
 import { CLOSED_LOOP, CLOSED_LOOP_ENTRY, NON_MOTION, unknownOutcome } from "../src/planner/closed-loop.ts";
-import { CONTEXT_VERSION_ENTRY, gitCommit, sha256, usedTemplates } from "../src/planner/context-version.ts";
+import { CONTEXT_VERSION_ENTRY, gitCommit, gitDirty, sha256, usedTemplates } from "../src/planner/context-version.ts";
 import { defineRobot, RESULT_ENTRY, type RobotSpec } from "../src/robot.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
@@ -469,6 +469,11 @@ test("the result and a session entry record the context version", async (t) => {
 	t.after(f.restore);
 	toy(f);
 	await f.emit("session_start");
+	const reply = (model: string, responseModel?: string) => ({
+		message: { role: "assistant", provider: "faux", model, responseModel, content: [], stopReason: "toolUse" },
+	});
+	await f.emit("message_end", reply("m1"));
+	await f.emit("message_end", reply("alias", "m1"));
 	const r = await end(f);
 	const v = r.context_version;
 	assert.equal(v.system_prompt_sha256, sha256("the system prompt"));
@@ -481,6 +486,9 @@ test("the result and a session entry record the context version", async (t) => {
 	assert.equal(v.code_api_digest, null);
 	assert.match(v.git_commit, /^([0-9a-f]{40}|unknown)$/);
 	assert.equal(v.git_commit, gitCommit());
+	assert.equal(v.git_dirty, gitDirty());
+	assert.ok(v.git_dirty === null || typeof v.git_dirty === "boolean");
+	assert.deepEqual(v.planner_models, ["faux/m1"]);
 	assert.deepEqual(f.entries.find((e) => e.type === CONTEXT_VERSION_ENTRY)?.data, v);
 });
 

@@ -215,10 +215,27 @@ def test_openvla_reports_the_published_checkpoints_suite():
     vla = OpenVLAFacade(policy=Sampler(1), model="m", revision="r", suite="libero_10")
     info = call(vla, "vla.info")
     assert (info["suite"], info["model"], info["revision"]) == ("libero_10", "m", "r")
+    # libero_all un-normalises with one suite's statistics: it reports that suite and the key.
     oft = OpenVLAOFTFacade(
-        policy=Sampler(8), model="m", revision="r", suite="libero_all"
+        policy=Sampler(8),
+        model="m",
+        revision="r",
+        suite="libero_all",
+        unnorm_key="libero_goal_no_noops",
     )
-    assert call(oft, "vla.info")["suite"] == "libero_all"
+    info = call(oft, "vla.info")
+    assert (info["suite"], info["unnorm_key"]) == (
+        "libero_goal",
+        "libero_goal_no_noops",
+    )
+    with pytest.raises(ValueError, match="names none of the four"):
+        OpenVLAOFTFacade(
+            policy=Sampler(8),
+            model="m",
+            revision="r",
+            suite="libero_all",
+            unnorm_key="bridge",
+        )
     gr00t = Gr00tFacade(
         policy=Sampler(16), model="m", revision="r", horizon=16, suite="libero_spatial"
     )

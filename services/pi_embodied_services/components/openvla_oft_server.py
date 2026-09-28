@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import time
 from collections.abc import Callable
 from types import SimpleNamespace
@@ -93,9 +94,21 @@ class OpenVLAOFTFacade(ChunkVLAFacade):
         model: str,
         revision: str | None,
         suite: str | None = None,
+        unnorm_key: str | None = None,
     ):
         self._policy = policy
+        self._unnorm_key = unnorm_key
+        if suite == "libero_all":
+            # One server un-normalises with one suite's statistics: it serves that suite only.
+            suite = suite_of_key(unnorm_key)
+            if suite is None:
+                raise ValueError(
+                    f"libero_all: --unnorm-key {unnorm_key!r} names none of the four LIBERO suites"
+                )
         super().__init__(model=model, revision=revision, suite=suite)
+
+    def info(self) -> dict:
+        return {**super().info(), "unnorm_key": self._unnorm_key}
 
     def _act(self, frame: Frame) -> np.ndarray:
         if frame.wrist is None:
@@ -106,6 +119,13 @@ class OpenVLAOFTFacade(ChunkVLAFacade):
             )
         raw = self._policy(frame.main, frame.wrist, frame.state, frame.instruction)
         return libero_gripper(np.asarray(raw, np.float32))
+
+
+def suite_of_key(unnorm_key: str | None) -> str | None:
+    """The LIBERO suite whose statistics an un-normalisation key holds (``libero_goal_no_noops`` ->
+    ``libero_goal``); None for any other key."""
+    m = re.match(r"^(libero_(?:spatial|object|goal|10))(?:_|$)", unnorm_key or "")
+    return m.group(1) if m else None
 
 
 def norm_stat_keys(path: str) -> list[str]:
@@ -253,7 +273,13 @@ def main() -> None:
         path, args.unnorm_key, not args.no_center_crop, args.repo
     )
     logger.info("model ready in %.1fs (unnorm_key=%s)", time.time() - t0, unnorm_key)
-    OpenVLAOFTFacade(policy=policy, model=model, revision=revision, suite=suite).serve(
+    OpenVLAOFTFacade(
+        policy=policy,
+        model=model,
+        revision=revision,
+        suite=suite,
+        unnorm_key=unnorm_key,
+    ).serve(
         transport=args.transport,
         host=args.host,
         port=args.port,

@@ -78,7 +78,14 @@ export function pickTracker(startZ: number, startGrip: number, p: PickParams) {
 }
 
 /** What a VLA server says of itself: its healthz name and, for the adapters, `vla.info`. */
-export type VlaInfo = { service: string; model?: string; revision?: string | null; suite?: string | null };
+export type VlaInfo = {
+	service: string;
+	model?: string;
+	revision?: string | null;
+	suite?: string | null;
+	/** OpenVLA-OFT: the dataset statistics it un-normalises with (libero_all reports the key's suite). */
+	unnorm_key?: string | null;
+};
 
 /**
  * Which VLA answers on `client`: the server's healthz name and, for the adapters, `vla.info`
@@ -116,17 +123,16 @@ export function baseSuite(suite: string): string {
 
 /**
  * Why a VLA fine-tuned on one LIBERO suite must not run on `suite`: the adapters report the
- * checkpoint's suite (`libero_all`, OpenVLA-OFT's mixture of the four fine-tuned suites, covers
- * those four and not libero_90; a custom checkpoint reports none and is trusted), compared with the
- * episode's base suite. Undefined when the checkpoint fits.
+ * checkpoint's suite (OpenVLA-OFT's `libero_all` mixture reports the suite of its `--unnorm-key`,
+ * whose statistics it un-normalises with; a custom checkpoint reports none and is trusted), compared
+ * with the episode's base suite. Undefined when the checkpoint fits.
  */
 export function suiteMismatch(info: VlaInfo, suite: string): string | undefined {
 	const base = baseSuite(suite);
 	if (!info.suite || info.suite === base) return undefined;
-	if (info.suite === "libero_all" && (FINE_TUNED_SUITES as readonly string[]).includes(base)) return undefined;
 	const episode = base === suite ? suite : `${suite} (base suite ${base})`;
 	const fix = (FINE_TUNED_SUITES as readonly string[]).includes(base)
-		? `restart its server with --suite ${base}${info.service === "openvla-oft" ? " or --suite libero_all" : ""}, or --model-path a checkpoint fine-tuned on ${base},`
+		? `restart its server with --suite ${base}${info.service === "openvla-oft" ? ` or --suite libero_all --unnorm-key ${base}_no_noops` : ""}, or --model-path a checkpoint fine-tuned on ${base},`
 		: `no published fine-tune covers ${base}; restart its server with --model-path a checkpoint fine-tuned on it`;
 	return `${vlaIdentity(info)} is the ${info.suite} fine-tune, but this episode is ${episode}: ${fix} before using its grasp tool.`;
 }

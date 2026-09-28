@@ -98,7 +98,7 @@ test("the pick heuristics: descend, lift with a partly closed gripper", () => {
 	assert.equal(empty.update(0.25, 0.0), false);
 });
 
-test("a checkpoint fine-tuned on another suite is refused; libero_all (not libero_90) and unknown suites are trusted", () => {
+test("a checkpoint fine-tuned on another suite is refused; unknown suites are trusted", () => {
 	const oft = { service: "openvla-oft", model: "moojink/x", revision: "r", suite: "libero_spatial" };
 	assert.equal(suiteMismatch(oft, "libero_spatial"), undefined);
 	assert.match(
@@ -106,7 +106,11 @@ test("a checkpoint fine-tuned on another suite is refused; libero_all (not liber
 		/moojink\/x@r is the libero_spatial fine-tune, but this episode is libero_10/,
 	);
 	assert.match(suiteMismatch(oft, "libero_10")!, /--suite libero_10\b/);
-	assert.match(suiteMismatch(oft, "libero_10")!, /--suite libero_all/, "OFT's all-suite fine-tune");
+	assert.match(
+		suiteMismatch(oft, "libero_10")!,
+		/--suite libero_all --unnorm-key libero_10_no_noops/,
+		"OFT's all-suite fine-tune, keyed to the episode's suite",
+	);
 	// LIBERO-Pro / plus suites are judged by their base suite.
 	const vla = { service: "openvla", model: "openvla/x", revision: "r", suite: "libero_10" };
 	for (const pro of ["libero_10_task", "libero_10_swap", "libero_10_lan", "libero_10_object", "libero_10_temp"])
@@ -123,11 +127,11 @@ test("a checkpoint fine-tuned on another suite is refused; libero_all (not liber
 	const none = suiteMismatch(vla, "libero_90")!;
 	assert.match(none, /no published fine-tune covers libero_90/);
 	assert.doesNotMatch(none, /--suite/);
-	assert.equal(suiteMismatch({ ...oft, suite: "libero_all" }, "libero_goal"), undefined);
-	assert.equal(suiteMismatch({ ...oft, suite: "libero_all" }, "libero_10_swap"), undefined);
-	const all90 = suiteMismatch({ ...oft, suite: "libero_all" }, "libero_90")!;
-	assert.match(all90, /is the libero_all fine-tune, but this episode is libero_90/, "libero_all is the four suites");
-	assert.match(all90, /no published fine-tune covers libero_90/);
+	// libero_all reports its --unnorm-key's suite: only that suite passes.
+	const all = { ...oft, suite: "libero_goal", unnorm_key: "libero_goal_no_noops" };
+	assert.equal(suiteMismatch(all, "libero_goal_swap"), undefined);
+	assert.match(suiteMismatch(all, "libero_10")!, /--unnorm-key libero_10_no_noops/);
+	assert.match(suiteMismatch(all, "libero_90")!, /no published fine-tune covers libero_90/);
 	assert.match(
 		suiteMismatch({ service: "gr00t", model: "RLinf/x", suite: "libero_spatial" }, "libero_goal")!,
 		/gr00t RLinf\/x is the libero_spatial fine-tune/,

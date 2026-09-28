@@ -407,7 +407,7 @@ test("object memory: records by name with the sighting's step, rebuilt from the 
 		step: () => step,
 	});
 	await f.emit("session_start");
-	assert.deepEqual(om.tools(), ["remember_object", "recall_objects", "forget_object"]);
+	assert.deepEqual(om.tools(), ["remember_object", "recall_objects", "forget_object", "retrieve_asset_reference"]);
 	await f.run("remember_object", { name: "Red Mug", position: [0.1, 0.2, 0.05], note: "on the plate" });
 	step = 9;
 	const upd = await f.run("remember_object", { name: "red  mug", position: [0.3, 0.2, 0.05] });
@@ -631,4 +631,37 @@ test("plannerOf: any human turn makes the episode human-planned, else the last t
 		]),
 		["finetuned"],
 	);
+});
+
+test("retrieve_asset_reference resolves a name as OpenETA's bank does, from files in the memory corpus", async () => {
+	const { mkdirSync, writeFileSync } = await import("node:fs");
+	const { encodePng } = await import("../src/png.ts");
+	const root = mkdtempSync(join(tmpdir(), "assets-"));
+	const put = (id: string, manifest: Json, views = ["front", "side", "top"]) => {
+		const d = join(root, "libero", id);
+		mkdirSync(d, { recursive: true });
+		writeFileSync(join(d, "manifest.json"), JSON.stringify(manifest));
+		for (const v of views) writeFileSync(join(d, `${v}.png`), encodePng(Buffer.alloc(12), 2, 2));
+	};
+	put("alphabet_soup", { label: "alphabet soup", aliases: ["soup can"], shape: "cylinder", size_m: [0.07, 0.07, 0.1], grasp: "side, mid-body" });
+	put("tomato_sauce", { label: "tomato sauce", aliases: [] });
+	put("cream_cheese", { label: "cream cheese", aliases: [] });
+	const f = fakePi({ "object-memory": true, "asset-references-dir": root });
+	const om = objectMemory(f.pi, { robot: "libero", scene: () => ({}), step: () => 0 });
+	await f.emit("session_start");
+	om.tools();
+	const exec = (name: string) => f.tools.get("retrieve_asset_reference").execute("id", { name }, undefined, undefined, f.ctx);
+	const exact = await exec("Alphabet Soup");
+	assert.equal(exact.details.key, "libero/alphabet_soup");
+	assert.equal(exact.details.match.match_type, "exact_key");
+	assert.equal(exact.details.manifest.grasp, "side, mid-body");
+	assert.deepEqual(exact.details.views, ["front", "side", "top"]);
+	assert.equal(exact.content.filter((c: Json) => c.type === "image").length, 3);
+	assert.equal((await exec("soup can")).details.match.match_type, "exact_alias");
+	assert.equal((await exec("libero/tomato_sauce")).details.key, "libero/tomato_sauce");
+	// A near miss is taken only when confident and unambiguous; otherwise the candidates come back.
+	assert.equal((await exec("alphabet soups")).details.key, "libero/alphabet_soup");
+	const unknown = await exec("orange juice");
+	assert.equal(unknown.details.found, false);
+	assert.match(unknown.details.reason, /low_confidence|no_candidates/);
 });

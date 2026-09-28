@@ -8,6 +8,8 @@
  *   remember_object  {name, position, quat_xyzw?, note?}  add or update a record
  *   recall_objects   {names?}                            the records, oldest sighting flagged
  *   forget_object    {name}                              drop a record (the object left the scene)
+ *   retrieve_asset_reference {name}                      reference views and facts of a kind of object
+ *                                                        (./assets.ts: OpenETA's object memory bank, local)
  *
  * Every change is an `object_record` session entry, so resume and fork rebuild the records from the
  * branch. With --object-memory-dir the records also persist per scene, as
@@ -25,9 +27,10 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { assetsHome, retrieve } from "./assets.ts";
 
 export const OBJECT_ENTRY = "object_record";
-export const OBJECT_TOOLS = ["remember_object", "recall_objects", "forget_object"] as const;
+export const OBJECT_TOOLS = ["remember_object", "recall_objects", "forget_object", "retrieve_asset_reference"] as const;
 
 export type ObjectRecord = {
 	name: string;
@@ -79,6 +82,11 @@ export function objectMemory(
 		type: "string",
 		default: "",
 		description: "Persist object records per scene under this directory (default: this episode only)",
+	});
+	pi.registerFlag("asset-references-dir", {
+		type: "string",
+		default: "",
+		description: "Reference assets for retrieve_asset_reference (default: <memory home>/assets)",
 	});
 	const on = () => pi.getFlag("object-memory") === true;
 	let records = new Map<string, ObjectRecord>();
@@ -159,6 +167,31 @@ export function objectMemory(
 				const found = wanted ? all.filter((r) => wanted.includes(key(r.name))) : all;
 				const missing = wanted?.filter((w) => !records.has(w)) ?? [];
 				return text({ step: o.step() ?? null, objects: found, ...(missing.length ? { unknown: missing } : {}) });
+			},
+		});
+		pi.registerTool({
+			name: "retrieve_asset_reference",
+			label: "retrieve_asset_reference",
+			description:
+				"Reference data about a kind of object from the memory corpus (OpenETA's object memory bank): its front/side/top reference views and what is known about it (shape, size, grasp experience, notes). Give its name as the task says it (e.g. 'alphabet soup'); an ambiguous or unknown name returns the closest candidates instead. Compare the views with the scene before trusting a match.",
+			parameters: Type.Object({ name: Type.String({ description: "Object name, or <namespace>/<asset_id>" }) }),
+			executionMode: "sequential",
+			async execute(_id, p) {
+				const root = String(pi.getFlag("asset-references-dir") || "") || assetsHome();
+				const r = retrieve(root, o.robot, p.name);
+				if (!r.found) return text({ ...r, assets_dir: root });
+				const { pngs, ...rest } = r;
+				return {
+					content: [
+						{ type: "text" as const, text: JSON.stringify(rest) },
+						...pngs.map((png) => ({
+							type: "image" as const,
+							data: png.toString("base64"),
+							mimeType: "image/png",
+						})),
+					],
+					details: rest,
+				};
 			},
 		});
 		pi.registerTool({

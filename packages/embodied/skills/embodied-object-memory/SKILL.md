@@ -7,7 +7,7 @@ license: Apache-2.0 (adapted from OpenETA agent/skills/memory_extract.md)
 # Object memory
 
 **Robots:** all, with `--object-memory`.
-**Needs:** `remember_object`, `recall_objects`, `forget_object`; positions from `back_project` / `segment` / `plan_grasp` where the robot has them.
+**Needs:** `remember_object`, `recall_objects`, `forget_object`, `retrieve_asset_reference`; positions from `back_project` / `segment` / `plan_grasp` where the robot has them.
 
 `remember_object`, `recall_objects` and `forget_object` (pi started with --object-memory) keep one
 record per object name: its last world position (and orientation), the env step and time it was
@@ -26,3 +26,8 @@ earlier episode are hints about the layout only; the scene was reset since.
 
 The robot's memory corpus (`/memory`, --explore) is different: task knowledge across episodes (recipes,
 notes) in files. Object memory is what is where in this scene now.
+
+`retrieve_asset_reference {name}` returns reference views (front/side/top) and known facts (shape,
+size, grasp experience) of a kind of object from `<memory home>/assets/<robot>/<asset>/` when the
+corpus has them. Use it when the task names an unusual object, before segmenting; compare the views
+with the scene before trusting a match.

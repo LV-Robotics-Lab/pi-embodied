@@ -1320,3 +1320,14 @@ test("gumi with a robot's own vocabulary: NAME(param) steps, its key bindings, r
 	assert.deepEqual(actSteps({ unit: "turn", param: 45 }, [ARM]), { step: { [ARM]: "TURN(45)" }, n: 1 });
 	assert.deepEqual(actSteps({ unit: "WALK(fast)" }, [ARM]), { step: { [ARM]: "WALK(fast)" }, n: 1 });
 });
+
+test("dashboard keys: a robot's own units bound with their parameter match by name (#24)", () => {
+	const page = readFileSync(new URL("../src/capabilities/dashboard/page.html", import.meta.url), "utf8");
+	const fn = /const baseUnit = \(label\) => (.*);/.exec(page)?.[1];
+	assert.ok(fn, "page.html defines baseUnit");
+	const baseUnit = new Function("label", `return ${fn};`) as (l: string) => string;
+	assert.equal(baseUnit("WALK(normal)"), "WALK");
+	assert.equal(baseUnit("MV_FWD"), "MV_FWD");
+	assert.match(page, /G\.vocabulary\.includes\(baseUnit\(hit\[1\]\)\)/);
+	assert.match(page, /baseUnit\(G\.keys\[k\]\[1\]\) === unit/);
+});

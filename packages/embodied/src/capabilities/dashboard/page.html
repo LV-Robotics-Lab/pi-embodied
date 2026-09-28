@@ -483,7 +483,9 @@ let G = null, padsKey = "", inFlight = false, timer = null;
 const held = new Map();   // key/button id -> [arm, unit], newest last
 const dual = () => G && G.arms.length > 1;
 const keyName = (code) => code.replace(/^(Key|Digit|Arrow)/, "").replace("Period", ".").replace("Left", "L-").replace("Right", "R-");
-const keyOf = (arm, unit) => Object.keys(G.keys ?? {}).find((k) => G.keys[k][0] === arm && G.keys[k][1] === unit && !k.startsWith("Arrow"));
+/** A bound unit's name: a robot's own units are bound with their parameter ("WALK(normal)" is a WALK key). */
+const baseUnit = (label) => String(label).replace(/\(.*\)$/, "");
+const keyOf = (arm, unit) => Object.keys(G.keys ?? {}).find((k) => G.keys[k][0] === arm && baseUnit(G.keys[k][1]) === unit && !k.startsWith("Arrow"));
 /** The bound turn keys, e.g. "Z/X rotate" or "Z/X yaw · 1/2 roll ± · 3/4 pitch ±" (two arms: per arm). */
 const turnHelp = () => G.arms.map((arm) => {
   const pairs = TURN_PAIRS.map(([axis, pos, neg]) => [axis, keyOf(arm, pos), keyOf(arm, neg)]).filter(([, a, b]) => a && b)
@@ -578,7 +580,7 @@ document.addEventListener("keydown", (e) => {
   if (e.ctrlKey && !e.code.startsWith("Control")) return;
   let hit = G.keys?.[e.code];
   if (!dual() && e.code === "Space") hit = [G.arms[0], G.closed[G.arms[0]] ? "RELEASE" : "GRASP"];
-  if (!hit || !G.vocabulary.includes(hit[1]) && hit[1] !== "STILL") return;
+  if (!hit || !G.vocabulary.includes(baseUnit(hit[1])) && hit[1] !== "STILL") return;
   e.preventDefault();
   press(`key:${e.code}`, hit[0], hit[1]);
 });

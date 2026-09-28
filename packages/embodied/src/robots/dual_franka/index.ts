@@ -46,6 +46,7 @@ import {
 import { viewCameraMeta, viewEnvState } from "../../primitives/perception.ts";
 import { pointActive, pointTool, registerPointFlags } from "../../primitives/pointing.ts";
 import { getStep, outcome, type StepsIO, type ToolDef } from "../../primitives/steps.ts";
+import { gripperCommand, poseDelta, toWxyz, type XPolicySpec } from "../../primitives/xpolicy.ts";
 import {
 	attach,
 	defineRobot,
@@ -203,6 +204,8 @@ export default function dualFranka(pi: ExtensionAPI) {
 		task: ["task"],
 		keepImages: 4,
 		video: true,
+		// XPolicyLab policies (--xpolicy, env_cfg franka: two arms): ee targets run as bounded relative motions.
+		xpolicy: xpolicySpec(),
 		// Observations carry the policy's inline cameras (the D455 by default), wrist views among them.
 		vdm: () =>
 			shown.length
@@ -525,6 +528,85 @@ export default function dualFranka(pi: ExtensionAPI) {
 
 	/** One arm's state in the latest step (tcp_pose in right_base). */
 	const armState = (arm: string): Json => steps[steps.length - 1]?.blob.state?.[`${arm}_arm`] ?? {};
+
+	/**
+	 * XPolicyLab (--xpolicy, env_cfg franka: two arms): the first non-wrist camera as cam_head and the
+	 * wrist cameras as cam_left_wrist / cam_right_wrist; per arm the joints, gripper width and TCP pose in
+	 * the rig frame (right_base). An ee action runs per arm as move_delta then rotate_delta toward its
+	 * target (the server's per-call and workspace limits), then an open/close of the gripper
+	 * (gripperCommand). No joint actions: the env server has no joint-position command. XPolicyLab
+	 * publishes no Franka weights: a policy has to be fine-tuned on this rig's own data.
+	 */
+	function xpolicySpec(): XPolicySpec {
+		const widest: Record<string, number> = {};
+		const arms = ["left", "right"] as const;
+		const armState = async () => {
+			const s = await robotState();
+			return (side: string) => (s[`${side}_arm`] ?? {}) as Json;
+		};
+		return {
+			envCfgType: "franka",
+			actions: ["ee"],
+			observe: async () => {
+				const obs = await observation();
+				const meta = await call<Json | null>("env.get_camera_meta");
+				const map: Json = meta?.observation_camera_map ?? {};
+				const images = new Map<string, NdArray>();
+				if (obs.main_images instanceof NdArray) images.set(alias(map.main) ?? "left_wrist", obs.main_images);
+				let extras = obs.extra_view_images;
+				if (extras instanceof NdArray && extras.shape.length === 5) extras = sub(extras, 0);
+				if (extras instanceof NdArray && extras.shape.length === 4)
+					for (let i = 0; i < extras.shape[0]; i++)
+						images.set(alias(map[`extra_${i}`]) ?? `extra_${i}`, sub(extras, i));
+				for (const [k, v] of Object.entries(obs.raw_camera_frames ?? {}))
+					if (v instanceof NdArray) images.set(alias(k) ?? k, v);
+				const vision: Record<string, { color: NdArray }> = {};
+				const head = [...images.keys()].find((k) => !k.includes("wrist"));
+				if (head) vision.cam_head = { color: images.get(head) as NdArray };
+				for (const side of arms) {
+					const wrist = [...images.keys()].find((k) => k.includes(`${side}_wrist`));
+					if (wrist) vision[`cam_${side}_wrist`] = { color: images.get(wrist) as NdArray };
+				}
+				const of = await armState();
+				const state: Record<string, number[]> = {};
+				for (const side of arms) {
+					const a = of(side);
+					const width = vec(a.gripper_position)[0] ?? 0;
+					widest[side] = Math.max(widest[side] ?? 0, width);
+					state[`${side}_arm_joint_state`] = vec(a.arm_joint_position);
+					state[`${side}_ee_joint_state`] = [width];
+					state[`${side}_ee_pose`] = toWxyz(vec(a.tcp_pose));
+				}
+				return { instruction: setup?.task.instruction ?? "", vision, state };
+			},
+			act: async (action, signal) => {
+				check(signal);
+				const of = await armState();
+				for (const side of arms) {
+					const target = action.arms[`${side}_`];
+					if (!target) continue;
+					const a = of(side);
+					if (target.pose) {
+						const { delta, rpy } = poseDelta(toWxyz(vec(a.tcp_pose)), target.pose);
+						// The server holds each call to pi's limits (--max-move, --workspace-xy, --z-floor, --max-rotate).
+						if (Math.hypot(...delta) > 1e-4)
+							await motion("env.move_delta", { arm: side, delta_xyz: NdArray.f32(delta) }, signal);
+						if (Math.hypot(...rpy) > 1e-3)
+							await motion("env.rotate_delta", { arm: side, delta_rpy: NdArray.f32(rpy) }, signal);
+					}
+					const grip = target.ee
+						? gripperCommand(target.ee[0], widest[side] ?? 0, a.gripper_open === false)
+						: null;
+					if (grip) await motion("env.set_gripper", { arm: side, open: grip === "open" }, signal);
+				}
+			},
+			over: () => false,
+			present: async (run) => {
+				const { output, pngs } = view(await dumpState({ action: "xpolicy_act" }, run, null));
+				return toolResult(output, pngs);
+			},
+		};
+	}
 
 	/** Units mode (../units): one grounded action unit for one arm on the existing move primitives. */
 	function unitStep(move: Move, signal: AbortSignal | undefined) {

@@ -88,9 +88,9 @@ Source layout (`src/`, one directory per layer; `src/robot.ts`, the `defineRobot
 | Genesis | `src/robots/genesis` | the task predicate (cube_pick: an 8 cm lift) | memory, explore, video, units, VDM, code, `--privileged`, flywheel |
 | HumanCLAW (SMPL-X humanoid, HSSD homes) | `src/robots/humanclaw` | HumanClawBench's paper metrics (FindSR, NavSR@20cm/@1m, InteractSR; `success` = NavSR@20cm) | video, units, VDM, `--privileged`; units in its own vocabulary (WALK, TURN_*, SIDE_*, STEP_BACK, CLIMB_UP, WALK_DOWN, SIT, STOP; `--units=both` with `look`), GUMI keys, video ego (exo on the server), `code.api` recorded; `--humanclaw-mode paper` (default) plans with `humanclaw-psv/<base>` (HumanCLAW's prompt v4 + verifier v3 verbatim, no SYSTEM.md/VDM/memory), `pi` with our SYSTEM.md, `act`'s `target_visible`, and optional `--units-verify` / VDM. Later: `--api low` (segment, point, navmesh `navigate_to`). |
 | BEHAVIOR-1K / R1Pro | `src/robots/behavior` | the BDDL activity's `success`, latched (`q_score` = partial credit) | memory, explore, video, units, VDM, code, `--privileged`; units on `env.move_hand_delta` |
-| Franka (real) | `src/robots/franka` | operator verdict (`--operator`) | memory, explore, video, units, VDM, code, operator, XPolicyLab; explore resets through the operator; XPolicyLab (`franka`, ee) |
-| Dual Franka (real) | `src/robots/dual_franka` | operator verdict (required) | memory, explore, video, units, VDM, code, operator; explore resets through the operator |
-| Piper / dual Piper (real) | `src/robots/piper` | operator verdict (required) | memory, explore, video, units, VDM, code, operator, XPolicyLab; explore resets through the operator; XPolicyLab on one arm (`piper`, ee) |
+| Franka (real) | `src/robots/franka` | operator verdict (`--operator`) | memory, explore, video, units, VDM, code, operator; explore resets through the operator |
+| Dual Franka (real) | `src/robots/dual_franka` | operator verdict (required) | memory, explore, video, units, VDM, code, operator, XPolicyLab; explore resets through the operator; XPolicyLab (`franka`, ee; fine-tuning required) |
+| Piper / dual Piper (real) | `src/robots/piper` | operator verdict (required) | memory, explore, video, units, VDM, code, operator; explore resets through the operator; XPolicyLab on the dual rig only (`piper/dual.ts`: `piper`, ee; fine-tuning required) |
 | UR5e (real) | `src/robots/ur5e` | operator verdict (required) | memory, explore, video, units, VDM, code, operator; explore resets through the operator; bound to one arm (`--arm-id`) |
 
 Every robot but the Frankas (whose `segment` does this with `--robot-sam3` / `--robot-unidepth`) takes
@@ -225,12 +225,15 @@ Shared modules:
   `--xpolicy-python` and `--xpolicylab <checkout>` or attached with `--xpolicy-bridge`;
   `--xpolicy-encode-images` sends JPEGs, `--xpolicy-timeout` / `--xpolicy-connect-timeout` are
   XPolicyLab's request and cold-start budgets. Dimensions come from the services' env_cfg
-  (`components/xpolicy_env_cfg`: `aloha_agilex` two arms, `piper` and `franka` one arm with
-  unprefixed keys). A robot opts in with `xpolicy` in its spec (env_cfg type, action types, how it
-  builds the observation and executes one action). RoboTwin runs joint (qpos14) and ee (ee16)
-  actions natively; Piper and Franka run ee targets as their bounded relative moves (Piper: yaw
-  only) and have no joint command. RLDX (RoboCasa) and LingBot (RoboTwin) keep their own clients
-  for now; new VLAs go through XPolicyLab.
+  (`components/xpolicy_env_cfg`: XPolicyLab's own robot table; `aloha_agilex`, `piper`, `franka`
+  and `arx_x5` are all two-armed, keys prefixed `left_` / `right_`). A robot opts in with `xpolicy`
+  in its spec (env_cfg type, action types, how it builds the observation and executes one action).
+  RoboTwin runs joint (qpos14) and ee (ee16) actions natively; the dual Piper and dual Franka rigs
+  run ee targets as their bounded relative moves (Piper: yaw only) and have no joint command.
+  XPolicyLab publishes no weights for them (nor real-robot evaluation): a policy has to be
+  fine-tuned on the rig's own data first. The single-arm Piper and Franka have no XPolicyLab
+  env_cfg and no `xpolicy_act`. RLDX (RoboCasa) and LingBot (RoboTwin) keep their own clients for
+  now; new VLAs go through XPolicyLab.
 - `src/infra/model-services.ts`: model-service auto-start (RPent's `robots/runtime.py`), opt-in with
   `--serve-models vla,sam3,molmo` (or `all`; RoboCasa's VLA is `rldx`) on the simulators: each named
   server starts on its endpoint flag's loopback port (`--vla`, `--sam3`, `--molmo`, `--rldx`), all

@@ -17,8 +17,8 @@
  * With `--xpolicy <ws url>` the session start connects (a new trial per episode) and fails closed
  * when the server is unreachable or the robot cannot run --xpolicy-action. Dimensions come from the
  * services' env_cfg (`xpolicy.action_dims`, XPolicyLab's get_robot_action_dim_info against
- * components/xpolicy_env_cfg): single-arm robots use unprefixed state/action keys, two-armed ones
- * `left_` / `right_`. `xpolicy_act` (registered at the first such start) follows XPolicyLab's deploy loop (policy/<name>/deploy.py):
+ * components/xpolicy_env_cfg, XPolicyLab's own robot table): two-armed robots use `left_` / `right_`
+ * state/action keys, a single-arm env_cfg (none upstream yet) unprefixed ones. `xpolicy_act` (registered at the first such start) follows XPolicyLab's deploy loop (policy/<name>/deploy.py):
  * before the episode's first chunk (and after a scene reset) prepare_case (the robot's case meta)
  * and reset; per chunk update_obs + get_action, then every action of the chunk, with an update_obs
  * of the fresh observation between two actions; it stops at the end of the episode. An action is a
@@ -66,7 +66,7 @@ export type XPolicyArm = { joints?: number[]; pose?: number[]; ee?: number[] };
 /** One action of a chunk, by arm prefix ("" on a single arm, "left_" / "right_" on two). */
 export type XPolicyAction = { type: XPolicyActionType; arms: Record<string, XPolicyArm> };
 export type XPolicySpec = {
-	/** env_cfg type: the robot's row in components/xpolicy_env_cfg (aloha_agilex, piper, franka). */
+	/** env_cfg type: the robot's row in components/xpolicy_env_cfg (aloha_agilex, piper, franka, arx_x5). */
 	envCfgType: string;
 	/** Action types this robot executes. */
 	actions: readonly XPolicyActionType[];

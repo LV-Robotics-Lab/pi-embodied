@@ -469,8 +469,8 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 			result: (params) => toolResult({ _finish: true, ...params }),
 		},
 		units,
-		// XPolicyLab policies (--xpolicy, one arm: env_cfg piper): ee targets run as guarded steps.
-		...(dual ? {} : { xpolicy: xpolicySpec() }),
+		// XPolicyLab policies (--xpolicy, the dual rig: env_cfg piper is two-armed): ee targets run as guarded steps.
+		...(dual ? { xpolicy: xpolicySpec() } : {}),
 	};
 	const robot = defineRobot(pi, spec);
 	const { op } = robot;
@@ -661,41 +661,50 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 		);
 
 	/**
-	 * XPolicyLab (--xpolicy): the front camera as cam_head and the wrist one as cam_wrist, the joints,
-	 * the gripper width and the eef pose. An ee action runs as one guarded step (the same limits as
-	 * move_delta): the translation, the rotation about base z (the Piper step has no roll or pitch, so
-	 * those are dropped) and an open/close of the gripper (gripperCommand). No joint actions: the env
-	 * server has no joint-position command.
+	 * XPolicyLab (--xpolicy, dual rig: env_cfg piper, two arms): the front camera as cam_head and the wrist
+	 * cameras as cam_left_wrist / cam_right_wrist, each arm's joints, gripper width and eef pose. An ee
+	 * action runs per arm as one guarded step (the same limits as move_delta): the translation, the
+	 * rotation about base z (the Piper step has no roll or pitch, so those are dropped) and an open/close
+	 * of the gripper (gripperCommand). No joint actions: the env server has no joint-position command.
+	 * XPolicyLab publishes no Piper weights: a policy has to be fine-tuned on this rig's own data.
 	 */
 	function xpolicySpec(): XPolicySpec {
-		let widest = 0;
+		const widest: Record<string, number> = {};
+		const arm = (s: Json, side: string) => (s.arms?.[side] ?? {}) as Json;
 		return {
 			envCfgType: "piper",
 			actions: ["ee"],
 			observe: async () => {
 				const obs = await call<Json>("env.get_observation");
-				const s = obs.robot_state as Json;
-				widest = Math.max(widest, Number(s.gripper_width_m));
 				const vision: Record<string, { color: NdArray }> = {};
-				if (obs.images?.front instanceof NdArray) vision.cam_head = { color: obs.images.front };
-				if (obs.images?.wrist instanceof NdArray) vision.cam_wrist = { color: obs.images.wrist };
-				return {
-					instruction: task?.instruction ?? "",
-					vision,
-					state: {
-						arm_joint_state: vec(s.joints),
-						ee_joint_state: [Number(s.gripper_width_m)],
-						ee_pose: toWxyz(vec(s.eef_pose)),
-					},
-				};
+				const cams = { cam_head: "front", cam_left_wrist: "wrist_left", cam_right_wrist: "wrist_right" };
+				for (const [name, cam] of Object.entries(cams))
+					if (obs.images?.[cam] instanceof NdArray) vision[name] = { color: obs.images[cam] };
+				const state: Record<string, number[]> = {};
+				for (const side of arms) {
+					const a = arm(obs.robot_state as Json, side);
+					widest[side] = Math.max(widest[side] ?? 0, Number(a.gripper_width_m));
+					state[`${side}_arm_joint_state`] = vec(a.joints);
+					state[`${side}_ee_joint_state`] = [Number(a.gripper_width_m)];
+					state[`${side}_ee_pose`] = toWxyz(vec(a.eef_pose));
+				}
+				return { instruction: task?.instruction ?? "", vision, state };
 			},
-			act: async (a, signal) => {
-				const arm = a.arms[""] ?? {};
+			act: async (action, signal) => {
 				const s = await call<Json>("env.get_robot_state");
-				const move = arm.pose ? poseDelta(toWxyz(vec(s.eef_pose)), arm.pose) : { delta: [0, 0, 0], rpy: [0, 0, 0] };
-				const grip = arm.ee ? gripperCommand(arm.ee[0], widest, s.gripper_closed === true) : null;
-				const r = await guardedStep(move.delta, move.rpy[2], grip, "base", signal);
-				if (r.ok === false) throw new Error(`the Piper step failed: ${JSON.stringify(plain(r))}`);
+				for (const side of arms) {
+					const target = action.arms[`${side}_`];
+					if (!target) continue;
+					const a = arm(s, side);
+					const move = target.pose
+						? poseDelta(toWxyz(vec(a.eef_pose)), target.pose)
+						: { delta: [0, 0, 0], rpy: [0, 0, 0] };
+					const grip = target.ee
+						? gripperCommand(target.ee[0], widest[side] ?? 0, a.gripper_closed === true)
+						: null;
+					const r = await guardedStep(move.delta, move.rpy[2], grip, "base", signal, true, side);
+					if (r.ok === false) throw new Error(`the ${side} Piper step failed: ${JSON.stringify(plain(r))}`);
+				}
 			},
 			over: () => false,
 			present: async (run) => view(await record({ action: "xpolicy_act" }, run, null)),

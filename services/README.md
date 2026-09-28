@@ -146,8 +146,8 @@ uv pip install -e "services[openvla]"       # or [openvla-oft] (Python 3.10/3.11
 # XPolicyLab way, in its own env; pi-embodied only runs the bridge (components/xpolicy_bridge.py),
 # which uses XPolicyLab's own websocket client from a checkout pinned at d6332bf:
 git clone https://github.com/XPolicyLab/XPolicyLab.git ~/xpolicy/XPolicyLab && git -C ~/xpolicy/XPolicyLab checkout d6332bf
-# get_robot_action_dim_info reads <checkout>/../env_cfg: give it pi-embodied's (aloha_agilex, piper, franka)
-ln -s "$PWD/services/pi_embodied_services/components/xpolicy_env_cfg" ~/xpolicy/env_cfg
+# The policy server reads its benchmark's env_cfg (<checkout>/../env_cfg, e.g. RoboTwin's): leave it as the
+# benchmark ships it. The bridge checks dims against components/xpolicy_env_cfg, XPolicyLab's own robot table.
 uv venv services/.venv-xpolicy --python 3.11 && source services/.venv-xpolicy/bin/activate
 uv pip install -e "services[xpolicy]"       # pi: --xpolicy-python services/.venv-xpolicy/bin/python --xpolicylab ~/xpolicy/XPolicyLab
 # The policy server, per its policy/<name>/README (install.sh, download_checkpoint.sh), e.g. Evo-1 on

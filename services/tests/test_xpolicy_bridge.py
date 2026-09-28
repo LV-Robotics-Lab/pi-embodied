@@ -86,8 +86,19 @@ def test_action_dims_follow_the_packaged_env_cfg():
         "arm_dim": [6, 6],
         "ee_dim": [1, 1],
     }
-    assert action_dims("piper")["arm_dim"] == [6]
-    assert action_dims("franka") == {"robot": "franka", "arm_dim": [7], "ee_dim": [1]}
+    # XPolicyLab's own table (utils/robot/_robot_info.json @d6332bf): Piper and Franka are two-armed.
+    assert action_dims("piper")["arm_dim"] == [6, 6]
+    assert action_dims("franka") == {
+        "robot": "franka",
+        "arm_dim": [7, 7],
+        "ee_dim": [1, 1],
+    }
+    # arx_x5.yml is RoboDojo's own (robot dual_x5: the two 6-DoF arms of upstream's arx_x5).
+    assert action_dims("arx_x5") == {
+        "robot": "dual_x5",
+        "arm_dim": [6, 6],
+        "ee_dim": [1, 1],
+    }
     with pytest.raises(ValueError, match="unknown env_cfg_type"):
         action_dims("nope")
 

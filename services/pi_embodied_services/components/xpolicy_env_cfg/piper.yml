@@ -1,4 +1,4 @@
-# One AgileX Piper arm (pi-embodied's piper robot): single-arm, unprefixed keys.
+# pi-embodied's dual Piper rig; XPolicyLab's utils/robot/_robot_info.json piper (two 6-DoF arms).
 config:
   robot: piper
 

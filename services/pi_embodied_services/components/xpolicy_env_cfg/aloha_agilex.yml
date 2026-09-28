@@ -1,4 +1,4 @@
-# RoboTwin's dual-arm aloha-agilex (pi-embodied's robotwin robot), as RoboTwin's env_cfg/aloha_agilex.yml.
+# RoboTwin's dual-arm aloha-agilex (pi-embodied's robotwin robot); XPolicyLab's utils/robot/_robot_info.json aloha_agilex.
 config:
   robot: aloha_agilex
 

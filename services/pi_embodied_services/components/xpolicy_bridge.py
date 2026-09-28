@@ -69,7 +69,7 @@ logger = get_logger("xpolicy_bridge")
 
 #: The XPolicyLab commit this bridge was written against (reported, not enforced).
 XPOLICYLAB_PIN = "d6332bf"
-#: pi-embodied's env_cfg: ``<env_cfg_type>.yml`` names the robot, ``robot/_robot_info.json`` its dims.
+#: ``<env_cfg_type>.yml`` names the robot; ``robot/_robot_info.json`` is XPolicyLab's own robot table (@d6332bf).
 ENV_CFG = Path(__file__).with_name("xpolicy_env_cfg")
 
 

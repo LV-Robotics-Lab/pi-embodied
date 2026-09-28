@@ -576,19 +576,101 @@
 			"side": "ts",
 			"tier": "low",
 			"mutating": true,
-			"module": "waypoints",
+			"requires": [
+				"waypoints"
+			],
+			"params": {
+				"waypoints": {
+					"type": "array",
+					"items": "vec3",
+					"minItems": 1,
+					"maxItems": 5,
+					"required": true,
+					"description": "World-frame [x, y, z] positions in m, in order"
+				}
+			},
 			"doc": {
-				"tool": "OpenETA's multi-waypoint EEF route (primitives/waypoints.ts, --waypoints)."
-			}
+				"tool": "Move the EEF through 1-5 world-frame positions in order (orientation and gripper held). Checked before anything moves: each segment and the whole route against the per-call limits, each waypoint against the workspace. Stops at the first waypoint not reached. Use it for short routes around an obstacle (lift, carry, descend) instead of one straight move."
+			},
+			"result": "motion"
 		},
 		{
 			"name": "align_wrist",
+			"side": "env",
+			"method": "env.align_wrist",
+			"tier": "low",
+			"mutating": true,
+			"requires": [
+				"align_wrist"
+			],
+			"params": {
+				"point": {
+					"type": "array",
+					"items": "integer",
+					"minItems": 2,
+					"maxItems": 2,
+					"required": true,
+					"modes": [
+						"tool"
+					],
+					"description": "Target pixel [row, col] in the wrist image"
+				},
+				"row": {
+					"type": "integer",
+					"required": true,
+					"modes": [
+						"code"
+					],
+					"description": "target pixel row in the wrist image"
+				},
+				"col": {
+					"type": "integer",
+					"required": true,
+					"modes": [
+						"code"
+					],
+					"description": "target pixel column"
+				},
+				"max_correction_m": {
+					"type": "number",
+					"minimum": 0.005,
+					"maximum": 0.05,
+					"description": "Largest correction, m (default 0.03)"
+				},
+				"execute": {
+					"type": "boolean",
+					"description": "Also move by the correction (default false)"
+				}
+			},
+			"doc": {
+				"tool": "Wrist-view alignment near a grasp: give the target's pixel [row, col] in the current wrist image. Returns the lateral EEF correction (in the camera's image plane, at the target's depth, at most max_correction_m) that puts the target under the gripper centre (delta_world) and the EEF position after it (aligned_xyz). execute=true also applies it (move_delta by delta_world; the server enforces its limits); by default nothing moves. Approach depth and orientation are unchanged. The returned wrist image marks the gripper-centre pixel (green) and the target (red).",
+				"code": "The lateral EEF correction that puts pixel (row, col) of the current wrist image under the gripper centre (in the camera's image plane, at the target's depth, at most max_correction_m): desired_pixel, target_pixel, delta_world, aligned_xyz. execute=True also moves by it (env.move_delta by delta_world).\n\nExample:\n    a = align_wrist(250, 270)\n    align_wrist(250, 270, execute=True)"
+			},
+			"result": "read"
+		},
+		{
+			"name": "suggest_grasp",
 			"side": "ts",
 			"tier": "low",
-			"module": "wrist",
+			"requires": [
+				"grasp_advisor"
+			],
+			"params": {
+				"object": {
+					"type": "string",
+					"description": "Without a grasp backend: the object to grasp, e.g. 'black bowl' (required then)"
+				},
+				"max_candidates": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 8,
+					"description": "With a grasp backend: how many plan_grasp candidates to show (default 8)"
+				}
+			},
 			"doc": {
-				"tool": "The wrist camera's alignment helper (primitives/wrist.ts, --align-wrist)."
-			}
+				"tool": "A separate vision model's grasp opinion (--grasp-advisor), never moving the robot. With a grasp backend: it sees the latest plan_grasp candidates drawn on the camera image (jaw line, centre dot, approach arrow, one colour each) and recommends the one most likely to hold through lift and carry, or abstains; run the recommended id with execute_grasp (or pass it as grasp_id); call it right after plan_grasp, before the robot moves. Without one: give `object`; it proposes the grasp centre, jaw contacts and top/side approach on the camera image, back-projected to a world grasp (position, approach, eef_yaw, pregrasp_xyz), marked confidence_level low (one image, no width or collision check): approach through pregrasp_xyz and confirm in the wrist view."
+			},
+			"result": "read"
 		},
 		{
 			"use": "grasp/plan_grasp"
@@ -697,6 +779,18 @@
 		},
 		{
 			"use": "modules/run_code"
+		},
+		{
+			"use": "modules/remember_object"
+		},
+		{
+			"use": "modules/recall_objects"
+		},
+		{
+			"use": "modules/forget_object"
+		},
+		{
+			"use": "modules/retrieve_asset_reference"
 		}
 	]
 }

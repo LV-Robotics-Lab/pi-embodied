@@ -5,6 +5,11 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from pi_embodied_services.components.manifest import (
+    _signature_mismatch,
+    code_primitives,
+    load_manifest,
+)
 from pi_embodied_services.utils.wrist_alignment import WristAligner, alignment
 
 K = np.array([[500.0, 0, 320], [0, 500.0, 240], [0, 0, 1]])
@@ -58,24 +63,40 @@ def test_align_wrist_reports_by_default_and_moves_only_with_execute():
         aligner.align_wrist(480, 0)
 
 
-def test_align_wrist_is_a_mutating_high_tier_code_api_primitive():
-    aligner = WristAligner(
-        view,
-        lambda: [0, 0, 0.3],
-        lambda *_: {},
-        move_with="env.move_delta by delta_world",
-    )
+@pytest.mark.parametrize("robot", ["libero", "franka"])
+def test_the_manifest_declares_align_wrist_and_the_method_matches_it(robot):
+    aligner = WristAligner(view, lambda: [0, 0, 0.3], lambda *_: {}, move_with="x")
 
     class Facade:
         def __init__(self) -> None:
             self._rpc: dict = {}
-            self._readonly_methods: set = set()
 
     f = Facade()
     aligner.install(f)
-    assert f._rpc["env.align_wrist"] == aligner.align_wrist
-    (prim,) = aligner.primitives()
-    assert prim.name == "align_wrist" and prim.method == "env.align_wrist"
-    assert prim.mutating and prim.tiers == ("high",)
-    assert set(prim.params) == {"row", "col", "max_correction_m", "execute"}
-    assert "execute=True also moves by it (env.move_delta by delta_world)" in prim.doc
+    manifest = load_manifest(robot)
+    (entry,) = [e for e in manifest["primitives"] if e["name"] == "align_wrist"]
+    assert entry["method"] == "env.align_wrist" and entry["requires"] == ["align_wrist"]
+    # Without --align-wrist the program never sees it; with it, its code signature is the method's.
+    assert "align_wrist" not in [
+        p.name for p in code_primitives(manifest, lambda c: False)
+    ]
+    (prim,) = [
+        p
+        for p in code_primitives(manifest, lambda c: c == "align_wrist")
+        if p.name == "align_wrist"
+    ]
+    assert (
+        set(prim.params) == {"row", "col", "max_correction_m", "execute"}
+        and prim.mutating
+    )
+    assert (
+        _signature_mismatch(
+            f._rpc["env.align_wrist"],
+            {
+                k: p
+                for k, p in entry["params"].items()
+                if "code" in p.get("modes", ["tool", "code"])
+            },
+        )
+        == ""
+    )

@@ -35,6 +35,7 @@ import { CONTEXT_VERSION_ENTRY, gitCommit, gitDirty, sha256, usedTemplates } fro
 import { ensemble } from "./planner/ensemble.ts";
 import { fallback } from "./planner/fallback.ts";
 import { human } from "./planner/human.ts";
+import { plannerOf } from "./planner/kind.ts";
 import {
 	available,
 	loadManifest,
@@ -44,7 +45,6 @@ import {
 	toolSchema,
 	type Vars,
 } from "./primitives/manifest.ts";
-import { plannerOf } from "./planner/kind.ts";
 import { EXTRAS, extrasInPureMode } from "./primitives/optional.ts";
 import { CODE_API_ENTRY, CODE_API_EVENT, type CodeApi, fetchCodeApi } from "./primitives/registry.ts";
 import { type XPolicySpec, xpolicy } from "./primitives/xpolicy.ts";

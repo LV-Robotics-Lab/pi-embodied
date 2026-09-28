@@ -331,6 +331,18 @@
 				"dual",
 				"xpolicy"
 			]
+		},
+		{
+			"use": "modules/remember_object"
+		},
+		{
+			"use": "modules/recall_objects"
+		},
+		{
+			"use": "modules/forget_object"
+		},
+		{
+			"use": "modules/retrieve_asset_reference"
 		}
 	]
 }

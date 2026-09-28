@@ -509,6 +509,10 @@ export default function libero(pi: ExtensionAPI) {
 				grasp: graspActive(pi).length > 0,
 				place: Boolean(flag("anyplace", "")),
 				geometry: pi.getFlag("geometry") === true,
+				// The OpenETA extras (their flags).
+				waypoints: pi.getFlag("waypoints") === true,
+				align_wrist: pi.getFlag("align-wrist") === true,
+				grasp_advisor: pi.getFlag("grasp-advisor") === true,
 				unidepth: Boolean(String(pi.getFlag("unidepth") ?? "").trim()),
 				// pi0_pick / pi0_doubled: the Pi0.5 server answered at session start.
 				pi0: skills.pi0?.on === true,

@@ -261,7 +261,8 @@ test("LIBERO --grasp-advisor without a grasp backend mounts the VLM grasp-point 
 	await s.emit("session_start");
 	process.exitCode = undefined;
 	assert.ok(s.active().includes("suggest_grasp"));
-	assert.match(s.tools.get("suggest_grasp").description, /No grasp planner here/);
+	assert.match(s.tools.get("suggest_grasp").description, /Without one: give `object`/);
+	assert.ok("object" in s.tools.get("suggest_grasp").parameters.properties);
 	assert.ok(!s.active().includes("plan_grasp"));
 });
 

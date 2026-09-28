@@ -99,6 +99,54 @@
 			"doc": {
 				"tool": "An XPolicyLab policy's action chunks (primitives/xpolicy.ts)."
 			}
+		},
+		{
+			"name": "remember_object",
+			"side": "ts",
+			"tier": "low",
+			"module": "objects",
+			"requires": [
+				"object_memory"
+			],
+			"doc": {
+				"tool": "Record where an object was seen now (capabilities/objects.ts, --object-memory)."
+			}
+		},
+		{
+			"name": "recall_objects",
+			"side": "ts",
+			"tier": "low",
+			"module": "objects",
+			"requires": [
+				"object_memory"
+			],
+			"doc": {
+				"tool": "The object records (capabilities/objects.ts, --object-memory)."
+			}
+		},
+		{
+			"name": "forget_object",
+			"side": "ts",
+			"tier": "low",
+			"module": "objects",
+			"requires": [
+				"object_memory"
+			],
+			"doc": {
+				"tool": "Drop an object record (capabilities/objects.ts, --object-memory)."
+			}
+		},
+		{
+			"name": "retrieve_asset_reference",
+			"side": "ts",
+			"tier": "low",
+			"module": "objects",
+			"requires": [
+				"object_memory"
+			],
+			"doc": {
+				"tool": "Reference views and facts of a kind of object from the memory corpus (capabilities/assets.ts, --object-memory)."
+			}
 		}
 	]
 }

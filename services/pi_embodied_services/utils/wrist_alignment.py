@@ -156,34 +156,9 @@ class WristAligner:
         return out
 
     def install(self, facade: Any) -> None:
+        """Register ``env.align_wrist``; its code.api entry is the robot manifest's ``align_wrist``
+        (``requires: ["align_wrist"]``, ../../packages/embodied/src/primitives/manifests)."""
         facade._rpc["env.align_wrist"] = self.align_wrist
-
-    def primitives(self) -> tuple[Any, ...]:
-        from pi_embodied_services.components.code_api import Param, Primitive
-
-        return (
-            Primitive(
-                "align_wrist",
-                "env.align_wrist",
-                "Wrist-view alignment near a grasp: the lateral EEF correction (in the wrist camera's "
-                "image plane, at the target's depth, at most max_correction_m) that puts the target "
-                "pixel under the gripper centre: desired_pixel, target_pixel, delta_world, "
-                f"aligned_xyz. execute=True also moves by it ({self._move_with}); approach depth and "
-                "orientation are unchanged.",
-                {
-                    "row": Param("integer", "target pixel row in the wrist image"),
-                    "col": Param("integer", "target pixel column"),
-                    "max_correction_m": Param(
-                        "number", "largest correction, m (default 0.03)", False
-                    ),
-                    "execute": Param(
-                        "boolean", "also move by the correction (default False)", False
-                    ),
-                },
-                mutating=True,
-                tiers=("high",),
-            ),
-        )
 
 
 def add_align_wrist_argument(parser: Any) -> None:

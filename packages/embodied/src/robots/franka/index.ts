@@ -358,6 +358,10 @@ export default function franka(pi: ExtensionAPI) {
 				grasp: graspActive(pi).length > 0,
 				place: Boolean(flag("anyplace")),
 				geometry: pi.getFlag("geometry") === true,
+				// The OpenETA extras (their flags).
+				waypoints: pi.getFlag("waypoints") === true,
+				align_wrist: pi.getFlag("align-wrist") === true,
+				grasp_advisor: pi.getFlag("grasp-advisor") === true,
 				joints: caps.backend === "polymetis",
 				vla: caps.has_vla === true && Boolean(flag("robot-vla")),
 			})[c] ?? false,
@@ -1222,12 +1226,10 @@ export default function franka(pi: ExtensionAPI) {
 						return undefined;
 					}
 				},
-				// Applied like move_delta: the operator gate, the per-call limit, the workspace, env.move_delta.
+				// Applied like move_delta: the operator gate, then env.move_delta (the server enforces the limits).
 				move: async (a, signal) => {
 					check(signal);
 					const delta = (a.delta_world as number[]).map(Number);
-					checkMove(delta, maxMove(), setup?.task.constraints);
-					checkWorkspace(delta);
 					return motion("env.move_delta", { delta_xyz: NdArray.f32(delta) }, signal);
 				},
 				moveWith: "move_delta by delta_world, with its per-call limit and workspace check",

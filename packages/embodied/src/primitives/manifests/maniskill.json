@@ -37,7 +37,10 @@
 				},
 				"gripper": {
 					"type": "enum",
-					"values": ["open", "close"],
+					"values": [
+						"open",
+						"close"
+					],
 					"description": "Open or close the gripper first (omitted: keep the current command)"
 				},
 				"arm": {
@@ -102,7 +105,10 @@
 			"params": {
 				"camera_name": {
 					"type": "enum",
-					"values": ["agentview", "wrist"],
+					"values": [
+						"agentview",
+						"wrist"
+					],
 					"description": "Default agentview"
 				},
 				"depth": {
@@ -122,7 +128,10 @@
 			"params": {
 				"camera_name": {
 					"type": "enum",
-					"values": ["agentview", "wrist"],
+					"values": [
+						"agentview",
+						"wrist"
+					],
 					"description": "Default agentview"
 				}
 			},
@@ -173,7 +182,9 @@
 			"side": "env",
 			"method": "env.preview_reach",
 			"tier": "low",
-			"requires": ["ik"],
+			"requires": [
+				"ik"
+			],
 			"params": {
 				"xyz": {
 					"type": "vec3",
@@ -223,6 +234,18 @@
 		},
 		{
 			"use": "modules/run_code"
+		},
+		{
+			"use": "modules/remember_object"
+		},
+		{
+			"use": "modules/recall_objects"
+		},
+		{
+			"use": "modules/forget_object"
+		},
+		{
+			"use": "modules/retrieve_asset_reference"
 		}
 	]
 }

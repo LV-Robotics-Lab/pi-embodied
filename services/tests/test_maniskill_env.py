@@ -585,3 +585,28 @@ def test_the_bridge_twins_render_without_depth_and_the_rest_with_it(monkeypatch)
     assert ms.obs_mode_for("PutCarrotOnPlateInScene-v1") == "rgb+segmentation"
     assert ms.obs_mode_for("PickCube-v1") == ms.OBS_MODE
     assert ms.obs_mode_for("NotRegistered-v1") == ms.OBS_MODE
+
+
+def test_drawing_scenes_end_at_their_dot_limit_instead_of_stepping_past_it():
+    """DrawTriangle / DrawSVG place one dot per control step and index past MAX_DOTS after
+    that: at the limit the server returns truncated with step_limit and never steps."""
+    assert ms.DOT_LIMIT == {"DrawTriangle-v1": 300, "DrawSVG-v1": 500}
+    for env_id, text in ms.INSTRUCTIONS.items():
+        if env_id in ms.DOT_LIMIT:
+            assert (
+                "paint nothing farther" in text and "every part of the outline" in text
+            )
+    f = _facade("panda_stick", wrist=False)
+    f._meta["env_id"] = "DrawTriangle-v1"
+    stepped = []
+    f._env = type(
+        "E",
+        (),
+        {
+            "unwrapped": type("U", (), {"draw_step": 300})(),
+            "step": lambda a: stepped.append(a),
+        },
+    )()
+    f._obs, f._last_info = "last", {"success": False}
+    obs, rew, term, trunc, info = f._step([0.0, 0.0, 0.0])
+    assert (obs, trunc, info["step_limit"], stepped) == ("last", True, True, [])

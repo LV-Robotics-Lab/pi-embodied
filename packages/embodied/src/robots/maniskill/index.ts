@@ -884,6 +884,7 @@ export default function maniskill(pi: ExtensionAPI) {
 		const gripper = gripOf(a);
 		const start = armObs(a).tcp_pos!.toArray();
 		let steps = 0;
+		let limited = false;
 		const r = arm();
 		for (const { target, minSteps, maxSteps } of phases(start, delta, gripper !== before, r.gripperSteps, r.stepM)) {
 			if (success) break;
@@ -902,7 +903,8 @@ export default function maniskill(pi: ExtensionAPI) {
 			steps += frames.length;
 			envStep += frames.length;
 			absorb(frames[frames.length - 1], i);
-			if (i.cancelled) break;
+			limited = Boolean(i.step_limit);
+			if (i.cancelled || limited) break;
 		}
 		const end = armObs(a).tcp_pos!.toArray();
 		return {
@@ -911,6 +913,8 @@ export default function maniskill(pi: ExtensionAPI) {
 			moved_m: end.map((v, k) => round(v - start[k])),
 			gripper: gripper > 0 ? "open" : "close",
 			env_steps: steps,
+			// The drawing scenes' step budget is spent (env server DOT_LIMIT): nothing more can run.
+			...(limited ? { step_limit: "the episode's step limit is reached; no further motion runs: call finish" } : {}),
 		};
 	}
 

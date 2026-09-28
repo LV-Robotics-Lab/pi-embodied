@@ -96,8 +96,8 @@ INSTRUCTIONS = {
     # Drawing: the stick paints a red dot at every control step its tip is within ~8 mm
     # of the canvas; success is a dot within 2.5 cm (triangle) / 10 cm (svg) of every
     # point of the outline.
-    "DrawTriangle-v1": "draw the outlined triangle on the white canvas: trace all three edges with the stick's tip touching the canvas",
-    "DrawSVG-v1": "draw the outlined shape on the white canvas: trace its whole outline with the stick's tip touching the canvas",
+    "DrawTriangle-v1": "draw the outlined triangle on the white canvas: trace all three edges with the stick's tip touching the canvas so every part of the outline has a red dot within 2.5 cm, and paint nothing farther than 2.5 cm from the outline (lift the tip off the canvas to travel); the canvas holds at most 300 control steps of drawing",
+    "DrawSVG-v1": "draw the outlined shape on the white canvas: trace its whole outline with the stick's tip touching the canvas so every part of the outline has a red dot within 10 cm, and paint nothing farther than 10 cm from the outline (lift the tip off the canvas to travel); the canvas holds at most 500 control steps of drawing",
     # The two-robot scenes (--robot panda_pair). TwoRobotPickCube: the cube starts on the
     # left arm's side, the goal on the right's; success is the cube inside the goal
     # sphere (2.5 cm) with the right arm still.
@@ -153,6 +153,11 @@ TASK_ACTORS = {
         "objs/table_cloth_generated_shorter",
     ],
 }
+#: The drawing scenes record one dot per control step and index past their buffers after
+#: this many (measured: DrawTriangle's 300 dot actors, DrawSVG's 500-wide dots_dist, its
+#: registered max_episode_steps, though it builds 1000 dots): at the limit the episode ends
+#: as truncated instead of stepping the env again.
+DOT_LIMIT = {"DrawTriangle-v1": 300, "DrawSVG-v1": 500}
 #: Success markers a task keeps in ``_hidden_objects`` (drawn for the human viewer only, never
 #: in the sensor cameras) although its success depends on them: shown to the cameras at every
 #: reset, so the model can see the goal (and ``check_visible`` can require it).
@@ -1083,6 +1088,11 @@ class ManiskillEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         return out
 
     def _step(self, action) -> tuple:
+        limit = DOT_LIMIT.get(self._meta["env_id"])
+        if limit and int(getattr(self._env.unwrapped, "draw_step", 0)) >= limit:
+            # Out of dots: a further env.step would raise (IndexError); report the end.
+            info = {**getattr(self, "_last_info", {}), "step_limit": True}
+            return self._obs, 0.0, False, True, info
         if isinstance(action, dict):
             a = {
                 k: np.asarray(v, dtype=np.float32).reshape(1, -1)

@@ -363,7 +363,7 @@ async function fakeEnv(
 			else if (method === "env.servo") {
 				if (kwargs.arm) armTcp[kwargs.arm as string] = args[0] as number[];
 				else tcp = args[0] as number[];
-				result = [[obs()], { is_grasped: false }];
+				result = [[obs()], { is_grasped: false, ...(process.env.FAKE_STEP_LIMIT ? { step_limit: true } : {}) }];
 			} else if (method === "code.run") {
 				tcp = [-0.4, 0, 0.3];
 				result = {
@@ -659,4 +659,19 @@ test("--code=true: run_code runs on the env server and its result becomes the ob
 	assert.equal(result.env_steps, 12);
 	assert.equal(result.code, "true");
 	assert.equal(result.code_api, "low-noexamples");
+});
+
+test("a drawing scene's spent step budget ends a move and says to finish", async (t) => {
+	const env = await fakeEnv("panda_stick", ROBOTS.panda_stick.setup, false, "DrawTriangle-v1");
+	t.after(env.close);
+	const s = stubPi({ env: env.url, "env-id": "DrawTriangle-v1", robot: "panda_stick" });
+	maniskill(s.pi);
+	await s.emit("session_start");
+	process.exitCode = undefined;
+	process.env.FAKE_STEP_LIMIT = "1";
+	t.after(() => delete process.env.FAKE_STEP_LIMIT);
+	const r = await s.run("move_delta", { delta_xyz: [0.06, 0, 0] });
+	// Three 2 cm waypoints, but the first returned step_limit: no further servo call.
+	assert.equal(env.calls.filter((c) => c.method === "env.servo").length, 1);
+	assert.match(r.details.result.step_limit, /step limit is reached.*call finish/);
 });

@@ -643,14 +643,21 @@ test("retrieve_asset_reference resolves a name as OpenETA's bank does, from file
 		writeFileSync(join(d, "manifest.json"), JSON.stringify(manifest));
 		for (const v of views) writeFileSync(join(d, `${v}.png`), encodePng(Buffer.alloc(12), 2, 2));
 	};
-	put("alphabet_soup", { label: "alphabet soup", aliases: ["soup can"], shape: "cylinder", size_m: [0.07, 0.07, 0.1], grasp: "side, mid-body" });
+	put("alphabet_soup", {
+		label: "alphabet soup",
+		aliases: ["soup can"],
+		shape: "cylinder",
+		size_m: [0.07, 0.07, 0.1],
+		grasp: "side, mid-body",
+	});
 	put("tomato_sauce", { label: "tomato sauce", aliases: [] });
 	put("cream_cheese", { label: "cream cheese", aliases: [] });
 	const f = fakePi({ "object-memory": true, "asset-references-dir": root });
 	const om = objectMemory(f.pi, { robot: "libero", scene: () => ({}), step: () => 0 });
 	await f.emit("session_start");
 	om.tools();
-	const exec = (name: string) => f.tools.get("retrieve_asset_reference").execute("id", { name }, undefined, undefined, f.ctx);
+	const exec = (name: string) =>
+		f.tools.get("retrieve_asset_reference").execute("id", { name }, undefined, undefined, f.ctx);
 	const exact = await exec("Alphabet Soup");
 	assert.equal(exact.details.key, "libero/alphabet_soup");
 	assert.equal(exact.details.match.match_type, "exact_key");

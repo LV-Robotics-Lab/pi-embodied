@@ -1053,6 +1053,10 @@
 							"type": "string",
 							"description": "The object's mask id; default the mask the grasp was planned on"
 						},
+						"keep_tilt": {
+							"type": "boolean",
+							"description": "Keep AnyPlace's full rotation (a tilted insertion or placement); default keeps only its turn about the vertical and places from above"
+						},
 						"camera": {
 							"type": "string",
 							"description": "Registered RGB-D view name (default: the first configured)"
@@ -1612,6 +1616,10 @@
 						"object_mask_id": {
 							"type": "string",
 							"description": "The object's mask id; default the mask the grasp was planned on"
+						},
+						"keep_tilt": {
+							"type": "boolean",
+							"description": "Keep AnyPlace's full rotation (a tilted insertion or placement); default keeps only its turn about the vertical and places from above"
 						},
 						"camera": {
 							"type": "string",
@@ -2471,6 +2479,10 @@
 						"object_mask_id": {
 							"type": "string",
 							"description": "The object's mask id; default the mask the grasp was planned on"
+						},
+						"keep_tilt": {
+							"type": "boolean",
+							"description": "Keep AnyPlace's full rotation (a tilted insertion or placement); default keeps only its turn about the vertical and places from above"
 						},
 						"camera": {
 							"type": "string",

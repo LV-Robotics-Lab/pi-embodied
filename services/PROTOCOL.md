@@ -192,6 +192,16 @@ LIBERO server converts the world target into the `robot0_base` frame (read from 
 per reset). `path_checked` is always false: only the end pose is solved, not the path. Each
 robot's `primitives.py` declares `preview_reach` in `code.api` (high and low tiers).
 
+Placement (`env.plan_place`, `utils/grasp.py`): AnyPlace gets the clouds in the world frame
+(gravity-aligned, as it was trained; `extrinsic_cam2world`) and its transforms come back in the
+camera frame. Deviation from upstream AnyPlace: by default a placement keeps only the model's
+turn about world +z and its landing point (`model_tilt_deg` reports the dropped tilt), is set down
+on the region's surface at the grasp's measured height above its old support, and is refused when
+it would approach more than 45 deg from straight down or land off the region. Tilted insertions and
+placements need `keep_tilt: true`, which keeps the full predicted rotation and drops the
+from-above check; only an executor servoing the full orientation (LIBERO's `execute_place`) runs
+them.
+
 Collision-free motion (`--ik`, `utils/motion.py`): LIBERO's `env.move_to` (and pi's `move_to`
 tool and every leg of its `execute_grasp` / `execute_place`, through `env.plan_motion` /
 `env.check_motion`) and the Frankas' `env.move_delta` /

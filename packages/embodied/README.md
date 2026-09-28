@@ -100,7 +100,10 @@ it); `src/primitives/detections.ts`, the env servers' `env.detect` & co.
 Metaworld and Genesis take the grasp flags too (`--contact-graspnet` & co): `plan_grasp`, `plan_place`,
 `check_attached` over their env server's planner, and `execute_grasp` / `execute_place`, which run a
 planned id's claimed path as bounded `move_delta` legs (`src/primitives/grasp-chain.ts`; a candidate
-more than 20 deg from straight down is refused, the grippers cannot turn).
+more than 20 deg from straight down, or turned more than 20 deg off the hand, is refused: the
+grippers cannot turn). `plan_place` places upright by default, keeping only AnyPlace's turn about
+the vertical (unlike upstream AnyPlace); `keep_tilt: true` keeps its full rotation for tilted
+insertions, which only LIBERO's full-orientation `execute_place` can run (services/PROTOCOL.md).
 ManiSkill (the Panda and the xArm6) and Genesis take `--ik <url>` too: `preview_reach` over the env
 server's `env.preview_reach` (the ik service gained an `xarm6` model); Genesis's `move_delta` then
 refuses an unreachable target before it moves.

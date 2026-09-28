@@ -220,6 +220,12 @@ export function graspTools(pi: ExtensionAPI, rig: GraspRig): GraspToolDef[] {
 			object_mask_id: Type.Optional(
 				Type.String({ description: "The object's mask id; default the mask the grasp was planned on" }),
 			),
+			keep_tilt: Type.Optional(
+				Type.Boolean({
+					description:
+						"Keep AnyPlace's full rotation (a tilted insertion or placement); default keeps only its turn about the vertical and places from above",
+				}),
+			),
 			camera,
 		}),
 		run: async (p) => {
@@ -240,6 +246,7 @@ export function graspTools(pi: ExtensionAPI, rig: GraspRig): GraspToolDef[] {
 						region_mask_id,
 						grasp_id: String(params.grasp_id),
 						...(params.object_mask_id ? { object_mask_id: String(params.object_mask_id) } : {}),
+						...(params.keep_tilt ? { keep_tilt: true } : {}),
 					},
 					600_000,
 				);

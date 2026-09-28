@@ -827,6 +827,11 @@ class GraspPlanner:
                         False,
                     ),
                     "max_candidates": Param("integer", "default 5", False),
+                    "keep_tilt": Param(
+                        "boolean",
+                        "keep AnyPlace's full rotation (a tilted insertion) instead of only its turn about the vertical",
+                        False,
+                    ),
                 },
             ),
             Primitive(
@@ -1513,8 +1518,15 @@ class GraspPlanner:
         grasp_id: str,
         object_mask_id: str | None = None,
         max_candidates: int | None = None,
+        keep_tilt: bool = False,
     ) -> dict:
         """Where to hold the grasped object so it comes to rest on the placement region.
+
+        By default a placement keeps only AnyPlace's turn about the vertical (``upright_placement``),
+        a deviation from upstream AnyPlace, whose full rotation may tilt the object:
+        ``keep_tilt=True`` keeps the model's full rotation (a tilted insertion or placement)
+        and drops the from-above approach check; only an executor that servos the full
+        orientation (LIBERO's) can run such a place.
 
         AnyPlace predicts the object's placement transform from the object mask and the
         placement-region mask; the place grasp pose is that transform applied to the grasp
@@ -1552,7 +1564,7 @@ class GraspPlanner:
         live = self._book.known(grasp_id) and grasp_id in self._book.ids
         if held is not None and not live:
             return self._plan_place_held(
-                held, region_mask_id, object_mask_id, max_candidates
+                held, region_mask_id, object_mask_id, max_candidates, keep_tilt
             )
         self._snapshot(
             self._grasp_item(grasp_id)["camera"]
@@ -1594,6 +1606,7 @@ class GraspPlanner:
             arm=grasp.get("arm"),
             max_candidates=max_candidates,
             held=False,
+            keep_tilt=keep_tilt,
         )
 
     def _plan_place_held(
@@ -1602,6 +1615,7 @@ class GraspPlanner:
         region_mask_id: str,
         object_mask_id: str | None,
         max_candidates: int | None,
+        keep_tilt: bool = False,
     ) -> dict:
         """``plan_place`` after the grasp: the grasp pose is the EEF's pose now."""
         arm = held["arm"]
@@ -1662,6 +1676,7 @@ class GraspPlanner:
             arm=arm,
             max_candidates=max_candidates,
             held=True,
+            keep_tilt=keep_tilt,
             eef_above_support=held.get("eef_above_support_m"),
         )
 
@@ -1681,6 +1696,7 @@ class GraspPlanner:
         max_candidates: int | None,
         held: bool,
         eef_above_support: float | None = None,
+        keep_tilt: bool = False,
     ) -> dict:
         """AnyPlace's placements composed with the grasp, kept upright, refused when not
         executable; with ``eef_above_support`` (the executed grasp's EEF height above the
@@ -1723,11 +1739,16 @@ class GraspPlanner:
         refused: list[dict[str, Any]] = []
         for i, pl in enumerate(list(res["placements"])[:n]):
             T_model = np.asarray(pl["transform_matrix"], dtype=np.float64)
-            T_place, tilt = upright_placement(T_model, T_cw, obj_cam)
+            if keep_tilt:
+                T_place, tilt = T_model, 0.0
+            else:
+                T_place, tilt = upright_placement(T_model, T_cw, obj_cam)
             R_c, t_c = compose_placement(T_place, grasp_R_camera, grasp_t_camera)
             R = T_cw[:3, :3] @ R_c
             t = T_cw[:3, :3] @ t_c + T_cw[:3, 3]
-            why = self._place_refusal(R, T_place, T_cw, obj_cam, region_w)
+            why = self._place_refusal(
+                R, T_place, T_cw, obj_cam, region_w, check_approach=not keep_tilt
+            )
             if why:
                 refused.append({"rank": i, "reason": why})
                 continue
@@ -1804,13 +1825,14 @@ class GraspPlanner:
         cam2world: np.ndarray,
         object_camera: np.ndarray,
         region_world: np.ndarray,
+        check_approach: bool = True,
     ) -> str | None:
         """Why a composed place pose cannot be executed, or None: the gripper must approach
         from above (within ``MAX_PLACE_TILT_RAD`` of straight down), and the placed object's
         centroid must land over the region, not beside it or high above it."""
         approach = np.asarray(R_world, dtype=np.float64)[:, 0]
         tilt = math.acos(float(np.clip(-approach[2], -1.0, 1.0)))
-        if tilt > MAX_PLACE_TILT_RAD:
+        if check_approach and tilt > MAX_PLACE_TILT_RAD:
             return (
                 f"approach {[round(float(v), 2) for v in approach]} is "
                 f"{math.degrees(tilt):.0f} deg from straight down"

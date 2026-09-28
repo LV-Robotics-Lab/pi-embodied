@@ -1071,3 +1071,22 @@ def test_the_support_is_the_surface_around_the_object_not_its_lowest_visible_poi
     eef["xyz"] = np.array([0.0, 0.0, 0.185])  # the fingers stopped 1.5 cm lower
     assert planner.note_grasp_closed()["noted"] is True
     assert planner.held()["eef_above_support_m"] == pytest.approx(planned - 0.015)
+
+
+def test_keep_tilt_keeps_anyplaces_full_rotation():
+    """Audit 55d8d9a: dropping the predicted tilt rules out tilted insertions; keep_tilt keeps
+    the model's rotation (and skips the from-above check) for those tasks."""
+    a = np.deg2rad(30)
+    tip = np.eye(4)
+    tip[:3, :3] = [[1, 0, 0], [0, np.cos(a), -np.sin(a)], [0, np.sin(a), np.cos(a)]]
+    centre = np.array([-0.02, -0.02, 0.8])
+    tip[:3, 3] = centre - tip[:3, :3] @ centre
+    planner, _ = _planner(sam3=FakeSam3(_block_mask()), anyplace=FakeAnyPlace([tip]))
+    obj = planner.segment_mask("block")["id"]
+    planner._sam3 = FakeSam3(np.ones((H, W), bool))
+    reg = planner.segment_mask("table")["id"]
+    gid = planner.plan_grasp(mask_id=obj)["active"]
+    upright = planner.plan_place(reg, gid)["candidates"][0]
+    tilted = planner.plan_place(reg, gid, keep_tilt=True)["candidates"][0]
+    assert upright["approach"] == pytest.approx([0, 0, -1], abs=1e-6)
+    assert np.degrees(np.arccos(-tilted["approach"][2])) == pytest.approx(30, abs=0.5)

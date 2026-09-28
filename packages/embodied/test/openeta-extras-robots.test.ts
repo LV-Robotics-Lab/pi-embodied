@@ -10,6 +10,8 @@ import franka from "../src/robots/franka/index.ts";
 import libero from "../src/robots/libero/index.ts";
 import { codeApiReply } from "./helpers/code-api.ts";
 
+const SESSION_DIR = mkdtempSync(join(tmpdir(), "extras-session-"));
+
 type Handler = (event: any, ctx: any) => unknown;
 
 /** A stub pi that runs a robot's lifecycle: flags, tools, active tools, entries, hooks. */
@@ -49,7 +51,8 @@ function stubPi(values: Record<string, unknown>, ui: Record<string, unknown> = {
 		sessionManager: {
 			getBranch: () => [],
 			getEntries: () => [],
-			getSessionDir: () => tmpdir(),
+			// Its own dir: LIBERO writes the episode's state records there, and other test files run at once.
+			getSessionDir: () => SESSION_DIR,
 			getSessionFile: () => undefined,
 			getSessionId: () => "sess",
 		},

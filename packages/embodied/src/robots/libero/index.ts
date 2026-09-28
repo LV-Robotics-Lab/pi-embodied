@@ -9,7 +9,7 @@
  * own `terminated` flag, recorded in the session's `robot_result` entry.
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -400,6 +400,13 @@ export default function libero(pi: ExtensionAPI) {
 		default: "rpent",
 		description: "System prompt: rpent (RPent's full evaluate/explore prompts and guides, default) | compact",
 	});
+	// Each state record is about 2.7 MB (two 1024 images, depth, calibration).
+	pi.registerFlag("step-history", {
+		type: "string",
+		default: "clean",
+		description:
+			"State records for `step` look-back: clean (default; kept during the session, removed at its end except segments/) | keep | off (no look-back)",
+	});
 	pi.registerFlag("vla", { type: "string", default: "http://127.0.0.1:18200", description: "Pi0.5 VLA server" });
 	// The third-party VLAs (../vla-adapters.ts): `--openvla <url>` mounts `openvla_act`, and so on; unset mounts nothing.
 	for (const a of VLA_ADAPTERS)
@@ -454,6 +461,20 @@ export default function libero(pi: ExtensionAPI) {
 	/** The episode's state records, the history directory, and segment readings so far. */
 	const records: StateRecord[] = [];
 	let historyDir = "";
+	/** The history is in a temp dir (no output dir): removed whole at the session's end. */
+	let tempHistory = false;
+	const history = () => flag("step-history", "clean");
+	/**
+	 * At the session's end: --step-history clean removes the step records and keeps segments/ (the flash
+	 * anchors, a few KB); a temp-dir history goes entirely, whatever the mode.
+	 */
+	pi.on("session_shutdown", () => {
+		if (!historyDir || !existsSync(historyDir)) return;
+		if (tempHistory) rmSync(join(historyDir, ".."), { recursive: true, force: true });
+		else if (history() === "clean")
+			for (const d of readdirSync(historyDir))
+				if (d.startsWith("step_")) rmSync(join(historyDir, d), { recursive: true, force: true });
+	});
 	let segments = 0;
 	/** Both cameras at the current env step (taken by `snapshot`), and the one past world map in use. */
 	let shots: { envStep: number; cams: Record<Camera, Shot> } | undefined;
@@ -759,8 +780,12 @@ export default function libero(pi: ExtensionAPI) {
 		segments = 0;
 		shots = undefined;
 		pastMap = undefined;
-		const out = mem.render("{{output_dir}}") || join(tmpdir(), `pi-embodied-libero-${process.pid}`);
-		historyDir = join(out, `${tag()}_steps`);
+		if (history() === "off") return;
+		const out = mem.render("{{output_dir}}");
+		tempHistory = !out;
+		historyDir = join(out || join(tmpdir(), `pi-embodied-libero-${process.pid}`), `${tag()}_steps`);
+		// Only --step-history keep keeps an earlier episode's records; clean drops them at once.
+		if (existsSync(historyDir) && history() !== "keep") rmSync(historyDir, { recursive: true, force: true });
 		if (existsSync(historyDir)) {
 			let n = 1;
 			while (existsSync(`${historyDir}.${n}`)) n++;
@@ -800,7 +825,9 @@ export default function libero(pi: ExtensionAPI) {
 		if (step === undefined || step === null) return undefined;
 		const i = step < 0 ? records.length + step : step;
 		if (!records[i]) throw new Error(`step ${step} is not recorded (have 0..${records.length - 1})`);
-		return i === records.length - 1 && records[i].envStep === envStep ? undefined : i;
+		if (i === records.length - 1 && records[i].envStep === envStep) return undefined;
+		if (history() === "off") throw new Error("earlier steps are not kept (--step-history off); use the latest state");
+		return i;
 	}
 
 	/** Per-pixel world xyz of the current step (or of state record `step`), from metric depth + calibration. */
@@ -865,7 +892,8 @@ export default function libero(pi: ExtensionAPI) {
 			images: ["agentview_high 1024x1024", "wrist_high 1024x1024"],
 		};
 		const pngs = CAMERA_NAMES.map((c) => encodePng(cams[c].rgb, 1024, 1024));
-		if (fresh) {
+		if (fresh && history() === "off") records.push({ envStep, dir: "" });
+		else if (fresh) {
 			const dir = join(historyDir, `step_${String(index).padStart(3, "0")}`);
 			mkdirSync(dir, { recursive: true });
 			writeFileSync(join(dir, "state.json"), `${JSON.stringify(body)}\n`);
@@ -894,6 +922,7 @@ export default function libero(pi: ExtensionAPI) {
 
 	/** Write `segment_NN.json` (the anchors flash-generate.ts reads) and its overlay next to its state record. */
 	function saveSegment(index: number, reading: Record<string, unknown>, overlay: Buffer | undefined) {
+		if (history() === "off") return {};
 		const n = String(++segments).padStart(2, "0");
 		const name = `segment_${n}.json`;
 		writeFileSync(
@@ -1684,6 +1713,8 @@ export default function libero(pi: ExtensionAPI) {
 	/** Start (or attach to) the env server and restore the initial scene; returns the tools to activate. */
 	async function startEpisode() {
 		const { suite, task, seed } = robot.task;
+		if (!["clean", "keep", "off"].includes(history()))
+			throw new Error(`--step-history must be clean, keep or off, not ${history()}`);
 		if (!(LIBERO_PROMPTS as readonly string[]).includes(variant()))
 			throw new Error(`--libero-prompt must be one of ${LIBERO_PROMPTS.join(", ")}, not ${variant()}`);
 		vla = new RpcClient(flag("vla", ""));

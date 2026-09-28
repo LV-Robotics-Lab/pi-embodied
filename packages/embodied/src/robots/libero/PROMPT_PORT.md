@@ -94,6 +94,10 @@ Every state the model is shown becomes a state record under `<output dir>/<cell>
 `flash-generate.ts` reads by default. An exploration `reset` starts a new history and keeps the earlier one as
 `<cell>_steps.<n>`.
 
+A record is about 2.7 MB. `--step-history clean` (default) removes the `step_*` records when the session ends and
+keeps `segments/`; `keep` keeps everything (and earlier episodes as `<cell>_steps.<n>`); `off` records nothing and
+refuses look-back. Without an output dir the history is a temp dir, removed at the session's end in every mode.
+
 ## Other robots (checked against RPent eecf206)
 
 - RoboTwin: mildly compressed. Restored in `robotwin/SYSTEM.md`: CLEAN-TO-RANDOMIZED TRANSFER (evaluate.py:39-44),

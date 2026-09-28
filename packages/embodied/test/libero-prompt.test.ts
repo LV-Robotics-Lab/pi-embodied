@@ -46,7 +46,7 @@ function stubPi(values: Record<string, unknown>, cwd: string) {
 		abort: () => {},
 		sessionManager: {
 			getBranch: () => [],
-			getSessionDir: () => cwd,
+			getSessionDir: () => (values.noSessionDir ? "" : cwd),
 			getSessionFile: () => undefined,
 			getSessionId: () => "s",
 		},
@@ -368,10 +368,37 @@ test("state history: every state is recorded; view_env_state, back_project and s
 	const anchors = JSON.parse(readFileSync(join(s.out, "flash", "10_task_t2_anchors.json"), "utf8")).anchors;
 	assert.equal(anchors[0].phrase, "the black bowl");
 	assert.equal(anchors[0].locator, "segment");
-	// A new episode starts a fresh history; the earlier one is kept beside it.
-	await s.emit("session_start");
+	// --step-history clean (default): the session's end removes the records and keeps the anchors.
+	await s.emit("session_shutdown");
 	assert.deepEqual(readdirSync(s.steps), ["segments"]);
-	assert.deepEqual(readdirSync(`${s.steps}.1`).sort(), ["segments", "step_000", "step_001"]);
+	assert.equal(readdirSync(join(s.steps, "segments")).length, 2);
+});
+
+test("--step-history keep keeps an earlier episode beside the new one; off records nothing and refuses look-back", async (t) => {
+	const k = await session(t, { "step-history": "keep" });
+	await k.run("view_env_state", {});
+	await k.run("move_to", { xyz: [0.1, 0, 1] });
+	await k.emit("session_start");
+	assert.deepEqual(readdirSync(k.steps), ["segments"]);
+	assert.deepEqual(readdirSync(`${k.steps}.1`).sort(), ["segments", "step_000", "step_001"]);
+	await k.emit("session_shutdown");
+	assert.deepEqual(readdirSync(`${k.steps}.1`).sort(), ["segments", "step_000", "step_001"]);
+	const o = await session(t, { "step-history": "off" });
+	assert.equal(text(await o.run("view_env_state", {})).state_step, 0);
+	await o.run("move_to", { xyz: [0.1, 0, 1] });
+	assert.equal(existsSync(o.steps), false);
+	await assert.rejects(o.run("back_project", { row: 1, col: 1, step: 0 }), /--step-history off/);
+	assert.equal(text(await o.run("segment", { prompt: "the black bowl" })).segment_artifact, undefined);
+	assert.deepEqual((await session(t, { "step-history": "all" })).active(), []);
+});
+
+test("without an output dir the history is a temp dir, removed at the session's end", async (t) => {
+	const s = await session(t, { "output-dir": "", noSessionDir: true });
+	await s.run("view_env_state", {});
+	const dir = join(tmpdir(), `pi-embodied-libero-${process.pid}`);
+	assert.ok(existsSync(dir));
+	await s.emit("session_shutdown");
+	assert.equal(existsSync(dir), false);
 });
 
 test("persisted depth round-trips within 0.1 mm; missing depth stays missing", () => {

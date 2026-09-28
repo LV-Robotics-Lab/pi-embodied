@@ -8,7 +8,7 @@
  *   system_prompt_sha256  SHA-256 of the system prompt pi sent (after toolSections and every
  *                         extension's rewrite), at the episode's first agent start; a later start
  *                         with another prompt (an exploration continuation) adds `system_prompts_sha256`
- *   templates             { "<path under src/>": sha256 } of every template (SYSTEM.md, explore.md,
+ *   templates             { "<stable id>": sha256 } (templateId: robot or mode + file name) of every template (SYSTEM.md, explore.md,
  *                         distil.md, memory-*.md, the code/units prompts, closed-loop.md) the loaded
  *                         extensions read through `template`, less the ones this episode's mode does not use
  *   memory_files          { "<path under the memory corpus>": sha256 } of the memory files the agent read
@@ -30,14 +30,32 @@ const SRC = fileURLToPath(new URL("..", import.meta.url));
 
 export const sha256 = (s: string | Buffer) => createHash("sha256").update(s).digest("hex");
 
-/** Every template read through `template`, by path under src/. */
+/** Every template read through `template`, by its stable id (`templateId`). */
 const templates = new Map<string, string>();
+
+/**
+ * A template's stable id: its owner (the robot, or the code/units mode) and its file name, the
+ * same before and after the src/ re-layering (ef525e14b moved robots/, modes/, planner/ under
+ * src/): "libero/SYSTEM.md", "libero/compact/memory-hf.md", "code/SYSTEM.md", "units/SYSTEM.md",
+ * and "closed-loop.md" for the shared rules (the path under src/ without its layer directory). Accepts a path under src/ in either layout, so records keyed by the new paths
+ * (written between the re-layering and this id) map onto the same ids.
+ */
+export function templateId(path: string): string {
+	const parts = path.split("\\").join("/").split("/").filter(Boolean);
+	if (["robots", "modes", "planner", "capabilities"].includes(parts[0] ?? "")) parts.shift();
+	return parts.join("/");
+}
+
+/** A record's `templates` with every key as a stable id (for comparing results across layouts). */
+export function normalizeTemplates(templates: Record<string, string>): Record<string, string> {
+	return Object.fromEntries(Object.entries(templates).map(([k, v]) => [templateId(k), v]));
+}
 
 /** Read a prompt template (a URL next to the module, as `new URL("../SYSTEM.md", import.meta.url)`) and register its digest. */
 export function template(url: URL): string {
 	const path = fileURLToPath(url);
 	const text = readFileSync(path, "utf8");
-	templates.set(relative(SRC, path).split("\\").join("/"), sha256(text));
+	templates.set(templateId(relative(SRC, path)), sha256(text));
 	return text;
 }
 
@@ -46,7 +64,7 @@ export type TemplateUse = { explore: boolean; memoryProfile?: string; code: bool
 
 /**
  * The registered templates this episode uses: explore.md and distil.md only when exploring, a
- * memory-<profile>.md only for that profile (memory.md with any), modes/code/SYSTEM.md and modes/units/SYSTEM.md
+ * memory-<profile>.md only for that profile (memory.md with any), code/SYSTEM.md and units/SYSTEM.md
  * only in their mode; every other template (a robot's SYSTEM*.md, closed-loop.md) always.
  */
 export function usedTemplates(use: TemplateUse): Record<string, string> {
@@ -56,8 +74,8 @@ export function usedTemplates(use: TemplateUse): Record<string, string> {
 		if ((name === "explore.md" || name === "distil.md") && !use.explore) continue;
 		const mem = /^memory(?:-(\w+))?\.md$/.exec(name);
 		if (mem && (use.memoryProfile === undefined || (mem[1] !== undefined && mem[1] !== use.memoryProfile))) continue;
-		if (path === "modes/code/SYSTEM.md" && !use.code) continue;
-		if (path === "modes/units/SYSTEM.md" && !use.units) continue;
+		if (path === "code/SYSTEM.md" && !use.code) continue;
+		if (path === "units/SYSTEM.md" && !use.units) continue;
 		out[path] = digest;
 	}
 	return out;

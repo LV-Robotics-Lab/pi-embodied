@@ -635,7 +635,7 @@ test("plannerOf: any human turn makes the episode human-planned, else the last t
 
 test("retrieve_asset_reference resolves a name as OpenETA's bank does, from files in the memory corpus", async () => {
 	const { mkdirSync, writeFileSync } = await import("node:fs");
-	const { encodePng } = await import("../src/png.ts");
+	const { encodePng } = await import("../src/infra/png.ts");
 	const root = mkdtempSync(join(tmpdir(), "assets-"));
 	const put = (id: string, manifest: Json, views = ["front", "side", "top"]) => {
 		const d = join(root, "libero", id);

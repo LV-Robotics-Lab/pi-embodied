@@ -1304,6 +1304,9 @@ def main():
             sam3=args.sam3 or (perception.sam3 if perception is not None else None),
             eef_pose=lambda arm: (facade._tcp(), _xyzw(facade._hand_pose()[1])),
             wrist_camera="wrist",
+            # Ids expire only when the sim stepped: a refused, unmoved execute_grasp keeps them,
+            # so its "ask plan_grasp for the next candidate (next_after)" can be followed.
+            state_digest=lambda: facade._steps,
             **urls_from_args(args),
         )
     )

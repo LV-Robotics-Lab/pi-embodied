@@ -431,22 +431,39 @@ def test_timeout_stops_the_move():
     )
 
 
+def hold_at_poll(arm, n: int, when=lambda: True):
+    """Hold the mock arm's motion at its ``n``-th status poll (once ``when()``) until
+    ``release`` is set: the stop then always lands mid-motion, however loaded the machine is
+    (a sleep-and-poll race let a slow stop arrive after the motion had already ended)."""
+    reached, release = threading.Event(), threading.Event()
+    poll = arm.async_status
+
+    def held():
+        out = poll()
+        if when() and arm.polls >= n and not release.is_set():
+            reached.set()
+            release.wait(30)
+        return out
+
+    arm.async_status = held
+    return reached, release
+
+
 def test_stop_halts_a_running_move_with_stopL_and_clears_the_setpoint():
     arm = MockUrArm((0.5, 0.0, 0.3, *DOWN), step_m=0.0005)
     f = facade(arm, config=cfg(limits={"poll_s": 0.005}))
     f.controller._sleep = time.sleep
     box: dict = {}
+    reached, release = hold_at_poll(arm, 10)
     thread = threading.Thread(
         target=lambda: box.update(r=call(f, "env.move_delta", [0.05, 0.0, 0.0]))
     )
     thread.start()
-    deadline = time.time() + 5
-    while arm.polls < 10:
-        assert time.time() < deadline
-        time.sleep(0.002)
+    assert reached.wait(30), "the move reached its 10th poll"
     reply = call(f, "stop")
+    release.set()
     assert reply["call_in_progress"] is True
-    thread.join(timeout=5)
+    thread.join(timeout=30)
     r = box["r"]
     assert r["cancelled"] is True and r["ok"] is False
     assert arm.stops == ["stopL"], "stopL really stops the moveL"
@@ -465,14 +482,13 @@ def test_stop_halts_the_reset_with_stopJ():
     f = facade(arm, config=cfg(limits={"poll_s": 0.005}))
     f.controller._sleep = time.sleep
     box: dict = {}
+    reached, release = hold_at_poll(arm, 5, when=lambda: bool(arm.joint_moves))
     thread = threading.Thread(target=lambda: box.update(r=call(f, "env.reset")))
     thread.start()
-    deadline = time.time() + 5
-    while not arm.joint_moves or arm.polls < 5:
-        assert time.time() < deadline
-        time.sleep(0.002)
+    assert reached.wait(30), "the moveJ is under way"
     call(f, "stop")
-    thread.join(timeout=5)
+    release.set()
+    thread.join(timeout=30)
     r = box["r"]
     assert r["cancelled"] is True and r["ok"] is False and "stopJ" in arm.stops
     assert f.controller.target is None

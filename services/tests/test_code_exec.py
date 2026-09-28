@@ -422,13 +422,17 @@ def test_the_timeout_stops_the_robot_inside_a_running_primitive():
         stop_requested=lambda: toy.stop_flag,
         on_timeout=stop,
     )
+    # Load-independent: the deadline leaves the child ample time to start and call slow (a
+    # 2 s deadline could pass before a loaded machine even started it), and the bound is the
+    # primitive's own 600 s, which only the stop can cut short.
     t0 = time.monotonic()
-    out = r.run("slow(30)\nRESULT = 'never'", timeout_s=2)
-    assert time.monotonic() - t0 < 5, (
-        "the primitive returned through the stop, not after 30 s"
+    out = r.run("slow(600)\nRESULT = 'never'", timeout_s=8)
+    assert time.monotonic() - t0 < 120, (
+        "the primitive returned through the stop, not after 600 s"
     )
-    assert out["status"] == "timeout" and out["stop_issued"] is True
+    assert out["status"] == "timeout" and out["stop_issued"] is True and toy.stopped
     assert out["calls"][0]["name"] == "slow" and out["result"] is None
+    assert out["calls"][0].get("ms", 0) < 120_000
 
 
 # ---- the audit's findings (sandbox) ----------------------------------------------------------

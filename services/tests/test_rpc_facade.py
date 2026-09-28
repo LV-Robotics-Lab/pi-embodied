@@ -41,6 +41,8 @@ class Dummy(RpcFacade):
         self._rpc["slow"] = self.slow
         self._rpc["read"] = self.read
         self._rpc["loop"] = self.loop
+        #: Set once a ``slow`` call has arrived and captured its stop generation.
+        self.slow_arrived = threading.Event()
         # Formerly allowed to run concurrently; must not any more.
         self._readonly_methods.add("read")
 
@@ -84,9 +86,27 @@ class Dummy(RpcFacade):
         finally:
             self._leave()
 
+    def _run_call(self, method, *args, **kwargs):
+        # Threaded serving: the arrival generation is already captured when this runs, and
+        # the call has not taken the lock yet.
+        if method == "slow":
+            self.slow_arrived.set()
+        return super()._run_call(method, *args, **kwargs)
+
 
 class MainThreadDummy(MainThreadServeMixin, Dummy):
-    pass
+    def _dispatch_main_thread(self, method, *args, **kwargs):
+        # Main-thread serving: the call's generation is captured and it is queued before
+        # this returns; signal once it is in the queue.
+        if method == "slow":
+            threading.Thread(target=self._signal_queued, daemon=True).start()
+        return super()._dispatch_main_thread(method, *args, **kwargs)
+
+    def _signal_queued(self) -> None:
+        deadline = time.monotonic() + 30
+        while self._main_thread_queue.qsize() < 1 and time.monotonic() < deadline:
+            time.sleep(0.001)
+        self.slow_arrived.set()
 
 
 def _serve(facade: RpcFacade):
@@ -154,11 +174,11 @@ def test_calls_never_overlap(served):
 
 def test_healthz_reports_version_and_bypasses_lock(served):
     facade, client = served
-    thread, _ = _call_async(client, "slow", 0.5)
-    assert facade.started.wait(5)
-    t0 = time.monotonic()
-    health = client.call("healthz", timeout_s=5)
-    assert time.monotonic() - t0 < 0.4
+    thread, _ = _call_async(client, "loop", 6000)
+    assert facade.started.wait(30)
+    health = client.call("healthz", timeout_s=30)
+    assert thread.is_alive(), "healthz was answered while the call held the lock"
+    client.call("stop", timeout_s=30)
     # The pid names the answering process (a client that started it checks it is its own).
     assert health == {
         "status": "ok",
@@ -171,18 +191,21 @@ def test_healthz_reports_version_and_bypasses_lock(served):
 
 def test_stop_interrupts_running_loop_and_drops_queued_calls(served):
     facade, client = served
-    running, running_box = _call_async(client, "loop", 500)
+    running, running_box = _call_async(client, "loop", 6000)
     assert facade.started.wait(5)
     queued, queued_box = _call_async(client, "slow", 0.01)
-    time.sleep(0.1)  # let the queued call reach the server and wait for the lock
-    t0 = time.monotonic()
-    reply = client.call("stop", timeout_s=5)
-    assert time.monotonic() - t0 < 0.5
+    # The queued call has reached the server and waits for the lock (not a sleep: under load
+    # a sleep let the stop overtake it, and it then ran as a call received after the stop).
+    assert facade.slow_arrived.wait(30)
+    reply = client.call("stop", timeout_s=30)
+    # Answered while the loop (6000 x 10 ms, ended only by the stop) still runs: stop bypasses the lock. No wall-clock
+    # bound, which a loaded machine breaks.
+    assert running.is_alive(), "the stop was answered before the running call ended"
     assert reply["ok"] is True and reply["call_in_progress"] is True
-    running.join(timeout=10)
-    queued.join(timeout=10)
+    running.join(timeout=30)
+    queued.join(timeout=30)
     assert running_box["result"]["cancelled"] is True
-    assert running_box["result"]["steps"] < 500
+    assert running_box["result"]["steps"] < 6000
     assert isinstance(queued_box.get("error"), RpcError)
     assert "cancelled by stop" in str(queued_box["error"])
     assert "slow" not in facade.ran

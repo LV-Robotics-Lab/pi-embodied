@@ -202,6 +202,11 @@ test("without an active observation tool the re-observe gate stays open", async 
 	assert.equal(await call(f, "move"), undefined);
 });
 
+test("advice and look-up tools are not motion", () => {
+	for (const tool of ["suggest_grasp", "locate", "view_env_state", "plan_grasp"])
+		assert.ok(NON_MOTION.has(tool), tool);
+});
+
 test("motion classification over every robot's tools", () => {
 	const fixture = JSON.parse(readFileSync(new URL("./fixtures/tool-schemas.json", import.meta.url), "utf8"))
 		.robots as Record<string, { name: string }[]>;

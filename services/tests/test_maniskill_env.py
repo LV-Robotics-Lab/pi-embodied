@@ -423,8 +423,8 @@ def test_a_two_arm_robot_drives_one_arm_and_holds_the_other():
     except ValueError as e:
         assert "one arm" in str(e)
     # A flat code-mode action is split per arm.
-    split = f._split(np.arange(8))
-    assert list(split["panda-1"]) == [4, 5, 6, 7]
+    split = f._split(np.arange(8) / 10)
+    assert np.allclose(split["panda-1"], [0.4, 0.5, 0.6, 0.7])
 
 
 def test_code_mode_raw_actions_use_pis_gripper_sign_on_every_robot():
@@ -629,3 +629,13 @@ def test_code_move_m_reads_the_driven_arms_tcp_on_two_arms():
         )
         < 1e-6
     )
+
+
+def test_raw_actions_are_clipped_to_the_normalised_bound_before_scaling():
+    """step([5, 0, 0, 1]) on the bridge WidowX (unnormalised metres) moves 0.1 m, not 0.5 m."""
+    wx = _facade("widowx250s", wrist=False)
+    assert np.allclose(
+        wx._split([5.0, -3.0, 0.5, 1.0]), [0.1, -0.1, 0.05, 0, 0, 0, 1.0]
+    )
+    panda = _facade("panda")
+    assert np.allclose(panda._split([2.0, 0, 0, 1.0]), [1.0, 0, 0, 1.0])

@@ -1200,7 +1200,10 @@ class ManiskillEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         n = len(self._robot.arms or [None])
         out = []
         for arm in a.reshape(n, -1):
-            native = self._robot.action(arm[:3], 1.0).astype(np.float32)
+            # Normalised like every pd_ee_delta_pos action: [-1, 1] (0.1 m), also for a robot
+            # whose controller takes metres unnormalised (the bridge WidowX), whose cap
+            # (_code_move_m) assumes it.
+            native = self._robot.action(np.clip(arm[:3], -1, 1), 1.0).astype(np.float32)
             if self._robot.gripper:
                 native[-1] = arm[3] * self._robot.gripper[0]
             out.append(native)

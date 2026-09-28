@@ -584,7 +584,7 @@ export function units(
 			const s = stages[stage];
 			out.push(
 				s
-					? `STAGE ${stage + 1}/${stages.length} [${s.motion}]${s.arm ? ` (${s.arm} arm)` : ""}: target ${s.target}${s.affordance ? `; affordance ${s.affordance}` : ""}${s.description ? `; ${s.description}` : ""}; DONE WHEN ${s.completion}${stageCap() ? `; step ${stepsOf(arm)} of ${stageCap()}` : ""}`
+					? `STAGE ${stage + 1}/${stages.length} [${s.motion}]${s.arm ? ` (${s.arm} arm)` : ""}: target ${s.target}${s.affordance ? `; affordance ${s.affordance}` : ""}${s.description ? `; ${s.description}` : ""}; DONE WHEN ${s.completion.replace(/^\s*DONE WHEN:?\s*/i, "")}${stageCap() ? `; step ${stepsOf(arm)} of ${stageCap()}` : ""}`
 					: "STAGE: all planned stages are done; check the task and DONE, or send a new plan.",
 			);
 			if (s?.motion.toUpperCase() === "REASON")

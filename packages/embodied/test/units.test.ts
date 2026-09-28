@@ -347,6 +347,9 @@ test("plan tracks the current stage in every act result", async () => {
 	await f.run("plan", { done: true });
 	const r = head(await f.run("act", { unit: "STOP" }));
 	assert.match(r, /STAGE 2\/2 \[REASON\]/);
+	// A completion the model already wrote as "DONE WHEN ..." is not prefixed twice.
+	await f.run("plan", { stages: [{ motion: "LIFT", target: "cube", completion: "DONE WHEN: cube above the table" }] });
+	assert.match(head(await f.run("act", { unit: "STOP" })), /; DONE WHEN cube above the table/);
 	assert.match(r, /Decision point/);
 });
 

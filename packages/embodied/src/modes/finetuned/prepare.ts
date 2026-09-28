@@ -26,7 +26,7 @@ import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { encodePng } from "../../infra/png.ts";
 import { isRt } from "../units/index.ts";
-import { MVTOKEN_ACTIONS, PRESETS, V5_ACTIONS, viewsFor } from "./index.ts";
+import { isV5, MVTOKEN_ACTIONS, PRESETS, V5_ACTIONS, viewsFor } from "./index.ts";
 import { decodePng, formatView, parseView, prepareView, type ViewSpec } from "./views.ts";
 
 type Json = Record<string, any>;
@@ -45,7 +45,7 @@ export function runSucceeded(run: string): boolean {
 /** The tokens a prompt version trains: v5's 15 units, else the single-arm lite vocabulary. */
 export function trainedTokens(version: string): readonly string[] {
 	if (!(version in PRESETS)) throw new Error(`unknown prompt version ${version} (${Object.keys(PRESETS).join(", ")})`);
-	return version === "v5" ? V5_ACTIONS : MVTOKEN_ACTIONS;
+	return isV5(version) ? V5_ACTIONS : MVTOKEN_ACTIONS;
 }
 
 /** Every directory under `root` (itself included) that holds an actions.jsonl. */

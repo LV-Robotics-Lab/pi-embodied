@@ -56,7 +56,7 @@
  * ported as a pi provider; prompts/v3 and prompts/v4 lite and dual templates copied verbatim into ./templates/.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import {
 	type Api,
 	type AssistantMessage,
@@ -221,9 +221,12 @@ export function activeSubgoal(
 	return { index: a + k, subgoal: sgs[a + k] };
 }
 /**
- * The v5 prompt (prompt_v5.txt of the gated HF dataset aaroncaozj/libero_show-harness_tokenized),
- * vendored here once fetched; until then `--ft-prompt v5` needs `--ft-prompt-file`.
+ * The v5 prompt: prompt_v5.txt of the gated HF dataset aaroncaozj/libero_show-harness_tokenized,
+ * copied verbatim (sha256 f4550b74...6a2f; also services/.../showharness/prompts/v5/prompt_v5.txt).
+ * `--ft-prompt v5-libero` runs it with the v5 rules; `v5` is the same.
  */
+/** A v5 prompt version: the aaroncaozj LIBERO adapters' 15-unit prompt and rules. */
+export const isV5 = (version: string) => version === "v5" || version.startsWith("v5-");
 export const V5_PROMPT = new URL("./templates/v5_libero_mvtoken.txt", import.meta.url);
 
 /**
@@ -242,6 +245,7 @@ export const PRESETS: Record<string, Preset> = {
 	"v3-subgoal": RUNNER,
 	"v3-affordance": RUNNER,
 	v5: { maxSteps: 200, stuckGuardMm: 5, ignoreDone: true, oov: "reask" },
+	"v5-libero": { maxSteps: 200, stuckGuardMm: 5, ignoreDone: true, oov: "reask" },
 	// configs/robot_piper_ft.yaml max_steps (the dual runner's budget); no guard, DONE ends (both arms).
 	...Object.fromEntries(
 		Object.keys(DUAL_PROMPTS).map((k) => [k, { maxSteps: 150, stuckGuardMm: 0, ignoreDone: false, oov: "fallback" }]),
@@ -748,7 +752,7 @@ export default function finetuned(pi: ExtensionAPI) {
 				.split(",")
 				.map((s) => s.trim())
 		).filter((s) => GROUNDING_PLUGINS.includes(s));
-		if (preset() === PRESETS.v5 && grounding.length)
+		if (isV5(version()) && grounding.length)
 			warn(
 				`units plugins ${grounding.join(", ")} change what a token does; the v5 eval ran none (--units-plugins "")`,
 			);
@@ -759,13 +763,7 @@ export default function finetuned(pi: ExtensionAPI) {
 		const p = version();
 		if (flag("ft-prompt-file")) return readFileSync(flag("ft-prompt-file"), "utf8").trim();
 		if (DUAL_PROMPTS[p]) return DUAL_PROMPTS[p].template;
-		if (p === "v5") {
-			if (!existsSync(V5_PROMPT))
-				throw new Error(
-					"--ft-prompt v5: prompt_v5.txt (gated HF dataset aaroncaozj/libero_show-harness_tokenized) is not vendored; pass --ft-prompt-file <path>",
-				);
-			return readFileSync(V5_PROMPT, "utf8").trim();
-		}
+		if (isV5(p)) return readFileSync(V5_PROMPT, "utf8").trim();
 		return PROMPTS[p] ?? readFileSync(p, "utf8").trim();
 	};
 	/** The version's rules (a template file path follows the runner's), with the explicit flags over them. */

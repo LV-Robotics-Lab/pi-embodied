@@ -586,11 +586,11 @@ test("v5: the budget, an endpoint that ignores the constraint, and a robot that 
 		await turnless.close();
 	}
 
-	// v5 without the prompt text says where it comes from; plugins that regrind a token are flagged.
+	// v5 reads the vendored prompt (no warning); plugins that regrind a token are flagged.
 	const none = fakePi({ "ft-prompt": "v5", "units-plugins": "variable_step,mem_text" }, "libero");
 	await none.emit("session_start");
 	await none.emit("before_agent_start");
-	assert.match(none.warnings.join("\n"), /prompt_v5\.txt .* is not vendored/);
+	assert.doesNotMatch(none.warnings.join("\n"), /not vendored/);
 	assert.match(none.warnings.join("\n"), /units plugins variable_step change what a token does/);
 });
 
@@ -862,4 +862,16 @@ test("v3-subgoal and v3-affordance prompts carry the task's config; the policy's
 	} finally {
 		await ep.close();
 	}
+});
+
+test("v5-libero runs the vendored prompt_v5.txt verbatim with the 15-unit vocabulary", () => {
+	const tpl = readFileSync(new URL("../src/modes/finetuned/templates/v5_libero_mvtoken.txt", import.meta.url), "utf8");
+	const vendored = readFileSync(
+		new URL("../../../services/pi_embodied_services/finetuned/showharness/prompts/v5/prompt_v5.txt", import.meta.url),
+		"utf8",
+	);
+	assert.equal(tpl, vendored);
+	assert.deepEqual(allowedTokens(tpl.trim()), [...V5_ACTIONS]);
+	assert.equal(trainedTokens("v5-libero").length, 15);
+	assert.match(formatPrompt(tpl.trim(), { task: "t", recent_moves: "none" }), /^You are controlling a robot arm/);
 });

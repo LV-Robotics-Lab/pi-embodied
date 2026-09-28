@@ -635,8 +635,8 @@ def test_unsupported_tasks_are_real_tasks_and_refused_before_isaac_starts(
 
 def test_object_poses_read_the_layout_and_fall_back_to_the_prim_for_dynamic_objects():
     class Records:
-        def __init__(self, labels):
-            self.layout_records_by_env = [[{"label": lb} for lb in labels]]
+        def __init__(self, recs):
+            self.layout_records_by_env = [recs]
 
     class Prim:
         def get_world_pose(self):
@@ -644,19 +644,22 @@ def test_object_poses_read_the_layout_and_fall_back_to_the_prim_for_dynamic_obje
 
     class Layout:
         object_records_by_type = {
-            "Rigid": Records(["bowl0"]),
-            "Dynamic": Records(["item0"]),
+            "Rigid": Records(
+                [
+                    {"label": "bowl0", "inst_name": "bowl_1_0"},
+                    {"label": ["cup", "target"], "inst_name": "mug_16_1"},
+                    {"label": None, "inst_name": "clutter_3_2"},
+                ]
+            ),
+            "Dynamic": Records([{"label": "item0", "inst_name": "box_0_3"}]),
         }
 
-        def get_instance_pose(self, env_idx, label, relative):
-            return (
-                (np.array([0.1, 0.2, 0.79]), np.array([1.0, 0, 0, 0]))
-                if label == "bowl0"
-                else None
-            )
-
-        def get_instance_name(self, env_idx, label):
-            return f"inst_{label}"
+        def get_instance_pose(self, env_idx, inst_name, relative):
+            poses = {
+                "bowl_1_0": (np.array([0.1, 0.2, 0.79]), np.array([1.0, 0, 0, 0])),
+                "mug_16_1": (np.array([0.0, -0.1, 0.8]), np.array([1.0, 0, 0, 0])),
+            }
+            return poses.get(inst_name)  # RoboDojo returns None for its dynamic type
 
         def get_scene_object(self, env_idx, inst):
             return Prim()
@@ -667,7 +670,10 @@ def test_object_poses_read_the_layout_and_fall_back_to_the_prim_for_dynamic_obje
         )
     )
     poses = sim.object_poses(env)
+    assert sorted(poses) == ["bowl0", "cup", "item0", "target"]
     assert poses["bowl0"]["pos"] == [0.1, 0.2, 0.79]
+    # A list label names one object: every name gets its pose.
+    assert poses["cup"] == poses["target"] and poses["cup"]["pos"] == [0.0, -0.1, 0.8]
     # The dynamic item's world pose, in the env frame (minus the env origin).
     assert poses["item0"] == {"pos": [0.5, 1.0, 0.8], "quat_xyzw": [0.0, 0.0, 0.0, 1.0]}
 

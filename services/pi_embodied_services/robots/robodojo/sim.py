@@ -564,7 +564,10 @@ def _np(v: Any) -> np.ndarray:
 
 def object_poses(env: Any) -> dict[str, dict]:
     """Every labelled object of the layout (RoboDojo's reward labels: ``bowl0``, ...) in the env
-    frame, from the layout manager RoboDojo's success checks read."""
+    frame, from the layout manager RoboDojo's success checks read. A record whose ``label`` is a list
+    names one object several ways: each name gets its pose. Poses are read by instance name, so a list
+    label needs no lookup by label; the layout manager has none for its ``dynamic`` type (conveyor
+    items), whose pose is the prim's own."""
     from pi_embodied_services.utils import ground_truth
 
     lm = env.scene_manager.layout_manager
@@ -573,18 +576,22 @@ def object_poses(env: Any) -> dict[str, dict]:
         records = lm.object_records_by_type.get(t)
         for rec in records.layout_records_by_env[0] if records is not None else []:
             label = rec.get("label")
-            if not label or label in out:
+            names = [
+                str(n)
+                for n in (label if isinstance(label, (list, tuple)) else [label])
+                if n
+            ]
+            inst = rec.get("inst_name")
+            if not names or inst is None or all(n in out for n in names):
                 continue
-            pose = lm.get_instance_pose(env_idx=0, label=label, relative=True)
+            pose = lm.get_instance_pose(env_idx=0, inst_name=inst, relative=True)
             pos, rot = pose if pose is not None else (None, None)
             if pos is None or rot is None:
-                # RoboDojo's layout manager has no pose for its "dynamic" type (conveyor items):
-                # read the prim's own world pose.
-                inst = lm.get_instance_name(0, label)
-                obj = lm.get_scene_object(0, inst) if inst is not None else None
+                obj = lm.get_scene_object(0, inst)
                 if obj is None or not hasattr(obj, "get_world_pose"):
                     continue
                 pos, rot = obj.get_world_pose()
                 pos = _np(pos)[:3] - env_origin(env)
-            out[label] = ground_truth.pose(_np(pos)[:3], _np(rot)[:4])
+            for n in names:
+                out.setdefault(n, ground_truth.pose(_np(pos)[:3], _np(rot)[:4]))
     return out

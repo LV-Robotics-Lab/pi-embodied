@@ -410,13 +410,21 @@ class RobodojoEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
 
     def _policy_frame(self, action: np.ndarray) -> dict:
         """The Flywheel's record of one control step: the three images after it, the measured
-        joints and grippers, and the joint-space command it ran."""
+        joints and grippers, the joint-space command it ran, and RoboDojo's judgement after it
+        (a motion can succeed midway: go_home's last steps are the ones that bring the arms back)."""
         self._observe()
         state = self._vector(
             {a: self._joints(a) for a in sim.ARMS},
             {a: self._gripper_measured(a) for a in sim.ARMS},
         )
-        return {**self._images(), "state": state, "action": action}
+        return {
+            **self._images(),
+            "state": state,
+            "action": action,
+            "success": self._success(),
+            "ended": self._ended(),
+            "truncated": self._truncated(),
+        }
 
     def _recorded(self, action: np.ndarray) -> None:
         if self._recording:

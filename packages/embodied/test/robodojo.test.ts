@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { ground, MOVE_UNITS } from "../src/modes/units/index.ts";
@@ -56,9 +58,27 @@ function stubPi(values: Record<string, unknown> = {}) {
 
 /** A fake RoboDojo env server (the wire protocol of ../src/rpc.ts): moves land exactly, `solveAfter` motions succeed. */
 async function fakeEnv(
-	o: { layouts?: number; task?: string; solveAfter?: number; resetError?: string; perception?: boolean } = {},
+	o: {
+		layouts?: number;
+		task?: string;
+		solveAfter?: number;
+		resetError?: string;
+		perception?: boolean;
+		/** Recorded control steps per motion: RoboDojo's success after each (Flywheel policy frames). */
+		frames?: boolean[];
+	} = {},
 ) {
 	const calls: { method: string; args: unknown[]; kwargs: Record<string, unknown> }[] = [];
+	const frame = (success: boolean) => ({
+		head: img(),
+		left_wrist: img(),
+		right_wrist: img(),
+		state: f32(Array(14).fill(0)),
+		action: f32(Array(14).fill(0)),
+		success,
+		ended: success,
+		truncated: false,
+	});
 	const pos: Record<string, number[]> = { left: [-0.3, -0.15, 0.97], right: [0.3, -0.15, 0.97] };
 	let steps = 0;
 	let motions = 0;
@@ -137,7 +157,7 @@ async function fakeEnv(
 			else if (method === "env.get_env_meta") result = meta;
 			else if (method === "env.reset")
 				result = [obs(), { instruction: meta.instruction, ...(o.resetError ? { error: o.resetError } : {}) }];
-			else if (method === "env.set_recording") result = null;
+			else if (method === "env.set_recording") result = kwargs.on ? frame(false) : null;
 			else if (method === "env.get_obs")
 				result = {
 					instruction: meta.instruction,
@@ -168,7 +188,15 @@ async function fakeEnv(
 				const a = String(kwargs.arm ?? "left");
 				if (method === "env.move_delta") pos[a] = pos[a].map((v, i) => v + (kwargs.delta_xyz as number[])[i]);
 				if (method === "env.move_to") pos[a] = kwargs.xyz as number[];
-				result = { ...obs(), arm: a, moved_m: [0, 0, 0], executed: 1, control_steps: 10, frames: [img()] };
+				result = {
+					...obs(),
+					arm: a,
+					moved_m: [0, 0, 0],
+					executed: 1,
+					control_steps: 10,
+					frames: [img()],
+					...(o.frames ? { policy_frames: o.frames.map(frame) } : {}),
+				};
 			}
 			res.end(JSON.stringify({ ok: true, result }));
 		});
@@ -431,4 +459,18 @@ test("xpolicy_act sends RoboDojo's native observation and runs each action as on
 	assert.deepEqual(round(steps[1].left_ee_pose), [-0.3, -0.15, 0.97, 0, 0.6, 0.8, 0]);
 	assert.deepEqual(steps[1].right_ee_pose, [0.3, 0, 0.9, 1, 0, 0, 0]);
 	assert.deepEqual([steps[1].left_ee_joint_state, steps[1].right_ee_joint_state], [[1], [1]]);
+});
+
+test("the Flywheel takes success per control step: a success midway through go_home keeps its whole return", async (t) => {
+	const env = await fakeEnv({ frames: [false, false, true] });
+	t.after(env.close);
+	const root = mkdtempSync(join(tmpdir(), "robodojo-fly-"));
+	const s = await start({ "collect-flywheel-data": true, "flywheel-root": root }, env);
+	await s.run("go_home", {});
+	await s.emit("session_shutdown");
+	const dir = join(root, "raw", "robodojo", "stack_bowls", "seed_000");
+	const [episode] = readdirSync(dir);
+	const meta = JSON.parse(readFileSync(join(dir, episode, "episode.json"), "utf8"));
+	// Stamped with the call's final success, every step would be terminated and training would keep one.
+	assert.deepEqual([meta.step_count, meta.training_step_count, meta.is_success], [3, 3, true]);
 });

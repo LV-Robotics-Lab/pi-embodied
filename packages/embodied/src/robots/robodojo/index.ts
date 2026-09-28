@@ -95,7 +95,20 @@ export const FLYWHEEL: FlywheelSpec = {
 	action: 14,
 };
 /** The server's per-action record while Flywheel recording is on (`env.set_recording`). */
-type PolicyFrame = { head: NdArray; left_wrist: NdArray; right_wrist: NdArray; state: NdArray; action: NdArray };
+type PolicyFrame = {
+	head: NdArray;
+	left_wrist: NdArray;
+	right_wrist: NdArray;
+	state: NdArray;
+	action: NdArray;
+	/** RoboDojo's judgement right after this control step (a motion can succeed midway). */
+	success: boolean;
+	ended: boolean;
+	truncated: boolean;
+};
+/** One recorded control step: terminated is RoboDojo's success, truncated any other end. */
+const flyStep = (f: PolicyFrame) =>
+	[f.action.toArray(), flyObs(f), f.success ? 1 : 0, f.success, f.ended && !f.success] as const;
 const flyObs = (f: PolicyFrame): FlywheelObs => ({
 	images: { head_images: u8(f.head), left_wrist_images: u8(f.left_wrist), right_wrist_images: u8(f.right_wrist) },
 	state: f.state.toArray(),
@@ -383,8 +396,7 @@ export default function robodojo(pi: ExtensionAPI) {
 			signal ?? robot.signal,
 		);
 		for (const f of r.frames ?? []) video.frame(f);
-		for (const f of r.policy_frames ?? [])
-			fly.transition(f.action.toArray(), flyObs(f), r.success ? 1 : 0, r.success, r.truncated);
+		for (const f of r.policy_frames ?? []) fly.transition(...flyStep(f));
 		const {
 			frames: _f,
 			policy_frames: _p,
@@ -625,8 +637,7 @@ export default function robodojo(pi: ExtensionAPI) {
 			robot.signal,
 		);
 		video.frame(o.head);
-		for (const f of o.policy_frames ?? [])
-			fly.transition(f.action.toArray(), flyObs(f), o.success ? 1 : 0, o.success, o.truncated);
+		for (const f of o.policy_frames ?? []) fly.transition(...flyStep(f));
 		const { policy_frames: _p, frames: _f, ...rest } = o;
 		obs = rest;
 	}

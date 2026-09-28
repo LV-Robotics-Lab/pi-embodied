@@ -675,4 +675,21 @@ def test_object_poses_read_the_layout_and_fall_back_to_the_prim_for_dynamic_obje
 def test_xpolicy_env_cfg_names_the_dual_x5():
     from pi_embodied_services.components.xpolicy_bridge import action_dims
 
-    assert action_dims("arx_x5") == {"robot": "dual_x5", "arm_dim": [6, 6], "ee_dim": [1, 1]}
+    assert action_dims("arx_x5") == {
+        "robot": "dual_x5",
+        "arm_dim": [6, 6],
+        "ee_dim": [1, 1],
+    }
+
+
+def test_policy_frames_carry_robodojos_judgement_per_control_step(facade):
+    env = facade._env
+    facade.move_delta("left", [0.0, 0.0, 0.05])
+    facade.set_recording(True)
+    # Solved once the left arm is back within 1 cm of its reset height: midway through go_home.
+    env.solve_when = lambda rm: rm.q["left_arm"][2] < 0.21
+    r = facade.go_home()
+    flags = [f["success"] for f in r["policy_frames"]]
+    assert flags[0] is False and flags[-1] is True and flags.index(True) > 0
+    assert all(f["ended"] == f["success"] for f in r["policy_frames"])
+    assert not any(f["truncated"] for f in r["policy_frames"])

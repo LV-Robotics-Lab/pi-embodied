@@ -152,6 +152,9 @@ def test_robosuite_and_maniskill_spaces_differ_where_the_embodiments_do(tmp_path
         "wrist",
     }
     assert spec("maniskill", "xarm6_robotiq")["robot_type"] == "xarm6_robotiq"
+    # The bridge twins step at 5 Hz, the tabletop scenes at 20 Hz.
+    assert spec("maniskill", "widowx250s")["fps"] == 5
+    assert spec("maniskill", "panda")["fps"] == 20
     widow = record(
         tmp_path,
         "maniskill",

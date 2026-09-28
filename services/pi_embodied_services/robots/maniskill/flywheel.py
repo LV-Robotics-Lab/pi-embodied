@@ -60,6 +60,7 @@ def _spec(
     *,
     action: tuple[str, ...] = _DELTA_POS,
     arms: tuple[str, ...] = (),
+    fps: int = 20,
 ) -> dict[str, Any]:
     images = ("agentview_images", "wrist_images") if wrist else ("agentview_images",)
     prefixes = [f"{a}_" for a in arms] or [""]
@@ -68,8 +69,8 @@ def _spec(
     return {
         "robot": "maniskill",
         "robot_type": robot_type,
-        # The tabletop tasks' control_freq.
-        "fps": 20,
+        # The scenes' control_freq: 20 Hz on the tabletop tasks, 5 Hz on the bridge twins.
+        "fps": fps,
         "arrays": {
             **{key: _IMAGE for key in images},
             "states": {"shape": (len(state_names),), "dtype": "float32"},
@@ -100,6 +101,8 @@ SPACES = {
     "widowx250s": _spec(
         "widowx250s",
         wrist=False,
+        # The bridge twins' SimConfig(control_freq=5).
+        fps=5,
         action=(
             *("ee_dx_m", "ee_dy_m", "ee_dz_m", "ee_droll", "ee_dpitch", "ee_dyaw"),
             "gripper",

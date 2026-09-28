@@ -45,6 +45,7 @@ import {
 	type Vars,
 } from "./primitives/manifest.ts";
 import { plannerOf } from "./planner/kind.ts";
+import { EXTRAS, extrasInPureMode } from "./primitives/optional.ts";
 import { CODE_API_ENTRY, CODE_API_EVENT, type CodeApi, fetchCodeApi } from "./primitives/registry.ts";
 import { type XPolicySpec, xpolicy } from "./primitives/xpolicy.ts";
 
@@ -646,7 +647,8 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		await stop();
 		try {
 			// A flag the robot cannot honour fails closed, before the robot boots.
-			const misconfigured = un?.configError() ?? co?.configError() ?? ap.configError(ctx.hasUI);
+			const misconfigured =
+				un?.configError() ?? co?.configError() ?? ap.configError(ctx.hasUI) ?? extrasInPureMode(pi);
 			if (misconfigured) throw new Error(misconfigured);
 			api = undefined;
 			await models?.start();
@@ -918,9 +920,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		reported = true;
 		// Ground truth was on offer (--privileged): not comparable with a run without it.
 		// The OpenETA extras that were on (flags of ./primitives, ./objects.ts, ./web.ts): not comparable with a run without them.
-		const extras = ["waypoints", "align-wrist", "grasp-advisor", "object-memory", "web-tools"].filter(
-			(f) => pi.getFlag(f) === true,
-		);
+		const extras = EXTRAS.filter((f) => pi.getFlag(f) === true);
 		const mark = {
 			...(privileged() ? { privileged: true } : {}),
 			...(anchored() ? { anchor_image: true } : {}),

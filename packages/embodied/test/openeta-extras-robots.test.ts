@@ -435,3 +435,24 @@ test("Franka waypoints: each leg starts from the measured TCP and reports whethe
 	assert.equal(out.segments[0].final_dist_m, 0.01);
 	await s.emit("session_shutdown");
 });
+
+test("pure units or code mode refuses the extras instead of mounting them", async (t) => {
+	const env = await fakeLibero();
+	t.after(env.close);
+	for (const mode of [{ units: "true" }, { code: "true" }]) {
+		const s = stubPi(liberoFlags(env.url, { ...mode, waypoints: true, "object-memory": true }));
+		libero(s.pi);
+		const log = console.error;
+		const lines: string[] = [];
+		console.error = (l: string) => lines.push(l);
+		try {
+			await s.emit("session_start");
+		} finally {
+			console.error = log;
+			process.exitCode = undefined;
+		}
+		assert.deepEqual(s.active(), []);
+		assert.match(lines.join("\n"), /--waypoints, --object-memory cannot run in pure --(units|code) mode/);
+		assert.ok(!s.tools.has("follow_waypoints") && !s.tools.has("remember_object"));
+	}
+});

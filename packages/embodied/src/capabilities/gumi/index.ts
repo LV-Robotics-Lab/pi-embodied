@@ -907,13 +907,15 @@ export function gumi(
 	const controller = {
 		state,
 		takeover,
-		/** STOP (hold one step and look): the first observation, not a recorded step. */
+		/** The first observation (the robot's non-terminal look), not a recorded step. */
 		async look() {
 			if (!handle) throw fail(409, "no robot with action units is up (run the robot with --units)");
 			if (ctx && !ctx.isIdle() && !takeover.human) throw fail(409, "the agent is driving: take over first");
 			const why = handle.refuse();
 			if (why) throw fail(409, why);
-			const r = await handle.run(arms[0] === ARM ? { unit: "STOP" } : { unit: "STOP", arm: arms[0] });
+			if (!handle.look)
+				throw fail(409, "this robot has no way to look without acting (its vocabulary declares no observe)");
+			const r = await handle.look();
 			latest = observation(r) ?? latest;
 			publish();
 		},
@@ -976,14 +978,10 @@ export function gumi(
 					}
 					o.onAction?.(label);
 					// obs_t: the observation the policy would see now (the latest robot result); before any
-					// result exists, STOP (hold one step and look) produces it.
-					if (!latest && recorder?.active && handle.vocabulary.includes("STOP")) {
-						const first = arms[0];
+					// result exists, the robot's non-terminal look produces it (never a terminal unit).
+					if (!latest && recorder?.active && handle.look) {
 						try {
-							const look = await handle.run(
-								first === ARM ? { unit: "STOP" } : { unit: "STOP", arm: first },
-								signal,
-							);
+							const look = await handle.look(signal);
 							latest = observation(look);
 						} catch (e) {
 							results.push({ step, ok: false, error: (e as Error).message });

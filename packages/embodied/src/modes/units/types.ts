@@ -31,6 +31,11 @@ export type UnitsHandle = {
 		params: { unit: string; n?: number; arm?: string; other?: string; param?: string | number; operator?: boolean },
 		signal?: AbortSignal,
 	) => Promise<AgentToolResult<unknown>>;
+	/**
+	 * The current observation without a training step: the arm's STOP (hold one step), or a custom
+	 * vocabulary's `observe`; undefined when the robot has no non-terminal way to look.
+	 */
+	look?: (signal?: AbortSignal) => Promise<AgentToolResult<unknown>>;
 	/** The robot's proprioception (`eef_xyz`, `gripper_width`, ...), per arm on two arms. */
 	state?: (arm?: string) => Promise<Record<string, unknown>>;
 	/** Every robot tool (`act` and the robot's own): ../gumi holds them all while the operator drives. */
@@ -84,6 +89,11 @@ export type CustomVocabulary = {
 	units: readonly CustomUnit[];
 	/** Run one unit with its checked parameter through the robot's own safety checks; the new observation. */
 	run: (unit: string, param: string | number | undefined, signal: AbortSignal | undefined) => Promise<Result>;
+	/**
+	 * The current observation without acting (GUMI's first look). Without it GUMI cannot take an
+	 * observation before the first step: a terminal unit is never used to look.
+	 */
+	observe?: (signal: AbortSignal | undefined) => Promise<Result>;
 	/** GUMI key bindings (KeyboardEvent.code -> the unit and its parameter). */
 	keys?: Record<string, { unit: string; param?: string | number }>;
 };

@@ -541,6 +541,8 @@ function fakeRobot() {
 		stepM: 0.02,
 		tools: () => ["act", "move_to"],
 		refuse: () => g.refusal,
+		// The arm's non-terminal look: STOP through run (a custom vocabulary would use its observe).
+		look: (signal) => handle.run({ unit: "STOP" }, signal),
 		run: async (params, signal) => {
 			calls.push(params);
 			if (slow)
@@ -1294,6 +1296,11 @@ test("gumi with a robot's own vocabulary: NAME(param) steps, its key bindings, r
 	const robot = fakeRobot();
 	robot.handle.vocabulary = vocab;
 	robot.handle.keys = { KeyW: "WALK(normal)", KeyA: "TURN(30)" };
+	// Its STOP is terminal: the first observation comes from the vocabulary's observe, never from STOP.
+	robot.handle.look = async (signal) => {
+		const r = await robot.handle.run({ unit: "OBSERVE" }, signal);
+		return r;
+	};
 	await f.emit("session_start");
 	f.pi.events.emit(UNITS_EVENT, robot.handle);
 	assert.deepEqual(g.state().keys, { KeyW: [ARM, "WALK(normal)"], KeyA: [ARM, "TURN(30)"] });
@@ -1301,7 +1308,7 @@ test("gumi with a robot's own vocabulary: NAME(param) steps, its key bindings, r
 	await g.step({ command: "TURN(30) WALK(fast)" });
 	assert.deepEqual(
 		robot.calls.map((c) => c.unit),
-		["STOP", "TURN(30)", "WALK(fast)"],
+		["OBSERVE", "TURN(30)", "WALK(fast)"],
 	);
 	const dir = g.record("save", true).dir;
 	const tokens = readFileSync(join(dir, "actions.jsonl"), "utf8")

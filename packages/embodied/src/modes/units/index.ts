@@ -1118,6 +1118,14 @@ export function units(
 			? { keys: Object.fromEntries(Object.entries(custom.keys).map(([k, v]) => [k, unitLabel(v.unit, v.param)])) }
 			: {}),
 		run: actAndSave,
+		...(custom
+			? custom.observe
+				? { look: (signal?: AbortSignal) => (custom.observe as NonNullable<typeof custom.observe>)(signal) }
+				: {}
+			: {
+					look: (signal?: AbortSignal) =>
+						actAndSave({ unit: "STOP", ...(armNames[0] ? { arm: armNames[0] } : {}) }, signal),
+				}),
 		state: spec.state,
 		viewSelect: false,
 		wrist: () => wristView,

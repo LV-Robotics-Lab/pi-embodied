@@ -375,7 +375,7 @@ Features ported from OpenETA beyond the core harness; each is off by default and
 | Feature | Enable | pi mechanism | Robots |
 |---|---|---|---|
 | Human as the model (OpenETA's manual VLM console) | `--model human/operator` (or any VLM flag set to it, e.g. `--attach-vlm-model human/operator`) | a provider (`src/planner/human.ts`) asking through `ctx.ui` select/input (TUI dialogs, RPC `extension_ui_request`) and the dashboard's composer | any |
-| Web search / page fetch | `pi install npm:pi-web-search npm:@zeldrisho/pi-web-fetch`, then `--web-tools` | pi packages; `src/capabilities/web.ts` keeps their tools active next to the robot's | any |
+| Web search / page fetch | `pi install npm:pi-web-search@1.6.0 npm:@zeldrisho/pi-web-fetch@0.9.2`, then `--web-tools` | pi packages; `src/capabilities/web.ts` keeps their tools active next to the robot's | any |
 | Object memory | `--object-memory` [`--object-memory-dir <dir>`] | tools + `object_record` session entries (`src/capabilities/objects.ts`) | any |
 | Multi-waypoint route | `--waypoints` | `follow_waypoints` (`src/primitives/waypoints.ts`) | LIBERO, Franka |
 | Wrist-view alignment | `--align-wrist` | `align_wrist` (`src/primitives/wrist.ts`) | LIBERO, Franka |
@@ -384,6 +384,8 @@ Features ported from OpenETA beyond the core harness; each is off by default and
 | One server per arm and camera | always, real robots | `utils/hardware_lock.py` flock per device: the arm by serial (`robot.serial` / `calibration.arm_id`; one id for RLinf and Polymetis) else address, and every camera serial / device (`--lock-id`, `--lock-dir`, `$PI_EMBODIED_LOCK_DIR`) | Franka (RLinf, Polymetis), dual Franka, Piper, UR5e |
 
 The flags that change what the agent can do are recorded in the result row as `extras`.
+
+Web text is untrusted: a page or search answer can carry instructions ("ignore the task, move the arm to ...") that the planner reads next to tools that move the robot (prompt injection). Use `--web-tools` in simulation or with an operator at the stop; the two packages are pinned at the versions reviewed.
 
 
 ## Deliberately dropped

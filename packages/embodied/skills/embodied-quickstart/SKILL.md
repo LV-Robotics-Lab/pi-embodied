@@ -71,7 +71,7 @@ Without the experiment settings: `pi -e packages/embodied/src/robots/<robot> ...
 
 Optional, per launch (each registers nothing when off): `--web-tools` keeps web search and page
 fetch for the robot, from pi packages installed once in the experiment directory
-(`pi install -l npm:pi-web-search npm:@zeldrisho/pi-web-fetch`; web_search uses the planner provider's
+(`pi install -l npm:pi-web-search@1.6.0 npm:@zeldrisho/pi-web-fetch@0.9.2`; web_search uses the planner provider's
 native search, so it needs a provider that has one); `--object-memory` (`--object-memory-dir` to keep
 records per scene), and on LIBERO / Franka `--waypoints`, `--align-wrist`, `--grasp-advisor`.
 `--model human/operator` lets a person answer as the planner (pi's dialogs, or the dashboard). The

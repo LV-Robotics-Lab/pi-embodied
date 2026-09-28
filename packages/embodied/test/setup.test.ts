@@ -154,7 +154,12 @@ test("/embodied-setup writes the experiment settings and hands the install to th
 	// The confirmation says what happens: one confirmation, then the agent runs the whole install.
 	const summary = p.confirms.at(-1) ?? "";
 	assert.match(summary, /the agent runs it after this confirmation \(pi does not ask per step\)/);
-	assert.doesNotMatch(summary, /approval/);
+	// Only the settings it describes, not the paths in it (a checkout's path may contain any word).
+	const described = summary
+		.split("\n")
+		.filter((line) => !/^(services at|writes|install:)/.test(line))
+		.map((line) => line.replace(/(^|\s)\/\S+/g, "$1<path>"));
+	assert.doesNotMatch(described.join("\n"), /approval/);
 });
 
 test("tools mode asks about weights; a declined confirmation writes and sends nothing", async () => {

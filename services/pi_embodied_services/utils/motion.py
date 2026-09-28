@@ -328,9 +328,11 @@ class MotionPlanner:
         # Obstacles the robot's own base already sits in (the table under a mounted arm).
         out["excluded_by_base"] = list(result.get("excluded_by_base") or [])
         if not result["ok"]:
+            why = self._why_blocked(q, goal_base, kept)
             out.update(
                 status="blocked",
-                message=f"no collision-free path: {result.get('error') or 'plan failed'}",
+                message=f"no collision-free path: {result.get('error') or 'plan failed'}"
+                + (f"; {why}" if why else ""),
             )
             return out
         path = np.asarray(result.get("path") or [], dtype=np.float64)
@@ -368,6 +370,43 @@ class MotionPlanner:
             q_path=[[float(v) for v in path[i]] for i in idx],
         )
         return out
+
+    def _why_blocked(
+        self, q: Any, goal_base: np.ndarray, kept: list[dict[str, Any]]
+    ) -> str | None:
+        """Why a plan failed, from the ik service: the goal is unreachable (IK fails without
+        obstacles), or the arm at the goal touches an obstacle (named; its box is a bound, so a
+        round object's corners count). None when the service cannot tell."""
+        try:
+            sol = self._call(
+                "ik.solve",
+                robot=self.robot,
+                target_pose={
+                    "pos": goal_base[:3].tolist(),
+                    "quat_xyzw": goal_base[3:].tolist(),
+                },
+                seed_q=[float(v) for v in np.asarray(q, dtype=np.float64).reshape(-1)],
+            )
+            if not sol.get("ok"):
+                return f"the goal pose is out of reach ({sol.get('error')})"
+            if not kept:
+                return None
+            chk = self._call(
+                "ik.check",
+                robot=self.robot,
+                q=sol["q"],
+                obstacles=kept,
+                margin=self.margin,
+            )
+        except (RpcError, OSError, ValueError, KeyError, TypeError) as exc:
+            logger.warning("blocked plan not diagnosed: %s", exc)
+            return None
+        if chk.get("collision_free"):
+            return "the goal is reachable and clear; the path between is blocked"
+        name = str(chk.get("nearest") or "an obstacle").split("/")[0]
+        gap = chk.get("min_clearance_m")
+        mm = "" if gap is None else f", {round(float(gap) * 1000)} mm"
+        return f"at the goal the arm touches {name}'s bounding box{mm}; aim clear of it"
 
     def check(
         self,

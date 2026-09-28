@@ -252,6 +252,14 @@ class PointIk:
         self.fail = fail
 
     @staticmethod
+    def _nearest(obstacles, p):
+        if not obstacles:
+            return None
+        parsed = [collision.parse_obstacle(o) for o in obstacles]
+        _, j = collision.sphere_clearance(parsed, [[*p, POINT_RADIUS]])
+        return obstacles[j]["name"]
+
+    @staticmethod
     def _clear(obstacles, pts):
         parsed = [collision.parse_obstacle(o) for o in obstacles]
         if not parsed:
@@ -264,17 +272,25 @@ class PointIk:
         self.calls.append((method, kwargs))
         if self.fail is not None:
             raise self.fail
+        if method == "ik.solve":
+            pos = kwargs["target_pose"]["pos"]
+            ok = float(np.linalg.norm(pos)) < 0.9
+            return {
+                "ok": ok,
+                "q": [*pos, 0, 0, 0, 0],
+                "error": None if ok else "unreachable",
+            }
         if method == "ik.check":
-            path = np.asarray(kwargs["path"], dtype=float)
+            path = np.asarray(
+                kwargs["path"] if "path" in kwargs else [kwargs["q"]], dtype=float
+            )
             clear = [self._clear(kwargs["obstacles"], [q[:3]]) for q in path]
             worst = int(np.argmin(clear))
             return {
                 "collision_free": bool(min(clear) > kwargs.get("margin", 0.0)),
                 "min_clearance_m": None if np.isinf(min(clear)) else float(min(clear)),
                 "worst_index": worst,
-                "nearest": kwargs["obstacles"][0]["name"]
-                if kwargs["obstacles"]
-                else None,
+                "nearest": self._nearest(kwargs["obstacles"], path[worst][:3]),
             }
         assert method == "ik.plan"
         start = np.asarray(kwargs["start_q"], dtype=float)
@@ -978,3 +994,33 @@ def test_the_plan_reports_what_the_base_excluded():
     planner = motion.MotionPlanner("http://ik", "panda_libero", client=Ik())
     out = planner.plan([0.1, 0, 0.1, 0, 0, 0, 0], [0.1, 0, 0.1], [0.3, 0, 0.1], UP, [])
     assert out["status"] == "planned" and out["excluded_by_base"] == ["table/7"]
+
+
+def test_a_blocked_plan_says_why():
+    roof = {
+        "type": "box",
+        "name": "roof",
+        "position": [0.3, 0, 0.3],
+        "extent": [0.05, 2, 0.8],
+    }
+    bowl = {
+        "type": "box",
+        "name": "akita_black_bowl_2_main",
+        "position": [0.5, 0.065, 0.1],
+        "extent": [0.1, 0.1, 0.05],
+    }
+    planner = motion.MotionPlanner("http://ik", "panda_libero", client=PointIk())
+    start = [0.1, 0, 0.1]
+    # The path is blocked, the goal itself is clear.
+    out = planner.plan([*start, 0, 0, 0, 0], start, [0.5, 0, 0.1], UP, [roof])
+    assert "goal is reachable and clear" in out["message"]
+    # The goal touches a neighbouring object's box outside the left-out radius (the point
+    # robot is smaller than a hand, so the radius shrinks with it): named.
+    tight = motion.MotionPlanner(
+        "http://ik", "panda_libero", client=PointIk(), contact_radius=0.01
+    )
+    out = tight.plan([*start, 0, 0, 0, 0], start, [0.5, 0, 0.1], UP, [roof, bowl])
+    assert "touches akita_black_bowl_2_main's bounding box" in out["message"]
+    # Out of reach without any obstacle.
+    out = planner.plan([*start, 0, 0, 0, 0], start, [1.2, 0, 0.1], UP, [roof])
+    assert "out of reach" in out["message"]

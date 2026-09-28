@@ -1787,3 +1787,18 @@ test("custom vocabulary: the units handle publishes the names and GUMI keys; tel
 		/either its own `vocabulary` or the arm's/,
 	);
 });
+
+test("stage_control counts steps per arm: one arm's units do not use the other arm's stage cap (#27)", async () => {
+	const f = await toyRobot({ "units-stage-steps": "2" }, { arms: ["left", "right"] });
+	await f.run("plan", {
+		stages: [
+			{ motion: "MOVE", target: "cloth", completion: "done", arm: "left" },
+			{ motion: "LIFT", target: "cloth", completion: "up", arm: "left" },
+		],
+	});
+	await f.run("act", { unit: "MV_UP", arm: "right", n: 3 });
+	const r = head(await f.run("act", { unit: "MV_UP", arm: "left" }));
+	assert.match(r, /STAGE 1\/2 \[MOVE\] \(left arm\).*step 1 of 2/, "the right arm's units did not count");
+	const next = head(await f.run("act", { unit: "MV_UP", arm: "left", n: 2 }));
+	assert.match(next, /used its 2-step cap/);
+});

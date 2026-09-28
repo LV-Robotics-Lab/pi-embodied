@@ -409,7 +409,15 @@ export function units(
 	let stages: Stage[] = [];
 	let stage = 0;
 	/** stage_control: units run in the current stage, and whether the last stage used its cap. */
-	let stageSteps = 0;
+	/** Units run in the current stage, per arm ("" = the single arm), as upstream counts each arm's track. */
+	let stageSteps = new Map<string, number>();
+	const stepsOf = (arm: string | undefined) => stageSteps.get(arm ?? "") ?? 0;
+	/** Count a unit of `arm` toward the current stage, when the stage is that arm's (or any arm's). */
+	const countStep = (arm: string | undefined) => {
+		const s = stages[stage];
+		if (s?.arm && arm && s.arm !== arm) return;
+		stageSteps.set(arm ?? "", stepsOf(arm) + 1);
+	};
 	let capped = false;
 	/** A custom vocabulary's terminal unit (STOP) ran: the episode is over for the units. */
 	let ended = false;
@@ -437,7 +445,7 @@ export function units(
 		note = "";
 		stages = [];
 		stage = 0;
-		stageSteps = 0;
+		stageSteps = new Map();
 		capped = false;
 		ended = false;
 		targets = [];
@@ -537,12 +545,12 @@ export function units(
 	 * stage_control (core/runners/real.py): a stage that ran its step cap is abandoned for the next one
 	 * with a fresh move history; past the last stage no unit runs until a new plan. False: stop.
 	 */
-	function advanceCapped(lines: string[]) {
+	function advanceCapped(lines: string[], arms: readonly (string | undefined)[] = [undefined]) {
 		const cap = stageCap();
-		if (!plugin("plan") || !cap || stage >= stages.length || stageSteps < cap) return true;
+		if (!plugin("plan") || !cap || stage >= stages.length || !arms.some((a) => stepsOf(a) >= cap)) return true;
 		lines.push(`STAGE ${stage + 1} [${stages[stage].motion}] used its ${cap}-step cap: the plan moves on.`);
 		stage++;
-		stageSteps = 0;
+		stageSteps = new Map();
 		recent = [];
 		if (stage < stages.length) return true;
 		capped = true;
@@ -563,7 +571,7 @@ export function units(
 				break;
 			}
 		stage = to;
-		stageSteps = 0;
+		stageSteps = new Map();
 		capped = false;
 		lines.push(`Plan rolled back to stage ${to + 1} [${stages[to].motion}].`);
 		return true;
@@ -576,7 +584,7 @@ export function units(
 			const s = stages[stage];
 			out.push(
 				s
-					? `STAGE ${stage + 1}/${stages.length} [${s.motion}]${s.arm ? ` (${s.arm} arm)` : ""}: target ${s.target}${s.affordance ? `; affordance ${s.affordance}` : ""}${s.description ? `; ${s.description}` : ""}; DONE WHEN ${s.completion}${stageCap() ? `; step ${stageSteps} of ${stageCap()}` : ""}`
+					? `STAGE ${stage + 1}/${stages.length} [${s.motion}]${s.arm ? ` (${s.arm} arm)` : ""}: target ${s.target}${s.affordance ? `; affordance ${s.affordance}` : ""}${s.description ? `; ${s.description}` : ""}; DONE WHEN ${s.completion}${stageCap() ? `; step ${stepsOf(arm)} of ${stageCap()}` : ""}`
 					: "STAGE: all planned stages are done; check the task and DONE, or send a new plan.",
 			);
 			if (s?.motion.toUpperCase() === "REASON")
@@ -886,7 +894,13 @@ export function units(
 		let stop = false;
 		for (const [index, tick] of ticks.entries()) {
 			// stage_control: a stage that used its step cap is abandoned for the next one (core/runners/real.py).
-			if (!advanceCapped(lines)) break;
+			if (
+				!advanceCapped(
+					lines,
+					tick.map((t) => t.arm),
+				)
+			)
+				break;
 			type Planned = {
 				slot: Slot;
 				key: string;
@@ -1002,7 +1016,7 @@ export function units(
 					if (last && halted(last, q.move)) break;
 				}
 			}
-			stageSteps++;
+			for (const q of planned) countStep(q.slot.arm);
 			ran.push(planned.map((q) => q.label).join("+"));
 			for (const q of planned) {
 				const { u } = q.slot;
@@ -1102,7 +1116,7 @@ export function units(
 			if (!advanceCapped(lines)) break;
 			last = await vocabulary.run(name, param, signal);
 			ran++;
-			stageSteps++;
+			countStep(undefined);
 			remember(label);
 			const d = last.details as { error?: unknown; terminated?: unknown } | undefined;
 			if (unit.terminal) ended = true;
@@ -1288,7 +1302,7 @@ export function units(
 					else if (closed.get(a ?? "") === true && st) await reopen(a, signal);
 				}
 				if (!held.length) {
-					stageSteps = 0;
+					stageSteps = new Map();
 					recent = [];
 					note = UNVERIFIED_GRASP;
 					save();
@@ -1305,7 +1319,7 @@ export function units(
 			if (done && stage < stages.length) stage++;
 			if (next?.length) stages = [...stages.slice(0, stage), ...next];
 			if (done || next?.length) {
-				stageSteps = 0;
+				stageSteps = new Map();
 				capped = false;
 			}
 			// A new stage starts with a clean move history (core/runners/real.py); a new plan answers the verifier.

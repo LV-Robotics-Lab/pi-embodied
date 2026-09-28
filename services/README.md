@@ -354,5 +354,13 @@ pinned RLinf `bde6c918` does not define; they come from the RLinf checkout given
 ## Tests
 
 ```bash
-cd services && pip install -e ".[test]" && pytest
+services/test.sh            # all tests, then ruff check and ruff format --check
+services/test.sh tests/test_motion_plan.py   # pytest arguments
 ```
+
+It runs `uv run --no-project --with numpy --with pytest --with pyyaml --with scipy --with
+omegaconf --with msgpack --with pillow --with pyarrow python -m pytest -q tests`. Plain `uv run
+pytest` is not supported: it resolves every optional extra in `pyproject.toml` into one
+environment, and the robot extras are mutually incompatible by design (each backend pins its own
+torch and simulator; `setup.sh` builds one venv per backend). The tests mock those backends, so
+the test dependencies above are all they need.

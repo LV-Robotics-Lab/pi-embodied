@@ -374,8 +374,7 @@ The flags that change what the agent can do are recorded in the result row as `e
 
 ## Deliberately dropped
 
-What the four source repositories have that pi-embodied does not port, and why. Work still planned
-is tracked in the migration specs, not here.
+What the four source repositories have that pi-embodied does not port, and why.
 
 RPent (eecf206):
 
@@ -391,15 +390,19 @@ CaP-X (53e9966):
 - GRPO / VeRL training (`third_party/verl`, `verl_agent_reward`): training stays outside the
   repository; pi-embodied exports sessions in a format VeRL and RLinf read, with the environment's
   success as the reward, never "the program ran without error = 0.1".
-- Its LLM client and model proxies: pi-ai providers and pi's model registry serve the planner and
-  the side VLMs.
-- FastAPI / msgpack model serving: every Python service speaks `POST /call` with `healthz` / `stop`.
+- Its LLM client and model proxies (`capx/llm/client.py`, `serving/{openrouter,vllm}_server.py`):
+  replaced by pi-ai providers and pi's model registry (`--model <provider>/<id>`, models.json), which
+  serve the planner and the side VLMs.
+- FastAPI / msgpack model serving (`serving/launch_*_server.py`): replaced by the services' JSON
+  `POST /call` with `healthz` / `stop` (services/PROTOCOL.md); a CaP-X server's endpoint maps to one
+  RPC method of the matching `components/*_server.py`.
 - In-process `exec` with the env in the program's globals: `run_code` runs in a sandboxed
   subprocess that holds no env object and reaches the robot only through the primitive registry.
 - The joint-position controller and joint-space IK primitives (`solve_ik`, `move_to_joints`):
   Robosuite runs OSC_POSE, so a Cartesian target is the primitive.
 - Ground truth in ordinary observations (`cube_poses` / `nut_poses`, TwoArmHandover's instance
-  segmentation): object poses leave the server only through `ground_truth_poses` under `--privileged`.
+  segmentation): object poses leave the server only through `ground_truth_poses` under
+  `--privileged`, which the result marks, so a score without it is a clean non-privileged score.
 - `pick_up_radio_reward` as BEHAVIOR success (BDDL's `success` decides; CaP-X's judgement is a
   reference field) and `move_hand(ignore_all_obstacles=True)` (the R1Pro planner keeps its obstacles).
 
@@ -408,8 +411,9 @@ Show-Harness (137d571):
 - Its runners and VLM client (`core/runners`, `core/vlm`): the planner is the model; MvTokenRunner
   is the `finetuned/<adapter>` provider, and the verifier and video_ref calls go through pi's model
   registry.
-- `prompt_v5.txt` of the v5 LIBERO adapters: it sits in a gated HF dataset and is not vendored
-  (`--ft-prompt-file`).
+
+Pending, not dropped: `prompt_v5.txt` of the v5 LIBERO adapters sits in a gated HF dataset whose
+access is being requested; until then pass it with `--ft-prompt-file`.
 
 OpenETA (7d4a0a1):
 

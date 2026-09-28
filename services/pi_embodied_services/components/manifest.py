@@ -96,6 +96,7 @@ FRAMEWORK_RPC = frozenset(
         "code.api",
         "code.run",
         "code.helpers",
+        "code.preflight",
         "code.set_limits",
         "env.get_env_meta",
         "env.reset",
@@ -114,6 +115,7 @@ NEVER_PRIMITIVES = frozenset(
         "code.run",
         "code.api",
         "code.helpers",
+        "code.preflight",
         "code.set_limits",
     }
 )

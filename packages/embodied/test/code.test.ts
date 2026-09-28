@@ -7,6 +7,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
 	type Helper,
+	isLocalEndpoint,
 	ORACLE_MAX_CALLS,
 	ORACLE_TIMEOUT_S,
 	type RunResult,
@@ -85,7 +86,7 @@ function fakeEnv(
 	const calls: { method: string; kwargs: Record<string, unknown>; signal?: AbortSignal }[] = [];
 	let interrupts = 0;
 	/** While set, `code.run` waits in the client's queue (behind another call) until it resolves. */
-	const queue: { hold?: Promise<void> } = {};
+	const queue: { hold?: Promise<void>; preflight?: Record<string, unknown> } = {};
 	const rpc = {
 		interrupt: async () => {
 			interrupts++;
@@ -108,6 +109,7 @@ function fakeEnv(
 			calls.push({ method, kwargs, signal });
 			if (method === "code.api") return (codeApi?.() ?? codeApiReply("toy", kwargs.tier as string | undefined)) as T;
 			if (method === "code.helpers") return HELPERS as T;
+			if (method === "code.preflight") return (queue.preflight ?? { isolated: true, error: null }) as T;
 			if (method === "code.run")
 				return {
 					status: "ran",
@@ -155,10 +157,13 @@ async function toyRobot(
 		observeNeedsSignal?: boolean;
 		/** Override the server's code.api reply. */
 		codeApi?: () => unknown;
+		/** What the env's `code.preflight` answers. */
+		preflight?: Record<string, unknown>;
 	} = {},
 ) {
 	const f = fakePi(flags, o.hasUI ?? true, o.confirm);
 	const env = fakeEnv(o.answer ?? (() => ({})), o.codeApi);
+	if (o.preflight) env.queue.preflight = o.preflight;
 	const observed: RunResult[] = [];
 	defineRobot(f.pi, {
 		name: "toy",
@@ -204,7 +209,10 @@ test("--code=true leaves only run_code and finish, fetches the tier's API and re
 	assert.deepEqual(f.active(), ["run_code", "finish"]);
 	assert.deepEqual(
 		f.env.calls.map((c) => [c.method, c.kwargs]),
-		[["code.api", { tier: "high" }]],
+		[
+			["code.api", { tier: "high" }],
+			["code.preflight", { remote: false }],
+		],
 	);
 	const prompt = (await f.emit("before_agent_start")).systemPrompt as string;
 	assert.match(prompt, /^You control a robot arm by writing Python programs/);
@@ -232,6 +240,7 @@ test("--code=both adds run_code to the robot's tools and appends the code sectio
 		both.env.calls.map((c) => [c.method, c.kwargs]),
 		[
 			["code.api", { tier: "low" }],
+			["code.preflight", { remote: false }],
 			["code.helpers", {}],
 		],
 	);
@@ -606,3 +615,16 @@ function tempOracle(): string {
 	writeFileSync(path, "RESULT = 1\n");
 	return path;
 }
+
+test("code mode's preflight refuses a server that cannot isolate a program, before the episode", async () => {
+	const f = await toyRobot(
+		{ code: true },
+		{ hasUI: false, preflight: { isolated: false, error: "run_code refused: run the server as root" } },
+	);
+	assert.ok(!f.active().includes("run_code"), "the robot did not start in code mode");
+	const r = f.entries.find((e) => e.type === RESULT_ENTRY)?.data ?? (await result(f));
+	assert.match(String(r.error), /run_code refused: run the server as root/);
+	assert.equal(f.env.calls.filter((c) => c.method === "code.run").length, 0);
+	assert.equal(isLocalEndpoint("http://127.0.0.1:8080/call"), true);
+	assert.equal(isLocalEndpoint("http://robot-pc.tailnet:9000/call"), false);
+});

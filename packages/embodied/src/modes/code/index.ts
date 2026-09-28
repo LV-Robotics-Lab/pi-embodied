@@ -43,6 +43,7 @@
 
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { hostname } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
@@ -140,6 +141,16 @@ export type CodeSpec = {
 
 const TEMPLATE = template(new URL("./SYSTEM.md", import.meta.url)).replace(/^<!--[\s\S]*?-->\n/, "");
 const text = (s: string) => ({ type: "text" as const, text: s });
+
+/** Whether an endpoint URL is on this host (a spawned server, or one attached on loopback). */
+export function isLocalEndpoint(url: string): boolean {
+	try {
+		const host = new URL(url.includes("://") ? url : `http://${url}`).hostname.replace(/^\[|\]$/g, "");
+		return ["127.0.0.1", "localhost", "::1", "0.0.0.0", ""].includes(host) || host === hostname();
+	} catch {
+		return true;
+	}
+}
 
 /** Keep every `[name]...[/name]` block when `on`, drop them otherwise. */
 function section(prompt: string, name: string, on: boolean) {
@@ -497,6 +508,15 @@ export function code(
 				);
 			if (!primitives.length)
 				throw new Error(`this robot has no ${tier()}-tier code primitives; pick another --code-api`);
+			// Preflight before the episode starts (no reset, no operator confirmation wasted): a server
+			// that cannot isolate a program from this host's processes refuses code mode here. A
+			// server on another host (URL#token) cannot expose this process: its refusal is waived.
+			const remote = !isLocalEndpoint((client as RpcClient).url ?? "");
+			const pre = await client
+				.call<{ error?: string | null }>("code.preflight", { remote }, 30_000)
+				// A server without code.preflight (older, or a stand-in): its code.run still refuses on its own.
+				.catch((): { error?: string | null } => ({}));
+			if (pre.error) throw new Error(pre.error);
 			helpers = helpersOn() ? await client.call<Helper[]>("code.helpers", {}, 30_000) : [];
 			registerTool();
 			return ["run_code"];

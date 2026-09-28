@@ -1071,6 +1071,9 @@ class CodeRunner:
         self._on_abandon = on_abandon
         self._on_released = on_released
         self._abandoned: list[threading.Thread] = []
+        #: Set by :meth:`preflight` when the caller runs on another host (its secrets are not
+        #: readable through this host's /proc): the isolation refusal is waived for good.
+        self.isolation_waived = False
         self._stop_requested = stop_requested
         self._on_timeout = on_timeout
         self._begin = begin
@@ -1142,6 +1145,17 @@ class CodeRunner:
             out.extend(describe_helpers())
         return out
 
+    def preflight(self, remote: bool = False) -> dict:
+        """Code mode's start check (``code.preflight``), before the robot resets or an operator
+        confirms anything: ``{"isolated", "error"}``. ``error`` says why every program would be
+        refused (:func:`code_isolation_error`). A caller on another host (``remote``: pi attached
+        by ``URL#token``) holds no secrets this host's /proc could expose; the refusal is waived."""
+        error = code_isolation_error()
+        if error is not None and remote:
+            self.isolation_waived = True
+            return {"isolated": False, "error": None, "waived": "remote caller"}
+        return {"isolated": error is None, "error": error}
+
     def abort(self) -> None:
         """Kill the running child (a ``stop`` while a run executes); no-op when idle."""
         self._abort.set()
@@ -1176,7 +1190,7 @@ class CodeRunner:
             raise ValueError("timeout_s must be positive")
         if max_move_m is not None and not (float(max_move_m) >= 0):
             raise ValueError("max_move_m must be a non-negative number")
-        refusal = code_isolation_error()
+        refusal = None if self.isolation_waived else code_isolation_error()
         if refusal is not None:
             raise CodeIsolationError(refusal)
         stuck = self.wedged
@@ -1616,6 +1630,7 @@ class CodeRunMixin:
             on_released=self._release_abandoned,
         )
         self._rpc["code.run"] = self._code.run
+        self._rpc["code.preflight"] = self._code.preflight
         self._rpc["code.helpers"] = describe_helpers
         self._readonly_methods.add("code.helpers")
         return self._code
@@ -1672,6 +1687,10 @@ class CodeRunMixin:
         self._rpc["code.run"] = lambda *a, **k: self._manifest_ready()["code.run"](
             *a, **k
         )
+        # pi calls it first, when code mode starts (see CodeRunner.preflight).
+        self._rpc["code.preflight"] = lambda *a, **k: self._manifest_ready()[
+            "code.preflight"
+        ](*a, **k)
         self._rpc["code.helpers"] = describe_helpers
         self._readonly_methods.update({"code.api", "code.helpers"})
 

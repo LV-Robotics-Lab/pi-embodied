@@ -240,6 +240,7 @@ class RealCodeMode(CodeRunMixin):
         if not self._code_on:
             self._rpc.pop("code.run", None)
             self._rpc.pop("code.helpers", None)
+            self._rpc.pop("code.preflight", None)
 
     def _install_code_run(self, api: Any, **hooks: Any) -> Any:
         # Without --code only code.api is served (built by _manifest_ready with the self-check).

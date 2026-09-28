@@ -373,3 +373,10 @@ def test_a_success_inside_a_motion_is_latched_too():
     assert out["status"] == "ran", out
     assert f.check_success() is False
     assert out["success"] is True and out["success_step"] is not None, out
+
+
+def test_code_preflight_is_served_before_any_other_code_call():
+    """pi calls code.preflight first when code mode starts (audit a2c880c #12)."""
+    f = facade()
+    out = f._rpc["code.preflight"](remote=False)
+    assert set(out) >= {"isolated", "error"}, out

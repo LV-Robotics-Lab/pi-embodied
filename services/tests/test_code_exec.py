@@ -879,3 +879,22 @@ def test_an_abandoned_primitive_is_stopped_and_refused_when_it_wakes_to_move(
     assert len(f.stops) > n_stops and f.stops[-1] >= abandoned_at, (
         "stopped again on return"
     )
+
+
+def test_preflight_reports_the_refusal_up_front_and_a_remote_caller_waives_it(
+    monkeypatch,
+):
+    """Audit a2c880c #12: the refusal came only inside code.run, after the robot's reset and
+    the operator's confirmation; and a caller on another host (URL#token) was refused too."""
+    monkeypatch.setattr(code_exec, "_proc_isolation_relevant", lambda: True)
+    monkeypatch.setattr(code_exec, "sandbox_uid", lambda: None)
+    monkeypatch.delenv(code_exec.ALLOW_UNISOLATED_ENV, raising=False)
+    monkeypatch.delenv(code_exec.SANDBOX_UID_ENV, raising=False)
+    r = runner(Toy())
+    local = r.preflight()
+    assert local["isolated"] is False and "run_code refused" in local["error"]
+    with pytest.raises(code_exec.CodeIsolationError):
+        r.run("RESULT = 1\n")
+    remote = r.preflight(remote=True)
+    assert remote["error"] is None and remote["waived"] == "remote caller"
+    assert r.run("RESULT = 1\n")["result"] == 1

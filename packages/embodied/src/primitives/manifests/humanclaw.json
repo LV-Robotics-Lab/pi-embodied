@@ -1,0 +1,222 @@
+{
+	"robot": "humanclaw",
+	"internal": [
+		"env.step",
+		"env.chunk_step",
+		"env.record_decision",
+		"env.metric_observation",
+		"env.finish",
+		"env.list_episodes"
+	],
+	"primitives": [
+		{
+			"name": "look",
+			"side": "ts",
+			"tier": "raw",
+			"doc": {
+				"tool": "The current head-view (ego) image, without acting."
+			},
+			"result": "read"
+		},
+		{
+			"use": "sim/get_task_language"
+		},
+		{
+			"name": "walk_forward",
+			"side": "code",
+			"method": "env.walk_forward",
+			"tier": "raw",
+			"mutating": true,
+			"doc": {
+				"code": "Walk straight ahead for 0.5 s: slow 0.2 m, normal 0.4 m, fast 0.6 m (HumanCLAW's Walk<forward><speed>).\n\nExample:\n    r = walk_forward(\"normal\")\n    print(r[\"step\"], r[\"done\"])"
+			},
+			"params": {
+				"speed": {
+					"type": "enum",
+					"values": [
+						"slow",
+						"normal",
+						"fast"
+					],
+					"description": "default slow"
+				}
+			}
+		},
+		{
+			"name": "turn",
+			"side": "code",
+			"method": "env.turn",
+			"tier": "raw",
+			"mutating": true,
+			"doc": {
+				"code": "Turn in place by 10-120 degrees (clamped) within 0.5 s.\n\nExample:\n    turn(\"left\", 45)"
+			},
+			"params": {
+				"direction": {
+					"type": "enum",
+					"values": [
+						"left",
+						"right"
+					],
+					"required": true,
+					"description": "left or right"
+				},
+				"degree": {
+					"type": "number",
+					"required": true,
+					"minimum": 10,
+					"maximum": 120,
+					"description": "degrees"
+				}
+			}
+		},
+		{
+			"name": "side_walk",
+			"side": "code",
+			"method": "env.side_walk",
+			"tier": "raw",
+			"mutating": true,
+			"doc": {
+				"code": "Side step 0.1-0.5 m (clamped) left or right, keeping the facing direction.\n\nExample:\n    side_walk(\"right\", 0.25)"
+			},
+			"params": {
+				"direction": {
+					"type": "enum",
+					"values": [
+						"left",
+						"right"
+					],
+					"required": true,
+					"description": "left or right"
+				},
+				"distance": {
+					"type": "number",
+					"required": true,
+					"minimum": 0.1,
+					"maximum": 0.5,
+					"description": "m"
+				}
+			}
+		},
+		{
+			"name": "step_back",
+			"side": "code",
+			"method": "env.step_back",
+			"tier": "raw",
+			"mutating": true,
+			"doc": {
+				"code": "Step backward 0.1-0.6 m (clamped), keeping the facing direction.\n\nExample:\n    step_back(0.25)"
+			},
+			"params": {
+				"distance": {
+					"type": "number",
+					"required": true,
+					"minimum": 0.1,
+					"maximum": 0.6,
+					"description": "m"
+				}
+			}
+		},
+		{
+			"name": "step_climb_up",
+			"side": "code",
+			"method": "env.step_climb_up",
+			"tier": "raw",
+			"mutating": true,
+			"doc": {
+				"code": "Climb one chunk upstairs (the riser at the feet, stairs straight ahead)."
+			}
+		},
+		{
+			"name": "step_climb_down",
+			"side": "code",
+			"method": "env.step_climb_down",
+			"tier": "raw",
+			"mutating": true,
+			"doc": {
+				"code": "Walk one chunk downstairs (the next step down at the feet, stairs straight ahead)."
+			}
+		},
+		{
+			"name": "sit",
+			"side": "code",
+			"method": "env.sit",
+			"tier": "raw",
+			"mutating": true,
+			"doc": {
+				"code": "Sit down in place onto a surface of the given height, 0.15-0.85 m (clamped).\n\nExample:\n    sit(0.45)"
+			},
+			"params": {
+				"height": {
+					"type": "number",
+					"required": true,
+					"minimum": 0.15,
+					"maximum": 0.85,
+					"description": "m"
+				}
+			}
+		},
+		{
+			"name": "stand",
+			"side": "code",
+			"method": "env.stand",
+			"tier": "raw",
+			"mutating": true,
+			"doc": {
+				"code": "Stop/Stand: the terminal action; it ends the episode."
+			}
+		},
+		{
+			"name": "render_camera",
+			"side": "code",
+			"method": "env.render_camera",
+			"tier": "raw",
+			"params": {
+				"camera_name": {
+					"type": "enum",
+					"values": [
+						"ego"
+					],
+					"description": "ego (default)"
+				}
+			},
+			"doc": {
+				"code": "The latest 448x448 head-view (ego) image, {rgb}."
+			}
+		},
+		{
+			"name": "get_camera_meta",
+			"side": "code",
+			"method": "env.get_camera_meta",
+			"tier": "raw",
+			"params": {
+				"camera_name": {
+					"type": "enum",
+					"values": [
+						"ego"
+					],
+					"description": "ego (default)"
+				}
+			},
+			"doc": {
+				"code": "The ego camera's resolution, fps and frames per step."
+			}
+		},
+		{
+			"use": "sim/ground_truth_poses",
+			"doc": {
+				"tool": "Privileged simulator ground truth: the target instances' centres and the humanoid's root pose (Habitat world, y up).",
+				"code": "Simulator ground truth: {frame, targets: [{object_name, object_id, center}], human_root: {pos, quat_xyzw}}."
+			}
+		},
+		{
+			"use": "modules/finish"
+		},
+		{
+			"use": "modules/act"
+		},
+		{
+			"use": "modules/plan"
+		}
+	]
+}

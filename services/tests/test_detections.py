@@ -614,7 +614,8 @@ def test_install_perception_from_args_on_a_real_robots_observation_layout() -> N
 
 def test_every_env_server_but_the_frankas_installs_perception() -> None:
     """Every robot's env server takes --sam3 / --unidepth and installs the primitives (the
-    Franka servers install theirs under the Franka names)."""
+    Franka servers install theirs under the Franka names; HumanCLAW runs the paper's skills-only
+    tier, no perception primitive)."""
     from pathlib import Path
 
     robots = Path(__file__).resolve().parents[1] / "pi_embodied_services" / "robots"
@@ -622,7 +623,12 @@ def test_every_env_server_but_the_frankas_installs_perception() -> None:
     assert len(servers) >= 13
     for path in servers:
         text = path.read_text()
-        if path.parent.name in ("franka", "franka_polymetis", "dual_franka"):
+        if path.parent.name in (
+            "franka",
+            "franka_polymetis",
+            "dual_franka",
+            "humanclaw",
+        ):
             continue
         assert "install_perception(" in text, path.parent.name
         assert "add_perception_arguments(" in text, path.parent.name

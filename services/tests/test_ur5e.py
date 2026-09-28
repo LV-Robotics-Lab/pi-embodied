@@ -747,7 +747,8 @@ def test_a_stale_object_status_is_not_taken_for_settled_fingers():
 def test_stop_during_a_gripper_command_stops_the_gripper():
     grip = MockRobotiq(object_pos=150, stale_polls=100)
     f = facade(gripper=grip)
-    f.controller._stop = lambda: True
+    polls = iter([False])  # the stop arrives once the command is under way
+    f.controller._stop = lambda: next(polls, True)
     r = call(f, "env.close_gripper")
     assert r["cancelled"] is True and r["ok"] is False and grip.stopped == 1
 
@@ -1672,3 +1673,19 @@ def test_motion_is_refused_before_commanding_while_motion_is_halted():
     assert arm.moves == [] and arm.joint_moves == []
     f.clear_motion_halt()
     assert call(f, "env.move_delta", [0.01, 0.0, 0.0])["ok"]
+
+
+def test_the_gripper_is_never_commanded_while_a_stop_is_in_effect():
+    """Audit 55d8d9a: a gripper path that commands first and checks later can open a hand
+    holding an object once when a halted primitive wakes up."""
+    gripper = MockRobotiq()
+    f = facade(gripper=gripper)
+    before = gripper.pos
+    f.halt_motion("run_code primitive set_gripper was abandoned")
+    with pytest.raises(
+        RuntimeError, match="gripper command refused: a stop is in effect"
+    ):
+        call(f, "env.set_gripper", open=True)
+    assert gripper.pos == before, "the fingers were never driven"
+    f.clear_motion_halt()
+    call(f, "env.set_gripper", open=False)

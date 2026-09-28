@@ -657,6 +657,14 @@ class PiperController:
             return smooth_fractions(n, v0, v1), duration / n
         return [i / n for i in range(1, n + 1)], duration / n
 
+    def _refuse_if_stopped(self, what: str) -> None:
+        """Refuse ``what`` before anything is commanded while a stop is in effect (e.g. motion
+        halted for an abandoned run_code primitive that woke up)."""
+        if self.stop_requested():
+            raise RuntimeError(
+                f"{what} refused: a stop is in effect; nothing was commanded"
+            )
+
     def _check_stop(self) -> None:
         if self.stop_requested():
             raise Stopped()
@@ -940,6 +948,8 @@ class PiperController:
             report.notes.append(f"gripper already {'closed' if close else 'open'}")
             return
         pre = float(self.robot.get_gripper_width())
+        # Before the command, not after it: a late stop must not open a hand that holds an object.
+        self._check_stop()
         self._set_width(0.0 if close else lim.open_width_m)
         self.gripper_closed = close
         width = self._await_gripper(lim.grasp_open_width_m if close else None)
@@ -954,6 +964,7 @@ class PiperController:
         if close and empty and not reopen_empty:
             report.notes.append(f"empty grasp: width {width:.4f} m (left closed)")
         elif close and empty:
+            self._check_stop()
             self._set_width(lim.open_width_m)
             self.gripper_closed = False
             self._await_gripper(None)
@@ -1011,6 +1022,7 @@ class PiperController:
         steps = max(2, int(round(lim.joint_stream_hz * max(0.1, lim.reset_time_s))))
         period = max(0.1, lim.reset_time_s) / steps
         # The Z floor and the box hold on the reset path too (refused before any motion).
+        self._refuse_if_stopped("the joint move")
         self._ensure_synced()
         self.check_joint_path(start, goal, steps)
         # The Cartesian setpoint is meaningless once the reset streams; a failure below

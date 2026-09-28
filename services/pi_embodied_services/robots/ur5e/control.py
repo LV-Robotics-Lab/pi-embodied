@@ -824,6 +824,11 @@ class UR5eController:
         lim = self.limits
         if self.gripper is None:
             raise ValueError("this UR5e has no gripper configured (robot.gripper.type)")
+        if self._stop():
+            # Before any finger command: a late stop must not open a hand that holds an object.
+            raise RuntimeError(
+                "the gripper command refused: a stop is in effect; nothing was commanded"
+            )
         if not self.gripper.activated():
             self.gripper.activate()
             self.commands += 1

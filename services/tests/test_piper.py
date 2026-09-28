@@ -1075,3 +1075,26 @@ def test_step_pair_expires_the_detection_ids():
     before = perception.epoch.observation
     f._rpc["env.step_pair"]([])
     assert perception.epoch.observation == before + 1
+
+
+def test_a_stop_in_effect_refuses_the_gripper_and_every_motion_before_commanding():
+    """Audit 55d8d9a: the gripper path commanded the fingers before it checked the stop, so a
+    halted (abandoned) primitive that woke up could open a hand holding an object once."""
+    arm = FakeArm(width=0.03)
+    stopped = [True]
+    c = controller(arm, stop=lambda: stopped[0])
+    widths: list[float] = []
+    arm.set_gripper_width = lambda w: widths.append(w)
+    # A step settles any flowing stream and ends cancelled; it never drives the fingers.
+    out = c.step([0.0, 0.0, 0.0], gripper="open")
+    assert out["cancelled"] and widths == [], (out, widths)
+    held = arm.streamed  # the step's hold where the arm is, no motion
+    with pytest.raises(RuntimeError, match="stop is in effect.*nothing was commanded"):
+        c.move_to_joints([0.0] * 6)
+    assert widths == [] and arm.streamed == held, "the joint move commanded nothing"
+    # The gripper command itself checks first (a stop landing mid-step, before it).
+    from pi_embodied_services.robots.piper.controller import StepReport, Stopped
+
+    with pytest.raises(Stopped):
+        c._gripper(False, StepReport(), reopen_empty=True)
+    assert widths == [], "the fingers were never driven"

@@ -197,6 +197,11 @@ class FrankaEnvFacade(FrankaCodeMode, BaseEnvFacade):
         """Tell the worker which stop generation this call runs under, then run it."""
 
         def call(*args: Any, **kwargs: Any) -> Any:
+            if self.motion_halt is not None:
+                # A thread that outlived its call (an abandoned run_code primitive) moves nothing.
+                raise RuntimeError(
+                    f"refused: {self.motion_halt}; nothing was commanded"
+                )
             begin_op = getattr(self._backend, "begin_op", None)
             if begin_op is not None:
                 begin_op(self.active_stop_generation)

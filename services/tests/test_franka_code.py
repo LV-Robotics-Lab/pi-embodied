@@ -574,3 +574,19 @@ def test_the_self_check_passes_with_the_geometric_toolset():
     ), (
         "the geometry primitives are the server's; move_grip stays pi's (it executes the plan)"
     )
+
+
+def test_a_halted_facade_sends_no_worker_motion_or_gripper_command():
+    """An abandoned run_code primitive that wakes up must not reach the arm or the gripper."""
+    f, w = rlinf()
+    f.halt_motion("run_code primitive set_gripper was abandoned")
+    for method, kwargs in (
+        ("env.set_gripper", {"open": True}),
+        ("env.move_delta", {"delta_xyz": [0.01, 0.0, 0.0]}),
+    ):
+        with pytest.raises(RuntimeError, match="nothing was commanded"):
+            f._rpc[method](**kwargs)
+    assert w.moves == []
+    f.clear_motion_halt()
+    f._rpc["env.set_gripper"](open=True)
+    assert w.moves == [("gripper", True)]

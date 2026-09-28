@@ -81,3 +81,8 @@ test("a manifest names the robot's calibrated transform or explicit view specs",
 	assert.equal(transformAll([{ src: join(dir, "a.png"), dst: join(dir, "b.png"), camera: "agentview" }], libero), 1);
 	assert.deepEqual(fingerprint(decodePng(readFileSync(join(dir, "b.png")))).shape, [256, 256, 3]);
 });
+
+test("LIBERO views match aaroncaozj/libero_show-harness_tokenized: full square frames, the wrist turned 180 degrees, no crop", () => {
+	assert.equal(formatView(ROBOT_VIEWS.libero.agentview), "rot=0,flip=none,square=256");
+	assert.equal(formatView(ROBOT_VIEWS.libero.wrist), "rot=0,flip=both,square=256");
+});

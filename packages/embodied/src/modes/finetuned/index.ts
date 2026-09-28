@@ -282,10 +282,13 @@ export const ROBOT_VIEWS: Record<string, { agentview: ViewSpec; wrist: ViewSpec 
 		agentview: { rot: 0, flip: "none", square: SQUARE },
 		wrist: { rot: 0, flip: "none", crop: 1.3333, square: SQUARE },
 	},
-	// turned half around (MV_FWD toward the top, MV_LEFT toward the right): a 180 degree turn.
+	// turned half around (MV_FWD toward the top, MV_LEFT toward the right): a 180 degree turn, and no
+	// crop: LIBERO renders both views square, and aaroncaozj/libero_show-harness_tokenized (the only
+	// LIBERO training data, the v5 adapters') stores them as the full 256 x 256 frame, the wrist with the
+	// fingertips at the top. A 4:3 crop cut the far edge off and stretched what was left.
 	libero: {
 		agentview: { rot: 0, flip: "none", square: SQUARE },
-		wrist: { rot: 0, flip: "both", crop: 1.3333, square: SQUARE },
+		wrist: { rot: 0, flip: "both", square: SQUARE },
 	},
 	// fingertips at the bottom, MV_FWD toward the top, left agrees.
 	piper: {

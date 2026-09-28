@@ -558,7 +558,10 @@
 			"module": "vla-adapters",
 			"doc": {
 				"tool": "Pi0.5 closed-loop grasp. Use it only for the grasp; you do every move_to and release. Success needs a descent then a lift with the gripper partly closed; it is a hint, confirm from gripper opening and the wrist image."
-			}
+			},
+			"requires": [
+				"pi0"
+			]
 		},
 		{
 			"name": "openvla_act",
@@ -607,7 +610,10 @@
 			"doc": {
 				"tool": "Pi0.5 closed-loop contact skill for non-pick interactions (knob, stove, drawer, button, short push). success only mirrors task termination; inspect the images for intermediate progress."
 			},
-			"result": "motion"
+			"result": "motion",
+			"requires": [
+				"pi0"
+			]
 		},
 		{
 			"name": "execute_grasp",

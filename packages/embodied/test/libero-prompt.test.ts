@@ -199,6 +199,8 @@ async function session(t: { after: (fn: () => void) => void }, values: Record<st
 		{
 			env: env.url,
 			sam3: sam3.url,
+			// Any server that answers healthz stands in for Pi0.5: the RPent prompt describes the pi0 tools.
+			vla: sam3.url,
 			suite: "libero_10_task",
 			task: "2",
 			"memory-profile": "local",
@@ -471,4 +473,20 @@ test("the motion tools run the env server's methods with the manifest's paramete
 	assert.ok(moved.step > before);
 	assert.equal(moved.result.steps_used, moved.step - before);
 	assert.deepEqual(moved.result.final_eef_pos, [0.05, 0, 1]);
+});
+
+test("Pi0.5 is optional: without it the pi0 tools stay inactive and the result notes it; --require-skills pi0 refuses", async (t) => {
+	const s = await session(t, { vla: "off" });
+	assert.ok(s.active().includes("move_to"), "the robot started");
+	assert.ok(!s.active().includes("pi0_pick") && !s.active().includes("pi0_doubled"));
+	assert.doesNotMatch((await s.emit("before_agent_start", { systemPrompt: "" })).systemPrompt, /`pi0_pick`/);
+	await s.emit("agent_start");
+	await s.run("finish", { status: "failure", summary: "x" });
+	await s.emit("agent_end", { messages: [] });
+	const result = s.entries.find((e) => e.type === "robot_result")?.data;
+	assert.deepEqual(result?.skills_off, { pi0: "switched off" });
+
+	const r = await session(t, { vla: "http://127.0.0.1:9", "require-skills": "pi0" });
+	process.exitCode = undefined;
+	assert.deepEqual(r.active(), [], "a run that needs Pi0.5 does not start without it");
 });

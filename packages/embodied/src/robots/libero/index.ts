@@ -18,6 +18,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
 import { type FlywheelObs, type FlywheelSpec, flywheelSuite } from "../../capabilities/flywheel.ts";
+import { probeSkill, registerSkillFlags, type SkillState, skillsOff } from "../../capabilities/skills.ts";
 import { MOLMO, pi05, SAM3 } from "../../infra/model-services.ts";
 import { decodePng, decodePngChannel, encodePng } from "../../infra/png.ts";
 import { NdArray, RpcClient } from "../../infra/rpc.ts";
@@ -437,6 +438,8 @@ export default function libero(pi: ExtensionAPI) {
 	registerGraspFlags(pi);
 	// --point: Molmo's point as molmo_point (the units' point plugin owns `point`); LIBERO's Flash registers --molmo.
 	registerPointFlags(pi);
+	// --require-skills: Pi0.5 is optional unless named (../../capabilities/skills.ts).
+	registerSkillFlags(pi);
 	// --detections / --unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
 	registerDetectionFlags(pi);
 
@@ -490,6 +493,8 @@ export default function libero(pi: ExtensionAPI) {
 		const vars: Record<string, string> = { ...robot.task, guides_dir: GUIDES, task_language: language };
 		return text.replace(/\{\{(suite|task|seed|guides_dir|task_language)\}\}/g, (_, k: string) => vars[k]);
 	};
+	/** Optional VLA skills at this session's start (Pi0.5). */
+	const skills: Record<string, SkillState> = {};
 	const robot = defineRobot(pi, {
 		name: "libero",
 		// Tools and code primitives: ../../primitives/manifests/libero.json (the env server reads it too).
@@ -507,6 +512,8 @@ export default function libero(pi: ExtensionAPI) {
 				place: Boolean(flag("anyplace", "")),
 				geometry: pi.getFlag("geometry") === true,
 				unidepth: Boolean(String(pi.getFlag("unidepth") ?? "").trim()),
+				// pi0_pick / pi0_doubled: the Pi0.5 server answered at session start.
+				pi0: skills.pi0?.on === true,
 			})[c] ?? false,
 		services: { models: [pi05("libero"), SAM3, MOLMO] },
 		task: ["suite", "task", "seed"],
@@ -576,6 +583,7 @@ export default function libero(pi: ExtensionAPI) {
 			return `${system}\n\n${mem.render(COMPACT.memory[mem.profile], { task: robot.task.task })}`;
 		},
 		result: () => ({
+			...skillsOff(skills),
 			suite: robot.task.suite,
 			task: Number(robot.task.task),
 			seed: Number(robot.task.seed),
@@ -1733,6 +1741,8 @@ export default function libero(pi: ExtensionAPI) {
 		if (!(LIBERO_PROMPTS as readonly string[]).includes(variant()))
 			throw new Error(`--libero-prompt must be one of ${LIBERO_PROMPTS.join(", ")}, not ${variant()}`);
 		vla = new RpcClient(flag("vla", ""));
+		// Pi0.5 is optional: without it the pi0 tools stay inactive and the result notes it.
+		skills.pi0 = await probeSkill(pi, "pi0", flag("vla", ""), () => vla.ready(3_000));
 		for (const a of VLA_ADAPTERS) if (flag(a.flag, "")) adapters.set(a.tool, new RpcClient(flag(a.flag, "")));
 		for (const k of Object.keys(vlaUsed)) delete vlaUsed[k];
 		sam3 = new RpcClient(flag("sam3", ""));

@@ -378,8 +378,8 @@ Features ported from OpenETA beyond the core harness; each is off by default and
 | Web search / page fetch | `pi install npm:pi-web-search@1.6.0 npm:@zeldrisho/pi-web-fetch@0.9.2`, then `--web-tools` | pi packages; `src/capabilities/web.ts` keeps their tools active next to the robot's | any |
 | Object memory | `--object-memory` [`--object-memory-dir <dir>`] | tools + `object_record` session entries (`src/capabilities/objects.ts`) | any |
 | Multi-waypoint route | `--waypoints` | `follow_waypoints` (`src/primitives/waypoints.ts`) | LIBERO, Franka |
-| Wrist-view alignment | `--align-wrist` | `align_wrist` (`src/primitives/wrist.ts`) | LIBERO, Franka |
-| Grasp advisor | `--grasp-advisor` [`--grasp-advisor-model`], with a plan_grasp backend | `suggest_grasp` (`src/primitives/advisor.ts`), a side VLM call | LIBERO |
+| Wrist-view alignment | `--align-wrist` | `align_wrist` (`src/primitives/wrist.ts`): computes the lateral correction to a target pixel in the wrist view and moves nothing (LIBERO: `move_to aligned_xyz`; Franka: `move_delta delta_world`) | LIBERO, Franka |
+| Grasp advisor | `--grasp-advisor` [`--grasp-advisor-model`], with a plan_grasp backend | `suggest_grasp` (`src/primitives/advisor.ts`): a side VLM ranks the latest plan_grasp candidates (no backend-free mode) | LIBERO only (Franka/dual Franka have plan_grasp but no advisor mount) |
 | Task skills | `/skill:embodied-pick` ... | pi skills (`skills/`) | any |
 | One server per arm and camera | always, real robots | `utils/hardware_lock.py` flock per device: the arm by serial (`robot.serial` / `calibration.arm_id`; one id for RLinf and Polymetis) else address, and every camera serial / device (`--lock-id`, `--lock-dir`, `$PI_EMBODIED_LOCK_DIR`) | Franka (RLinf, Polymetis), dual Franka, Piper, UR5e |
 

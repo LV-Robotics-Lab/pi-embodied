@@ -6,6 +6,10 @@ license: Apache-2.0 (adapted from OpenETA agent/skills/place.md)
 
 # Place
 
+**Robots:** as embodied-pick.
+**Needs:** `view_env_state`, a motion tool and a gripper tool (LIBERO `release`, `open_gripper`).
+**Uses when present:** `segment`, `back_project`; `plan_place`, `check_attached` (a grasp backend: LIBERO / Franka / dual Franka); `execute_place` (LIBERO); `follow_waypoints` (LIBERO / Franka with `--waypoints`).
+
 Guidance, not a macro; the tool descriptions define the parameters. Use the tools your robot has.
 
 ## Before the grasp

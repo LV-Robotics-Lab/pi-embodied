@@ -26,7 +26,7 @@ export type WristRig = {
 	view: (row: number, col: number) => Promise<WristView>;
 	/** The gripper centre (between the fingertips) in the world frame. */
 	gripper: () => Promise<number[]> | number[];
-	/** Where the aligned position goes, for the description (e.g. "move_to xyz"). */
+	/** How to apply the correction, for the description (e.g. "move_to xyz = aligned_xyz"). */
 	moveWith: string;
 };
 
@@ -100,7 +100,7 @@ export function wristAlignment(o: {
 export function alignWrist(rig: WristRig): ToolDef {
 	return toolDef(
 		"align_wrist",
-		`Wrist-view alignment near a grasp: give the target's pixel [row, col] in the current wrist image. Returns the lateral EEF correction (in the camera's image plane, at the target's depth, at most max_correction_m) that puts the target under the gripper centre, and aligned_xyz to pass to ${rig.moveWith}. Nothing moves; approach depth and orientation are unchanged. The returned wrist image marks the gripper-centre pixel (green) and the target (red).`,
+		`Wrist-view alignment near a grasp: give the target's pixel [row, col] in the current wrist image. Returns the lateral EEF correction (in the camera's image plane, at the target's depth, at most max_correction_m) that puts the target under the gripper centre (delta_world) and the EEF position after it (aligned_xyz). Nothing moves: then ${rig.moveWith}; approach depth and orientation are unchanged. The returned wrist image marks the gripper-centre pixel (green) and the target (red).`,
 		Type.Object({
 			point: Type.Array(Type.Integer(), {
 				minItems: 2,

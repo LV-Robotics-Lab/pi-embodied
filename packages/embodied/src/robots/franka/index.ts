@@ -1209,7 +1209,7 @@ export default function franka(pi: ExtensionAPI) {
 		alignWristTool(
 			pi,
 			{
-				moveWith: "move_delta (delta_world)",
+				moveWith: "move_delta with delta_xyz = delta_world",
 				gripper: tcpXyz,
 				view: async (row, col) => {
 					const s = getStep(steps, -1);

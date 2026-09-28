@@ -6,6 +6,10 @@ license: Apache-2.0 (adapted from OpenETA agent/skills/push.md and pull.md)
 
 # Push and pull
 
+**Robots:** all; a VLA contact skill only on LIBERO (`pi0_doubled`).
+**Needs:** `view_env_state`, a motion tool (`move_to` / `move_delta` / `move_pose`), a gripper tool for pulling.
+**Uses when present:** `segment`, `back_project`; `follow_waypoints` (LIBERO / Franka with `--waypoints`).
+
 Guidance, not a macro; the tool descriptions define the parameters. Use the tools your robot has.
 
 ## Push

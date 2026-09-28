@@ -6,6 +6,10 @@ license: Apache-2.0 (adapted from OpenETA agent/skills/pick.md)
 
 # Pick
 
+**Robots:** LIBERO, Franka, dual Franka (grasp planning, check_attached), ManiSkill, RoboCasa, RoboTwin, RoboLab, Piper, UR5e (motion and images only).
+**Needs:** `view_env_state`, a motion tool (`move_to` / `move_delta` / `move_pose`) and a gripper tool (`set_gripper`, `open_gripper` / `close_gripper`, a motion tool's gripper parameter, or a VLA grasp: LIBERO `pi0_pick`, Franka `vla_grasp`).
+**Uses when present:** `segment`, `back_project`; `plan_grasp`, `check_attached` (a grasp backend flag, LIBERO / Franka / dual Franka); `execute_grasp` (LIBERO); `suggest_grasp` (LIBERO with `--grasp-advisor`); `follow_waypoints` (LIBERO / Franka with `--waypoints`); `align_wrist` (LIBERO / Franka with `--align-wrist`); `recall_objects` (`--object-memory`).
+
 Guidance, not a macro: the robot's tool descriptions define the exact parameters. Use the tools your
 robot has; skip a step whose tool is not active.
 
@@ -22,9 +26,10 @@ robot has; skip a step whose tool is not active.
 
 4. With a grasp backend, `plan_grasp` the target. Choose for holding through lift and transport, not
    for the highest score alone: aperture, contact depth, clearance, where the contacts land on the object.
-5. `suggest_grasp` (--grasp-advisor) gives a second opinion from a separate vision model. Treat it as
-   evidence. Contacts on a rim, cap, neck, thin edge or barely on the object slip; if every candidate
-   looks like that, get another view or plan again instead of taking the least bad one.
+5. On LIBERO with `--grasp-advisor`, `suggest_grasp` gives a second opinion from a separate vision
+   model on the latest `plan_grasp` candidates. Treat it as evidence. Contacts on a rim, cap, neck,
+   thin edge or barely on the object slip; if every candidate looks like that, get another view or
+   plan again instead of taking the least bad one. Run the chosen id with `execute_grasp`.
 6. A candidate that fails for a structural reason (unreachable, collision, empty close):
    `plan_grasp` with `next_after` for the next rank, not the same one again.
 
@@ -36,8 +41,10 @@ robot has; skip a step whose tool is not active.
    (`follow_waypoints`, --waypoints: lift, carry, descend as separate segments) and look again from
    where the robot actually stopped before extending it.
 9. Near the object, when the wrist view shows a small sideways offset and the depth and orientation
-   are right, `align_wrist` (--align-wrist) on the target's wrist pixel and move to `aligned_xyz`.
-   When the target is clipped or the orientation is doubtful, move for a better wrist view or plan again.
+   are right, `align_wrist` (LIBERO / Franka, `--align-wrist`) on the target's wrist pixel: it moves
+   nothing and returns the correction, then move by it (LIBERO: `move_to` `aligned_xyz`; Franka:
+   `move_delta` by `delta_world`). When the target is clipped or the orientation is doubtful, move
+   for a better wrist view or plan again.
 
 ## Close and confirm
 

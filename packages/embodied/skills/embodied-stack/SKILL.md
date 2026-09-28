@@ -6,6 +6,8 @@ license: Apache-2.0 (adapted from OpenETA agent/skills/stack.md)
 
 # Stack
 
+**Robots / needs:** those of embodied-pick and embodied-place.
+
 Guidance, not a macro. Combine embodied-pick and embodied-place, and reason about stability before release.
 
 1. Identify and confirm both the object to move and the support; look at the support's usable top

@@ -1584,7 +1584,7 @@ export default function libero(pi: ExtensionAPI) {
 		alignWristTool(
 			pi,
 			{
-				moveWith: "move_to xyz",
+				moveWith: "move_to with xyz = aligned_xyz",
 				gripper: eef,
 				view: async (row, col) => {
 					const map = await worldMap("wrist", 1024);

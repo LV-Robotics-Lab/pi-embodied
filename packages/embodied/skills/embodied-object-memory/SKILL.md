@@ -6,6 +6,9 @@ license: Apache-2.0 (adapted from OpenETA agent/skills/memory_extract.md)
 
 # Object memory
 
+**Robots:** all, with `--object-memory`.
+**Needs:** `remember_object`, `recall_objects`, `forget_object`; positions from `back_project` / `segment` / `plan_grasp` where the robot has them.
+
 `remember_object`, `recall_objects` and `forget_object` (pi started with --object-memory) keep one
 record per object name: its last world position (and orientation), the env step and time it was
 seen, and your note. They are session entries, so a resumed or forked session keeps them; with

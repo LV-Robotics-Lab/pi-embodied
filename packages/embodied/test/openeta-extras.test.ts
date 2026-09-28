@@ -169,6 +169,7 @@ test("follow_waypoints runs segments in order and stops at the first one not rea
 				[0, 0, 0.35],
 				[0, 0, 0.4],
 			],
+			gripper: -1,
 		},
 		undefined,
 	);
@@ -179,14 +180,17 @@ test("follow_waypoints runs segments in order and stops at the first one not rea
 			throw new Error("reflex");
 		},
 	});
-	const failed = await followWaypoints(c.rig).run({ waypoints: [[0, 0, 0.35]] }, undefined);
+	const failed = await followWaypoints(c.rig).run({ waypoints: [[0, 0, 0.35]], gripper: -1 }, undefined);
 	assert.equal(failed.stop_reason, "error");
 	assert.equal(failed.segments[0].error, "reflex");
 	// A route over the limit moves nothing.
 	const d = waypointRig();
-	const refused = await followWaypoints(d.rig).run({ waypoints: [[0.5, 0, 0.3]] }, undefined);
+	const refused = await followWaypoints(d.rig).run({ waypoints: [[0.5, 0, 0.3]], gripper: -1 }, undefined);
 	assert.match(refused.error, /segment 0: .*Add waypoints in between/);
 	assert.equal(refused.moved, false);
+	const nogrip = await followWaypoints(d.rig).run({ waypoints: [[0, 0, 0.35]] }, undefined);
+	assert.match(nogrip.error, /give gripper/);
+	assert.equal(d.moves.length, 0);
 	assert.equal(d.moves.length, 0);
 	// A real arm's gripper keeps its last command: no gripper parameter.
 	const props = (r: WaypointRig) => (followWaypoints(r).parameters as { properties: object }).properties;

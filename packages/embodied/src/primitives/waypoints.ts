@@ -86,15 +86,18 @@ export function followWaypoints(rig: WaypointRig): ToolDef {
 			...(rig.gripper === false
 				? {}
 				: {
-						gripper: Type.Optional(
-							Type.Number({ description: "-1 open (default), +1 closed (hold +1 while carrying)" }),
-						),
+						gripper: Type.Number({
+							description:
+								"Gripper command held along the route: -1 open, +1 closed (+1 while carrying). Required: the route never changes the gripper by default",
+						}),
 					}),
 		}),
 		async (p, signal) => {
 			rig.check?.(signal);
 			const waypoints = (p.waypoints as number[][]).map((w) => w.map(Number));
-			const gripper = Number(p.gripper ?? -1) >= 0 ? 1 : -1;
+			if (rig.gripper !== false && !Number.isFinite(Number(p.gripper)))
+				return { name: "follow_waypoints", error: "give gripper: -1 open or +1 closed", moved: false };
+			const gripper = Number(p.gripper) >= 0 ? 1 : -1;
 			const start = [...(await rig.current())];
 			let lengths: number[];
 			try {

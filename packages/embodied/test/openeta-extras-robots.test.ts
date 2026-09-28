@@ -211,7 +211,7 @@ test("LIBERO --waypoints --align-wrist --object-memory: the route servos through
 	assert.ok(steps.length > 2);
 	// A route beyond LIBERO's 0.3 m segment limit moves nothing.
 	const before = steps.length;
-	const refused = await s.run("follow_waypoints", { waypoints: [[0.6, 0.05, 0.9]] });
+	const refused = await s.run("follow_waypoints", { waypoints: [[0.6, 0.05, 0.9]], gripper: 1 });
 	assert.match(refused.content[0].text, /segment 0/);
 	assert.equal(env.calls.filter((c) => c.method === "env.step").length, before);
 	// The target 2 cm along +x and 4 cm along +y of the gripper, seen 0.4 m below the wrist camera.

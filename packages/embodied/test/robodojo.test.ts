@@ -395,7 +395,7 @@ test("--code=true: run_code runs on the env server; its observation and success 
 	assert.equal(env.calls.filter((c) => c.method === "code.run").length, 1);
 });
 
-/** A fake xpolicy bridge (`POST /call`, ../src/xpolicy.ts): `chunks` are get_action's replies in order. */
+/** A fake xpolicy bridge (`POST /call`, ../src/primitives/xpolicy.ts): `chunks` are get_action's replies in order. */
 async function fakeBridge(chunks: unknown[][]) {
 	const calls: { method: string; kwargs: Record<string, any> }[] = [];
 	const server = createServer((req, res) => {
@@ -490,7 +490,7 @@ echo '{"type":"custom","customType":"robot_result","data":{"robot":"robodojo","s
 `,
 	);
 	chmodSync(pi, 0o755);
-	const script = new URL("../src/robodojo/eval.sh", import.meta.url).pathname;
+	const script = new URL("../src/robots/robodojo/eval.sh", import.meta.url).pathname;
 	const r = spawnSync("bash", [script, join(dir, "out"), "stack_bowls", seeds], {
 		env: { ...process.env, PI: pi, TIME_LIMIT: "0" },
 		encoding: "utf8",

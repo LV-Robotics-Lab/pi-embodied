@@ -12,7 +12,7 @@
  * layout id (layouts are pre-generated per task; 25 or 50 of them). Isaac Sim takes a minute or more to
  * come up.
  *
- * With `--xpolicy <ws url>`, `xpolicy_act` runs an XPolicyLab policy (../xpolicy.ts, env_cfg arx_x5, joint or
+ * With `--xpolicy <ws url>`, `xpolicy_act` runs an XPolicyLab policy (../../primitives/xpolicy.ts, env_cfg arx_x5, joint or
  * ee actions) on RoboDojo's native observation, one native action per step, as RoboDojo's own
  * eval_one_episode does.
  *
@@ -45,8 +45,8 @@ import {
 } from "../../primitives/detections.ts";
 import { mountGraspTool } from "../../primitives/grasp.ts";
 import { pointActive, pointTool, registerPointFlags } from "../../primitives/pointing.ts";
-import { attach, defineRobot, type Json, rgbOf, SERVICES, u8 } from "../../robot.ts";
 import type { XPolicyAction, XPolicyObs } from "../../primitives/xpolicy.ts";
+import { attach, defineRobot, type Json, rgbOf, SERVICES, u8 } from "../../robot.ts";
 
 const read = (name: string) => template(new URL(name, import.meta.url));
 const SYSTEM = read("./SYSTEM.md");

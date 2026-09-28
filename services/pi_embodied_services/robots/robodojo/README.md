@@ -44,7 +44,7 @@ measured on Isaac Sim 5.1. What differs from upstream (robodojo-benchmark/RoboDo
 - The policy-client side of `EvalEnv` is stubbed (no XPolicyLab connection from the env) and its
   episode videos are off: pi records its own. XPolicyLab policies reach the env through pi's
   `xpolicy_act`, one native action per step, as RoboDojo's `eval_one_episode` does.
-- Layout selection: `packages/embodied/src/robodojo/eval.sh` replaces an unstable layout with the next
+- Layout selection: `packages/embodied/src/robots/robodojo/eval.sh` replaces an unstable layout with the next
   one, as RoboDojo's `SeedManager` does; the layout ids are given on the command line.
 
 The same policy on the same layouts on both stacks has not been compared (未验证): no host here runs

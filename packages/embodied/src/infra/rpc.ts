@@ -71,6 +71,16 @@ const NONFINITE: Record<string, number> = { NaN: Number.NaN, Infinity: Infinity,
 const NONFINITE_TAG = "\u0000pi-nonfinite:";
 
 /**
+ * A service endpoint as robots take it: `URL`, or `URL#token=HEX` for a server that requires its RPC
+ * token (services/PROTOCOL.md). The token is never part of the URL that is dialled.
+ */
+export function parseEndpoint(endpoint: string): { url: string; token?: string } {
+	const [url, fragment] = endpoint.split("#", 2);
+	const token = /^token=([0-9a-f]+)$/.exec(fragment ?? "")?.[1];
+	return token ? { url, token } : { url };
+}
+
+/**
  * JSON.parse that also accepts the `NaN`, `Infinity` and `-Infinity` tokens Python's `json.dumps`
  * emits for non-finite floats (standard JSON has none, so JSON.parse rejects the whole reply).
  * Tokens inside strings are left alone.

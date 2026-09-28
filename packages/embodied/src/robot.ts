@@ -23,7 +23,7 @@ import { approval, operator } from "./capabilities/operator.ts";
 import { webTools } from "./capabilities/web.ts";
 import { robotCheck } from "./infra/check.ts";
 import { type ModelServicesSpec, modelServices } from "./infra/model-services.ts";
-import { forgetUnresponsive, NdArray, RpcClient, RpcUnavailable } from "./infra/rpc.ts";
+import { forgetUnresponsive, NdArray, parseEndpoint, RpcClient, RpcUnavailable } from "./infra/rpc.ts";
 import { type CodeSpec, code } from "./modes/code/index.ts";
 import { type UnitsSpec, units } from "./modes/units/index.ts";
 import { VLM_COST_EVENT } from "./modes/units/vlm.ts";
@@ -1107,9 +1107,8 @@ export async function servicesJson<T>(r: Services, code: string, args: string[])
 /** Attach to a running service and wait for healthz. */
 export async function attach(endpoint: string, readyMs = 300_000): Promise<RpcClient> {
 	// A server that requires its RPC token (services/PROTOCOL.md) is attached as `URL#token=HEX`.
-	const [url, fragment] = endpoint.split("#", 2);
+	const { url, token } = parseEndpoint(endpoint);
 	const rpc = new RpcClient(url);
-	const token = /^token=([0-9a-f]+)$/.exec(fragment ?? "")?.[1];
 	if (token) rpc.token = token;
 	await rpc.ready(readyMs);
 	return rpc;

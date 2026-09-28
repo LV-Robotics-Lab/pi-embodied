@@ -19,6 +19,7 @@ import {
 	runChecks,
 	SPECS,
 } from "../src/infra/check.ts";
+import { parseEndpoint } from "../src/infra/rpc.ts";
 
 /** A services-style RPC server answering healthz with `ok`. */
 async function rpcServer(ok: boolean) {
@@ -291,4 +292,48 @@ test("runChecks refuses an unknown robot", async () => {
 	const rows = await runChecks("nosuchrobot", {});
 	assert.equal(rows[0].status, "FAIL");
 	assert.match(rows[0].detail, /unknown robot/);
+});
+
+test("/robot-check sends a URL#token=HEX endpoint's token, as attach() does, and never prints it", async () => {
+	const server = createHttpServer((req, res) => {
+		let body = "";
+		req.on("data", (c) => {
+			body += c;
+		});
+		req.on("end", () => {
+			const { method, token } = JSON.parse(body) as { method: string; token?: string };
+			const ok = token === "abc123";
+			res.writeHead(ok ? 200 : 403, { "Content-Type": "application/json" });
+			res.end(JSON.stringify(ok ? { ok: true, result: { method } } : { ok: false, error: "bad token" }));
+		});
+	});
+	await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+	const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+	try {
+		assert.deepEqual(parseEndpoint(`${url}#token=abc123`), { url, token: "abc123" });
+		assert.deepEqual(parseEndpoint(url), { url });
+		assert.equal((await probeEndpoint(url, 3000, ENV_CALLS)).ok, false);
+		const ok = await probeEndpoint(`${url}#token=abc123`, 3000, ENV_CALLS);
+		assert.equal(ok.ok, true, ok.detail);
+		const rows = await runChecks(
+			"x",
+			{ "robot-env": `${url}#token=abc123` },
+			{
+				spec: {
+					python: { flag: "python", env: [] },
+					imports: [],
+					gpu: false,
+					endpoints: [{ flag: "robot-env", why: "env", calls: ENV_CALLS }],
+				},
+				dashboard: "skip",
+				timeoutMs: 1,
+			},
+		);
+		const env = rows.find((r) => r.check === "--robot-env");
+		assert.equal(env?.status, "PASS", env?.detail);
+		assert.ok(!rows.some((r) => r.detail.includes("abc123")));
+	} finally {
+		server.closeAllConnections();
+		server.close();
+	}
 });

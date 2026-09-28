@@ -27,6 +27,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { parseEndpoint } from "./rpc.ts";
 
 const SERVICES = fileURLToPath(new URL("../../../../services", import.meta.url));
 
@@ -357,16 +358,18 @@ async function gpuRows(needed: boolean): Promise<Row[]> {
 
 /** One services RPC call (`POST <base>/call`): its result, or why it failed. */
 async function rpcCall(
-	base: string,
+	endpoint: string,
 	method: string,
 	timeoutMs: number,
 ): Promise<{ ok: true; result: unknown; ms: number } | { ok: false; detail: string }> {
 	const t0 = Date.now();
+	// `URL#token=HEX` (the robots' attach()): the token goes in the body, as RpcClient sends it.
+	const { url: base, token } = parseEndpoint(endpoint);
 	try {
 		const res = await fetch(`${base.replace(/\/$/, "")}/call`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ method, kwargs: {}, args: [] }),
+			body: JSON.stringify({ method, kwargs: {}, args: [], ...(token ? { token } : {}) }),
 			signal: AbortSignal.timeout(timeoutMs),
 		});
 		const text = await res.text();
@@ -438,12 +441,14 @@ async function endpointRows(spec: RobotCheckSpec, flags: Flags): Promise<Row[]> 
 			const check = `--${e.flag}`;
 			if (!e.url) return { status: "SKIP", check, detail: `not set (${e.why})` };
 			const r = await probeEndpoint(e.url, 3000, "calls" in e ? (e.calls ?? []) : []);
-			if (r.ok) return { status: "PASS", check, detail: `${e.url} ${r.detail}` };
+			// The printed endpoint leaves out a `#token=`.
+			const shown = parseEndpoint(e.url).url;
+			if (r.ok) return { status: "PASS", check, detail: `${shown} ${r.detail}` };
 			const soft = e.toolsOnly && units;
 			return {
 				status: soft ? "WARN" : "FAIL",
 				check,
-				detail: `${e.url} unreachable: ${r.detail} (${e.why}${soft ? "; not used by --units=true" : ""})`,
+				detail: `${shown} unreachable: ${r.detail} (${e.why}${soft ? "; not used by --units=true" : ""})`,
 			};
 		}),
 	);

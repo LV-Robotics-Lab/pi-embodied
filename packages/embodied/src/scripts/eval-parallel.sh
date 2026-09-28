@@ -48,7 +48,7 @@
 # would serialize the workers (an exclusive flock admits one holder), and a worker waiting on it while
 # its siblings run would deadlock with anything that waits for this run to finish. The flip side: a
 # service this run needs must not be started under the same lock, or this script waits forever.
-# Heavy: robolab, robodojo and behavior (Isaac Sim) and robotwin (cuRobo). Light: libero, maniskill, metaworld,
+# Heavy: robolab, robodojo and behavior (Isaac Sim), robotwin (cuRobo) and humanclaw (Habitat + a motion model). Light: libero, maniskill, metaworld,
 # robosuite, genesis and robocasa (an EGL, SAPIEN or Genesis renderer per episode, the planner off the
 # GPU); they share the GPU with whatever else runs and never take LOCK (it is noted and ignored), so a
 # lock queue of light jobs cannot form. Genesis and BEHAVIOR pick their GPU themselves (--backend /
@@ -97,8 +97,8 @@ shift 2
 case $robot in
 libero) npos=3 ;;
 maniskill | robolab | robodojo | metaworld | robosuite | genesis | behavior) npos=2 ;;
-robotwin | robocasa) npos=1 ;;
-*) die "unknown robot $robot (libero, maniskill, metaworld, robosuite, genesis, behavior, robolab, robodojo, robotwin, robocasa)" ;;
+robotwin | robocasa | humanclaw) npos=1 ;;
+*) die "unknown robot $robot (libero, maniskill, metaworld, robosuite, genesis, behavior, robolab, robodojo, robotwin, robocasa, humanclaw)" ;;
 esac
 [ $# -ge $npos ] || die "$robot takes $npos selection arguments"
 sel=("${@:1:npos}")
@@ -159,6 +159,14 @@ for (const name of splits) {
 			if ((!tasks || tasks.includes(t)) && (!seeds || seeds.includes(String(s))))
 				console.log(`${name}/${t}\t${name}/${t}_s${s}\tTASKS=${t} SEEDS=${s}\t${name}`);
 }' "${TARGET50:-$SERVICES/pi_embodied_services/robots/robocasa/eval/target50.json}" "$1" ;;
+	# One unit per HumanClawBench episode of one|val100|fullval|<list.json> (the humanclaw venv lists them).
+	humanclaw) "${HUMANCLAW_PYTHON:-${PI_EMBODIED_PYTHON:-python}}" -c '
+import sys
+from humanclaw_bench.config import load_config
+from pi_embodied_services.robots.humanclaw.env_server import episode_specs
+for r in episode_specs(None, load_config("paper_fullval_v1"), sys.argv[1]):
+    k = "%s_ep%s_%s" % (r["scene_id"], r["episode_id"], r["object_category"])
+    print("%s\t%s\t-\t--episodes %s" % (k, k, k))' "$1" ;;
 	esac
 }
 
@@ -208,12 +216,12 @@ done
 
 if [ -n "${LOCK:-}" ]; then
 	case $robot in
-	robolab | robodojo | robotwin | behavior)
+	robolab | robodojo | robotwin | behavior | humanclaw)
 		command -v flock >/dev/null || die "LOCK is set but flock is missing"
 		exec 9>"$LOCK"
 		flock -n 9 || { echo "$(date +%T) waiting for $LOCK" && flock 9; } || die "cannot lock $LOCK"
 		;;
-	*) echo "eval-parallel.sh: $robot is a light job (renderer only, planner off the GPU); LOCK is for robolab, robodojo, behavior and robotwin and is not taken" >&2 ;;
+	*) echo "eval-parallel.sh: $robot is a light job (renderer only, planner off the GPU); LOCK is for robolab, robodojo, behavior, robotwin and humanclaw and is not taken" >&2 ;;
 	esac
 fi
 
@@ -228,7 +236,7 @@ worker() { # <k>
 		# index for a CUDA ordinal). Widening CUDA_VISIBLE_DEVICES to <gpu>,<egl> would satisfy it but expose a
 		# second GPU to the worker; instead the MuJoCo env servers get --cuda-device, clear CUDA_VISIBLE_DEVICES
 		# for themselves before importing robosuite and pin torch with set_device.
-		case $robot in libero | robocasa | robolab | robodojo | robosuite) extra+=(--cuda-device "$gpu") ;; esac
+		case $robot in libero | robocasa | robolab | robodojo | robosuite | humanclaw) extra+=(--cuda-device "$gpu") ;; esac
 	fi
 	[ "$api" -gt 0 ] && extra+=(-e "$here/../planner/api-gate.ts" --api-slots "$state/api" --max-api-concurrency "$api")
 	[ ${#ports[@]} -gt 0 ] && extra+=(-e "$here/../capabilities/dashboard" --dashboard=true --dashboard-port "${ports[k]}")

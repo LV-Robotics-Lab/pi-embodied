@@ -345,7 +345,10 @@ test("workers get their GPU and the EGL device on its PCI bus; only a heavy robo
 	assert.deepEqual([...seen], ["CVD=1 EGL=0 ORDER=PCI_BUS_ID"]);
 	// ManiSkill is a light job: it shares the GPU and never takes LOCK.
 	assert.ok(!existsSync(flocks), "a light robot takes no lock");
-	assert.match(r.stderr, /maniskill is a light job .* LOCK is for robolab, robodojo, behavior and robotwin/);
+	assert.match(
+		r.stderr,
+		/maniskill is a light job .* LOCK is for robolab, robodojo, behavior, robotwin and humanclaw/,
+	);
 	const heavy = s.run(["-j", "2", "--gpus", "1", "robolab", join(s.dir, "heavy"), "BananaInBowlTask", "0-1"], env);
 	assert.equal(heavy.status, 0, heavy.stdout + heavy.stderr);
 	assert.deepEqual(

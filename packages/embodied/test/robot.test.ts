@@ -54,6 +54,7 @@ function fakePi(flagValues: Record<string, unknown> = {}, branch: unknown[] = []
 		shutdown: () => {
 			shutdown = true;
 		},
+		abort: () => {},
 		sessionManager: { getBranch: () => branch, getSessionDir: () => dir },
 		// Like pi: the prompt the last before_agent_start handler forced (see emit).
 		getSystemPrompt: () => forced ?? "pi default prompt",
@@ -239,6 +240,24 @@ test("finish ends the episode, terminates its batch, and yields exactly one resu
 	);
 	assert.equal(f.events.at(-1)?.data.claimed, "success");
 	assert.equal(f.events.at(-1)?.data.step, 3);
+});
+
+test("the time-limit abort ends the episode as a failure, not a planner error", async (t) => {
+	const f = fakePi({ "time-limit": "0.01" });
+	t.after(f.restore);
+	toy(f.pi, async () => ["move", "finish"]);
+	await f.emit("session_start");
+	await f.emit("agent_start");
+	await f.emit("before_agent_start");
+	await new Promise((r) => setTimeout(r, 50));
+	// The reply the deadline cut off: some providers report the abort as an error.
+	await f.emit("message_end", {
+		message: { role: "assistant", stopReason: "error", errorMessage: "This operation was aborted", content: [] },
+	});
+	await f.emit("agent_end");
+	const [result] = f.entries.filter((e) => e.type === RESULT_ENTRY).map((e) => e.data);
+	assert.equal(result.planner_budget_exhausted, "time");
+	assert.equal(result.planner_error, null);
 });
 
 test("a spent turn budget ends the episode; an unended episode reports at shutdown", async (t) => {

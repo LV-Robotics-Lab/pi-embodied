@@ -272,6 +272,8 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	/** USD of this episode's model replies, as pi prices them from models.json. */
 	let cost = 0;
 	let plannerError: string | undefined;
+	/** The --time-limit deadline aborted the run: the reply it cut off is not a planner failure. */
+	let timedOut = false;
 	/** Ends the episode when the --time-limit wall-clock budget runs out, even mid-call. */
 	let deadline: ReturnType<typeof setTimeout> | undefined;
 	pi.registerFlag("keep-images", {
@@ -324,6 +326,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	pi.on("session_start", (_event, ctx) => {
 		ready = ran = ended = reported = finishing = false;
 		failed = broken = claimed = started = plannerError = outOfBudget = undefined;
+		timedOut = false;
 		clearTimeout(deadline);
 		deadline = undefined;
 		// A service that stopped answering ended the last episode; this one may find it restarted.
@@ -692,6 +695,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 					if (ended) return;
 					outOfBudget = "time";
 					ended = true;
+					timedOut = true;
 					publish();
 					ctx.abort();
 				}, limit * 1000);
@@ -726,8 +730,10 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		tokens.input += (m.usage?.input ?? 0) + (m.usage?.cacheRead ?? 0) + (m.usage?.cacheWrite ?? 0);
 		tokens.output += m.usage?.output ?? 0;
 		finishing = m.content.some((c) => c.type === "toolCall" && c.name === "finish");
-		// The model failing (after pi's own retries) makes the episode's outcome meaningless, whatever it is.
-		plannerError = m.stopReason === "error" ? (m.errorMessage ?? "model error") : undefined;
+		// The model failing (after pi's own retries) makes the episode's outcome meaningless, whatever it is;
+		// a reply the time-limit abort cut off (some providers report it as an error, "This operation was
+		// aborted") is the budget ending the episode, not the model failing.
+		plannerError = m.stopReason === "error" && !timedOut ? (m.errorMessage ?? "model error") : undefined;
 	});
 	pi.on("turn_end", () => {
 		turns++;

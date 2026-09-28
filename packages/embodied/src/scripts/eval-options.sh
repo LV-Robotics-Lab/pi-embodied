@@ -9,7 +9,7 @@
 eval_options_defaults() {
 	model="" thinking="" turns=${1:-0} limit=${TIME_LIMIT:-1800} limited="" units=false stateless=false
 	anchor=false
-	approval=standard max_tool_calls=0 max_tokens=0
+	approval=off max_tool_calls=0 max_tokens=0
 	vdm=false vdm_model="" vdm_wrist=false vdm_video=false vdm_video_frames=8
 	privileged=false
 	fallback_model="" fallback_after=2 fallback_retry=0
@@ -79,7 +79,7 @@ eval_parse_options() {
 		--fallback-retry-primary) fallback_retry=${args[i + 1]:-0} ;;
 		--fallback-retry-primary=*) fallback_retry=${args[i]#*=} ;;
 		# --approval (motion approval, src/capabilities/operator.ts) and the --max-tool-calls / --max-tokens budgets (src/robot.ts).
-		--approval) approval=${args[i + 1]:-standard} ;;
+		--approval) approval=${args[i + 1]:-off} ;;
 		--approval=*) approval=${args[i]#*=} ;;
 		--max-tool-calls) max_tool_calls=${args[i + 1]:-0} ;;
 		--max-tool-calls=*) max_tool_calls=${args[i]#*=} ;;

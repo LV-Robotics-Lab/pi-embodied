@@ -312,7 +312,61 @@ export function operator(pi: ExtensionAPI, robot: Robot) {
 // motion approval (--approval), OpenETA's supervision profiles (agent/runtime/supervision.py)
 
 /** `--approval` values: OpenETA's standard, human_gated and reviewed_autonomy profiles. */
-export const APPROVAL_MODES = ["standard", "human", "reviewed"] as const;
+export const APPROVAL_MODES = ["off", "standard", "human", "reviewed"] as const;
+
+/** Tools that execute a grasp or a placement (scripted or learned): high risk under --approval standard. */
+export const GRASP_PLACE_TOOLS: ReadonlySet<string> = new Set([
+	"execute_grasp",
+	"execute_place",
+	"grasp_object",
+	"scripted_grasp",
+	"pi0_pick",
+	"pi0_doubled",
+	"vla_grasp",
+	"vla_right_grasp",
+	"vla_handoff",
+	"vla_left_place",
+	"xpolicy_act",
+	"lingbot_act",
+	"rldx_skill",
+	"rldx_arm",
+	"release",
+]);
+/** Tools that reset the scene or the arm's posture: high risk under --approval standard. */
+export const RESET_TOOLS: ReadonlySet<string> = new Set(["reset", "request_scene_reset", "recover_joint_posture"]);
+/** Tools that move to an absolute target (the distance is unknown here): large moves under standard. */
+const ABSOLUTE_MOVES: ReadonlySet<string> = new Set([
+	"move_to",
+	"move_pose",
+	"move_hand",
+	"navigate_to",
+	"navigate_to_pose",
+	"move_to_joints",
+	"move_along_trajectory",
+]);
+
+/** The translation a relative-move call commands, m (the largest delta field found), else 0. */
+export function commandedTranslation(input: Record<string, unknown> | undefined): number {
+	let most = 0;
+	for (const key of ["delta_xyz", "delta", "dxyz", "translation"]) {
+		const v = input?.[key];
+		if (Array.isArray(v) && v.length >= 2 && v.every((x) => typeof x === "number"))
+			most = Math.max(most, Math.hypot(...(v as number[]).slice(0, 3)));
+	}
+	return most;
+}
+
+/**
+ * Whether --approval standard asks about a motion call: on a real robot every motion; in simulation
+ * grasp/place execution (GRASP_PLACE_TOOLS), resets (RESET_TOOLS), `run_code` (a program's moves are
+ * not bounded per call), a move to an absolute target, and a relative move of more than `largeM`.
+ */
+export function highRisk(tool: string, input: Record<string, unknown> | undefined, real: boolean, largeM: number) {
+	if (real) return true;
+	if (GRASP_PLACE_TOOLS.has(tool) || RESET_TOOLS.has(tool) || tool === "run_code" || ABSOLUTE_MOVES.has(tool))
+		return true;
+	return commandedTranslation(input) > largeM;
+}
 export type ApprovalMode = (typeof APPROVAL_MODES)[number];
 /** Session entry per approval decision: `{ mode, tool, input, decision, reason, source, model?, cost_usd?, images?, ms }`. */
 export const APPROVAL_ENTRY = "approval";
@@ -381,16 +435,22 @@ type ApprovalRobot = {
 	observes: (tool: string) => boolean;
 	/** The task text the reviewer judges against. */
 	task: () => string;
+	/** A real robot (code mode's `real`, an operator-judged exploration): --approval defaults to human, and standard asks about every motion. */
+	real: () => boolean;
 };
 
 /**
- * Motion approval, `--approval standard|human|reviewed`. pi itself asks no approval per tool call
- * (its `--approve` only trusts project resources), so this is built on pi's `tool_call` hook
- * (a block with a reason) and `ui.confirm`:
- *   standard  the default and the behaviour before this flag: motion runs under the runtime's
- *             deterministic checks only (workspace, IK, move and step limits, budgets, the operator gate)
+ * Motion approval, `--approval off|standard|human|reviewed` (handoff spec 2.2). pi itself asks no
+ * approval per tool call (its `--approve` only trusts project resources), so this is built on pi's
+ * `tool_call` hook (a block with a reason) and `ui.confirm`. The default is `human` on a real robot
+ * and `off` in simulation:
+ *   off       motion runs under the runtime's deterministic checks only (workspace, IK, move and
+ *             step limits, budgets, the operator gate)
+ *   standard  the operator confirms the high-risk motion calls only (`highRisk`: grasp/place
+ *             execution, resets, run_code, moves to an absolute target, relative moves over
+ *             --approval-large-move; on a real robot every motion)
  *   human     the operator confirms every motion call (`ui.confirm`); a declined call is blocked.
- *             Needs a UI: a run without one does not start
+ *   Both need a UI: a run without one does not start
  *   reviewed  every motion call first goes to a reviewer model (`--approval-model`, default
  *             --units-vlm-model, else the session's model) with the task, the call and the latest
  *             camera images (../units/vlm.ts askVlm); anything but an approval (a rejection, an
@@ -400,14 +460,19 @@ type ApprovalRobot = {
  * Motion calls are the robot's moving tools (ApprovalRobot.moves): its motion tools, `act`,
  * `run_code`, the VLA tools and the scene resets. The gate runs after the robot's own gates (a call
  * refused anyway costs no review). Each decision is an `approval` session entry; the robot result
- * carries the counts (none in standard mode). In standard mode no hook is registered.
+ * carries the counts (none when off). When off no hook is registered.
  */
 export function approval(pi: ExtensionAPI, robot: ApprovalRobot) {
 	pi.registerFlag("approval", {
 		type: "string",
-		default: "standard",
+		default: "",
 		description:
-			"Motion approval (not pi's --approve): standard (runtime checks only, the default) | human (the operator confirms each motion call) | reviewed (a reviewer model approves each motion call)",
+			"Motion approval (not pi's --approve): off (runtime checks only; the simulation default) | standard (the operator confirms high-risk motions) | human (the operator confirms each motion call; the real-robot default) | reviewed (a reviewer model approves each motion call)",
+	});
+	pi.registerFlag("approval-large-move", {
+		type: "string",
+		default: "0.1",
+		description: "--approval standard: a relative move commanding more than this translation, m, is high risk",
 	});
 	pi.registerFlag("approval-model", {
 		type: "string",
@@ -421,7 +486,14 @@ export function approval(pi: ExtensionAPI, robot: ApprovalRobot) {
 		description:
 			"Seconds one --approval reviewed call may take (its slot wait included); a timeout blocks the motion",
 	});
-	const mode = () => String(pi.getFlag("approval") || "standard") as ApprovalMode;
+	const mode = () => String(pi.getFlag("approval") || (robot.real() ? "human" : "off")) as ApprovalMode;
+	/** Whether the gate asks the operator about this call (human, or standard and high risk). */
+	const asksOperator = (tool: string, input?: Record<string, unknown>) => {
+		const m = mode();
+		if (!robot.moves(tool)) return false;
+		if (m === "human") return true;
+		return m === "standard" && highRisk(tool, input, robot.real(), Number(pi.getFlag("approval-large-move")) || 0.1);
+	};
 	let gate: { dir: string; n: number } | undefined;
 	pi.events.on(API_GATE_EVENT, (g) => {
 		gate = g as { dir: string; n: number };
@@ -430,7 +502,7 @@ export function approval(pi: ExtensionAPI, robot: ApprovalRobot) {
 	let hooked = false;
 	pi.on("session_start", () => {
 		Object.assign(counts, { requests: 0, approved: 0, rejected: 0, errors: 0, cost: 0 });
-		if (mode() !== "standard" && !hooked && (APPROVAL_MODES as readonly string[]).includes(mode())) {
+		if (mode() !== "off" && !hooked && (APPROVAL_MODES as readonly string[]).includes(mode())) {
 			hooked = true;
 			pi.on("tool_call", decide);
 		}
@@ -456,13 +528,14 @@ export function approval(pi: ExtensionAPI, robot: ApprovalRobot) {
 
 	async function decide(event: { toolName: string; input: Record<string, unknown> }, ctx: ExtensionContext) {
 		const m = mode();
-		if (m === "standard" || !robot.moves(event.toolName)) return undefined;
+		if (m === "off" || !robot.moves(event.toolName)) return undefined;
+		if (m === "standard" && !asksOperator(event.toolName, event.input)) return undefined;
 		counts.requests++;
 		const started = Date.now();
 		const entry: Record<string, unknown> = { mode: m, tool: event.toolName, input: event.input };
 		let allowed = false;
 		let reason: string;
-		if (m === "human") {
+		if (m === "human" || m === "standard") {
 			const go = ctx.hasUI
 				? await ctx.ui.confirm(
 						`Approve ${event.toolName}?`,
@@ -536,7 +609,7 @@ export function approval(pi: ExtensionAPI, robot: ApprovalRobot) {
 		Object.assign(entry, { reason, ms: Date.now() - started });
 		pi.appendEntry(APPROVAL_ENTRY, entry);
 		if (allowed) return undefined;
-		const who = m === "human" ? "the operator" : `the reviewer (${entry.decision})`;
+		const who = m !== "reviewed" ? "the operator" : `the reviewer (${entry.decision})`;
 		return { block: true, reason: `${event.toolName} was not approved by ${who}: ${reason}. It did not run.` };
 	}
 
@@ -546,12 +619,13 @@ export function approval(pi: ExtensionAPI, robot: ApprovalRobot) {
 			const m = mode();
 			if (!(APPROVAL_MODES as readonly string[]).includes(m))
 				return `--approval must be one of ${APPROVAL_MODES.join(", ")}, got "${m}"`;
-			if (m === "human" && !hasUI) return "--approval human needs an operator UI (interactive or RPC mode)";
+			if ((m === "human" || m === "standard") && !hasUI)
+				return `--approval ${m} needs an operator UI (interactive or RPC mode)${robot.real() && !pi.getFlag("approval") ? "; a real robot defaults to human, pass --approval off to run without one" : ""}`;
 			return undefined;
 		},
-		/** The robot result's approval summary (none in standard mode). */
+		/** The robot result's approval summary (none when off). */
 		result: () =>
-			mode() === "standard"
+			mode() === "off"
 				? {}
 				: {
 						approval: mode(),

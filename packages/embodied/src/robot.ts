@@ -826,6 +826,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	const ap = approval(pi, {
 		moves,
 		observes: (t) => (OBSERVE as readonly string[]).includes(t),
+		real: () => spec.code?.real === true || spec.explore?.operatorJudged === true,
 		task: () =>
 			spec.status?.().language ||
 			Object.entries(task)

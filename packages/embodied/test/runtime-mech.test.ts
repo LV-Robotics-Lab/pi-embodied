@@ -7,7 +7,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import "../src/robots/libero/index.ts";
 import { memory } from "../src/capabilities/memory/index.ts";
-import { APPROVAL_ENTRY, parseReview, reviewPrompt } from "../src/capabilities/operator.ts";
+import { APPROVAL_ENTRY, highRisk, parseReview, reviewPrompt } from "../src/capabilities/operator.ts";
 import { VLM_COST_EVENT } from "../src/modes/units/vlm.ts";
 import { CLOSED_LOOP, CLOSED_LOOP_ENTRY, NON_MOTION, unknownOutcome } from "../src/planner/closed-loop.ts";
 import { CONTEXT_VERSION_ENTRY, gitCommit, sha256, usedTemplates } from "../src/planner/context-version.ts";
@@ -255,7 +255,64 @@ test("motion classification over every robot's tools", () => {
 // ---------------------------------------------------------------------------
 // --approval
 
-test("--approval standard (the default) reviews nothing and leaves the result without approval fields", async (t) => {
+/** The toy plus the given motion tools. */
+function toyWith(f: ReturnType<typeof fakePi>, names: string[], extra: Partial<RobotSpec> = {}) {
+	const robot = toy(f, ["move", "view_env_state", ...names], extra);
+	const ok = async () => ({ content: [{ type: "text" as const, text: "ok" }], details: {} });
+	for (const n of names) robot.tool(n, n, Type.Object({}), ok);
+	return robot;
+}
+
+test("--approval standard asks only about high-risk motions in simulation", async (t) => {
+	const f = fakePi({ approval: "standard" }, { hasUI: true, confirm: false });
+	t.after(f.restore);
+	toyWith(f, ["move_delta", "execute_grasp", "reset", "move_to"]);
+	await f.emit("session_start");
+	assert.equal(await call(f, "move_delta", { delta_xyz: [0.02, 0, 0] }), undefined, "a small move runs");
+	assert.equal(await call(f, "view_env_state"), undefined);
+	for (const [tool, input] of [
+		["move_delta", { delta_xyz: [0.2, 0, 0] }],
+		["execute_grasp", { grasp_id: "g1" }],
+		["reset", {}],
+		["move_to", { xyz: [0.1, 0, 0.3] }],
+	] as const)
+		assert.match((await call(f, tool, input))?.reason ?? "", /not approved by the operator/, tool);
+	assert.deepEqual(f.confirms, [
+		"Approve move_delta?",
+		"Approve execute_grasp?",
+		"Approve reset?",
+		"Approve move_to?",
+	]);
+	assert.equal((await end(f)).approval_requests, 4);
+	assert.equal(highRisk("move_delta", { delta_xyz: [0.05, 0, 0] }, false, 0.1), false);
+	assert.equal(highRisk("move_delta", { delta_xyz: [0.05, 0, 0] }, true, 0.1), true, "real: every motion");
+	assert.equal(highRisk("run_code", { code: "" }, false, 0.1), true);
+});
+
+test("a real robot defaults to --approval human", async (t) => {
+	const f = fakePi({}, { hasUI: true, confirm: true });
+	t.after(f.restore);
+	toy(f, ["move", "view_env_state"], { explore: undefined, code: undefined });
+	await f.emit("session_start");
+	assert.equal(await call(f, "move"), undefined);
+	assert.deepEqual(f.confirms, [], "simulation: off");
+	const g = fakePi({}, { hasUI: true, confirm: true });
+	t.after(g.restore);
+	const real = { real: true, rpc: () => ({}) as never, observe: async () => ({ content: [], details: {} }) };
+	toy(g, ["move", "view_env_state"], { code: real as RobotSpec["code"] });
+	await g.emit("session_start");
+	assert.equal(await call(g, "move"), undefined);
+	assert.deepEqual(g.confirms, ["Approve move?"], "real: human");
+	// Without a UI a real robot does not start unless --approval off.
+	const h = fakePi({});
+	t.after(h.restore);
+	toy(h, ["move", "view_env_state"], { code: real as RobotSpec["code"] });
+	await h.emit("session_start");
+	await h.emit("session_shutdown");
+	assert.match(result(h)?.error ?? "", /real robot defaults to human, pass --approval off/);
+});
+
+test("--approval off (the simulation default) reviews nothing and leaves the result without approval fields", async (t) => {
 	const f = fakePi();
 	t.after(f.restore);
 	toy(f);
@@ -342,7 +399,7 @@ test("--approval human: the operator confirms each motion; without a UI the robo
 	assert.equal(await call(g, "move"), undefined);
 	for (const [flags, why] of [
 		[{ approval: "human" }, /needs an operator UI/],
-		[{ approval: "yolo" }, /--approval must be one of standard, human, reviewed/],
+		[{ approval: "yolo" }, /--approval must be one of off, standard, human, reviewed/],
 	] as const) {
 		const h = fakePi(flags);
 		t.after(h.restore);

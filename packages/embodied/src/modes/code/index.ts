@@ -90,6 +90,13 @@ type Json = Record<string, unknown>;
 export const DEFAULT_TIMEOUT_S = 60;
 export const DEFAULT_MAX_CALLS = 50;
 export const DEFAULT_MAX_MOVE_M = 3;
+/**
+ * An oracle run's (`--code-oracle`) caps where the flag is not given: a reference program must not
+ * be cut short by the model's defaults (CaP-X's two_arm_lift makes 52 calls, wipe about 83 and 5 m).
+ */
+export const ORACLE_MAX_CALLS = 1000;
+export const ORACLE_MAX_MOVE_M = 50;
+export const ORACLE_TIMEOUT_S = 600;
 
 /** A `--code-oracle` program: its file, header fields (`# key: value`) and the code that runs (prelude first). */
 export type Oracle = { name: string; path: string; header: Record<string, string>; code: string; sha256: string };
@@ -212,18 +219,18 @@ export function code(
 	});
 	pi.registerFlag("code-timeout", {
 		type: "string",
-		default: String(spec.timeoutS ?? DEFAULT_TIMEOUT_S),
-		description: `Code mode: the most wall-clock seconds one program may run (its default timeout_s is ${spec.timeoutS ?? DEFAULT_TIMEOUT_S} or this)`,
+		default: "",
+		description: `Code mode: the most wall-clock seconds one program may run (default ${spec.timeoutS ?? DEFAULT_TIMEOUT_S}; ${ORACLE_TIMEOUT_S} for --code-oracle)`,
 	});
 	pi.registerFlag("code-max-calls", {
 		type: "string",
-		default: String(DEFAULT_MAX_CALLS),
-		description: "Code mode: primitive calls one program may make",
+		default: "",
+		description: `Code mode: primitive calls one program may make (default ${DEFAULT_MAX_CALLS}; ${ORACLE_MAX_CALLS} for --code-oracle)`,
 	});
 	pi.registerFlag("code-max-move", {
 		type: "string",
-		default: String(spec.maxMoveM ?? DEFAULT_MAX_MOVE_M),
-		description: "Code mode: metres of translation one program may command in total",
+		default: "",
+		description: `Code mode: metres of translation one program may command in total (default ${spec.maxMoveM ?? DEFAULT_MAX_MOVE_M}; ${ORACLE_MAX_MOVE_M} for --code-oracle)`,
 	});
 	pi.registerFlag("code-helpers", {
 		type: "boolean",
@@ -256,11 +263,18 @@ export function code(
 				: `${String(pi.getFlag("code-api"))}+privileged`
 			: String(pi.getFlag("code-api") ?? "high");
 	const defaultTimeout = spec.timeoutS ?? DEFAULT_TIMEOUT_S;
-	const timeoutCap = () => Number(pi.getFlag("code-timeout")) || defaultTimeout;
-	const maxCalls = () => Math.max(1, Math.floor(Number(pi.getFlag("code-max-calls")) || DEFAULT_MAX_CALLS));
+	/** A budget flag as given (empty when not): eval.sh keys its configuration on these. */
+	const rawFlag = (name: string) => String(pi.getFlag(name) ?? "").trim();
+	// An oracle run (--code-oracle) relaxes every cap its flag does not set.
+	const oracleOn = () => !!String(pi.getFlag("code-oracle") ?? "").trim();
+	const timeoutCap = () =>
+		Number(rawFlag("code-timeout")) || (oracleOn() ? Math.max(ORACLE_TIMEOUT_S, defaultTimeout) : defaultTimeout);
+	const maxCalls = () =>
+		Math.max(1, Math.floor(Number(rawFlag("code-max-calls")) || (oracleOn() ? ORACLE_MAX_CALLS : DEFAULT_MAX_CALLS)));
 	const maxMove = () => {
-		const v = Number(pi.getFlag("code-max-move"));
-		return Number.isFinite(v) && v > 0 ? v : (spec.maxMoveM ?? DEFAULT_MAX_MOVE_M);
+		const v = Number(rawFlag("code-max-move"));
+		if (Number.isFinite(v) && v > 0) return v;
+		return oracleOn() ? ORACLE_MAX_MOVE_M : (spec.maxMoveM ?? DEFAULT_MAX_MOVE_M);
 	};
 	const helpersOn = () => pi.getFlag("code-helpers") === true;
 	const oracleRef = () => String(pi.getFlag("code-oracle") ?? "").trim();
@@ -515,6 +529,14 @@ export function code(
 				? {
 						code: mode() === "pure" ? "true" : "both",
 						code_api: tier(),
+						// The budget the programs ran under (effective) and as flagged (eval.sh's configuration key).
+						code_budget: {
+							timeout_s: timeoutCap(),
+							max_calls: maxCalls(),
+							max_move_m: maxMove(),
+							helpers: helpersOn(),
+						},
+						code_budget_flags: `timeout=${rawFlag("code-timeout")}+max_calls=${rawFlag("code-max-calls")}+max_move=${rawFlag("code-max-move")}+helpers=${helpersOn()}${oracleOn() ? "+oracle" : ""}`,
 						// The digest of the tier the programs ran with (robot.ts's code_api_digest is the episode's whole registry).
 						...(api ? { code_tier_digest: api.digest } : {}),
 						// A reference program ran, not the model: never comparable with a planner's run.

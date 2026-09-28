@@ -30,7 +30,7 @@ vdm=false vdm_model="" vdm_wrist=false vdm_video=false vdm_video_frames=8
 unit_tol=0.004
 privileged=false
 fallback_model="" fallback_after=2 fallback_retry=0
-code=false code_api=high code_oracle=""
+code=false code_api=high code_oracle="" code_timeout="" code_max_calls="" code_max_move="" code_helpers=false
 libero_prompt=rpent
 args=("$@")
 for ((i = 0; i < ${#args[@]}; i++)); do
@@ -59,6 +59,14 @@ for ((i = 0; i < ${#args[@]}; i++)); do
 	--libero-prompt=*) libero_prompt=${args[i]#*=} ;;
 	--code-oracle) code_oracle=${args[i + 1]:-} ;;
 	--code-oracle=*) code_oracle=${args[i]#*=} ;;
+	# The code budget is part of the code mode's configuration (result.json's code_budget_flags).
+	--code-timeout) code_timeout=${args[i + 1]-} ;;
+	--code-timeout=*) code_timeout=${args[i]#*=} ;;
+	--code-max-calls) code_max_calls=${args[i + 1]-} ;;
+	--code-max-calls=*) code_max_calls=${args[i]#*=} ;;
+	--code-max-move) code_max_move=${args[i + 1]-} ;;
+	--code-max-move=*) code_max_move=${args[i]#*=} ;;
+	--code-helpers | --code-helpers=true) code_helpers=true ;;
 	# pi sets a boolean flag to true whatever value it is given (`--stateless=false` runs stateless)
 	# and takes a following word as that value: only the forms that say what pi runs are accepted.
 	--stateless) case ${args[i + 1]:-} in "" | -* | @* | true) stateless=true ;; *)
@@ -135,6 +143,7 @@ backstop=()
 mkdir -p "$out"
 case $libero_prompt in rpent | compact) ;; *) echo "--libero-prompt must be rpent or compact, not '$libero_prompt'" >&2 && exit 2 ;; esac
 config=("$model" "$thinking" "$turns" "$limit" "$units" "$stateless" "$vdm" "$vdm_model" "$vdm_wrist" "$privileged" "$anchor" "$unit_tol" "$code" "$code_api" "$fallback_model" "$fallback_after" "$fallback_retry" "$approval" "$max_tool_calls" "$max_tokens" "$libero_prompt" "$code_oracle" "$vdm_video")
+export CODE_BUDGET_FLAGS="timeout=$code_timeout+max_calls=$code_max_calls+max_move=$code_max_move+helpers=$code_helpers${code_oracle:++oracle}"
 
 record() { # <dir> <exit code>: write result.json from the episode's session
 	node --input-type=module -e '
@@ -192,6 +201,8 @@ const same = r.model === (model || null) && r.thinking === (thinking || null) &&
 	&& (r.code ?? "false") === codeMode && (r.code_api ?? null) === (codeMode === "false" ? null : codeApi)
 	// Results written before --code-oracle existed ran the model.
 	&& (r.code_oracle ?? null) === (codeMode === "false" ? null : codeOracle || null)
+	// Results written before the code budget was recorded ran the default one.
+	&& (codeMode === "false" || (r.code_budget_flags ?? "timeout=+max_calls=+max_move=+helpers=false") === process.env.CODE_BUDGET_FLAGS)
 	// Results written before --fallback-model existed ran without a fallback planner.
 	&& (r.fallback_model ?? null) === (fallbackModel || null) && (r.fallback_after ?? null) === (fallbackModel ? Number(fallbackAfter) : null)
 	&& (r.fallback_retry_primary ?? null) === (fallbackModel ? Number(fallbackRetry) : null)

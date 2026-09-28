@@ -471,7 +471,7 @@ test("--code=true: run_code runs on the env server; BDDL success, q_score and th
 	await s.emit("session_start");
 	process.exitCode = undefined;
 	assert.deepEqual(s.active(), ["run_code", "finish"]);
-	assert.equal(s.flags["code-max-move"], String(CODE_MAX_MOVE_M), "a house-scale translation cap");
+	assert.equal(s.flags["code-max-move"], "", "not given: the robot's house-scale cap applies (below)");
 	await s.emit("agent_start");
 	const r = await s.run("run_code", { code: "navigate_to_pose(1.0, 0.5, 0.0)" });
 	const run = env.calls.find((c) => c.method === "code.run")!;

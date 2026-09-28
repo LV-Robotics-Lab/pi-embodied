@@ -63,7 +63,7 @@ approval=standard max_tool_calls=0 max_tokens=0
 vdm=false vdm_model="" vdm_wrist=false vdm_video=false vdm_video_frames=8
 privileged=false
 fallback_model="" fallback_after=2 fallback_retry=0
-code=false code_api=high code_oracle=""
+code=false code_api=high code_oracle="" code_timeout="" code_max_calls="" code_max_move="" code_helpers=false
 args=("$@")
 for ((i = 0; i < ${#args[@]}; i++)); do
 	case ${args[i]} in
@@ -133,6 +133,14 @@ for ((i = 0; i < ${#args[@]}; i++)); do
 	--code-api=*) code_api=${args[i]#*=} ;;
 	--code-oracle) code_oracle=${args[i + 1]:-} ;;
 	--code-oracle=*) code_oracle=${args[i]#*=} ;;
+	# The code budget is part of the code mode's configuration (result.json's code_budget_flags).
+	--code-timeout) code_timeout=${args[i + 1]-} ;;
+	--code-timeout=*) code_timeout=${args[i]#*=} ;;
+	--code-max-calls) code_max_calls=${args[i + 1]-} ;;
+	--code-max-calls=*) code_max_calls=${args[i]#*=} ;;
+	--code-max-move) code_max_move=${args[i + 1]-} ;;
+	--code-max-move=*) code_max_move=${args[i]#*=} ;;
+	--code-helpers | --code-helpers=true) code_helpers=true ;;
 	# --anchor-image (keep the first camera frame in context) is a boolean like --stateless.
 	--anchor-image) case ${args[i + 1]:-} in "" | -* | @* | true) anchor=true ;; *)
 		echo "--anchor-image takes no value: pi would turn it on and swallow '${args[i + 1]}'" >&2 && exit 2 ;;
@@ -267,7 +275,9 @@ const same = r.protocol === "robocasa365" && r.model === (model || null) && r.th
 	&& (r.fallback_retry_primary ?? null) === (fallbackModel ? Number(fallbackRetry) : null)
 	// Results written before code mode existed here ran without it.
 	&& (r.code ?? "false") === codeMode && (r.code_api ?? null) === (codeMode === "false" ? null : codeApi)
-	&& (r.code_oracle ?? null) === (codeMode === "false" ? null : codeOracle || null);
+	&& (r.code_oracle ?? null) === (codeMode === "false" ? null : codeOracle || null)
+	// Results written before the code budget was recorded ran the default one.
+	&& (codeMode === "false" || (r.code_budget_flags ?? "timeout=+max_calls=+max_move=+helpers=false") === process.env.CODE_BUDGET_FLAGS);
 process.exit(same ? 0 : 2);
 ' "$1/result.json" "${config[@]}" 2>/dev/null
 	}
@@ -372,6 +382,7 @@ export RLDX_SETTLE_PATIENCE=$(protocol m.runtime_protocol.rldx_settle_patience)
 export RLDX_ACTION_STEPS_PER_CHUNK=$(protocol m.runtime_protocol.rldx_action_steps_per_chunk)
 unset RLDX_RESET_SEED
 config=("$model" "$thinking" "$turns" "$units" "$stateless" "$privileged" "$anchor" "$vdm" "$vdm_model" "$vdm_wrist" "$fallback_model" "$fallback_after" "$fallback_retry" "$approval" "$max_tool_calls" "$max_tokens" "$code" "$code_api" "$code_oracle" "$vdm_video")
+export CODE_BUDGET_FLAGS="timeout=$code_timeout+max_calls=$code_max_calls+max_move=$code_max_move+helpers=$code_helpers${code_oracle:++oracle}"
 # The protocol pins the task-memory snapshot (hf profile); PI_EMBODIED_MEMORY_REVISION overrides it.
 export PI_EMBODIED_MEMORY_REVISION=${PI_EMBODIED_MEMORY_REVISION:-$(protocol m.dependencies.task_memory.revision)}
 
@@ -468,7 +479,9 @@ const same = r.protocol_id === protocolId && r.model === (model || null) && r.th
 	&& (r.fallback_retry_primary ?? null) === (fallbackModel ? Number(fallbackRetry) : null)
 	// Results written before code mode existed here ran without it.
 	&& (r.code ?? "false") === codeMode && (r.code_api ?? null) === (codeMode === "false" ? null : codeApi)
-	&& (r.code_oracle ?? null) === (codeMode === "false" ? null : codeOracle || null);
+	&& (r.code_oracle ?? null) === (codeMode === "false" ? null : codeOracle || null)
+	// Results written before the code budget was recorded ran the default one.
+	&& (codeMode === "false" || (r.code_budget_flags ?? "timeout=+max_calls=+max_move=+helpers=false") === process.env.CODE_BUDGET_FLAGS);
 process.exit(same ? 0 : 2);
 ' "$1/result.json" "$(protocol m.protocol_id)" "${config[@]}" 2>/dev/null
 }

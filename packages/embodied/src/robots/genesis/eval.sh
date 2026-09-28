@@ -27,7 +27,7 @@ expand() { for part in ${1//,/ }; do seq "${part%-*}" "${part#*-}"; done; }
 model="" thinking="" turns=0 limit=${TIME_LIMIT:-1800} limited="" units=false stateless=false
 anchor=false
 approval=standard max_tool_calls=0 max_tokens=0
-code=false code_api=high code_oracle="" success_rule=grasp
+code=false code_api=high code_oracle="" success_rule=grasp code_timeout="" code_max_calls="" code_max_move="" code_helpers=false
 vdm=false vdm_model="" vdm_wrist=false vdm_video=false vdm_video_frames=8
 privileged=false
 fallback_model="" fallback_after=2 fallback_retry=0
@@ -105,6 +105,14 @@ for ((i = 0; i < ${#args[@]}; i++)); do
 	# --success-rule: grasp (OpenETA's cube_pick rule, the default) or lift (the cube 8 cm up).
 	--success-rule) success_rule=${args[i + 1]:-grasp} ;;
 	--success-rule=*) success_rule=${args[i]#*=} ;;
+	# The code budget is part of the code mode's configuration (result.json's code_budget_flags).
+	--code-timeout) code_timeout=${args[i + 1]-} ;;
+	--code-timeout=*) code_timeout=${args[i]#*=} ;;
+	--code-max-calls) code_max_calls=${args[i + 1]-} ;;
+	--code-max-calls=*) code_max_calls=${args[i]#*=} ;;
+	--code-max-move) code_max_move=${args[i + 1]-} ;;
+	--code-max-move=*) code_max_move=${args[i]#*=} ;;
+	--code-helpers | --code-helpers=true) code_helpers=true ;;
 	# --anchor-image (keep the first camera frame in context) is a boolean like --stateless.
 	--anchor-image) case ${args[i + 1]:-} in "" | -* | @* | true) anchor=true ;; *)
 		echo "--anchor-image takes no value: pi would turn it on and swallow '${args[i + 1]}'" >&2 && exit 2 ;;
@@ -130,6 +138,7 @@ backstop=()
 [ "$limit" -gt 0 ] && command -v timeout >/dev/null && backstop=(timeout -k 30 $((limit + 900)))
 mkdir -p "$out"
 config=("$model" "$thinking" "$turns" "$limit" "$units" "$stateless" "$privileged" "$anchor" "$vdm" "$vdm_model" "$vdm_wrist" "$fallback_model" "$fallback_after" "$fallback_retry" "$approval" "$max_tool_calls" "$max_tokens" "$code" "$code_api" "$code_oracle" "$vdm_video" "$success_rule")
+export CODE_BUDGET_FLAGS="timeout=$code_timeout+max_calls=$code_max_calls+max_move=$code_max_move+helpers=$code_helpers${code_oracle:++oracle}"
 
 record() { # <dir> <exit code>: write result.json from the episode's session
 	node --input-type=module -e '
@@ -190,7 +199,9 @@ const same = r.model === (model || null) && r.thinking === (thinking || null) &&
 	&& (r.code ?? "false") === codeMode && (r.code_api ?? null) === (codeMode === "false" ? null : codeApi)
 	&& (r.code_oracle ?? null) === (codeMode === "false" ? null : codeOracle || null)
 	// Results written before --success-rule existed were scored by the lift rule.
-	&& (r.success_rule ?? "lift") === successRule;
+	&& (r.success_rule ?? "lift") === successRule
+	// Results written before the code budget was recorded ran the default one.
+	&& (codeMode === "false" || (r.code_budget_flags ?? "timeout=+max_calls=+max_move=+helpers=false") === process.env.CODE_BUDGET_FLAGS);
 process.exit(same ? 0 : 2);
 ' "$1/result.json" "${config[@]}" 2>/dev/null
 }

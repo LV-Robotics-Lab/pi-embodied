@@ -1,8 +1,18 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { type Helper, type RunResult, renderHelpers, renderPrimitives } from "../src/modes/code/index.ts";
+import {
+	type Helper,
+	ORACLE_MAX_CALLS,
+	ORACLE_TIMEOUT_S,
+	type RunResult,
+	renderHelpers,
+	renderPrimitives,
+} from "../src/modes/code/index.ts";
 import type { UnitsSpec } from "../src/modes/units/index.ts";
 import { codeApiReply } from "./helpers/code-api.ts";
 
@@ -437,6 +447,10 @@ test("the robot result records the code mode and tier", async () => {
 	const r = await result(f);
 	assert.equal(r.code, "both");
 	assert.equal(r.code_api, "low");
+	assert.deepEqual(r.code_budget, { timeout_s: 60, max_calls: 50, max_move_m: 3, helpers: false });
+	assert.equal(r.code_budget_flags, "timeout=+max_calls=+max_move=+helpers=false");
+	const flagged = await result(await toyRobot({ code: true, "code-max-calls": "7", "code-oracle": tempOracle() }));
+	assert.equal(flagged.code_budget_flags, "timeout=+max_calls=7+max_move=+helpers=false+oracle");
 	const off = await toyRobot({});
 	const plain = await result(off);
 	assert.equal("code" in plain, false);
@@ -568,3 +582,27 @@ test("--code-oracle needs pure code mode and a simulator", async () => {
 		assert.match(String((await result(f)).error), why);
 	}
 });
+
+test("the result records the code budget; an oracle run relaxes the caps its flags leave unset", async () => {
+	const plain = await toyRobot({ code: true });
+	await plain.run("run_code", { code: "pass" });
+	const run = plain.env.calls.find((c) => c.method === "code.run");
+	assert.equal(run?.kwargs.max_calls, 50);
+	const set = await toyRobot({ code: true, "code-max-calls": "7", "code-helpers": true });
+	await set.run("run_code", { code: "pass" });
+	assert.equal(set.env.calls.find((c) => c.method === "code.run")?.kwargs.max_calls, 7);
+	const oracle = await toyRobot({ code: true, "code-oracle": tempOracle(), "code-max-move": "2" });
+	await oracle.run("run_code", { code: "pass" });
+	const o = oracle.env.calls.find((c) => c.method === "code.run");
+	assert.equal(o?.kwargs.max_calls, ORACLE_MAX_CALLS);
+	assert.equal(o?.kwargs.max_move_m, 2, "a given flag is kept");
+	assert.ok((o?.kwargs.timeout_s as number) <= ORACLE_TIMEOUT_S);
+});
+
+/** A reference program on disk, for --code-oracle (a path is taken as is). */
+function tempOracle(): string {
+	const dir = mkdtempSync(join(tmpdir(), "oracle-"));
+	const path = join(dir, "noop.py");
+	writeFileSync(path, "RESULT = 1\n");
+	return path;
+}

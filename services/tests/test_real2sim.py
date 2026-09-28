@@ -449,3 +449,8 @@ def test_robolab_follow_takes_the_tracks_randomize_xy(tmp_path, monkeypatch):
     assert rl.main(base) == 2 and seen["xy"] == 0.0
     with pytest.raises(SystemExit, match="differs"):
         rl.main([*base, "--randomize-xy", "0.08"])
+    # an old track without the field is refused unless the value is given
+    (tmp_path / "track_ep000.json").write_text(json.dumps({"task_key": "T", "seed": 3}))
+    with pytest.raises(SystemExit, match="does not record"):
+        rl.main(base)
+    assert rl.main([*base, "--randomize-xy", "0"]) == 2 and seen["xy"] == 0.0

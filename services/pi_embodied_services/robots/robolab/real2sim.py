@@ -454,7 +454,7 @@ def record(args, backend) -> tuple[int, int]:
             "task_key": args.task,
             "plan": plan,
             "layout": layout,
-            "randomize_xy_m": args.randomize_xy,
+            "randomize_xy_m": float(args.randomize_xy or 0.0),
             **rec.track(),
         }
         name = f"track_ep{kept:03d}.json"
@@ -737,10 +737,17 @@ def main(argv: list[str] | None = None) -> int:
         first = json.loads(files[0].read_text())
         args.task, args.seed0 = first["task_key"], int(first["seed"])
         # The layout is reproduced by the seed only under the recorder's randomisation.
-        recorded = float(first.get("randomize_xy_m", RANDOMIZE_XY_M))
-        if args.randomize_xy is None:
-            args.randomize_xy = recorded
-        elif args.randomize_xy != recorded:
+        recorded = first.get("randomize_xy_m")
+        if recorded is None:
+            # tracks from before the value was recorded: only the caller knows it
+            if args.randomize_xy is None:
+                raise SystemExit(
+                    f"{files[0]} does not record its layout randomisation; pass "
+                    "--randomize-xy (the value `record` ran with, 0 = authored layout)"
+                )
+        elif args.randomize_xy is None:
+            args.randomize_xy = float(recorded)
+        elif args.randomize_xy != float(recorded):
             raise SystemExit(
                 f"--randomize-xy {args.randomize_xy} differs from the tracks' {recorded}: "
                 "the reset would not reproduce the recorded layouts"

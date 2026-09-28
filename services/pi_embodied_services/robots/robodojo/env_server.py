@@ -935,7 +935,8 @@ def main():
     tasks = sim.task_names(root)
     if args.task not in tasks:
         raise SystemExit(f"unknown RoboDojo task {args.task!r}; have {tasks}")
-    if args.task in sim.UNSUPPORTED:
+    # The list is Isaac Sim 6.1's; on RoboDojo's own Isaac Sim 5.1 stack every task runs.
+    if args.task in sim.UNSUPPORTED and sim.isaacsim_major() >= 6:
         raise SystemExit(
             f"RoboDojo task {args.task!r} does not run on Isaac Sim 6.1: {sim.UNSUPPORTED[args.task]}"
         )

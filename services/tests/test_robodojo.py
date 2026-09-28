@@ -622,6 +622,7 @@ def test_unsupported_tasks_are_real_tasks_and_refused_before_isaac_starts(
     monkeypatch.setattr(
         sim, "task_names", lambda _root: ["fold_clothes", "stack_bowls"]
     )
+    monkeypatch.setattr(sim, "isaacsim_major", lambda: 6)
     monkeypatch.setattr(
         sim, "launch_isaac", lambda **_: pytest.fail("Isaac must not start")
     )

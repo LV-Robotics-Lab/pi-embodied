@@ -117,7 +117,8 @@ EXTRA_EXTS = (
 )
 
 
-#: Tasks that do not run on Isaac Sim 6.1 (the 54-task smoke on the box), and why. The rest reset,
+#: Tasks that do not run on Isaac Sim 6.1 (the 54-task smoke on the box), and why; on RoboDojo's own
+#: Isaac Sim 5.1 stack (install_isaac51.sh) they are not refused. The rest reset,
 #: render all three cameras, move and reach RoboDojo's success check.
 _NO_PARTICLE_CLOTH = (
     "the garment is PhysX particle cloth (isaacsim.core.prims.SingleClothPrim), which Isaac Sim 6 "

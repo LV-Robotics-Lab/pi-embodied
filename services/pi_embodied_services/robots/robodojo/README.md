@@ -8,9 +8,47 @@ Flywheel data rules. The pi robot is `packages/embodied/src/robots/robodojo`.
 
 ## Install
 
+Two stacks. The env server and the pi robot are written for either; only the 6.1 one has been run.
+
 ```bash
+# Isaac Sim 6.1 / Isaac Lab 3.0rc1, RoboDojo patched by robodojo-isaac61.patch (run on driver 595.71.05)
 bash install_isaac61.sh services/.venv-robodojo ~/RoboDojo ~/.cache/pi-embodied/robodojo-assets   # or: services/setup.sh robodojo
+# RoboDojo's own stack, unpatched: Isaac Sim 5.1 + its Isaac Lab 2.3 and cuRobo forks (a separate checkout)
+bash install_isaac51.sh services/.venv-robodojo51 ~/RoboDojo51 ~/.cache/pi-embodied/robodojo-assets
 ```
+
+Isaac Sim 5.1 segfaults at startup on driver 595.x (isaac-sim/IsaacSim#677, reproduced with isaacsim
+5.1.0.0 on 595.71.05), which is why the 6.1 port exists. `install_isaac51.sh` has not been run: this
+repository's only RoboDojo host has that driver.
+
+## Comparability
+
+**Runs on Isaac Sim 6.1; scores are not comparable with the official RoboDojo leaderboard**, which is
+measured on Isaac Sim 5.1. What differs from upstream (robodojo-benchmark/RoboDojo @726e9aa):
+
+- Simulator: Isaac Sim 6.1, Isaac Lab 3.0rc1, PhysX 110, torch 2.11 (upstream: Isaac Sim 5.1, its
+  Isaac Lab 2.3.2 fork, torch 2.7). Contacts, solver and rendering are other versions.
+- The port (`robodojo-isaac61.patch`): the deprecated `isaacsim.core.*` / `isaacsim.sensors.camera`
+  extensions put back on the extension path; PhysX settings on Isaac Lab 3's `PhysxCfg` (an unknown
+  field is an error); the render settings Isaac Lab 2.3 applied from `SimulationCfg.render` set as carb
+  settings (the `quality` preset inlined); the two arms' quaternions and data read in Isaac Lab 3's
+  conventions; a torch PhysX view created for RoboDojo's scene objects; an explicit Kit update per render
+  (Isaac Lab 3 pumps Kit only through a visualizer); the PBD material attributes PhysX 110 removed
+  (drag, lift) dropped.
+- Six tasks do not run (table below): particle cloth is gone in Isaac Sim 6, the liquid spills, one
+  collider cannot be built.
+- One env per process: RoboDojo's heterogeneous parallel simulation (several envs, several tasks in one
+  Kit process) is not used. Each episode resets through RoboDojo's own `EvalEnv` (`create_eval_env`), a
+  second reset relaunching the simulation as its main.py does between batches.
+- Every camera also renders `distance_to_image_plane` (depth for back-projection); the RGB is the same.
+- The policy-client side of `EvalEnv` is stubbed (no XPolicyLab connection from the env) and its
+  episode videos are off: pi records its own. XPolicyLab policies reach the env through pi's
+  `xpolicy_act`, one native action per step, as RoboDojo's `eval_one_episode` does.
+- Layout selection: `packages/embodied/src/robodojo/eval.sh` replaces an unstable layout with the next
+  one, as RoboDojo's `SeedManager` does; the layout ids are given on the command line.
+
+The same policy on the same layouts on both stacks has not been compared (未验证): no host here runs
+Isaac Sim 5.1.
 
 ## Tasks on Isaac Sim 6.1
 

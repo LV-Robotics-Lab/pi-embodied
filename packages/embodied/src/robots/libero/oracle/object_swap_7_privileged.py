@@ -3,7 +3,9 @@
 # suite: libero_object_swap
 # task: 7
 # tier: privileged
-# prelude: capx_libero_privileged.py
+# prelude: capx_libero.py
+# The CaP-X API calls are the env server's privileged-tier primitives (manifests/libero.json); the
+# prelude only stubs the unused viser import.
 # ---- CaP-X's program, verbatim ----
 import numpy as np
 import viser.transforms as vtf

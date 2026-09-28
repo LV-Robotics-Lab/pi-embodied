@@ -92,7 +92,9 @@ async function fakeEnv(answer: (method: string, args: any[], kwargs: Record<stri
 			const { method, args = [], kwargs = {} } = JSON.parse(body);
 			calls.push({ method, args, kwargs });
 			let result =
-				method === "code.api" ? { tier: null, primitives: [], digest: "d" } : answer(method, args, kwargs);
+				method === "code.api"
+					? { tier: null, manifest_digest: "fake", available: [], digest: "d" }
+					: answer(method, args, kwargs);
 			result ??= { status: "ok" };
 			res.end(JSON.stringify({ ok: true, result }));
 		});
@@ -140,13 +142,13 @@ test("Metaworld: every control step of a motion is one transition, with the env 
 		gripper_width: 0.09,
 		obs: f32(new Array(39).fill(0)),
 	});
-	const env = await fakeEnv((method, args) => {
+	const env = await fakeEnv((method, args, kwargs) => {
 		if (method === "env.get_env_meta")
 			return { task: "reach-v3", seed: 3, agentview: "corner4", wrist: "gripperPOV", view_size: 256 };
 		if (method === "env.reset") return [obs(0.2), {}];
 		if (method === "env.get_task_language") return "reach the ball";
 		if (method === "env.move_delta") {
-			const n = args[0][2] < 0 ? 3 : 2;
+			const n = (kwargs.delta_xyz ?? args[0])[2] < 0 ? 3 : 2;
 			const frames = Array.from({ length: n }, (_, k) => ({
 				...obs(0.2 - 0.01 * (k + 1)),
 				action: f32([0, 0, -1, -1]),
@@ -231,7 +233,7 @@ test("Genesis: a motion returns its control steps only while recording, one tran
 		process.exitCode = undefined;
 		const before = env.calls.length;
 		await s.run("move_delta", { delta_xyz: [0.02, 0, 0] });
-		await s.run("gripper", { action: "close" });
+		await s.run("set_gripper", { close: true });
 		const motions = env.calls.slice(before).filter((c) => c.method !== "code.api");
 		assert.deepEqual(
 			motions.map((c) => c.kwargs.record),
@@ -295,7 +297,7 @@ test("Robosuite: the task's arms set the widths and the export space; the reset 
 	await s.emit("session_start");
 	process.exitCode = undefined;
 	await s.run("move_delta", { delta_xyz: [0, 0, 0.05], arm: "robot1" });
-	await s.run("gripper", { command: "close", arm: "robot0" });
+	await s.run("set_gripper", { close: true, arm: "robot0" });
 	await s.emit("session_shutdown");
 	assert.deepEqual(
 		env.calls.filter((c) => c.method === "env.render_camera").map((c) => [c.kwargs.camera_name, c.kwargs.height]),
@@ -320,7 +322,7 @@ test("Robosuite: the task's arms set the widths and the export space; the reset 
 	]);
 });
 
-test("ManiSkill: each servo step is a transition; the arm is the raw path's first part and the export space, and a wrist-less arm records the agentview alone", async (t) => {
+test("ManiSkill: each control step env.move_delta returns is a transition; the arm is the raw path's first part and the export space, and a wrist-less arm records the agentview alone", async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "fly-maniskill-"));
 	for (const [arm, wrist] of [
 		["widowxai", false],
@@ -334,7 +336,7 @@ test("ManiSkill: each servo step is a transition; the arm is the raw path's firs
 			gripper_width: 0.08,
 			qpos: f32([0, 0]),
 		});
-		const env = await fakeEnv((method, args, kwargs) => {
+		const env = await fakeEnv((method, _args, kwargs) => {
 			if (method === "env.get_env_meta")
 				return {
 					env_id: "PickCube-v1",
@@ -347,14 +349,22 @@ test("ManiSkill: each servo step is a transition; the arm is the raw path's firs
 				};
 			if (method === "env.reset") return [obs(0.08), {}];
 			if (method === "env.get_task_language") return "pick up the cube";
-			if (method === "env.servo") {
-				const n = kwargs.min_steps;
-				const frames = Array.from({ length: n }, () => ({
-					...obs(args[0][2]),
-					action: f32([0, 0, -0.5, 1]),
-					success: false,
-				}));
-				return [frames, { is_grasped: false }];
+			if (method === "env.move_delta") {
+				// The server's two 2 cm legs of 2 control steps each (a leg that ran no step has no action).
+				const frames = [
+					...Array.from({ length: 4 }, (_, i) => ({
+						...obs(0.08 + kwargs.delta_xyz[2] * ((i + 1) / 4)),
+						action: f32([0, 0, -0.5, 1]),
+						success: false,
+					})),
+					obs(0.04),
+				];
+				return {
+					result: { commanded_m: kwargs.delta_xyz, moved_m: kwargs.delta_xyz, gripper: "open", env_steps: 4 },
+					frames,
+					obs: frames[4],
+					info: { is_grasped: false },
+				};
 			}
 		});
 		t.after(env.close);
@@ -370,9 +380,7 @@ test("ManiSkill: each servo step is a transition; the arm is the raw path's firs
 		await s.emit("session_start");
 		process.exitCode = undefined;
 		await s.run("move_delta", { delta_xyz: [0, 0, -0.04] });
-		const servoSteps = env.calls
-			.filter((c) => c.method === "env.servo")
-			.reduce((sum, c) => sum + Number(c.kwargs.min_steps), 0);
+		const servoSteps = 4;
 		await s.emit("session_shutdown");
 		const { meta, arrays } = episode(join(root, "raw", "maniskill", arm, "PickCube-v1", "default", "seed_002"));
 		assert.equal(meta.step_count, servoSteps);

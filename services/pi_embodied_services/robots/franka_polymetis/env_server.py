@@ -70,10 +70,8 @@ from typing import Any
 import numpy as np
 import yaml
 
-from pi_embodied_services.components.code_api import register_code_api
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
 from pi_embodied_services.robots.franka.code_mode import FrankaCodeMode
-from pi_embodied_services.robots.franka.primitives import franka_primitives
 from pi_embodied_services.robots.franka.runtime_config import set_robot_config_path
 from pi_embodied_services.robots.franka_polymetis.control import (
     PolymetisController,
@@ -81,7 +79,11 @@ from pi_embodied_services.robots.franka_polymetis.control import (
     flange_to_tcp,
 )
 from pi_embodied_services.utils import hardware_lock, reach
-from pi_embodied_services.utils.code_real import add_code_argument
+from pi_embodied_services.utils.code_real import (
+    add_code_argument,
+    add_limit_arguments,
+    limits_from_args,
+)
 from pi_embodied_services.utils.daemon import watch_parent_death
 from pi_embodied_services.utils.detections import state_digest
 from pi_embodied_services.utils.grasp import add_grasp_arguments, urls_from_args
@@ -127,6 +129,7 @@ _LIMIT_KEYS = (
     "divergence_resync_m",
     "max_tracking_error_m",
     "max_tilt_rad",
+    "max_joint_step_rad",
 )
 _GRIPPER_KEYS = {
     "close_threshold_m": "gripper_close_threshold_m",
@@ -281,9 +284,11 @@ def letterbox_intrinsics(raw: dict[str, Any], geo: dict[str, Any] | None) -> lis
 class FrankaPolymetisFacade(FrankaCodeMode, MainThreadServeMixin, BaseEnvFacade):
     """The single-Franka ``env.*`` protocol on a Polymetis NUC.
 
-    Code mode (``code.run``, ../franka/code_mode.py): a program's motions run through the same
-    facade methods as pi's tools (the controller's per-call caps, workspace and floor, the reach
-    check, the stop polled between servo ticks), under pi's per-call limits too.
+    pi's limits (``--max-move`` ..., ../franka/code_mode.py) hold in ``env.move_delta`` /
+    ``env.rotate_delta`` for every caller, on top of the controller's per-call caps, workspace and
+    floor. The primitives are packages/embodied/src/primitives/manifests/franka.json; this backend
+    also streams joints (``move_to_joints``, bounded per call by ``limits.max_joint_step_rad``).
+    Code mode (``code.run``, ``--code``) runs a program's calls through the same methods.
     """
 
     SERVICE_NAME = "franka-polymetis-env"
@@ -302,8 +307,11 @@ class FrankaPolymetisFacade(FrankaCodeMode, MainThreadServeMixin, BaseEnvFacade)
         ik_reach: reach.ReachPreview | None = None,
         geometry: bool = False,
         code: bool = False,
+        limits: dict[str, Any] | None = None,
     ) -> None:
         self._perception = perception
+        # pi's --max-move / --max-rotate / --workspace-xy / --z-floor (../franka/code_mode.py).
+        self._set_limits(limits)
         # --geometry: the RLinf backend's geometric toolset (franka/grasp_views.franka_geometry).
         self._geometry_on = geometry
         # --code: code.run over the registry, behind the RPC token (../franka/code_mode.py).
@@ -372,7 +380,10 @@ class FrankaPolymetisFacade(FrankaCodeMode, MainThreadServeMixin, BaseEnvFacade)
 
     def _register_rpc(self) -> None:
         for name in METHODS:
-            self._rpc[f"env.{name}"] = getattr(self, name)
+            handler = getattr(self, name)
+            if name in ("move_delta", "rotate_delta"):
+                handler = self._limited(name, handler)  # pi's limits, every caller
+            self._rpc[f"env.{name}"] = handler
         self._rpc["env.preview_reach"] = self.preview_reach
         # --sam3 / --unidepth: env.segment, env.select_detection, env.reject_detection,
         # env.enhance_depth over the latest env.get_observation (utils/perception.py). Ids
@@ -380,18 +391,15 @@ class FrankaPolymetisFacade(FrankaCodeMode, MainThreadServeMixin, BaseEnvFacade)
         if self._perception is not None:
             self._perception.epoch.set_digest(self._state_digest)
             self._perception.install(self)
-        primitives = franka_primitives(self._perception)
         if self._geometry_on:
             from pi_embodied_services.robots.franka.grasp_views import franka_geometry
 
-            kit = franka_geometry(self, state_digest=self._state_digest)
-            kit.install(self)
-            primitives = (*primitives, *kit.primitives())
-        grasp = self._grasp_planner()
-        if grasp is not None:
-            grasp.install(self)
-            primitives = (*primitives, *grasp.primitives())
-        self._install_real_code_run(register_code_api(self, primitives))
+            franka_geometry(self, state_digest=self._state_digest).install(self)
+        self._grasp = self._grasp_planner()
+        if self._grasp is not None:
+            self._grasp.install(self)
+        # The manifest's methods, then code.api (with the startup self-check) and --code's code.run.
+        self._install_franka()
 
     def _state_digest(self) -> tuple:
         """The arm's TCP pose and gripper, rounded (``utils/detections.state_digest``)."""
@@ -525,7 +533,7 @@ class FrankaPolymetisFacade(FrankaCodeMode, MainThreadServeMixin, BaseEnvFacade)
 
     # -- reach preview (--ik) ---------------------------------------------
 
-    def preview_reach(self, pos: Any, quat_xyzw: Any = None) -> dict[str, Any]:
+    def preview_reach(self, xyz: Any, quat_xyzw: Any = None) -> dict[str, Any]:
         """Whether the TCP can reach a base-frame pose from the current joints (IK only, the
         arm does not move); ``quat_xyzw`` None keeps the current orientation."""
         if self._reach is None:
@@ -534,7 +542,7 @@ class FrankaPolymetisFacade(FrankaCodeMode, MainThreadServeMixin, BaseEnvFacade)
         tcp = np.asarray(state["tcp_pose"], dtype=np.float64)
         return self._reach.preview(
             state["arm_joint_position"],
-            pos,
+            xyz,
             tcp[3:] if quat_xyzw is None else quat_xyzw,
         )
 
@@ -570,6 +578,25 @@ class FrankaPolymetisFacade(FrankaCodeMode, MainThreadServeMixin, BaseEnvFacade)
         result["robot_state"] = self.get_robot_state()
         result["states"] = None
         return result
+
+    # -- joint moves (move_to_joints, ../franka/code_mode.py) --------------
+
+    def _joint_mover(self) -> Any:
+        return self._move_joints
+
+    def _move_joints(self, q: Any) -> dict[str, Any]:
+        result = self.controller.move_joints(q)
+        result["robot_state"] = self.get_robot_state()
+        result["states"] = None
+        return result
+
+    def _joint_step_rad(self) -> float | None:
+        return float(self.controller.limits.max_joint_step_rad)
+
+    def _box_violation(self, p: np.ndarray) -> float:
+        return float(
+            np.sum(self.controller._violation(np.asarray(p, dtype=np.float64)))
+        )
 
     def chunk_step(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
         raise ValueError(
@@ -695,6 +722,7 @@ def main(argv: list[str] | None = None) -> int:
         help="serve the geometric toolset: point-cloud views, marked points, grip-site targets",
     )
     add_code_argument(parser)
+    add_limit_arguments(parser, FrankaCodeMode._LIMIT_DEFAULTS)
     args = parser.parse_args(argv)
     # The grasp planner reads perception.calibration from the robot config in this process.
     set_robot_config_path(args.robot_config or DEFAULT_CONFIG)
@@ -740,6 +768,7 @@ def main(argv: list[str] | None = None) -> int:
             ik_reach=reach.reach_from_args(args, "panda"),
             geometry=args.geometry,
             code=args.code,
+            limits=limits_from_args(args, FrankaCodeMode._LIMIT_DEFAULTS),
         )
     except Exception:
         for cam in cameras.values():

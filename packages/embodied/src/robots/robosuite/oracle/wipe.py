@@ -1,7 +1,8 @@
 # capx: env_configs/human_oracle_code/robosuite/franka_robosuite_spill_wipe_oracle.yaml @53e9966
 # program: capx/envs/tasks/franka/franka_spill_wipe.py ORACLE_CODE (FrankaControlSpillWipeApi)
 # task: Wipe
-# tier: high
+# tier: low
+# CaP-X's task API (not in the high tier) is the prelude over the low tier's primitives.
 # prelude: capx_spill_wipe.py
 # ---- CaP-X's program, verbatim ----
 import numpy as np

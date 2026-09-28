@@ -13,6 +13,7 @@ import { FRAME_EVENT } from "../src/observation/video.ts";
 import { defineRobot } from "../src/robot.ts";
 import piperDual from "../src/robots/piper/dual.ts";
 import piper, { chains, headingToBase, motionFrame, PIPER_UNITS, piperViews } from "../src/robots/piper/index.ts";
+import { codeApiReply } from "./helpers/code-api.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
@@ -166,35 +167,76 @@ test("piper opts into action units with the Show-Harness primitives", () => {
 	}
 });
 
-test("motion beyond the per-call limits is refused before it reaches the robot", async () => {
+test("pi checks no per-call limit itself: a motion goes to the server, which enforces them", async () => {
 	const f = fakePi({ operator: true });
 	piper(f.pi);
+	// Beyond --max-move: pi passes it on (the server refuses it); without a robot the call fails there.
 	const far = await f.run("move_delta", { delta_xyz: [0.04, 0.04, 0] });
-	assert.match(far.details.error, /moves 0\.0566 m; the limit is 0\.05 m per call/);
+	assert.match(far.details.error, /piper is not initialized/);
 	const turn = await f.run("rotate_yaw", { yaw: -0.3 });
-	assert.match(turn.details.error, /yaw -0\.3 rad exceeds the limit of 0\.2 rad per call/);
-	const nan = await f.run("move_delta", { delta_xyz: [Number.NaN, 0, 0] });
-	assert.match(nan.details.error, /finite/);
-	// Within the limits the call proceeds to the (absent) robot.
-	const ok = await f.run("move_delta", { delta_xyz: [0.02, 0, 0] });
-	assert.match(ok.details.error, /piper is not initialized/);
-
-	const tight = fakePi({ operator: true, "max-move": "0.01" });
-	piper(tight.pi);
-	const unit = await tight.run("move_delta", { delta_xyz: [0, 0, -0.02] });
-	assert.match(unit.details.error, /the limit is 0\.01 m per call/);
+	assert.match(turn.details.error, /piper is not initialized/);
+	// One arm: the manifest's tools have no `arm`, and program-only options stay out of the tools.
+	assert.ok(!("arm" in f.tools.get("move_delta").parameters.properties));
+	assert.ok(!("frame" in f.tools.get("move_delta").parameters.properties));
+	assert.ok(!("reopen_empty" in f.tools.get("close_gripper").parameters.properties));
+	assert.ok(!f.tools.has("halt_arm"));
+	assert.match(f.tools.get("move_delta").description, /at most 0\.05 m per call/);
 });
 
-test("with --units the act tool grounds units through the same per-call limits", async () => {
+test("an attached server must enforce pi's limits or tighter ones", async (t) => {
+	for (const [limits, why] of [
+		[
+			{ max_move_m: 0.1, max_yaw_rad: 0.2 },
+			/looser than pi's \(--max-move is 0\.1\): start it with --max-move 0\.05 --max-yaw 0\.2/,
+		],
+		[null, /enforces none of pi's per-call limits/],
+	] as const) {
+		const m = await mockServer({ dual: false, limits });
+		t.after(m.close);
+		const f = fakePi({ operator: true, task: "banana_handover", "robot-env": m.url });
+		piper(f.pi);
+		f.confirms.push(true);
+		await start(f);
+		assert.match(f.notes.join("\n"), why);
+		assert.equal(m.calls.filter((c) => c.method === "env.reset").length, 0, "nothing moved");
+	}
+	// Tighter is fine; the prompt names the limit in force.
+	const m = await mockServer({ dual: false, limits: { max_move_m: 0.02, max_yaw_rad: 0.1 } });
+	t.after(m.close);
+	const f = fakePi({ operator: true, task: "banana_handover", "robot-env": m.url });
+	piper(f.pi);
+	f.confirms.push(true);
+	await start(f);
+	const p = await f.emit("before_agent_start", { systemPrompt: "base" });
+	assert.match(p.systemPrompt, /at most 0\.02 m per call/);
+	// The tools pass the manifest's parameters straight to the server methods of the same names.
+	await f.run("move_delta", { delta_xyz: [0, 0, 0.01] });
+	await f.run("rotate_yaw", { yaw: 0.05 });
+	await f.run("close_gripper", {});
+	assert.deepEqual(
+		m.calls
+			.filter((c) => /^env\.(move_delta|rotate_yaw|close_gripper)$/.test(c.method))
+			.map((c) => [c.method, c.kwargs]),
+		[
+			["env.move_delta", { delta_xyz: [0, 0, 0.01] }],
+			["env.rotate_yaw", { yaw: 0.05 }],
+			["env.close_gripper", {}],
+		],
+	);
+	const refused = await f.run("move_delta", { delta_xyz: [0, 0, 0.03] });
+	assert.match(refused.details.error, /the limit is 0\.02 m per call/);
+});
+
+test("with --units the act tool grounds units on the server's guarded step", async () => {
 	const f = fakePi({ operator: true, units: true, "units-plugins": "", "max-move": "0.01" });
 	piper(f.pi);
 	assert.ok(f.tools.has("act"));
 	const params = enumOf(f.tools.get("act").parameters.properties.unit);
 	assert.ok(!params.includes("ROTATE_CW") && !params.includes("STILL"), "no rotation units and one arm");
-	// One MV_FWD is 2 cm, over the 1 cm --max-move: refused before any robot call.
+	// One MV_FWD is 2 cm, over the 1 cm --max-move: pi passes it to the server, which refuses it.
 	const far = await f.run("act", { unit: "MV_FWD" });
 	assert.match(far.content[0].text, /units: MV_FWD x1/);
-	assert.match(far.details.error, /moves 0\.02 m; the limit is 0\.01 m per call/);
+	assert.match(far.details.error, /piper is not initialized/);
 	assert.deepEqual(far.details.command, { action: "unit", delta: [0.02, 0, 0], yaw: 0, gripper: null });
 	// Within the limit the unit reaches the (absent) robot.
 	const g = fakePi({ operator: true, units: true, "units-plugins": "" });
@@ -266,6 +308,8 @@ type ServerOpts = {
 	smooth?: boolean;
 	/** The streamed cameras (default: front and each arm's wrist camera). */
 	cameras?: string[];
+	/** The limits the server enforces (`motion_limits`; default pi's defaults; null: none). */
+	limits?: { max_move_m: number; max_yaw_rad: number } | null;
 };
 async function mockServer(o: ServerOpts = {}) {
 	const dual = o.dual ?? true;
@@ -284,6 +328,17 @@ async function mockServer(o: ServerOpts = {}) {
 	});
 	const state = () => (dual ? { arms: { left: armState("left"), right: armState("right") } } : armState("left"));
 	const cameras = o.cameras ?? (dual ? ["front", "wrist_left", "wrist_right"] : ["front", "wrist"]);
+	const limits = o.limits === undefined ? { max_move_m: 0.05, max_yaw_rad: 0.2 } : o.limits;
+	/** The server's own refusal of a step beyond its limits (services piper env_server `_check_step`). */
+	const check = (k: Record<string, any>) => {
+		const n = Math.hypot(...(k.delta_xyz ?? [0, 0, 0]));
+		if (limits && n > limits.max_move_m + 1e-9)
+			throw new Error(
+				`delta_xyz moves ${n.toFixed(4)} m; the limit is ${limits.max_move_m} m per call (--max-move)`,
+			);
+		if (limits && Math.abs(k.yaw ?? 0) > limits.max_yaw_rad + 1e-9)
+			throw new Error(`yaw ${k.yaw} rad exceeds the limit of ${limits.max_yaw_rad} rad per call (--max-yaw)`);
+	};
 	const answer = (method: string, kwargs: Record<string, any>): unknown => {
 		switch (method) {
 			case "healthz":
@@ -299,23 +354,29 @@ async function mockServer(o: ServerOpts = {}) {
 					tasks: { banana_handover: { instruction: "hand the banana over" } },
 					smooth: { enabled: o.smooth ?? true, blend: true },
 					motion_backend: dual ? { left: "joint_stream", right: "joint_stream" } : "joint_stream",
+					...(limits ? { motion_limits: limits } : {}),
 				};
 			case "env.reset":
 				return { ok: true, robot_state: state() };
 			case "code.api":
-				return { tier: null, primitives: [], digest: "0".repeat(64) };
+				return codeApiReply("piper", kwargs.tier, (c) => c === "dual" && dual);
 			case "env.get_observation":
 				return { images: Object.fromEntries(cameras.map((c) => [c, img])), robot_state: state() };
 			case "env.get_robot_state":
 				return kwargs.arm ? armState(kwargs.arm) : state();
 			case "env.step":
+			case "env.move_delta":
+			case "env.rotate_yaw":
+				check(kwargs);
 				return { ok: true, arm: kwargs.arm, frame: kwargs.frame, notes: [] };
+			case "env.open_gripper":
+			case "env.close_gripper":
+				return { ok: true, arm: kwargs.arm, notes: [] };
 			case "env.step_pair":
+				for (const st of kwargs.steps) check(st);
 				return { ok: true, arms: Object.fromEntries(kwargs.steps.map((st: any) => [st.arm, { ok: true }])) };
 			case "env.halt_arm":
 				return { ok: true, arm: kwargs.arm, halted: `halted: ${kwargs.reason}` };
-			case "code.set_limits":
-				return kwargs;
 			case "code.run":
 				return {
 					status: "ran",
@@ -367,7 +428,10 @@ async function dualStarted(
 	server: ServerOpts = {},
 	o: { unitsHook?: boolean; confirms?: boolean[] } = {},
 ) {
-	const m = await mockServer(server);
+	// The attached server enforces pi's --max-move (a looser one is refused at start).
+	const move =
+		flags["max-move"] === undefined ? {} : { limits: { max_move_m: Number(flags["max-move"]), max_yaw_rad: 0.2 } };
+	const m = await mockServer({ ...move, ...server });
 	const f = fakePi({ operator: true, task: "banana_handover", "robot-env": m.url, ...flags }, true, o);
 	piperDual(f.pi);
 	f.confirms.push(...(o.confirms ?? [true]));
@@ -432,26 +496,36 @@ test("dual Piper: act takes the arm, STILL leaves the other arm alone, no rotati
 	}
 });
 
-test("dual Piper: per-arm refusals before any robot call", async () => {
+test("dual Piper: per-arm refusals before any robot call, the limits on the server", async () => {
 	const { f, m } = await dualStarted({ "max-move": "0.01", units: "both", "units-plugins": "" });
 	try {
 		const noArm = await f.run("move_delta", { delta_xyz: [0.01, 0, 0] });
 		assert.match(noArm.details.error, /two arms: name the arm \(left or right\)/);
 		const bad = await f.run("open_gripper", { arm: "middle" });
 		assert.match(bad.details.error, /unknown arm 'middle'/);
+		const actNoArm = await f.run("act", { unit: "MV_UP" });
+		assert.match(actNoArm.details.error, /two arms: name the arm/);
+		assert.deepEqual(
+			m.calls.filter((c) => /^env\.(step|move_delta|open_gripper)$/.test(c.method)),
+			[],
+			"nothing reached the server",
+		);
+		// The tools and the units meet the server's --max-move.
 		const far = await f.run("move_delta", { delta_xyz: [0, 0, -0.02], arm: "left" });
 		assert.match(far.details.error, /the limit is 0\.01 m per call/);
 		const unit = await f.run("act", { unit: "MV_DOWN", arm: "right" });
-		assert.match(unit.details.error, /moves 0\.02 m; the limit is 0\.01 m per call/);
-		const actNoArm = await f.run("act", { unit: "MV_UP" });
-		assert.match(actNoArm.details.error, /two arms: name the arm/);
-		assert.deepEqual(m.steps(), [], "nothing reached the server");
+		assert.match(unit.details.error, /moves 0\.0200 m; the limit is 0\.01 m per call/);
+		// Two arms: `arm` is an enum of the rig's arms.
+		assert.deepEqual(enumOf(f.tools.get("move_delta").parameters.properties.arm), ["left", "right"]);
 
 		const ok = await f.run("move_delta", { delta_xyz: [0, 0.01, 0], arm: "left" });
 		assert.equal(ok.details.result.arm, "left");
 		const halt = await f.run("halt_arm", { arm: "right", reason: "stage done" });
 		assert.equal(halt.details.result.halted, "halted: stage done");
-		assert.deepEqual(m.calls.at(-2)?.kwargs, { arm: "right", reason: "stage done" });
+		assert.deepEqual(m.calls.filter((c) => c.method === "env.halt_arm").at(-1)?.kwargs, {
+			arm: "right",
+			reason: "stage done",
+		});
 		assert.ok(f.active().includes("halt_arm"));
 	} finally {
 		m.close();
@@ -723,8 +797,8 @@ test("a Piper without a wrist camera: the views, act and the prompt describe the
 
 const PIPER_CODE = { code: "true", "code-real": true };
 
-test("piper --code: pi's limits reach the server, every program is confirmed and the run is a state step", async (t) => {
-	const m = await mockServer({ dual: false });
+test("piper --code: the server enforces pi's limits, every program is confirmed and the run is a state step", async (t) => {
+	const m = await mockServer({ dual: false, limits: { max_move_m: 0.03, max_yaw_rad: 0.2 } });
 	t.after(m.close);
 	const f = fakePi({ operator: true, task: "banana_handover", "robot-env": m.url, "max-move": "0.03", ...PIPER_CODE });
 	piper(f.pi);
@@ -732,10 +806,7 @@ test("piper --code: pi's limits reach the server, every program is confirmed and
 	const { errors } = await start(f);
 	assert.deepEqual(errors, []);
 	assert.ok(f.active().includes("run_code"), f.active().join(","));
-	assert.deepEqual(m.calls.find((c) => c.method === "code.set_limits")?.kwargs, {
-		max_move_m: 0.03,
-		max_yaw_rad: 0.2,
-	});
+	assert.ok(!m.calls.some((c) => c.method === "code.set_limits"));
 	await f.emit("agent_start");
 	const r = await f.run("run_code", { code: "step([0, 0, -0.02])" });
 	assert.equal(f.dialogs[1], "Run this program on the robot?");

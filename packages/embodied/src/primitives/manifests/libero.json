@@ -1,0 +1,1071 @@
+{
+	"robot": "libero",
+	"internal": [
+		"env.raw_obs",
+		"env.plan_motion",
+		"env.check_motion",
+		"env.release_held"
+	],
+	"primitives": [
+		{
+			"use": "sim/get_task_language",
+			"doc": {
+				"code": "The task instruction.\n\nExample:\n    task = get_task_language()\n    print(task)"
+			}
+		},
+		{
+			"name": "view_env_state",
+			"side": "ts",
+			"tier": "low",
+			"params": {
+				"step": {
+					"type": "integer",
+					"description": "State record (a result's state_step): 0 = initial, -1 = latest (default)"
+				}
+			},
+			"doc": {
+				"tool": "A state with agentview (global layout) and wrist (close range) 1024x1024 images: the current one, or the earlier state record `step` (0 = initial). Pixel (row, col) in these images feed back_project with the same step."
+			},
+			"result": "motion"
+		},
+		{
+			"name": "view_camera_meta",
+			"side": "ts",
+			"tier": "low",
+			"params": {
+				"camera": {
+					"type": "enum",
+					"values": [
+						"agentview",
+						"wrist"
+					],
+					"description": "Default agentview"
+				},
+				"resolution": {
+					"type": "enum",
+					"values": [
+						"high",
+						"low"
+					],
+					"description": "high = 1024 (default), low = 256"
+				},
+				"step": {
+					"type": "integer",
+					"description": "State record (a result's state_step): 0 = initial, -1 = latest (default)"
+				}
+			},
+			"doc": {
+				"tool": "Camera calibration (intrinsic K, cam-to-world extrinsic, depth range) for the current step, or for the state record `step` (high resolution)."
+			},
+			"result": "read"
+		},
+		{
+			"name": "get_state",
+			"side": "code",
+			"method": "env.get_state",
+			"tier": "low",
+			"doc": {
+				"code": "Proprioception, no images: eef_pos [x, y, z] (m, world), eef_quat_xyzw, yaw (rad about world +z), gripper_width (about 0.08 open, 0.01-0.05 holding, below 0.01 closed on nothing), gripper_cmd (-1 open / +1 close, the last command), terminated (LIBERO judged the task done; it stays true), truncated.\n\nExample:\n    st = get_state()\n    if st[\"gripper_width\"] < 0.01:\n        print(\"closed on nothing\")"
+			}
+		},
+		{
+			"name": "get_observation",
+			"side": "code",
+			"method": "env.get_observation",
+			"tier": "low",
+			"doc": {
+				"code": "The current 512x512 upright camera images with calibration: agentview and wrist, each {rgb uint8[512,512,3], depth float32[512,512] metres (0 = none), intrinsic_K 3x3, extrinsic_cam2world 4x4}, plus the get_state fields. Pixel (row, col) back-projects as x = (col - cx) z / fx, y = (row - cy) z / fy in the camera frame, then extrinsic_cam2world @ [x, y, z, 1]. The agentview faces the robot (its base at the image top); the wrist camera looks down between the fingers.\n\nExample:\n    obs = get_observation()\n    depth = obs[\"agentview\"][\"depth\"]\n    K = obs[\"agentview\"][\"intrinsic_K\"]"
+			}
+		},
+		{
+			"name": "back_project",
+			"side": "env",
+			"method": "env.back_project",
+			"tier": "low",
+			"params": {
+				"row": {
+					"type": "integer",
+					"description": "Pixel row (0 = top)",
+					"minimum": 0
+				},
+				"col": {
+					"type": "integer",
+					"description": "Pixel column",
+					"minimum": 0
+				},
+				"camera": {
+					"type": "enum",
+					"values": [
+						"agentview",
+						"wrist"
+					],
+					"description": "Default agentview"
+				},
+				"resolution": {
+					"type": "enum",
+					"values": [
+						"high",
+						"low"
+					],
+					"description": "The image the pixel came from: high = 1024 (default), low = 256",
+					"modes": [
+						"tool"
+					]
+				},
+				"row_range": {
+					"type": "array",
+					"items": "integer",
+					"minItems": 2,
+					"maxItems": 2,
+					"description": "Region mode: [first, last) rows"
+				},
+				"col_range": {
+					"type": "array",
+					"items": "integer",
+					"minItems": 2,
+					"maxItems": 2,
+					"description": "Region mode: [first, last) columns"
+				},
+				"z_min": {
+					"type": "number",
+					"description": "Region mode: keep pixels with world z >= z_min"
+				},
+				"z_max": {
+					"type": "number",
+					"description": "Region mode: keep pixels with world z <= z_max"
+				},
+				"step": {
+					"type": "integer",
+					"description": "State record (a result's state_step): 0 = initial, -1 = latest (default)",
+					"modes": [
+						"tool"
+					]
+				}
+			},
+			"doc": {
+				"tool": "World xyz of a pixel (row, col; row 0 = top) in the current camera image, or in state record `step`'s (the state_step of the image the pixel came from), from that state's depth world map. Region mode: row_range + col_range (+ optional z_min/z_max) returns the midpoint of world xy over that window, e.g. a container's interior center. Pixels from the 1024 images use resolution high (default).",
+				"code": "World xyz {world_xyz: [x, y, z]} of pixel (row, col) of the current 512x512 image of a camera (get_observation's; row 0 = top), through its depth; an error when the pixel has no depth. Region mode: row_range + col_range (+ z_min / z_max) returns center_xyz (midpoint of world x and y over the window, median z) and median_xyz.\n\nExample:\n    p = back_project(300, 260)[\"world_xyz\"]\n    inside = back_project(row_range=[200, 260], col_range=[240, 300])[\"center_xyz\"]"
+			},
+			"result": "read"
+		},
+		{
+			"name": "segment",
+			"side": "env",
+			"method": "env.segment",
+			"tier": "low",
+			"requires": [
+				"sam3"
+			],
+			"params": {
+				"prompt": {
+					"type": "string",
+					"description": "What to segment, e.g. 'black bowl' (or give point)"
+				},
+				"point": {
+					"type": "array",
+					"items": "integer",
+					"minItems": 2,
+					"maxItems": 2,
+					"description": "A positive point [row, col] instead of a prompt"
+				},
+				"camera": {
+					"type": "enum",
+					"values": [
+						"agentview",
+						"wrist"
+					],
+					"description": "Default agentview"
+				},
+				"min_score": {
+					"type": "number",
+					"description": "SAM3 threshold (default 0.2)",
+					"minimum": 0,
+					"maximum": 1
+				},
+				"step": {
+					"type": "integer",
+					"description": "State record (a result's state_step): 0 = initial, -1 = latest (default)",
+					"modes": [
+						"tool"
+					]
+				}
+			},
+			"doc": {
+				"tool": "SAM3 segmentation of the current 1024x1024 camera image, or of state record `step`'s. Give exactly one of a text prompt or a positive point [row, col]. The top mask is projected through that state's depth world map; world_xyz is the median over mask pixels. Returns an overlay image; the reading is saved as segment_artifact.",
+				"code": "SAM3 segmentation of the current 512x512 image of a camera by a text prompt (or a point [row, col]): {found, score, box [x1, y1, x2, y2], mask bool[512,512], n_pixels, centroid_rowcol [row, col], world_xyz (median over the mask's pixels with depth, or None)}.\n\nExample:\n    seg = segment(\"black bowl\")\n    if seg[\"found\"]:\n        xyz = seg[\"world_xyz\"]"
+			},
+			"result": "read"
+		},
+		{
+			"name": "preview_reach",
+			"side": "env",
+			"method": "env.preview_reach",
+			"tier": "low",
+			"requires": [
+				"ik"
+			],
+			"params": {
+				"xyz": {
+					"type": "vec3",
+					"required": true,
+					"description": "World-frame [x, y, z] in meters"
+				},
+				"quat_xyzw": {
+					"type": "quat",
+					"description": "Default: the current orientation"
+				}
+			},
+			"doc": {
+				"tool": "Whether move_to could reach a world xyz from the current joints (IK only; nothing moves). status unreachable means move_to would refuse it; unknown means the check could not run.",
+				"code": "IK reach check from the current joints, nothing moves (--ik): {status: reachable | unreachable | unknown, q, position_err, orientation_err, message}.\n\nExample:\n    if preview_reach([0.05, 0.12, 0.95])[\"status\"] != \"unreachable\":\n        move_to([0.05, 0.12, 0.95])"
+			},
+			"result": "read"
+		},
+		{
+			"name": "move_to",
+			"side": "env",
+			"method": "env.move_to",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"xyz": {
+					"type": "vec3",
+					"required": true,
+					"description": "World-frame [x, y, z] in meters"
+				},
+				"gripper": {
+					"type": "number",
+					"minimum": -1,
+					"maximum": 1,
+					"description": "-1 open (default), +1 close; a program may pass None to keep the last command"
+				},
+				"tol": {
+					"type": "number",
+					"description": "Position tolerance, m (default 0.012)",
+					"minimum": 0.001,
+					"maximum": 0.1
+				},
+				"step_clip": {
+					"type": "number",
+					"description": "Per-step xyz cap, m (default 0.025)",
+					"minimum": 0.001,
+					"maximum": 0.05
+				},
+				"max_steps": {
+					"type": "integer",
+					"description": "Step budget (default 80)",
+					"minimum": 1,
+					"maximum": 400
+				},
+				"action_scale": {
+					"type": "number",
+					"description": "OSC action scale (default 0.05)",
+					"minimum": 0.01,
+					"maximum": 0.2
+				},
+				"target_yaw": {
+					"type": "number",
+					"description": "Optional world yaw target, rad"
+				},
+				"yaw_step_clip": {
+					"type": "number",
+					"description": "Per-step yaw clip, rad (default 0.10)",
+					"minimum": 0.01,
+					"maximum": 0.5
+				}
+			},
+			"doc": {
+				"tool": "Scripted EEF servo to a world xyz; holds orientation. gripper -1 = open, +1 = close (hold +1 while carrying). Never move more than 0.30 m in xy in one call; split long moves.",
+				"code": "Servo the end effector to a world xyz, holding its orientation (or turning to target_yaw). gripper -1 opens (the default), +1 closes: pass gripper=1 on every move while carrying. Refused (ValueError, unmoved) beyond 0.30 m in xy: split long moves into waypoints at carry height; with --ik also when unreachable or no collision-free path exists.\n\nReturns:\n    dict with eef_pos, final_dist_m (large: the reach stalled), steps_used, gripper_width, terminated, truncated; planned / stopped with --ik.\n\nExample:\n    move_to([0.05, 0.12, 1.05])                 # above the target, open\n    move_to([0.05, 0.12, 0.93])\n    set_gripper(1, steps=15)\n    r = move_to([0.05, 0.12, 1.05], gripper=1)  # carry: keep it closed\n    print(r[\"final_dist_m\"])"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "move_pose",
+			"side": "env",
+			"method": "env.move_pose",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"xyz": {
+					"type": "vec3",
+					"required": true,
+					"description": "World-frame [x, y, z] in meters"
+				},
+				"target_pitch": {
+					"type": "number",
+					"description": "rad"
+				},
+				"target_yaw": {
+					"type": "number",
+					"description": "rad"
+				},
+				"gripper": {
+					"type": "number",
+					"minimum": -1,
+					"maximum": 1,
+					"description": "Default -1 (open); +1 while holding"
+				},
+				"step_clip": {
+					"type": "number",
+					"description": "m, default 0.02",
+					"minimum": 0.001,
+					"maximum": 0.05
+				},
+				"pitch_step": {
+					"type": "number",
+					"description": "rad, default 0.08",
+					"minimum": 0.005,
+					"maximum": 0.5
+				},
+				"yaw_step": {
+					"type": "number",
+					"description": "rad, default 0.08",
+					"minimum": 0.005,
+					"maximum": 0.5
+				},
+				"tol": {
+					"type": "number",
+					"description": "m, default 0.012",
+					"minimum": 0.001,
+					"maximum": 0.1
+				},
+				"ori_tol": {
+					"type": "number",
+					"description": "rad, default 0.05",
+					"minimum": 0.005,
+					"maximum": 0.5
+				},
+				"action_scale": {
+					"type": "number",
+					"description": "Default 0.05",
+					"minimum": 0.01,
+					"maximum": 0.2
+				},
+				"max_steps": {
+					"type": "integer",
+					"description": "Default 150",
+					"minimum": 1,
+					"maximum": 400
+				}
+			},
+			"doc": {
+				"tool": "Servo xyz and pitch/yaw together each step. Use when move_to stalls on deep or low reaches (cabinet fronts, microwave). gripper defaults to -1 (open): pass +1 while holding.",
+				"code": "Servo xyz and the pitch / yaw targets (world frame; pitch 0 = pointing down) together each step: the reach that move_to stalls on (cabinet fronts, microwave). gripper defaults to -1 (open): pass 1 while holding.\n\nReturns:\n    dict with eef_pos, final_dist_m, final_pitch, steps_used, gripper_width, terminated.\n\nExample:\n    r = move_pose([0.1, 0.2, 0.95], target_pitch=0.5, gripper=1)\n    print(r[\"final_dist_m\"], r[\"final_pitch\"])"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "rotate_wrist",
+			"side": "env",
+			"method": "env.rotate_wrist",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"target_yaw": {
+					"type": "number",
+					"description": "rad"
+				},
+				"delta_yaw": {
+					"type": "number",
+					"description": "rad"
+				},
+				"gripper": {
+					"type": "number",
+					"minimum": -1,
+					"maximum": 1,
+					"description": "-1 open, +1 close (default); a program may pass None to keep the last command"
+				},
+				"max_steps": {
+					"type": "integer",
+					"description": "Default 40",
+					"minimum": 1,
+					"maximum": 200
+				},
+				"tol": {
+					"type": "number",
+					"description": "rad, default 0.02",
+					"minimum": 0.002,
+					"maximum": 0.5
+				},
+				"step_clip": {
+					"type": "number",
+					"description": "rad, default 0.10",
+					"minimum": 0.01,
+					"maximum": 0.5
+				}
+			},
+			"doc": {
+				"tool": "Rotate the wrist about world z. Give target_yaw (absolute) or delta_yaw (relative), radians. Holds xyz.",
+				"code": "Turn the gripper about world z to target_yaw or by delta_yaw (rad, positive = counter-clockwise seen from above), holding its position. gripper defaults to +1 (closed): pass -1 before a grasp.\n\nReturns:\n    dict with start_yaw, target_yaw, final_yaw, yaw, final_err, steps_used, eef_pos.\n\nExample:\n    r = rotate_wrist(delta_yaw=1.5708, gripper=-1)   # a quarter turn, open\n    print(r[\"final_yaw\"], r[\"final_err\"])"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "rotate_pitch",
+			"side": "env",
+			"method": "env.rotate_pitch",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"target_pitch": {
+					"type": "number",
+					"description": "rad"
+				},
+				"delta_pitch": {
+					"type": "number",
+					"description": "rad"
+				},
+				"gripper": {
+					"type": "number",
+					"minimum": -1,
+					"maximum": 1,
+					"description": "-1 open, +1 close (default); a program may pass None to keep the last command"
+				},
+				"max_steps": {
+					"type": "integer",
+					"description": "Default 40",
+					"minimum": 1,
+					"maximum": 200
+				},
+				"tol": {
+					"type": "number",
+					"description": "rad, default 0.02",
+					"minimum": 0.002,
+					"maximum": 0.5
+				},
+				"step_clip": {
+					"type": "number",
+					"description": "rad, default 0.10",
+					"minimum": 0.01,
+					"maximum": 0.5
+				}
+			},
+			"doc": {
+				"tool": "Tilt the gripper about world x (pitch 0 = pointing down, +pi/2 = pointing +y). Give target_pitch or delta_pitch, radians. Holds xyz and yaw. Use before entering a narrow opening facing ±y.",
+				"code": "Tilt the gripper about world x (pitch 0 = pointing down, +pi/2 = pointing +y) to target_pitch or by delta_pitch (rad), holding its position and yaw. gripper defaults to +1 (closed).\n\nReturns:\n    dict with start_pitch, target_pitch, final_pitch, final_err, steps_used, eef_pos.\n\nExample:\n    rotate_pitch(target_pitch=0.6)\n    move_to([0.0, 0.25, 1.0], gripper=1)"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "move_delta",
+			"side": "code",
+			"method": "env.move_delta",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"dxyz": {
+					"type": "vec3",
+					"required": true,
+					"description": "[dx, dy, dz] in metres (world frame)"
+				},
+				"gripper": {
+					"type": "number",
+					"minimum": -1,
+					"maximum": 1,
+					"description": "-1 opens, +1 closes; omitted keeps the last command"
+				},
+				"max_steps": {
+					"type": "integer",
+					"description": "env-step budget (default 25)",
+					"minimum": 1,
+					"maximum": 200
+				}
+			},
+			"doc": {
+				"code": "Move the end effector by a world-frame offset (+x away from the robot toward the agentview camera, +y robot-left, +z up), holding its orientation; at most 0.10 m per call. moved_m well below the command: blocked by contact, the table or a limit.\n\nReturns:\n    dict with eef_pos, moved_m, steps_used, gripper_width, terminated.\n\nExample:\n    r = move_delta([0, 0, -0.05])   # descend 5 cm\n    print(r[\"moved_m\"])"
+			}
+		},
+		{
+			"name": "rotate_delta",
+			"side": "code",
+			"method": "env.rotate_delta",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"delta_yaw": {
+					"type": "number",
+					"required": true,
+					"description": "relative turn, rad (at most pi/2)"
+				},
+				"gripper": {
+					"type": "number",
+					"minimum": -1,
+					"maximum": 1,
+					"description": "-1 opens, +1 closes; omitted keeps the last command"
+				},
+				"max_steps": {
+					"type": "integer",
+					"description": "env-step budget (default 40)",
+					"minimum": 1,
+					"maximum": 200
+				}
+			},
+			"doc": {
+				"code": "Turn the gripper about world z by delta_yaw radians (positive = counter-clockwise seen from above; at most pi/2 per call), holding its position and the gripper command.\n\nReturns:\n    dict with yaw, final_err, steps_used, eef_pos.\n\nExample:\n    r = rotate_delta(0.5)\n    print(r[\"yaw\"], r[\"final_err\"])"
+			}
+		},
+		{
+			"name": "set_gripper",
+			"side": "env",
+			"method": "env.set_gripper",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"gripper": {
+					"type": "number",
+					"minimum": -1,
+					"maximum": 1,
+					"description": "-1 open (default), +1 close; a program may pass None to keep the last command"
+				},
+				"steps": {
+					"type": "integer",
+					"description": "Default 5",
+					"minimum": 1,
+					"maximum": 200
+				}
+			},
+			"doc": {
+				"tool": "Hold the pose and drive the gripper for `steps` env steps (e.g. +1 for 8-12 steps to firm a grip).",
+				"code": "Hold the pose and drive the gripper (-1 open, the default; +1 close) for `steps` env steps; the fingers travel about 1 mm per step and stop on a grasped object. Close with about 15 steps; +1 for 8-12 steps firms a grip.\n\nReturns:\n    dict with gripper, gripper_width (0.01-0.05 holding, near 0 closed on nothing), steps_used, terminated.\n\nExample:\n    set_gripper(1, steps=15)\n    if get_state()[\"gripper_width\"] < 0.01:\n        print(\"missed\")"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "release",
+			"side": "env",
+			"method": "env.release",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"max_steps": {
+					"type": "integer",
+					"description": "Default 20",
+					"minimum": 1,
+					"maximum": 200
+				}
+			},
+			"doc": {
+				"tool": "Open the gripper in place for up to max_steps; triggers termination when the goal predicate holds.",
+				"code": "Open the gripper in place for max_steps env steps; placing may end the task (terminated).\n\nReturns:\n    dict with start_gripper_opening, final_gripper_opening, steps_used, terminated.\n\nExample:\n    r = release()\n    print(r[\"terminated\"], r[\"final_gripper_opening\"])"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "pi0_pick",
+			"side": "ts",
+			"tier": "high",
+			"module": "vla-adapters",
+			"doc": {
+				"tool": "Pi0.5 closed-loop grasp. Use it only for the grasp; you do every move_to and release. Success needs a descent then a lift with the gripper partly closed; it is a hint, confirm from gripper opening and the wrist image."
+			}
+		},
+		{
+			"name": "openvla_act",
+			"side": "ts",
+			"tier": "high",
+			"module": "vla-adapters",
+			"doc": {
+				"tool": "OpenVLA (7B, LIBERO fine-tune; one action per call) closed-loop grasp, run as action chunks until the pick heuristics say the object is lifted or the budget ends. Use it only for the grasp; you do every move_to and release. Success needs a descent then a lift with the gripper partly closed; it is a hint, confirm from gripper opening and the wrist image."
+			}
+		},
+		{
+			"name": "openvla_oft_act",
+			"side": "ts",
+			"tier": "high",
+			"module": "vla-adapters",
+			"doc": {
+				"tool": "OpenVLA-OFT (7B, LIBERO fine-tune; 8-step chunks) closed-loop grasp, run as action chunks until the pick heuristics say the object is lifted or the budget ends. Use it only for the grasp; you do every move_to and release. Success needs a descent then a lift with the gripper partly closed; it is a hint, confirm from gripper opening and the wrist image."
+			}
+		},
+		{
+			"name": "gr00t_act",
+			"side": "ts",
+			"tier": "high",
+			"module": "vla-adapters",
+			"doc": {
+				"tool": "GR00T N1.6/N1.7 (LIBERO libero_panda fine-tune; 16-step chunks) closed-loop grasp, run as action chunks until the pick heuristics say the object is lifted or the budget ends. Use it only for the grasp; you do every move_to and release. Success needs a descent then a lift with the gripper partly closed; it is a hint, confirm from gripper opening and the wrist image."
+			}
+		},
+		{
+			"name": "pi0_doubled",
+			"side": "ts",
+			"tier": "high",
+			"params": {
+				"prompt": {
+					"type": "string",
+					"required": true,
+					"description": "e.g. 'turn on the stove'"
+				},
+				"max_chunks": {
+					"type": "integer",
+					"description": "Default 20",
+					"minimum": 1,
+					"maximum": 200
+				}
+			},
+			"doc": {
+				"tool": "Pi0.5 closed-loop contact skill for non-pick interactions (knob, stove, drawer, button, short push). success only mirrors task termination; inspect the images for intermediate progress."
+			},
+			"result": "motion"
+		},
+		{
+			"name": "execute_grasp",
+			"side": "env",
+			"method": "env.execute_grasp",
+			"tier": "low",
+			"mutating": true,
+			"requires": [
+				"grasp"
+			],
+			"params": {
+				"grasp_id": {
+					"type": "string",
+					"required": true,
+					"description": "A g id from plan_grasp"
+				},
+				"standoff": {
+					"type": "number",
+					"description": "Pre-grasp distance along the approach, m (default 0.10)",
+					"minimum": 0,
+					"maximum": 0.3
+				},
+				"lift": {
+					"type": "number",
+					"description": "Lift after closing, m (default 0.10)",
+					"minimum": 0,
+					"maximum": 0.3
+				},
+				"max_steps": {
+					"type": "integer",
+					"description": "Step budget per leg (default 150)",
+					"minimum": 1,
+					"maximum": 400
+				}
+			},
+			"doc": {
+				"tool": "Execute one planned grasp (a g id of the current observation, from plan_grasp) in one call: open to the pre-grasp standoff back along its approach, descend to it with its pitch and yaw, close, lift straight up. Returns each leg's final_dist_m and gripper_width (0.01-0.05 holding, near 0 missed); error and stalled when a leg stopped short. The id is spent either way; afterwards plan_place with this grasp_id plans from the held object.",
+				"code": "Execute one planned grasp (a g id of the current observation) from a single resolution of the id: open to the pre-grasp standoff back along its approach, descend to it with its pitch and yaw, close, lift straight up. error and stalled when a leg stopped short (the robot moved: plan again). Afterwards plan_place(region, that grasp id) plans from the held object.\n\nReturns:\n    dict with legs, gripper_width (0.01-0.05 holding, near 0 missed), eef_pos, terminated; error / stalled.\n\nExample:\n    g = plan_grasp(\"black bowl\")\n    r = execute_grasp(g[\"active\"])\n    print(r[\"gripper_width\"])"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "execute_place",
+			"side": "env",
+			"method": "env.execute_place",
+			"tier": "low",
+			"mutating": true,
+			"requires": [
+				"grasp"
+			],
+			"params": {
+				"place_id": {
+					"type": "string",
+					"required": true,
+					"description": "A p id from plan_place"
+				},
+				"standoff": {
+					"type": "number",
+					"description": "Pre-place distance along the approach, m (default 0.10)",
+					"minimum": 0,
+					"maximum": 0.3
+				},
+				"max_steps": {
+					"type": "integer",
+					"description": "Step budget per leg (default 150)",
+					"minimum": 1,
+					"maximum": 400
+				}
+			},
+			"doc": {
+				"tool": "Execute one planned place (a p id of the current observation, from plan_place) in one call: carry closed to the pre-place standoff, descend to the place pose, open, retreat to the pre-place. Returns each leg's final_dist_m; error and stalled when a leg stopped short.",
+				"code": "Execute one planned place (a p id of the current observation) from a single resolution of the id: carry closed to the pre-place standoff, descend to the place pose, open, retreat.\n\nReturns:\n    dict with legs, gripper_width, eef_pos, terminated (placing may finish the task); error / stalled.\n\nExample:\n    p = plan_place(\"plate\", g[\"active\"])\n    r = execute_place(p[\"active\"])\n    print(r[\"terminated\"])"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "get_camera_meta",
+			"side": "code",
+			"method": "env.get_camera_meta",
+			"tier": "low",
+			"params": {
+				"camera_name": {
+					"type": "enum",
+					"values": [
+						"agentview",
+						"robot0_eye_in_hand"
+					],
+					"description": "LIBERO camera (default agentview)"
+				},
+				"height": {
+					"type": "integer",
+					"description": "pixels (default 256)",
+					"minimum": 16,
+					"maximum": 1024
+				},
+				"width": {
+					"type": "integer",
+					"description": "pixels (default 256)",
+					"minimum": 16,
+					"maximum": 1024
+				}
+			},
+			"doc": {
+				"code": "Camera intrinsics and extrinsics of a LIBERO camera at a resolution (images rendered by render_camera are upside down).\n\nExample:\n    meta = get_camera_meta(\"agentview\", 512, 512)\n    K = meta[\"intrinsic_K\"]"
+			}
+		},
+		{
+			"name": "render_camera",
+			"side": "code",
+			"method": "env.render_camera",
+			"tier": "raw",
+			"params": {
+				"camera_name": {
+					"type": "enum",
+					"values": [
+						"agentview",
+						"robot0_eye_in_hand"
+					],
+					"description": "LIBERO camera (default agentview)"
+				},
+				"height": {
+					"type": "integer",
+					"description": "pixels (default 1024)",
+					"minimum": 16,
+					"maximum": 1024
+				},
+				"width": {
+					"type": "integer",
+					"description": "pixels (default 1024)",
+					"minimum": 16,
+					"maximum": 1024
+				},
+				"depth": {
+					"type": "boolean",
+					"description": "also return the depth map"
+				}
+			},
+			"doc": {
+				"code": "One LIBERO camera's raw RGB frame (and normalized depth buffer), upside down as MuJoCo renders it.\n\nExample:\n    rgb, depth = render_camera(\"agentview\", 256, 256, depth=True)"
+			}
+		},
+		{
+			"name": "raw_obs",
+			"side": "code",
+			"method": "env.code_raw_obs",
+			"tier": "raw",
+			"doc": {
+				"code": "The simulator's current observation: the robot's own robot0_* keys and the images (object poses are privileged).\n\nExample:\n    o = raw_obs()\n    print(o[\"robot0_eef_pos\"], o[\"robot0_gripper_qpos\"])"
+			}
+		},
+		{
+			"name": "step",
+			"side": "code",
+			"method": "env.step",
+			"tier": "raw",
+			"mutating": true,
+			"params": {
+				"action": {
+					"type": "array",
+					"required": true,
+					"description": "7 floats"
+				}
+			},
+			"doc": {
+				"code": "One OSC action [dx, dy, dz, drx, dry, drz, gripper] in [-1, 1] (0.05 m and 0.1 rad per unit; gripper -1 open, +1 close).\n\nExample:\n    step([0, 0, 0.5, 0, 0, 0, -1])   # up 2.5 cm, open"
+			}
+		},
+		{
+			"name": "chunk_step",
+			"side": "code",
+			"method": "env.chunk_step",
+			"tier": "raw",
+			"mutating": true,
+			"params": {
+				"actions": {
+					"type": "array",
+					"required": true,
+					"description": "N x 7 floats (N <= 64)"
+				},
+				"return_all_frames": {
+					"type": "boolean",
+					"description": "one observation per action"
+				}
+			},
+			"doc": {
+				"code": "Run a chunk of OSC actions [N, 7] in one call.\n\nExample:\n    chunk_step([[0, 0, 0.5, 0, 0, 0, -1]] * 4)"
+			}
+		},
+		{
+			"use": "sim/ground_truth_poses"
+		},
+		{
+			"name": "get_object_pose",
+			"side": "env",
+			"method": "env.get_object_pose",
+			"tier": "high",
+			"requires": [
+				"sam3"
+			],
+			"params": {
+				"object_name": {
+					"type": "string",
+					"required": true,
+					"description": "The object in words, e.g. 'black bowl'"
+				},
+				"use_multiview": {
+					"type": "boolean",
+					"description": "Also segment in the wrist view (default true)"
+				}
+			},
+			"doc": {
+				"tool": "Pose of an object named in words, from SAM3 masks and depth (agentview and wrist): [position (3,), quaternion_wxyz (4,)], or [null, null]. The quaternion may be unreliable: for placing use the grasp quaternion or [0, 1, 0, 0] (gripper down).",
+				"code": "Get the pose of an object from a natural language description (SAM3 + depth).\nThe quaternion may be unreliable: disregard it and use the grasp quaternion or [0, 1, 0, 0] (wxyz, gripper down) for placement. It may return (None, None).\n\nArgs:\n    object_name: the object, e.g. \"black bowl\".\n    use_multiview: also use the wrist camera (default True).\n\nReturns:\n    [position (3,), quaternion_wxyz (4,)] in the world frame.\n\nExample:\n    pos, quat = get_object_pose(\"woven basket\")"
+			},
+			"result": "read"
+		},
+		{
+			"name": "get_object_pose",
+			"side": "env",
+			"method": "env.get_object_pose_privileged",
+			"tier": "privileged",
+			"params": {
+				"object_name": {
+					"type": "string",
+					"required": true,
+					"description": "The object in words, e.g. 'basket'"
+				}
+			},
+			"doc": {
+				"tool": "Privileged: the simulator's pose of an object named in words: [position (3,), quaternion_wxyz (4,)].",
+				"code": "Get the pose of an object from the simulator (privileged): \"<name>_1\", else the one object whose name contains the words.\n\nReturns:\n    [position (3,), quaternion_wxyz (4,)].\n\nExample:\n    pos, quat = get_object_pose(\"basket\")"
+			},
+			"result": "read"
+		},
+		{
+			"name": "sample_grasp_pose",
+			"side": "env",
+			"method": "env.sample_grasp_pose",
+			"tier": "high",
+			"requires": [
+				"sam3"
+			],
+			"params": {
+				"object_name": {
+					"type": "string",
+					"required": true,
+					"description": "The object in words"
+				},
+				"use_multiview": {
+					"type": "boolean",
+					"description": "Also segment in the wrist view (default true)"
+				}
+			},
+			"doc": {
+				"tool": "A grasp of an object named in words: [position (3,), quaternion_wxyz (4,)] for goto_pose. With a grasp server the best planned grasp, else top-down over the object's centre, 3 cm below its top.",
+				"code": "Sample a grasp pose for an object from a natural language description. Use its quaternion.\n\nReturns:\n    [position (3,), quaternion_wxyz (4,)].\n\nExample:\n    pos, quat = sample_grasp_pose(\"milk carton\")\n    goto_pose(pos, quat, z_approach=0.1)"
+			},
+			"result": "read"
+		},
+		{
+			"name": "sample_grasp_pose",
+			"side": "env",
+			"method": "env.sample_grasp_pose_privileged",
+			"tier": "privileged",
+			"params": {
+				"object_name": {
+					"type": "string",
+					"required": true,
+					"description": "The object in words"
+				}
+			},
+			"doc": {
+				"tool": "Privileged: a grasp of an object named in words, from the simulator: its position with the gripper pointing down.",
+				"code": "Sample a grasp pose for an object (privileged: the simulator's position, gripper down [0, 1, 0, 0]).\n\nExample:\n    pos, quat = sample_grasp_pose(\"milk\")"
+			},
+			"result": "read"
+		},
+		{
+			"name": "goto_pose",
+			"side": "env",
+			"method": "env.goto_pose",
+			"tier": "high",
+			"mutating": true,
+			"params": {
+				"position": {
+					"type": "vec3",
+					"required": true,
+					"description": "World [x, y, z] of the grip point, m"
+				},
+				"quaternion_wxyz": {
+					"type": "quat",
+					"required": true,
+					"description": "Gripper (panda_hand) orientation, wxyz ([0, 1, 0, 0] = pointing down)"
+				},
+				"z_approach": {
+					"type": "number",
+					"description": "First stop this far back along the approach axis, m (default 0)",
+					"minimum": -0.5,
+					"maximum": 0.5
+				}
+			},
+			"doc": {
+				"tool": "Go to a gripper pose (position and wxyz orientation), keeping the gripper command; with z_approach first stop that far back along the approach axis. The gripper stays pointing down and turns to the pose's yaw; long moves run as straight legs.",
+				"code": "Go to pose. There is no need to call a second goto_pose with the same pose after calling it with z_approach. The gripper points down and turns to the quaternion's yaw (tilt_rad in the result: the tilt not reached).\n\nArgs:\n    position: (3,) XYZ in meters.\n    quaternion_wxyz: (4,) WXYZ unit quaternion.\n    z_approach: first arrive z_approach metres back along the gripper's approach axis.\n\nExample:\n    goto_pose(pos, quat, z_approach=0.1)"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "home_pose",
+			"side": "env",
+			"method": "env.home_pose",
+			"tier": "high",
+			"mutating": true,
+			"doc": {
+				"tool": "Move the gripper back to its position and yaw at the episode's start.",
+				"code": "Move the robot to a safe home pose (the gripper's pose at the episode's start).\n\nExample:\n    home_pose()"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "open_gripper",
+			"side": "env",
+			"method": "env.open_gripper",
+			"tier": "high",
+			"mutating": true,
+			"doc": {
+				"tool": "Open the gripper fully (40 env steps).",
+				"code": "Open gripper fully.\n\nExample:\n    open_gripper()"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "close_gripper",
+			"side": "env",
+			"method": "env.close_gripper",
+			"tier": "high",
+			"mutating": true,
+			"doc": {
+				"tool": "Close the gripper fully (60 env steps; the fingers stop on an object).",
+				"code": "Close gripper fully.\n\nExample:\n    close_gripper()"
+			},
+			"result": "motion"
+		},
+		{
+			"use": "grasp/plan_grasp",
+			"doc": {
+				"tool": "Predict grasps for one object from the current RGB-D observation, ranked best first, in the world frame. Give the object as text (segmented with SAM3) or a mask_id of this observation. Each candidate has a short id (g3) and its EEF pose, valid until the robot moves or the scene changes; execute_grasp runs one from a single resolution of its id. Try `active` first; when it is refused before the robot moves (unreachable), call again with next_after=<that id> to get the next rank without re-planning; after a failed motion, plan again.",
+				"code": "Grasp candidates for one object of the current observation, world frame, best first; ids (g3) expire when the robot moves. next_after=<id> rejects a candidate and returns the next rank.\n\nExample:\n    g = plan_grasp(\"red cube\")\n    best = g[\"candidates\"][0]\n    print(best[\"id\"], best[\"eef_position\"])"
+			}
+		},
+		{
+			"use": "grasp/plan_place",
+			"doc": {
+				"tool": "Where to hold the grasped object so it comes to rest on a placement region (AnyPlace). Give the region as text (segmented now) or as a mask id, and the grasp id: after execute_grasp, that grasp's id (the held object is found again from its prompt as the mask nearest the gripper, or object_mask_id, and the gripper's actual pose is used; refused when the fingers hold nothing); before it, a current g id with region and object from the same observation. Returns place poses with ids (p1); execute_place runs one.",
+				"code": "AnyPlace: place poses (p ids) for the held object on a region. Before the grasp: region mask and grasp from one observation; after executing it: the executed grasp's id, the region from the current observation.\n\nExample:\n    p = plan_place(\"green plate\", g[\"candidates\"][0][\"id\"])"
+			}
+		},
+		{
+			"use": "grasp/check_attached"
+		},
+		{
+			"use": "grasp/next_grasp"
+		},
+		{
+			"use": "grasp/resolve_grasp"
+		},
+		{
+			"use": "grasp/claim_waypoints"
+		},
+		{
+			"use": "grasp/segment_mask"
+		},
+		{
+			"use": "geometry/view_points"
+		},
+		{
+			"use": "geometry/mark_point"
+		},
+		{
+			"use": "geometry/grip_target"
+		},
+		{
+			"use": "geometry/grip_state"
+		},
+		{
+			"use": "geometry/move_grip"
+		},
+		{
+			"use": "perception/detect",
+			"requires": [
+				"detections"
+			]
+		},
+		{
+			"use": "perception/select_detection",
+			"requires": [
+				"detections"
+			]
+		},
+		{
+			"use": "perception/reject_detection",
+			"requires": [
+				"detections"
+			]
+		},
+		{
+			"use": "perception/enhance_depth"
+		},
+		{
+			"name": "follow_waypoints",
+			"side": "ts",
+			"tier": "low",
+			"module": "waypoints",
+			"doc": {
+				"tool": "OpenETA's waypoint follower (primitives/waypoints.ts, --waypoints)."
+			}
+		},
+		{
+			"name": "align_wrist",
+			"side": "ts",
+			"tier": "low",
+			"module": "wrist",
+			"doc": {
+				"tool": "OpenETA's wrist alignment (primitives/wrist.ts, --align-wrist)."
+			}
+		},
+		{
+			"name": "suggest_grasp",
+			"side": "ts",
+			"tier": "low",
+			"module": "advisor",
+			"doc": {
+				"tool": "The grasp advisor (primitives/advisor.ts, --grasp-advisor)."
+			}
+		},
+		{
+			"use": "modules/finish"
+		},
+		{
+			"use": "modules/act"
+		},
+		{
+			"use": "modules/plan"
+		},
+		{
+			"use": "modules/point"
+		},
+		{
+			"use": "modules/reset"
+		},
+		{
+			"use": "modules/run_code"
+		},
+		{
+			"use": "modules/request_operator_verdict"
+		},
+		{
+			"use": "modules/request_scene_reset"
+		}
+	]
+}

@@ -144,7 +144,7 @@ export function detectionTools(pi: ExtensionAPI, rig: DetectionRig): GraspToolDe
 			if (!text && !point) return { error: "give a text prompt or a point [row, col]" };
 			const res = await rig.call(
 				METHODS.detect,
-				{ camera: c, ...(text ? { text_prompt: text } : { point }), min_score, all },
+				{ camera: c, ...(text ? { prompt: text } : { point }), min_score, all },
 				120_000,
 			);
 			expired("detect", res);

@@ -8,6 +8,7 @@ import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import franka from "../src/robots/franka/index.ts";
 import libero from "../src/robots/libero/index.ts";
+import { codeApiReply } from "./helpers/code-api.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
@@ -135,7 +136,7 @@ async function fakeLibero() {
 					],
 				};
 	const env = await fakeServer((method, args, kwargs) => {
-		if (method === "code.api") return { tier: null, primitives: [], digest: "d" };
+		if (method === "code.api") return codeApiReply("libero", kwargs.tier);
 		if (method === "env.reset") return [obs(), {}];
 		if (method === "env.get_task_language") return "put the bowl on the plate";
 		if (method === "env.raw_obs")
@@ -251,8 +252,18 @@ async function fakeFranka() {
 	let tcp = [0.5, 0, 0.3];
 	const [w, h] = [64, 48];
 	const env = await fakeServer((method, _args, kwargs) => {
-		if (method === "code.api") return { tier: null, primitives: [], digest: "d" };
-		if (method === "env.get_env_meta") return { capabilities: { backend: "rlinf", has_vla: false } };
+		if (method === "code.api") return codeApiReply("franka", kwargs.tier);
+		if (method === "env.get_env_meta")
+			return {
+				capabilities: { backend: "rlinf", has_vla: false },
+				// pi's limits as the server enforces them (the test's --max-move / --z-floor).
+				motion_limits: {
+					max_move_m: 0.06,
+					max_rotate_rad: 0.5,
+					z_floor_m: 0.32,
+					workspace_xy: [0.159, 1.159, -0.456, 0.544],
+				},
+			};
 		if (method === "env.reset") return { states: f32([...tcp, 0]) };
 		if (method === "env.get_observation")
 			return {

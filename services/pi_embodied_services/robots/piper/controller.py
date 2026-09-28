@@ -155,6 +155,8 @@ class PiperLimits:
     gripper_settle_s: float = 1.5
     gripper_min_settle_s: float = 0.5
     gripper_poll_dt_s: float = 0.05
+    #: Largest |joint change| (rad, any joint) one ``move_to_joints_bounded`` call may command.
+    max_joint_step_rad: float = 0.35
     #: Joint-space reset: duration (s) and convergence tolerance (rad).
     reset_time_s: float = 4.0
     reset_tolerance_rad: float = 0.05
@@ -227,6 +229,7 @@ class PiperLimits:
             "gripper_settle_s": (-1e-12, 10.0),
             "gripper_min_settle_s": (-1e-12, 10.0),
             "gripper_poll_dt_s": (0.0, 1.0),
+            "max_joint_step_rad": (0.0, 1.0),
             "reset_time_s": (0.05, 60.0),
             "reset_tolerance_rad": (0.0, 0.2),
             "smooth_substeps": (0.0, 1000.0),
@@ -1042,6 +1045,199 @@ class PiperController:
             "ok": not cancelled and err < lim.reset_tolerance_rad,
             "target_joints": goal.tolist(),
             "max_joint_error_rad": err,
+            "notes": notes,
+        }
+        if cancelled:
+            out["cancelled"] = True
+        return out
+
+    # -- bounded joint-space motion (CaP-X solve_ik / move_to_joints) ------
+
+    def _joint_model(self) -> Any:
+        """The validated FK/IK (the joint_stream backend), else a refusal."""
+        self._ensure_synced()
+        if self.backend != "joint_stream" or self._kin is None:
+            raise ValueError(
+                "joint-space motion needs the joint_stream backend (the vendored FK within "
+                "1 cm of the arm's own pose feedback); this arm runs endpose"
+            )
+        return self._kin
+
+    def _feedback_offset(self, kin: Any) -> tuple[np.ndarray, R, np.ndarray]:
+        """(position offset, rotation offset, joints): feedback minus FK, measured now."""
+        pose = np.asarray(self.robot.get_ee_pose(), dtype=float)
+        q = np.asarray(self.robot.get_joint_positions(), dtype=float)[:6]
+        pos, rot = kin.fk(q)
+        return (
+            pose[:3] - np.asarray(pos, dtype=float),
+            R.from_quat(pose[3:]) * R.from_matrix(rot).inv(),
+            q,
+        )
+
+    def solve_ik(self, position: Any, quat_xyzw: Any = None) -> dict[str, Any]:
+        """Joints (6, rad) that put the tool at ``position`` (base frame, m; the pose
+        feedback's frame) with orientation ``quat_xyzw`` (None: any), seeded from the
+        measured joints. Read-only: nothing is commanded."""
+        target = np.asarray(position, dtype=float).reshape(-1)
+        if target.shape != (3,) or not np.all(np.isfinite(target)):
+            raise ValueError("position must be 3 finite numbers (m)")
+        kin = self._joint_model()
+        off_pos, off_rot, q = self._feedback_offset(kin)
+        if quat_xyzw is None:
+            sol = kin.ik_position(
+                target - off_pos, q, max_iters=200, max_seed_dist_rad=0.0
+            )
+        else:
+            quat = np.asarray(quat_xyzw, dtype=float).reshape(-1)
+            if (
+                quat.shape != (4,)
+                or not np.all(np.isfinite(quat))
+                or not (np.linalg.norm(quat) > 1e-6)
+            ):
+                raise ValueError("the quaternion must be 4 finite numbers, not zero")
+            rot = (off_rot.inv() * R.from_quat(quat)).as_matrix()
+            sol = kin.ik(target - off_pos, rot, q, max_iters=200, max_seed_dist_rad=0.0)
+        if sol is None:
+            return {
+                "reachable": False,
+                "joints": None,
+                "reason": "no IK solution within the joint limits from the current joints",
+            }
+        travel = float(np.max(np.abs(sol - q)))
+        return {
+            "reachable": True,
+            "joints": np.asarray(sol, dtype=float).tolist(),
+            "max_joint_change_rad": travel,
+            "max_joint_step_rad": self.limits.max_joint_step_rad,
+        }
+
+    def joint_move_m(self, target: Any) -> float:
+        """The TCP translation (m) a joint move to ``target`` would make (0 if unknown)."""
+        try:
+            kin = self._joint_model()
+            goal = np.asarray(target, dtype=float).reshape(-1)[:6]
+            q = np.asarray(self.robot.get_joint_positions(), dtype=float)[:6]
+            return float(
+                np.linalg.norm(
+                    np.asarray(kin.fk(goal)[0], float) - np.asarray(kin.fk(q)[0], float)
+                )
+            )
+        except Exception:
+            return 0.0
+
+    def move_to_joints_bounded(
+        self, target: Any, max_move_m: float, max_rotate_rad: float
+    ) -> dict[str, Any]:
+        """Stream a straight joint-space move to ``target`` (6 rad), bounded per call.
+
+        Refused before any command when: a joint would change more than
+        ``max_joint_step_rad``; the tool, at any waypoint, would be further than
+        ``max_move_m`` (and ``max_step_m``) from where it starts or turned more than
+        ``max_rotate_rad`` (and ``max_yaw_rad``, any axis); the heading would leave the
+        yaw budget (``max_total_yaw_rad``); the path would leave the Z floor / box
+        (:meth:`check_joint_path`). Stop-polled at every waypoint (a stop holds the arm
+        where it is). Unlike :meth:`move_to_joints` (the reset) the yaw budget keeps its
+        origin."""
+        lim = self.limits
+        goal = np.asarray(target, dtype=float).reshape(-1)
+        if goal.shape != (6,) or not np.all(np.isfinite(goal)):
+            raise ValueError("joints must be 6 finite values (rad)")
+        if np.any(goal < JOINT_LIMITS_RAD[:, 0]) or np.any(
+            goal > JOINT_LIMITS_RAD[:, 1]
+        ):
+            raise ValueError(f"joints {goal.tolist()} are outside the joint limits")
+        kin = self._joint_model()
+        # A chained stream still flowing settles first (a command), then the move starts at rest.
+        self.end_stream()
+        move_cap = min(float(max_move_m), lim.max_step_m)
+        rot_cap = min(float(max_rotate_rad), lim.max_yaw_rad)
+        off_pos, off_rot, start = self._feedback_offset(kin)
+        dq = goal - start
+        travel = float(np.max(np.abs(dq)))
+        if travel > lim.max_joint_step_rad + 1e-9:
+            raise ValueError(
+                f"a joint would change {travel:.3f} rad; the limit is "
+                f"{lim.max_joint_step_rad} rad per call (limits.max_joint_step_rad). Split "
+                "the motion into smaller calls; nothing was commanded"
+            )
+
+        def tool(q: np.ndarray) -> tuple[np.ndarray, R]:
+            pos, rot = kin.fk(q)
+            return np.asarray(pos, float) + off_pos, off_rot * R.from_matrix(rot)
+
+        p0, r0 = tool(start)
+        p1, r1 = tool(goal)
+        fractions, delay = self.plan(
+            float(np.linalg.norm(p1 - p0)), float((r1 * r0.inv()).magnitude())
+        )
+        for f in fractions:
+            p, r = tool(start + dq * f)
+            moved = float(np.linalg.norm(p - p0))
+            turned = float((r * r0.inv()).magnitude())
+            if moved > move_cap + 1e-9:
+                raise ValueError(
+                    f"the joint move takes the gripper {moved:.4f} m from where it starts; "
+                    f"the limit is {move_cap} m per call (--max-move / limits.max_step_m). "
+                    "Split the motion into smaller calls; nothing was commanded"
+                )
+            if turned > rot_cap + 1e-9:
+                raise ValueError(
+                    f"the joint move turns the gripper {turned:.4f} rad; the limit is "
+                    f"{rot_cap} rad per call (--max-yaw / limits.max_yaw_rad). Split the "
+                    "motion into smaller calls; nothing was commanded"
+                )
+        yaw_goal = float(r1.as_euler("xyz")[2])
+        turned_total = math.remainder(
+            yaw_goal - float(self._yaw_ref or 0.0), 2 * math.pi
+        )
+        if abs(turned_total) > lim.max_total_yaw_rad + 1e-9:
+            raise ValueError(
+                f"the joint move would turn the gripper {math.degrees(turned_total):.0f} deg "
+                "from its heading at the last reset; the limit is "
+                f"{math.degrees(lim.max_total_yaw_rad):.0f} deg (limits.max_total_yaw_rad); "
+                "nothing was commanded"
+            )
+        self.check_joint_path(start, goal, len(fractions))
+        pre = np.asarray(self.robot.get_ee_pose(), dtype=float)
+        self._invalidate()
+        cancelled = False
+        q = start
+        try:
+            for f in fractions:
+                self._check_stop()
+                q = start + dq * f
+                self._stream(q)
+                self.sleep(delay)
+            deadline = self.clock() + 3.0
+            while self.clock() < deadline:
+                err = np.abs(np.asarray(self.robot.get_joint_positions())[:6] - goal)
+                if float(err.max()) < lim.reset_tolerance_rad:
+                    break
+                self._wait(0.05)
+        except Stopped:
+            cancelled = True
+            self._stream(q)
+        except BaseException:
+            self._invalidate()
+            raise
+        self.robot.note_commanded_pose(None)
+        notes = self.sync()
+        post = np.asarray(self.robot.get_ee_pose(), dtype=float)
+        err = float(
+            np.abs(np.asarray(self.robot.get_joint_positions())[:6] - goal).max()
+        )
+        ok = not cancelled and err < lim.reset_tolerance_rad
+        if cancelled:
+            notes.append("stopped")
+        elif not ok:
+            notes.append(f"did not reach the joints ({err:.3f} rad off)")
+        out: dict[str, Any] = {
+            "ok": ok,
+            "target_joints": goal.tolist(),
+            "max_joint_error_rad": err,
+            "pre_pose": pre.tolist(),
+            "post_pose": post.tolist(),
+            "moved_m": float(np.linalg.norm(post[:3] - pre[:3])),
             "notes": notes,
         }
         if cancelled:

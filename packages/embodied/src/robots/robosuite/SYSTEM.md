@@ -22,15 +22,15 @@ This is a single episode. You may recover within it (re-position, re-grasp), but
 [tool:preview_reach]
 - `preview_reach` tells whether `move_to` could reach a world xyz from the current joints without moving; `move_to` refuses an `unreachable` target, so check far or low targets first.
 [/tool:preview_reach]
-[tool:gripper]
-- `gripper close` closes and holds, `open` opens; the command persists across moves until you change it. Carry with the gripper closed. A `gripper_width` near 0 after closing means the fingers hold nothing.
-[/tool:gripper]
+[tool:set_gripper]
+- `set_gripper` with `close: true` closes and holds, `close: false` opens; the command persists across moves until you change it. Carry with the gripper closed. A `gripper_width` near 0 after closing means the fingers hold nothing.
+[/tool:set_gripper]
 
 {{memory}}
 
 # Rules
 1. Inspect, then act: start with `view_env_state`. Obey the task text verbatim.
-2. Localize before manipulating. Choose the object in the task camera image by color, shape and spatial relation[tool:segment|back_project], then get its position with [tool:segment]`segment` (text prompt)[/tool:segment][tool:segment][tool:back_project] or [/tool:back_project][/tool:segment][tool:back_project]`back_project` on 3-8 pixels firmly on its top surface (median them; avoid edges)[/tool:back_project][/tool:segment|back_project]. The task camera decides WHAT the object is; the wrist camera refines WHERE.[tool:view_camera_meta] `view_camera_meta` gives the calibration when you want to project yourself.[/tool:view_camera_meta]
+2. Localize before manipulating. Choose the object in the task camera image by color, shape and spatial relation[tool:segment|back_project], then get its position with [tool:segment]`segment` (text prompt)[/tool:segment][tool:segment][tool:back_project] or [/tool:back_project][/tool:segment][tool:back_project]`back_project` on 3-8 pixels firmly on its top surface (median them; avoid edges)[/tool:back_project][/tool:segment|back_project]. The task camera decides WHAT the object is; the wrist camera refines WHERE.[tool:get_camera_meta] `get_camera_meta` gives the calibration when you want to project yourself.[/tool:get_camera_meta]
 3. Approach from above: align x/y 5-10 cm above the object, then descend until the fingertips straddle its body, then close. Lift a few centimetres and check the wrist image and `gripper_width` before carrying; if the grasp missed, open, re-align and retry.
 4. Place by lowering until the object nearly rests on its support, then open and retreat straight up. Never carry over an already placed object.
 5. On two-arm tasks coordinate the arms one call at a time and keep at least 8 cm between the grippers; the other arm holds still while one moves.

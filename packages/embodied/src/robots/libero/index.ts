@@ -148,6 +148,9 @@ const VIEWS = `Each result shows the agentview, then the wrist view (verified in
 - Agentview (first image) faces the robot, whose base is at the image top: MV_LEFT / MV_RIGHT move the gripper toward the image left / right, MV_FWD toward the image bottom (toward the camera), MV_BACK toward the image top.
 - Wrist view (second image) looks straight down from the gripper; the two fingers are at the image bottom corners and the grasp point is between them, at the horizontal center just above the fingers. It is turned half around relative to the agentview: MV_FWD moves toward the wrist image TOP, MV_BACK toward its bottom, MV_LEFT toward its RIGHT and MV_RIGHT toward its LEFT. So a target above the grasp point in the wrist image needs MV_FWD, one to its right needs MV_LEFT.`;
 type Camera = keyof typeof CAMERAS;
+type Json = Record<string, any>;
+/** One env step of a server motion (`tool_call`, env_server.py `_for_tools`). */
+type Transition = { action: NdArray; obs: Obs; reward: unknown; terminated: boolean; truncated: boolean };
 type Obs = { main_images: NdArray; wrist_images?: NdArray | null; states: NdArray };
 /** The Pi0.5 policy input and output LIBERO records (services robots/libero/flywheel.py). */
 const FLYWHEEL: FlywheelSpec = {
@@ -248,7 +251,6 @@ export function xyRefusal(from: number[], to: number[], what: string): string | 
 		? `${what} would move ${xy.toFixed(3)} m in xy, more than ${MAX_XY_MOVE_M} m: split it into waypoints at carry height`
 		: undefined;
 }
-const wrap = (a: number) => ((((a + Math.PI) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI)) - Math.PI;
 const clip = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
 /** Rows of an HxWxC byte image in reverse order (LIBERO renders upside down). */
@@ -340,10 +342,6 @@ export async function runClaim(
 export const yawOf = (q: number[]) => {
 	const r = rotation(q);
 	return Math.atan2(r[1][0], r[0][0]);
-};
-const pitchOf = (q: number[]) => {
-	const r = rotation(q);
-	return Math.atan2(r[1][2], -r[2][2]);
 };
 /**
  * The turn units on LIBERO (base +z up). ROTATE_CW is +yawStepRad about base +z, i.e. counter-clockwise
@@ -468,6 +466,22 @@ export default function libero(pi: ExtensionAPI) {
 	};
 	const robot = defineRobot(pi, {
 		name: "libero",
+		// Tools and code primitives: ../../primitives/manifests/libero.json (the env server reads it too).
+		manifest: "libero",
+		vars: () => ({ cameras: ["agentview", "wrist"], arms: [] }),
+		// As the env server's `_has`: the flags pi starts it with.
+		capabilities: (c) =>
+			({
+				sam3: Boolean(flag("sam3", "")),
+				// The env server installs env.detect & co. whenever it has a SAM3 server.
+				detections: Boolean(flag("sam3", "")),
+				ik: Boolean(flag("ik", "")),
+				motion: Boolean(flag("ik", "")),
+				grasp: graspActive(pi).length > 0,
+				place: Boolean(flag("anyplace", "")),
+				geometry: pi.getFlag("geometry") === true,
+				unidepth: Boolean(String(pi.getFlag("unidepth") ?? "").trim()),
+			})[c] ?? false,
 		services: { models: [pi05("libero"), SAM3, MOLMO] },
 		task: ["suite", "task", "seed"],
 		// The env server's primitive registry (code.api), recorded per episode.
@@ -536,8 +550,8 @@ export default function libero(pi: ExtensionAPI) {
 			libero_prompt: variant(),
 		}),
 		status: () => ({ language, step: envStep, solved: terminated }),
-		// Code mode (../code): the env server runs the program against its registry's primitives
-		// (env_server.py, primitives.py CODE_PRIMITIVES); the result carries the steps it took,
+		// Code mode (../code): the env server runs the program against its manifest's primitives
+		// (manifests/libero.json, env_server.py); the result carries the steps it took,
 		// LIBERO's flags and the frames.
 		code: {
 			rpc: () => env,
@@ -640,6 +654,30 @@ export default function libero(pi: ExtensionAPI) {
 		record(action, ret[0], scalar(ret[1]), done(ret[2]), done(ret[3]));
 		absorb(ret, 1);
 	}
+
+	/**
+	 * A motion the env server runs (the method a program's primitive calls too): its limits, stop
+	 * handling and success latch are the server's. `tool_call` returns every env step it took, which
+	 * goes to the episode video and the Flywheel recorder as pi's own steps did, and a refusal
+	 * (unmoved) as `refused`.
+	 */
+	async function serverMotion(method: string, params: Record<string, unknown>) {
+		op.check();
+		const { transitions, ...out } = await call<Json & { transitions?: Transition[] }>(
+			env,
+			method,
+			{ ...params, tool_call: true },
+			600_000,
+		);
+		for (const t of transitions ?? []) {
+			const action = t.action.toArray();
+			record(action, t.obs, scalar(t.reward), Boolean(t.terminated), Boolean(t.truncated));
+			absorb([t.obs, t.reward, Boolean(t.terminated), Boolean(t.truncated), {}], 1);
+		}
+		return out;
+	}
+	/** The pose the tools report after a server motion (their result fields before the move to the server). */
+	const final = (r: Json) => ({ final_eef_pos: r.eef_pos, ...(r.refused ? { refused: r.refused } : {}) });
 
 	/**
 	 * One VLA forward pass (Pi0.5 by default, or a mounted adapter) with `prompt` as the instruction,
@@ -896,44 +934,6 @@ export default function libero(pi: ExtensionAPI) {
 		});
 	}
 
-	const xyz = Type.Array(Type.Number(), { minItems: 3, maxItems: 3, description: "World-frame [x, y, z] in meters" });
-	const num = (description: string) => Type.Optional(Type.Number({ description }));
-	const int = (description: string) => Type.Optional(Type.Integer({ description }));
-	const camera = Type.Optional(StringEnum(["agentview", "wrist"] as const, { description: "Default agentview" }));
-	/** Servo xyz, pitch and yaw together each step (move_pose's rule); stops within tol / ori_tol or at max_steps. */
-	async function servoPose(
-		target: number[],
-		pitch: number | undefined,
-		yaw: number | undefined,
-		g: number,
-		{
-			step_clip = 0.02,
-			pitch_step = 0.08,
-			yaw_step = 0.08,
-			tol = 0.012,
-			ori_tol = 0.05,
-			action_scale = 0.05,
-			max_steps = 150,
-		} = {},
-	) {
-		let steps = 0;
-		for (; steps < max_steps && !terminated && !truncated; steps++) {
-			const q = await quat();
-			const diff = target.map((v: number, i: number) => v - eef()[i]);
-			const pErr = pitch === undefined ? 0 : wrap(pitch - pitchOf(q));
-			const yErr = yaw === undefined ? 0 : wrap(yaw - yawOf(q));
-			if (Math.hypot(...diff) < tol && Math.abs(pErr) < ori_tol && Math.abs(yErr) < ori_tol) break;
-			await step([
-				...diff.map((d: number) => clip(clip(d, -step_clip, step_clip) / action_scale, -1, 1)),
-				clip(clip(pErr, -pitch_step, pitch_step) / 0.1, -1, 1),
-				0,
-				clip(clip(yErr, -yaw_step, yaw_step) / 0.1, -1, 1),
-				g,
-			]);
-		}
-		return { steps, final_dist_m: round(Math.hypot(...target.map((v: number, i: number) => v - eef()[i]))) };
-	}
-
 	/**
 	 * Servo xyz and the full orientation (roll, pitch, yaw; any tilt direction) toward a target each
 	 * step: the OSC's rotation delta is the world-frame rotation vector to it (orientationError).
@@ -1042,7 +1042,7 @@ export default function libero(pi: ExtensionAPI) {
 					grasp_id: id,
 					standoff: 0,
 				});
-				const unreachable = reachRefusal(await call<Reach>(env, "env.preview_reach", { pos: grasp.eef_position }));
+				const unreachable = reachRefusal(await call<Reach>(env, "env.preview_reach", { xyz: grasp.eef_position }));
 				if (unreachable) return { name, id, refused: unreachable, steps_used: 0 };
 				const blocked = planRefusal(
 					await call<MotionPlan>(env, "env.plan_motion", { pos: pre.eef_position, quat_xyzw: pre.eef_quat_xyzw }),
@@ -1098,92 +1098,29 @@ export default function libero(pi: ExtensionAPI) {
 		},
 	);
 
-	tool(
-		"move_to",
-		"Scripted EEF servo to a world xyz; holds orientation. gripper -1 = open, +1 = close (hold +1 while carrying). Never move more than 0.30 m in xy in one call; split long moves.",
-		Type.Object({
-			xyz,
-			gripper: num("-1 open (default), +1 close"),
-			tol: num("Position tolerance, m (default 0.012)"),
-			step_clip: num("Per-step xyz cap, m (default 0.025)"),
-			max_steps: int("Step budget (default 80)"),
-			action_scale: num("OSC action scale (default 0.05)"),
-			target_yaw: num("Optional world yaw target, rad"),
-			yaw_step_clip: num("Per-step yaw clip, rad (default 0.10)"),
-		}),
-		async ({
-			xyz: target,
-			gripper: g = -1,
-			tol = 0.012,
-			step_clip = 0.025,
-			max_steps = 80,
-			action_scale = 0.05,
-			target_yaw,
-			yaw_step_clip = 0.1,
-		}) => {
-			const far = xyRefusal(eef(), target, "move_to");
-			if (far) return { name: "move_to", refused: far, final_eef_pos: eef().map((v) => round(v)), steps_used: 0 };
-			// --ik: the env server plans a collision-free path through the scene (refused when none
-			// exists) and checks the arm against it before each segment; predicted contact stops the move.
-			let waypoints: number[][] = [target];
-			let pathPlanned = false;
-			if (flag("ik", "")) {
-				const plan = await call<MotionPlan>(env, "env.plan_motion", {
-					pos: target,
-					target_yaw: target_yaw ?? null,
-				});
-				const refusal = planRefusal(plan);
-				if (refusal)
-					return { name: "move_to", refused: refusal, final_eef_pos: eef().map((v) => round(v)), steps_used: 0 };
-				if (plan.status === "planned") {
-					waypoints = plan.waypoints.map((w) => w.slice(0, 3));
-					pathPlanned = true;
-				}
-			}
-			let steps = 0;
-			let stopped: string | undefined;
-			for (let i = 0; i < waypoints.length && !stopped; i++) {
-				if (pathPlanned) {
-					const check = await call<MotionCheck>(env, "env.check_motion", { segment: i });
-					if (check.status === "contact") {
-						stopped = check.message;
-						break;
-					}
-				}
-				const wp = waypoints[i];
-				const wtol = i === waypoints.length - 1 ? tol : Math.max(tol, 0.02);
-				for (; steps < max_steps && !terminated && !truncated; steps++) {
-					const diff = wp.map((v: number, k: number) => v - eef()[k]);
-					if (Math.hypot(...diff) < wtol) break;
-					const a = [
-						...diff.map((d: number) => clip(clip(d, -step_clip, step_clip) / action_scale, -1, 1)),
-						0,
-						0,
-						0,
-						g,
-					];
-					if (target_yaw !== undefined)
-						a[5] = clip(clip(wrap(target_yaw - yawOf(await quat())), -yaw_step_clip, yaw_step_clip) / 0.1, -1, 1);
-					await step(a);
-				}
-			}
-			return {
-				name: "move_to",
-				final_eef_pos: eef().map((v) => round(v)),
-				final_dist_m: round(Math.hypot(...target.map((v: number, i: number) => v - eef()[i]))),
-				steps_used: steps,
-				...(pathPlanned ? { planned_segments: waypoints.length } : {}),
-				...(stopped ? { stopped: `collision check: ${stopped}` } : {}),
-			};
-		},
-	);
+	// The motion tools run on the env server (its env.* methods, the ones a program's primitives call),
+	// with the manifest's parameters and defaults (manifests/libero.json).
+	tool("move_to", "", Type.Object({}), async (params: Json) => {
+		const r = await serverMotion("env.move_to", params);
+		return {
+			name: "move_to",
+			...final(r),
+			...(r.refused
+				? { steps_used: 0 }
+				: {
+						final_dist_m: r.final_dist_m,
+						steps_used: r.steps_used,
+						...(r.planned ? { planned_segments: r.planned.segments } : {}),
+						...(r.stopped ? { stopped: `collision check: ${r.contact}` } : {}),
+					}),
+		};
+	});
 
 	tool(
 		"preview_reach",
-		"Whether move_to could reach a world xyz from the current joints (IK only; nothing moves). status unreachable means move_to would refuse it; unknown means the check could not run.",
-		Type.Object({ xyz, quat_xyzw: Type.Optional(Type.Array(Type.Number(), { minItems: 4, maxItems: 4 })) }),
-		async ({ xyz: target, quat_xyzw }) =>
-			call<Reach>(env, "env.preview_reach", { pos: target, quat_xyzw: quat_xyzw ?? null }),
+		"",
+		Type.Object({}),
+		async (params: Json) => call<Reach>(env, "env.preview_reach", params),
 		false,
 	);
 
@@ -1233,193 +1170,95 @@ export default function libero(pi: ExtensionAPI) {
 	for (const a of VLA_ADAPTERS)
 		tool(a.tool, pickDescription(a.model), PICK_PARAMETERS, (p) => pick(adapters.get(a.tool)!, a.tool, p));
 
-	tool(
-		"pi0_doubled",
-		"Pi0.5 closed-loop contact skill for non-pick interactions (knob, stove, drawer, button, short push). success only mirrors task termination; inspect the images for intermediate progress.",
-		Type.Object({ prompt: Type.String({ description: "e.g. 'turn on the stove'" }), max_chunks: int("Default 20") }),
-		async ({ prompt, max_chunks = 20 }) => {
-			let chunks = 0;
-			const vla_seeds: (number | null)[] = [];
-			while (chunks < max_chunks && !terminated && !truncated) {
-				vla_seeds.push((await vlaChunk(prompt)) ?? null);
-				chunks++;
-			}
-			return { name: "pi0_doubled", instruction: prompt, success: terminated, chunks_used: chunks, vla_seeds };
-		},
-	);
-
-	tool(
-		"release",
-		"Open the gripper in place for up to max_steps; triggers termination when the goal predicate holds.",
-		Type.Object({ max_steps: int("Default 20") }),
-		async ({ max_steps = 20 }) => {
-			const start = gripper();
-			let steps = 0;
-			while (steps < max_steps && !terminated && !truncated) {
-				await step([0, 0, 0, 0, 0, 0, -1]);
-				steps++;
-			}
-			return {
-				name: "release",
-				steps_used: steps,
-				start_gripper_opening: round(start),
-				final_gripper_opening: round(gripper()),
-			};
-		},
-	);
-
-	tool(
-		"set_gripper",
-		"Hold the pose and drive the gripper for `steps` env steps (e.g. +1 for 8-12 steps to firm a grip).",
-		Type.Object({ gripper: num("-1 open (default), +1 close"), steps: int("Default 5") }),
-		async ({ gripper: g = -1, steps = 5 }) => {
-			for (let i = 0; i < steps && !terminated && !truncated; i++) await step([0, 0, 0, 0, 0, 0, g]);
-			return { name: "set_gripper", gripper: g, steps };
-		},
-	);
-
-	async function rotate(
-		kind: "yaw" | "pitch",
-		target: number | undefined,
-		delta: number | undefined,
-		g: number,
-		max_steps: number,
-		tol: number,
-		step_clip: number,
-	) {
-		const angle = kind === "yaw" ? yawOf : pitchOf;
-		const start = angle(await quat());
-		if (target === undefined && delta === undefined) throw new Error(`need target_${kind} or delta_${kind}`);
-		const goal = target ?? start + (delta as number);
-		let steps = 0;
-		for (; steps < max_steps && !terminated && !truncated; steps++) {
-			const err = wrap(goal - angle(await quat()));
-			if (Math.abs(err) < tol) break;
-			const a = [0, 0, 0, 0, 0, 0, g];
-			a[kind === "yaw" ? 5 : 3] = clip(clip(err, -step_clip, step_clip) / 0.1, -1, 1);
-			await step(a);
+	tool("pi0_doubled", "", Type.Object({}), async ({ prompt, max_chunks = 20 }: Json) => {
+		let chunks = 0;
+		const vla_seeds: (number | null)[] = [];
+		while (chunks < max_chunks && !terminated && !truncated) {
+			vla_seeds.push((await vlaChunk(prompt)) ?? null);
+			chunks++;
 		}
-		const final = angle(await quat());
+		return { name: "pi0_doubled", instruction: prompt, success: terminated, chunks_used: chunks, vla_seeds };
+	});
+
+	tool("release", "", Type.Object({}), async (params: Json) => {
+		const r = await serverMotion("env.release", params);
 		return {
-			[`start_${kind}`]: round(start),
-			[`target_${kind}`]: round(goal),
-			[`final_${kind}`]: round(final),
-			final_err: round(wrap(goal - final)),
-			steps_used: steps,
+			name: "release",
+			steps_used: r.steps_used,
+			start_gripper_opening: r.start_gripper_opening,
+			final_gripper_opening: r.final_gripper_opening,
 		};
+	});
+
+	tool("set_gripper", "", Type.Object({}), async (params: Json) => {
+		const r = await serverMotion("env.set_gripper", params);
+		return { name: "set_gripper", gripper: r.gripper, steps: r.steps_used };
+	});
+
+	for (const kind of ["wrist", "pitch"] as const) {
+		const name = `rotate_${kind}`;
+		const angle = kind === "wrist" ? "yaw" : "pitch";
+		tool(name, "", Type.Object({}), async (params: Json) => {
+			const r = await serverMotion(`env.${name}`, params);
+			return {
+				name,
+				[`start_${angle}`]: r[`start_${angle}`],
+				[`target_${angle}`]: r[`target_${angle}`],
+				[`final_${angle}`]: r[`final_${angle}`],
+				final_err: r.final_err,
+				steps_used: r.steps_used,
+			};
+		});
 	}
 
-	tool(
-		"rotate_wrist",
-		"Rotate the wrist about world z. Give target_yaw (absolute) or delta_yaw (relative), radians. Holds xyz.",
-		Type.Object({
-			target_yaw: num("rad"),
-			delta_yaw: num("rad"),
-			gripper: num("Default +1"),
-			max_steps: int("Default 40"),
-			tol: num("rad, default 0.02"),
-			step_clip: num("rad, default 0.10"),
-		}),
-		async (p) => ({
-			name: "rotate_wrist",
-			...(await rotate(
-				"yaw",
-				p.target_yaw,
-				p.delta_yaw,
-				p.gripper ?? 1,
-				p.max_steps ?? 40,
-				p.tol ?? 0.02,
-				p.step_clip ?? 0.1,
-			)),
-		}),
-	);
+	tool("move_pose", "", Type.Object({}), async (params: Json) => {
+		const r = await serverMotion("env.move_pose", params);
+		return {
+			name: "move_pose",
+			...final(r),
+			final_dist_m: r.final_dist_m,
+			final_pitch: r.final_pitch,
+			steps_used: r.steps_used,
+		};
+	});
 
+	// CaP-X's high tier (manifest tier high, active with --api high): the semantic functions run on the
+	// server; --privileged answers get_object_pose and sample_grasp_pose from the simulator.
+	const privileged = () => pi.getFlag("privileged") === true;
 	tool(
-		"rotate_pitch",
-		"Tilt the gripper about world x (pitch 0 = pointing down, +pi/2 = pointing +y). Give target_pitch or delta_pitch, radians. Holds xyz and yaw. Use before entering a narrow opening facing ±y.",
-		Type.Object({
-			target_pitch: num("rad"),
-			delta_pitch: num("rad"),
-			gripper: num("Default +1"),
-			max_steps: int("Default 40"),
-			tol: num("rad, default 0.02"),
-			step_clip: num("rad, default 0.10"),
+		"get_object_pose",
+		"",
+		Type.Object({}),
+		async (params: Json) => ({
+			pose: await call(env, privileged() ? "env.get_object_pose_privileged" : "env.get_object_pose", params),
 		}),
-		async (p) => ({
-			name: "rotate_pitch",
-			...(await rotate(
-				"pitch",
-				p.target_pitch,
-				p.delta_pitch,
-				p.gripper ?? 1,
-				p.max_steps ?? 40,
-				p.tol ?? 0.02,
-				p.step_clip ?? 0.1,
-			)),
-		}),
+		false,
 	);
-
 	tool(
-		"move_pose",
-		"Servo xyz and pitch/yaw together each step. Use when move_to stalls on deep or low reaches (cabinet fronts, microwave). gripper defaults to -1 (open): pass +1 while holding.",
-		Type.Object({
-			xyz,
-			target_pitch: num("rad"),
-			target_yaw: num("rad"),
-			gripper: num("Default -1"),
-			step_clip: num("m, default 0.02"),
-			pitch_step: num("rad, default 0.08"),
-			yaw_step: num("rad, default 0.08"),
-			tol: num("m, default 0.012"),
-			ori_tol: num("rad, default 0.05"),
-			action_scale: num("Default 0.05"),
-			max_steps: int("Default 150"),
+		"sample_grasp_pose",
+		"",
+		Type.Object({}),
+		async (params: Json) => ({
+			grasp: await call(
+				env,
+				privileged() ? "env.sample_grasp_pose_privileged" : "env.sample_grasp_pose",
+				params,
+				600_000,
+			),
 		}),
-		async ({
-			xyz: target,
-			target_pitch,
-			target_yaw,
-			gripper: g = -1,
-			step_clip = 0.02,
-			pitch_step = 0.08,
-			yaw_step = 0.08,
-			tol = 0.012,
-			ori_tol = 0.05,
-			action_scale = 0.05,
-			max_steps = 150,
-		}) => {
-			const r = await servoPose(target, target_pitch, target_yaw, g, {
-				step_clip,
-				pitch_step,
-				yaw_step,
-				tol,
-				ori_tol,
-				action_scale,
-				max_steps,
-			});
-			return {
-				name: "move_pose",
-				final_eef_pos: eef().map((v) => round(v)),
-				final_dist_m: r.final_dist_m,
-				final_pitch: round(pitchOf(await quat())),
-				steps_used: r.steps,
-			};
-		},
+		false,
 	);
+	for (const name of ["goto_pose", "home_pose", "open_gripper", "close_gripper"] as const)
+		tool(name, "", Type.Object({}), async (params: Json) => ({
+			...(await serverMotion(`env.${name}`, params)),
+			name,
+		}));
 
 	tool(
 		"view_camera_meta",
-		"Camera calibration (intrinsic K, cam-to-world extrinsic, depth range) for the current step, or for the state record `step` (high resolution).",
-		Type.Object({
-			camera,
-			resolution: Type.Optional(
-				StringEnum(["high", "low"] as const, {
-					description: "high = 1024 (default), low = 256",
-				}),
-			),
-			step: stepParam,
-		}),
-		async ({ camera: c = "agentview", resolution = "high", step: at }) => {
+		"",
+		Type.Object({}),
+		async ({ camera: c = "agentview", resolution = "high", step: at }: Json) => {
 			const size = resolution === "high" ? 1024 : 256;
 			const i = past(at);
 			if (i !== undefined) {
@@ -1440,17 +1279,13 @@ export default function libero(pi: ExtensionAPI) {
 		false,
 	);
 
+	// segment and back_project read pi's state history (the 1024 images of earlier state records), so
+	// the tools run here; a program's primitives of the same names are the server's (512 images).
 	tool(
 		"segment",
-		"SAM3 segmentation of the current 1024x1024 camera image, or of state record `step`'s. Give exactly one of a text prompt or a positive point [row, col]. The top mask is projected through that state's depth world map; world_xyz is the median over mask pixels. Returns an overlay image; the reading is saved as segment_artifact.",
-		Type.Object({
-			prompt: Type.Optional(Type.String()),
-			point: Type.Optional(Type.Array(Type.Integer(), { minItems: 2, maxItems: 2 })),
-			camera,
-			min_score: num("Default 0.2"),
-			step: stepParam,
-		}),
-		async ({ prompt, point, camera: c = "agentview", min_score = 0.2, step: at }) => {
+		"",
+		Type.Object({}),
+		async ({ prompt, point, camera: c = "agentview", min_score = 0.2, step: at }: Json) => {
 			// Models often fill both optional fields; a non-empty prompt wins.
 			const text = prompt?.trim();
 			if (!text && !point) return { error: "give a text prompt or a point [row, col]" };
@@ -1521,18 +1356,8 @@ export default function libero(pi: ExtensionAPI) {
 
 	tool(
 		"back_project",
-		"World xyz of a pixel (row, col; row 0 = top) in the current camera image, or in state record `step`'s (the state_step of the image the pixel came from), from that state's depth world map. Region mode: row_range + col_range (+ optional z_min/z_max) returns the midpoint of world xy over that window, e.g. a container's interior center. Pixels from the 1024 images use resolution high (default).",
-		Type.Object({
-			row: int("Pixel row"),
-			col: int("Pixel column"),
-			camera,
-			resolution: Type.Optional(StringEnum(["high", "low"] as const)),
-			row_range: Type.Optional(Type.Array(Type.Integer(), { minItems: 2, maxItems: 2 })),
-			col_range: Type.Optional(Type.Array(Type.Integer(), { minItems: 2, maxItems: 2 })),
-			z_min: num("Region mode: keep pixels with world z >= z_min"),
-			z_max: num("Region mode: keep pixels with world z <= z_max"),
-			step: stepParam,
-		}),
+		"",
+		Type.Object({}),
 		async ({
 			row,
 			col,
@@ -1543,7 +1368,7 @@ export default function libero(pi: ExtensionAPI) {
 			z_min,
 			z_max,
 			step: s,
-		}) => {
+		}: Json) => {
 			const size = resolution === "high" ? 1024 : 256;
 			const map = await worldMap(c, size, s);
 			const shownStep = past(s) ?? (records.at(-1)?.envStep === envStep ? records.length - 1 : undefined);
@@ -1652,29 +1477,12 @@ export default function libero(pi: ExtensionAPI) {
 	);
 
 	// A planned grasp or place runs as one tool from one resolution of its id (executePlanned).
-	tool(
-		"execute_grasp",
-		"Execute one planned grasp (a g id of the current observation, from plan_grasp) in one call: open to the pre-grasp standoff back along its approach, descend to it with its pitch and yaw, close, lift straight up. Returns each leg's final_dist_m and gripper_width (0.01-0.05 holding, near 0 missed); error and stalled when a leg stopped short. The id is spent either way; afterwards plan_place with this grasp_id plans from the held object.",
-		Type.Object({
-			grasp_id: Type.String({ description: "A g id from plan_grasp" }),
-			standoff: num("Pre-grasp distance along the approach, m (default 0.10)"),
-			lift: num("Lift after closing, m (default 0.10)"),
-			max_steps: int("Step budget per leg (default 150)"),
-		}),
-		async ({ grasp_id, standoff = 0.1, lift = 0.1, max_steps = 150 }) =>
-			executePlanned("execute_grasp", grasp_id, "grasp", { standoff, lift, max_steps }),
+	tool("execute_grasp", "", Type.Object({}), async ({ grasp_id, standoff = 0.1, lift = 0.1, max_steps = 150 }: Json) =>
+		executePlanned("execute_grasp", grasp_id, "grasp", { standoff, lift, max_steps }),
 	);
 
-	tool(
-		"execute_place",
-		"Execute one planned place (a p id of the current observation, from plan_place) in one call: carry closed to the pre-place standoff, descend to the place pose, open, retreat to the pre-place. Returns each leg's final_dist_m; error and stalled when a leg stopped short.",
-		Type.Object({
-			place_id: Type.String({ description: "A p id from plan_place" }),
-			standoff: num("Pre-place distance along the approach, m (default 0.10)"),
-			max_steps: int("Step budget per leg (default 150)"),
-		}),
-		async ({ place_id, standoff = 0.1, max_steps = 150 }) =>
-			executePlanned("execute_place", place_id, "placement", { standoff, lift: 0, max_steps }),
+	tool("execute_place", "", Type.Object({}), async ({ place_id, standoff = 0.1, max_steps = 150 }: Json) =>
+		executePlanned("execute_place", place_id, "placement", { standoff, lift: 0, max_steps }),
 	);
 
 	// OpenETA extras, each registered only with its flag: follow_waypoints (--waypoints), align_wrist
@@ -1780,7 +1588,18 @@ export default function libero(pi: ExtensionAPI) {
 				steps++;
 			}
 		}
-		if (move.yaw) steps += (await rotate("yaw", undefined, move.yaw, grip, 25, 0.02, 0.1)).steps_used as number;
+		if (move.yaw)
+			steps += Number(
+				(
+					await serverMotion("env.rotate_wrist", {
+						delta_yaw: move.yaw,
+						gripper: grip,
+						max_steps: 25,
+						tol: 0.02,
+						step_clip: 0.1,
+					})
+				).steps_used,
+			);
 		if (move.rot && Math.hypot(...move.rot) > 0) {
 			// An RT_* turn: servo to rot * R0 (a world-frame rotation, the OSC delta convention) while
 			// holding the TCP position.

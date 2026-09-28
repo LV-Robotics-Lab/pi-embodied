@@ -17,8 +17,15 @@
 
 """RoboCasa env server — hosts the raw robosuite env in a subprocess, exposes basic calls via RPC.
 
-Code mode (``code.run``, utils/code_exec.py ``CodeRunMixin``): a program calls the registry's
-primitives (primitives.py) through its resolve, in a sandboxed subprocess, so the server requires
+The motion primitives run here, for pi's tools and a program alike (``env.move_to``,
+``env.move_delta``, ``env.rotate_pitch``, ``env.set_gripper``, ``env.release``,
+``env.scripted_grasp``, ``env.navigate_to``, ``env.move_base`` and the high tier's
+``env.goto_pose`` / ``env.home_pose`` / ``env.open_gripper`` / ``env.close_gripper``): the arm
+servo inverts a measured action-to-world Jacobian, the base drives on a measured forward heading,
+every step is polled for a stop and recorded (video frames, the Flywheel's records).
+
+Code mode (``code.run``, utils/code_exec.py ``CodeRunMixin``): a program calls the manifest's
+primitives (packages/embodied/src/primitives/manifests/robocasa.json) through its resolve, in a sandboxed subprocess, so the server requires
 its RPC token and refuses other business calls while a program runs. A program's ``step`` receives
 the robot's own observations only (the kitchen's object observations are privileged: they stay
 out, as does the reward's info), and every step it takes adds an agentview frame to the run's
@@ -26,17 +33,19 @@ video; the run reports its env steps, the success and the new robot observation 
 """
 
 import argparse
+import base64
 import inspect
+import io
+import math
 import os
 import re
 import sys
+from typing import Any
 
 import numpy as np
 
-from pi_embodied_services.components.code_api import register_code_api
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
 from pi_embodied_services.robots.robocasa import tasks
-from pi_embodied_services.robots.robocasa.primitives import ROBOCASA_PRIMITIVES
 from pi_embodied_services.utils import ground_truth
 from pi_embodied_services.utils.code_exec import CodeRunMixin
 from pi_embodied_services.utils.logging import get_logger
@@ -69,6 +78,37 @@ CODE_MAX_RENDER = 1024
 ARM_M_PER_STEP = 0.05
 TORSO_M_PER_STEP = 0.05
 BASE_M_PER_STEP = 0.5 / 20
+#: The motion methods (pi's tools and the programs' primitives run the same ones). The arm servo
+#: measures the world motion of a unit arm action with three probe moves (PROBE_ACTION for
+#: PROBE_STEPS steps per axis) and inverts it; the base's forward heading is measured by driving
+#: forward CALIBRATE_BASE_STEPS steps. OSC_ROT_SCALE: rad per unit rotation action.
+PROBE_ACTION = 0.4
+PROBE_STEPS = 3
+CALIBRATE_BASE_STEPS = 6
+OSC_ROT_SCALE = 0.5
+#: "hold": the finger servo gain that keeps the current width (carry without crushing).
+HOLD_GAIN = 60.0
+#: Steps the high tier's open_gripper / close_gripper drive the fingers.
+GRIPPER_STEPS = 15
+#: The cameras the motion methods record: the video's (top-down agentview, VIDEO_SIZE) and RLDX-1's
+#: three (the Flywheel's observation while recording).
+VIDEO_SIZE = 256
+VLA_CAMERAS = ("robot0_agentview_left", "robot0_agentview_right", "robot0_eye_in_hand")
+#: The methods that step the env and answer a motion report (frames, the new robot obs).
+MOTION_METHODS = (
+    "env.move_to",
+    "env.move_delta",
+    "env.rotate_pitch",
+    "env.set_gripper",
+    "env.release",
+    "env.scripted_grasp",
+    "env.navigate_to",
+    "env.move_base",
+    "env.goto_pose",
+    "env.home_pose",
+    "env.open_gripper",
+    "env.close_gripper",
+)
 
 
 def robot_obs(obs) -> dict:
@@ -79,6 +119,38 @@ def robot_obs(obs) -> dict:
         for k, v in obs.items()
         if k.startswith("robot0_") and not k.endswith(("_image", "_depth"))
     }
+
+
+def _pinv3(J: np.ndarray) -> np.ndarray:
+    """Moore-Penrose inverse of a 3x3 matrix, as (JᵀJ + εI)⁻¹Jᵀ with a vanishing ε."""
+    A = J.T @ J
+    A = A + (1e-12 + 1e-10 * np.trace(A)) * np.eye(3)
+    return np.linalg.inv(A) @ J.T
+
+
+def _yaw(q_xyzw) -> float:
+    """Yaw of an xyzw quaternion (scipy's ``as_euler("xyz")[2]``)."""
+    x, y, z, w = (float(v) for v in q_xyzw)
+    return math.atan2(2 * (x * y + z * w), 1 - 2 * (y * y + z * z))
+
+
+def _rot(q_xyzw) -> np.ndarray:
+    """The rotation matrix of an xyzw quaternion."""
+    x, y, z, w = (float(v) for v in q_xyzw)
+    return np.array(
+        [
+            [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+        ]
+    )
+
+
+def _vec(value, n: int, name: str) -> np.ndarray:
+    a = np.asarray(value, dtype=np.float64).reshape(-1)
+    if a.shape != (n,) or not np.isfinite(a).all():
+        raise ValueError(f"{name} must be {n} finite numbers")
+    return a
 
 
 def _split_kwargs(split):
@@ -112,6 +184,10 @@ def _split_kwargs(split):
             "layout_and_style_ids": None,
         }
     raise ValueError('split must be {None,"all","pretrain","target"}')
+
+
+class _Stopped(Exception):
+    """A stop arrived during a motion (internal)."""
 
 
 class RoboCasaEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
@@ -150,6 +226,21 @@ class RoboCasaEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         self._run_start = 0
         self._run_obs: dict | None = None
         self._run_frames: list[np.ndarray] = []
+        # The motion methods: the latest observation, the arm servo's calibration (world dpos per
+        # unit arm action; dropped when the base turns), the base's measured forward heading
+        # offset, the arm's reset pose in the base frame (home_pose), the frames and Flywheel
+        # records of the motion in progress, and whether the Flywheel records (env.set_recording).
+        self._obs: dict | None = None
+        self._pos_jac: np.ndarray | None = None
+        self._fwd_offset: float | None = None
+        self._home_rel: np.ndarray | None = None
+        self._motion_frames: list[np.ndarray] = []
+        self._policy_frames: list[dict] = []
+        self._recording = False
+        self._motion_steps = 0
+        # SAM3 (--sam3, with --detections): get_object_pose.
+        self._sam3_url = ""
+        self._sam3 = None
         self._make(task_name, split, seed, scene)
 
     def _make(self, task_name, split, seed, scene):
@@ -214,6 +305,11 @@ class RoboCasaEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         self._rpc["env.get_success_criteria_text"] = self.get_success_criteria_text
         self._rpc["env.get_task_progress"] = self.get_task_progress
         self._rpc["env.ground_truth_poses"] = self.ground_truth_poses
+        self._rpc["env.get_state"] = self.get_state
+        self._rpc["env.set_recording"] = self.set_recording
+        self._rpc["env.get_object_pose"] = self.get_object_pose
+        for method in MOTION_METHODS:
+            self._rpc[method] = getattr(self, method.removeprefix("env."))
         # Read-only methods
         self._readonly_methods.update(
             [
@@ -222,17 +318,28 @@ class RoboCasaEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
                 "env.grasp_contact",
                 "env.get_success_criteria_text",
                 "env.get_task_progress",
+                "env.get_state",
             ]
         )
-        api = register_code_api(self, ROBOCASA_PRIMITIVES)
-        self._install_code_run(
-            api,
+        # The primitives are packages/embodied/src/primitives/manifests/robocasa.json (with pi);
+        # code.api, the programs' whitelist and the startup self-check come from it.
+        self._manifest_code_run(
+            "robocasa",
+            have=self._has,
             move_m=self._code_move_m,
             check=self._code_check,
             reply=self._code_reply,
             begin=self._begin_run,
             finish=self._finish_run,
         )
+
+    def _has(self, capability: str) -> bool:
+        """What this server can serve of the manifest's ``requires``."""
+        return {
+            "sam3": bool(self._sam3_url),
+            "unidepth": "env.enhance_depth" in self._rpc,
+            "privileged": True,
+        }.get(capability, False)
 
     # ---- code mode (run_code) ----
 
@@ -259,7 +366,16 @@ class RoboCasaEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
 
     def _code_reply(self, method: str, out):
         """What a program receives of a ``step``: the robot's observations, the reward and done
-        (no object observations, no info); the step's agentview goes to the run's video."""
+        (no object observations, no info); the step's agentview goes to the run's video. Of a
+        motion: its report, its frames going to the run's video."""
+        if method in MOTION_METHODS:
+            out = dict(out)
+            for f in out.pop("frames", []):
+                self._keep_frame(f)
+            out.pop("policy_frames", None)
+            self._run_obs = out.pop("obs", None) or self._run_obs
+            out.pop("env_steps", None)
+            return out
         if method != "env.step":
             return out
         obs, reward, done, _info = out
@@ -274,6 +390,8 @@ class RoboCasaEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
     def _code_move_m(self, method: str, kwargs: dict) -> float:
         """How far one ``step`` may move the gripper (the run's translation cap): the arm's OSC
         travel, the torso's and the base's (drive and turn), each at the action's clipped size."""
+        if method in MOTION_METHODS:
+            return self._motion_move_m(method, kwargs)
         if method != "env.step":
             return 0.0
         a = np.clip(
@@ -340,7 +458,13 @@ class RoboCasaEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
                 self.env.seed = sd
             if hasattr(self.env, "rng"):
                 self.env.rng = np.random.default_rng(sd)
-        return self.env.reset()
+        obs = self.env.reset()
+        # A fresh scene: the servo and base calibrations start over; home is the arm's reset pose.
+        self._obs = obs
+        self._pos_jac = self._fwd_offset = None
+        rel = obs.get("robot0_base_to_eef_pos") if isinstance(obs, dict) else None
+        self._home_rel = None if rel is None else np.asarray(rel, dtype=np.float64)
+        return obs
 
     def step(self, flat_action):
         """flat_action: np.ndarray[12] = [eef_pos(3), eef_rot(3), gripper(1),
@@ -351,7 +475,520 @@ class RoboCasaEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         )
         obs, reward, done, info = self.env.step(a)
         self._steps += 1
+        self._obs = obs
+        if a.shape[0] >= 10 and a[9] != 0:
+            # The base turned: the arm action's world directions changed.
+            self._pos_jac = None
         return obs, reward, done, info
+
+    # ---- motion (pi's tools and the programs' primitives run these same methods) ----
+    #
+    # The PandaOmron 12-D action is [eef_pos 3, eef_rot 3, gripper, base 3, torso, base_mode].
+    # Every method polls the stop between env steps, records the top-down agentview after every
+    # step (``frames``, the episode video) and, while the Flywheel records, what RLDX-1 reads
+    # (``policy_frames``); its reply carries the robot's new observation (``obs``, robot0_* only)
+    # and the env steps it took (``env_steps``).
+
+    def _vec_obs(self, key: str) -> np.ndarray:
+        if self._obs is None:
+            raise RuntimeError("no observation yet: reset the env first")
+        return np.asarray(self._obs[key], dtype=np.float64).reshape(-1)
+
+    def _eef(self) -> np.ndarray:
+        return self._vec_obs("robot0_eef_pos")
+
+    def _finger(self) -> float:
+        return float(self._vec_obs("robot0_gripper_qpos")[0])
+
+    def _base_pos(self) -> np.ndarray:
+        return self._vec_obs("robot0_base_pos")
+
+    def _base_yaw(self) -> float:
+        return _yaw(self._vec_obs("robot0_base_quat"))
+
+    @staticmethod
+    def _zero(base_mode: float = -1.0) -> np.ndarray:
+        a = np.zeros(12)
+        a[11] = base_mode
+        return a
+
+    def _grip(self, g: Any, q: float) -> float:
+        """a[6] for a motion step: "close" +1, "open" -1, a number passes (clipped); "hold"
+        (or None) servos the fingers back to width ``q``."""
+        if g == "close":
+            return 1.0
+        if g == "open":
+            return -1.0
+        if isinstance(g, (int, float)) and not isinstance(g, bool):
+            return float(np.clip(g, -1, 1))
+        if g not in (None, "hold"):
+            raise ValueError(
+                f"gripper must be 'close', 'open', 'hold' or a number, got {g!r}"
+            )
+        return float(np.clip(HOLD_GAIN * (self._finger() - q), -1, 1))
+
+    def _video_frame(self) -> np.ndarray:
+        rgb = self.render_camera(CODE_VIDEO_CAMERA, VIDEO_SIZE, VIDEO_SIZE, False)
+        return np.ascontiguousarray(np.asarray(rgb)[::-1])
+
+    def _policy_frame(self) -> dict:
+        """What RLDX-1 reads now (the Flywheel's observation): its three cameras, top-down, and
+        its state keys."""
+        return {
+            "state": {
+                "state.gripper_qpos": self._vec_obs("robot0_gripper_qpos"),
+                "state.base_position": self._vec_obs("robot0_base_pos"),
+                "state.base_rotation": self._vec_obs("robot0_base_quat"),
+                "state.end_effector_position_relative": self._vec_obs(
+                    "robot0_base_to_eef_pos"
+                ),
+                "state.end_effector_rotation_relative": self._vec_obs(
+                    "robot0_base_to_eef_quat"
+                ),
+            },
+            "video": {
+                f"video.{c}": np.ascontiguousarray(
+                    np.asarray(self.render_camera(c, VIDEO_SIZE, VIDEO_SIZE, False))[
+                        ::-1
+                    ]
+                )
+                for c in VLA_CAMERAS
+            },
+        }
+
+    def _act(self, a: np.ndarray) -> bool:
+        """One env step of a motion; False (nothing stepped) once a stop arrived."""
+        if self.stop_requested():
+            return False
+        self.step(a)
+        self._motion_steps += 1
+        self._motion_frames.append(self._video_frame())
+        if self._recording:
+            self._policy_frames.append(
+                {
+                    "action": np.asarray(a, dtype=np.float64),
+                    "success": self.check_success(),
+                    **self._policy_frame(),
+                }
+            )
+        return True
+
+    def _motion(self, run) -> dict:
+        """Run a motion body and answer its report with the frames, the Flywheel records, the
+        new robot observation and the env steps taken."""
+        self._motion_frames, self._policy_frames, self._motion_steps = [], [], 0
+        try:
+            report = run()
+        except _Stopped:
+            report = {"ok": False, "cancelled": True}
+        out = {
+            **report,
+            "frames": self._motion_frames,
+            "obs": robot_obs(self._obs) if self._obs is not None else None,
+            "env_steps": self._motion_steps,
+        }
+        if self._recording:
+            out["policy_frames"] = self._policy_frames
+        self._motion_frames, self._policy_frames = [], []
+        return out
+
+    def _step_or_stop(self, a: np.ndarray) -> None:
+        if not self._act(a):
+            raise _Stopped
+
+    def set_recording(self, on: bool = True) -> None:
+        """Whether the motion methods return the Flywheel's per-step records (pi's
+        --collect-flywheel-data)."""
+        self._recording = bool(on)
+
+    def _calibrate_arm(self, g: float) -> np.ndarray:
+        """Probe the three arm action axes and measure the world motion: dpos ≈ J @ action."""
+        cols = []
+        for axis in range(3):
+            p0 = self._eef()
+            a = self._zero()
+            a[axis] = PROBE_ACTION
+            a[6] = g
+            for _ in range(PROBE_STEPS):
+                self._step_or_stop(a)
+            cols.append((self._eef() - p0) / (PROBE_ACTION * PROBE_STEPS))
+        self._pos_jac = np.stack(cols, axis=1)
+        return self._pos_jac
+
+    def _servo(
+        self,
+        target,
+        gripper: Any = "hold",
+        step_clip: float = 0.02,
+        max_steps: int = 200,
+        tol: float = 0.012,
+    ) -> dict:
+        """Closed-loop OSC servo of the eef to a world ``target``, orientation held."""
+        target = _vec(target, 3, "xyz")
+        q = self._finger()
+        jinv = _pinv3(
+            self._pos_jac
+            if self._pos_jac is not None
+            else self._calibrate_arm(self._grip(gripper, q))
+        )
+
+        def done(ok: bool, steps: int) -> dict:
+            return {
+                "ok": ok,
+                "steps": steps,
+                "final_dist": round(float(np.linalg.norm(target - self._eef())), 4),
+                "eef": [round(float(v), 4) for v in self._eef()],
+                "gripper_qpos": round(self._finger(), 4),
+            }
+
+        for i in range(int(max_steps)):
+            err = target - self._eef()
+            dist = float(np.linalg.norm(err))
+            if dist < tol:
+                return done(True, i)
+            d = err if dist <= step_clip else err / dist * step_clip
+            a = self._zero()
+            a[:3] = np.clip(jinv @ d, -1, 1)
+            a[6] = self._grip(gripper, q)
+            self._step_or_stop(a)
+        return done(False, int(max_steps))
+
+    def _gripper_steps(self, g: float, steps: int) -> dict:
+        a = self._zero()
+        a[6] = float(np.clip(g, -1, 1))
+        for _ in range(int(steps)):
+            self._step_or_stop(a)
+        return {
+            "ok": True,
+            "gripper_qpos": [
+                round(float(v), 4) for v in self._vec_obs("robot0_gripper_qpos")
+            ],
+        }
+
+    def move_to(
+        self,
+        xyz,
+        gripper: Any = "hold",
+        step_clip: float = 0.02,
+        max_steps: int = 200,
+        tol: float = 0.012,
+    ) -> dict:
+        """Servo the eef to a world xyz with the OSC controller, orientation held; ``gripper``
+        "hold" keeps the finger width, "close" / "open" drive it."""
+        return self._motion(
+            lambda: self._servo(xyz, gripper, step_clip, max_steps, tol)
+        )
+
+    def move_delta(
+        self,
+        dxyz,
+        gripper: Any = "hold",
+        step_clip: float = 0.02,
+        max_steps: int = 80,
+    ) -> dict:
+        """Servo the eef by a world-frame displacement (``move_to`` of current + dxyz)."""
+        d = _vec(dxyz, 3, "dxyz")
+        return self._motion(
+            lambda: self._servo(self._eef() + d, gripper, step_clip, max_steps)
+        )
+
+    def rotate_pitch(
+        self, target_pitch: float = 0.6, gripper: float = 1.0, n: int = 12
+    ) -> dict:
+        """Tilt the wrist about the control x axis by ``target_pitch`` rad (clamped to ±1.5)
+        over ``n`` env steps, holding ``gripper``."""
+        if int(n) < 1:
+            raise ValueError("n must be at least 1")
+
+        def run() -> dict:
+            per = float(np.clip(target_pitch, -1.5, 1.5)) / int(n)
+            a = self._zero()
+            a[3] = float(np.clip(per / OSC_ROT_SCALE, -1, 1))
+            a[6] = float(np.clip(gripper, -1, 1))
+            for _ in range(int(n)):
+                self._step_or_stop(a)
+            return {"ok": True, "eef": [round(float(v), 4) for v in self._eef()]}
+
+        return self._motion(run)
+
+    def set_gripper(self, gripper: float = 1.0, steps: int = 10) -> dict:
+        """Hold the eef and drive the gripper command (+1 close, -1 open) for ``steps`` steps."""
+        return self._motion(lambda: self._gripper_steps(gripper, steps))
+
+    def release(self, steps: int = 10) -> dict:
+        """Open the gripper for ``steps`` steps, the eef held (``set_gripper(-1)``)."""
+        return self._motion(lambda: self._gripper_steps(-1.0, steps))
+
+    def scripted_grasp(
+        self,
+        xyz,
+        approach_z: float = 0.1,
+        grasp_z_offset: float = 0.0,
+        step_clip: float = 0.02,
+    ) -> dict:
+        """Open, hover ``approach_z`` above ``xyz``, descend to ``grasp_z_offset``, close, lift."""
+        t = _vec(xyz, 3, "xyz")
+
+        def at(dz: float) -> np.ndarray:
+            return t + np.array([0.0, 0.0, dz])
+
+        def run() -> dict:
+            self._gripper_steps(-1.0, 4)
+            r = self._servo(at(approach_z), -1.0, step_clip)
+            if not r["ok"]:
+                return {**r, "stage": "approach"}
+            r = self._servo(at(grasp_z_offset), -1.0, 0.012, 200, 0.01)
+            if not r["ok"]:
+                return {**r, "stage": "descent"}
+            self._gripper_steps(1.0, 14)
+            r = self._servo(at(approach_z + 0.05), "hold", 0.015)
+            if not r["ok"]:
+                return {**r, "stage": "lift"}
+            return {
+                "ok": True,
+                "gripper_qpos": [
+                    round(float(v), 4) for v in self._vec_obs("robot0_gripper_qpos")
+                ],
+                "eef": [round(float(v), 4) for v in self._eef()],
+            }
+
+        return self._motion(run)
+
+    def _calibrate_forward(self, g: float) -> float:
+        """Drive forward briefly and measure the world direction the base goes."""
+        p0, y0 = self._base_pos(), self._base_yaw()
+        a = self._zero(1.0)
+        a[6] = float(np.clip(g, -1, 1))
+        a[7] = 1.0
+        for _ in range(CALIBRATE_BASE_STEPS):
+            self._step_or_stop(a)
+        dx, dy = (self._base_pos() - p0)[:2]
+        self._fwd_offset = (
+            math.atan2(dy, dx) - y0 if math.hypot(dx, dy) > 0.005 else 0.0
+        )
+        return self._fwd_offset
+
+    def navigate_to(
+        self, xy, tol: float = 0.2, max_steps: int = 300, gripper: Any = "hold"
+    ) -> dict:
+        """Drive the base toward a world (x, y): turn to face it, then drive forward
+        closed-loop (the forward heading is measured once per scene); the arm is held."""
+        goal = _vec(xy, 2, "xy")
+
+        def run() -> dict:
+            q = self._finger()
+            if self._fwd_offset is None:
+                self._calibrate_forward(self._grip(gripper, q))
+            offset = self._fwd_offset or 0.0
+            start = self._base_pos()[:2]
+
+            def end(ok: bool, steps: int) -> dict:
+                self._pos_jac = None  # the base moved: the arm servo calibrates again
+                bp = self._base_pos()
+                moved = float(np.linalg.norm(bp[:2] - start))
+                return {
+                    "ok": ok,
+                    "steps": steps,
+                    "final_dist": round(float(np.linalg.norm(goal - bp[:2])), 4),
+                    "moved": round(moved, 4),
+                    # barely moved: rammed a fixture (no path planning)
+                    **({} if ok else {"stuck": moved < 0.12}),
+                    "start_pos": [round(float(v), 4) for v in start],
+                    "base_pos": [round(float(v), 4) for v in bp],
+                }
+
+            for i in range(int(max_steps)):
+                bp = self._base_pos()
+                to = goal - bp[:2]
+                if float(np.linalg.norm(to)) < tol:
+                    return end(True, i)
+                e = math.atan2(to[1], to[0]) - (self._base_yaw() + offset) + math.pi
+                dyaw = e - 2 * math.pi * math.floor(e / (2 * math.pi)) - math.pi
+                a = self._zero(1.0)
+                a[6] = self._grip(gripper, q)
+                if abs(dyaw) > 0.3:
+                    a[9] = math.copysign(1.0, dyaw)
+                else:
+                    a[7] = 1.0
+                    a[9] = float(np.clip(dyaw * 1.5, -0.4, 0.4))
+                self._step_or_stop(a)
+            return end(False, int(max_steps))
+
+        return self._motion(run)
+
+    def move_base(
+        self,
+        forward: float = 0.0,
+        lateral: float = 0.0,
+        turn: float = 0.0,
+        steps: int = 10,
+        gripper: Any = "hold",
+    ) -> dict:
+        """Raw base velocities in the robot's frame (each clipped to [-1, 1]) for ``steps``
+        env steps: +forward drives forward, +lateral strafes, +turn rotates counter-clockwise."""
+
+        def run() -> dict:
+            q = self._finger()
+            a = self._zero(1.0)
+            a[7] = float(np.clip(forward, -1, 1))
+            a[8] = float(np.clip(lateral, -1, 1))
+            a[9] = float(np.clip(turn, -1, 1))
+            bp0 = self._base_pos()
+            for _ in range(int(steps)):
+                a[6] = self._grip(gripper, q)
+                self._step_or_stop(a)
+            bp1 = self._base_pos()
+            return {
+                "ok": True,
+                "base_moved": [round(float(v), 4) for v in bp1 - bp0],
+                "base_pos": [round(float(v), 4) for v in bp1],
+            }
+
+        return self._motion(run)
+
+    # ---- the high tier (CaP-X's semantic functions) ----
+
+    def goto_pose(self, position, z_approach: float = 0.0) -> dict:
+        """CaP-X's goto_pose for the OSC servo, which holds the gripper's orientation: stop
+        ``z_approach`` above ``position`` first, then go down to it."""
+        p = _vec(position, 3, "position")
+
+        def run() -> dict:
+            if float(z_approach) > 0:
+                r = self._servo(p + np.array([0.0, 0.0, float(z_approach)]))
+                if not r["ok"]:
+                    return {**r, "stage": "approach"}
+            return self._servo(p)
+
+        return self._motion(run)
+
+    def _home(self) -> np.ndarray:
+        if self._home_rel is None:
+            raise RuntimeError("no home pose: reset the env first")
+        return (
+            self._base_pos() + _rot(self._vec_obs("robot0_base_quat")) @ self._home_rel
+        )
+
+    def home_pose(self) -> dict:
+        """Move the eef back to its reset position relative to the base (where the base is now)."""
+        return self._motion(lambda: self._servo(self._home()))
+
+    def open_gripper(self) -> dict:
+        """Open the gripper fully."""
+        return self._motion(lambda: self._gripper_steps(-1.0, GRIPPER_STEPS))
+
+    def close_gripper(self) -> dict:
+        """Close the gripper fully (the fingers stop on an object)."""
+        return self._motion(lambda: self._gripper_steps(1.0, GRIPPER_STEPS))
+
+    def get_state(self) -> dict:
+        """The robot's proprioception (robot0_* observations, no images) and the env steps."""
+        if self._obs is None:
+            raise RuntimeError("no observation yet: reset the env first")
+        return {**robot_obs(self._obs), "env_steps": self._steps}
+
+    def _world_map(
+        self, camera: str, size: int = VIDEO_SIZE
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """A camera's top-down RGB and per-pixel world xyz (pi's world map: T_p2w @ [col·z,
+        row·z, z, 1] with the top-down row and the bottom-up depth of that row)."""
+        rgb, depth = self.render_camera(camera, size, size, True)
+        rgb = np.ascontiguousarray(np.asarray(rgb)[::-1])
+        z = np.asarray(depth, dtype=np.float64)[::-1]
+        T = np.asarray(self.get_camera_transform(camera, size, size), dtype=np.float64)
+        rows, cols = np.mgrid[0:size, 0:size]
+        pix = np.stack([cols * z, rows * z, z, np.ones_like(z)], axis=-1)
+        return rgb, (pix @ T.T)[..., :3]
+
+    def _segment(self, rgb: np.ndarray, prompt: str) -> np.ndarray | None:
+        """SAM3's top mask of ``prompt`` in ``rgb`` (bool, top-down), or None."""
+        from PIL import Image
+
+        from pi_embodied_services.utils.rpc.http_rpc import HttpRpcClient
+
+        if not self._sam3_url:
+            raise RuntimeError("get_object_pose needs a SAM3 server (--sam3)")
+        if self._sam3 is None:
+            self._sam3 = HttpRpcClient(self._sam3_url)
+        buf = io.BytesIO()
+        Image.fromarray(rgb).save(buf, format="PNG")
+        res = self._sam3.call(
+            "sam3.segment",
+            kwargs={
+                "image_base64": base64.b64encode(buf.getvalue()).decode("ascii"),
+                "text_prompt": prompt,
+                "min_score": 0.2,
+            },
+            timeout_s=120,
+        )
+        if not res.get("found") or not res.get("mask_png_base64"):
+            return None
+        mask = np.asarray(
+            Image.open(io.BytesIO(base64.b64decode(res["mask_png_base64"])))
+        )
+        if mask.ndim == 3:
+            mask = mask[..., 0]
+        return mask >= 128 if mask.shape == rgb.shape[:2] else None
+
+    def get_object_pose(
+        self, object_name: str, return_bbox_extent: bool = False
+    ) -> list:
+        """CaP-X's get_object_pose from perception: [position (3,), quaternion_wxyz (4,),
+        bbox_extent (3,) or None] of an object named in words, from the first camera (agentview,
+        then wrist) whose SAM3 mask has depth. The position is the median of the mask's world
+        points, the extent their 5th-95th percentile span per axis; the orientation is identity."""
+        text = str(object_name).strip()
+        if not text:
+            raise ValueError("object_name is empty")
+        for camera in ("robot0_agentview_left", "robot0_eye_in_hand"):
+            rgb, xyz = self._world_map(camera)
+            mask = self._segment(rgb, text)
+            if mask is None:
+                continue
+            pts = xyz[mask]
+            pts = pts[np.isfinite(pts).all(axis=1) & (np.abs(pts).sum(axis=1) > 1e-6)]
+            if len(pts) < 10:
+                continue
+            pos = np.median(pts, axis=0)
+            extent = np.percentile(pts, 95, axis=0) - np.percentile(pts, 5, axis=0)
+            return [
+                [round(float(v), 4) for v in pos],
+                [1.0, 0.0, 0.0, 0.0],
+                [round(float(v), 4) for v in extent] if return_bbox_extent else None,
+            ]
+        raise ValueError(f"no SAM3 detection with depth for {text!r}")
+
+    def _motion_move_m(self, method: str, kwargs: dict) -> float:
+        """How far a program's motion call may move the gripper (the run's translation cap)."""
+        eef = self._eef()
+        if method == "env.move_to":
+            return float(np.linalg.norm(_vec(kwargs["xyz"], 3, "xyz") - eef))
+        if method == "env.move_delta":
+            return float(np.linalg.norm(_vec(kwargs["dxyz"], 3, "dxyz")))
+        if method == "env.scripted_grasp":
+            t = _vec(kwargs["xyz"], 3, "xyz")
+            up = float(kwargs.get("approach_z") or 0.1)
+            down = float(kwargs.get("grasp_z_offset") or 0.0)
+            return float(
+                np.linalg.norm(t + [0, 0, up] - eef) + 2 * abs(up - down) + 0.05
+            )
+        if method == "env.goto_pose":
+            p = _vec(kwargs["position"], 3, "position")
+            up = float(kwargs.get("z_approach") or 0.0)
+            return float(np.linalg.norm(p + [0, 0, up] - eef) + up)
+        if method == "env.home_pose":
+            return float(np.linalg.norm(self._home() - eef))
+        if method == "env.navigate_to":
+            goal = _vec(kwargs["xy"], 2, "xy")
+            return float(np.linalg.norm(goal - self._base_pos()[:2]))
+        if method == "env.move_base":
+            n = int(kwargs.get("steps") or 10)
+            v = [
+                float(np.clip(kwargs.get(k) or 0.0, -1, 1))
+                for k in ("forward", "lateral", "turn")
+            ]
+            return n * BASE_M_PER_STEP * (math.hypot(v[0], v[1]) + abs(v[2]))
+        return 0.0
 
     def check_success(self):
         return bool(self.env._check_success())
@@ -627,10 +1264,12 @@ def main():
     )
     # --sam3 / --unidepth: env.detect, env.select_detection, env.reject_detection,
     # env.enhance_depth, on the upright 256 px views the model sees.
+    facade._sam3_url = args.sam3 or ""
     install_perception(
         facade,
         args,
         cameras=["agentview", "navview", "wrist"],
+        mutating=MOTION_METHODS,
         view=render_view(
             facade,
             size=256,

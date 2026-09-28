@@ -67,44 +67,29 @@ def test_camera_conventions_round_trip():
     assert g.letterbox(out, 64) is not None and (g.letterbox(out, 64) == out).all()
 
 
-def test_primitive_registry_names_only_registered_methods():
-    """The Genesis registry (primitives.py) resolves against the facade's RPC table: every
-    primitive's method is registered, the motion primitives are mutating, and ground truth is
-    the privileged tier alone."""
-    from pi_embodied_services.components.code_api import CodeApi
-    from pi_embodied_services.robots.genesis.primitives import GENESIS_PRIMITIVES
+def test_the_manifest_declares_the_motions_mutating_and_ground_truth_privileged():
+    """manifests/genesis.json: every motion is mutating, ground truth is the privileged tier
+    alone, and the joint-space primitives are code-only (low)."""
+    from pi_embodied_services.components.manifest import load_manifest
 
-    methods = {
-        "env.get_task_language", "env.state", "env.move_delta", "env.set_gripper",
-        "env.back_project", "env.render_camera", "env.get_camera_meta", "env.step",
-        "env.chunk_step", "env.ground_truth_poses",
+    m = {e["name"]: e for e in load_manifest("genesis")["primitives"]}
+    mutating = {n for n, e in m.items() if e.get("mutating") and e["side"] != "ts"}
+    assert mutating == {
+        "move_delta", "set_gripper", "execute_grasp", "execute_place", "move_to_joints",
+        "move_along_trajectory", "step", "chunk_step",
     }  # fmt: skip
-    api = CodeApi(GENESIS_PRIMITIVES, dict.fromkeys(methods))
-    high = [p.name for p in api.primitives("high")]
-    assert high == [
-        "get_task_language",
-        "state",
-        "move_delta",
-        "set_gripper",
-        "back_project",
+    assert [n for n, e in m.items() if e["tier"] == "privileged"] == [
+        "ground_truth_poses"
     ]
-    assert [p.name for p in api.primitives("privileged")] == [
-        *high,
-        "ground_truth_poses",
-    ]
-    assert "step" in [p.name for p in api.primitives("low")]
-    assert {p.name for p in GENESIS_PRIMITIVES if p.mutating} == {
-        "move_delta", "set_gripper", "step", "chunk_step",
-    }  # fmt: skip
-    method, kwargs = api.resolve(
-        "move_delta", {"delta_xyz": [0, 0, 0.05], "gripper": "open"}
-    )
-    assert method == "env.move_delta"
-    with pytest.raises(ValueError, match="unknown parameter"):
-        api.resolve("move_delta", {"delta_xyz": [0, 0, 0], "yaw": 1})
-    # A registry whose method the facade lacks is refused at construction.
-    with pytest.raises(ValueError, match="not registered"):
-        CodeApi(GENESIS_PRIMITIVES, {"env.state": None})
+    assert {n for n, e in m.items() if e["tier"] == "raw"} == {
+        "step",
+        "chunk_step",
+        "act",
+        "plan",
+    }
+    for n in ("solve_ik", "move_to_joints", "traj_plan", "move_along_trajectory"):
+        assert m[n]["side"] == "code" and m[n]["tier"] == "low", n
+    assert m["set_gripper"]["params"]["close"]["required"]
 
 
 def test_task_table_and_limits_are_what_the_robot_describes():
@@ -179,6 +164,7 @@ def _moving_facade():
     f._hand, f._hold_quat = None, np.array([0.0, 1.0, 0.0, 0.0])
     f._cmd_tcp, f._record, f._offset = None, None, np.zeros(3)
     f._gripper_open, f._success, f._hold, f._steps = True, False, 0, 0
+    f._rule = "lift"
     return f
 
 
@@ -195,10 +181,63 @@ def test_a_recorded_motion_returns_every_control_step_as_env_step_takes_it():
     assert steps[0]["tcp_pos"][0] == pytest.approx(start[0] + 0.015)
     assert f._record is None, "recording ends with the call"
     # A gripper change holds the commanded point: each step's action is its remaining gap.
-    out = f.set_gripper(open=False, record=True)
+    out = f.set_gripper(True, record=True)
     actions = np.stack([s["action"] for s in out["steps"]])
     assert len(actions) == g.GRIPPER_STEPS and (actions[:, 3] == -1).all()
     gaps = np.linalg.norm(actions[:, :3], axis=1)
     assert (np.diff(gaps) <= 1e-9).all()
     # Without record nothing is kept.
     assert "steps" not in f.move_delta([0, 0.02, 0])
+
+
+def test_move_to_joints_servos_the_arm_and_stops_outside_the_workspace():
+    """The joint servo steps the scene until the joints are within tol; refused outside the
+    Panda's limits; stopped (and holding) when the TCP leaves the workspace box."""
+    f = _moving_facade()
+    q = np.full(9, 0.02)
+
+    def control(target, dofs):
+        if list(dofs) == g.MOTOR_DOFS:
+            q[:7] = q[:7] + 0.5 * (np.asarray(target) - q[:7])
+
+    f._robot.control_dofs_position = control
+    f._robot.get_dofs_position = lambda: q.copy()
+    f._render = lambda name, depth=False: np.zeros((4, 4, 3), np.uint8)
+    target = [0.0, -0.4, 0.0, -2.2, 0.0, 2.0, 0.8]
+    out = f.move_to_joints(target, tol_rad=0.01)
+    assert (
+        out["joint_error_rad"] < 0.01 and 0 < out["control_steps"] < g.JOINT_MAX_STEPS
+    )
+    assert "error" not in out and f._offset.tolist() == [0, 0, 0]
+    with pytest.raises(ValueError, match="limits"):
+        f.move_to_joints([0.0, -0.4, 0.0, 0.5, 0.0, 2.0, 0.8])
+    with pytest.raises(ValueError, match="7 finite"):
+        f.move_to_joints([0.0] * 6)
+    f._tcp = lambda: np.array([0.5, 0.0, 0.0])  # below the Z floor
+    out = f.move_to_joints([0.1, -0.4, 0.0, -2.2, 0.0, 2.0, 0.8])
+    assert out["control_steps"] == 1 and "workspace" in out["error"]
+    # A trajectory runs its waypoints with CaP-X's per-waypoint budget and stops at the error.
+    out = f.move_along_trajectory([target, target])
+    assert out["control_steps"] == 1 and out["waypoints"] == 2 and "error" in out
+
+
+def test_solve_ik_and_traj_plan_ask_genesis_ik_for_the_tcp_and_move_nothing():
+    """solve_ik: 7 joints for a TCP pose (default: the held orientation); traj_plan: IK waypoints
+    along the straight line in 2 cm steps, each seeded with the previous solution."""
+    f = _moving_facade()
+    asked: list = []
+
+    def ik(**kw):
+        asked.append(kw)
+        return np.arange(9, dtype=np.float64) * float(kw["pos"][2])
+
+    f._robot.inverse_kinematics = ik
+    q = f.solve_ik([0.5, 0.0, 0.1])
+    assert q == pytest.approx([0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6])
+    assert asked[0]["quat"].tolist() == f._hold_quat.tolist()
+    assert asked[0]["local_point"] == [0.0, 0.0, g.TCP_OFFSET_M]
+    start = [0.0, 1.0, 0.0, 0.0, 0.5, 0.0, 0.3]
+    traj = f.traj_plan(start, [0.0, 1.0, 0.0, 0.0, 0.5, 0.0, 0.2])
+    assert len(traj) == 6 and all(len(p) == 7 for p in traj)
+    assert "init_qpos" in asked[-1], "seeded with the previous waypoint"
+    assert f._steps == 0, "nothing moved"

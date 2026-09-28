@@ -26,8 +26,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
 import type { FlywheelObs, FlywheelSpec } from "../../capabilities/flywheel.ts";
 import { MOLMO, SAM3 } from "../../infra/model-services.ts";
-import { decodePngChannel, encodePng } from "../../infra/png.ts";
-import { NdArray, RpcClient } from "../../infra/rpc.ts";
+import { encodePng } from "../../infra/png.ts";
+import { NdArray, type RpcClient } from "../../infra/rpc.ts";
 import { finishMove, type Move, type MoveUnit, type Vec3 } from "../../modes/units/index.ts";
 import { template } from "../../planner/context-version.ts";
 import { detectionActive, detectionArgs, detectionTools, registerDetectionFlags } from "../../primitives/detections.ts";
@@ -35,7 +35,7 @@ import { geometryArgs, geometryTools, SERVO, splitImages } from "../../primitive
 import { graspActive, graspArgs, graspTools, mountGraspTool, registerGraspFlags } from "../../primitives/grasp.ts";
 import { ikArgs, type Reach, registerIkFlag } from "../../primitives/ik.ts";
 import { pointActive, pointTool, registerPointFlags } from "../../primitives/pointing.ts";
-import { attach, defineRobot, type Json, median, plain, rgbOf, SERVICES, toolResult } from "../../robot.ts";
+import { attach, defineRobot, type Json, plain, rgbOf, SERVICES, toolResult } from "../../robot.ts";
 
 const SYSTEM = template(new URL("./SYSTEM.md", import.meta.url));
 const EXPLORE = template(new URL("./explore.md", import.meta.url));
@@ -115,7 +115,6 @@ type Camera = "agentview" | "wrist";
 
 const round = (v: number, d = 4) => Number(v.toFixed(d));
 const num = (v: unknown) => (v instanceof NdArray ? v.toArray() : Array.isArray(v) ? v.map(Number) : [Number(v)]);
-const clip = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
 /** Size of a recorded step's cameras (env_server RECORD_SIZE). */
 export const RECORD_SIZE = 256;
@@ -174,7 +173,6 @@ export default function robosuite(pi: ExtensionAPI) {
 	});
 
 	let env: RpcClient;
-	let sam3: RpcClient;
 	let obs: Obs;
 	let meta: Meta;
 	let success = false;
@@ -208,6 +206,25 @@ export default function robosuite(pi: ExtensionAPI) {
 	});
 	const robot = defineRobot(pi, {
 		name: "robosuite",
+		// Tools and code primitives: ../../primitives/manifests/robosuite.json (the env server reads it too).
+		manifest: "robosuite",
+		vars: () => ({
+			image_size: IMAGE_SIZE,
+			cameras: ["agentview", "wrist"],
+			max_move: flag("max-move", String(MAX_MOVE_M)),
+			// `arm` exists on the two-arm tasks only (the one-arm tools and primitives leave it out).
+			arms: robot?.task.task && twoArm() ? [...ARMS] : [],
+		}),
+		capabilities: (c) =>
+			({
+				sam3: Boolean(flag("sam3", "")),
+				ik: Boolean(flag("ik", "")),
+				grasp: graspActive(pi).length > 0,
+				place: Boolean(flag("anyplace", "")),
+				geometry: pi.getFlag("geometry") === true && !twoArm(),
+				unidepth: Boolean(String(pi.getFlag("unidepth") ?? "").trim()),
+				fingers: hasGripper(robot.task.task),
+			})[c] ?? false,
 		services: { models: [SAM3, MOLMO] },
 		task: ["task", "seed"],
 		keepImages: 4,
@@ -218,7 +235,7 @@ export default function robosuite(pi: ExtensionAPI) {
 		// No corpus is published for robosuite: memory is what exploration writes locally, one cell per task and seed.
 		memory: {
 			cell: () => ({ tag: tag(robot.task.seed), reference: tag("0") }),
-			primitives: ["move_to", "move_delta", "gripper", "act"],
+			primitives: ["move_to", "move_delta", "set_gripper", "act"],
 			published: false,
 		},
 		explore: {
@@ -417,14 +434,7 @@ export default function robosuite(pi: ExtensionAPI) {
 		});
 	}
 
-	const xyz = Type.Array(Type.Number(), { minItems: 3, maxItems: 3, description: "World-frame [x, y, z] in metres" });
 	const arm = Type.Optional(StringEnum(ARMS, { description: "Two-arm tasks: which arm (required there)" }));
-	const gripper = Type.Optional(
-		StringEnum(["open", "close"] as const, { description: "Set the held gripper command first" }),
-	);
-	const camera = Type.Optional(StringEnum(["agentview", "wrist"] as const, { description: "Default agentview" }));
-	const int = (description: string) => Type.Optional(Type.Integer({ description }));
-	const opt = (description: string) => Type.Optional(Type.Number({ description }));
 
 	tool(
 		"view_env_state",
@@ -433,84 +443,29 @@ export default function robosuite(pi: ExtensionAPI) {
 		async () => ({}),
 	);
 
-	tool(
-		"move_to",
-		`Closed-loop servo of the TCP to a world xyz, holding the orientation (or turning by rotvec, a world-frame axis-angle in rad). The server refuses a target more than ${MAX_MOVE_M} m away, outside the table workspace or below the z floor; split long moves. gripper sets the held command first.`,
-		Type.Object({
-			xyz,
-			arm,
-			gripper,
-			rotvec: Type.Optional(
-				Type.Array(Type.Number(), { minItems: 3, maxItems: 3, description: "World-frame turn, axis x angle, rad" }),
+	// The motion tools are the server's methods with the manifest's parameters (manifests/robosuite.json).
+	tool("move_to", "", Type.Object({}), async (params: Json, signal) => {
+		checkMove(params.xyz, num(obs[`${armOf(params.arm) ?? "robot0"}_eef_pos`]));
+		return {
+			name: "move_to",
+			...motion(await call<Motion>("env.move_to", rec({ ...params, arm: armOf(params.arm) ?? null }), [], signal)),
+		};
+	});
+
+	tool("move_delta", "", Type.Object({}), async (params: Json, signal) => {
+		checkMove(params.delta_xyz, [0, 0, 0]);
+		return {
+			name: "move_delta",
+			...motion(
+				await call<Motion>("env.move_delta", rec({ ...params, arm: armOf(params.arm) ?? null }), [], signal),
 			),
-			tol: opt("Position tolerance, m (default 0.005)"),
-			max_steps: int("Control-step budget (default 100)"),
-		}),
-		async ({ xyz: target, arm: a, gripper: g, rotvec, tol, max_steps }, signal) => {
-			checkMove(target, num(obs[`${armOf(a) ?? "robot0"}_eef_pos`]));
-			return {
-				name: "move_to",
-				...motion(
-					await call<Motion>(
-						"env.move_to",
-						rec({
-							arm: armOf(a) ?? null,
-							...(g ? { gripper: g } : {}),
-							...(rotvec ? { rotvec } : {}),
-							...(tol !== undefined ? { tol_m: tol } : {}),
-							...(max_steps !== undefined ? { max_steps } : {}),
-						}),
-						[target],
-						signal,
-					),
-				),
-			};
-		},
-	);
+		};
+	});
 
-	tool(
-		"move_delta",
-		`Translate the TCP by a world-frame [dx, dy, dz] in metres (+z up; in the task camera +x runs toward the image bottom and +y toward the image right: on the one-arm tasks +x is away from robot0 and +y to its left, on the two-arm tasks +y runs from robot0 toward robot1; at most ${MAX_MOVE_M} m per call), holding the orientation. gripper sets the held command first.`,
-		Type.Object({ delta_xyz: xyz, arm, gripper }),
-		async ({ delta_xyz, arm: a, gripper: g }, signal) => {
-			checkMove(delta_xyz, [0, 0, 0]);
-			return {
-				name: "move_delta",
-				...motion(
-					await call<Motion>(
-						"env.move_delta",
-						rec({ arm: armOf(a) ?? null, ...(g ? { gripper: g } : {}) }),
-						[delta_xyz],
-						signal,
-					),
-				),
-			};
-		},
-	);
-
-	tool(
-		"gripper",
-		"Hold the arm and open or close its gripper (up to `steps` control steps; the fingers stop on a grasped object). The command stays in force for later moves: carry with close.",
-		Type.Object({
-			command: StringEnum(["open", "close"] as const),
-			arm,
-			steps: int("Default 15"),
-		}),
-		async ({ command, arm: a, steps }, signal) => {
-			if (!hasGripper(robot.task.task)) throw new Error(`${robot.task.task}'s wiping gripper has no fingers`);
-			return {
-				name: "gripper",
-				...motion(
-					await call<Motion>(
-						"env.set_gripper",
-						rec({ arm: armOf(a) ?? null, ...(steps !== undefined ? { steps } : {}) }),
-						[command],
-						signal,
-					),
-				),
-			};
-		},
-	);
+	tool("set_gripper", "", Type.Object({}), async (params: Json, signal) => ({
+		name: "set_gripper",
+		...motion(await call<Motion>("env.set_gripper", rec({ ...params, arm: armOf(params.arm) ?? null }), [], signal)),
+	}));
 
 	// --geometry (one-arm tasks): view_points, mark_point, move_grip (../primitives/geometry.ts). The env
 	// server resolves move_grip's target; its move_to (per-call cap, workspace box, z floor) servos the
@@ -620,150 +575,80 @@ export default function robosuite(pi: ExtensionAPI) {
 	const valid = (p: number[]) => p.every(Number.isFinite) && Math.abs(p[0]) + Math.abs(p[1]) + Math.abs(p[2]) > 1e-6;
 
 	tool(
-		"view_camera_meta",
-		"Camera calibration (intrinsic K and cam-to-world extrinsic for the 512x512 image; depth is metric) for the current step.",
-		Type.Object({ camera }),
-		async ({ camera: c = "agentview" }) => ({
-			camera: c,
-			meta: await call("env.get_camera_meta", { camera_name: c, height: IMAGE_SIZE, width: IMAGE_SIZE }),
+		"get_camera_meta",
+		"",
+		Type.Object({}),
+		async (params: Json) => ({
+			camera: params.camera_name ?? "agentview",
+			meta: await call("env.get_camera_meta", {
+				camera_name: params.camera_name ?? "agentview",
+				height: params.height ?? IMAGE_SIZE,
+				width: params.width ?? IMAGE_SIZE,
+			}),
 		}),
 		"read",
 	);
 
 	tool(
 		"segment",
-		`SAM3 segmentation of the current ${IMAGE_SIZE}x${IMAGE_SIZE} camera image. Give exactly one of a text prompt or a positive point [row, col]. The top mask is projected through the depth world map; world_xyz is the median over mask pixels. Returns an overlay image.`,
-		Type.Object({
-			prompt: Type.Optional(Type.String()),
-			point: Type.Optional(Type.Array(Type.Integer(), { minItems: 2, maxItems: 2 })),
-			camera,
-			min_score: opt("Default 0.2"),
-		}),
-		async ({ prompt, point, camera: c = "agentview", min_score = 0.2 }) => {
-			const text = prompt?.trim();
-			if (!text && !point) return { error: "give a text prompt or a point [row, col]" };
-			const size = IMAGE_SIZE;
-			const map = await worldMap(c, size);
-			const png = encodePng(map.rgb, size, size);
-			const res = await sam3.call<{
-				found: boolean;
-				score?: number;
-				box?: number[];
-				mask_png_base64?: string;
-				reason?: string;
-			}>(
-				"sam3.segment",
-				{ image_base64: png.toString("base64"), ...(text ? { text_prompt: text } : { point }), min_score },
-				120_000,
-				[],
-				robot.signal,
-			);
-			if (!res.found || !res.mask_png_base64)
-				return {
-					found: false,
-					error: res.reason ?? "no mask",
-					fallback: "Pick pixels in the image and use back_project.",
-				};
-			const mask = decodePngChannel(Buffer.from(res.mask_png_base64, "base64"));
-			if (mask.width !== size || mask.height !== size)
-				return { found: true, error: `mask ${mask.width}x${mask.height} does not match the ${size} world map` };
-			const xs: number[] = [];
-			const ys: number[] = [];
-			const pts: number[][] = [];
-			const overlay = Buffer.from(map.rgb);
-			for (let i = 0; i < mask.data.length; i++) {
-				if (mask.data[i] < 128) continue;
-				ys.push(Math.floor(i / size));
-				xs.push(i % size);
-				overlay[i * 3] = Math.round(0.55 * overlay[i * 3] + 0.45 * 255);
-				overlay[i * 3 + 1] = Math.round(0.55 * overlay[i * 3 + 1]);
-				overlay[i * 3 + 2] = Math.round(0.55 * overlay[i * 3 + 2]);
-				const p = [map.xyz[i * 3], map.xyz[i * 3 + 1], map.xyz[i * 3 + 2]];
-				if (valid(p)) pts.push(p);
-			}
-			return {
-				found: true,
-				camera: c,
-				score: res.score === undefined ? null : round(res.score, 3),
-				box: res.box,
-				n_pixels: xs.length,
-				n_valid: pts.length,
-				centroid_pixel: [Math.round(median(ys)), Math.round(median(xs))],
-				world_xyz: pts.length < 10 ? null : [0, 1, 2].map((k) => round(median(pts.map((p) => p[k])))),
-				...(pts.length < 10 ? { world_error: `too few valid depth pixels (${pts.length})` } : {}),
-				_image: encodePng(overlay, size, size),
-			};
+		"",
+		Type.Object({}),
+		async (params: Json) => {
+			const {
+				mask: _mask,
+				overlay_png_base64,
+				...rest
+			} = await call<Json>("env.segment", params, [], robot.signal, 120_000);
+			return { ...rest, ...(overlay_png_base64 ? { _image: Buffer.from(overlay_png_base64, "base64") } : {}) };
 		},
 		"read",
 	);
 
+	tool("back_project", "", Type.Object({}), async (params: Json) => call<Json>("env.back_project", params), "read");
+
+	// CaP-X's high tier (manifest tier high; activated by --api high, PARAMS.md 4): the semantic functions run on the
+	// server; --privileged answers get_object_pose from the simulator.
 	tool(
-		"back_project",
-		`World xyz of a pixel (row, col; row 0 = top) in the current ${IMAGE_SIZE}x${IMAGE_SIZE} camera image, from the depth world map. Region mode: row_range + col_range (+ optional z_min/z_max) returns the midpoint of world xy over that window and the median z.`,
-		Type.Object({
-			row: int("Pixel row"),
-			col: int("Pixel column"),
-			camera,
-			row_range: Type.Optional(Type.Array(Type.Integer(), { minItems: 2, maxItems: 2 })),
-			col_range: Type.Optional(Type.Array(Type.Integer(), { minItems: 2, maxItems: 2 })),
-			z_min: opt("Region mode: keep pixels with world z >= z_min"),
-			z_max: opt("Region mode: keep pixels with world z <= z_max"),
+		"get_object_pose",
+		"",
+		Type.Object({}),
+		async (params: Json) => ({
+			pose: await call(
+				pi.getFlag("privileged") === true ? "env.get_object_pose_privileged" : "env.get_object_pose",
+				params,
+				[],
+				robot.signal,
+				120_000,
+			),
 		}),
-		async ({ row, col, camera: c = "agentview", row_range, col_range, z_min, z_max }) => {
-			const size = IMAGE_SIZE;
-			const map = await worldMap(c, size);
-			const at = (r: number, cc: number) => {
-				const i = (r * size + cc) * 3;
-				return [map.xyz[i], map.xyz[i + 1], map.xyz[i + 2]];
-			};
-			const span = (r?: number[]) => (r && Math.max(...r) > Math.min(...r) ? r : undefined);
-			const rows = span(row_range);
-			const cols = span(col_range);
-			if (rows || cols) {
-				if (!rows || !cols) return { error: "region mode needs both row_range and col_range" };
-				const [r0, r1] = [clip(Math.min(...rows), 0, size), clip(Math.max(...rows), 0, size)];
-				const [c0, c1] = [clip(Math.min(...cols), 0, size), clip(Math.max(...cols), 0, size)];
-				let pts: number[][] = [];
-				for (let r = r0; r < r1; r++) for (let cc = c0; cc < c1; cc++) if (valid(at(r, cc))) pts.push(at(r, cc));
-				if (z_min !== undefined) pts = pts.filter((p) => p[2] >= z_min);
-				if (z_max !== undefined) pts = pts.filter((p) => p[2] <= z_max);
-				if (pts.length < 8)
-					return { error: `too few valid pixels in region (${pts.length}); widen the window or the z band` };
-				const axis = (k: number) => pts.map((p) => p[k]);
-				return {
-					camera: c,
-					mode: "region",
-					center_xyz: [
-						round((Math.min(...axis(0)) + Math.max(...axis(0))) / 2),
-						round((Math.min(...axis(1)) + Math.max(...axis(1))) / 2),
-						round(median(axis(2))),
-					],
-					median_xyz: [0, 1, 2].map((k) => round(median(axis(k)))),
-					n_valid: pts.length,
-				};
-			}
-			if (row === undefined || col === undefined) return { error: "give row and col, or row_range and col_range" };
-			if (row < 0 || row >= size || col < 0 || col >= size)
-				return { error: `pixel (${row},${col}) out of bounds for ${size}x${size}` };
-			const p = at(row, col);
-			if (!valid(p)) return { error: `invalid world xyz at (${row},${col}); pick another pixel` };
-			return { camera: c, pixel: [row, col], world_xyz: p.map((v) => round(v)) };
-		},
 		"read",
 	);
+	tool(
+		"sample_grasp_pose",
+		"",
+		Type.Object({}),
+		async (params: Json) => ({
+			grasp: await call(
+				pi.getFlag("privileged") === true ? "env.sample_grasp_pose_privileged" : "env.sample_grasp_pose",
+				{ ...params, arm: armOf(params.arm) ?? null },
+				[],
+				robot.signal,
+				600_000,
+			),
+		}),
+		"read",
+	);
+	for (const name of ["goto_pose", "home_pose", "open_gripper", "close_gripper"] as const)
+		tool(name, "", Type.Object({}), async (params: Json, signal) => ({
+			name,
+			...motion(await call<Motion>(`env.${name}`, { ...params, arm: armOf(params.arm) ?? null }, [], signal)),
+		}));
 
 	tool(
 		"preview_reach",
-		"Whether move_to could reach a world xyz from the arm's current joints (IK only; nothing moves). status unreachable means move_to would refuse it; unknown means the check could not run.",
-		Type.Object({
-			xyz,
-			arm,
-			quat_xyzw: Type.Optional(
-				Type.Array(Type.Number(), { minItems: 4, maxItems: 4, description: "Default: the current orientation" }),
-			),
-		}),
-		async ({ xyz: target, arm: a, quat_xyzw }) =>
-			call<Reach>("env.preview_reach", { pos: target, quat_xyzw: quat_xyzw ?? null, arm: armOf(a) ?? null }),
+		"",
+		Type.Object({}),
+		async (params: Json) => call<Reach>("env.preview_reach", { ...params, arm: armOf(params.arm) ?? null }),
 		"read",
 	);
 
@@ -869,7 +754,6 @@ export default function robosuite(pi: ExtensionAPI) {
 		if (!TASKS.includes(task as Task)) throw new Error(`unknown --task ${task}: ${TASKS.join(", ")}`);
 		if (TWO_ARM.includes(task as Task) && pi.getFlag("geometry") === true)
 			throw new Error(`--geometry needs a one-arm task; ${task} has two arms`);
-		sam3 = new RpcClient(flag("sam3", ""));
 		const endpoint = pi.getFlag("env") as string | undefined;
 		if (endpoint) env = await attach(endpoint);
 		else {
@@ -905,14 +789,14 @@ export default function robosuite(pi: ExtensionAPI) {
 		await flyReset(o);
 		return [
 			"view_env_state",
-			"view_camera_meta",
+			"get_camera_meta",
 			"segment",
 			"back_project",
 			"move_to",
 			"move_delta",
-			...(hasGripper(task) ? ["gripper"] : []),
-			// The env server serves env.preview_reach only with --ik.
-			...(flag("ik", "") ? ["preview_reach"] : []),
+			...(hasGripper(task) ? ["set_gripper"] : []),
+			// preview_reach requires --ik (the manifest drops it without).
+			"preview_reach",
 			...detectionActive(pi, meta.capabilities?.perception),
 			...pointActive(pi),
 			// Grasping needs fingers: Wipe's sponge has none.

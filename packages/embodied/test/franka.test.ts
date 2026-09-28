@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import franka, { DETECTIONS_ENTRY } from "../src/robots/franka/index.ts";
+import { codeApiReply } from "./helpers/code-api.ts";
 
 /** A stub pi that only records registrations (no robot starts: tools are inspected, not run). */
 function fakePi() {
@@ -119,8 +120,11 @@ function operatorPi(values: Record<string, unknown>, confirms: boolean[]) {
 	return { pi, emit, run, entries, asked, notes, dir, active: () => active };
 }
 
+/** pi's limits under CODE_FLAGS (the task documents 0.04 m per call), as the server enforces them. */
+const LIMITS = { max_move_m: 0.04, max_rotate_rad: 0.5, z_floor_m: 0.14, workspace_xy: [0.159, 1.159, -0.456, 0.544] };
+
 /** A fake franka env server (`--robot-env`, RLinf capabilities) whose `code.run` made two motions. */
-async function fakeFranka() {
+async function fakeFranka(limits: Record<string, unknown> = LIMITS) {
 	const calls: { method: string; kwargs: Record<string, any> }[] = [];
 	const nd = (shape: number[]) => ({
 		__ndarray__: Buffer.alloc(shape.reduce((a, b) => a * b, 1)).toString("base64"),
@@ -136,14 +140,15 @@ async function fakeFranka() {
 			const { method, kwargs = {} } = JSON.parse(body);
 			calls.push({ method, kwargs });
 			let result: unknown = { ok: true };
-			if (method === "env.get_env_meta") result = { ok: true, capabilities: { backend: "rlinf", has_vla: true } };
+			if (method === "env.get_env_meta")
+				result = { ok: true, capabilities: { backend: "rlinf", has_vla: true }, motion_limits: limits };
 			else if (method === "env.reset") result = { ok: true, states: [1, 2] };
 			else if (method === "env.get_observation")
 				result = { main_images: nd([2, 2, 3]), extra_view_images: nd([1, 2, 2, 3]) };
 			else if (method === "env.get_robot_state")
 				result = { raw_base_state: { tcp_pose: [0.5, 0, 0.3, 1, 0, 0, 0], gripper_open: true } };
 			else if (method === "env.get_camera_meta") result = null;
-			else if (method === "code.api") result = { tier: kwargs.tier ?? null, primitives: [], digest: "d" };
+			else if (method === "code.api") result = codeApiReply("franka", kwargs.tier);
 			else if (method === "code.run")
 				result = {
 					status: "ran",
@@ -194,7 +199,7 @@ function fakePython(dir: string) {
 
 const CODE_FLAGS = { code: "true", "code-real": true, operator: true, task: "1", "z-floor": "0.14" };
 
-test("franka --code: pi's limits reach the server, every program is confirmed and the run is a state step", async (t) => {
+test("franka --code: the server enforces pi's limits, every program is confirmed and the run is a state step", async (t) => {
 	const env = await fakeFranka();
 	t.after(env.close);
 	const dir = mkdtempSync(join(tmpdir(), "franka-py-"));
@@ -207,13 +212,9 @@ test("franka --code: pi's limits reach the server, every program is confirmed an
 	await f.emit("session_start");
 	process.exitCode = undefined;
 	assert.ok(f.active().includes("run_code"), f.active().join(","));
-	const limits = env.calls.find((c) => c.method === "code.set_limits")?.kwargs;
-	assert.deepEqual(limits, {
-		max_move_m: 0.04,
-		max_rotate_rad: 0.5,
-		z_floor_m: 0.14,
-		workspace_xy: [0.159, 1.159, -0.456, 0.544],
-	});
+	// The attached server reported pi's limits (motion_limits); pi sends none itself.
+	assert.ok(!env.calls.some((c) => c.method === "code.set_limits"));
+	assert.equal(env.calls.filter((c) => c.method === "env.reset").length, 1);
 	await f.emit("agent_start");
 	const r = await f.run("run_code", { code: "move_delta([0, 0, -0.02])" });
 	assert.equal(f.asked[1], "Run this program on the robot?");
@@ -243,4 +244,46 @@ test("franka --code without --code-real or --operator refuses before touching th
 		assert.ok(!f.active().includes("run_code"));
 	}
 	assert.equal(env.calls.filter((c) => c.method === "env.reset").length, 0);
+});
+
+test("franka refuses an attached env server whose limits are looser than pi's, before any motion", async (t) => {
+	const dir = mkdtempSync(join(tmpdir(), "franka-py-"));
+	for (const limits of [
+		{ ...LIMITS, max_move_m: 0.1 },
+		{ ...LIMITS, z_floor_m: 0.05 },
+		{ ...LIMITS, workspace_xy: null },
+	]) {
+		const env = await fakeFranka(limits);
+		t.after(env.close);
+		const f = operatorPi({ ...CODE_FLAGS, "robot-env": env.url, python: fakePython(dir), out: dir }, [true]);
+		franka(f.pi);
+		await f.emit("session_start");
+		process.exitCode = undefined;
+		assert.match(f.notes.join("\n"), /looser than pi's/, JSON.stringify(limits));
+		assert.equal(env.calls.filter((c) => c.method === "env.reset").length, 0);
+		assert.ok(!f.active().includes("move_delta"));
+	}
+});
+
+test("franka's tools take their schemas from the manifest; the motion tools call the server as is", async (t) => {
+	const env = await fakeFranka();
+	t.after(env.close);
+	const dir = mkdtempSync(join(tmpdir(), "franka-py-"));
+	const f = operatorPi({ task: "1", "z-floor": "0.14", "robot-env": env.url, python: fakePython(dir), out: dir }, [
+		true,
+	]);
+	franka(f.pi);
+	await f.emit("session_start");
+	process.exitCode = undefined;
+	assert.ok(f.active().includes("move_delta") && f.active().includes("open_gripper"), f.active().join(","));
+	assert.ok(!f.active().includes("segment"), "segment requires the server's SAM3");
+	await f.emit("agent_start");
+	// 0.3 m is beyond pi's 0.04: the server refuses it (here the fake answers), pi does not pre-check.
+	await f.run("move_delta", { delta_xyz: [0.3, 0, 0] });
+	await f.run("close_gripper", {});
+	const sent = env.calls.filter((c) => c.method.startsWith("env.move") || c.method.endsWith("_gripper"));
+	assert.deepEqual(
+		sent.map((c) => c.method),
+		["env.move_delta", "env.close_gripper"],
+	);
 });

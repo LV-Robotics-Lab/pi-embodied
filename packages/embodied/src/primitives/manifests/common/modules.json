@@ -1,0 +1,86 @@
+{
+	"internal": [],
+	"primitives": [
+		{
+			"name": "finish",
+			"side": "ts",
+			"tier": "low",
+			"module": "robot",
+			"doc": {
+				"tool": "End the episode (the robot's finish tool)."
+			}
+		},
+		{
+			"name": "act",
+			"side": "ts",
+			"tier": "raw",
+			"module": "units",
+			"doc": {
+				"tool": "One Show-Harness action unit (modes/units)."
+			}
+		},
+		{
+			"name": "plan",
+			"side": "ts",
+			"tier": "raw",
+			"module": "units",
+			"doc": {
+				"tool": "The units' subgoal plan (modes/units)."
+			}
+		},
+		{
+			"name": "point",
+			"side": "ts",
+			"tier": "low",
+			"module": "pointing",
+			"doc": {
+				"tool": "Molmo pointing (primitives/pointing.ts)."
+			}
+		},
+		{
+			"name": "reset",
+			"side": "ts",
+			"tier": "low",
+			"module": "explore",
+			"doc": {
+				"tool": "Exploration's episode restart (capabilities/explore.ts)."
+			}
+		},
+		{
+			"name": "request_operator_verdict",
+			"side": "ts",
+			"tier": "low",
+			"module": "operator",
+			"doc": {
+				"tool": "Ask the operator for a verdict (capabilities/operator.ts)."
+			}
+		},
+		{
+			"name": "request_scene_reset",
+			"side": "ts",
+			"tier": "low",
+			"module": "operator",
+			"doc": {
+				"tool": "Ask the operator to reset the scene (capabilities/operator.ts)."
+			}
+		},
+		{
+			"name": "run_code",
+			"side": "ts",
+			"tier": "low",
+			"module": "code",
+			"doc": {
+				"tool": "Code mode's program runner (modes/code)."
+			}
+		},
+		{
+			"name": "xpolicy_act",
+			"side": "ts",
+			"tier": "low",
+			"module": "xpolicy",
+			"doc": {
+				"tool": "An XPolicyLab policy's action chunks (primitives/xpolicy.ts)."
+			}
+		}
+	]
+}

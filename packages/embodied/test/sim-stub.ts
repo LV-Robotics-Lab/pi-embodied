@@ -124,7 +124,7 @@ export const rgb = (h = 2, w = 2) => nd("uint8", [h, w, 3], Buffer.alloc(h * w *
 
 export type Call = { method: string; args: unknown[]; kwargs: Record<string, any> };
 
-/** A fake env server: `answer` returns each method's result (undefined: `{status: "ok"}`); code.api serves an empty registry. */
+/** A fake env server: `answer` returns each method's result (undefined: `{status: "ok"}`); code.api serves an empty API. */
 export async function fakeEnv(answer: (c: Call) => unknown) {
 	const calls: Call[] = [];
 	const server = createServer((req, res) => {
@@ -137,7 +137,10 @@ export async function fakeEnv(answer: (c: Call) => unknown) {
 			const c = { method, args, kwargs };
 			calls.push(c);
 			try {
-				let result = method === "code.api" ? { tier: null, primitives: [], digest: "d" } : answer(c);
+				let result = answer(c);
+				// code.api: a manifest digest no pi agrees with (code mode refuses it) and nothing available.
+				if (result === undefined && method === "code.api")
+					result = { tier: null, manifest_digest: "fake", available: [], digest: "d" };
 				if (result === undefined) result = { status: "ok" };
 				res.end(JSON.stringify({ ok: true, result }));
 			} catch (err) {
@@ -222,7 +225,7 @@ export async function checkDetections(o: {
 	const r = await s.run("detect", { prompt: "cube", camera: o.camera });
 	assert.deepEqual(o.calls.filter((c) => c.method === "env.detect").at(-1)?.kwargs, {
 		camera: o.camera,
-		text_prompt: "cube",
+		prompt: "cube",
 		min_score: 0.2,
 		all: false,
 	});

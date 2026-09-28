@@ -28,9 +28,8 @@ import numpy as np
 import pytest
 
 from pi_embodied_services.components.code_api import CodeApi
-from pi_embodied_services.robots.libero.primitives import libero_primitives
-from pi_embodied_services.robots.robosuite.primitives import ROBOSUITE_PRIMITIVES
-from pi_embodied_services.utils.grasp import GraspPlanner
+from pi_embodied_services.components.manifest import code_primitives, load_manifest
+from pi_embodied_services.robots.robosuite import tasks
 
 SRC = Path(__file__).resolve().parents[2] / "packages" / "embodied" / "src" / "robots"
 MARK = "# ---- CaP-X's program, verbatim ----\n"
@@ -83,7 +82,7 @@ class Fake:
     """Recording fakes of one robot's primitives in one tier."""
 
     def __init__(
-        self, primitives, tier, *, arms, objects, table_z, cam_xy, libero=False
+        self, primitives, tier, *, arms, objects, table_z, cam_xy, libero=False, task=""
     ):
         self.primitives = list(primitives)
         self.api = CodeApi(self.primitives, {p.method: None for p in self.primitives})
@@ -98,6 +97,8 @@ class Fake:
         self.table_z = table_z
         self.cam = camera(cam_xy)
         self.libero = libero
+        self.task = task
+        self.poses: list[list[float]] = []
 
     # The program's globals: a stub per primitive of the tier (utils/code_exec.py _stub).
     def globals(self) -> dict:
@@ -163,6 +164,47 @@ class Fake:
             "gripper": "close" if close else "open",
             "gripper_width": 0.0 if close else 0.08,
         }
+
+    # -- CaP-X's high tier (the server's semantic functions; privileged: from the simulator)
+    def _privileged(self):
+        return "privileged" in (self.tier or "")
+
+    def get_object_pose(self, object_name, return_bbox_extent=False):
+        if self._privileged():
+            sim, ext = tasks.OBJECT_NAMES[self.task][object_name]
+            pos = self.objects[sim]
+            return [
+                pos.tolist(),
+                [1.0, 0.0, 0.0, 0.0],
+                list(ext) if return_bbox_extent else None,
+            ]
+        pos = self._object_of(object_name)
+        return [
+            pos.tolist(),
+            [1.0, 0.0, 0.0, 0.0],
+            [0.05, 0.05, 0.05] if return_bbox_extent else None,
+        ]
+
+    def sample_grasp_pose(self, object_name, arm=None):
+        pos, _, _ = self.get_object_pose(object_name)
+        return [pos, [0.0, 0.0, 1.0, 0.0]]
+
+    def goto_pose(self, position, quaternion_wxyz, z_approach=0.0, arm=None):
+        target = np.asarray(position, dtype=np.float64)
+        if z_approach:
+            self.poses.append((target + [0.0, 0.0, float(z_approach)]).tolist())
+        self.poses.append(target.tolist())
+        self.eef[arm or "robot0"] = target
+        return {"final_eef_pos": target.tolist()}
+
+    def home_pose(self, arm=None):
+        return self.goto_pose(self.home[arm or "robot0"], [0, 0, 1, 0], arm=arm)
+
+    def open_gripper(self, arm=None):
+        return self.set_gripper(False, arm=arm)
+
+    def close_gripper(self, arm=None):
+        return self.set_gripper(True, arm=arm)
 
     # -- privileged
     def ground_truth_poses(self, names=None):
@@ -316,16 +358,19 @@ ROBOSUITE_WORLDS = {
 
 
 def robosuite_fake(task: str, tier: str, grasp: bool = False) -> Fake:
-    prims = ROBOSUITE_PRIMITIVES + (GraspPlanner.primitives(None) if grasp else ())
+    """The robosuite manifest's primitives (every requirement met, the grasp server optional)."""
+    prims = code_primitives(
+        load_manifest("robosuite"), lambda c: c not in ("grasp", "place") or grasp
+    )
     world = {**ROBOSUITE_WORLDS[task]}
     world["objects"] = dict(world["objects"])
-    return Fake(prims, tier, **world)
+    return Fake(prims, tier, task=task, **world)
 
 
 def simplify(fake: Fake) -> None:
     """Ground-truth names are the keys before '|'."""
     fake.objects = {
-        k.split("|")[0] if fake.tier == "privileged" else k: v
+        k.split("|")[0] if "privileged" in fake.tier else k: v
         for k, v in fake.objects.items()
     }
 
@@ -346,13 +391,20 @@ def test_every_oracle_has_a_valid_header_and_a_self_contained_prelude():
     for robot, names in (("robosuite", rs), ("libero", lb)):
         for name in names:
             header, code = load(robot, name)
-            assert header["tier"] in ("high", "low", "low-noexamples", "privileged"), (
-                name
-            )
+            assert header["tier"].removesuffix("+privileged") in (
+                "high",
+                "low",
+                "low-noexamples",
+                "privileged",
+            ), name
             assert MARK in code, name
             compile(code, name, "exec")
+            if "prelude" not in header:
+                # The CaP-X functions are the server's high / privileged tier.
+                assert header["tier"] in ("high", "privileged"), name
+                continue
             prelude = (SRC / robot / "oracle" / header["prelude"]).read_text()
-            if header["tier"] != "privileged":
+            if "privileged" not in header["tier"]:
                 assert "ground_truth_poses" not in prelude, (
                     name,
                     "an S2/S3 prelude reads ground truth",
@@ -365,35 +417,34 @@ def test_robosuite_oracle_runs_on_its_tier(name):
     fake = robosuite_fake(header["task"], header["tier"])
     simplify(fake)
     run("robosuite", name, fake)
-    assert any(n == "move_to" for n, _ in fake.calls)
-    if header["tier"] != "privileged":
+    assert any(n in ("move_to", "goto_pose") for n, _ in fake.calls)
+    if "privileged" not in header["tier"]:
         assert not any(n == "ground_truth_poses" for n, _ in fake.calls)
 
 
 def test_lift_privileged_sequence():
+    """CaP-X's lift program on the server's privileged tier: its calls are the primitives."""
     fake = robosuite_fake("Lift", "privileged")
     simplify(fake)
     run("robosuite", "lift_privileged.py", fake)
     assert fake.sequence() == [
-        "ground_truth_poses",
-        "open",
-        "move_to",
-        "close",
-        "move_to",
+        "sample_grasp_pose",
+        "open_gripper",
+        "goto_pose",
+        "close_gripper",
+        "goto_pose",
     ]
     np.testing.assert_allclose(fake.eef["robot0"], [0.0, -0.02, 0.93], atol=1e-9)
 
 
-def test_lift_s2_uses_the_grasp_server_when_there_is_one_and_segments_otherwise():
-    fake = robosuite_fake("Lift", "high", grasp=True)
-    run("robosuite", "lift.py", fake)
-    assert fake.sequence()[:2] == ["plan_grasp", "open"]
-    np.testing.assert_allclose(fake.eef["robot0"], [0.0, -0.02, 0.93], atol=1e-9)
+def test_lift_s2_calls_the_high_tier_functions():
     fake = robosuite_fake("Lift", "high")
     run("robosuite", "lift.py", fake)
-    assert fake.sequence()[:3] == ["segment", "get_observation", "open"]
-    # The grasp point is the mask's box centre, lifted 0.1 m at the end.
-    np.testing.assert_allclose(fake.eef["robot0"][:2], [0.0, -0.02], atol=0.005)
+    assert fake.sequence()[:2] == ["sample_grasp_pose", "open_gripper"]
+    np.testing.assert_allclose(fake.eef["robot0"], [0.0, -0.02, 0.93], atol=1e-9)
+    assert any(np.allclose(p, [0.0, -0.02, 0.93]) for p in fake.poses), (
+        "approach from 0.1 m above"
+    )
 
 
 def test_stack_privileged_places_red_on_green():
@@ -401,18 +452,17 @@ def test_stack_privileged_places_red_on_green():
     simplify(fake)
     run("robosuite", "stack_privileged.py", fake)
     seq = fake.sequence()
-    assert seq[-3:] == ["move_to", "open", "move_to"]
+    assert seq[-3:] == ["goto_pose", "open_gripper", "goto_pose"]
     # Retract point: 0.1 m above the place point on green (green z + 0.05).
     np.testing.assert_allclose(
         fake.eef["robot0"], [0.02, 0.05, 0.835 + 0.05 + 0.1], atol=1e-9
     )
-    # The place leg approaches from 0.1 m above along the gripper's (down) axis.
-    targets = [kw["target_xyz"] for n, kw in fake.calls if n == "move_to"]
-    assert any(np.allclose(t, [0.02, 0.05, 0.985]) for t in targets)
+    # The place leg approaches from 0.1 m above.
+    assert any(np.allclose(p, [0.02, 0.05, 0.985]) for p in fake.poses)
 
 
 def test_two_arm_lift_privileged_takes_capx_bounding_box_branch_and_lifts_together():
-    fake = robosuite_fake("TwoArmLift", "privileged")
+    fake = robosuite_fake("TwoArmLift", "low+privileged")
     simplify(fake)
     g = run("robosuite", "two_arm_lift_privileged.py", fake)
     assert (
@@ -433,13 +483,43 @@ def test_two_arm_lift_privileged_takes_capx_bounding_box_branch_and_lifts_togeth
 
 
 def test_handover_privileged_uses_robot0_frame_constants():
-    fake = robosuite_fake("TwoArmHandover", "privileged")
+    fake = robosuite_fake("TwoArmHandover", "low+privileged")
     simplify(fake)
     run("robosuite", "two_arm_handover_privileged.py", fake)
     # handover_pos = (0.81, 0, 0.10) in robot0's frame: world (0, -0.81 + 0.81, 1.022) etc.
     # arm0 retracts to handover + (-0.1, 0, 0.06): world (0, -0.1, 1.082) after the +90 deg turn.
     np.testing.assert_allclose(fake.eef["robot0"], [0.0, -0.1, 0.922 + 0.16], atol=1e-6)
     np.testing.assert_allclose(fake.eef["robot1"], [0.0, 0.1, 0.922 + 0.09], atol=1e-6)
+
+
+class LiberoFake(Fake):
+    """The LIBERO manifest's primitives: set_gripper takes the gripper command (-1 / +1), the
+    CaP-X functions take use_multiview, and the privileged ones look names up as CaP-X does."""
+
+    def set_gripper(self, gripper=-1, steps=5, **_):
+        return super().set_gripper(float(gripper) > 0)
+
+    def get_object_pose(self, object_name, use_multiview=True):
+        if self._privileged():
+            pos = self.objects[f"{object_name.split()[0]}_1"]
+            return [pos.tolist(), [1.0, 0.0, 0.0, 0.0]]
+        return [self._object_of(object_name).tolist(), [1.0, 0.0, 0.0, 0.0]]
+
+    def sample_grasp_pose(self, object_name, use_multiview=True):
+        pos, _ = self.get_object_pose(object_name)
+        return [pos, [0.0, 1.0, 0.0, 0.0]]
+
+    def sequence(self):
+        out: list[str] = []
+        for name, kw in self.calls:
+            if name == "get_state":
+                continue
+            tag = {"open_gripper": "open", "close_gripper": "close"}.get(name, name)
+            if name == "set_gripper":
+                tag = "close" if float(kw.get("gripper", -1)) > 0 else "open"
+            if not out or out[-1] != tag:
+                out.append(tag)
+        return out
 
 
 @pytest.mark.parametrize("name", oracles("libero"))
@@ -451,10 +531,11 @@ def test_libero_oracle_runs_on_its_tier(name):
         "milk_1|milk": [0.05, 0.1, 0.95],
         "basket_1|basket": [-0.05, -0.15, 0.93],
     }
-    if tier == "privileged":
+    if "privileged" in tier:
         objects = {k.split("|")[0]: v for k, v in objects.items()}
-    fake = Fake(
-        libero_primitives(sam3=True),
+    prims = code_primitives(load_manifest("libero"), lambda c: c != "grasp")
+    fake = LiberoFake(
+        prims,
         tier,
         arms={"robot0": [-0.2, 0.0, 1.15]},
         objects=objects,
@@ -464,13 +545,26 @@ def test_libero_oracle_runs_on_its_tier(name):
     )
     run("libero", name, fake)
     seq = fake.sequence()
-    assert "close" in seq and seq[-1] in ("open", "move_to")
-    grasp = [kw["xyz"] for n, kw in fake.calls if n == "move_to"]
-    assert any(np.allclose(p[:2], [0.05, 0.1], atol=0.01) for p in grasp)  # at the milk
+    assert "close" in seq and seq[-1] in ("open", "move_to", "goto_pose")
+    reached = [kw["xyz"] for n, kw in fake.calls if n == "move_to"] + [
+        kw["position"] for n, kw in fake.calls if n == "goto_pose"
+    ]
+    assert any(
+        np.allclose(np.asarray(p)[:2], [0.05, 0.1], atol=0.01) for p in reached
+    )  # the milk
     basket_xy = np.array([-0.05, -0.15])
     assert (
         np.linalg.norm(fake.eef["robot0"][:2] - basket_xy) < 0.01
     )  # released over the basket
+    if tier in ("high", "privileged"):
+        # CaP-X's functions are the server's: the program calls them directly.
+        assert {n for n, _ in fake.calls} <= {
+            "open_gripper",
+            "close_gripper",
+            "sample_grasp_pose",
+            "get_object_pose",
+            "goto_pose",
+        }
 
 
 def test_verbatim_blocks_match_capx_when_the_reference_is_present():

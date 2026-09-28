@@ -28,8 +28,13 @@ opening; ``info`` is flattened to plain scalars (``success``, ``is_grasped``, ..
 BlockStack-v1) runs that rig with Show-Harness's calibrated cameras, reset and views; the
 other ids (``ENV_IDS``) are stock ManiSkill tabletop tasks on the shared oblique camera.
 
-Code mode (``code.run``, utils/code_exec.py ``CodeRunMixin``): a program calls the registry's
-primitives (./primitives.py) in a sandboxed subprocess, so the server requires its RPC token and
+Motion: ``env.move_delta`` (the ``move_delta`` tool and primitive, and the units' moves) splits a
+translation into ~2 cm waypoints (:func:`phases`) and servos to each (:meth:`servo`), with the
+per-call cap, ``stop`` between steps and the success latched since the reset in one place.
+
+Code mode (``code.run``, utils/code_exec.py ``CodeRunMixin``): a program calls the primitives of
+the robot's manifest (packages/embodied/src/primitives/manifests/maniskill.json) in a sandboxed
+subprocess, so the server requires its RPC token and
 refuses other business calls while a program runs. What a program receives carries no object
 state: of a step's info only the flags (``success``, ``is_grasped``, ...; the distances and poses
 some tasks report are object state), no reward (ManiSkill's dense rewards are computed from the
@@ -40,14 +45,13 @@ from __future__ import annotations
 
 import argparse
 import copy
+import math
 from dataclasses import dataclass
 from typing import Any, Optional
 
 import numpy as np
 
-from pi_embodied_services.components.code_api import register_code_api
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
-from pi_embodied_services.robots.maniskill.primitives import MANISKILL_PRIMITIVES
 from pi_embodied_services.utils import ground_truth, reach
 from pi_embodied_services.utils.code_exec import CodeRunMixin
 from pi_embodied_services.utils.logging import get_logger
@@ -194,6 +198,52 @@ DELTA_BOUND_M = 0.1
 CODE_MAX_FRAMES = 128
 CODE_MAX_SERVO_STEPS = 100
 CODE_MAX_CHUNK = 200
+#: ``move_delta``: metres per ~2 cm decision (the MVTOKEN convention), the servo gain (command per
+#: metre of remaining error: configs/robot_maniskill.yaml's step_m 0.026 per 2 cm decision; 0.026 x
+#: 2 control steps measured 20.2 mm on BlockPAP, 20.6 mm on PickCube from rest), the control steps
+#: of one waypoint (at least the yaml's sim_steps_per_decision, up to 8 until the TCP is within
+#: 2 mm: open-loop 2-step decisions fell short after a reversal), the default gripper hold
+#: (closing takes 3 steps, opening ~6; ``RobotSpec.gripper_steps``) and the largest translation
+#: one call may command.
+STEP_M = 0.02
+GAIN = 0.026 / 0.02
+SERVO_MIN_STEPS = 2
+SERVO_MAX_STEPS = 8
+SERVO_TOL_M = 0.002
+GRIPPER_STEPS = 6
+MAX_MOVE_M = 0.2
+
+
+def waypoints(
+    start: list[float], delta: list[float], step_m: float = STEP_M
+) -> list[list[float]]:
+    """The waypoints of one move: one per ~2 cm decision, ceil(|delta| / step_m) of them,
+    evenly spaced from ``start`` (a zero move is one waypoint at ``start``)."""
+    n = max(1, math.ceil(math.hypot(*delta) / step_m - 1e-9))
+    return [
+        [p + (delta[k] * (i + 1)) / n for k, p in enumerate(start)] for i in range(n)
+    ]
+
+
+def phases(
+    start: list[float],
+    delta: list[float],
+    gripper_changed: bool,
+    gripper_steps: int = GRIPPER_STEPS,
+    step_m: float = STEP_M,
+) -> list[tuple[list[float], int, int]]:
+    """The servo legs ``(target, min_steps, max_steps)`` of one move. A gripper change is its
+    own leg first, holding still at ``start`` for ``gripper_steps`` until the fingers settle
+    (Show-Harness's GRASP / RELEASE are separate tokens: the fingers never close while the arm
+    travels); then the ~2 cm waypoints. A call that neither moves nor changes the gripper
+    (STOP) holds for one decision."""
+    out = [(list(start), gripper_steps, gripper_steps)] if gripper_changed else []
+    if math.hypot(*delta) > 0:
+        out += [
+            (t, SERVO_MIN_STEPS, SERVO_MAX_STEPS)
+            for t in waypoints(start, delta, step_m)
+        ]
+    return out or [(list(start), SERVO_MIN_STEPS, SERVO_MIN_STEPS)]
 
 
 def program_info(info: dict) -> dict:
@@ -370,6 +420,8 @@ class RobotSpec:
     wrist: Optional[dict]
     ee_joints: Optional[tuple[str, ...]] = None
     arms: Optional[tuple[str, ...]] = None
+    #: Control steps ``move_delta`` holds still after a gripper change (the fingers settle).
+    gripper_steps: int = GRIPPER_STEPS
     #: The scene's own controller when it ships one (the bridge twins): ``pos_scale`` m per
     #: normalised unit (an unnormalised controller) and ``rot_dims`` zero rotation entries
     #: between the translation and the gripper (a pose controller held at its orientation).
@@ -492,6 +544,8 @@ ROBOTS: dict[str, RobotSpec] = {
         envs=("PickCube-v1", "PickCubeWidowXAI-v1"),
         wrist=None,
         ee_joints=tuple(f"joint_{i}" for i in range(6)),
+        # The carriages close from 87 mm to 4 mm in 6 control steps, under 1 mm by the 10th.
+        gripper_steps=10,
     ),
     # A Panda holding a stick (ManiSkill's panda_stick: pd_ee_delta_pos on the arm, no
     # gripper, no camera link): the pushing and drawing scenes built for it.
@@ -502,6 +556,7 @@ ROBOTS: dict[str, RobotSpec] = {
         width=("none",),
         envs=("PushT-v1", "DrawTriangle-v1", "DrawSVG-v1"),
         wrist=None,
+        gripper_steps=0,
     ),
     # Two Pandas facing each other across the table (the two-robot scenes): agent 0 at
     # y = -0.75 (the agentview's left), agent 1 at y = +0.75. The plain panda uid: the
@@ -542,6 +597,8 @@ ROBOTS: dict[str, RobotSpec] = {
         rot_dims=3,
         tcp_link="ee_gripper_link",
         agentview="3rd_view_camera",
+        # The mimic gripper closes (74 mm to 30 mm on nothing) in 3-4 control steps.
+        gripper_steps=4,
     ),
 }
 
@@ -813,16 +870,30 @@ class ManiskillEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         super()._register_rpc()
         self._rpc["env.state"] = self.state
         self._rpc["env.servo"] = self.servo
+        self._rpc["env.move_delta"] = self.move_delta
         self._rpc["env.ground_truth_poses"] = self.ground_truth_poses
-        api = register_code_api(self, MANISKILL_PRIMITIVES)
-        self._install_code_run(
-            api,
+        # Tools and code primitives: packages/embodied/src/primitives/manifests/maniskill.json.
+        self._manifest_code_run(
+            "maniskill",
+            have=self._has,
             move_m=self._code_move_m,
             check=self._code_check,
             reply=self._code_reply,
             begin=self._begin_run,
             finish=self._finish_run,
         )
+
+    #: ``--ik`` was given and the arm has an IK model (``main``: env.preview_reach answers).
+    _ik = False
+
+    def _has(self, capability: str) -> bool:
+        """What this server can serve of the manifest's ``requires``."""
+        return {
+            "sam3": "env.detect" in self._rpc,
+            "unidepth": "env.enhance_depth" in self._rpc,
+            "ik": self._ik,
+            "privileged": True,
+        }.get(capability, False)
 
     # ---- code mode (run_code) ----
 
@@ -859,6 +930,13 @@ class ManiskillEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
     def _code_reply(self, method: str, out: Any) -> Any:
         """What a program receives: of a step's info only the flags, no reward, and no images
         of a motion (they go to the run's video)."""
+        if method == "env.move_delta":
+            self._keep_frames(out["frames"])
+            return {
+                **out["result"],
+                "info": program_info(out["info"]),
+                "state": self._robot_state(out["obs"]),
+            }
         if method == "env.servo":
             packs, info = out
             self._keep_frames(packs)
@@ -891,6 +969,10 @@ class ManiskillEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
 
     def _code_move_m(self, method: str, kwargs: dict) -> float:
         """How far a program's call may move the TCP (the run's translation cap)."""
+        if method == "env.move_delta":
+            return float(
+                np.linalg.norm(np.asarray(kwargs["delta_xyz"], dtype=np.float64))
+            )
         if method == "env.servo":
             target = np.asarray(kwargs["target_xyz"], dtype=np.float64).reshape(3)
             # The arm the call drives (a two-arm robot's state has no top-level tcp_pos).
@@ -1123,6 +1205,8 @@ class ManiskillEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
                 if abs(g - self._robot.open) <= abs(g - self._robot.gripper[1])
                 else -1.0
             )
+            # move_delta's "gripper changed" test reads it (a program's raw steps included).
+            self._grip[0] = self._gripper_command
         return (
             obs,
             float(_np(rew).reshape(-1)[0]),
@@ -1302,6 +1386,94 @@ class ManiskillEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
             frames.append(self._pack(self._obs))
         return frames, info
 
+    def move_delta(
+        self,
+        delta_xyz,
+        gripper: Optional[str] = None,
+        arm: Optional[str] = None,
+    ) -> dict:
+        """Translate the TCP by ``delta_xyz`` (m; base frame on a one-arm robot at the table's
+        -x end, the world frame on the pair and the bridge twins), optionally opening or
+        closing the gripper first: the :func:`phases` legs, each a closed-loop :meth:`servo`
+        (``GAIN``, ``SERVO_TOL_M``), stopping at the success latched since the reset, a
+        cancelled leg (``stop``) or the drawing scenes' step limit. At most ``MAX_MOVE_M`` per
+        call. A two-arm robot moves ``arm``, the other holding still. Returns ``result``
+        (``commanded_m``, ``moved_m``, ``gripper``, ``env_steps``, ``arm``, ``step_limit``),
+        ``frames`` (every control step, as :meth:`servo` returns them), ``obs`` (the last
+        observation) and ``info`` (the last step's)."""
+        delta = [float(v) for v in np.asarray(delta_xyz, dtype=np.float64).reshape(3)]
+        norm = math.hypot(*delta)
+        if not norm <= MAX_MOVE_M:
+            raise ValueError(
+                f"delta moves {round(norm, 4)} m; the limit is {MAX_MOVE_M} m per call. Split the motion."
+            )
+        if gripper not in (None, "open", "close"):
+            raise ValueError(f"gripper must be open or close, not {gripper!r}")
+        if gripper and self._robot.gripper is None:
+            raise ValueError(
+                "this robot holds a stick and has no gripper; leave `gripper` out"
+            )
+        names = self._robot.arms
+        if names and arm not in names:
+            raise ValueError(
+                f"this robot has two arms; arm must be one of {', '.join(names)}"
+            )
+        if not names and arm is not None:
+            raise ValueError("this robot has one arm; leave `arm` out")
+        idx = self._arm(arm)
+        if self._success_once:
+            return {
+                "result": {"error": "the task is already solved; call finish"},
+                "frames": [],
+                "obs": self._pack(self._obs),
+                "info": dict(self._last_info),
+            }
+        before = self._grip[idx]
+        command = before if gripper is None else (1.0 if gripper == "open" else -1.0)
+        changed = (command > 0) != (before > 0)
+        agent = self._agents[idx]
+        start = [float(v) for v in _np(self._tcp(agent).p).reshape(-1)[:3]]
+        frames: list = []
+        info: dict = dict(self._last_info)
+        steps = 0
+        limited = False
+        for target, lo, hi in phases(
+            start, delta, changed, self._robot.gripper_steps, STEP_M
+        ):
+            if self._success_once:
+                break
+            legs, info = self.servo(
+                target,
+                command,
+                gain=GAIN,
+                tol_m=SERVO_TOL_M,
+                min_steps=lo,
+                max_steps=hi,
+                arm=arm,
+            )
+            frames.extend(legs)
+            steps += sum(1 for f in legs if "action" in f)
+            limited = bool(info.get("step_limit"))
+            if info.get("cancelled") or limited:
+                break
+        end = [float(v) for v in _np(self._tcp(agent).p).reshape(-1)[:3]]
+        result: dict = {
+            **({"arm": arm} if arm else {}),
+            "commanded_m": [round(v, 4) for v in delta],
+            "moved_m": [round(e - s, 4) for e, s in zip(end, start)],
+            "gripper": "open" if command > 0 else "close",
+            "env_steps": steps,
+        }
+        if limited:
+            # The drawing scenes' step budget is spent (DOT_LIMIT): nothing more can run.
+            result["step_limit"] = (
+                "the episode's step limit is reached; no further motion runs: call finish"
+            )
+        if info.get("cancelled"):
+            result["cancelled"] = True
+        obs = frames[-1] if frames else self._pack(self._obs)
+        return {"result": result, "frames": frames, "obs": obs, "info": info}
+
     def _to_root(self, vec: np.ndarray, agent=None) -> np.ndarray:
         """A world-frame vector in the robot base's frame, where ``pd_ee_delta_pos``
         acts: unchanged for a base at the identity rotation (the one-arm table scenes),
@@ -1480,6 +1652,14 @@ def main():
     )
     # --sam3 / --unidepth: env.detect, env.select_detection, env.reject_detection, env.enhance_depth
     # (no rendered depth here: enhance_depth supplies it). The views are letterboxed: no K.
+    facade._ik = bool(ik_model and getattr(args, "ik", ""))
+    # The manifest's one parameter set: preview_reach(xyz, quat_xyzw) (utils/reach.py takes pos).
+    by_pos = facade._rpc["env.preview_reach"]
+
+    def preview_reach(xyz, quat_xyzw=None) -> dict:
+        return by_pos(xyz, quat_xyzw=quat_xyzw)
+
+    facade._rpc["env.preview_reach"] = preview_reach
     install_perception(
         facade,
         args,

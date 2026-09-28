@@ -1,7 +1,8 @@
 # capx: env_configs/human_oracle_code/robosuite/franka_robosuite_nut_assembly_oracle.yaml @53e9966
 # program: capx/envs/tasks/franka/franka_nut_assembly.py ORACLE_CODE (FrankaControlNutAssemblyVisualApi)
 # task: NutAssemblySquare
-# tier: high
+# tier: low
+# CaP-X's task API (not in the high tier) is the prelude over the low tier's primitives.
 # prelude: capx_nut_assembly_visual.py
 # ---- CaP-X's program, verbatim ----
 import numpy as np

@@ -6,9 +6,10 @@
  *
  * Starts one RoboTwin env server per session (the RLinf RoboTwin facade) and
  * attaches to a running LingBot-VLA WebSocket server (see serve.sh). Tools follow
- * the RoboTwin primitives for the dual-arm aloha-agilex: `move_to` plans with
- * the env's curobo planner (`env.plan_arm_path`) and executes qpos waypoints,
- * `lingbot_act` runs eef16 chunks. Every action returns a new numbered state with
+ * the RoboTwin primitives for the dual-arm aloha-agilex (../../primitives/manifests/robotwin.json,
+ * which the env server reads too): `move_to` / `rotate_wrist` / `set_gripper` / `release` are the
+ * server's methods (cuRobo plans, the qpos waypoints run as one chunk there), `lingbot_act` runs
+ * eef16 chunks. Every action returns a new numbered state with
  * the head and both wrist images; success is RoboTwin's own `eval_success`,
  * recorded in the session's `robot_result` entry. With `--xpolicy <ws url>`, `xpolicy_act` runs an
  * XPolicyLab policy (../xpolicy.ts, env_cfg aloha_agilex) instead: LingBot then connects only on the
@@ -445,28 +446,35 @@ export default function robotwin(pi: ExtensionAPI) {
 				details: {},
 			};
 		const result: Record<string, unknown> = {};
-		if (m.gripper) result.gripper = await setGripper(arm, m.gripper === "close" ? 0 : 1, 10);
+		if (m.gripper) result.gripper = await motion("env.set_gripper", { arm, val: m.gripper === "close" ? 0 : 1 });
 		const current = pose(arm);
 		const half = m.yaw / 2;
 		const quat = m.yaw ? qmult([Math.cos(half), 0, 0, Math.sin(half)], current.slice(3)) : undefined;
 		if (m.yaw || m.delta.some((v) => v !== 0))
-			result.move = await moveTo(
+			result.move = await motion("env.move_to", {
 				arm,
-				current.slice(0, 3).map((v, k) => v + m.delta[k]),
-				quat,
-				undefined,
-				25,
-			);
+				xyz: current.slice(0, 3).map((v, k) => v + m.delta[k]),
+				...(quat ? { quat } : {}),
+			});
 		return present(await capture({ action: "act", arm, delta: m.delta, yaw: m.yaw, gripper: m.gripper }, result));
 	}
 
 	const robot = defineRobot(pi, {
 		name: "robotwin",
+		// Tools and code primitives: ../../primitives/manifests/robotwin.json (the env server reads it too).
+		manifest: "robotwin",
+		vars: () => ({ cameras: [...VIEWS] }),
+		// What the env server serves of the manifest's `requires` (its `_has`): the perception it was started with.
+		capabilities: (c) =>
+			({
+				sam3: pi.getFlag("detections") === true && Boolean(flag("sam3", "")),
+				unidepth: Boolean(String(pi.getFlag("unidepth") ?? "").trim()),
+			})[c] ?? false,
 		services: { models: [SAM3, MOLMO] },
 		task: ["task-name", "task-config", "seed"],
-		// The env server's primitive registry (code.api), recorded per episode.
+		// The env server's code.api (the manifest's digest and what this run has), recorded per episode.
 		codeApi: () => env,
-		// Code mode (../code): the env server runs the program against that registry; the result carries the
+		// Code mode (../../modes/code): the env server runs the program over the manifest's primitives; the result carries the
 		// native actions, the latest robot state and status (Info, null when nothing stepped) and the run's
 		// head frames. It becomes a new recorded state, as the motion tools' results do.
 		code: {
@@ -746,93 +754,47 @@ export default function robotwin(pi: ExtensionAPI) {
 		}
 	}
 
-	async function applyQpos(updates: { arm: Arm; arm_qpos?: number[]; gripper?: number }[]) {
-		let executed = 0;
-		for (const u of updates) {
-			const action = (info.robot_state.qpos_target14 as NdArray).toArray();
-			const offset = u.arm === "left" ? 0 : 7;
-			if (u.arm_qpos) action.splice(offset, 6, ...u.arm_qpos);
-			if (u.gripper !== undefined) action[offset + 6] = u.gripper;
-			const ret = await env.call<StepReturn>(
-				"env.step",
-				{ action_type: "qpos" },
-				MUTATE_MS,
-				[f64(action)],
-				robot.signal,
-			);
-			info = ret[4];
-			const main = (ret[0] as { main_images?: unknown } | null)?.main_images;
-			if (main instanceof NdArray) robot.video.frame(u8(main));
-			executed += ret[4].executed_actions ?? 0;
-			// Flywheel: a scripted qpos step, recorded in the policy's eef16 space as the pose it reached.
-			if (fly.recording) {
-				const f = await env.call<PolicyFrame>("env.policy_frame", {}, READ_MS);
-				fly.transition(f.state.toArray(), flyObs(f), success() ? 1 : 0, success(), exhausted());
-			}
-			if (success() || exhausted()) break;
-		}
-		nativeActions += executed;
-		return { action_type: "qpos", requested_actions: updates.length, executed_actions: executed };
-	}
-
-	async function moveTo(
-		arm: Arm,
-		xyz: number[],
-		quat: number[] | undefined,
-		gripper: number | undefined,
-		substeps: number,
-	) {
-		if (substeps < 0) throw new Error("substeps must be non-negative");
-		const target = [...xyz, ...(quat ?? pose(arm).slice(3))];
-		const planned = await env.call<{ status: string; position: NdArray | null }>(
-			"env.plan_arm_path",
-			{ arm, target_pose: target },
-			READ_MS,
+	/**
+	 * Run one of the env server's motion methods (manifests/robotwin.json: cuRobo plans there and the
+	 * qpos waypoints run as one chunk, stopping at success, the budget or a stop): its head frames go to
+	 * the video, its per-action policy frames to the Flywheel (a scripted step is recorded in the policy's
+	 * eef16 space as the pose it reached), its robot state and status become the latest; the rest is the
+	 * tool's result.
+	 */
+	async function motion(method: string, params: Record<string, unknown>) {
+		const recording = fly.recording;
+		const r = await env.call<Record<string, unknown>>(
+			method,
+			{ ...params, ...(recording ? { return_policy_frames: true } : {}) },
+			MUTATE_MS,
 			[],
 			robot.signal,
 		);
-		if (planned.status !== "Success" || !planned.position)
-			return {
-				completed: false,
-				requested_steps: 0,
-				executed_steps: 0,
-				stop_reason: "plan_failed",
-				success: false,
-				plan_status: planned.status,
-				hint: "target may be unreachable or in collision",
-			};
-		const [n, dof] = planned.position.shape;
-		const flat = planned.position.toArray();
-		let path = Array.from({ length: n }, (_, i) => flat.slice(i * dof, (i + 1) * dof));
-		if (substeps === 1) path = path.slice(-1);
-		else if (substeps >= 2 && path.length > substeps) path = linspace(n, substeps).map((i) => path[i]);
-		const execution = await applyQpos(path.map((arm_qpos) => ({ arm, arm_qpos, gripper })));
-		const final = pose(arm);
-		return {
-			...execution,
-			...completion(path.length, execution.executed_actions),
-			success: true,
-			plan_status: planned.status,
-			waypoints: path.length,
-			final_eef_xyz: final.slice(0, 3).map((v) => round(v)),
-			final_dist_m: round(Math.hypot(...xyz.map((v, i) => v - final[i]))),
-		};
-	}
-
-	async function setGripper(arm: Arm, val: number, steps: number) {
-		if (steps < 1) throw new Error("steps must be at least 1");
-		const current = grip(arm);
-		const updates = Array.from({ length: steps }, (_, i) => ({
-			arm,
-			gripper: current + ((val - current) * (i + 1)) / steps,
-		}));
-		const execution = await applyQpos(updates);
-		return {
-			...execution,
-			...completion(updates.length, execution.executed_actions),
-			success: true,
-			gripper_val: round(grip(arm)),
-		};
+		const {
+			info: next,
+			frames,
+			policy_frames,
+			per_step,
+			...report
+		} = r as {
+			info: Info;
+			frames?: NdArray[];
+			policy_frames?: PolicyFrame[];
+			per_step?: { reward: number[]; terminated: boolean[]; truncated: boolean[] };
+		} & Record<string, unknown>;
+		for (const f of frames ?? []) robot.video.frame(u8(f));
+		(policy_frames ?? []).forEach((f, i) => {
+			fly.transition(
+				f.state.toArray(),
+				flyObs(f),
+				per_step?.reward[i] ?? 0,
+				Boolean(per_step?.terminated[i]),
+				Boolean(per_step?.truncated[i]),
+			);
+		});
+		if (next?.robot_state) info = { ...info, robot_state: next.robot_state, episode_status: next.episode_status };
+		nativeActions += next?.executed_actions ?? 0;
+		return report;
 	}
 
 	/** Record a new numbered state: images, same-step world maps, robot state and native status. */
@@ -934,17 +896,10 @@ export default function robotwin(pi: ExtensionAPI) {
 		});
 	}
 
-	const arm = StringEnum(["left", "right"] as const);
 	const view = StringEnum(["head", "left_wrist", "right_wrist"] as const, {
 		description: "View whose RGB supplied the pixels; also the pixel coordinate space",
 	});
 	const step = Type.Optional(Type.Integer({ description: "Recorded state; -1 (default) = latest, 0 = initial" }));
-	const gripper = Type.Optional(
-		Type.Number({ description: "Gripper command held along the path, 0 closed .. 1 open; omit to keep it" }),
-	);
-	const substeps = Type.Optional(
-		Type.Integer({ minimum: 0, description: "Planner waypoints executed, evenly subsampled (default 25; 0 = all)" }),
-	);
 
 	robot.tool(
 		"view_env_state",
@@ -1176,51 +1131,9 @@ export default function robotwin(pi: ExtensionAPI) {
 		},
 	);
 
-	tool(
-		"move_to",
-		"Plan (curobo) and move one arm's EEF to a world-frame xyz and wxyz orientation (default: keep current). The planned qpos waypoints are executed from fresh state. EEF is not TCP: do not send a raw object surface point.",
-		Type.Object({
-			arm,
-			xyz: Type.Array(Type.Number(), { minItems: 3, maxItems: 3, description: "World [x, y, z], m" }),
-			quat: Type.Optional(Type.Array(Type.Number(), { minItems: 4, maxItems: 4, description: "[qw, qx, qy, qz]" })),
-			gripper,
-			substeps,
-		}),
-		async (p) => moveTo(p.arm, p.xyz, p.quat, p.gripper, p.substeps ?? 25),
-	);
-
-	tool(
-		"rotate_wrist",
-		"Rotate one EEF about world z by a relative angle in degrees (EEF xyz fixed; the TCP and a held object sweep an arc).",
-		Type.Object({ arm, delta_yaw_deg: Type.Number(), gripper, substeps }),
-		async (p) => {
-			const current = pose(p.arm);
-			const half = (p.delta_yaw_deg * Math.PI) / 360;
-			const quat = qmult([Math.cos(half), 0, 0, Math.sin(half)], current.slice(3));
-			return {
-				...(await moveTo(p.arm, current.slice(0, 3), quat, p.gripper, p.substeps ?? 25)),
-				requested_delta_yaw_deg: p.delta_yaw_deg,
-			};
-		},
-	);
-
-	tool(
-		"set_gripper",
-		"Linearly move one normalized gripper (0 closed, 1 open) to val over `steps` native actions (default 10).",
-		Type.Object({
-			arm,
-			val: Type.Number({ minimum: 0, maximum: 1 }),
-			steps: Type.Optional(Type.Integer({ minimum: 1 })),
-		}),
-		async (p) => setGripper(p.arm, p.val, p.steps ?? 10),
-	);
-
-	tool(
-		"release",
-		"Open one gripper to val (default 1.0) over `steps` native actions (default 10).",
-		Type.Object({ arm, val: Type.Optional(Type.Number()), steps: Type.Optional(Type.Integer({ minimum: 1 })) }),
-		async (p) => setGripper(p.arm, p.val ?? 1, p.steps ?? 10),
-	);
+	// The motion tools are the server's methods with the manifest's parameters (manifests/robotwin.json).
+	for (const name of ["move_to", "rotate_wrist", "set_gripper", "release"])
+		tool(name, "", Type.Object({}), (p) => motion(`env.${name}`, p as Record<string, unknown>));
 
 	// Molmo pointing on the current images (active with --point).
 	mountGraspTool(

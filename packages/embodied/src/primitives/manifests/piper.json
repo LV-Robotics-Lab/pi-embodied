@@ -1,0 +1,332 @@
+{
+	"robot": "piper",
+	"internal": [
+		"env.step_pair",
+		"env.move_joints"
+	],
+	"primitives": [
+		{
+			"name": "view_env_state",
+			"side": "ts",
+			"tier": "low",
+			"params": {
+				"step": {
+					"type": "integer",
+					"description": "State step (default -1 = latest)"
+				}
+			},
+			"doc": {
+				"tool": "Read a Piper state step ({{state_fields}}) and its {{image_names}} images."
+			},
+			"result": "motion"
+		},
+		{
+			"name": "move_delta",
+			"side": "env",
+			"method": "env.move_delta",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"delta_xyz": {
+					"type": "vec3",
+					"required": true,
+					"description": "[dx, dy, dz], m (at most {{max_move}} m per call)"
+				},
+				"arm": {
+					"type": "enum",
+					"values": "{{arms}}",
+					"description": "Which arm: 'left' or 'right' (two arms; required there, the other arm holds still). Omit on one arm"
+				},
+				"frame": {
+					"type": "enum",
+					"values": [
+						"base",
+						"heading"
+					],
+					"modes": [
+						"code"
+					],
+					"description": "'base' (default: x forward, y left, z up) or 'heading' (x along the gripper heading)"
+				},
+				"continuous": {
+					"type": "boolean",
+					"modes": [
+						"code"
+					],
+					"description": "Another translation in about the same direction follows at once (the smooth stream chains it; default false)"
+				}
+			},
+			"doc": {
+				"tool": "Move {{the}} gripper by a bounded base-frame xyz delta in meters (x forward, y left, z up{{arm_frame}}; at most {{max_move}} m per call).",
+				"code": "Translate the gripper by delta_xyz (m), holding the orientation; refused beyond the per-call limit (--max-move) or out of the floor/box (clamped, noted). Returns ok, pre_pose, post_pose, moved_m, notes.\n\nExample:\n    r = move_delta([0.0, 0.0, -0.02])   # 2 cm down\n    print(r[\"ok\"], r[\"moved_m\"])"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "rotate_yaw",
+			"side": "env",
+			"method": "env.rotate_yaw",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"yaw": {
+					"type": "number",
+					"required": true,
+					"description": "rad, + turns counter-clockwise seen from above (at most {{max_yaw}} rad per call)"
+				},
+				"arm": {
+					"type": "enum",
+					"values": "{{arms}}",
+					"description": "Which arm: 'left' or 'right' (two arms; required there, the other arm holds still). Omit on one arm"
+				}
+			},
+			"doc": {
+				"tool": "Rotate {{the}} gripper about the base z axis by a bounded angle in radians (at most {{max_yaw}} rad per call).",
+				"code": "Turn the gripper about the base z axis by yaw (rad); refused beyond the per-call limit (--max-yaw) or the total turn from the reset heading.\n\nExample:\n    rotate_yaw(0.15)"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "open_gripper",
+			"side": "env",
+			"method": "env.open_gripper",
+			"tier": "high",
+			"mutating": true,
+			"params": {
+				"arm": {
+					"type": "enum",
+					"values": "{{arms}}",
+					"description": "Which arm: 'left' or 'right' (two arms; required there, the other arm holds still). Omit on one arm"
+				}
+			},
+			"doc": {
+				"tool": "Open {{the}} gripper and wait for it to settle.",
+				"code": "Open gripper fully and wait for it to settle.\n\nExample:\n    open_gripper()"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "close_gripper",
+			"side": "env",
+			"method": "env.close_gripper",
+			"tier": "high",
+			"mutating": true,
+			"params": {
+				"arm": {
+					"type": "enum",
+					"values": "{{arms}}",
+					"description": "Which arm: 'left' or 'right' (two arms; required there, the other arm holds still). Omit on one arm"
+				},
+				"reopen_empty": {
+					"type": "boolean",
+					"modes": [
+						"code"
+					],
+					"description": "Reopen a close that caught nothing (default true)"
+				}
+			},
+			"doc": {
+				"tool": "Close {{the}} gripper and wait for it to settle; an empty close reopens and says so in notes.",
+				"code": "Close gripper and wait for it to settle; a close that caught nothing reopens (reopen_empty) and says so in notes. gripper_closed / gripper_width_m tell whether it holds something.\n\nExample:\n    r = close_gripper()\n    print(r[\"gripper_width_m\"], r[\"notes\"])"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "halt_arm",
+			"side": "env",
+			"method": "env.halt_arm",
+			"tier": "low",
+			"mutating": true,
+			"requires": [
+				"dual"
+			],
+			"params": {
+				"arm": {
+					"type": "enum",
+					"values": "{{arms}}",
+					"description": "Which arm: 'left' or 'right' (two arms; required there, the other arm holds still). Omit on one arm"
+				},
+				"reason": {
+					"type": "string",
+					"description": "Why the arm stops"
+				}
+			},
+			"doc": {
+				"tool": "Stop one arm for the rest of the episode (its part of the task is done, or it is in trouble): the server holds it where it is and refuses its motion until the operator resets it. The other arm keeps working.",
+				"code": "Stop one arm and refuse its motion until its reset (two arms only); the other arm keeps working.\n\nExample:\n    halt_arm(arm=\"left\", reason=\"its part is done\")"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "get_robot_state",
+			"side": "code",
+			"method": "env.get_robot_state",
+			"tier": "low",
+			"params": {
+				"arm": {
+					"type": "enum",
+					"values": "{{arms}}",
+					"description": "Which arm: 'left' or 'right' (two arms; required there, the other arm holds still). Omit on one arm"
+				}
+			},
+			"doc": {
+				"code": "One arm's state: eef_pose (xyz + quat xyzw, base frame), eef_pos, eef_euler_xyz, joints (6, rad), gripper_width_m, gripper_closed, heading_yaw_rad, yaw_from_reset_rad, z_floor_m; on two arms without `arm`: {\"arms\": {side: state}}.\n\nExample:\n    st = get_robot_state()\n    print(st[\"eef_pos\"], st[\"gripper_width_m\"])"
+			}
+		},
+		{
+			"name": "get_observation",
+			"side": "code",
+			"method": "env.get_observation",
+			"tier": "low",
+			"doc": {
+				"code": "The cameras' frames (front and the wrist camera(s), HxWx3 uint8) and the robot state.\n\nExample:\n    obs = get_observation()\n    front = obs[\"images\"][\"front\"]  # HxWx3 uint8\n    print(obs[\"robot_state\"][\"eef_pos\"])"
+			}
+		},
+		{
+			"name": "get_camera_meta",
+			"side": "code",
+			"method": "env.get_camera_meta",
+			"tier": "low",
+			"doc": {
+				"code": "The cameras (topic, role) and the image size; the webcams have no calibration or depth.\n\nExample:\n    print(get_camera_meta()[\"cameras\"])"
+			}
+		},
+		{
+			"name": "step",
+			"side": "code",
+			"method": "env.step",
+			"tier": "raw",
+			"mutating": true,
+			"params": {
+				"delta_xyz": {
+					"type": "vec3",
+					"description": "[dx, dy, dz], m (default 0)"
+				},
+				"yaw": {
+					"type": "number",
+					"description": "rad about base z (default 0)"
+				},
+				"gripper": {
+					"type": "enum",
+					"values": [
+						"open",
+						"close"
+					],
+					"description": "Then open or close (default: unchanged)"
+				},
+				"frame": {
+					"type": "enum",
+					"values": [
+						"base",
+						"heading"
+					],
+					"description": "'base' (default) or 'heading'"
+				},
+				"reopen_empty": {
+					"type": "boolean",
+					"description": "Reopen a close that caught nothing (default true)"
+				},
+				"arm": {
+					"type": "enum",
+					"values": "{{arms}}",
+					"description": "Which arm: 'left' or 'right' (two arms; required there, the other arm holds still). Omit on one arm"
+				},
+				"continuous": {
+					"type": "boolean",
+					"description": "Chain with the next step (smooth stream; default false)"
+				}
+			},
+			"doc": {
+				"code": "One guarded step of one arm: translate (m), yaw (rad), then open/close; refused beyond the per-call limits (--max-move, --max-yaw), clamped to the floor and workspace box.\n\nExample:\n    r = step([0.0, 0.0, -0.02])      # 2 cm down (within the per-call limit)\n    step(yaw=0.1, gripper=\"close\")  # turn, then close\n    print(r[\"ok\"])"
+			}
+		},
+		{
+			"name": "solve_ik",
+			"side": "code",
+			"method": "env.solve_ik",
+			"tier": "low",
+			"params": {
+				"position": {
+					"type": "vec3",
+					"required": true,
+					"description": "TCP [x, y, z] in the arm's base frame, m"
+				},
+				"quaternion_wxyz": {
+					"type": "quat",
+					"description": "Orientation, wxyz (default: any)"
+				},
+				"arm": {
+					"type": "enum",
+					"values": "{{arms}}",
+					"description": "Which arm: 'left' or 'right' (two arms; required there, the other arm holds still). Omit on one arm"
+				}
+			},
+			"doc": {
+				"code": "Solve inverse kinematics for the gripper from the current joints (nothing moves).\n\nReturns:\n    {reachable, joints (6, rad) or None, max_joint_change_rad, max_joint_step_rad}: one move_to_joints call may change a joint by at most max_joint_step_rad.\n\nExample:\n    st = get_robot_state()\n    r = solve_ik([st[\"eef_pos\"][0], st[\"eef_pos\"][1], st[\"eef_pos\"][2] - 0.02])\n    if r[\"reachable\"]:\n        move_to_joints(r[\"joints\"])"
+			}
+		},
+		{
+			"name": "move_to_joints",
+			"side": "code",
+			"method": "env.move_to_joints",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"joints": {
+					"type": "array",
+					"required": true,
+					"minItems": 6,
+					"maxItems": 6,
+					"description": "6 joint angles, rad"
+				},
+				"arm": {
+					"type": "enum",
+					"values": "{{arms}}",
+					"description": "Which arm: 'left' or 'right' (two arms; required there, the other arm holds still). Omit on one arm"
+				}
+			},
+			"doc": {
+				"code": "Move the arm along a straight joint-space line to a joint configuration, bounded per call: each joint changes at most max_joint_step_rad, the gripper stays within the per-call limits (--max-move, --max-yaw) of where it starts, and the path stays above the floor and in the box; refused whole otherwise (nothing moves).\n\nExample:\n    q = get_robot_state()[\"joints\"]\n    q[0] += 0.05\n    move_to_joints(q)"
+			}
+		},
+		{
+			"use": "perception/detect"
+		},
+		{
+			"use": "perception/select_detection"
+		},
+		{
+			"use": "perception/reject_detection"
+		},
+		{
+			"use": "perception/enhance_depth"
+		},
+		{
+			"use": "modules/finish"
+		},
+		{
+			"use": "modules/act"
+		},
+		{
+			"use": "modules/plan"
+		},
+		{
+			"use": "modules/point"
+		},
+		{
+			"use": "modules/reset"
+		},
+		{
+			"use": "modules/request_operator_verdict"
+		},
+		{
+			"use": "modules/request_scene_reset"
+		},
+		{
+			"use": "modules/run_code"
+		},
+		{
+			"use": "modules/xpolicy_act"
+		}
+	]
+}

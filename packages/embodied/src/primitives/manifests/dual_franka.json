@@ -1,0 +1,563 @@
+{
+	"robot": "dual_franka",
+	"internal": [
+		"env.chunk_step",
+		"env.segment",
+		"env.select_detection",
+		"env.reject_detection",
+		"env.enhance_depth"
+	],
+	"primitives": [
+		{
+			"name": "describe_dual_franka_setup",
+			"side": "ts",
+			"tier": "low",
+			"doc": {
+				"tool": "Read the dual-Franka runtime conventions, camera aliases, VLA policy conditioning text, semantic stop rules, and available primitive names before acting. This is read-only."
+			},
+			"result": "read"
+		},
+		{
+			"name": "view_env_state",
+			"side": "ts",
+			"tier": "low",
+			"params": {
+				"step": {
+					"type": "integer",
+					"description": "State step (default -1 = latest)"
+				}
+			},
+			"doc": {
+				"tool": "Read a dual-Franka state snapshot. Configured inline camera views are returned directly; other available views are returned as artifact paths; use read to inspect these artifacts."
+			},
+			"result": "read"
+		},
+		{
+			"name": "view_camera_meta",
+			"side": "ts",
+			"tier": "low",
+			"params": {
+				"step": {
+					"type": "integer",
+					"description": "State step (default -1 = latest)"
+				}
+			},
+			"doc": {
+				"tool": "Read camera intrinsics, serials, and projection metadata for the dual-Franka rig."
+			},
+			"result": "read"
+		},
+		{
+			"name": "back_project",
+			"side": "ts",
+			"tier": "low",
+			"params": {
+				"camera": {
+					"type": "string",
+					"description": "Registered projection view name, e.g. d455 or base (default d455). Valid names come from perception.projection_views and the current state's saved artifacts."
+				},
+				"row": {
+					"type": "integer",
+					"required": true,
+					"minimum": 0
+				},
+				"col": {
+					"type": "integer",
+					"required": true,
+					"minimum": 0
+				},
+				"target_name": {
+					"type": "string",
+					"description": "Default 'target'"
+				},
+				"step": {
+					"type": "integer",
+					"description": "State step (default -1 = latest)"
+				},
+				"window_radius": {
+					"type": "integer",
+					"minimum": 0,
+					"description": "Depth median window radius (default 2)"
+				}
+			},
+			"doc": {
+				"tool": "Back-project one pixel from a registered RGBD camera view into shared right-base coordinates. Use a camera listed by view_env_state/view_camera_meta; default is the configured primary metric localization camera."
+			},
+			"result": "read"
+		},
+		{
+			"name": "segment",
+			"side": "ts",
+			"tier": "low",
+			"requires": [
+				"sam3"
+			],
+			"params": {
+				"camera": {
+					"type": "string",
+					"description": "Registered projection view name, e.g. d455 or base (default d455). Valid names come from perception.projection_views and the current state's saved artifacts."
+				},
+				"prompt": {
+					"type": "string",
+					"description": "Text prompt for SAM3. Prefer short object/relation phrases; for the clean-desk box use 'white interior of the black cardboard box' or 'cardboard box'. Avoid over-specific surface words such as 'floor' when grounding is weak. Provide exactly one of prompt or point."
+				},
+				"point": {
+					"type": "array",
+					"items": "integer",
+					"minItems": 2,
+					"maxItems": 2,
+					"description": "Positive SAM3 point in camera image coordinates [row, col]. Provide exactly one of prompt or point."
+				},
+				"target_name": {
+					"type": "string",
+					"description": "Default 'target'"
+				},
+				"step": {
+					"type": "integer",
+					"description": "State step (default -1 = latest)"
+				},
+				"min_score": {
+					"type": "number",
+					"minimum": 0,
+					"maximum": 1,
+					"description": "Default 0.2"
+				},
+				"min_valid_depth_pixels": {
+					"type": "integer",
+					"minimum": 1,
+					"description": "Default 25"
+				}
+			},
+			"doc": {
+				"tool": "Use SAM3 on a registered RGB image with either a text prompt or one positive [row, col] point, return a mask overlay for verification, and estimate the mask median point in shared right-base coordinates."
+			},
+			"result": "read"
+		},
+		{
+			"name": "get_robot_state",
+			"side": "code",
+			"method": "env.get_robot_state",
+			"tier": "low",
+			"doc": {
+				"code": "Both arms' state: TCP poses (right_base, xyz + quaternion xyzw), joints and gripper widths.\n\nExample:\n    st = get_robot_state()\n    print(st[\"left_arm\"][\"tcp_pose\"][:3], st[\"right_arm\"][\"tcp_pose\"][:3])"
+			}
+		},
+		{
+			"name": "get_observation",
+			"side": "code",
+			"method": "env.get_observation",
+			"tier": "low",
+			"doc": {
+				"code": "Live RGB-D frames of the rig's cameras.\n\nExample:\n    obs = get_observation()\n    print(sorted(k for k in obs if k.endswith(\"_images\")))"
+			}
+		},
+		{
+			"name": "get_camera_meta",
+			"side": "code",
+			"method": "env.get_camera_meta",
+			"tier": "low",
+			"doc": {
+				"code": "Camera intrinsics, serials and projection metadata.\n\nExample:\n    meta = get_camera_meta()\n    print(meta[\"observation_camera_map\"])"
+			}
+		},
+		{
+			"name": "preview_reach",
+			"side": "code",
+			"method": "env.preview_reach",
+			"tier": "low",
+			"requires": [
+				"ik"
+			],
+			"params": {
+				"xyz": {
+					"type": "vec3",
+					"required": true,
+					"description": "TCP position, right_base [x, y, z] in m"
+				},
+				"quat_xyzw": {
+					"type": "quat",
+					"description": "Orientation, xyzw (default: the current one)"
+				},
+				"arm": {
+					"type": "enum",
+					"values": [
+						"left",
+						"right"
+					],
+					"required": false,
+					"description": "'left' or 'right' (default right)"
+				}
+			},
+			"doc": {
+				"code": "IK reach check of one arm's TCP pose (right_base) from its current joints, nothing moves (--ik): {status: reachable | unreachable | unknown, q, message}.\n\nExample:\n    print(preview_reach([0.4, 0.2, 0.2], arm=\"left\")[\"status\"])"
+			}
+		},
+		{
+			"name": "move_delta",
+			"side": "env",
+			"method": "env.move_delta",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"arm": {
+					"type": "enum",
+					"values": [
+						"left",
+						"right"
+					],
+					"required": true,
+					"description": "Which arm to command; the other arm is left uncommanded."
+				},
+				"delta_xyz": {
+					"type": "vec3",
+					"required": true,
+					"description": "right_base [dx, dy, dz] in m"
+				}
+			},
+			"doc": {
+				"tool": "Move one Franka TCP by a bounded world-frame (right_base) xyz delta in meters (at most {{max_move}} m per call; refused when it ends outside the workspace or below the z floor).",
+				"code": "Translate one arm's TCP by a right_base delta in metres; refused beyond the per-call limit (--max-move) or outside the workspace (--workspace-xy, --z-floor).\n\nExample:\n    move_delta(\"left\", [0, 0, 0.03])  # the left TCP 3 cm up"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "rotate_delta",
+			"side": "env",
+			"method": "env.rotate_delta",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"arm": {
+					"type": "enum",
+					"values": [
+						"left",
+						"right"
+					],
+					"required": true,
+					"description": "Which arm to command; the other arm is left uncommanded."
+				},
+				"delta_rpy": {
+					"type": "vec3",
+					"required": true,
+					"description": "right_base [droll, dpitch, dyaw] in rad"
+				}
+			},
+			"doc": {
+				"tool": "Rotate one Franka TCP by a bounded world-frame (right_base) rpy delta in radians (at most {{max_rotate}} rad per call, norm of delta_rpy).",
+				"code": "Rotate one arm's TCP by a right_base roll/pitch/yaw delta in radians; refused beyond the per-call limit (--max-rotate).\n\nExample:\n    rotate_delta(\"right\", [0, 0, -0.2])"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "set_gripper",
+			"side": "code",
+			"method": "env.set_gripper",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"arm": {
+					"type": "enum",
+					"values": [
+						"left",
+						"right"
+					],
+					"required": true,
+					"description": "Which arm to command; the other arm is left uncommanded."
+				},
+				"open": {
+					"type": "boolean",
+					"required": true,
+					"description": "True opens, False closes"
+				}
+			},
+			"doc": {
+				"code": "Open (open=True) or close one arm's gripper and wait for it to settle.\n\nExample:\n    set_gripper(\"right\", True)  # open"
+			}
+		},
+		{
+			"name": "open_gripper",
+			"side": "env",
+			"method": "env.open_gripper",
+			"tier": "high",
+			"mutating": true,
+			"params": {
+				"arm": {
+					"type": "enum",
+					"values": [
+						"left",
+						"right"
+					],
+					"required": true,
+					"description": "Which arm to command; the other arm is left uncommanded."
+				}
+			},
+			"doc": {
+				"tool": "Open one Franka gripper and wait for the command to settle.",
+				"code": "Open one arm's gripper fully and wait for it to settle (CaP-X's open_gripper, per arm).\n\nExample:\n    open_gripper(\"left\")"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "close_gripper",
+			"side": "env",
+			"method": "env.close_gripper",
+			"tier": "high",
+			"mutating": true,
+			"params": {
+				"arm": {
+					"type": "enum",
+					"values": [
+						"left",
+						"right"
+					],
+					"required": true,
+					"description": "Which arm to command; the other arm is left uncommanded."
+				}
+			},
+			"doc": {
+				"tool": "Close one Franka gripper and wait for the command to settle.",
+				"code": "Close one arm's gripper and wait for it to settle (CaP-X's close_gripper, per arm).\n\nExample:\n    close_gripper(\"right\")"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "recover_joint_posture",
+			"side": "env",
+			"method": "env.recover_joint_posture",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"reason": {
+					"type": "string",
+					"description": "Default ''"
+				},
+				"return_to_start": {
+					"type": "boolean",
+					"description": "Default true"
+				}
+			},
+			"doc": {
+				"tool": "Reset both arms to their healthy configured joint posture while preserving each gripper's open/closed state. Closed grippers are re-commanded before/after the joint reset so held objects stay clamped, then both TCPs return near their prior poses."
+			},
+			"result": "motion"
+		},
+		{
+			"name": "vla_right_grasp",
+			"side": "ts",
+			"tier": "low",
+			"mutating": true,
+			"requires": [
+				"vla"
+			],
+			"params": {
+				"prompt": {
+					"type": "string",
+					"required": true,
+					"description": "Planner-facing segment intent. This is recorded in the tool result; the current live clean-desk checkpoint still receives its fixed training instruction during policy inference."
+				},
+				"max_chunks": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 20,
+					"description": "Default 20"
+				}
+			},
+			"doc": {
+				"tool": "Run the learned right-grasp VLA segment. The active task prompt decides which object is currently allowed; this tool only defines the capability boundary: right gripper closes and the right TCP lifts."
+			},
+			"result": "motion"
+		},
+		{
+			"name": "vla_handoff",
+			"side": "ts",
+			"tier": "low",
+			"mutating": true,
+			"requires": [
+				"vla"
+			],
+			"params": {
+				"prompt": {
+					"type": "string",
+					"required": true,
+					"description": "Planner-facing segment intent. This is recorded in the tool result; the current live clean-desk checkpoint still receives its fixed training instruction during policy inference."
+				},
+				"max_chunks": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 20,
+					"description": "Default 20"
+				}
+			},
+			"doc": {
+				"tool": "Run the learned bimanual handoff VLA segment. The capability boundary is right-gripper release followed by the configured settle delay; do not rule-base pre-position either arm for it."
+			},
+			"result": "motion"
+		},
+		{
+			"name": "vla_left_place",
+			"side": "ts",
+			"tier": "low",
+			"mutating": true,
+			"requires": [
+				"vla"
+			],
+			"params": {
+				"prompt": {
+					"type": "string",
+					"required": true,
+					"description": "Planner-facing segment intent. This is recorded in the tool result; the current live clean-desk checkpoint still receives its fixed training instruction during policy inference."
+				},
+				"max_chunks": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 20,
+					"description": "Default 20"
+				}
+			},
+			"doc": {
+				"tool": "Run the learned left-placement VLA segment. The active task decides the destination; this tool only defines the capability boundary: left gripper opens and the left TCP lifts."
+			},
+			"result": "motion"
+		},
+		{
+			"use": "grasp/plan_grasp",
+			"params": {
+				"object": {
+					"type": "string",
+					"description": "Object to grasp (SAM3 text prompt), e.g. 'black bowl'"
+				},
+				"mask_id": {
+					"type": "string",
+					"description": "A mask id (d2) of the current observation instead of object"
+				},
+				"camera": {
+					"type": "string",
+					"description": "Registered RGB-D view name (default: the first configured)"
+				},
+				"backend": {
+					"type": "enum",
+					"values": [
+						"contact_graspnet",
+						"graspgenx",
+						"anygrasp",
+						"graspnet1b"
+					],
+					"description": "Default: the first configured"
+				},
+				"arm": {
+					"type": "enum",
+					"values": [
+						"left",
+						"right"
+					],
+					"required": true,
+					"description": "Which arm to command; the other arm is left uncommanded."
+				},
+				"max_candidates": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 50,
+					"description": "At most this many (default 10)",
+					"modes": [
+						"code"
+					]
+				},
+				"next_after": {
+					"type": "string",
+					"description": "Greedy policy: reject this grasp id and return the next rank of its plan"
+				},
+				"reason": {
+					"type": "string",
+					"description": "With next_after: why that candidate failed"
+				}
+			}
+		},
+		{
+			"use": "grasp/plan_place",
+			"params": {
+				"region": {
+					"type": "string",
+					"description": "The surface it goes onto / into (SAM3 text), or region_mask_id"
+				},
+				"region_mask_id": {
+					"type": "string",
+					"description": "Mask id of the placement region"
+				},
+				"grasp_id": {
+					"type": "string",
+					"required": true,
+					"description": "A current grasp (g id) of this observation, the one the object will be held with"
+				},
+				"object_mask_id": {
+					"type": "string",
+					"description": "The object's mask id; default the mask the grasp was planned on"
+				},
+				"camera": {
+					"type": "string",
+					"description": "Registered RGB-D view name (default: the first configured)"
+				},
+				"max_candidates": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 50,
+					"description": "At most this many (default 5)",
+					"modes": [
+						"code"
+					]
+				}
+			}
+		},
+		{
+			"use": "grasp/check_attached",
+			"params": {
+				"object": {
+					"type": "string",
+					"required": true,
+					"description": "The object that should be in the gripper"
+				},
+				"arm": {
+					"type": "enum",
+					"values": [
+						"left",
+						"right"
+					],
+					"required": true,
+					"description": "Which arm to command; the other arm is left uncommanded."
+				}
+			}
+		},
+		{
+			"use": "grasp/next_grasp"
+		},
+		{
+			"use": "grasp/resolve_grasp"
+		},
+		{
+			"use": "grasp/claim_waypoints"
+		},
+		{
+			"use": "grasp/segment_mask"
+		},
+		{
+			"use": "modules/finish"
+		},
+		{
+			"use": "modules/act"
+		},
+		{
+			"use": "modules/plan"
+		},
+		{
+			"use": "modules/reset"
+		},
+		{
+			"use": "modules/request_operator_verdict"
+		},
+		{
+			"use": "modules/request_scene_reset"
+		},
+		{
+			"use": "modules/run_code"
+		}
+	]
+}

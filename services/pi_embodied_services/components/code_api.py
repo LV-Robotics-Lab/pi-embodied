@@ -39,10 +39,20 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-TIERS = ("high", "low", "privileged")
+TIERS = ("high", "low", "raw", "privileged")
 #: CaP-X's S4: the low tier (S3) without the primitives' usage examples.
 NO_EXAMPLES = "low-noexamples"
-PARAM_TYPES = ("number", "integer", "boolean", "string", "vec3", "array", "object")
+PARAM_TYPES = (
+    "number",
+    "integer",
+    "boolean",
+    "string",
+    "enum",
+    "vec3",
+    "quat",
+    "array",
+    "object",
+)
 
 
 @dataclass(frozen=True)
@@ -52,13 +62,38 @@ class Param:
     type: str
     description: str = ""
     required: bool = True
+    #: An enum's values.
+    values: tuple = ()
+    minimum: float | None = None
+    maximum: float | None = None
 
     def describe(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "type": self.type,
             "description": self.description,
             "required": self.required,
         }
+        if self.values:
+            out["values"] = list(self.values)
+        if self.minimum is not None:
+            out["minimum"] = self.minimum
+        if self.maximum is not None:
+            out["maximum"] = self.maximum
+        return out
+
+    def check(self, name: str, value: Any) -> None:
+        """Refuse a value outside the declared enum or range (None passes: an optional's default)."""
+        if value is None:
+            return
+        if self.values and value not in self.values:
+            raise ValueError(
+                f"{name} must be one of {list(self.values)}, got {value!r}"
+            )
+        if self.type in ("number", "integer") and isinstance(value, (int, float)):
+            if self.minimum is not None and value < self.minimum:
+                raise ValueError(f"{name} must be >= {self.minimum}, got {value}")
+            if self.maximum is not None and value > self.maximum:
+                raise ValueError(f"{name} must be <= {self.maximum}, got {value}")
 
 
 @dataclass(frozen=True)
@@ -70,95 +105,120 @@ class Primitive:
     doc: str
     params: Mapping[str, Param] = field(default_factory=dict)
     mutating: bool = False
-    tiers: tuple[str, ...] = ("high", "low")
-    #: A short usage example (Python), shown in every tier but :data:`NO_EXAMPLES`.
-    example: str = ""
+    #: One tier (the manifest's label; a tuple for the runner's bookkeeping).
+    tiers: tuple[str, ...] = ("low",)
 
     def describe(self, examples: bool = True) -> dict[str, Any]:
-        out = {
+        return {
             "name": self.name,
             "method": self.method,
-            "doc": self.doc,
+            "doc": self.doc if examples else strip_examples(self.doc),
             "params": {k: p.describe() for k, p in self.params.items()},
             "mutating": self.mutating,
             "tiers": list(self.tiers),
         }
-        # Only when there is one: a registry without examples keeps its digest.
-        if examples and self.example:
-            out["example"] = self.example
-        return out
 
 
-#: The simulators' ground truth (``env.ground_truth_poses``, utils/ground_truth.py): the privileged tier.
-GROUND_TRUTH = Primitive(
-    "ground_truth_poses",
-    "env.ground_truth_poses",
-    "Simulator ground truth: {frame, poses: {name: {pos, quat_xyzw}}} of the named objects (default all).",
-    {"names": Param("array", "object names (default all)", required=False)},
-    tiers=("privileged",),
-)
+def strip_examples(doc: str) -> str:
+    """Drop the ``Example:`` / ``Examples:`` sections of a Google-style docstring (CaP-X's
+    exampleless tier, ``control_reduced_exampleless.py``): from the header to the next section
+    header at the same indentation, or the end."""
+    out: list[str] = []
+    skipping: int | None = None
+    for line in doc.splitlines():
+        stripped = line.strip()
+        indent = len(line) - len(line.lstrip())
+        if skipping is not None:
+            if stripped and indent <= skipping and stripped.endswith(":"):
+                skipping = None
+            else:
+                continue
+        if stripped.lower() in ("example:", "examples:"):
+            skipping = indent
+            continue
+        out.append(line)
+    return "\n".join(out).rstrip()
 
-#: The task instruction every env server answers.
-TASK_LANGUAGE = Primitive(
-    "get_task_language", "env.get_task_language", "The task instruction."
-)
+
+#: A tier with the simulator's ground truth added (``--privileged`` on a tier other than high, e.g.
+#: ``low+privileged``): the tier's primitives with the privileged entries added (a privileged entry
+#: of the same name replaces the tier's).
+PRIVILEGED_SUFFIX = "+privileged"
+
+
+def base_tier(tier: str | None) -> str | None:
+    """The registry tier behind a ``code.api`` tier (S4 is the low tier)."""
+    if tier is not None and tier.endswith(PRIVILEGED_SUFFIX):
+        return base_tier(tier[: -len(PRIVILEGED_SUFFIX)]) + PRIVILEGED_SUFFIX
+    return "low" if tier == NO_EXAMPLES else tier
 
 
 class CodeApi:
-    """A validated set of primitives over a facade's registered RPC methods."""
+    """A validated set of primitives over a facade's registered RPC methods: the whitelist every
+    program call goes through (a program never reaches an RPC method outside it)."""
 
     def __init__(self, primitives: Iterable[Primitive], rpc: Mapping[str, Any]) -> None:
-        self._by_name: dict[str, Primitive] = {}
+        self._all: list[Primitive] = []
+        seen: set[tuple[str, bool]] = set()
         for p in primitives:
             if not p.name.isidentifier():
                 raise ValueError(
                     f"primitive name {p.name!r} is not a Python identifier"
                 )
-            if p.name in self._by_name:
+            if len(p.tiers) != 1 or p.tiers[0] not in TIERS:
+                raise ValueError(
+                    f"primitive {p.name!r}: exactly one tier of {TIERS}, got {p.tiers}"
+                )
+            key = (p.name, p.tiers[0] == "privileged")
+            if key in seen:
                 raise ValueError(f"primitive {p.name!r} is declared twice")
+            seen.add(key)
             if p.method not in rpc:
                 raise ValueError(
                     f"primitive {p.name!r}: RPC method {p.method!r} is not registered"
-                )
-            unknown = [t for t in p.tiers if t not in TIERS]
-            if not p.tiers or unknown:
-                raise ValueError(
-                    f"primitive {p.name!r}: tiers must be among {TIERS}, got {p.tiers}"
-                )
-            if "privileged" in p.tiers and len(p.tiers) > 1:
-                raise ValueError(
-                    f"primitive {p.name!r}: a privileged primitive is in no other tier"
                 )
             for k, param in p.params.items():
                 if not k.isidentifier() or param.type not in PARAM_TYPES:
                     raise ValueError(
                         f"primitive {p.name!r}: bad parameter {k!r} ({param.type})"
                     )
-            self._by_name[p.name] = p
+            self._all.append(p)
 
     def primitives(self, tier: str | None = None) -> list[Primitive]:
-        """The primitives of ``tier`` (all but privileged when None), in declaration order."""
+        """The primitives of ``tier``, in declaration order. ``privileged`` is the high tier with
+        the privileged entries added (one of the same name replaces the high one); None lists
+        every non-privileged primitive."""
+        tier = base_tier(tier)
+        if tier is not None and tier.endswith(PRIVILEGED_SUFFIX):
+            base = tier[: -len(PRIVILEGED_SUFFIX)]
+            if base not in ("high", "low", "raw"):
+                raise ValueError(f"no privileged variant of tier {base!r}")
+            priv = [p for p in self._all if p.tiers[0] == "privileged"]
+            names = {p.name for p in priv}
+            return [
+                p for p in self._all if p.tiers[0] == base and p.name not in names
+            ] + priv
         if tier is not None and tier not in TIERS:
-            raise ValueError(f"tier must be one of {TIERS}, got {tier!r}")
+            raise ValueError(
+                f"tier must be one of {TIERS + (NO_EXAMPLES,)}, got {tier!r}"
+            )
         if tier is None:
-            return [p for p in self._by_name.values() if "privileged" not in p.tiers]
+            return [p for p in self._all if p.tiers[0] != "privileged"]
         if tier == "privileged":
-            # The privileged tier adds ground truth to the high-level API.
+            priv = {p.name for p in self._all if p.tiers[0] == "privileged"}
             return [
                 p
-                for p in self._by_name.values()
-                if "high" in p.tiers or "privileged" in p.tiers
+                for p in self._all
+                if p.tiers[0] == "privileged"
+                or (p.tiers[0] == "high" and p.name not in priv)
             ]
-        return [p for p in self._by_name.values() if tier in p.tiers]
+        return [p for p in self._all if p.tiers[0] == tier]
 
     def describe(self, tier: str | None = None) -> dict[str, Any]:
         """The ``code.api`` result: the tier, its primitives and a digest that names this API
         version. :data:`NO_EXAMPLES` lists the low tier without the examples."""
-        examples = tier != NO_EXAMPLES
-        listed = [
-            p.describe(examples)
-            for p in self.primitives("low" if tier == NO_EXAMPLES else tier)
-        ]
+        examples = not (tier or "").startswith(NO_EXAMPLES)
+        listed = [p.describe(examples) for p in self.primitives(tier)]
         blob = json.dumps(listed, sort_keys=True, separators=(",", ":")).encode()
         return {
             "tier": tier,
@@ -184,6 +244,8 @@ class CodeApi:
         ]
         if missing:
             raise ValueError(f"{name}: missing parameter(s) {', '.join(missing)}")
+        for k, v in kwargs.items():
+            p.params[k].check(f"{name}.{k}", v)
         return p.method, dict(kwargs)
 
 

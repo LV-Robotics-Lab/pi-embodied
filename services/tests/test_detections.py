@@ -292,7 +292,7 @@ def test_segment_all_gives_ids_geometry_and_overlay() -> None:
     server._dispatch("env.get_observation", (), {})
     before = server.observations
     out = server._dispatch(
-        "env.segment", (), {"camera": "wrist", "text_prompt": " bowl ", "all": True}
+        "env.segment", (), {"camera": "wrist", "prompt": " bowl ", "all": True}
     )
 
     assert server.observations == before + 1, "a fresh capture per segment"
@@ -313,7 +313,7 @@ def test_segment_all_gives_ids_geometry_and_overlay() -> None:
     out = server._dispatch("env.segment", (), {"point": [7, 14]})
     assert sam3.calls[1]["point"] == [7, 14] and "all" not in sam3.calls[1]
     assert out["ids"] == ["d3"] and out["count"] == 1
-    out = server._dispatch("env.segment", (), {"text_prompt": "x", "min_score": 0.95})
+    out = server._dispatch("env.segment", (), {"prompt": "x", "min_score": 0.95})
     assert out == {
         "found": False,
         "observation": 0,
@@ -324,18 +324,16 @@ def test_segment_all_gives_ids_geometry_and_overlay() -> None:
         "invalidated": [],
         "reason": "below min_score",
     }
-    with pytest.raises(ValueError, match="text_prompt or a point"):
+    with pytest.raises(ValueError, match="text prompt or a point"):
         server._dispatch("env.segment", (), {})
     with pytest.raises(ValueError, match="unknown camera"):
-        server._dispatch("env.segment", (), {"camera": "head", "text_prompt": "x"})
+        server._dispatch("env.segment", (), {"camera": "head", "prompt": "x"})
 
 
 def test_ids_are_invalidated_by_a_new_observation_and_reported_once() -> None:
     server, _ = _server(sam3=FakeSam3())
     server._dispatch("env.get_observation", (), {})
-    ids = server._dispatch("env.segment", (), {"text_prompt": "bowl", "all": True})[
-        "ids"
-    ]
+    ids = server._dispatch("env.segment", (), {"prompt": "bowl", "all": True})["ids"]
     ok = server._dispatch("env.select_detection", (), {"id": ids[0]})
     assert ok["ok"] and ok["selected"] == ids[0] and ok["detection"]["id"] == ids[0]
     assert "mask" not in ok["detection"]
@@ -357,7 +355,7 @@ def test_ids_are_invalidated_by_a_new_observation_and_reported_once() -> None:
     assert "unknown detection id" in unknown["error"]
 
     # Fresh ids after re-segmenting; the old ones were never reused.
-    fresh = server._dispatch("env.segment", (), {"text_prompt": "bowl", "all": True})
+    fresh = server._dispatch("env.segment", (), {"prompt": "bowl", "all": True})
     assert fresh["ids"] == ["d3", "d4"] and fresh["observation"] == 1
 
 
@@ -365,7 +363,7 @@ def test_enhance_depth_replaces_the_camera_depth_for_later_segments() -> None:
     server, _ = _server(sam3=FakeSam3(), unidepth=FakeUniDepth())
     assert "env.enhance_depth" in server._rpc
     server._dispatch("env.get_observation", (), {})
-    before = server._dispatch("env.segment", (), {"text_prompt": "bowl", "all": True})
+    before = server._dispatch("env.segment", (), {"prompt": "bowl", "all": True})
     assert before["detections"][1]["depth_m"] is None
 
     out = server._dispatch("env.enhance_depth", (), {"camera": "wrist"})
@@ -377,7 +375,7 @@ def test_enhance_depth_replaces_the_camera_depth_for_later_segments() -> None:
     assert out["depth"][0, 0] == pytest.approx(0.5), "sensor pixels untouched"
     assert out["estimate"] == {"model": "fake"}
 
-    after = server._dispatch("env.segment", (), {"text_prompt": "bowl", "all": True})
+    after = server._dispatch("env.segment", (), {"prompt": "bowl", "all": True})
     assert after["detections"][1]["depth_m"] == pytest.approx(0.5)
     assert after["ids"] == ["d3", "d4"], (
         "enhancing depth keeps the observation (no invalidation)"
@@ -424,7 +422,7 @@ def test_an_observation_of_an_unmoved_robot_keeps_the_ids() -> None:
     perception.epoch.set_digest(lambda: state_digest(pose))
     perception.install(server)
     server._dispatch("env.get_observation", (), {})
-    ids = server._dispatch("env.segment", (), {"text_prompt": "bowl"})["ids"]
+    ids = server._dispatch("env.segment", (), {"prompt": "bowl"})["ids"]
     server._dispatch("env.get_observation", (), {})
     with pytest.raises(ValueError, match="0.08"):
         server._dispatch("env.move_delta", (0.5,), {})
@@ -453,7 +451,7 @@ def test_perception_reads_per_camera_dict_frames_for_the_dual_arm_views() -> Non
     }
     Perception(sam3=FakeSam3(), cameras=cameras, intrinsics=intrinsics).install(server)
     server._dispatch("env.get_observation", (), {})
-    out = server._dispatch("env.segment", (), {"camera": "d455", "text_prompt": "bowl"})
+    out = server._dispatch("env.segment", (), {"camera": "d455", "prompt": "bowl"})
     assert out["found"] and out["camera"] == "d455"
     assert out["detections"][0]["point_camera"] is not None, (
         "K came from the view's meta"
@@ -471,11 +469,11 @@ def test_a_moved_object_or_a_reset_expires_ids_under_a_still_arm() -> None:
     perception = Perception(sam3=FakeSam3(), cameras=FRANKA_CAMERAS)
     perception.epoch.set_digest(lambda: state_digest(pose))
     perception.install(server)
-    ids = server._dispatch("env.segment", (), {"text_prompt": "bowl"})["ids"]
+    ids = server._dispatch("env.segment", (), {"prompt": "bowl"})["ids"]
     server._dispatch("env.get_observation", (), {})
     assert server._dispatch("env.select_detection", (), {"id": ids[0]})["ok"]
     server.depth[2:10, 10:18] = 0.35  # moved by hand
-    fresh = server._dispatch("env.segment", (), {"text_prompt": "bowl"})
+    fresh = server._dispatch("env.segment", (), {"prompt": "bowl"})
     assert fresh["invalidated"] == ids and fresh["ids"] != ids
     kept = server._dispatch("env.select_detection", (), {"id": fresh["ids"][0]})
     assert kept["ok"], "the new frame's id is current"
@@ -539,14 +537,14 @@ def test_a_rendered_view_serves_detect_beside_the_servers_own_segment() -> None:
     assert meta == {"segment": True, "enhance_depth": False}
     assert "env.enhance_depth" not in server._rpc
     out = server._dispatch(
-        "env.detect", (), {"camera": "agentview", "text_prompt": "bowl", "all": True}
+        "env.detect", (), {"camera": "agentview", "prompt": "bowl", "all": True}
     )
     assert out["found"] and len(out["ids"]) == 2
     assert out["detections"][0]["depth_m"] == pytest.approx(0.5)
     assert out["detections"][0]["point_camera"] is not None, "K from get_camera_meta"
     renders = server.renders
     # The same observation: the frame is rendered once.
-    server._dispatch("env.detect", (), {"camera": "agentview", "text_prompt": "cup"})
+    server._dispatch("env.detect", (), {"camera": "agentview", "prompt": "cup"})
     assert server.renders == renders
     assert server._dispatch("env.select_detection", (), {"id": out["ids"][1]})["ok"]
     # A motion starts a new observation: the ids expire and the next call renders again.
@@ -554,32 +552,26 @@ def test_a_rendered_view_serves_detect_beside_the_servers_own_segment() -> None:
     stale = server._dispatch("env.select_detection", (), {"id": out["ids"][0]})
     assert stale["ok"] is False and set(stale["invalidated"]) >= set(out["ids"])
     again = server._dispatch(
-        "env.detect", (), {"camera": "agentview", "text_prompt": "bowl"}
+        "env.detect", (), {"camera": "agentview", "prompt": "bowl"}
     )
     assert server.renders == renders + 1
     assert again["detections"][0]["depth_m"] == pytest.approx(0.6)
     with pytest.raises(ValueError, match="unknown camera"):
-        server._dispatch("env.detect", (), {"camera": "top", "text_prompt": "bowl"})
+        server._dispatch("env.detect", (), {"camera": "top", "prompt": "bowl"})
 
 
 def test_enhance_depth_supplies_depth_to_a_view_without_it() -> None:
     server, _ = _sim(sam3=FakeSam3(), unidepth=FakeUniDepth(), depth=False)
     assert "env.select_detection" in server._rpc and "env.enhance_depth" in server._rpc
-    bare = server._dispatch(
-        "env.detect", (), {"camera": "wrist", "text_prompt": "bowl"}
-    )
+    bare = server._dispatch("env.detect", (), {"camera": "wrist", "prompt": "bowl"})
     assert bare["detections"][0]["depth_m"] is None
     out = server._dispatch("env.enhance_depth", (), {"camera": "wrist"})
     assert out["ok"] and out["depth"].shape == (H, W)
-    after = server._dispatch(
-        "env.detect", (), {"camera": "wrist", "text_prompt": "bowl"}
-    )
+    after = server._dispatch("env.detect", (), {"camera": "wrist", "prompt": "bowl"})
     assert after["detections"][0]["depth_m"] == pytest.approx(0.25)
     # The estimate belongs to this observation only.
     server._dispatch("env.move_delta", (0.1,), {})
-    moved = server._dispatch(
-        "env.detect", (), {"camera": "wrist", "text_prompt": "bowl"}
-    )
+    moved = server._dispatch("env.detect", (), {"camera": "wrist", "prompt": "bowl"})
     assert moved["detections"][0]["depth_m"] is None
 
 
@@ -636,13 +628,12 @@ def test_every_env_server_but_the_frankas_installs_perception() -> None:
         assert "add_perception_arguments(" in text, path.parent.name
 
 
-def test_install_grasp_planner_shares_the_perception_ids_and_extends_code_api() -> None:
+def test_install_grasp_planner_shares_the_perception_ids() -> None:
     """The simulators' planner (utils/grasp.install_grasp_planner): nothing without a grasp or
-    place URL; with one the planner's primitives join code.api, its views are render_view's
+    place URL; with one its methods are installed (code.api comes from the robot's manifest), its views are render_view's
     (with the camera pose) and env.detect ids live on its epoch."""
     import argparse
 
-    from pi_embodied_services.components.code_api import Primitive, register_code_api
     from pi_embodied_services.utils.grasp import (
         add_grasp_arguments,
         install_grasp_planner,
@@ -652,8 +643,6 @@ def test_install_grasp_planner_shares_the_perception_ids_and_extends_code_api() 
     add_perception_arguments(parser, sam3=True)
     add_grasp_arguments(parser)
     server, perception = _sim(sam3=FakeSam3())
-    own = (Primitive("move_delta", "env.move_delta", "move", {}),)
-    register_code_api(server, own)
     view = render_view(server)
     assert view("agentview")["extrinsic_cam2world"].shape == (4, 4)
     off = parser.parse_args([])
@@ -672,7 +661,6 @@ def test_install_grasp_planner_shares_the_perception_ids_and_extends_code_api() 
         cameras=["agentview", "wrist"],
         eef_pose=lambda a: (np.zeros(3), np.array([1.0, 0, 0, 0])),
         perception=perception,
-        primitives=own,
     )
     assert planner is not None
     for m in (
@@ -682,11 +670,9 @@ def test_install_grasp_planner_shares_the_perception_ids_and_extends_code_api() 
         "env.plan_place",
     ):
         assert m in server._rpc, m
-    names = {p["name"] for p in server._dispatch("code.api", (), {})["primitives"]}
-    assert {"move_delta", "plan_grasp", "claim_waypoints"} <= names
-    ids = server._dispatch(
-        "env.detect", (), {"camera": "agentview", "text_prompt": "bowl"}
-    )["ids"]
+    ids = server._dispatch("env.detect", (), {"camera": "agentview", "prompt": "bowl"})[
+        "ids"
+    ]
     assert perception.book.epoch is planner._epoch, "one observation clock"
     server._dispatch("env.move_delta", (0.1,), {})
     assert server._dispatch("env.select_detection", (), {"id": ids[0]})["ok"] is False

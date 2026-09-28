@@ -45,7 +45,8 @@ class MockUrArm:
     polls raises (an RTDE error); ``accept_moves`` False makes moveL/moveJ return False
     (the controller rejected the command); ``home_pose`` is the TCP pose the arm
     reports once a joint move arrives (and what ``forward_kinematics`` returns for any
-    other joint vector), unless ``fk`` maps joints to a TCP pose.
+    other joint vector), unless ``fk`` maps joints to a TCP pose; ``ik(pose, qnear)``
+    answers ``inverse_kinematics`` (None: no solution).
 
     The async status register behaves like ur_rtde 1.6.5's
     (``getAsyncOperationProgressEx``: an operation id bumped when the control script's
@@ -81,6 +82,7 @@ class MockUrArm:
         reupload_fails: bool = False,
         home_pose: Any = (0.45, 0.0, 0.40, *DOWN),
         fk: Callable[[np.ndarray], Any] | None = None,
+        ik: Callable[[np.ndarray, np.ndarray], Any] | None = None,
         joints_within_limits: bool | None | Exception = True,
         serial: str | None = "2023300001",
     ) -> None:
@@ -97,6 +99,7 @@ class MockUrArm:
         self.reupload_fails = reupload_fails
         self.home_pose = np.asarray(home_pose, dtype=np.float64).copy()
         self.fk = fk
+        self.ik = ik
         self.joints_within_limits = joints_within_limits
         self.serial = serial
         self.goal: np.ndarray | None = None
@@ -163,6 +166,15 @@ class MockUrArm:
         if np.allclose(q, self.q, atol=1e-9):
             return self.pose.copy()
         return self.home_pose.copy()
+
+    def inverse_kinematics(self, pose: Any, qnear: Any) -> np.ndarray | None:
+        """``ik(pose, qnear)`` when given, else no solution."""
+        if self.ik is None:
+            return None
+        q = self.ik(
+            np.asarray(pose, dtype=np.float64), np.asarray(qnear, dtype=np.float64)
+        )
+        return None if q is None else np.asarray(q, dtype=np.float64)
 
     def joints_within_safety_limits(self, q: Any) -> bool | None:
         """``joints_within_limits``: True, False, None (the query failed) or an

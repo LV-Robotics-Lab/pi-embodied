@@ -1,0 +1,243 @@
+{
+	"internal": [
+		"env.attachment_frames",
+		"env.grasp_capabilities",
+		"env.release_held",
+		"env.note_grasp_closed"
+	],
+	"primitives": [
+		{
+			"name": "plan_grasp",
+			"side": "env",
+			"method": "env.plan_grasp",
+			"tier": "low",
+			"requires": [
+				"grasp"
+			],
+			"params": {
+				"object": {
+					"type": "string",
+					"description": "Object to grasp (SAM3 text prompt), e.g. 'black bowl'"
+				},
+				"mask_id": {
+					"type": "string",
+					"description": "A mask id (d2) of the current observation instead of object"
+				},
+				"camera": {
+					"type": "enum",
+					"values": "{{cameras}}",
+					"description": "Default: the first camera"
+				},
+				"backend": {
+					"type": "enum",
+					"values": [
+						"contact_graspnet",
+						"graspgenx",
+						"anygrasp",
+						"graspnet1b"
+					],
+					"description": "Default: the first configured"
+				},
+				"arm": {
+					"type": "enum",
+					"values": "{{arms}}",
+					"description": "Which arm (two-arm robots)"
+				},
+				"max_candidates": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 50,
+					"description": "At most this many (default 10)",
+					"modes": [
+						"code"
+					]
+				},
+				"next_after": {
+					"type": "string",
+					"description": "Greedy policy: reject this grasp id and return the next rank of its plan"
+				},
+				"reason": {
+					"type": "string",
+					"description": "With next_after: why that candidate failed"
+				}
+			},
+			"doc": {
+				"tool": "Predict grasps for one object from the current RGB-D observation, ranked best first, in the world frame. Give the object as text (segmented with SAM3) or a mask_id of this observation. Each candidate has a short id (g3) and its EEF pose (eef_position, eef_quat_xyzw, approach, width_m), valid until the robot moves or the scene changes; drive the arm to that pose with the motion tools. Try `active` first; when it is refused before the robot moves (unreachable), call again with next_after=<that id> to get the next rank without re-planning; after a failed motion, plan again.",
+				"code": "Grasp candidates for one object of the current observation, world frame, best first; ids (g3) expire when the robot moves. next_after=<id> rejects a candidate and returns the next rank.\n\nExample:\n    g = plan_grasp(\"red cube\")\n    best = g[\"candidates\"][0]\n    print(best[\"id\"], best[\"eef_position\"])"
+			},
+			"result": "read"
+		},
+		{
+			"name": "plan_place",
+			"side": "env",
+			"method": "env.plan_place",
+			"tier": "low",
+			"requires": [
+				"grasp",
+				"place"
+			],
+			"params": {
+				"region": {
+					"type": "string",
+					"description": "The surface it goes onto / into (SAM3 text), or region_mask_id"
+				},
+				"region_mask_id": {
+					"type": "string",
+					"description": "Mask id of the placement region"
+				},
+				"grasp_id": {
+					"type": "string",
+					"required": true,
+					"description": "A current grasp (g id) of this observation, the one the object will be held with"
+				},
+				"object_mask_id": {
+					"type": "string",
+					"description": "The object's mask id; default the mask the grasp was planned on"
+				},
+				"camera": {
+					"type": "enum",
+					"values": "{{cameras}}",
+					"description": "Default: the first camera"
+				},
+				"max_candidates": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 50,
+					"description": "At most this many (default 5)",
+					"modes": [
+						"code"
+					]
+				}
+			},
+			"doc": {
+				"tool": "Where to hold the grasped object so it comes to rest on a placement region (AnyPlace). Ask it before the grasp, from the observation the grasp was planned on: the region as text (segmented now) or a mask id, and that current g id (the object is the grasp's mask, or object_mask_id). Returns place poses (eef_position, eef_quat_xyzw) with ids (p1); after grasping with that grasp, drive the arm to the place pose and open.",
+				"code": "AnyPlace: place poses (p ids) for the held object on a region. Before the grasp: region mask and grasp from one observation; after executing it: the executed grasp's id, the region from the current observation.\n\nExample:\n    p = plan_place(\"green plate\", g[\"candidates\"][0][\"id\"])"
+			},
+			"result": "read"
+		},
+		{
+			"name": "check_attached",
+			"side": "ts",
+			"tier": "low",
+			"requires": [
+				"grasp"
+			],
+			"params": {
+				"object": {
+					"type": "string",
+					"required": true,
+					"description": "The object that should be in the gripper"
+				},
+				"arm": {
+					"type": "enum",
+					"values": "{{arms}}",
+					"description": "Which arm (two-arm robots)"
+				}
+			},
+			"doc": {
+				"tool": "Independent visual check whether the gripper holds the object: a vision model judges the current wrist view and the other cameras cropped around the gripper. Use it after a grasp and lift, before carrying; it does not move the robot."
+			},
+			"result": "read"
+		},
+		{
+			"name": "next_grasp",
+			"side": "code",
+			"method": "env.next_grasp",
+			"tier": "low",
+			"params": {
+				"grasp_id": {
+					"type": "string",
+					"required": true,
+					"description": "the failed id"
+				},
+				"reason": {
+					"type": "string",
+					"description": "why it failed"
+				}
+			},
+			"doc": {
+				"code": "Greedy candidate policy: reject a grasp id after a structured failure and activate the next rank of its plan."
+			},
+			"requires": [
+				"grasp"
+			]
+		},
+		{
+			"name": "resolve_grasp",
+			"side": "code",
+			"method": "env.resolve_grasp",
+			"tier": "low",
+			"params": {
+				"grasp_id": {
+					"type": "string",
+					"required": true,
+					"description": "a g or p id"
+				},
+				"standoff": {
+					"type": "number",
+					"description": "m backed off along the approach"
+				}
+			},
+			"doc": {
+				"code": "The EEF pose to command for a grasp or place id; refused when the id is from an earlier observation."
+			},
+			"requires": [
+				"grasp"
+			]
+		},
+		{
+			"name": "claim_waypoints",
+			"side": "code",
+			"method": "env.claim_waypoints",
+			"tier": "low",
+			"params": {
+				"grasp_id": {
+					"type": "string",
+					"required": true,
+					"description": "a g or p id of the current observation"
+				},
+				"standoff": {
+					"type": "number",
+					"description": "m backed off along the approach (default 0.10)"
+				},
+				"lift": {
+					"type": "number",
+					"description": "grasp: m lifted straight up (default 0.10)"
+				}
+			},
+			"doc": {
+				"code": "Claim one grasp or place id for execution: its whole path from that one candidate (pre_grasp, grasp, lift; or pre_place, place, retreat) as world positions with the orientation and the gripper per step. Motions after it may use these coordinates though they expire the id; a claimed grasp is remembered as held for plan_place."
+			},
+			"requires": [
+				"grasp"
+			]
+		},
+		{
+			"name": "segment_mask",
+			"side": "code",
+			"method": "env.segment_mask",
+			"tier": "low",
+			"params": {
+				"object": {
+					"type": "string",
+					"required": true,
+					"description": "SAM3 text prompt"
+				},
+				"camera": {
+					"type": "string",
+					"description": "camera (default the first configured)"
+				},
+				"min_score": {
+					"type": "number",
+					"description": "default 0.2"
+				}
+			},
+			"doc": {
+				"code": "Segment an object (SAM3 text) in the current observation and register its mask under a short id (d2)."
+			},
+			"requires": [
+				"grasp"
+			]
+		}
+	]
+}

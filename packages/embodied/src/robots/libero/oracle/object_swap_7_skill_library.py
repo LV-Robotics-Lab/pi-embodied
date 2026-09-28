@@ -2,11 +2,11 @@
 # program: the config's oracle_code (FrankaLiberoApiReducedSkillLibrary)
 # suite: libero_object_swap
 # task: 7
-# tier: high
+# tier: low
 # prelude: capx_libero_skill_library.py
-# CaP-X runs this on its reduced (S3) API plus the skill library, which still segments with
-# SAM3 and moves to absolute poses. On this server `segment` and `move_to` are high-tier
-# primitives (the low tier has neither), so the program runs on the high tier.
+# CaP-X runs this on its reduced (S3) API plus the skill library, which segments with SAM3 and
+# moves to absolute poses: this server's low tier (segment, move_to, rotate_wrist, set_gripper)
+# with the skill library as the prelude.
 
 # ---- CaP-X's program, verbatim ----
 import numpy as np

@@ -1,0 +1,536 @@
+{
+	"robot": "behavior",
+	"internal": [],
+	"primitives": [
+		{
+			"use": "sim/get_task_language"
+		},
+		{
+			"name": "view_env_state",
+			"side": "ts",
+			"tier": "low",
+			"doc": {
+				"tool": "Current state with the head (ZED) image and the left and right wrist (RealSense) images. Pixel (row, col) in these images feed back_project."
+			},
+			"result": "motion"
+		},
+		{
+			"name": "get_robot_position",
+			"side": "env",
+			"method": "env.get_robot_position",
+			"tier": "low",
+			"doc": {
+				"tool": "World pose of the base (position, xyzw, yaw in rad) and of both end effectors; no motion.",
+				"code": "World pose of the base (pos, quat_xyzw, yaw) and of both end effectors.\n\nExample:\n    p = get_robot_position()\n    print(p[\"pos\"], p[\"yaw\"], p[\"eef\"][\"right\"][\"pos\"])"
+			},
+			"result": "read"
+		},
+		{
+			"name": "navigate_to_pose",
+			"side": "env",
+			"method": "env.navigate_to_pose",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"x": {
+					"type": "number",
+					"required": true,
+					"description": "World x, m"
+				},
+				"y": {
+					"type": "number",
+					"required": true,
+					"description": "World y, m"
+				},
+				"yaw": {
+					"type": "number",
+					"required": true,
+					"description": "Heading, rad about +z (0 = +x)"
+				}
+			},
+			"doc": {
+				"tool": "Drive the base to world (x, y) facing yaw (rad about +z; 0 = +x). The planner avoids obstacles and refuses goals inside them or farther than 5 m; stand about 0.5 m from a table edge, facing it. Returns ok, the pose reached and images.",
+				"code": "Drive the base to world (x, y) facing yaw (rad about +z), planning around obstacles; at most 5 m per call. Returns ok, the pose reached and the observation.\n\nExample:\n    r = navigate_to_pose(1.2, 0.4, 1.57)\n    print(r[\"ok\"], r[\"distance_left_m\"])"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "move_hand",
+			"side": "env",
+			"method": "env.move_hand",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"arm": {
+					"type": "enum",
+					"values": [
+						"left",
+						"right"
+					],
+					"required": true,
+					"description": "Which arm"
+				},
+				"xyz": {
+					"type": "vec3",
+					"required": true,
+					"description": "World [x, y, z], m"
+				},
+				"quat_xyzw": {
+					"type": "quat",
+					"description": "World xyzw orientation (default: keep the current one)"
+				}
+			},
+			"doc": {
+				"tool": "Plan and move one arm's end effector to a world position (and xyzw orientation, default the current one), avoiding obstacles. Reach is about 1.5 m from the base in xy: navigate first. Returns ok, the eef pose reached, distance_left_m and images.",
+				"code": "Plan and move an arm's end effector to a world pose, obstacles respected; reach about 1.5 m from the base. Returns ok, the eef pose reached, distance_left_m and the observation.\n\nExample:\n    r = move_hand(\"right\", [0.8, -0.2, 1.0])\n    print(r[\"ok\"], r[\"distance_left_m\"])"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "move_hand_delta",
+			"side": "code",
+			"method": "env.move_hand_delta",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"arm": {
+					"type": "enum",
+					"values": [
+						"left",
+						"right"
+					],
+					"required": true,
+					"description": "Which arm"
+				},
+				"delta_xyz": {
+					"type": "vec3",
+					"required": true,
+					"description": "[dx, dy, dz] in the base frame (+x ahead, +y left, +z up), m; at most 0.1"
+				},
+				"yaw": {
+					"type": "number",
+					"minimum": -0.3,
+					"maximum": 0.3,
+					"description": "Turn about world +z, rad (default 0)"
+				},
+				"gripper": {
+					"type": "enum",
+					"values": [
+						"open",
+						"close"
+					],
+					"description": "Open or close first (default: neither)"
+				}
+			},
+			"doc": {
+				"code": "A small relative step of an arm's end effector: optional gripper open/close first, then a base-frame delta (m; +x ahead, +y left, +z up; at most 0.1) turned by yaw (rad about world +z; at most 0.3), planned like move_hand.\n\nExample:\n    r = move_hand_delta(\"left\", [0.0, 0.0, 0.05], gripper=\"close\")"
+			}
+		},
+		{
+			"name": "grasp_object",
+			"side": "env",
+			"method": "env.grasp_object",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"arm": {
+					"type": "enum",
+					"values": [
+						"left",
+						"right"
+					],
+					"required": true,
+					"description": "Which arm"
+				},
+				"xyz": {
+					"type": "vec3",
+					"required": true,
+					"description": "World [x, y, z], m"
+				},
+				"quat_xyzw": {
+					"type": "quat",
+					"description": "World xyzw orientation (default: keep the current one)"
+				},
+				"pregrasp_offset_m": {
+					"type": "number",
+					"minimum": 0.02,
+					"maximum": 0.5,
+					"description": "Height of the pre-grasp and the lift above the pose, m (default 0.1)"
+				}
+			},
+			"doc": {
+				"tool": "Grasp at a world pose with one arm: open, move to pregrasp_offset_m above it, descend along the approach, close, settle, lift back. Aim at the object's grasp point from segment / point / back_project. Judge the grasp from gripper_width (near 0 = nothing held) and the wrist image.",
+				"code": "Grasp at a world pose: open, hover pregrasp_offset_m above, descend, close, settle, lift. Judge the grasp from gripper_width, not ok.\n\nExample:\n    g = grasp_object(\"left\", [1.0, 0.5, 0.45])\n    print(g[\"gripper_width\"])  # near 0: nothing held"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "open_gripper",
+			"side": "env",
+			"method": "env.open_gripper",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"arm": {
+					"type": "enum",
+					"values": [
+						"left",
+						"right"
+					],
+					"required": true,
+					"description": "Which arm"
+				}
+			},
+			"doc": {
+				"tool": "Open one arm's gripper fully (releases what it holds). Returns gripper_width and images.",
+				"code": "Open an arm's gripper fully (releases what it holds).\n\nExample:\n    r = open_gripper(\"right\")\n    print(r[\"ok\"], r[\"gripper_width\"])"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "close_gripper",
+			"side": "env",
+			"method": "env.close_gripper",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"arm": {
+					"type": "enum",
+					"values": [
+						"left",
+						"right"
+					],
+					"required": true,
+					"description": "Which arm"
+				}
+			},
+			"doc": {
+				"tool": "Close one arm's gripper fully. Returns gripper_width and images.",
+				"code": "Close an arm's gripper fully.\n\nExample:\n    r = close_gripper(\"right\")\n    print(r[\"gripper_width\"])  # near 0: nothing held"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "segment",
+			"side": "env",
+			"method": "env.segment",
+			"tier": "low",
+			"requires": [
+				"sam3"
+			],
+			"params": {
+				"prompt": {
+					"type": "string",
+					"description": "What to segment, e.g. 'the radio' (or give point)"
+				},
+				"point": {
+					"type": "array",
+					"items": "integer",
+					"minItems": 2,
+					"maxItems": 2,
+					"description": "A positive point [row, col] instead of a prompt"
+				},
+				"camera": {
+					"type": "enum",
+					"values": [
+						"head",
+						"left_wrist",
+						"right_wrist"
+					],
+					"description": "Default head"
+				},
+				"min_score": {
+					"type": "number",
+					"minimum": 0,
+					"maximum": 1,
+					"description": "SAM3 threshold (default 0.2)"
+				}
+			},
+			"doc": {
+				"tool": "SAM3 segmentation of the latest image of a camera. Give exactly one of a text prompt or a positive point [row, col]. The top mask is projected through that camera's depth; world_xyz is the median over mask pixels, top_xyz the median of its highest points (a grasp point). Returns an overlay image.",
+				"code": "SAM3 mask of a text prompt (or a point [row, col]) in a camera's latest image: found, score, box, mask (bool [H, W]), centroid_pixel, world_xyz (median through the depth) and top_xyz (the median of its highest points: a grasp point).\n\nExample:\n    m = segment(\"radio\")\n    if m[\"found\"] and m[\"top_xyz\"]:\n        grasp_object(\"left\", m[\"top_xyz\"])"
+			},
+			"result": "read"
+		},
+		{
+			"name": "point",
+			"side": "env",
+			"method": "env.point",
+			"tier": "low",
+			"requires": [
+				"molmo"
+			],
+			"params": {
+				"query": {
+					"type": "string",
+					"required": true,
+					"description": "A short noun phrase, e.g. 'the radio on the table'"
+				},
+				"camera": {
+					"type": "enum",
+					"values": [
+						"head",
+						"left_wrist",
+						"right_wrist"
+					],
+					"description": "Default head"
+				}
+			},
+			"doc": {
+				"tool": "Molmo points at what a short noun phrase names in a camera's latest image ('the radio on the table'). Returns the pixel, its world xyz through the depth (median of a 7x7 window) and the image with the point marked.",
+				"code": "Molmo points at what a short noun phrase names in a camera's latest image: found, pixel [row, col], world_xyz (median of a 7x7 window through the depth), answer.\n\nExample:\n    p = point(\"the radio on the table\")\n    if p[\"found\"]:\n        print(p[\"world_xyz\"])"
+			},
+			"result": "read"
+		},
+		{
+			"name": "back_project",
+			"side": "env",
+			"method": "env.back_project",
+			"tier": "low",
+			"params": {
+				"row": {
+					"type": "integer",
+					"minimum": 0,
+					"description": "Pixel row (0 = top)"
+				},
+				"col": {
+					"type": "integer",
+					"minimum": 0,
+					"description": "Pixel column"
+				},
+				"camera": {
+					"type": "enum",
+					"values": [
+						"head",
+						"left_wrist",
+						"right_wrist"
+					],
+					"description": "Default head"
+				},
+				"row_range": {
+					"type": "array",
+					"items": "integer",
+					"minItems": 2,
+					"maxItems": 2,
+					"description": "Region mode: [first, last) rows"
+				},
+				"col_range": {
+					"type": "array",
+					"items": "integer",
+					"minItems": 2,
+					"maxItems": 2,
+					"description": "Region mode: [first, last) columns"
+				}
+			},
+			"doc": {
+				"tool": "World xyz of a pixel (row, col; row 0 = top) in a camera's latest image, through its metric depth (median of a 3x3 window). Region mode: row_range + col_range returns the median and the xy midpoint over that window.",
+				"code": "World xyz of pixel (row, col) of a camera's latest image through its metric depth (median of a 3x3 window). Region mode: row_range + col_range returns center_xyz (midpoint of world x and y, median z) and median_xyz.\n\nExample:\n    print(back_project(240, 300)[\"world_xyz\"])\n    top = back_project(row_range=[200, 260], col_range=[280, 330], camera=\"left_wrist\")[\"center_xyz\"]"
+			},
+			"result": "read"
+		},
+		{
+			"name": "state",
+			"side": "code",
+			"method": "env.state",
+			"tier": "low",
+			"doc": {
+				"code": "Base and end-effector poses, gripper widths, success, q_score and goal counts (no images).\n\nExample:\n    st = state()\n    print(st[\"base_pos\"], st[\"eef\"][\"left\"][\"gripper_width\"], st[\"success\"])"
+			}
+		},
+		{
+			"name": "render_camera",
+			"side": "code",
+			"method": "env.render_camera",
+			"tier": "low",
+			"params": {
+				"camera_name": {
+					"type": "enum",
+					"values": [
+						"head",
+						"left_wrist",
+						"right_wrist"
+					],
+					"description": "Default head"
+				},
+				"depth": {
+					"type": "boolean",
+					"description": "Also the metric depth (default false)"
+				}
+			},
+			"doc": {
+				"code": "The latest frame of a camera; with depth=true, [rgb, depth_m].\n\nExample:\n    rgb, depth = render_camera(\"head\", depth=True)"
+			}
+		},
+		{
+			"name": "get_camera_meta",
+			"side": "code",
+			"method": "env.get_camera_meta",
+			"tier": "low",
+			"params": {
+				"camera_name": {
+					"type": "enum",
+					"values": [
+						"head",
+						"left_wrist",
+						"right_wrist"
+					],
+					"description": "Default head"
+				}
+			},
+			"doc": {
+				"code": "Camera intrinsics and the OpenGL camera-to-world transform at the current pose.\n\nExample:\n    meta = get_camera_meta(\"right_wrist\")\n    K, T = meta[\"intrinsic_K\"], meta[\"extrinsic_cam2world\"]  # OpenGL: looks along -z"
+			}
+		},
+		{
+			"name": "move_to_joints",
+			"side": "code",
+			"method": "env.move_to_joints",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"joints": {
+					"type": "array",
+					"required": true,
+					"minItems": 7,
+					"maxItems": 7,
+					"description": "The arm's 7 joint angles, rad (clipped to the joint limits)"
+				},
+				"arm": {
+					"type": "enum",
+					"values": [
+						"left",
+						"right"
+					],
+					"required": true,
+					"description": "Which arm"
+				},
+				"tol_rad": {
+					"type": "number",
+					"minimum": 0.001,
+					"maximum": 0.5,
+					"description": "Stop when every joint is this close, rad (default 0.01)"
+				},
+				"max_steps": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 3000,
+					"description": "Control-step budget (default 300)"
+				}
+			},
+			"doc": {
+				"code": "Drive an arm straight to a joint configuration (its position controller; no collision checking, unlike move_hand). Returns ok, reached, joints, joints_left_rad, eef_pos and the observation.\n\nExample:\n    r = move_to_joints([0.0, 1.2, 0.0, -1.5, 0.0, 0.8, 0.0], \"left\")\n    print(r[\"reached\"], r[\"joints_left_rad\"])"
+			}
+		},
+		{
+			"name": "move_along_trajectory",
+			"side": "code",
+			"method": "env.move_along_trajectory",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"trajectory": {
+					"type": "array",
+					"required": true,
+					"items": {
+						"type": "array"
+					},
+					"maxItems": 100,
+					"description": "Joint waypoints [N, 7], rad"
+				},
+				"arm": {
+					"type": "enum",
+					"values": [
+						"left",
+						"right"
+					],
+					"required": true,
+					"description": "Which arm"
+				}
+			},
+			"doc": {
+				"code": "Drive an arm through joint waypoints [N, 7] (N <= 100), each held until within 0.01 rad or 60 control steps. Returns the last waypoint's report with waypoints (how many were finished).\n\nExample:\n    r = move_along_trajectory([[0.0, 1.0, 0.0, -1.5, 0.0, 0.8, 0.0], [0.0, 1.2, 0.0, -1.5, 0.0, 0.8, 0.0]], \"right\")\n    print(r[\"waypoints\"], r[\"reached\"])"
+			}
+		},
+		{
+			"name": "raw_obs",
+			"side": "code",
+			"method": "env.raw_obs",
+			"tier": "raw",
+			"doc": {
+				"code": "The robot's proprioception and joint positions.\n\nExample:\n    o = raw_obs()\n    q = dict(zip(o[\"joint_names\"], o[\"joint_positions\"]))"
+			}
+		},
+		{
+			"name": "step",
+			"side": "code",
+			"method": "env.step",
+			"tier": "raw",
+			"mutating": true,
+			"params": {
+				"action": {
+					"type": "array",
+					"required": true,
+					"description": "The R1Pro's full action vector (absolute joint position targets)"
+				}
+			},
+			"doc": {
+				"code": "One raw control step of the robot's full action vector.\n\nExample:\n    r = step(a)  # a: one full R1Pro action (joint position targets)\n    print(r[\"state\"][\"env_steps\"], r[\"terminated\"])"
+			}
+		},
+		{
+			"name": "chunk_step",
+			"side": "code",
+			"method": "env.chunk_step",
+			"tier": "raw",
+			"mutating": true,
+			"params": {
+				"actions": {
+					"type": "array",
+					"required": true,
+					"items": {
+						"type": "array"
+					},
+					"maxItems": 300,
+					"description": "N x action_dim floats (N <= 300)"
+				},
+				"return_all_frames": {
+					"type": "boolean",
+					"description": "One observation per action (default false)"
+				}
+			},
+			"doc": {
+				"code": "Run actions [N, action_dim] in one call; stops early on stop or the episode's end.\n\nExample:\n    r = chunk_step([a] * 30)  # hold a for one second (30 Hz)\n    print(r[\"state\"][\"base_pos\"], r[\"truncated\"])"
+			}
+		},
+		{
+			"use": "sim/ground_truth_poses"
+		},
+		{
+			"use": "perception/detect"
+		},
+		{
+			"use": "perception/select_detection"
+		},
+		{
+			"use": "perception/reject_detection"
+		},
+		{
+			"use": "perception/enhance_depth"
+		},
+		{
+			"use": "modules/finish"
+		},
+		{
+			"use": "modules/act"
+		},
+		{
+			"use": "modules/plan"
+		},
+		{
+			"use": "modules/reset"
+		},
+		{
+			"use": "modules/run_code"
+		}
+	]
+}

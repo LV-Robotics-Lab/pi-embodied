@@ -70,13 +70,21 @@ for (const robot of ["robosuite", "libero"]) {
 			assert.equal(o.name, file);
 			assert.match(o.header.capx, /^env_configs\/human_oracle_code\/\S+\.yaml @53e9966$/);
 			assert.ok(o.header.program);
-			assert.ok([...TIERS, "privileged"].includes(o.header.tier), `tier ${o.header.tier}`);
+			const tier = o.header.tier;
+			assert.ok(
+				[...TIERS, "privileged"].includes(tier.replace(/\+privileged$/, "")) || tier === "privileged",
+				`tier ${tier}`,
+			);
 			TASK_FIELDS[robot](o.header);
-			assert.ok(o.header.prelude && existsSync(join(dir(robot), o.header.prelude)), "prelude exists");
-			const prelude = readFileSync(join(dir(robot), o.header.prelude), "utf8");
-			assert.ok(o.code.startsWith(prelude), "the prelude runs first");
-			// Only the privileged tier may read the simulator's ground truth.
-			if (o.header.tier !== "privileged") assert.doesNotMatch(prelude, /ground_truth_poses/);
+			// An oracle on the high / privileged tier calls the server's CaP-X functions directly; one on
+			// another tier carries CaP-X's (task) API as a prelude over that tier's primitives.
+			if (o.header.prelude) {
+				assert.ok(existsSync(join(dir(robot), o.header.prelude)), "prelude exists");
+				const prelude = readFileSync(join(dir(robot), o.header.prelude), "utf8");
+				assert.ok(o.code.startsWith(prelude), "the prelude runs first");
+				// Only a privileged tier may read the simulator's ground truth.
+				if (!tier.includes("privileged")) assert.doesNotMatch(prelude, /ground_truth_poses/);
+			} else assert.ok(["high", "privileged"].includes(tier), `${tier} needs a prelude`);
 			const text = readFileSync(join(dir(robot), file), "utf8");
 			assert.equal(text.split(MARK).length, 2, "one verbatim marker");
 			const verbatim = text.split(MARK)[1];

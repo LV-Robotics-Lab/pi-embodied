@@ -2,12 +2,7 @@
 # program: capx/envs/tasks/franka/franka_pick_place.py ORACLE_CODE (FrankaControlPrivilegedApi)
 # task: Stack
 # tier: privileged
-# prelude: capx_privileged.py
-OBJECTS = {
-    "red cube": {"name": "cubeA", "extent": [0.05, 0.05, 0.05]},
-    "green cube": {"name": "cubeB", "extent": [0.05, 0.05, 0.05]},
-}
-
+# The CaP-X API calls are the env server's high-tier primitives (manifests/robosuite.json): no prelude.
 # ---- CaP-X's program, verbatim ----
 import numpy as np
 

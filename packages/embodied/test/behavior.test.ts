@@ -6,7 +6,8 @@ import { tmpdir } from "node:os";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { RESULT_ENTRY, toolSections } from "../src/robot.ts";
-import behavior, { CODE_MAX_MOVE_M, project, STEP_M, TASKS, VECTORS } from "../src/robots/behavior/index.ts";
+import behavior, { CODE_MAX_MOVE_M, STEP_M, TASKS, VECTORS } from "../src/robots/behavior/index.ts";
+import { codeApiReply } from "./helpers/code-api.ts";
 import { checkSimExplore } from "./sim-stub.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
@@ -116,7 +117,8 @@ async function fakeEnv() {
 				}
 				return { ...obs(), primitive, ok: true, phase: "done", steps: 3, ...extra };
 			};
-			if (method === "code.api") result = { tier: kwargs.tier ?? null, primitives: [], digest: "d" };
+			if (method === "code.api")
+				result = codeApiReply("behavior", kwargs.tier, (c) => c === "sam3" || c === "molmo");
 			else if (method === "code.run") {
 				// The program's primitives stepped the env: BDDL success mid-run, the radio in hand.
 				state.steps += 40;
@@ -186,6 +188,25 @@ async function fakeEnv() {
 					width: W,
 					height: H,
 				};
+			else if (method === "env.segment")
+				result = {
+					found: true,
+					camera: kwargs.camera ?? "head",
+					world_xyz: [1, 0.5, 0.45],
+					top_xyz: [1, 0.5, 0.5],
+					mask: nd("bool", [H, W], Buffer.alloc(H * W, 1)),
+					overlay_png_base64: "iVBORw0KGgo=",
+				};
+			else if (method === "env.point")
+				result = {
+					found: true,
+					camera: "head",
+					pixel: [1, 2],
+					world_xyz: [1, 0.5, 0.45],
+					overlay_png_base64: "iVBORw0KGgo=",
+				};
+			else if (method === "env.back_project")
+				result = { camera: kwargs.camera ?? "head", pixel: [kwargs.row, kwargs.col], world_xyz: [0.5, 0, 0.8] };
 			else if (method === "env.ground_truth_poses")
 				result = {
 					frame: "world",
@@ -256,9 +277,9 @@ test("the tools are CaP-X's primitive set plus perception; motions carry the thr
 	assert.equal(d.step, 3);
 	assert.deepEqual(d.images, ["head 4x4", "left_wrist 4x4", "right_wrist 4x4"]);
 	assert.equal(r.content.filter((c: any) => c.type === "image").length, 3);
-	// move_hand asks the server for the arm and the pose, nothing about obstacles.
-	await s.run("move_hand", { arm: "right", position: [0.5, -0.3, 1.0] });
-	assert.deepEqual(env.calls.at(-1)?.kwargs, { arm: "right", position: [0.5, -0.3, 1.0], quat_xyzw: null });
+	// move_hand asks the server for the arm and the pose (the manifest's parameters), nothing about obstacles.
+	await s.run("move_hand", { arm: "right", xyz: [0.5, -0.3, 1.0] });
+	assert.deepEqual(env.calls.at(-1)?.kwargs, { arm: "right", xyz: [0.5, -0.3, 1.0] });
 	assert.equal("ignore_all_obstacles" in (env.calls.at(-1)?.kwargs ?? {}), false);
 	// String choices are plain enums.
 	const schema = JSON.stringify(s.tools.get("move_hand").parameters);
@@ -273,13 +294,9 @@ test("success is BDDL's; q_score and the reference `picked` go to the result, in
 	behavior(s.pi);
 	await s.emit("session_start");
 	assert.equal(s.tools.has("ground_truth_poses"), false);
-	let d = text(await s.run("grasp_object", { arm: "left", position: [1, 0.5, 0.45] }));
-	assert.deepEqual(env.calls.at(-1)?.kwargs, {
-		arm: "left",
-		position: [1, 0.5, 0.45],
-		quat_xyzw: null,
-		pregrasp_offset_m: 0.1,
-	});
+	// The server's defaults (orientation kept, pregrasp_offset_m 0.1) apply: the tool sends what it was given.
+	let d = text(await s.run("grasp_object", { arm: "left", xyz: [1, 0.5, 0.45] }));
+	assert.deepEqual(env.calls.at(-1)?.kwargs, { arm: "left", xyz: [1, 0.5, 0.45] });
 	// The radio is in hand and lifted: CaP-X would call this success. BDDL does not.
 	assert.equal(d.success, false);
 	assert.equal(d.q_score, 0);
@@ -316,57 +333,38 @@ test("success is BDDL's; q_score and the reference `picked` go to the result, in
 	assert.equal(result.privileged, true);
 });
 
-test("back_project uses the OpenGL camera convention through the camera's metric depth", async (t) => {
-	// K = [[2,0,2],[0,2,2]]: pixel (row 1, col 1) at depth 1 -> camera (-0.5, +0.5, -1); the camera is 1 m up.
-	const meta = {
-		intrinsic_K: [
-			[2, 0, 2],
-			[0, 2, 2],
-			[0, 0, 1],
-		],
-		extrinsic_cam2world: [
-			[1, 0, 0, 0],
-			[0, 1, 0, 0],
-			[0, 0, 1, 1],
-			[0, 0, 0, 1],
-		],
-		convention: "opengl",
-		width: 4,
-		height: 4,
-	};
-	const depth = new Float32Array(16).fill(2);
-	depth[5] = 1;
-	depth[0] = Number.POSITIVE_INFINITY;
-	const xyz = project(depth, 4, 4, meta);
-	assert.deepEqual(
-		[...xyz.subarray(15, 18)].map((v) => Number(v.toFixed(3))),
-		[-0.5, 0.5, 0],
-	);
-	assert.ok(Number.isNaN(xyz[0]), "no hit is NaN");
-	// Row 3 (bottom) is below the optical centre: -y in the OpenGL camera.
-	assert.ok(xyz[(3 * 4 + 2) * 3 + 1] < 0);
-
+test("perception runs on the env server: the tool passes its parameters and shows the server's picture", async (t) => {
 	const env = await fakeEnv();
 	t.after(env.close);
 	const s = stubPi({ env: env.url });
 	behavior(s.pi);
 	await s.emit("session_start");
-	const r = await s.run("back_project", { row: 1, col: 1, camera: "left_wrist" });
-	assert.equal(env.calls.at(-1)?.method, "env.get_camera_meta");
-	assert.deepEqual(env.calls.at(-1)?.kwargs, { camera_name: "left_wrist" });
-	// The 3x3 window around (1,1) mixes the 1 m and 2 m pixels; the median is the 2 m ring.
-	assert.deepEqual(r.details.pixel, [1, 1]);
-	assert.equal(r.details.world_xyz.length, 3);
-	assert.equal(r.details.camera, "left_wrist");
-	const bad = await s.run("back_project", { row: 9, col: 0 });
-	assert.match(bad.details.error, /out of bounds/);
-	const region = await s.run("back_project", { row_range: [0, 4], col_range: [0, 4] });
-	assert.equal(region.details.mode, "region");
-	assert.equal(region.details.n_valid, 15);
-	// The world map is cached per env step: a second call on the same camera asks no meta again.
-	const n = env.calls.length;
-	await s.run("back_project", { row: 2, col: 2 });
-	assert.equal(env.calls.length, n);
+	// The schemas are the manifest's (manifests/behavior.json).
+	const props = (name: string) => s.tools.get(name).parameters.properties;
+	assert.deepEqual(props("segment").camera.enum, ["head", "left_wrist", "right_wrist"]);
+	assert.deepEqual(s.tools.get("grasp_object").parameters.required, ["arm", "xyz"]);
+	assert.equal(props("grasp_object").pregrasp_offset_m.maximum, 0.5);
+	const seg = await s.run("segment", { prompt: "radio", camera: "left_wrist" });
+	assert.deepEqual(env.calls.at(-1), { method: "env.segment", kwargs: { prompt: "radio", camera: "left_wrist" } });
+	assert.deepEqual(seg.details.top_xyz, [1, 0.5, 0.5]);
+	assert.equal("mask" in seg.details || "overlay_png_base64" in seg.details, false);
+	assert.equal(seg.content.filter((c: any) => c.type === "image").length, 1);
+	const pt = await s.run("point", { query: "the radio" });
+	assert.deepEqual(env.calls.at(-1), { method: "env.point", kwargs: { query: "the radio" } });
+	assert.deepEqual(pt.details.pixel, [1, 2]);
+	const bp = await s.run("back_project", { row: 1, col: 1, camera: "left_wrist" });
+	assert.deepEqual(env.calls.at(-1), { method: "env.back_project", kwargs: { row: 1, col: 1, camera: "left_wrist" } });
+	assert.deepEqual(bp.details.world_xyz, [0.5, 0, 0.8]);
+	assert.equal(bp.content.filter((c: any) => c.type === "image").length, 0);
+});
+
+test("without a Molmo server point is not activated", async (t) => {
+	const env = await fakeEnv();
+	t.after(env.close);
+	const s = stubPi({ env: env.url, molmo: "" });
+	behavior(s.pi);
+	await s.emit("session_start");
+	assert.ok(!s.active().includes("point") && s.active().includes("segment"));
 });
 
 test("an unknown task or a non-integer seed fails closed before any server starts", async () => {
@@ -468,7 +466,7 @@ test("units: act runs one env.move_hand_delta with the arm, the base-frame step,
 test("--code=true: run_code runs on the env server; BDDL success, q_score and the head frames come back", async (t) => {
 	const env = await fakeEnv();
 	t.after(env.close);
-	const s = stubPi({ env: env.url, code: "true" });
+	const s = stubPi({ env: env.url, code: "true", "code-api": "low" });
 	behavior(s.pi);
 	await s.emit("session_start");
 	process.exitCode = undefined;
@@ -477,7 +475,7 @@ test("--code=true: run_code runs on the env server; BDDL success, q_score and th
 	await s.emit("agent_start");
 	const r = await s.run("run_code", { code: "navigate_to_pose(1.0, 0.5, 0.0)" });
 	const run = env.calls.find((c) => c.method === "code.run")!;
-	assert.equal(run.kwargs.tier, "high");
+	assert.equal(run.kwargs.tier, "low");
 	assert.equal(run.kwargs.max_move_m, CODE_MAX_MOVE_M);
 	const d = r.details;
 	assert.equal(d.status, "ran");
@@ -496,5 +494,5 @@ test("--code=true: run_code runs on the env server; BDDL success, q_score and th
 	assert.equal(result.q_score, 1);
 	assert.deepEqual(result.reference, { picked: false, in_hand: { left: "radio_89", right: null } });
 	assert.equal(result.code, "true");
-	assert.equal(result.code_api, "high");
+	assert.equal(result.code_api, "low");
 });

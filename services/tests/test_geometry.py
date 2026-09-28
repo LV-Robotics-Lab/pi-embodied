@@ -200,19 +200,24 @@ GEOMETRY_RPC = (
 def test_off_by_default_nothing_is_served():
     f = facade(geometry=False)
     assert not any(m in f._rpc for m in GEOMETRY_RPC)
-    names = [p["name"] for p in f._rpc["code.api"]("high")["primitives"]]
+    names = f._rpc["code.api"]("low")["available"]
     assert "mark_point" not in names and "move_grip" not in names
 
 
-def test_registry_lists_the_toolset_in_the_high_tier():
+def test_the_manifest_lists_the_toolset_in_the_low_tier():
+    """The geometry parts are motion and perception parts: the low tier (manifests/common/geometry.json)."""
     f = facade()
     assert all(m in f._rpc for m in GEOMETRY_RPC)
-    high = {p["name"]: p for p in f._rpc["code.api"]("high")["primitives"]}
-    for name in ("point_views", "mark_point", "grip_target", "grip_state", "move_grip"):
-        assert name in high
-    assert high["move_grip"]["mutating"] and not high["mark_point"]["mutating"]
-    low = [p["name"] for p in f._rpc["code.api"]("low")["primitives"]]
-    assert "move_grip" not in low
+    low = f._rpc["code.api"]("low")["available"]
+    for name in ("view_points", "mark_point", "grip_target", "grip_state", "move_grip"):
+        assert name in low
+    f._manifest_ready()
+    docs = {p["name"]: p["doc"] for p in f._code.api("low")}
+    assert (
+        "Moves the robot." in docs["move_grip"]
+        and "Moves the robot." not in docs["mark_point"]
+    )
+    assert "move_grip" not in f._rpc["code.api"]("high")["available"]
 
 
 def test_grip_frame_is_measured_from_the_site_and_its_pads():
@@ -532,7 +537,7 @@ def test_franka_plans_only_and_its_jaw_is_the_tcp_y(monkeypatch):
     for m in GEOMETRY_RPC[:4]:
         assert m in f._rpc
     assert "env.move_grip" not in f._rpc, "a real arm's client executes the plans"
-    names = [p["name"] for p in f._rpc["code.api"]("high")["primitives"]]
+    names = f._rpc["code.api"]("low")["available"]
     assert "grip_target" in names and "move_grip" not in names
     kit = f._rpc["env.grip_target"].__self__
     p, R = kit.grip()
@@ -560,9 +565,7 @@ def test_franka_rlinf_serves_the_same_toolset():
 
     f = FrankaEnvFacade(test_grasp._FrankaBackend(), geometry=True)
     assert "env.grip_target" in f._rpc and "env.move_grip" not in f._rpc
-    assert "grip_target" in [
-        p["name"] for p in f._rpc["code.api"]("high")["primitives"]
-    ]
+    assert "grip_target" in f._rpc["code.api"]("low")["available"]
     assert "env.grip_target" not in FrankaEnvFacade(test_grasp._FrankaBackend())._rpc
 
 

@@ -2,8 +2,9 @@
 
 One 2025-challenge activity on the R1Pro in OmniGibson (Isaac Sim), served over the HTTP RPC of
 the other env servers (`env_server.py`); `sim.py` is the OmniGibson glue, `tasks.py` the 50
-activities and their text, `primitives.py` the `code.api` registry. The pi robot is
-`packages/embodied/src/robots/behavior`.
+activities and their text. The primitives (pi's tools and `code.api`) are declared once in
+`packages/embodied/src/primitives/manifests/behavior.json`; the server checks itself against it
+at start. The pi robot is `packages/embodied/src/robots/behavior`.
 
 ## Install
 
@@ -24,8 +25,8 @@ OmniGibson. Mirrors: `PIP_INDEX`, `NVIDIA_INDEX`, `TORCH_INDEX`.
 - The env server (Isaac Sim, the scene, OmniGibson's cuRobo primitives) takes one GPU:
   `--gpu-id N` (`OMNIGIBSON_GPU_ID`). Loading a house takes minutes; every episode of
   `eval.sh` starts its own server, so on a shared GPU run the whole eval under that GPU's lock.
-- The perception servers the robot attaches to (SAM3 for `segment`, Molmo for `point`) are
-  started once, before pi, and should sit on another GPU.
+- The perception servers the env server calls (SAM3 for `segment`, `--sam3`; Molmo for
+  `point`, `--molmo`) are started once, before pi, and should sit on another GPU.
 - pi itself runs anywhere that reaches them: `--env` attaches to a running env server.
 
 ```bash

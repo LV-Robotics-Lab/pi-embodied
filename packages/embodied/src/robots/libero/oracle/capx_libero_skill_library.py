@@ -1,8 +1,8 @@
 # CaP-X's reduced LIBERO API with the skill library (capx/integrations/franka/libero_reduced.py
 # FrankaLiberoApiReduced + libero_reduced_skill_library.py FrankaLiberoApiReducedSkillLibrary
-# @53e9966), the functions the skill-library oracle calls, over this server's high tier
-# (get_observation, segment, get_state, move_to, rotate_wrist, set_gripper). --code-oracle
-# prepends it to object_swap_7_skill_library.py.
+# @53e9966), the functions the skill-library oracle calls, over this server's low tier
+# (get_observation, segment, get_state, move_to, rotate_wrist, set_gripper): CaP-X's reduced
+# (S3) API. --code-oracle prepends it to object_swap_7_skill_library.py.
 #
 # Differences from CaP-X:
 # - get_observation returns CaP-X's layout: obs["agentview"] and obs["robot0_eye_in_hand"], each
@@ -22,6 +22,8 @@
 # - Frames: CaP-X's LIBERO poses are in robot0_base's frame, which LIBERO mounts unrotated, and
 #   the programs only use offsets and CaP-X's own perception or simulator poses, so the world
 #   frame of this server's primitives stands in for it unchanged.
+# - The gripper: move_to opens and rotate_wrist closes unless told (the tools' defaults), so
+#   every motion passes the command the last open_gripper / close_gripper set.
 # - goto_pose: move_to servos the TCP (the grip site) holding its orientation, and rotate_wrist
 #   turns it about the vertical; there is no pitch or roll primitive. So a pose's position is
 #   reached exactly (CaP-X's positions are the TCP point: no TCP offset is applied) and of its
@@ -108,7 +110,14 @@ def _state():
     s = get_state()
     _EEF["pos"] = np.asarray(s["eef_pos"], dtype=np.float64)
     _EEF["yaw"] = float(s["yaw"])
+    _EEF.setdefault("grip", int(s.get("gripper_cmd", -1)))
     return s
+
+
+def _held():
+    if "grip" not in _EEF:
+        _state()
+    return _EEF["grip"]
 
 
 def _eef():
@@ -127,7 +136,7 @@ def _turn(q_wxyz):
     if abs(wrap(goal - _EEF["yaw"])) > math.pi / 2:
         goal = wrap(goal + math.pi)
     if abs(wrap(goal - _EEF["yaw"])) > 0.05:
-        r = rotate_wrist(target_yaw=goal)
+        r = rotate_wrist(target_yaw=goal, gripper=_held())
         _EEF["yaw"] = float(r.get("yaw", goal))
         if "eef_pos" in r:
             _EEF["pos"] = np.asarray(r["eef_pos"], dtype=np.float64)
@@ -144,7 +153,7 @@ def _move(target, q_wxyz):
         # call may ask for more than MAX_LEG_M.
         here = _EEF["pos"]
         leg = here + (target - here) / max(legs - k + 1, math.ceil(np.linalg.norm(target - here) / MAX_LEG_M))
-        r = move_to(leg.tolist(), max_steps=MOVE_STEPS)
+        r = move_to(leg.tolist(), gripper=_held(), max_steps=MOVE_STEPS)
         _EEF["pos"] = np.asarray(r.get("eef_pos", leg), dtype=np.float64)
 
 
@@ -157,7 +166,8 @@ def _goto_along_axis(position, quaternion_wxyz, z_approach=0.0):
 
 
 def _grip(close, steps):
-    set_gripper(bool(close), steps=int(steps))
+    _EEF["grip"] = 1 if close else -1
+    set_gripper(_EEF["grip"], steps=int(steps))
 
 
 _get_observation = get_observation

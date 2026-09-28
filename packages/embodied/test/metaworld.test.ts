@@ -5,22 +5,14 @@ import type { AddressInfo } from "node:net";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { ground, MOVE_UNITS } from "../src/modes/units/index.ts";
-import metaworld, {
-	backProject,
-	EMPTY_WIDTH_M,
-	STEP_M,
-	TASKS,
-	VECTORS,
-	VIEW_SETUP,
-	VIEW_SIZE,
-} from "../src/robots/metaworld/index.ts";
+import metaworld, { EMPTY_WIDTH_M, STEP_M, TASKS, VECTORS, VIEW_SETUP } from "../src/robots/metaworld/index.ts";
+import { codeApiReply } from "./helpers/code-api.ts";
 import {
 	checkDetections,
 	checkPoint,
 	checkSimExplore,
 	f32,
 	fakeEnv,
-	nd,
 	perceptionAnswers,
 	rgb,
 	withPerception,
@@ -104,11 +96,11 @@ test("flags: --task and --seed name the episode, --privileged is registered, not
 	assert.deepEqual(f.active(), []);
 	for (const name of [
 		"view_env_state",
-		"view_camera_meta",
+		"get_camera_meta",
 		"segment",
 		"back_project",
 		"move_delta",
-		"gripper",
+		"set_gripper",
 		"finish",
 		"act",
 	])
@@ -116,13 +108,16 @@ test("flags: --task and --seed name the episode, --privileged is registered, not
 	assert.equal(f.tools.has("ground_truth_poses"), false, "registered only with --privileged at start");
 });
 
-test("tool schemas: string enums for the gripper command, cameras and resolutions; a 3-vector delta", () => {
+test("tool schemas (manifests/metaworld.json): enums for the gripper command, cameras and resolutions; a 3-vector delta", () => {
 	const f = stubPi();
 	metaworld(f.pi);
 	const schema = (name: string) => JSON.stringify(f.tools.get(name).parameters);
 	assert.match(schema("move_delta"), /"enum":\["open","close"\]/);
 	assert.match(schema("move_delta"), /"minItems":3,"maxItems":3/);
-	assert.match(schema("gripper"), /"enum":\["open","close"\]/);
+	assert.match(schema("set_gripper"), /"close":\{"type":"boolean"/);
+	assert.deepEqual(f.tools.get("set_gripper").parameters.required, ["close"]);
+	assert.equal(f.tools.get("back_project").parameters.properties.pixels, undefined, "a program-only argument");
+	assert.match(f.tools.get("move_delta").description, /at most 0\.2 m per call/);
 	assert.match(schema("segment"), /"enum":\["agentview","wrist"\]/);
 	assert.match(schema("back_project"), /"enum":\["low","high"\]/);
 	assert.match(schema("finish"), /"enum":\["success","failure"\]/);
@@ -154,29 +149,6 @@ test("units grounding: each MV_* is one 2 cm step along the Sawyer's world axes 
 	assert.ok(EMPTY_WIDTH_M > 0.023 && EMPTY_WIDTH_M < 0.04, "above the empty-close pad distance, below a held puck");
 });
 
-test("back_project: a metric depth map goes through OpenCV intrinsics and the camera-to-world transform", () => {
-	// A 2x2 camera at the origin looking along +z (identity extrinsic), f = 1, principal point (1, 1).
-	const k = [
-		[1, 0, 1],
-		[0, 1, 1],
-		[0, 0, 1],
-	];
-	const eye = [
-		[1, 0, 0, 0],
-		[0, 1, 0, 0],
-		[0, 0, 1, 0],
-		[0, 0, 0, 1],
-	];
-	const xyz = backProject([2, 2, 2, 2], 2, k, eye);
-	// pixel (row 0, col 0): x = (0 - 1) * 2 / 1 = -2, y = -2, z = 2
-	assert.deepEqual([...xyz.slice(0, 3)], [-2, -2, 2]);
-	// pixel (row 1, col 1) is on the principal point.
-	assert.deepEqual([...xyz.slice(9, 12)], [0, 0, 2]);
-	// A translated camera shifts every point.
-	const moved = eye.map((r, i) => (i < 3 ? [...r.slice(0, 3), [0.5, 0, 1][i]] : r));
-	assert.deepEqual([...backProject([2, 2, 2, 2], 2, k, moved).slice(9, 12)], [0.5, 0, 3]);
-});
-
 /** A fake Metaworld env server running reach-v3 seed 0, with the perception primitives when `perception`. */
 async function fakeMetaworld(perception = false) {
 	const obs = () => ({
@@ -201,18 +173,26 @@ async function fakeMetaworld(perception = false) {
 		}
 		if (c.method === "env.reset") return [obs(), {}];
 		if (c.method === "env.get_task_language") return "reach the goal";
-		if (c.method === "env.render_camera")
-			return [rgb(VIEW_SIZE, VIEW_SIZE), f32(new Array(VIEW_SIZE * VIEW_SIZE).fill(1))];
-		// As the server sends it: numpy arrays (float64), not nested lists.
-		if (c.method === "env.get_camera_meta")
+		if (c.method === "env.back_project")
+			return c.kwargs.pixels
+				? c.kwargs.pixels.map(() => [1, 1, 1])
+				: { camera: "agentview", resolution: "low", pixel: [3, 4], world_xyz: [1, 1, 1] };
+		if (c.method === "env.segment")
+			return { found: true, camera: "agentview", world_xyz: [1, 1, 1], mask: [[true]], overlay_png_base64: "AAAA" };
+		if (c.method === "env.set_gripper" || c.method === "env.move_delta") {
+			const frame = { ...obs(), action: f32([0, 0, 0, 1]), success: false };
 			return {
-				intrinsic_K: nd("float64", [3, 3], Buffer.from(Float64Array.from([1, 0, 0, 0, 1, 0, 0, 0, 1]).buffer)),
-				extrinsic_cam2world: nd(
-					"float64",
-					[4, 4],
-					Buffer.from(Float64Array.from([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]).buffer),
-				),
+				ok: true,
+				final_tcp_pos: [0, 0.6, 0.2],
+				final_error_m: 0,
+				moved_m: [0, 0, 0],
+				gripper: "close",
+				gripper_width: 0.03,
+				steps_used: 2,
+				frames: [frame, frame],
+				info: { success: false },
 			};
+		}
 		return undefined;
 	});
 }
@@ -229,7 +209,34 @@ test("memory and exploration: reset restarts the seeded layout, the cell is meta
 	});
 });
 
-test("--detections / --unidepth: the env server's perception primitives; detect locates the centroid through the world map", async (t) => {
+test("segment, back_project and set_gripper run the env server's methods with the manifest's parameters", async (t) => {
+	const env = await fakeMetaworld();
+	t.after(env.close);
+	const s = stubPi({ env: env.url, task: "reach-v3" });
+	metaworld(s.pi);
+	await s.emit("session_start");
+	process.exitCode = undefined;
+	const r = await s.run("segment", { prompt: "puck", resolution: "high" });
+	assert.deepEqual(env.calls.find((c) => c.method === "env.segment")!.kwargs, { prompt: "puck", resolution: "high" });
+	assert.deepEqual(r.details.world_xyz, [1, 1, 1]);
+	assert.equal(r.details.mask, undefined);
+	assert.deepEqual(
+		r.content.map((c: { type: string }) => c.type),
+		["text", "image"],
+	);
+	const b = await s.run("back_project", { row_range: [1, 5], col_range: [2, 6] });
+	assert.deepEqual(env.calls.find((c) => c.method === "env.back_project")!.kwargs, {
+		row_range: [1, 5],
+		col_range: [2, 6],
+	});
+	assert.deepEqual(b.details.world_xyz, [1, 1, 1]);
+	const g = await s.run("set_gripper", { close: true });
+	assert.deepEqual(env.calls.find((c) => c.method === "env.set_gripper")!.kwargs, { close: true });
+	assert.equal(g.details.result.gripper, "close");
+	assert.equal(g.details.step, 2, "every control step the server ran");
+});
+
+test("--detections / --unidepth: the env server's perception primitives; detect locates the centroid through the server's depth", async (t) => {
 	const env = await fakeMetaworld(true);
 	t.after(env.close);
 	const s = await checkDetections({
@@ -280,7 +287,7 @@ async function fakeCodeEnv(run: Record<string, unknown>) {
 			const { method, kwargs = {} } = JSON.parse(body);
 			calls.push({ method, kwargs });
 			let result: unknown = { ok: true };
-			if (method === "code.api") result = { tier: kwargs.tier ?? null, primitives: [], digest: "d" };
+			if (method === "code.api") result = codeApiReply("metaworld", kwargs.tier, (c) => c === "sam3");
 			else if (method === "env.get_env_meta")
 				result = {
 					task: "reach-v3",

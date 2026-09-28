@@ -7,6 +7,7 @@ import {
 	CODE_API_ENTRY,
 	CODE_API_EVENT,
 	type CodeApi,
+	type CodeApiPrimitive,
 	fetchCodeApi,
 	renderCodeApi,
 } from "../src/primitives/registry.ts";
@@ -44,29 +45,31 @@ function stubPi(values: Record<string, unknown> = {}) {
 
 const API: CodeApi = {
 	tier: null,
+	manifest_digest: "m".repeat(64),
+	available: ["get_robot_state", "move_delta"],
 	digest: "d".repeat(64),
-	primitives: [
-		{
-			name: "get_robot_state",
-			method: "env.get_robot_state",
-			doc: "The state.",
-			params: {},
-			mutating: false,
-			tiers: ["high", "low"],
-		},
-		{
-			name: "move_delta",
-			method: "env.move_delta",
-			doc: "Translate the TCP.",
-			params: {
-				delta_xyz: { type: "vec3", description: "m", required: true },
-				continuous: { type: "boolean", description: "", required: false },
-			},
-			mutating: true,
-			tiers: ["high", "low"],
-		},
-	],
 };
+const PRIMS: CodeApiPrimitive[] = [
+	{
+		name: "get_robot_state",
+		method: "env.get_robot_state",
+		doc: "The state.",
+		params: {},
+		mutating: false,
+		tier: "low",
+	},
+	{
+		name: "move_delta",
+		method: "env.move_delta",
+		doc: "Translate the TCP.\nMore.",
+		params: {
+			delta_xyz: { type: "vec3", description: "m", required: true },
+			continuous: { type: "boolean", description: "", required: false },
+		},
+		mutating: true,
+		tier: "low",
+	},
+];
 
 /** An env client whose `code.api` answers `reply` (or throws it) and records the tier asked for. */
 function server(reply: unknown | Error) {
@@ -142,7 +145,7 @@ test("a server without code.api starts the robot with no declaration; a malforme
 	);
 	assert.equal("code_api_digest" in (await result(f)), false);
 
-	const bad = server({ primitives: "move" });
+	const bad = server({ available: "move" });
 	const g = robot({}, { codeApi: () => bad.client });
 	await g.emit("session_start");
 	assert.match(g.notes.join("\n"), /toy unavailable: code\.api: malformed reply/);
@@ -162,7 +165,7 @@ test("a robot without codeApi publishes no declaration", async () => {
 test("fetchCodeApi passes other errors on, and renderCodeApi lists one primitive per line", async () => {
 	await assert.rejects(fetchCodeApi(server(new Error("env: connection refused")).client), /connection refused/);
 	assert.equal(
-		renderCodeApi(API),
+		renderCodeApi(PRIMS),
 		"- get_robot_state() — The state.\n- move_delta(delta_xyz: vec3, continuous?: boolean) — Translate the TCP. [moves the robot]",
 	);
 });

@@ -1,0 +1,308 @@
+{
+	"robot": "ur5e",
+	"internal": [],
+	"primitives": [
+		{
+			"name": "view_env_state",
+			"side": "ts",
+			"tier": "low",
+			"params": {
+				"step": {
+					"type": "integer",
+					"description": "State step (default -1 = latest)"
+				}
+			},
+			"doc": {
+				"tool": "Read a UR5e state step (TCP pose, joints, gripper, setpoint) and its camera images, main camera first."
+			},
+			"result": "read"
+		},
+		{
+			"name": "view_camera_meta",
+			"side": "ts",
+			"tier": "low",
+			"params": {
+				"step": {
+					"type": "integer",
+					"description": "State step (default -1 = latest)"
+				}
+			},
+			"doc": {
+				"tool": "Read every camera's intrinsics, depth availability, mount and hand-eye calibration."
+			},
+			"result": "read"
+		},
+		{
+			"name": "back_project",
+			"side": "ts",
+			"tier": "low",
+			"params": {
+				"row": {
+					"type": "integer",
+					"required": true,
+					"minimum": 0
+				},
+				"col": {
+					"type": "integer",
+					"required": true,
+					"minimum": 0
+				},
+				"camera": {
+					"type": "string",
+					"description": "Camera name (default: the main camera; have {{cameras}})"
+				},
+				"step": {
+					"type": "integer",
+					"description": "State step (default -1 = latest)"
+				}
+			},
+			"doc": {
+				"tool": "Back-project one camera pixel (row, col; row 0 = top) into UR5e base coordinates through its depth, intrinsics and hand-eye calibration."
+			},
+			"result": "read"
+		},
+		{
+			"name": "segment",
+			"side": "ts",
+			"tier": "low",
+			"requires": [
+				"robot_sam3"
+			],
+			"params": {
+				"prompt": {
+					"type": "string"
+				},
+				"point": {
+					"type": "array",
+					"items": "integer",
+					"minItems": 2,
+					"maxItems": 2
+				},
+				"camera": {
+					"type": "string",
+					"description": "Camera name (default: the main camera; have {{cameras}})"
+				},
+				"step": {
+					"type": "integer",
+					"description": "State step (default -1 = latest)"
+				},
+				"min_score": {
+					"type": "number",
+					"description": "Default 0.2"
+				}
+			},
+			"doc": {
+				"tool": "SAM3 segmentation of a camera image from the latest (or given) step. Give exactly one of a text prompt or a positive point [row, col]. On a camera with depth the mask's pixels are back-projected and world_xyz is their median base-frame point. Returns an overlay image."
+			},
+			"result": "read"
+		},
+		{
+			"name": "move_delta",
+			"side": "env",
+			"method": "env.move_delta",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"delta_xyz": {
+					"type": "vec3",
+					"required": true,
+					"description": "Base-frame [dx, dy, dz], m (at most {{max_move}} m per call)"
+				}
+			},
+			"doc": {
+				"tool": "Move the UR5e TCP by a bounded base-frame xyz delta in meters (x forward, y left, z up; at most {{max_move}} m per call); the orientation is held.",
+				"code": "Translate the TCP by a base-frame delta in metres, orientation held; refused before anything moves beyond the per-call limit (--max-move and the config's limits.max_move_m) or outside the workspace. Returns ok, start/target/final_tcp_pose, final_error_m, notes.\n\nExample:\n    r = move_delta([0, 0, -0.03])  # 3 cm down, orientation held\n    print(r[\"ok\"], r[\"final_tcp_pose\"][:3])"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "move_pose",
+			"side": "env",
+			"method": "env.move_pose",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"xyz": {
+					"type": "vec3",
+					"required": true,
+					"description": "Base-frame [x, y, z], m (at most {{max_move}} m from the current pose)"
+				},
+				"rotvec": {
+					"type": "vec3",
+					"description": "Orientation as an axis-angle rotation vector, rad"
+				},
+				"rpy": {
+					"type": "vec3",
+					"description": "Orientation as extrinsic xyz Euler angles, rad"
+				}
+			},
+			"doc": {
+				"tool": "Move the UR5e TCP to an absolute base-frame pose within the per-call limits ({{max_move}} m, {{max_rotate}} rad): xyz in meters plus an orientation as rotvec (axis-angle, rad) or rpy (extrinsic xyz Euler, rad); omit both to keep the orientation.",
+				"code": "Move the TCP to an absolute base-frame pose: xyz (m) and an orientation as rotvec or rpy (rad; give at most one, omit both to keep it). Refused before anything moves when the pose is further than the per-call limits from the current setpoint (--max-move, --max-rotate and the config's), outside the workspace or tilted past limits.max_tilt_rad.\n\nExample:\n    p = get_robot_state()[\"raw_base_state\"][\"tcp_pose\"]\n    move_pose([p[0] + 0.03, p[1], p[2]])  # absolute, within the per-call limit"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "rotate_delta",
+			"side": "env",
+			"method": "env.rotate_delta",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"delta_rpy": {
+					"type": "vec3",
+					"required": true,
+					"description": "Base-frame [droll, dpitch, dyaw], rad (norm at most {{max_rotate}} rad per call)"
+				}
+			},
+			"doc": {
+				"tool": "Rotate the UR5e TCP by a bounded base-frame rpy delta in radians (extrinsic xyz: roll about base x, pitch about y, yaw about z; norm at most {{max_rotate}} rad per call).",
+				"code": "Rotate the TCP by a base-frame roll/pitch/yaw delta in radians; refused beyond the per-call limit (--max-rotate and the config's limits.max_rotate_rad) or the tilt limit.\n\nExample:\n    rotate_delta([0, 0, 0.1])  # yaw 0.1 rad"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "open_gripper",
+			"side": "env",
+			"method": "env.open_gripper",
+			"tier": "high",
+			"mutating": true,
+			"doc": {
+				"tool": "Open the Robotiq gripper and wait for the fingers to settle; fingers that do not move report gripper_jammed.",
+				"code": "Open gripper fully and wait for the fingers to settle; reports gripper_jammed when they did not move.\n\nExample:\n    open_gripper()"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "close_gripper",
+			"side": "env",
+			"method": "env.close_gripper",
+			"tier": "high",
+			"mutating": true,
+			"doc": {
+				"tool": "Close the Robotiq gripper and wait for the fingers to settle. A close that catches nothing reopens and reports grasp_empty; fingers that do not move report gripper_jammed.",
+				"code": "Close gripper and wait for the fingers to settle; a close that caught nothing reopens and reports grasp_empty, fingers that did not move report gripper_jammed; object_detected tells whether it holds something.\n\nExample:\n    r = close_gripper()\n    print(r[\"object_detected\"], r.get(\"grasp_empty\"), r.get(\"gripper_jammed\"))"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "set_gripper",
+			"side": "code",
+			"method": "env.set_gripper",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"open": {
+					"type": "boolean",
+					"required": true,
+					"description": "True opens, False closes"
+				}
+			},
+			"doc": {
+				"code": "Open (open=True) or close the Robotiq gripper and wait for the fingers to settle (the low tier's gripper; open_gripper / close_gripper are the high tier's); reports object_detected, grasp_empty and gripper_jammed.\n\nExample:\n    r = set_gripper(False)\n    print(r[\"object_detected\"], r.get(\"grasp_empty\"), r.get(\"gripper_jammed\"))"
+			}
+		},
+		{
+			"name": "get_robot_state",
+			"side": "code",
+			"method": "env.get_robot_state",
+			"tier": "low",
+			"doc": {
+				"code": "The arm's state: TCP pose (xyz + xyzw and the UR rotation vector), joints, setpoint, gripper width (m).\n\nExample:\n    st = get_robot_state()[\"raw_base_state\"]\n    print(st[\"tcp_pose\"][:3], st[\"joints\"], st[\"gripper_position\"])"
+			}
+		},
+		{
+			"name": "get_observation",
+			"side": "code",
+			"method": "env.get_observation",
+			"tier": "low",
+			"doc": {
+				"code": "Live frames per camera: images[name] RGB, depths[name] metres for cameras with depth.\n\nExample:\n    obs = get_observation()\n    for name, rgb in obs[\"images\"].items():\n        print(name, rgb.shape, name in obs[\"depths\"])"
+			}
+		},
+		{
+			"name": "get_camera_meta",
+			"side": "code",
+			"method": "env.get_camera_meta",
+			"tier": "low",
+			"doc": {
+				"code": "Per camera: intrinsics, depth availability, mount and hand-eye extrinsic (camera -> tcp or base).\n\nExample:\n    meta = get_camera_meta()\n    K = meta[\"cameras\"][\"wrist\"][\"intrinsic_K\"]"
+			}
+		},
+		{
+			"name": "solve_ik",
+			"side": "code",
+			"method": "env.solve_ik",
+			"tier": "low",
+			"params": {
+				"position": {
+					"type": "vec3",
+					"required": true,
+					"description": "TCP [x, y, z] in the base frame, m"
+				},
+				"quaternion_wxyz": {
+					"type": "quat",
+					"description": "TCP orientation, wxyz (default: the current one)"
+				}
+			},
+			"doc": {
+				"code": "Solve inverse kinematics for the TCP with the controller's model, seeded from the current joints (nothing moves); the solution is checked with forward kinematics.\n\nReturns:\n    {reachable, joints (6, rad) or None, max_joint_change_rad, max_joint_step_rad, reason}: one move_to_joints call may change a joint by at most max_joint_step_rad.\n\nExample:\n    p = get_robot_state()[\"raw_base_state\"][\"tcp_pose\"]\n    r = solve_ik([p[0], p[1], p[2] - 0.02])\n    if r[\"reachable\"]:\n        move_to_joints(r[\"joints\"])"
+			}
+		},
+		{
+			"name": "move_to_joints",
+			"side": "code",
+			"method": "env.move_to_joints",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"joints": {
+					"type": "array",
+					"required": true,
+					"minItems": 6,
+					"maxItems": 6,
+					"description": "6 joint angles, rad"
+				}
+			},
+			"doc": {
+				"code": "moveJ to a joint configuration, bounded per call: each joint changes at most limits.max_joint_step_rad, the TCP stays within the per-call limits (--max-move, --max-rotate and the config's) of where it starts and inside the workspace along the path (checked with forward kinematics), at the reset's joint speed; refused whole otherwise (nothing moves). Stop halts it with stopJ.\n\nExample:\n    q = get_robot_state()[\"raw_base_state\"][\"joints\"]\n    q[5] += 0.1  # turn the wrist\n    move_to_joints(q)"
+			}
+		},
+		{
+			"use": "perception/detect"
+		},
+		{
+			"use": "perception/select_detection"
+		},
+		{
+			"use": "perception/reject_detection"
+		},
+		{
+			"use": "perception/enhance_depth"
+		},
+		{
+			"use": "modules/finish"
+		},
+		{
+			"use": "modules/act"
+		},
+		{
+			"use": "modules/plan"
+		},
+		{
+			"use": "modules/point"
+		},
+		{
+			"use": "modules/reset"
+		},
+		{
+			"use": "modules/request_operator_verdict"
+		},
+		{
+			"use": "modules/request_scene_reset"
+		},
+		{
+			"use": "modules/run_code"
+		}
+	]
+}

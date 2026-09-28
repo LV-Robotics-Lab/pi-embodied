@@ -391,7 +391,7 @@ class Perception:
         self,
         camera: str = "wrist",
         *,
-        text_prompt: str | None = None,
+        prompt: str | None = None,
         point: list[int] | None = None,
         min_score: float = 0.2,
         all: bool = False,
@@ -408,12 +408,12 @@ class Perception:
             "image_base64": _png_base64(rgb),
             "min_score": min_score,
         }
-        if text_prompt is not None and text_prompt.strip():
-            kwargs["text_prompt"] = text_prompt.strip()
+        if prompt is not None and prompt.strip():
+            kwargs["text_prompt"] = prompt.strip()
         elif point is not None:
             kwargs["point"] = [int(point[0]), int(point[1])]
         else:
-            raise ValueError("give a text_prompt or a point [row, col]")
+            raise ValueError("give a text prompt or a point [row, col]")
         if all:
             raw = self._sam3_call({**kwargs, "all": True})
             candidates = list(raw.get("detections") or [])

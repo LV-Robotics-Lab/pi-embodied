@@ -415,6 +415,16 @@ class RoboTwinAgentEnv(RoboTwinEnv):
             ),
         }
 
+    def robot_state(self, env_id: int = 0) -> dict[str, Any]:
+        """The robot state and episode status now, without rendering (the motion methods'
+        starting point)."""
+        sub_env = self._sub_env(env_id)
+        with sub_env.lock:
+            return {
+                "robot_state": self._robot_state(sub_env),
+                "episode_status": self._episode_status(sub_env),
+            }
+
     def plan_arm_path(
         self,
         env_id: int,

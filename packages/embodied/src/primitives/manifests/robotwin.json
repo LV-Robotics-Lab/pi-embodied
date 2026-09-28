@@ -1,0 +1,592 @@
+{
+	"robot": "robotwin",
+	"internal": [],
+	"primitives": [
+		{
+			"use": "sim/get_task_language"
+		},
+		{
+			"name": "view_env_state",
+			"side": "ts",
+			"tier": "low",
+			"params": {
+				"step": {
+					"type": "integer",
+					"description": "Recorded state; -1 (default) = latest, 0 = initial"
+				}
+			},
+			"doc": {
+				"tool": "Read one recorded state (step -1 = latest, 0 = initial): command, result, native episode status, robot state, and the head, left wrist and right wrist RGB images."
+			},
+			"result": "motion"
+		},
+		{
+			"name": "render",
+			"side": "ts",
+			"tier": "low",
+			"doc": {
+				"tool": "Capture a fresh synchronized observation as a new state without moving."
+			},
+			"result": "motion"
+		},
+		{
+			"name": "sample_world_xyz",
+			"side": "ts",
+			"tier": "low",
+			"params": {
+				"view": {
+					"type": "enum",
+					"values": [
+						"head",
+						"left_wrist",
+						"right_wrist"
+					],
+					"required": true,
+					"description": "View whose RGB supplied the pixels; also the pixel coordinate space"
+				},
+				"pixels": {
+					"type": "array",
+					"required": true,
+					"items": {
+						"type": "array",
+						"items": "integer",
+						"minItems": 2,
+						"maxItems": 2
+					},
+					"minItems": 1,
+					"maxItems": 256,
+					"description": "[row, col] pixels"
+				},
+				"step": {
+					"type": "integer",
+					"description": "Recorded state; -1 (default) = latest, 0 = initial"
+				},
+				"neighborhood": {
+					"type": "integer",
+					"minimum": 0,
+					"maximum": 32,
+					"description": "Radius in pixels (default 1)"
+				}
+			},
+			"doc": {
+				"tool": "Median world xyz (m) around [row, col] pixels of a recorded state's view, from same-step metric depth. Read-only."
+			},
+			"result": "read"
+		},
+		{
+			"name": "query_world_map",
+			"side": "ts",
+			"tier": "low",
+			"params": {
+				"view": {
+					"type": "enum",
+					"values": [
+						"head",
+						"left_wrist",
+						"right_wrist"
+					],
+					"required": true,
+					"description": "View whose RGB supplied the pixels; also the pixel coordinate space"
+				},
+				"bbox": {
+					"type": "array",
+					"required": true,
+					"items": "integer",
+					"minItems": 4,
+					"maxItems": 4,
+					"description": "[row_start, col_start, row_end, col_end], half-open"
+				},
+				"step": {
+					"type": "integer",
+					"description": "Recorded state; -1 (default) = latest, 0 = initial"
+				},
+				"max_points": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 4096,
+					"description": "Default 256"
+				}
+			},
+			"doc": {
+				"tool": "World-xyz samples and min/max/median stats over a half-open [row_start, col_start, row_end, col_end] box of a recorded state's view. Read-only."
+			},
+			"result": "read"
+		},
+		{
+			"name": "lingbot_act",
+			"side": "ts",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"chunks": {
+					"type": "integer",
+					"minimum": 1,
+					"description": "Default 4"
+				},
+				"use_length": {
+					"type": "integer",
+					"minimum": 50,
+					"maximum": 50,
+					"description": "Must be 50"
+				},
+				"prompt": {
+					"type": "string",
+					"description": "Recorded, never sent to the policy"
+				}
+			},
+			"doc": {
+				"tool": "Run LingBot-VLA eef16 action chunks (50 native actions each) on the native task instruction. The optional prompt is recorded but never sent to the policy."
+			},
+			"result": "motion"
+		},
+		{
+			"name": "move_to",
+			"side": "env",
+			"method": "env.move_to",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"arm": {
+					"type": "enum",
+					"values": [
+						"left",
+						"right"
+					],
+					"required": true,
+					"description": "Which arm"
+				},
+				"xyz": {
+					"type": "vec3",
+					"required": true,
+					"description": "World [x, y, z], m"
+				},
+				"quat": {
+					"type": "quat",
+					"description": "[qw, qx, qy, qz] (default: keep the current orientation)"
+				},
+				"gripper": {
+					"type": "number",
+					"minimum": 0,
+					"maximum": 1,
+					"description": "Gripper command held along the path, 0 closed .. 1 open; omit to keep it"
+				},
+				"substeps": {
+					"type": "integer",
+					"minimum": 0,
+					"description": "Planner waypoints executed, evenly subsampled (default 25; 0 = all)"
+				}
+			},
+			"doc": {
+				"tool": "Plan (curobo) and move one arm's EEF to a world-frame xyz and wxyz orientation (default: keep current). The planned qpos waypoints are executed from fresh state. EEF is not TCP: do not send a raw object surface point.",
+				"code": "Plan (cuRobo) and move one arm's eef to a world xyz and wxyz orientation (default: keep); the planned qpos waypoints run from the fresh state. EEF is not TCP. Returns the motion report: completed, requested_steps, executed_steps, stop_reason (native_success, budget_exhausted, cancelled, completed, runtime_failure or plan_failed), info (robot_state, episode_status, executed_actions), plan_status, waypoints, final_eef_xyz and final_dist_m.\n\nExample:\n    r = move_to(\"left\", [-0.2, -0.05, 0.95])\n    print(r[\"stop_reason\"], r[\"final_dist_m\"])"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "rotate_wrist",
+			"side": "env",
+			"method": "env.rotate_wrist",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"arm": {
+					"type": "enum",
+					"values": [
+						"left",
+						"right"
+					],
+					"required": true,
+					"description": "Which arm"
+				},
+				"delta_yaw_deg": {
+					"type": "number",
+					"required": true,
+					"description": "Relative turn about world z, degrees"
+				},
+				"gripper": {
+					"type": "number",
+					"minimum": 0,
+					"maximum": 1,
+					"description": "Gripper command held along the path, 0 closed .. 1 open; omit to keep it"
+				},
+				"substeps": {
+					"type": "integer",
+					"minimum": 0,
+					"description": "Planner waypoints executed, evenly subsampled (default 25; 0 = all)"
+				}
+			},
+			"doc": {
+				"tool": "Rotate one EEF about world z by a relative angle in degrees (EEF xyz fixed; the TCP and a held object sweep an arc).",
+				"code": "Rotate one eef about world z by a relative angle in degrees, eef xyz fixed (planned like move_to). Returns the motion report: completed, requested_steps, executed_steps, stop_reason (native_success, budget_exhausted, cancelled, completed, runtime_failure or plan_failed), info (robot_state, episode_status, executed_actions).\n\nExample:\n    rotate_wrist(\"right\", 30)"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "set_gripper",
+			"side": "env",
+			"method": "env.set_gripper",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"arm": {
+					"type": "enum",
+					"values": [
+						"left",
+						"right"
+					],
+					"required": true,
+					"description": "Which arm"
+				},
+				"val": {
+					"type": "number",
+					"required": true,
+					"minimum": 0,
+					"maximum": 1,
+					"description": "0 closed .. 1 open"
+				},
+				"steps": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 200,
+					"description": "Native actions (default 10)"
+				}
+			},
+			"doc": {
+				"tool": "Linearly move one normalized gripper (0 closed, 1 open) to val over `steps` native actions (default 10).",
+				"code": "Move one normalized gripper (0 closed, 1 open) linearly to val over steps native actions (default 10). Returns the motion report: completed, requested_steps, executed_steps, stop_reason (native_success, budget_exhausted, cancelled, completed, runtime_failure or plan_failed), info (robot_state, episode_status, executed_actions) and gripper_val.\n\nExample:\n    set_gripper(\"left\", 0.0)  # close"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "release",
+			"side": "env",
+			"method": "env.release",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"arm": {
+					"type": "enum",
+					"values": [
+						"left",
+						"right"
+					],
+					"required": true,
+					"description": "Which arm"
+				},
+				"val": {
+					"type": "number",
+					"minimum": 0,
+					"maximum": 1,
+					"description": "Opening (default 1.0)"
+				},
+				"steps": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 200,
+					"description": "Native actions (default 10)"
+				}
+			},
+			"doc": {
+				"tool": "Open one gripper to val (default 1.0) over `steps` native actions (default 10).",
+				"code": "Open one gripper to val (default 1.0) over steps native actions (default 10).\n\nExample:\n    release(\"right\")"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "get_state",
+			"side": "code",
+			"method": "env.policy_frame",
+			"tier": "low",
+			"doc": {
+				"code": "The joint state qpos (measured) and qpos_target (commanded), each 14 [left joints6, left gripper, right joints6, right gripper], and the eef16 state [left pose7 (xyz, wxyz), left gripper, right pose7, right gripper]; grippers 0 closed .. 1 open.\n\nExample:\n    st = get_state()\n    print(st[\"qpos_target\"], st[\"state\"][:3])  # left eef xyz"
+			}
+		},
+		{
+			"name": "solve_ik",
+			"side": "code",
+			"method": "env.solve_ik",
+			"tier": "low",
+			"params": {
+				"position": {
+					"type": "vec3",
+					"required": true,
+					"description": "World eef position, m"
+				},
+				"quaternion_wxyz": {
+					"type": "quat",
+					"required": true,
+					"description": "Orientation, wxyz"
+				},
+				"arm": {
+					"type": "enum",
+					"values": [
+						"left",
+						"right"
+					],
+					"required": true,
+					"description": "Which arm"
+				}
+			},
+			"doc": {
+				"code": "Solve inverse kinematics for one arm's eef: the end of cuRobo's collision-checked path to the pose from the current joints (RoboTwin exposes its planner, not a bare IK solver). Raises when there is none.\n\nReturns:\n    joints: 6 joint angles.\n\nExample:\n    q = solve_ik([-0.2, -0.05, 0.95], [0, 0.707, 0, 0.707], \"left\")\n    move_to_joints(q, \"left\")"
+			}
+		},
+		{
+			"name": "move_to_joints",
+			"side": "code",
+			"method": "env.move_to_joints",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"joints": {
+					"type": "array",
+					"required": true,
+					"items": "number",
+					"minItems": 6,
+					"maxItems": 6,
+					"description": "6 joint angles, rad"
+				},
+				"arm": {
+					"type": "enum",
+					"values": [
+						"left",
+						"right"
+					],
+					"required": true,
+					"description": "Which arm"
+				},
+				"gripper": {
+					"type": "number",
+					"minimum": 0,
+					"maximum": 1,
+					"description": "Gripper value too, 0 closed .. 1 open (default: keep)"
+				}
+			},
+			"doc": {
+				"code": "Move one arm to a joint configuration (one native qpos action; RoboTwin runs the motion). Returns the motion report: completed, requested_steps, executed_steps, stop_reason (native_success, budget_exhausted, cancelled, completed, runtime_failure or plan_failed), info (robot_state, episode_status, executed_actions) and final_joints.\n\nExample:\n    move_to_joints([0.0, 1.2, 1.0, 0.0, -0.5, 0.0], \"right\")"
+			}
+		},
+		{
+			"name": "traj_plan",
+			"side": "code",
+			"method": "env.traj_plan",
+			"tier": "low",
+			"params": {
+				"start_pose_wxyz_xyz": {
+					"type": "array",
+					"required": true,
+					"items": "number",
+					"minItems": 7,
+					"maxItems": 7,
+					"description": "Start pose, wxyz then xyz: the arm's current eef pose (cuRobo plans from the current joints)"
+				},
+				"end_pose_wxyz_xyz": {
+					"type": "array",
+					"required": true,
+					"items": "number",
+					"minItems": 7,
+					"maxItems": 7,
+					"description": "End pose, wxyz then xyz"
+				},
+				"arm": {
+					"type": "enum",
+					"values": [
+						"left",
+						"right"
+					],
+					"required": true,
+					"description": "Which arm"
+				}
+			},
+			"doc": {
+				"code": "Plan joint waypoints [N, 6] between two eef poses with cuRobo (collision-aware). The start must be the arm's current eef pose. Raises when planning fails.\n\nExample:\n    p = get_state()[\"state\"][:7]  # left eef: xyz, wxyz\n    start = list(p[3:]) + list(p[:3])\n    traj = traj_plan(start, [0, 0.707, 0, 0.707, -0.2, -0.05, 0.95], \"left\")\n    move_along_trajectory(traj[::4], \"left\")"
+			}
+		},
+		{
+			"name": "move_along_trajectory",
+			"side": "code",
+			"method": "env.move_along_trajectory",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"trajectory": {
+					"type": "array",
+					"required": true,
+					"items": {
+						"type": "array",
+						"items": "number",
+						"minItems": 6,
+						"maxItems": 6
+					},
+					"minItems": 1,
+					"maxItems": 64,
+					"description": "Joint waypoints [N, 6]"
+				},
+				"arm": {
+					"type": "enum",
+					"values": [
+						"left",
+						"right"
+					],
+					"required": true,
+					"description": "Which arm"
+				},
+				"gripper": {
+					"type": "number",
+					"minimum": 0,
+					"maximum": 1,
+					"description": "Gripper command held along the path, 0 closed .. 1 open; omit to keep it"
+				}
+			},
+			"doc": {
+				"code": "Move one arm along joint-space waypoints, one native qpos action each. Returns the motion report: completed, requested_steps, executed_steps, stop_reason (native_success, budget_exhausted, cancelled, completed, runtime_failure or plan_failed), info (robot_state, episode_status, executed_actions) and final_joints.\n\nExample:\n    move_along_trajectory(traj, \"left\")"
+			}
+		},
+		{
+			"name": "render_camera",
+			"side": "code",
+			"method": "env.render_camera",
+			"tier": "low",
+			"params": {
+				"camera_name": {
+					"type": "enum",
+					"values": [
+						"head",
+						"left_wrist",
+						"right_wrist"
+					],
+					"required": true,
+					"description": "'head', 'left_wrist' or 'right_wrist'"
+				},
+				"depth": {
+					"type": "boolean",
+					"description": "Also return the depth map"
+				}
+			},
+			"doc": {
+				"code": "One camera's RGB (and depth) frame.\n\nExample:\n    rgb = render_camera(\"head\")\n    rgb, depth = render_camera(\"left_wrist\", depth=True)  # depth in m, NaN = no hit"
+			}
+		},
+		{
+			"name": "get_camera_meta",
+			"side": "code",
+			"method": "env.get_camera_meta",
+			"tier": "low",
+			"params": {
+				"camera_name": {
+					"type": "enum",
+					"values": [
+						"head",
+						"left_wrist",
+						"right_wrist"
+					],
+					"required": true,
+					"description": "'head', 'left_wrist' or 'right_wrist'"
+				}
+			},
+			"doc": {
+				"code": "Camera intrinsics and extrinsics.\n\nExample:\n    meta = get_camera_meta(\"head\")\n    K, cam2world = meta[\"intrinsic_K\"], meta[\"cam2world_gl\"]  # OpenGL camera axes"
+			}
+		},
+		{
+			"name": "raw_obs",
+			"side": "code",
+			"method": "env.policy_frame",
+			"tier": "raw",
+			"doc": {
+				"code": "The raw joint and eef16 state (get_state's, for the raw tier): qpos (measured) and qpos_target (commanded), each 14 [left joints6, left gripper, right joints6, right gripper], and state [left pose7 (xyz, wxyz), left gripper, right pose7, right gripper].\n\nExample:\n    q = list(raw_obs()[\"qpos_target\"])"
+			}
+		},
+		{
+			"name": "step",
+			"side": "code",
+			"method": "env.step",
+			"tier": "raw",
+			"mutating": true,
+			"params": {
+				"action": {
+					"type": "array",
+					"required": true,
+					"items": "number",
+					"description": "14 or 16 floats"
+				},
+				"action_type": {
+					"type": "enum",
+					"values": [
+						"qpos",
+						"ee"
+					],
+					"description": "'qpos' (14 joints, default) or 'ee' (16: two 7-D poses and grippers)"
+				}
+			},
+			"doc": {
+				"code": "One native action of both arms.\n\nExample:\n    q = list(raw_obs()[\"qpos_target\"])\n    q[13] = 0.0  # close the right gripper (0 closed .. 1 open)\n    r = step(q)\n    print(r[\"info\"][\"robot_state\"][\"right_gripper\"], r[\"info\"][\"episode_status\"][\"eval_success\"])"
+			}
+		},
+		{
+			"name": "chunk_step",
+			"side": "code",
+			"method": "env.chunk_step",
+			"tier": "raw",
+			"mutating": true,
+			"params": {
+				"actions": {
+					"type": "array",
+					"required": true,
+					"description": "N x 14 or N x 16 floats"
+				},
+				"action_type": {
+					"type": "enum",
+					"values": [
+						"qpos",
+						"ee"
+					],
+					"description": "'qpos' (14 joints, default) or 'ee' (16: two 7-D poses and grippers)"
+				},
+				"return_all_frames": {
+					"type": "boolean",
+					"description": "One observation per action"
+				}
+			},
+			"doc": {
+				"code": "Run N native actions in one call.\n\nExample:\n    q = list(raw_obs()[\"qpos_target\"])\n    rows = [q[:13] + [c] for c in (0.8, 0.5, 0.2, 0.0)]  # close the right gripper in 4 actions\n    r = chunk_step(rows)\n    print(r[\"info\"][\"executed_actions\"], r[\"info\"][\"robot_state\"][\"right_gripper\"])"
+			}
+		},
+		{
+			"use": "sim/ground_truth_poses"
+		},
+		{
+			"use": "perception/detect"
+		},
+		{
+			"use": "perception/select_detection"
+		},
+		{
+			"use": "perception/reject_detection"
+		},
+		{
+			"use": "perception/enhance_depth"
+		},
+		{
+			"use": "modules/finish"
+		},
+		{
+			"use": "modules/act"
+		},
+		{
+			"use": "modules/plan"
+		},
+		{
+			"use": "modules/point"
+		},
+		{
+			"use": "modules/reset"
+		},
+		{
+			"use": "modules/run_code"
+		},
+		{
+			"use": "modules/xpolicy_act"
+		}
+	]
+}

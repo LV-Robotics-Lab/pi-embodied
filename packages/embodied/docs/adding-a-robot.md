@@ -3,7 +3,9 @@
 A robot is two halves that talk over the services' RPC (`POST /call`, services/PROTOCOL.md):
 
 - a Python env server in `services/pi_embodied_services/robots/<robot>/`, which owns the simulator
-  or the arm, every motion limit, and the primitive registry;
+  or the arm, every motion limit, and the execution of every primitive;
+- a primitive manifest, `src/primitives/manifests/<robot>.json`, the one declaration of the robot's
+  tools and code primitives, read by both halves ([Adding a primitive](adding-a-primitive.md));
 - a pi extension in `packages/embodied/src/robots/<robot>/`, which registers the robot's flags and tools with
   `defineRobot` (`src/robot.ts`) and nothing else.
 
@@ -13,7 +15,7 @@ shared modules below; a feature a robot needs is a flag, a tool, a hook (`pi.on`
 message or a session entry, and a feature that is off registers no tool.
 
 Genesis is the smallest complete robot to copy from: `src/robots/genesis/index.ts` (one file, 420 lines),
-`services/.../robots/genesis/{env_server,primitives}.py`, `test/genesis.test.ts`.
+`services/.../robots/genesis/env_server.py`, `src/primitives/manifests/genesis.json`, `test/genesis.test.ts`.
 
 ## 1. The env server
 
@@ -35,8 +37,11 @@ Genesis is the smallest complete robot to copy from: `src/robots/genesis/index.t
 - `main()` takes `--transport http --host --port --parent-watch` plus the task arguments and calls
   `facade.serve(...)`. Port 0 is the default: the server binds a free port and prints
   `RPC server listening on http://127.0.0.1:<port>`, which is how `robot.serve` finds it.
-- Declare the primitive registry in `primitives.py` and serve it with
-  `register_code_api(self, PRIMITIVES)` (see [Adding a primitive](adding-a-primitive.md)).
+- Serve the manifest: mix `CodeRunMixin` (`utils/code_exec.py`) in first and call
+  `self._manifest_code_run("<robot>", have=self._has, move_m=..., check=..., reply=..., begin=...,
+  finish=...)` at the end of `_register_rpc`; `_has(capability)` says which `requires` this server
+  meets. At `serve` the server checks its RPC methods against the manifest and refuses to start on
+  a mismatch.
 
 Install: a `[<robot>]` extra in `services/pyproject.toml` (its own venv when its Torch, MuJoCo or
 robosuite pin conflicts with another robot's) and a target in `services/setup.sh`. Document the
@@ -56,7 +61,10 @@ methods in `services/PROTOCOL.md` under "Env servers".
    `finish`, and `prompt` (the robot's `SYSTEM.md`, `[tool:name]` blocks follow the active tools).
 3. In `start`, launch the env server with `robot.serve({python, args, cwd, env, log})` (or
    `attach(--env)`), check `env.get_env_meta` against the task flags, reset, and return the tools.
-4. Register tools with `robot.tool(name, description, TypeBox schema, run)`. Tools run
+4. Name the manifest in the spec (`manifest: "<robot>"`) with its `vars` (the cameras, arms and
+   limits its descriptions and enums refer to) and `capabilities` (which `requires` this run
+   meets; they must agree with the server's `_has`). Register tools with
+   `robot.tool(name, "", Type.Object({}), run)`: the schema and description are the manifest's. Tools run
    sequentially; pass `robot.signal` (or the `signal` argument) to every RPC so an abort stops the
    robot between calls and asks the server to `stop` the running one.
 5. Opt in to shared modules through the spec; each one mounts only what the spec asks for:

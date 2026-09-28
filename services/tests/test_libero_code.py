@@ -126,7 +126,19 @@ class ArmSim:
 
 
 def facade(sam3=None) -> LiberoEnvFacade:
+    """A facade as main() builds it: with --sam3 its perception primitives are installed too."""
     f = LiberoEnvFacade(ArmSim(), meta={}, sam3=sam3)
+    if sam3:
+        import argparse
+
+        from pi_embodied_services.utils.perception import install_perception
+
+        install_perception(
+            f,
+            argparse.Namespace(sam3=sam3, unidepth=""),
+            cameras=["agentview", "wrist"],
+            view=f._view,
+        )
     f.reset()
     return f
 
@@ -138,59 +150,82 @@ def names(api):
     return [p["name"] if isinstance(p, dict) else p.name for p in api]
 
 
-RAW_HIGH = ["get_task_language", "render_camera", "get_camera_meta"]
-RAW_LOW = RAW_HIGH + ["raw_obs", "step", "chunk_step"]
+def available(f, tier):
+    return f._rpc["code.api"](tier)["available"]
 
 
-CODE_HIGH = [
+HIGH = ["goto_pose", "home_pose", "open_gripper", "close_gripper"]
+LOW = [
+    "get_task_language",
     "get_state",
     "get_observation",
     "back_project",
     "move_to",
+    "move_pose",
     "rotate_wrist",
+    "rotate_pitch",
+    "move_delta",
+    "rotate_delta",
     "set_gripper",
+    "release",
+    "get_camera_meta",
 ]
-CODE_LOW = ["get_state", "get_observation", "move_delta", "rotate_delta", "set_gripper"]
+RAW = ["render_camera", "raw_obs", "step", "chunk_step"]
 
 
-def test_the_registry_tiers_list_the_code_primitives_and_privileged_adds_ground_truth():
+def test_the_manifest_tiers_list_the_code_primitives_and_privileged_adds_ground_truth():
     f = facade()
-    high = f._rpc["code.api"]("high")
-    low = f._rpc["code.api"]("low")
-    priv = f._rpc["code.api"]("privileged")
-    # Other servers' primitives (the raw surface, reach previews) sit beside these in the registry.
-    assert set(CODE_HIGH) <= set(names(high)) and set(CODE_LOW) <= set(names(low))
-    assert set(names(low)) & {"back_project", "move_to", "rotate_wrist"} == set()
-    assert set(names(high)) & {"move_delta", "rotate_delta"} == set()
-    assert "ground_truth_poses" not in names(high) + names(low)
-    assert set(names(priv)) == set(names(high)) | {"ground_truth_poses"}
-    assert isinstance(high["digest"], str) and high["tier"] == "high"
-    move_to = next(p for p in high["primitives"] if p["name"] == "move_to")
-    assert move_to["method"] == "env.move_to" and move_to["mutating"] is True
-    assert list(move_to["params"]) == ["xyz", "gripper", "tol", "max_steps"]
-    # The runner renders the same declaration as a signature and a doc for the program.
-    runner = {p.name: p for p in f._code.primitives("high")}
-    assert set(runner) == set(names(high))
-    assert runner["move_to"].describe()["signature"] == (
-        "(xyz: vec3, gripper: number = None, tol: number = None, max_steps: integer = None)"
+    assert available(f, "high") == HIGH, (
+        "CaP-X's semantic functions only (no SAM3 here)"
     )
-    assert "Args:" in runner["move_to"].describe()["doc"]
-    assert "Moves the robot." in runner["move_to"].describe()["doc"]
-    assert "ground_truth_poses" in [p.name for p in f._code.primitives("privileged")]
-    helpers = names(f._rpc["code.helpers"]())
-    assert helpers[:2] == ["rotation_matrix_to_quaternion", "decompose_transform"]
+    assert available(f, "low") == LOW
+    assert available(f, "raw") == RAW
+    priv = available(f, "privileged")
+    assert set(priv) == set(HIGH) | {
+        "ground_truth_poses",
+        "get_object_pose",
+        "sample_grasp_pose",
+    }, "the privileged pose functions need no SAM3"
+    low_priv = available(f, "low+privileged")
+    assert set(low_priv) == set(LOW) | {
+        "ground_truth_poses",
+        "get_object_pose",
+        "sample_grasp_pose",
+    }
+    high = f._rpc["code.api"]("high")
+    assert high["tier"] == "high" and isinstance(high["digest"], str)
+    # The runner renders the manifest's declaration as a signature and a doc for the program.
+    runner = {p.name: p for p in f._code.primitives("low")}
+    assert set(runner) == set(LOW)
+    sig = runner["move_to"].describe()["signature"]
+    assert sig.startswith("(xyz: vec3, gripper: number = None, tol: number = None")
+    doc = runner["move_to"].describe()["doc"]
+    assert "Args:" in doc and "Moves the robot." in doc and "Example:" in doc
 
 
-def test_segment_needs_a_sam3_server():
-    assert "segment" not in names(facade()._rpc["code.api"]("high"))
-    assert "env.segment" not in facade()._rpc
+def test_every_low_primitive_has_an_example_the_s4_tier_drops():
+    f = facade()
+    f._manifest_ready()
+    low = {p.name: p.describe()["doc"] for p in f._code.primitives("low")}
+    assert all("Example:" in d for d in low.values()), [
+        n for n, d in low.items() if "Example:" not in d
+    ]
+    s4 = f._code.api("low-noexamples")
+    assert [p["name"] for p in s4] == list(low)
+    assert all("Example:" not in p["doc"] for p in s4)
+
+
+def test_segment_and_the_perception_pose_functions_need_a_sam3_server():
+    f = facade()
+    assert "segment" not in available(f, "low")
+    assert "get_object_pose" not in available(f, "high")
     with_sam3 = facade(sam3="http://127.0.0.1:1")
-    assert "segment" in names(with_sam3._rpc["code.api"]("high"))
-    assert "segment" not in names(with_sam3._rpc["code.api"]("low"))
-    assert "env.segment" in with_sam3._rpc
+    assert "segment" in available(with_sam3, "low")
+    assert {"get_object_pose", "sample_grasp_pose"} <= set(available(with_sam3, "high"))
+    assert "segment" not in available(with_sam3, "high")
 
 
-def test_move_to_servos_with_the_tools_step_rule_and_keeps_the_gripper_command():
+def test_move_to_servos_with_the_tools_step_rule_and_opens_unless_told():
     f = facade()
     out = f.move_to([0.1, 0.05, 0.2])
     assert out["final_dist_m"] < 0.012
@@ -198,12 +233,14 @@ def test_move_to_servos_with_the_tools_step_rule_and_keeps_the_gripper_command()
     # 2.5 cm per step at most: 0.1 m takes at least 4 steps.
     assert 4 <= out["steps_used"] <= 6
     assert out["gripper_width"] == pytest.approx(0.08)
-    f.set_gripper(True)
+    f.set_gripper(1)
     assert f.get_state()["gripper_cmd"] == 1
-    f.move_to([0.1, 0.05, 0.3])
-    assert f.get_state()["gripper_cmd"] == 1, "a move keeps the last gripper command"
-    opened = f.move_to([0.1, 0.05, 0.2], gripper=-1)
-    assert opened["gripper_width"] == pytest.approx(0.08)
+    f.move_to([0.1, 0.05, 0.3], gripper=None)
+    assert f.get_state()["gripper_cmd"] == 1, "None keeps the last gripper command"
+    f.move_to([0.1, 0.05, 0.3], gripper=1)
+    assert f.get_state()["gripper_cmd"] == 1
+    opened = f.move_to([0.1, 0.05, 0.2])
+    assert opened["gripper_width"] == pytest.approx(0.08), "the tool's default opens"
     assert f.get_state()["gripper_cmd"] == -1
     with pytest.raises(ValueError):
         f.move_to([0, 0, 0.2], gripper=0.5)
@@ -227,12 +264,15 @@ def test_move_delta_and_rotate_delta_are_bounded_and_report_travel():
         f.rotate_wrist()
 
 
-def test_set_gripper_stops_when_the_fingers_stop():
+def test_set_gripper_drives_its_steps_and_the_executors_closing_stops_with_the_fingers():
     f = facade()
-    out = f.set_gripper(True)
+    out = f.set_gripper(1, steps=8)
     assert out["gripper_width"] == pytest.approx(0.02)
-    assert out["steps_used"] < 12, "the fingers stopped on the object"
-    assert f.set_gripper(False)["gripper_width"] == pytest.approx(0.08)
+    assert out["steps_used"] == 8, "the tool's rule: every step it was asked for"
+    assert f.set_gripper()["steps_used"] == 5, "default: open for 5 steps"
+    assert f._actuate(1.0)["steps_used"] < 8, "the executors stop once the fingers rest"
+    assert f.open_gripper()["steps_used"] == 40
+    assert f.close_gripper()["steps_used"] == 60
 
 
 def test_observation_is_upright_metric_and_back_projects_with_its_calibration():
@@ -266,9 +306,10 @@ def test_a_run_reports_steps_success_the_latest_obs_and_frames():
     f = facade()
     out = f._rpc["code.run"](
         "g = set_gripper(True)\n"
-        "r = move_to([0, 0, 0.6])\n"
+        "r = move_to([0, 0, 0.6], gripper=1)\n"
         "RESULT = [get_state()['terminated'], r['steps_used'] + g['steps_used']]\n",
         timeout_s=30,
+        tier="low",
     )
     assert out["status"] == "ran", out
     assert out["result"][0] is True
@@ -281,7 +322,7 @@ def test_a_run_reports_steps_success_the_latest_obs_and_frames():
     assert out["calls"][1]["move_m"] == pytest.approx(0.4)
 
 
-def test_the_low_tiers_raw_steps_count_and_its_raw_obs_has_no_object_poses():
+def test_the_raw_tiers_steps_count_and_its_raw_obs_has_no_object_poses():
     f = facade()
     raw = f.raw_obs
     f.raw_obs = lambda: {
@@ -296,7 +337,7 @@ def test_the_low_tiers_raw_steps_count_and_its_raw_obs_has_no_object_poses():
         "chunk_step([[0, 0, 1, 0, 0, 0, -1]] * 2)\n"
         "RESULT = sorted(obs)\n",
         timeout_s=30,
-        tier="low",
+        tier="raw",
     )
     assert out["status"] == "ran", out
     assert out["result"] == [
@@ -312,7 +353,7 @@ def test_the_low_tiers_raw_steps_count_and_its_raw_obs_has_no_object_poses():
 def test_a_finished_episode_stops_every_motion_primitive():
     f = facade()
     f.set_gripper(True)
-    f.move_to([0, 0, 0.6])
+    f.move_to([0, 0, 0.6], gripper=1)
     assert f.get_state()["terminated"]
     assert f.move_to([0.3, 0, 0.6])["steps_used"] == 0
     assert f.set_gripper(False)["steps_used"] == 0
@@ -339,6 +380,7 @@ def test_move_budget_is_estimated_from_the_target_and_refuses():
         "        log.append(type(e).__name__)\n"
         "RESULT = log\n",
         timeout_s=30,
+        tier="low",
         max_move_m=0.12,
     )
     assert out["result"] == ["ok", "ok", "CodeLimitError"]
@@ -348,7 +390,7 @@ def test_move_budget_is_estimated_from_the_target_and_refuses():
 
 def test_ground_truth_primitive_only_with_privileged():
     f = facade()
-    out = f._rpc["code.run"]("RESULT = ground_truth_poses()", timeout_s=30)
+    out = f._rpc["code.run"]("RESULT = ground_truth_poses()", timeout_s=30, tier="low")
     assert "NameError" in out["error"]
     out = f._rpc["code.run"](
         "RESULT = ground_truth_poses(['cube'])", timeout_s=30, tier="privileged"
@@ -369,22 +411,24 @@ def test_calls_go_through_the_registry_resolve():
         "        log.append(str(e))\n"
         "RESULT = log\n",
         timeout_s=30,
+        tier="low",
     )
     assert "unknown parameter(s) sideways" in out["result"][0]
     assert "missing parameter(s) xyz" in out["result"][1]
     assert "unknown parameter(s) extra" in out["result"][2]
     assert out["steps"] == 0, "a refused call never reaches the env"
-    # Positional arguments fill the declared parameters in order; a raw low-tier step is capped too.
+    # Positional arguments fill the declared parameters in order; a raw step is capped too.
     out = f._rpc["code.run"](
-        "r = move_delta([0, 0, 0.05], -1)\n"
-        "step([0.2, 0, 0, 0, 0, 0, -1])\n"
-        "RESULT = r['moved_m']",
+        "r = move_delta([0, 0, 0.05], -1)\nRESULT = r['moved_m']",
         timeout_s=30,
         tier="low",
     )
     assert out["result"] == pytest.approx(0.05, abs=0.005)
-    assert out["calls"][1]["move_m"] == pytest.approx(0.01)
-    assert len(out["frames"]) == 2, "raw steps are mutating too"
+    out = f._rpc["code.run"](
+        "step([0.2, 0, 0, 0, 0, 0, -1])\n", timeout_s=30, tier="raw"
+    )
+    assert out["calls"][0]["move_m"] == pytest.approx(0.01)
+    assert len(out["frames"]) == 1, "raw steps are mutating too"
 
 
 def test_non_finite_targets_are_refused_by_the_facade_methods_pi_calls_too():
@@ -413,7 +457,7 @@ def test_a_programs_nan_step_is_refused_and_the_move_cap_holds():
         "for _ in range(30):\n"
         "    step([1, 0, 0, 0, 0, 0, -1])\n",
         timeout_s=30,
-        tier="low",
+        tier="raw",
         max_move_m=0.5,
     )
     assert "non-finite" in out["calls"][0]["error"]
@@ -423,7 +467,7 @@ def test_a_programs_nan_step_is_refused_and_the_move_cap_holds():
 def test_a_long_raw_chunk_is_refused_before_it_runs():
     f = facade()
     out = f._rpc["code.run"](
-        "chunk_step([[0, 0, 0, 0, 0, 0, -1]] * 1000)\n", timeout_s=30, tier="low"
+        "chunk_step([[0, 0, 0, 0, 0, 0, -1]] * 1000)\n", timeout_s=30, tier="raw"
     )
     assert out["status"] == "error" and "at most 64 actions" in out["error"], out
     assert out["steps"] == 0
@@ -443,12 +487,10 @@ def test_the_server_requires_a_token_and_is_exclusive_while_a_program_runs():
             seen["refused"] = str(exc)
         return {}
 
-    f._rpc["env.get_state"] = probe
-    f._code._primitives["get_state"] = type(f._code._primitives["get_state"])(
-        "get_state", probe, ("high", "low")
-    )
+    f._manifest_ready()
+    f._rpc["env.get_state"] = probe  # the runner looks the method up at call time
     out = f._serve_dispatch(
-        "code.run", ("get_state()\n",), {"timeout_s": 30}, token=token
+        "code.run", ("get_state()\n",), {"timeout_s": 30, "tier": "low"}, token=token
     )
     assert out["status"] == "ran", out
     assert "run_code program is running" in seen["refused"]
@@ -580,19 +622,18 @@ def test_a_wrist_turn_expires_the_ids_and_an_empty_grasp_is_not_placed():
 
 
 def test_the_executors_are_code_primitives_only_with_a_grasp_server():
-    plain = set(names(facade()._rpc["code.api"]("high")))
+    plain = set(available(facade(), "low"))
     assert {"execute_grasp", "execute_place"} & plain == set()
     f, _ = grasp_facade()
-    high = f._rpc["code.api"]("high")
-    assert {"execute_grasp", "execute_place", "claim_waypoints"} <= set(names(high))
-    assert "execute_grasp" not in names(f._rpc["code.api"]("low"))
-    ex = next(p for p in high["primitives"] if p["name"] == "execute_grasp")
-    assert ex["mutating"] is True and list(ex["params"]) == [
-        "grasp_id",
-        "standoff",
-        "lift",
-        "max_steps",
-    ]
+    low = available(f, "low")
+    assert {"execute_grasp", "execute_place", "claim_waypoints", "plan_grasp"} <= set(
+        low
+    )
+    assert "execute_grasp" not in available(f, "high")
+    f._manifest_ready()
+    ex = next(p for p in f._code.api("low") if p["name"] == "execute_grasp")
+    assert ex["signature"].startswith("(grasp_id: string, standoff: number = None")
+    assert "Moves the robot." in ex["doc"]
     # The run's translation cap counts the whole path.
     gid = f._rpc["env.plan_grasp"](object="bowl")["active"]
     moved = f._code_move_m("env.execute_grasp", {"grasp_id": gid})
@@ -786,6 +827,7 @@ def test_business_calls_are_refused_while_a_primitive_is_abandoned():
     import threading
 
     f = facade()
+    f._manifest_ready()
     release = threading.Event()
     stuck = threading.Thread(target=release.wait, name="run_code:move_to", daemon=True)
     stuck.start()
@@ -796,3 +838,224 @@ def test_business_calls_are_refused_while_a_primitive_is_abandoned():
     release.set()
     stuck.join(2)
     assert f._serve_dispatch("env.get_state", (), {}, token=f._rpc_token)["eef_pos"]
+
+
+# ---- the manifest (packages/embodied/src/primitives/manifests/libero.json) -----------------
+
+
+def full_facade():
+    """Every optional part on: SAM3 with perception, a grasp server and AnyPlace, --geometry."""
+    f, _ = grasp_facade()
+    g = LiberoEnvFacade(DownArm(), meta={}, sam3="http://127.0.0.1:1", geometry=True)
+    import argparse
+
+    from pi_embodied_services.utils.perception import install_perception
+
+    install_perception(
+        g,
+        argparse.Namespace(sam3="http://127.0.0.1:1", unidepth=""),
+        cameras=["agentview", "wrist"],
+        view=g._view,
+    )
+    g.reset()
+    return f, g
+
+
+def test_the_server_checks_itself_against_its_manifest():
+    """Every declared primitive is served and every served business method is declared or
+    internal, with and without the optional parts."""
+    from pi_embodied_services.components.manifest import ManifestError
+
+    for f in (facade(), *full_facade()):
+        f._manifest_ready()
+    g = facade()
+    g._rpc["env.secret_teleport"] = lambda: None
+    with pytest.raises(ManifestError, match="env.secret_teleport"):
+        g._manifest_ready()
+    h = facade()
+    del h._rpc["env.move_pose"]
+    with pytest.raises(ManifestError, match="move_pose"):
+        h._manifest_ready()
+
+
+def test_a_tool_call_returns_every_env_step_and_a_refusal_as_its_result():
+    f = facade()
+    out = f._rpc["env.move_to"](xyz=[0.1, 0.0, 0.2], tool_call=True)
+    steps = out["transitions"]
+    assert len(steps) == out["steps_used"] > 0
+    assert steps[0]["action"].shape == (7,) and steps[0]["action"][6] == -1
+    assert set(steps[0]) == {"action", "obs", "reward", "terminated", "truncated"}
+    assert "main_images" in steps[0]["obs"]
+    far = f._rpc["env.move_to"](xyz=[0.5, 0.3, 0.2], tool_call=True)
+    assert (
+        "0.3 m" in far["refused"]
+        and far["transitions"] == []
+        and far["steps_used"] == 0
+    )
+    with pytest.raises(ValueError, match="0.3 m"):
+        f._rpc["env.move_to"](xyz=[0.5, 0.3, 0.2])  # a program gets the error
+    assert f._record is None
+    # A program cannot ask for the tool's extras: the manifest does not declare tool_call.
+    out = f._rpc["code.run"](
+        "move_to([0.1, 0, 0.2], tool_call=True)\n", timeout_s=30, tier="low"
+    )
+    assert "unknown parameter(s) tool_call" in out["error"]
+
+
+def test_move_to_with_a_yaw_target_turns_while_it_servos():
+    f = facade()
+    out = f.move_to([0.05, 0.0, 0.2], target_yaw=0.3, max_steps=10)
+    assert out["steps_used"] <= 10
+    assert f._yaw() > 0.05, "turned toward the target yaw"
+
+
+def test_move_pose_rotate_pitch_and_release_are_the_tools_loops():
+    f = LiberoEnvFacade(FullArm(), meta={})
+    f.reset()
+    r = f.move_pose([0.05, 0.0, 0.25], target_pitch=0.3, gripper=1)
+    assert r["final_dist_m"] < 0.012 and r["final_pitch"] == pytest.approx(
+        0.3, abs=0.05
+    )
+    assert f.get_state()["gripper_cmd"] == 1
+    p = f.rotate_pitch(delta_pitch=-0.2)
+    assert p["final_err"] == pytest.approx(0.0, abs=0.02)
+    assert p["target_pitch"] == pytest.approx(p["start_pitch"] - 0.2, abs=1e-3)
+    w = f.rotate_wrist(target_yaw=0.4, gripper=-1)
+    assert w["final_yaw"] == pytest.approx(0.4, abs=0.02) and w["yaw"] == w["final_yaw"]
+    with pytest.raises(ValueError, match="target_pitch or delta_pitch"):
+        f.rotate_pitch()
+    out = f.release(max_steps=7)
+    assert (
+        out["steps_used"] == 7
+        and out["final_gripper_opening"] >= out["start_gripper_opening"]
+    )
+    assert f.get_state()["gripper_cmd"] == -1
+
+
+def test_back_project_has_a_region_mode():
+    f = facade()
+    r = f.back_project(row_range=[200, 300], col_range=[250, 260])
+    assert r["mode"] == "region" and r["center_xyz"][2] == pytest.approx(0.2, abs=1e-3)
+    with pytest.raises(ValueError, match="both row_range and col_range"):
+        f.back_project(row_range=[0, 10])
+    with pytest.raises(ValueError, match="current 512x512"):
+        f.back_project(10, 10, step=0)
+
+
+# ---- CaP-X's high tier ------------------------------------------------------------------------
+
+
+def sam3_facade(arm=None):
+    from test_grasp import FakeSam3
+
+    mask = np.zeros((CODE_RES, CODE_RES), bool)
+    mask[240:270, 300:320] = True  # 30 x 20 px on the table plane (z = 0.2)
+    f = LiberoEnvFacade(arm or DownArm(), meta={}, sam3="http://127.0.0.1:1")
+    f._sam3 = FakeSam3(mask)
+    f.reset()
+    return f
+
+
+def test_get_object_pose_and_the_fallback_grasp_come_from_sam3_and_depth():
+    f = sam3_facade()
+    pos, quat = f.get_object_pose("black bowl", use_multiview=False)
+    # Pixel (255, 310) of the 512 image, 0.5 m below the camera: world x = (310 - 256) / 256 * 0.5.
+    assert pos == pytest.approx([0.1055, -0.0, 0.2], abs=0.01)
+    assert np.linalg.norm(quat) == pytest.approx(1.0)
+    both, _ = f.get_object_pose("black bowl")  # both views see the same points
+    assert both == pytest.approx(pos, abs=1e-3)
+    gpos, gquat = f.sample_grasp_pose("black bowl", use_multiview=False)
+    assert gpos[2] == pytest.approx(0.2 - 0.03, abs=1e-3), "3 cm below the top"
+    # Pointing down: the hand's approach axis is world -z.
+    from pi_embodied_services.utils import object_pose as op
+
+    assert op.matrix(gquat)[:, 2] == pytest.approx([0, 0, -1], abs=1e-6)
+
+
+def test_sample_grasp_pose_asks_the_grasp_server_when_there_is_one():
+    f, _ = grasp_facade()
+    pos, quat = f.sample_grasp_pose("bowl")
+    assert pos == pytest.approx([0.05, 0.0, 0.2], abs=1e-6)
+    from pi_embodied_services.utils import object_pose as op
+
+    best = f._rpc["env.plan_grasp"](object="bowl")["candidates"][0]
+    assert op.site_yaw(quat) == pytest.approx(best["eef_yaw"], abs=1e-6)
+
+
+def test_goto_pose_turns_to_the_nearer_yaw_then_servos_in_legs_from_the_approach():
+    from pi_embodied_services.utils import object_pose as op
+
+    f = LiberoEnvFacade(DownArm(), meta={})
+    f.reset()
+    moves = []
+    move_to = f._rpc["env.move_to"]
+    f._rpc["env.move_to"] = lambda xyz, **kw: (
+        moves.append(list(xyz)),
+        move_to(xyz, **kw),
+    )[1]
+    q = op.hand_of_yaw(0.4)
+    out = f.goto_pose([0.3, 0.1, 0.2], q, z_approach=0.1)
+    assert out["final_dist_m"] < 0.012 and out["tilt_rad"] == pytest.approx(
+        0.0, abs=1e-6
+    )
+    assert f._yaw() == pytest.approx(0.4, abs=0.05)
+    assert moves[-1] == pytest.approx([0.3, 0.1, 0.2])
+    assert any(m == pytest.approx([0.3, 0.1, 0.3]) for m in moves), "0.1 m above first"
+    legs = np.diff(np.array([[0.0, 0.0, 0.2]] + moves), axis=0)
+    assert np.linalg.norm(legs, axis=1).max() <= 0.25 + 1e-6
+    # A yaw half a turn away is the same grasp: the nearer one is taken.
+    f.goto_pose([0.3, 0.1, 0.2], op.hand_of_yaw(0.4 + np.pi))
+    assert f._yaw() == pytest.approx(0.4, abs=0.05)
+    # The gripper command is kept (the tool's move_to default would open it).
+    f.close_gripper()
+    f.goto_pose([0.25, 0.1, 0.25], q)
+    assert f.get_state()["gripper_cmd"] == 1
+    home = f.home_pose()
+    assert home["final_dist_m"] < 0.012 and f._yaw() == pytest.approx(0.0, abs=0.05)
+
+
+def test_the_privileged_pose_functions_match_names_as_capx_does():
+    f = facade()
+    poses = {
+        "milk_1": {"pos": [0.1, 0.2, 0.9], "quat_xyzw": [0, 0, 0, 1]},
+        "basket_1": {"pos": [-0.1, 0.0, 0.88], "quat_xyzw": [0, 0, 0.6, 0.8]},
+        "plate_1": {"pos": [0, 0, 0.9], "quat_xyzw": [0, 0, 0, 1]},
+        "plate_2": {"pos": [1, 0, 0.9], "quat_xyzw": [0, 0, 0, 1]},
+    }
+    f.ground_truth_poses = lambda names=None: {"frame": "world", "poses": poses}
+    assert f.get_object_pose_privileged("milk") == [
+        [0.1, 0.2, 0.9],
+        [1.0, 0.0, 0.0, 0.0],
+    ]
+    assert f.get_object_pose_privileged("woven basket")[1] == [0.8, 0.0, 0.0, 0.6]
+    assert f.get_object_pose_privileged("plate")[0] == [0, 0, 0.9], "plate_1"
+    with pytest.raises(KeyError, match="Available objects"):
+        f.get_object_pose_privileged("stove")
+    assert f.sample_grasp_pose_privileged("milk") == [
+        [0.1, 0.2, 0.9],
+        [0.0, 1.0, 0.0, 0.0],
+    ]
+
+
+def test_a_high_tier_program_runs_capx_calls_on_the_server():
+    f = sam3_facade()
+    out = f._rpc["code.run"](
+        "open_gripper()\n"
+        "pos, quat = sample_grasp_pose('black bowl', use_multiview=False)\n"
+        "goto_pose(pos, quat, z_approach=0.1)\n"
+        "close_gripper()\n"
+        "RESULT = [round(v, 3) for v in get_object_pose('black bowl', use_multiview=False)[0]]\n",
+        timeout_s=60,
+        tier="high",
+    )
+    assert out["status"] == "ran", out
+    assert [c["name"] for c in out["calls"]] == [
+        "open_gripper",
+        "sample_grasp_pose",
+        "goto_pose",
+        "close_gripper",
+        "get_object_pose",
+    ]
+    assert out["steps"] > 100
+    out = f._rpc["code.run"]("move_to([0, 0, 0.3])\n", timeout_s=30, tier="high")
+    assert "NameError" in out["error"], "the high tier has only CaP-X's functions"

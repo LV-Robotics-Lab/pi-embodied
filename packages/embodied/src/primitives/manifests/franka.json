@@ -1,0 +1,702 @@
+{
+	"robot": "franka",
+	"internal": [
+		"env.chunk_step"
+	],
+	"primitives": [
+		{
+			"name": "view_env_state",
+			"side": "ts",
+			"tier": "low",
+			"params": {
+				"step": {
+					"type": "integer",
+					"description": "State step (default -1 = latest)"
+				}
+			},
+			"doc": {
+				"tool": "Read a Franka state snapshot and its synchronized RGB images."
+			},
+			"result": "read"
+		},
+		{
+			"name": "view_camera_meta",
+			"side": "ts",
+			"tier": "low",
+			"params": {
+				"step": {
+					"type": "integer",
+					"description": "State step (default -1 = latest)"
+				}
+			},
+			"doc": {
+				"tool": "Read camera intrinsics, crop, depth, and calibration metadata."
+			},
+			"result": "read"
+		},
+		{
+			"name": "view_perception_setup",
+			"side": "ts",
+			"tier": "low",
+			"params": {
+				"step": {
+					"type": "integer",
+					"description": "State step (default -1 = latest)"
+				}
+			},
+			"doc": {
+				"tool": "Read calibrated camera geometry and projection conventions."
+			},
+			"result": "read"
+		},
+		{
+			"name": "get_robot_state",
+			"side": "code",
+			"method": "env.get_robot_state",
+			"tier": "low",
+			"doc": {
+				"code": "The arm's state: TCP pose (base frame, xyz + quaternion xyzw), joints and gripper width (m).\n\nExample:\n    st = get_robot_state()[\"raw_base_state\"]\n    print(st[\"tcp_pose\"][:3], st[\"gripper_position\"])"
+			}
+		},
+		{
+			"name": "get_observation",
+			"side": "code",
+			"method": "env.get_observation",
+			"tier": "low",
+			"doc": {
+				"code": "Live RGB-D frames: main_images/main_depths (wrist) and extra_view_* (the other cameras).\n\nExample:\n    obs = get_observation()\n    wrist, depth = obs[\"main_images\"], obs[\"main_depths\"]  # HxWx3 uint8, HxW m\n    scene = obs[\"extra_view_images\"][0]"
+			}
+		},
+		{
+			"name": "get_camera_meta",
+			"side": "code",
+			"method": "env.get_camera_meta",
+			"tier": "low",
+			"doc": {
+				"code": "Camera intrinsics, extrinsics and depth conventions.\n\nExample:\n    meta = get_camera_meta()\n    for name, cam in meta[\"cameras\"].items():\n        print(name, cam[\"intrinsic_K\"])"
+			}
+		},
+		{
+			"name": "segment",
+			"side": "env",
+			"method": "env.segment",
+			"tier": "low",
+			"requires": [
+				"sam3"
+			],
+			"params": {
+				"prompt": {
+					"type": "string",
+					"description": "What to segment, e.g. 'red block' (or give point)"
+				},
+				"point": {
+					"type": "array",
+					"items": "integer",
+					"minItems": 2,
+					"maxItems": 2,
+					"description": "A positive point [row, col] instead of a prompt"
+				},
+				"camera": {
+					"type": "enum",
+					"values": [
+						"wrist",
+						"third_person"
+					],
+					"description": "Default wrist"
+				},
+				"min_score": {
+					"type": "number",
+					"minimum": 0,
+					"maximum": 1,
+					"description": "Default 0.2"
+				},
+				"all": {
+					"type": "boolean",
+					"description": "Return every mask, not only the best (default false)"
+				}
+			},
+			"doc": {
+				"tool": "SAM3 masks on the latest camera image, each with a short id (d3) drawn on the returned overlay in rank order (red, blue, green, yellow, ...). Give exactly one of a text prompt or a positive point [row, col]. all=true returns every candidate instead of only the best; then pick one with select_detection. Ids die with the observation: segment again after any motion.",
+				"code": "SAM3 masks on the current observation, each with a short id; all=True returns every candidate instead of the best. Ids die with the next observation.\n\nExample:\n    s = segment(\"red block\", camera=\"third_person\")\n    if s[\"found\"]:\n        print(s[\"ids\"], s[\"detections\"][0][\"centroid_rc\"])"
+			},
+			"result": "read"
+		},
+		{
+			"name": "select_detection",
+			"side": "env",
+			"method": "env.select_detection",
+			"tier": "low",
+			"requires": [
+				"sam3"
+			],
+			"params": {
+				"id": {
+					"type": "string",
+					"required": true,
+					"description": "A detection id from segment (e.g. d3) of the current observation"
+				}
+			},
+			"doc": {
+				"tool": "Choose one segment mask (by id) as the target of the current observation, after checking the overlay.",
+				"code": "Make one detection id the selected mask of the current observation."
+			},
+			"result": "read"
+		},
+		{
+			"name": "reject_detection",
+			"side": "env",
+			"method": "env.reject_detection",
+			"tier": "low",
+			"requires": [
+				"sam3"
+			],
+			"params": {
+				"id": {
+					"type": "string",
+					"required": true,
+					"description": "A detection id from segment (e.g. d3) of the current observation"
+				}
+			},
+			"doc": {
+				"tool": "Rule out one segment mask (by id) of the current observation; it stays listed as rejected.",
+				"code": "Rule one detection id out; it stays listed as rejected."
+			},
+			"result": "read"
+		},
+		{
+			"name": "enhance_depth",
+			"side": "env",
+			"method": "env.enhance_depth",
+			"tier": "low",
+			"requires": [
+				"unidepth"
+			],
+			"params": {
+				"camera": {
+					"type": "enum",
+					"values": [
+						"wrist",
+						"third_person"
+					],
+					"description": "Default wrist"
+				}
+			},
+			"doc": {
+				"tool": "Fill the holes of a camera's depth on the latest step with a UniDepth estimate scaled to the sensor (or supply depth where the camera has none). back_project and segment on this step then use the filled depth; the sensor depth is kept as <camera>_depth_sensor.f32.",
+				"code": "Fill the holes of a camera's depth with a UniDepth estimate scaled to the sensor (or supply depth where the camera has none); later segments use the filled depth."
+			},
+			"result": "read"
+		},
+		{
+			"name": "back_project",
+			"side": "ts",
+			"tier": "low",
+			"params": {
+				"row": {
+					"type": "integer",
+					"required": true,
+					"minimum": 0
+				},
+				"col": {
+					"type": "integer",
+					"required": true,
+					"minimum": 0
+				},
+				"step": {
+					"type": "integer",
+					"description": "State step (default -1 = latest)"
+				},
+				"camera": {
+					"type": "enum",
+					"values": [
+						"wrist",
+						"third_person"
+					],
+					"description": "Default wrist"
+				},
+				"debug": {
+					"type": "boolean",
+					"description": "Default false"
+				}
+			},
+			"doc": {
+				"tool": "Back-project one wrist or external-camera pixel into Franka base coordinates."
+			},
+			"result": "read"
+		},
+		{
+			"name": "back_project_correspondence",
+			"side": "ts",
+			"tier": "low",
+			"params": {
+				"third_person_row": {
+					"type": "integer",
+					"minimum": 0,
+					"description": "External-camera row"
+				},
+				"third_person_col": {
+					"type": "integer",
+					"minimum": 0,
+					"description": "External-camera column"
+				},
+				"wrist_row": {
+					"type": "integer",
+					"minimum": 0,
+					"description": "Wrist row"
+				},
+				"wrist_col": {
+					"type": "integer",
+					"minimum": 0,
+					"description": "Wrist column"
+				},
+				"pixels": {
+					"type": "array",
+					"items": "object",
+					"description": "Several matches: [{wrist: [row, col], third_person: [row, col]}, ...]"
+				},
+				"step": {
+					"type": "integer",
+					"description": "State step (default -1 = latest)"
+				},
+				"debug": {
+					"type": "boolean",
+					"description": "Default false"
+				}
+			},
+			"doc": {
+				"tool": "Fuse matched wrist and external-camera pixels into a Franka base point."
+			},
+			"result": "read"
+		},
+		{
+			"name": "preview_reach",
+			"side": "code",
+			"method": "env.preview_reach",
+			"tier": "low",
+			"requires": [
+				"ik"
+			],
+			"params": {
+				"xyz": {
+					"type": "vec3",
+					"required": true,
+					"description": "TCP position, base-frame [x, y, z] in m"
+				},
+				"quat_xyzw": {
+					"type": "quat",
+					"description": "Orientation, xyzw (default: the current one)"
+				}
+			},
+			"doc": {
+				"code": "IK reach check of a base-frame TCP pose from the current joints, nothing moves (--ik): {status: reachable | unreachable | unknown, q, position_err, orientation_err, message}.\n\nExample:\n    r = preview_reach([0.5, 0.0, 0.25])\n    print(r[\"status\"])"
+			}
+		},
+		{
+			"name": "move_delta",
+			"side": "env",
+			"method": "env.move_delta",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"delta_xyz": {
+					"type": "vec3",
+					"required": true,
+					"description": "Base-frame [dx, dy, dz] in m"
+				}
+			},
+			"doc": {
+				"tool": "Move the Franka TCP by a bounded base-frame xyz delta in meters (at most {{max_move}} m per call; refused when it ends outside the workspace or below the z floor).",
+				"code": "Translate the TCP by a base-frame delta in metres; refused beyond the per-call limit (--max-move) or outside the workspace (--workspace-xy, --z-floor).\n\nExample:\n    r = move_delta([0, 0, -0.03])  # 3 cm down; each call stays within the per-call limit\n    print(r[\"ok\"], r[\"final_tcp_pose\"][:3])"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "rotate_delta",
+			"side": "env",
+			"method": "env.rotate_delta",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"delta_rpy": {
+					"type": "vec3",
+					"required": true,
+					"description": "Base-frame [droll, dpitch, dyaw] in rad"
+				}
+			},
+			"doc": {
+				"tool": "Rotate the Franka TCP by a bounded base-frame rpy delta in radians (at most {{max_rotate}} rad per call, norm of delta_rpy).",
+				"code": "Rotate the TCP by a base-frame roll/pitch/yaw delta in radians; refused beyond the per-call limit (--max-rotate, norm of delta_rpy).\n\nExample:\n    rotate_delta([0, 0, 0.2])  # yaw 0.2 rad"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "set_gripper",
+			"side": "code",
+			"method": "env.set_gripper",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"open": {
+					"type": "boolean",
+					"required": true,
+					"description": "True opens, False closes"
+				}
+			},
+			"doc": {
+				"code": "Open (open=True) or close the gripper and wait for it to settle.\n\nExample:\n    r = set_gripper(False)  # close\n    print(r[\"ok\"])"
+			}
+		},
+		{
+			"name": "open_gripper",
+			"side": "env",
+			"method": "env.open_gripper",
+			"tier": "high",
+			"mutating": true,
+			"doc": {
+				"tool": "Open the Franka gripper and wait for the command to settle.",
+				"code": "Open the gripper fully and wait for it to settle (CaP-X's open_gripper).\n\nExample:\n    open_gripper()"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "close_gripper",
+			"side": "env",
+			"method": "env.close_gripper",
+			"tier": "high",
+			"mutating": true,
+			"doc": {
+				"tool": "Close the Franka gripper and wait for the command to settle.",
+				"code": "Close the gripper and wait for it to settle; the fingers stop on an object (CaP-X's close_gripper).\n\nExample:\n    close_gripper()"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "get_object_pose",
+			"side": "code",
+			"method": "env.get_object_pose",
+			"tier": "high",
+			"requires": [
+				"sam3"
+			],
+			"params": {
+				"object_name": {
+					"type": "string",
+					"required": true,
+					"description": "The object in words, e.g. 'red block'"
+				},
+				"return_bbox_extent": {
+					"type": "boolean",
+					"description": "Also return the extent (default false)"
+				}
+			},
+			"doc": {
+				"code": "Pose of an object named in words, from SAM3 and depth (CaP-X's get_object_pose): [position (3,), quaternion_wxyz (4,), bbox_extent (3,) or None], in the base frame. The position is the median of the mask's depth points (third-person camera first, then the wrist); the extent the 5th-95th percentile span per base axis. The orientation is identity: disregard it, use sample_grasp_pose's quaternion or the current TCP orientation.\n\nExample:\n    pos, quat, ext = get_object_pose(\"red block\", return_bbox_extent=True)\n    print(pos, ext)"
+			}
+		},
+		{
+			"name": "sample_grasp_pose",
+			"side": "code",
+			"method": "env.sample_grasp_pose",
+			"tier": "high",
+			"requires": [
+				"sam3"
+			],
+			"params": {
+				"object_name": {
+					"type": "string",
+					"required": true,
+					"description": "The object in words"
+				}
+			},
+			"doc": {
+				"code": "A TCP grasp pose for an object named in words (CaP-X's sample_grasp_pose): [position (3,), quaternion_wxyz (4,)], base frame. With a grasp server (--contact-graspnet, ...) the best plan_grasp candidate; without one, the object's median depth point with the current TCP orientation (a straight top-down grasp when the gripper points down).\n\nExample:\n    pos, quat = sample_grasp_pose(\"red block\")\n    goto_pose(pos, quat, z_approach=0.1)"
+			}
+		},
+		{
+			"name": "goto_pose",
+			"side": "code",
+			"method": "env.goto_pose",
+			"tier": "high",
+			"mutating": true,
+			"params": {
+				"position": {
+					"type": "vec3",
+					"required": true,
+					"description": "TCP position, base-frame [x, y, z] in m"
+				},
+				"quaternion_wxyz": {
+					"type": "quat",
+					"required": true,
+					"description": "Orientation, wxyz unit quaternion (base frame)"
+				},
+				"z_approach": {
+					"type": "number",
+					"minimum": 0,
+					"maximum": 0.3,
+					"description": "First stop this far back along the gripper's approach axis, m (default 0)"
+				}
+			},
+			"doc": {
+				"code": "Move the TCP to a base-frame pose (CaP-X's goto_pose): rotate in place to the orientation, then translate to position + z_approach back along the approach axis, then to the position. Every leg is one bounded move_delta / rotate_delta (within --max-move / --max-rotate, the workspace, the floor and the reach check), at most 8 legs per call; the whole route is checked before the arm moves. Returns the last leg's result with legs and reached.\n\nExample:\n    pos, quat = sample_grasp_pose(\"red block\")\n    goto_pose(pos, quat, z_approach=0.08)\n    close_gripper()"
+			}
+		},
+		{
+			"name": "home_pose",
+			"side": "code",
+			"method": "env.home_pose",
+			"tier": "high",
+			"mutating": true,
+			"doc": {
+				"code": "Back to the TCP pose of the last reset (CaP-X's home_pose), as goto_pose moves: bounded legs, refused when that takes more than 8 legs.\n\nExample:\n    home_pose()"
+			}
+		},
+		{
+			"name": "solve_ik",
+			"side": "code",
+			"method": "env.solve_ik",
+			"tier": "low",
+			"requires": [
+				"ik"
+			],
+			"params": {
+				"position": {
+					"type": "vec3",
+					"required": true,
+					"description": "TCP position, base-frame [x, y, z] in m"
+				},
+				"quaternion_wxyz": {
+					"type": "quat",
+					"required": true,
+					"description": "Orientation, wxyz unit quaternion (base frame)"
+				}
+			},
+			"doc": {
+				"code": "The arm's 7 joint angles (rad) for a base-frame TCP pose, by the ik service (--ik) seeded with the current joints; nothing moves. Raises when there is no solution (CaP-X's solve_ik).\n\nExample:\n    q = solve_ik([0.5, 0.0, 0.25], [0, 1, 0, 0])"
+			}
+		},
+		{
+			"name": "move_to_joints",
+			"side": "code",
+			"method": "env.move_to_joints",
+			"tier": "low",
+			"mutating": true,
+			"requires": [
+				"ik",
+				"joints"
+			],
+			"params": {
+				"joints": {
+					"type": "array",
+					"required": true,
+					"minItems": 7,
+					"maxItems": 7,
+					"description": "7 joint angles, rad"
+				}
+			},
+			"doc": {
+				"code": "Stream the arm to a joint configuration (Polymetis only; CaP-X's move_to_joints), speed-capped and stop-polled. Refused unless every joint moves at most the server's per-call joint step (limits.max_joint_step_rad), the TCP ends within --max-move and --max-rotate of where it is, and the forward-kinematics path stays in the workspace and above the floor.\n\nExample:\n    q = get_robot_state()[\"raw_base_state\"][\"arm_joint_position\"]\n    q[6] += 0.1\n    move_to_joints(q)"
+			}
+		},
+		{
+			"name": "traj_plan",
+			"side": "code",
+			"method": "env.traj_plan",
+			"tier": "low",
+			"requires": [
+				"ik"
+			],
+			"params": {
+				"start_pose_wxyz_xyz": {
+					"type": "array",
+					"required": true,
+					"minItems": 7,
+					"maxItems": 7,
+					"description": "Start pose: quaternion wxyz then xyz (base frame)"
+				},
+				"end_pose_wxyz_xyz": {
+					"type": "array",
+					"required": true,
+					"minItems": 7,
+					"maxItems": 7,
+					"description": "End pose: quaternion wxyz then xyz (base frame)"
+				}
+			},
+			"doc": {
+				"code": "Joint waypoints [N, 7] along a straight TCP line from one pose to another (2 cm steps, orientation slerped, at most 100), each solved by IK from its predecessor; nothing moves (CaP-X's traj_plan).\n\nExample:\n    traj = traj_plan([0, 1, 0, 0, 0.5, 0.0, 0.3], [0, 1, 0, 0, 0.5, 0.0, 0.25])\n    move_along_trajectory(traj)"
+			}
+		},
+		{
+			"name": "move_along_trajectory",
+			"side": "code",
+			"method": "env.move_along_trajectory",
+			"tier": "low",
+			"mutating": true,
+			"requires": [
+				"ik",
+				"joints"
+			],
+			"params": {
+				"trajectory": {
+					"type": "array",
+					"required": true,
+					"description": "[N, 7] joint waypoints, rad (N <= 100)"
+				}
+			},
+			"doc": {
+				"code": "move_to_joints through every waypoint in order (Polymetis only; CaP-X's move_along_trajectory): each waypoint is one bounded move_to_joints, and the whole path's TCP travel is at most 8 x --max-move, checked before the arm moves.\n\nExample:\n    move_along_trajectory(traj_plan(start, end))"
+			}
+		},
+		{
+			"name": "vla_grasp",
+			"side": "ts",
+			"tier": "low",
+			"mutating": true,
+			"requires": [
+				"vla"
+			],
+			"params": {
+				"prompt": {
+					"type": "string",
+					"required": true
+				},
+				"max_chunks": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 20,
+					"description": "Default 4"
+				}
+			},
+			"doc": {
+				"tool": "Run bounded real-world VLA action chunks for a local grasp attempt."
+			},
+			"result": "motion"
+		},
+		{
+			"name": "follow_waypoints",
+			"side": "ts",
+			"tier": "low",
+			"mutating": true,
+			"module": "waypoints",
+			"doc": {
+				"tool": "OpenETA's multi-waypoint EEF route (primitives/waypoints.ts, --waypoints)."
+			}
+		},
+		{
+			"name": "align_wrist",
+			"side": "ts",
+			"tier": "low",
+			"module": "wrist",
+			"doc": {
+				"tool": "The wrist camera's alignment helper (primitives/wrist.ts, --align-wrist)."
+			}
+		},
+		{
+			"use": "grasp/plan_grasp"
+		},
+		{
+			"use": "grasp/plan_place"
+		},
+		{
+			"use": "grasp/check_attached"
+		},
+		{
+			"use": "grasp/next_grasp"
+		},
+		{
+			"use": "grasp/resolve_grasp"
+		},
+		{
+			"use": "grasp/claim_waypoints"
+		},
+		{
+			"use": "grasp/segment_mask"
+		},
+		{
+			"use": "geometry/view_points"
+		},
+		{
+			"use": "geometry/mark_point"
+		},
+		{
+			"use": "geometry/grip_target"
+		},
+		{
+			"use": "geometry/grip_state"
+		},
+		{
+			"name": "move_grip",
+			"side": "ts",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"xyz": {
+					"type": "vec3",
+					"description": "grip-site position, world m"
+				},
+				"point_id": {
+					"type": "string",
+					"description": "a solved mark_point id as the position"
+				},
+				"delta_mm": {
+					"type": "vec3",
+					"description": "grip-site displacement, mm (delta_frame)"
+				},
+				"delta_frame": {
+					"type": "string",
+					"description": "'world' (default) or 'grip_site' ([JAW, LAT, APP])"
+				},
+				"approach": {
+					"type": "vec3",
+					"description": "world direction of the grip frame's +Z"
+				},
+				"jaw": {
+					"type": "vec3",
+					"description": "world direction of the jaw axis (+X)"
+				},
+				"gripper": {
+					"type": "string",
+					"description": "'open' or 'close' after the motion"
+				},
+				"preview": {
+					"type": "boolean",
+					"description": "render the target without moving"
+				},
+				"execute_preview_id": {
+					"type": "string",
+					"description": "execute one frozen close preview (alone)"
+				}
+			},
+			"requires": [
+				"geometry"
+			],
+			"result": "motion",
+			"doc": {
+				"tool": "Move the grip site (the point between the finger pads) and orient it, then open or close. Position: at most one of xyz (world m), point_id (a solved mark_point) or delta_mm (delta_frame world = [dX,dY,dZ], grip_site = [dJAW,dLAT,dAPP] along the gripper's current axes); omitted keeps the position. Orientation: approach is the world direction the gripper points along (its +Z; [0,0,-1] = straight down), jaw the world direction the fingers close along (its +X; either sign); give either or both, omitted parts keep the current orientation. preview=true only draws the target (zoomed preview_top/front/side views, markable, and the camera). A close is always previewed first: the result's preview_id, executed unchanged by move_grip({execute_preview_id}) alone while the gripper has not moved; any change needs a new preview. The preview is geometry: it does not predict contact. After a motion: motion_status reached or not_reached (then the gripper is skipped), grip_xyz_m, remaining_delta_mm, rotation_error_deg, gripper_width (closed_on_nothing: no grasp), and in simulation the robot's contacts (cyan on the camera image)."
+			}
+		},
+		{
+			"use": "modules/finish"
+		},
+		{
+			"use": "modules/act"
+		},
+		{
+			"use": "modules/plan"
+		},
+		{
+			"use": "modules/reset"
+		},
+		{
+			"use": "modules/request_operator_verdict"
+		},
+		{
+			"use": "modules/request_scene_reset"
+		},
+		{
+			"use": "modules/run_code"
+		},
+		{
+			"use": "modules/xpolicy_act"
+		}
+	]
+}

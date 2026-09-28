@@ -10,6 +10,7 @@ import { Type } from "typebox";
 import { defineRobot } from "../src/robot.ts";
 import { inlineWrist } from "../src/robots/dual_franka/config.ts";
 import dualFranka from "../src/robots/dual_franka/index.ts";
+import { codeApiReply } from "./helpers/code-api.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
@@ -269,7 +270,16 @@ async function fakeDualEnv() {
 			const { method, kwargs = {} } = JSON.parse(body);
 			calls.push({ method, kwargs });
 			let result: unknown = { ok: true };
-			if (method === "env.get_env_meta") result = { ok: true };
+			if (method === "env.get_env_meta")
+				result = {
+					ok: true,
+					motion_limits: {
+						max_move_m: 0.1,
+						max_rotate_rad: 0.5,
+						z_floor_m: 0.02,
+						workspace_xy: [0.1, 1.15, -0.85, 0.85],
+					},
+				};
 			else if (method === "env.reset") result = { ok: true, states: [1] };
 			else if (method === "env.get_observation") result = { states: [1], d455_images: nd([2, 2, 3]) };
 			else if (method === "env.get_robot_state")
@@ -278,7 +288,7 @@ async function fakeDualEnv() {
 					right_arm: { tcp_pose: [0.5, -0.3, 0.3, 1, 0, 0, 0] },
 				};
 			else if (method === "env.get_camera_meta") result = null;
-			else if (method === "code.api") result = { tier: kwargs.tier ?? null, primitives: [], digest: "d" };
+			else if (method === "code.api") result = codeApiReply("dual_franka", kwargs.tier);
 			else if (method === "code.run")
 				result = {
 					status: "ran",
@@ -309,7 +319,7 @@ async function fakeDualEnv() {
 	};
 }
 
-test("dual_franka --code: pi's limits reach the server, the program is confirmed and the run is a state step", async (t) => {
+test("dual_franka --code: the server enforces pi's limits, the program is confirmed and the run is a state step", async (t) => {
 	const env = await fakeDualEnv();
 	t.after(env.close);
 	const dir = mkdtempSync(join(tmpdir(), "dual-py-"));
@@ -339,12 +349,8 @@ test("dual_franka --code: pi's limits reach the server, the program is confirmed
 	dualFranka(f.pi);
 	await f.emit("session_start");
 	assert.ok(f.active().includes("run_code"), f.active().join(","));
-	assert.deepEqual(env.calls.find((c) => c.method === "code.set_limits")?.kwargs, {
-		max_move_m: 0.1,
-		max_rotate_rad: 0.5,
-		z_floor_m: 0.02,
-		workspace_xy: [0.1, 1.15, -0.85, 0.85],
-	});
+	// The attached server enforces pi's limits (its motion_limits were checked); pi sends none.
+	assert.ok(!env.calls.some((c) => c.method === "code.set_limits"));
 	await f.emit("agent_start");
 	const r = await f.run("run_code", { code: "move_delta('left', [0, 0, 0.03])" });
 	assert.equal(r.details.status, "ran");

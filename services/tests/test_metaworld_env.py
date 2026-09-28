@@ -200,8 +200,8 @@ def test_move_delta_refuses_long_moves_and_targets_outside_the_workspace_box():
     # The gripper command persists across moves; set_gripper changes it in place.
     r = f.move_delta([0, 0.02, 0])
     assert r["gripper"] == "close" and math.isclose(r["final_error_m"], 0, abs_tol=1e-6)
-    r = f.set_gripper(open=True)
-    assert r["target_gripper_open"] is True and r["gripper"] == "open"
+    r = f.set_gripper(close=False)
+    assert r["gripper"] == "open"
     assert r["steps_used"] == mw.GRIPPER_STEPS, "no settle: the arm never moved"
     assert r["moved_m"] == pytest.approx([0, 0, 0])
 
@@ -262,32 +262,32 @@ def test_ground_truth_names_are_the_non_robot_bodies_plus_the_goal():
     assert mw.object_bodies(model) == ["obj", "peg", "tableTop"]
 
 
-def test_code_api_is_the_registry_over_the_facades_rpc_methods():
-    """`code.api` comes from the shared registry: the high tier is the closed-loop set, the
-    low tier adds the raw surface, `privileged` adds the simulator's ground truth; every
-    primitive's method is a registered RPC of the facade."""
+def test_code_api_is_the_manifest_over_the_facades_rpc_methods():
+    """`code.api` comes from manifests/metaworld.json: the low tier is the closed-loop set and
+    perception, raw the steps, `privileged` the simulator's ground truth; every primitive's
+    method is a registered RPC of the facade."""
     f = _facade()
+    f._manifest_ready()
     names = lambda tier: [p["name"] for p in f.code_api.describe(tier)["primitives"]]  # noqa: E731
-    assert names("high") == ["get_task_language", "state", "move_delta", "set_gripper"]
     assert names("low") == [
         "get_task_language",
         "state",
+        "get_camera_meta",
+        "back_project",
         "move_delta",
         "set_gripper",
         "render_camera",
-        "get_camera_meta",
-        "step",
-        "chunk_step",
     ]
+    assert names("raw") == ["step", "chunk_step"]
     assert names("privileged")[-1] == "ground_truth_poses"
     for p in f.code_api.describe(None)["primitives"]:
         assert p["method"] in f._rpc
-    assert f.code_api.resolve("move_delta", {"delta_xyz": [0, 0, 0.01]}) == (
+    assert f.code_api.resolve("move_delta", {"delta_xyz": [0, 0, 0.01]}, "low") == (
         "env.move_delta",
         {"delta_xyz": [0, 0, 0.01]},
     )
     with pytest.raises(ValueError, match="not a primitive"):
-        f.code_api.resolve("teleport", {})
+        f.code_api.resolve("teleport", {}, "low")
 
 
 def test_camera_meta_is_opencv_from_mujocos_fovy_and_frame():

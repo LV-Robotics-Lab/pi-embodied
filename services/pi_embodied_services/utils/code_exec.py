@@ -102,8 +102,20 @@ from pi_embodied_services.utils.rpc.deadline import call_deadline
 
 #: ``code.api`` / ``code.run`` tiers: CaP-X's S2 (perception + high-level primitives), S3
 #: (low-level moves only) and S4 (S3 with the docstrings' examples stripped). S1 is any tier
-#: with ``privileged=True``, which adds the simulator's ground-truth primitive.
-TIERS = ("high", "low", "low-noexamples")
+#: ``code.api`` / ``code.run`` tiers (PARAMS.md, CaP-X's levels): ``high`` (S2, the semantic
+#: functions), ``low`` (S3, perception and motion parts), ``low-noexamples`` (S4, the low tier
+#: without the docstrings' examples), ``raw`` (step and the raw observation) and ``privileged``
+#: (S1, the high tier with the simulator's ground truth).
+TIERS = (
+    "high",
+    "low",
+    "low-noexamples",
+    "raw",
+    "privileged",
+    "low+privileged",
+    "low-noexamples+privileged",
+    "raw+privileged",
+)
 DEFAULT_TIMEOUT_S = 60.0
 DEFAULT_MAX_CALLS = 50
 #: stdout, stderr, the traceback and the encoded RESULT of a run are each cut here.
@@ -186,14 +198,10 @@ def signature_of(fn: Callable[..., Any]) -> str:
 
 
 def base_tier(tier: str) -> tuple[str, bool]:
-    """``(the primitive tier, whether docstring examples are kept)`` of a ``code.api`` tier.
-    The registry's ``privileged`` tier is the high tier (its ground truth is added by
-    :meth:`CodeRunner.primitives`)."""
-    if tier == "privileged":
-        return "high", True
+    """``(the primitive tier, whether docstring examples are kept)`` of a ``code.api`` tier."""
     if tier not in TIERS:
         raise ValueError(f"unknown code tier {tier!r}; one of {list(TIERS)}")
-    return ("low" if tier.startswith("low") else "high"), tier != "low-noexamples"
+    return registry.base_tier(tier), not tier.startswith(registry.NO_EXAMPLES)
 
 
 def registry_primitives(
@@ -214,42 +222,40 @@ def registry_primitives(
     (the facade method is the tools' own; this drops what a program must not see, such as object
     state in a raw observation, or bulk it need not carry, such as a motion's video frames)."""
     out: list[Primitive] = []
-    for p in api.primitives("privileged") + [
-        q for q in api.primitives("low") if "high" not in q.tiers
-    ]:
-        privileged = "privileged" in p.tiers
-        tier_of = "privileged" if privileged else None
-        tiers = (
-            ("high", "low")
-            if privileged
-            else tuple(t for t in p.tiers if t in ("high", "low"))
-        )
-        out.append(
-            Primitive(
-                p.name,
-                _registry_call(
-                    api, rpc, p, "privileged" if privileged else None, after, reply
-                ),
-                tiers,
-                move_m=(
-                    lambda a, k, _p=p, _t=tier_of: move_m(
-                        *api.resolve(_p.name, _bind(_p, a, k), _t)
+    # One runner entry per (tier, primitive): a call resolves in the tier it was offered in.
+    for tier in (
+        "high",
+        "low",
+        "raw",
+        "privileged",
+        "low+privileged",
+        "raw+privileged",
+    ):
+        for p in api.primitives(tier):
+            out.append(
+                Primitive(
+                    p.name,
+                    _registry_call(api, rpc, p, tier, after, reply),
+                    (tier,),
+                    move_m=(
+                        lambda a, k, _p=p, _t=tier: move_m(
+                            *api.resolve(_p.name, _bind(_p, a, k), _t)
+                        )
                     )
-                )
-                if move_m
-                else None,
-                check=(
-                    lambda a, k, _p=p, _t=tier_of: check(
-                        *api.resolve(_p.name, _bind(_p, a, k), _t)
+                    if move_m
+                    else None,
+                    check=(
+                        lambda a, k, _p=p, _t=tier: check(
+                            *api.resolve(_p.name, _bind(_p, a, k), _t)
+                        )
                     )
+                    if check
+                    else None,
+                    privileged=tier == "privileged",
+                    signature=_registry_signature(p),
+                    doc=_registry_doc(p),
                 )
-                if check
-                else None,
-                privileged=privileged,
-                signature=_registry_signature(p),
-                doc=_registry_doc(p),
             )
-        )
     return out
 
 
@@ -298,31 +304,10 @@ def _registry_doc(p: registry.Primitive) -> str:
             lines.append(f"    {k} ({kind}): {v.description}".rstrip(": "))
     if p.mutating:
         lines += ["", "Moves the robot."]
-    if p.example:
-        # A Google-style section, which the S4 tier strips (strip_examples).
-        lines += ["", "Example:"] + [f"    {x}" for x in p.example.strip().splitlines()]
     return "\n".join(lines)
 
 
-def strip_examples(doc: str) -> str:
-    """Drop the ``Example:`` / ``Examples:`` sections of a Google-style docstring (CaP-X's
-    exampleless tier, ``control_reduced_exampleless.py``): from the header to the next
-    section header at the same indentation, or the end."""
-    out: list[str] = []
-    skipping: int | None = None
-    for line in doc.splitlines():
-        stripped = line.strip()
-        indent = len(line) - len(line.lstrip())
-        if skipping is not None:
-            if stripped and indent <= skipping and stripped.endswith(":"):
-                skipping = None
-            else:
-                continue
-        if stripped.lower() in ("example:", "examples:"):
-            skipping = indent
-            continue
-        out.append(line)
-    return "\n".join(out).rstrip()
+strip_examples = registry.strip_examples
 
 
 def jsonable(value: Any, cap: int = ARRAY_CAP, str_cap: int | None = None) -> Any:
@@ -1075,7 +1060,7 @@ class CodeRunner:
         on_abandon: Callable[[str], None] | None = None,
         on_released: Callable[[str], None] | None = None,
     ) -> None:
-        self._primitives = {p.name: p for p in primitives}
+        self._primitives = list(primitives)
         # Primitives run on a worker thread so the run's deadline can abandon one that never
         # returns. A server whose backend needs every call on one thread (MainThreadServeMixin)
         # passes False: its primitives run on the calling thread and cannot be abandoned.
@@ -1118,14 +1103,33 @@ class CodeRunner:
             )
 
     def primitives(self, tier: str, privileged: bool = False) -> list[Primitive]:
-        """The tier's primitives; the registry's ``privileged`` tier (or ``privileged=True``) adds
-        the privileged ones."""
+        """The tier's primitives. ``privileged=True`` with the high tier is the privileged tier.
+        A primitive listed without a registry (its tiers name only high / low) is offered in the
+        privileged tier when it is high or privileged, and outside it only when not privileged."""
         base, _ = base_tier(tier)
-        privileged = privileged or tier == "privileged"
+        if privileged and base == "high":
+            base = "privileged"
+        elif privileged and base in ("low", "raw"):
+            base = f"{base}+privileged"
+        plain = base.removesuffix("+privileged")
+        with_truth = base == "privileged" or base.endswith("+privileged")
+        out: dict[str, Primitive] = {}
+        for p in self._primitives:
+            if base in p.tiers:
+                out[p.name] = p
+            elif (
+                base == "privileged"
+                and "privileged" not in p.tiers
+                and ("high" in p.tiers or p.privileged)
+            ):
+                out.setdefault(p.name, p)
+            elif with_truth and plain in p.tiers and not any("+" in t for t in p.tiers):
+                # A primitive listed without a registry: its tier with the privileged ones.
+                out.setdefault(p.name, p)
         return [
             p
-            for p in self._primitives.values()
-            if base in p.tiers and (privileged or not p.privileged)
+            for p in out.values()
+            if with_truth or "privileged" in p.tiers or not p.privileged
         ]
 
     def api(
@@ -1628,6 +1632,66 @@ class CodeRunMixin:
         # Its thread returned: stop anything it started on its way out, then lift the halt.
         self.request_stop()
         self.clear_motion_halt()
+
+    #: Set by :meth:`_manifest_code_run`: the robot's manifest name, its capability check and hooks.
+    _manifest_plan: tuple[str, Callable[[str], bool], dict] | None = None
+    _manifest_done = False
+
+    def _manifest_code_run(
+        self,
+        robot: str,
+        *,
+        have: Callable[[str], bool],
+        move_m: Callable[[str, dict], float] | None = None,
+        after: Callable[[registry.Primitive], None] | None = None,
+        check: Callable[[str, dict], None] | None = None,
+        reply: Callable[[str, Any], Any] | None = None,
+        begin: Callable[[], None] | None = None,
+        finish: Callable[[], dict] | None = None,
+    ) -> None:
+        """Serve ``code.api`` and ``code.run`` from the robot's primitive manifest
+        (components/manifest.py). The whitelist, ``code.api`` and the startup self-check are
+        built once every RPC method is installed (perception and the planners are installed
+        after ``_register_rpc``): at :meth:`serve`, or at the first ``code.*`` call."""
+        self._manifest_plan = (
+            robot,
+            have,
+            dict(
+                move_m=move_m,
+                after=after,
+                check=check,
+                reply=reply,
+                begin=begin,
+                finish=finish,
+            ),
+        )
+        self._manifest_done = False
+        self._rpc["code.api"] = lambda tier=None: self._manifest_ready()["code.api"](
+            tier
+        )
+        self._rpc["code.run"] = lambda *a, **k: self._manifest_ready()["code.run"](
+            *a, **k
+        )
+        self._rpc["code.helpers"] = describe_helpers
+        self._readonly_methods.update({"code.api", "code.helpers"})
+
+    def _manifest_ready(self) -> dict:
+        """Build the manifest's whitelist once: self-check the server (fail closed), serve
+        ``code.api`` and install ``code.run``."""
+        if self._manifest_plan is not None and not self._manifest_done:
+            from pi_embodied_services.components import manifest as manifests
+
+            robot, have, hooks = self._manifest_plan
+            api = manifests.serve_code_api(self, manifests.load_manifest(robot), have)
+            self._install_code_run(api, **hooks)
+            self._manifest_done = True
+        return self._rpc
+
+    def serve(self, *args: Any, **kwargs: Any) -> Any:
+        # The self-check runs before the port is bound: a server whose manifest does not match
+        # its RPC methods never answers.
+        self._manifest_ready()
+        return super().serve(*args, **kwargs)
 
     def _on_stop(self, generation: int) -> None:
         super()._on_stop(generation)

@@ -9,6 +9,7 @@ import type { Duplex } from "node:stream";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import robotwin from "../src/robots/robotwin/index.ts";
+import { codeApiReply } from "./helpers/code-api.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
@@ -105,7 +106,7 @@ async function fakeEnv() {
 			const { method, args = [], kwargs = {} } = JSON.parse(body);
 			calls.push({ method, args, kwargs });
 			let result: unknown = { status: "ok" };
-			if (method === "code.api") result = { tier: kwargs.tier ?? null, primitives: [], digest: "d" };
+			if (method === "code.api") result = codeApiReply("robotwin", kwargs.tier);
 			else if (method === "env.get_env_meta")
 				result = { task_name: "beat_block_hammer", task_config: "demo_randomized", seed: 100000 };
 			else if (method === "env.reset") result = [{}, { ...info(0, false), instruction: "beat the block" }];
@@ -117,6 +118,19 @@ async function fakeEnv() {
 					cam2world_gl: f64([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1], [4, 4]),
 					width: 2,
 					height: 2,
+				};
+			else if (method === "env.move_to" || method === "env.set_gripper")
+				result = {
+					action_type: "qpos",
+					requested_actions: 2,
+					executed_actions: 2,
+					completed: true,
+					requested_steps: 2,
+					executed_steps: 2,
+					stop_reason: "completed",
+					success: true,
+					info: { ...info(2, method === "env.set_gripper"), executed_actions: 2 },
+					frames: [nd("uint8", [2, 2, 3], Buffer.alloc(12)), nd("uint8", [2, 2, 3], Buffer.alloc(12))],
 				};
 			else if (method === "code.run")
 				result = {
@@ -219,5 +233,43 @@ test("--code=true: run_code runs on the env server and its result becomes a reco
 	assert.equal(result.native_actions, 12);
 	assert.equal(result.code, "true");
 	assert.equal(result.code_api, "low");
+	await s.emit("session_shutdown");
+});
+
+test("the motion tools are the env server's methods: manifest schemas, params passed through, info absorbed", async (t) => {
+	const env = await fakeEnv();
+	t.after(env.close);
+	const base = mkdtempSync(join(tmpdir(), "robotwin-motion-"));
+	t.after(() => rmSync(base, { recursive: true, force: true }));
+	const memory = join(base, "robotwin");
+	mkdirSync(memory);
+	writeFileSync(join(memory, "MEMORY.md"), "# RoboTwin\n");
+	const s = stubPi({ env: env.url, lingbot: env.ws, "memory-profile": "local", "memory-dir": memory });
+	robotwin(s.pi);
+	const props = (name: string) => s.tools.get(name).parameters.properties;
+	assert.deepEqual(props("move_to").arm.enum, ["left", "right"]);
+	assert.equal(props("move_to").quat.minItems, 4);
+	assert.equal(props("set_gripper").val.maximum, 1);
+	assert.deepEqual(s.tools.get("move_to").parameters.required, ["arm", "xyz"]);
+	await s.emit("session_start");
+	process.exitCode = undefined;
+	for (const name of ["move_to", "rotate_wrist", "set_gripper", "release", "lingbot_act"])
+		assert.ok(s.active().includes(name), name);
+	await s.emit("agent_start");
+	const r = await s.run("move_to", { arm: "left", xyz: [-0.2, 0, 0.95], substeps: 5 });
+	const call = env.calls.find((c) => c.method === "env.move_to")!;
+	assert.deepEqual(call.kwargs, { arm: "left", xyz: [-0.2, 0, 0.95], substeps: 5 }, "no plan or step from pi");
+	assert.ok(!env.calls.some((c) => c.method === "env.step" || c.method === "env.plan_arm_path"));
+	const view = JSON.parse(r.content[0].text);
+	assert.equal(view.result.stop_reason, "completed");
+	assert.equal(view.result.info, undefined, "the info becomes the state, not the result");
+	assert.equal(view.result.frames, undefined);
+	assert.equal(view.episode_status.native_actions, 2);
+	// A motion that solved the task: the next one is refused by pi without a call.
+	await s.run("set_gripper", { arm: "right", val: 0 });
+	const before = env.calls.length;
+	const again = await s.run("move_to", { arm: "left", xyz: [-0.2, 0, 0.9] });
+	assert.match(again.content[0].text, /^Episode is terminal \(eval_success=true/);
+	assert.equal(env.calls.length, before);
 	await s.emit("session_shutdown");
 });

@@ -7,11 +7,9 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import ur5e, { cameraMount, hasWristCamera, UR5E_UNITS } from "../src/robots/ur5e/index.ts";
+import { codeApiReply } from "./helpers/code-api.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
-
-/** The values of an enum schema (StringEnum or a union of literals). */
-const enumOf = (schema: any): string[] => schema.enum ?? schema.anyOf.map((u: any) => u.const);
 
 /** A stub pi (as in piper.test.ts); `confirm` answers from `confirms`. */
 function fakePi(flagValues: Record<string, unknown> = {}, hasUI = true) {
@@ -122,6 +120,8 @@ async function mockServer(
 		cameraMeta?: Record<string, Record<string, unknown>>;
 		/** Serve the perception primitives (env.detect & co) and Molmo on this server too. */
 		perception?: boolean;
+		/** The limits the server enforces (`motion_limits`; default pi's defaults; null: none). */
+		limits?: { max_move_m: number; max_rotate_rad: number } | null;
 	} = {},
 ) {
 	const calls: { method: string; kwargs: Record<string, any> }[] = [];
@@ -156,12 +156,33 @@ async function mockServer(
 		[0, 0, 1, 0],
 		[0, 0, 0, 1],
 	];
+	const limits = o.limits === undefined ? { max_move_m: 0.08, max_rotate_rad: 0.2 } : o.limits;
+	/** The server's own refusals (services ur5e control.py, under pi's limits): nothing is commanded. */
+	const refuse = (method: string, k: Record<string, any>) => {
+		if (!limits) return;
+		const move =
+			method === "env.move_delta"
+				? Math.hypot(...k.delta_xyz)
+				: method === "env.move_pose"
+					? Math.hypot(...k.xyz.map((v: number, i: number) => v - tcp[i]))
+					: 0;
+		if (method === "env.move_pose" && k.rotvec && k.rpy) throw new Error("give rotvec or rpy, not both");
+		if (move > limits.max_move_m + 1e-9)
+			throw new Error(
+				`the move is ${move.toFixed(4)} m; the limit is ${limits.max_move_m} m per call (--max-move / limits.max_move_m)`,
+			);
+		const turn = method === "env.rotate_delta" ? Math.hypot(...k.delta_rpy) : 0;
+		if (turn > limits.max_rotate_rad + 1e-9)
+			throw new Error(
+				`delta_rpy rotates ${turn.toFixed(4)} rad; the limit is ${limits.max_rotate_rad} rad per call (--max-rotate)`,
+			);
+	};
 	const answer = (method: string, kwargs: Record<string, any>): unknown => {
 		switch (method) {
 			case "healthz":
 				return { status: "ok" };
 			case "code.api":
-				return { tier: null, primitives: [], digest: "0".repeat(64) };
+				return codeApiReply("ur5e", kwargs.tier);
 			case "env.get_env_meta":
 				return {
 					ok: true,
@@ -181,6 +202,7 @@ async function mockServer(
 					},
 					tasks: { block_bowl: { instruction: "put the block in the bowl" } },
 					...(o.perception ? { capabilities: { perception: { segment: true, enhance_depth: true } } } : {}),
+					...(limits ? { motion_limits: limits } : {}),
 				};
 			case "env.detect":
 				return {
@@ -225,9 +247,8 @@ async function mockServer(
 			case "env.move_delta":
 			case "env.move_pose":
 			case "env.rotate_delta":
+				refuse(method, kwargs);
 				return { ok: true, final_tcp_pose: tcp, states: null };
-			case "code.set_limits":
-				return kwargs;
 			case "code.run":
 				return {
 					status: "ran",
@@ -244,10 +265,10 @@ async function mockServer(
 					states: null,
 					frames: [img, img],
 				};
-			case "env.set_gripper":
-				return kwargs.open
-					? { ok: true, gripper_width_m: 0.085 }
-					: { ok: false, gripper_jammed: true, note: "gripper jammed: the fingers stayed" };
+			case "env.open_gripper":
+				return { ok: true, gripper_width_m: 0.085 };
+			case "env.close_gripper":
+				return { ok: false, gripper_jammed: true, note: "gripper jammed: the fingers stayed" };
 			default:
 				throw new Error(`unexpected ${method}`);
 		}
@@ -366,28 +387,55 @@ test("--arm-id must be the arm the env server is bound to; nothing moves otherwi
 	}
 });
 
-test("motion beyond the per-call limits is refused before it reaches the robot", async () => {
+test("pi checks no single-call limit itself: a motion goes to the server, which enforces them", async () => {
 	const f = fakePi({ operator: true, "arm-id": ARM });
 	ur5e(f.pi);
+	// Beyond --max-move: pi passes it on (the server refuses it); without a robot the call fails there.
 	const far = await f.run("move_delta", { delta_xyz: [0.06, 0.06, 0] });
-	assert.match(far.details.error, /moves 0\.0849 m; the limit is 0\.08 m per call/);
+	assert.match(far.details.error, /ur5e is not initialized/);
 	const turn = await f.run("rotate_delta", { delta_rpy: [0, 0, 0.3] });
-	assert.match(turn.details.error, /the rotation is 0\.3 rad; the limit is 0\.2 rad per call/);
-	const nan = await f.run("move_delta", { delta_xyz: [Number.NaN, 0, 0] });
-	assert.match(nan.details.error, /finite/);
-	// Within the limits the call proceeds to the (absent) robot.
-	const ok = await f.run("move_delta", { delta_xyz: [0.02, 0, 0] });
-	assert.match(ok.details.error, /ur5e is not initialized/);
-	const tight = fakePi({ operator: true, "arm-id": ARM, "max-move": "0.01" });
-	ur5e(tight.pi);
-	const unit = await tight.run("move_delta", { delta_xyz: [0, 0, -0.02] });
-	assert.match(unit.details.error, /the limit is 0\.01 m per call/);
+	assert.match(turn.details.error, /ur5e is not initialized/);
+	assert.match(f.tools.get("move_delta").description, /at most 0\.08 m per call/);
+	assert.match(f.tools.get("rotate_delta").description, /at most 0\.2 rad per call/);
 });
 
-test("tool schemas: gripper action enum, move_pose rotvec or rpy, camera flags", () => {
+test("with --units an act unit is refused whole before its first call when its move exceeds the limit", async () => {
+	const f = fakePi({ operator: true, "arm-id": ARM, units: true, "units-plugins": "", "max-move": "0.01" });
+	ur5e(f.pi);
+	assert.ok(f.tools.has("act"));
+	const far = await f.run("act", { unit: "MV_FWD" });
+	assert.match(far.details.error, /moves 0\.02 m; the limit is 0\.01 m per call/);
+});
+
+test("an attached server must enforce pi's limits or tighter ones", async (t) => {
+	for (const [limits, why] of [
+		[
+			{ max_move_m: 0.1, max_rotate_rad: 0.2 },
+			/looser than pi's \(--max-move is 0\.1\): start it with --max-move 0\.08 --max-rotate 0\.2/,
+		],
+		[null, /enforces none of pi's per-call limits/],
+	] as const) {
+		const { f, m } = await started({}, { limits });
+		t.after(m.close);
+		assert.match(f.notes.join("\n"), why);
+		assert.ok(!m.methods().includes("env.reset"), "nothing moved");
+	}
+	// Tighter is fine; the prompt and the tool descriptions name the limit in force.
+	const { f, m } = await started({}, { limits: { max_move_m: 0.03, max_rotate_rad: 0.1 } });
+	t.after(m.close);
+	const p = await f.emit("before_agent_start", { systemPrompt: "base" });
+	assert.match(p.systemPrompt, /at most 0\.03 m per call/);
+	const refused = await f.run("move_delta", { delta_xyz: [0, 0, 0.05] });
+	assert.match(refused.details.error, /the limit is 0\.03 m per call/);
+});
+
+test("tool schemas come from the manifest: open/close gripper, move_pose rotvec or rpy, camera flags", () => {
 	const f = fakePi({ operator: true, "arm-id": ARM });
 	ur5e(f.pi);
-	assert.deepEqual(enumOf(f.tools.get("gripper").parameters.properties.action), ["open", "close"]);
+	assert.ok(!f.tools.has("gripper"));
+	assert.deepEqual(Object.keys(f.tools.get("open_gripper").parameters.properties), []);
+	assert.deepEqual(Object.keys(f.tools.get("close_gripper").parameters.properties), []);
+	assert.match(f.tools.get("close_gripper").description, /grasp_empty/);
 	const pose = f.tools.get("move_pose").parameters;
 	assert.deepEqual(pose.required, ["xyz"]);
 	assert.deepEqual(Object.keys(pose.properties).sort(), ["rotvec", "rpy", "xyz"]);
@@ -409,7 +457,8 @@ test("a started ur5e resets once, records steps and back-projects through depth 
 			"move_delta",
 			"move_pose",
 			"rotate_delta",
-			"gripper",
+			"open_gripper",
+			"close_gripper",
 			"finish",
 			// memory's file tools, then the operator's.
 			"read",
@@ -448,15 +497,17 @@ test("a started ur5e resets once, records steps and back-projects through depth 
 			rpy: [0, 0, 0.1],
 		});
 		assert.equal(pose.details.step_idx, 2);
+		// The server refuses (and says why); the refusal is recorded as the next step.
 		const farPose = await f.run("move_pose", { xyz: [0.6, 0.1, 0.3] });
 		assert.match(farPose.details.error, /the limit is 0\.08 m per call/);
 		const both = await f.run("move_pose", { xyz: [0.41, 0.1, 0.3], rpy: [0, 0, 0], rotvec: [0, 0, 0] });
 		assert.match(both.details.error, /rotvec or rpy, not both/);
-		assert.equal(m.calls.filter((c) => c.method === "env.move_pose").length, 1, "refusals send nothing");
-		const grip = await f.run("gripper", { action: "close" });
+		const grip = await f.run("close_gripper", {});
 		assert.equal(grip.details.gripper_jammed, true);
 		assert.match(grip.details.gripper_note, /gripper jammed/);
-		assert.deepEqual(m.calls.find((c) => c.method === "env.set_gripper")?.kwargs, { open: false });
+		assert.deepEqual(m.calls.find((c) => c.method === "env.close_gripper")?.kwargs, {});
+		const open = await f.run("open_gripper", {});
+		assert.equal(open.details.result.gripper_width_m, 0.085);
 	} finally {
 		m.close();
 	}
@@ -565,7 +616,7 @@ test("--unidepth: enhance_depth stores the estimate in the latest step, so an RG
 		assert.deepEqual(d.details.ids, ["d1"]);
 		assert.deepEqual(m.calls.find((c) => c.method === "env.detect")?.kwargs, {
 			camera: "front",
-			text_prompt: "block",
+			prompt: "block",
 			min_score: 0.2,
 			all: false,
 		});
@@ -584,15 +635,16 @@ test("--unidepth: enhance_depth stores the estimate in the latest step, so an RG
 	}
 });
 
-test("ur5e --code: pi's caps reach the server, every program is confirmed and the run is a state step", async (t) => {
-	const { f, m, s } = await started({ code: "true", "code-real": true, "max-move": "0.05" }, {}, [true, true, false]);
+test("ur5e --code: the server enforces pi's caps, every program is confirmed and the run is a state step", async (t) => {
+	const { f, m, s } = await started(
+		{ code: "true", "code-real": true, "max-move": "0.05" },
+		{ limits: { max_move_m: 0.05, max_rotate_rad: 0.2 } },
+		[true, true, false],
+	);
 	t.after(m.close);
 	assert.deepEqual(s.errors, []);
 	assert.ok(f.active().includes("run_code"), f.active().join(","));
-	assert.deepEqual(m.calls.find((c) => c.method === "code.set_limits")?.kwargs, {
-		max_move_m: 0.05,
-		max_rotate_rad: 0.2,
-	});
+	assert.ok(!m.methods().includes("code.set_limits"), "no code.set_limits: the limits came at spawn");
 	await f.emit("agent_start");
 	const r = await f.run("run_code", { code: "move_delta([0, 0, -0.03])" });
 	assert.equal(r.details.status, "ran");

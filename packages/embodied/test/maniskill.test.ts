@@ -7,53 +7,42 @@ import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { NdArray } from "../src/infra/rpc.ts";
 import { ground, MOVE_UNITS } from "../src/modes/units/index.ts";
+import { loadManifest, toolSchema } from "../src/primitives/manifest.ts";
 import maniskill, {
 	calibrate,
 	ENV_IDS,
-	GAIN,
-	GRIPPER_STEPS,
 	grasped,
 	hasGripper,
 	hasWrist,
+	IK_ROBOTS,
 	type ManiskillRobot,
 	OTHER_ROBOT_ENVS,
-	phases,
 	ROBOT_IDS,
 	ROBOTS,
 	robotFor,
-	SERVO,
 	STEP_M,
 	sideBySide,
 	VECTORS,
 	VIEW_SETUP,
 	VIEWS,
-	waypoints,
 } from "../src/robots/maniskill/index.ts";
+import { codeApiReply } from "./helpers/code-api.ts";
 
 const close = (a: number[], b: number[]) => a.every((x, k) => Math.abs(x - b[k]) < 1e-9);
 
 test("each MV_* unit is one ~2 cm decision along the yaml's base-frame vector", () => {
 	for (const unit of MOVE_UNITS) {
 		const move = ground({ vectors: VECTORS, stepM: STEP_M }, unit)!;
-		const w = waypoints([0.1, 0.2, 0.3], move.delta);
-		assert.equal(w.length, 1);
+		// The env server splits a move into ceil(|delta| / 2 cm) waypoints: one per unit (services test_maniskill_move_delta.py).
 		assert.ok(
 			close(
-				w[0],
-				[0.1, 0.2, 0.3].map((p, k) => p + VECTORS[unit][k] * 0.02),
+				move.delta,
+				VECTORS[unit].map((v) => v * 0.02),
 			),
-			`${unit} ${w[0]}`,
+			`${unit} ${move.delta}`,
 		);
 	}
 	assert.deepEqual(VECTORS.MV_LEFT, [0, -1, 0]); // configs/robot_maniskill.yaml: robot-left = -Y
-});
-
-test("a long move splits into evenly spaced ~2 cm waypoints; a gripper command or STOP holds in place", () => {
-	const w = waypoints([0, 0, 0.2], [0.05, 0, -0.03]);
-	assert.equal(w.length, 3); // |delta| 5.8 cm -> 3 decisions
-	assert.ok(close(w[2], [0.05, 0, 0.17]));
-	assert.ok(close(w[0], [0.05 / 3, 0, 0.19]));
-	assert.deepEqual(waypoints([0, 0, 0.2], [0, 0, 0]), [[0, 0, 0.2]]);
 });
 
 test("the episode video frame puts the agentview and the wrist view side by side", () => {
@@ -68,22 +57,6 @@ test("the grasp flag is read from whichever is_*grasped key the scene reports", 
 	assert.equal(grasped({ is_grasped: true }), true);
 	assert.equal(grasped({ is_cubeA_grasped: 1, success: false }), true);
 	assert.equal(grasped({ is_cubeA_grasped: false, is_obj_placed: true }), false);
-});
-
-test("move_delta with a gripper change: the fingers settle first, holding still, then the arm moves", () => {
-	const start = [0.1, 0, 0.1];
-	const p = phases(start, [0, 0, 0.04], true);
-	// A GRIPPER_STEPS hold at the start, then the two ~2 cm waypoints of the move with the new command.
-	assert.deepEqual(p[0], { target: start, minSteps: GRIPPER_STEPS, maxSteps: GRIPPER_STEPS });
-	assert.equal(p.length, 3);
-	assert.ok(close(p[2].target, [0.1, 0, 0.14]));
-	assert.deepEqual([p[1].minSteps, p[1].maxSteps], [SERVO.minSteps, SERVO.maxSteps]);
-	// A pure gripper toggle is the hold alone; a move without a change has no hold; STOP holds one decision.
-	assert.deepEqual(phases(start, [0, 0, 0], true), [p[0]]);
-	assert.equal(phases(start, [0, 0, 0.04], false).length, 2);
-	assert.deepEqual(phases(start, [0, 0, 0], false), [
-		{ target: start, minSteps: SERVO.minSteps, maxSteps: SERVO.minSteps },
-	]);
 });
 
 test("probe-axes: a short unit is scaled up to stepM, a mirrored axis is refused", () => {
@@ -201,7 +174,10 @@ test("--robot: the same arms as the env server's ROBOTS, each with the env ids, 
 	// The default keeps every Panda constant the robot had before --robot.
 	const panda = ROBOTS.panda;
 	assert.equal(panda.vectors, VECTORS);
-	assert.deepEqual([panda.stepM, panda.gain, panda.gripperSteps], [STEP_M, GAIN, GRIPPER_STEPS]);
+	assert.equal(panda.stepM, STEP_M);
+	// The waypoint split and the per-call cap are the server's: its STEP_M and MAX_MOVE_M are pi's.
+	assert.match(SERVER, /^STEP_M = 0\.02$/m);
+	assert.match(SERVER, /^MAX_MOVE_M = 0\.2$/m);
 	assert.equal(panda.setup, VIEW_SETUP);
 	assert.equal(panda.views, VIEWS);
 	assert.equal(panda.arm, "Franka Panda arm");
@@ -235,7 +211,7 @@ test("--robot is checked against the env id: a rig runs its own Panda, a stock s
 	assert.throws(() => robotFor("toString", "PickCube-v1"), /unknown --robot/);
 });
 
-test("--robot units: every arm's MV_* is one ~2 cm decision along its measured base-frame axis; its gripper hold is its own", () => {
+test("--robot units: every arm's MV_* is one ~2 cm decision along its measured base-frame axis", () => {
 	for (const id of ROBOT_IDS) {
 		const r = ROBOTS[id];
 		for (const unit of MOVE_UNITS) {
@@ -247,15 +223,10 @@ test("--robot units: every arm's MV_* is one ~2 cm decision along its measured b
 				VECTORS[unit].map((v) => Math.sign(v)),
 				`${id} ${unit}`,
 			);
-			assert.equal(waypoints([0, 0, 0.2], move.delta, r.stepM).length, 1);
 		}
-		const p = phases([0, 0, 0.2], [0, 0, 0.04], true, r.gripperSteps, r.stepM);
-		assert.deepEqual([p[0].minSteps, p[0].maxSteps], [r.gripperSteps, r.gripperSteps]);
-		assert.equal(p.length, 3);
 	}
-	// The WidowX AI's carriages need 10 control steps to close on nothing (4 mm left after 6).
-	assert.equal(ROBOTS.widowxai.gripperSteps, 10);
-	assert.equal(ROBOTS.xarm6_robotiq.gripperSteps, GRIPPER_STEPS);
+	// Each arm's gripper hold (the WidowX AI's 10 steps, ...) is the env server's RobotSpec.gripper_steps.
+	assert.match(serverRobots().widowxai, /gripper_steps=10,/);
 });
 
 type Handler = (event: any, ctx: any) => unknown;
@@ -347,7 +318,7 @@ async function fakeEnv(
 			const { method, args = [], kwargs = {} } = JSON.parse(body);
 			calls.push({ method, args, kwargs });
 			let result: unknown = { status: "ok" };
-			if (method === "code.api") result = { tier: null, primitives: [], digest: "d" };
+			if (method === "code.api") result = codeApiReply("maniskill", kwargs.tier as string | undefined);
 			else if (method === "env.get_env_meta")
 				result = {
 					env_id: envId,
@@ -360,10 +331,46 @@ async function fakeEnv(
 				};
 			else if (method === "env.reset") result = [obs(), {}];
 			else if (method === "env.get_task_language") result = "pick up the red cube";
-			else if (method === "env.servo") {
-				if (kwargs.arm) armTcp[kwargs.arm as string] = args[0] as number[];
-				else tcp = args[0] as number[];
-				result = [[obs()], { is_grasped: false, ...(process.env.FAKE_STEP_LIMIT ? { step_limit: true } : {}) }];
+			else if (method === "env.move_delta") {
+				// The server's refusals (env_server.py move_delta); the waypoint legs themselves are tested in Python.
+				const d = kwargs.delta_xyz as number[];
+				if (robot === "panda_stick" && kwargs.gripper) {
+					res.end(JSON.stringify({ ok: false, error: "ValueError: this robot holds a stick and has no gripper" }));
+					return;
+				}
+				const a = kwargs.arm as string | undefined;
+				if (arms && !a) {
+					res.end(
+						JSON.stringify({
+							ok: false,
+							error: `ValueError: this robot has two arms; arm must be one of ${arms.join(", ")}`,
+						}),
+					);
+					return;
+				}
+				const from = a ? armTcp[a] : tcp;
+				const to = from.map((v, k) => v + d[k]);
+				if (a) armTcp[a] = to;
+				else tcp = to;
+				const limited = Boolean(process.env.FAKE_STEP_LIMIT);
+				result = {
+					result: {
+						...(a ? { arm: a } : {}),
+						commanded_m: d,
+						moved_m: d,
+						gripper: kwargs.gripper ?? "open",
+						env_steps: 2,
+						...(limited
+							? { step_limit: "the episode's step limit is reached; no further motion runs: call finish" }
+							: {}),
+					},
+					frames: [
+						{ ...obs(), action: f32([0, 0, 0, 1]), success: false },
+						{ ...obs(), action: f32([0, 0, 0, 1]), success: false },
+					],
+					obs: obs(),
+					info: { is_grasped: false },
+				};
 			} else if (method === "code.run") {
 				tcp = [-0.4, 0, 0.3];
 				result = {
@@ -417,17 +424,18 @@ test("--robot widowxai: a wrist-less arm starts on its own server, observes the 
 	assert.match(prompt, /no wrist camera/);
 	assert.match(prompt, /in the image before each move/);
 	assert.doesNotMatch(prompt, /both images|wrist image|\{\{/);
-	// A gripper change holds the robot's 10 steps, then each 2 cm waypoint is one servo call.
-	await s.run("move_delta", { delta_xyz: [0, 0, -0.04], gripper: "close" });
-	const servos = env.calls.filter((c) => c.method === "env.servo");
+	// One env.move_delta with the tool's parameters (the server holds the robot's 10 gripper steps, then servos
+	// each 2 cm waypoint); every control step it returns goes to the video.
+	const r0 = await s.run("move_delta", { delta_xyz: [0, 0, -0.04], gripper: "close" });
+	const moves = env.calls.filter((c) => c.method === "env.move_delta");
 	assert.deepEqual(
-		servos.map((c) => [c.kwargs.min_steps, c.kwargs.max_steps, c.args[1]]),
-		[
-			[10, 10, -1],
-			[SERVO.minSteps, SERVO.maxSteps, -1],
-			[SERVO.minSteps, SERVO.maxSteps, -1],
-		],
+		moves.map((c) => c.kwargs),
+		[{ delta_xyz: [0, 0, -0.04], gripper: "close" }],
 	);
+	assert.ok(!env.calls.some((c) => c.method === "env.servo"), "no servo loop in TypeScript");
+	assert.equal(r0.details.step, 2);
+	assert.equal(r0.details.state.gripper_command, "close");
+	assert.deepEqual(r0.details.result.moved_m, [0, 0, -0.04]);
 	// The result names the arm; `robot` stays the pi robot.
 	await s.emit("agent_start");
 	await s.run("finish", { status: "failure", summary: "stop" });
@@ -452,14 +460,9 @@ test("--robot panda_stick: no gripper, so move_delta refuses `gripper`, the stat
 	await assert.rejects(s.run("move_delta", { delta_xyz: [0, 0, -0.02], gripper: "close" }), /has no gripper/);
 	const r = await s.run("move_delta", { delta_xyz: [0, 0, -0.04] });
 	assert.deepEqual(Object.keys(r.details.state), ["tcp_pos"]);
-	// Two 2 cm waypoints, no gripper hold phase; the command stays "open" (the server drops it).
-	const servos = env.calls.filter((c) => c.method === "env.servo");
 	assert.deepEqual(
-		servos.map((c) => [c.kwargs.min_steps, c.args[1]]),
-		[
-			[SERVO.minSteps, 1],
-			[SERVO.minSteps, 1],
-		],
+		env.calls.filter((c) => c.method === "env.move_delta").map((c) => c.kwargs),
+		[{ delta_xyz: [0, 0, -0.02], gripper: "close" }, { delta_xyz: [0, 0, -0.04] }],
 	);
 	// The Panda cannot run it.
 	assert.throws(() => robotFor("panda", "DrawTriangle-v1"), /runs on --robot panda_stick/);
@@ -497,13 +500,8 @@ test("--robot panda_pair: move_delta takes `arm`, moves that arm alone in the wo
 	assert.doesNotMatch(prompt, /\[\/?\w+\]|base-frame|\{\{/);
 	await assert.rejects(s.run("move_delta", { delta_xyz: [0, 0, -0.02] }), /arm must be one of left, right/);
 	const r = await s.run("move_delta", { delta_xyz: [0, 0.02, -0.02], gripper: "close", arm: "right" });
-	const servos = env.calls.filter((c) => c.method === "env.servo");
-	assert.ok(servos.every((c) => c.kwargs.arm === "right"));
-	assert.deepEqual(
-		(servos.at(-1)?.args[0] as number[]).map((v) => Number(v.toFixed(4))),
-		[0, 0.14, 0.16],
-	);
-	assert.equal(servos.at(-1)?.args[1], -1);
+	const move = env.calls.filter((c) => c.method === "env.move_delta").at(-1);
+	assert.deepEqual(move?.kwargs, { delta_xyz: [0, 0.02, -0.02], gripper: "close", arm: "right" });
 	assert.equal(r.details.result.arm, "right");
 	assert.deepEqual(r.details.state.arms.right.tcp_pos, [0, 0.14, 0.16]);
 	assert.equal(r.details.state.arms.right.gripper_command, "close");
@@ -522,11 +520,11 @@ test("--units on --robot panda_pair: act takes `arm` and drives that arm", async
 	await s.emit("session_start");
 	process.exitCode = undefined;
 	await s.run("act", { unit: "MV_RIGHT", arm: "left" });
-	const servo = env.calls.filter((c) => c.method === "env.servo").at(-1);
-	assert.equal(servo?.kwargs.arm, "left");
+	const move = env.calls.filter((c) => c.method === "env.move_delta").at(-1);
+	assert.equal(move?.kwargs.arm, "left");
 	assert.deepEqual(
-		(servo?.args[0] as number[]).map((v) => Number(v.toFixed(4))),
-		[0, -0.1, 0.18],
+		(move?.kwargs.delta_xyz as number[]).map((v) => Number(v.toFixed(4))),
+		[0, 0.02, 0],
 	);
 });
 
@@ -563,6 +561,21 @@ test("the Panda's prompt is unchanged by --robot, and a server running another a
 	assert.match(prompt, /relative to the gripper in both images before each move\./);
 	assert.match(prompt, /check `is_grasped` and the wrist image before carrying\./);
 	assert.equal((await s.run("view_env_state", {})).details.images.length, 2);
+	// The manifest's move_delta: one arm takes no `arm`, the base frame and the cap are stated.
+	const md = s.tools.get("move_delta");
+	assert.deepEqual(Object.keys(md.parameters.properties), ["delta_xyz", "gripper"]);
+	assert.match(
+		md.description,
+		/^Translate the gripper by a base-frame \[dx, dy, dz\] in metres \(\+x away from the base, .*\(at most 0\.2 m per call\)/,
+	);
+	assert.deepEqual(
+		(
+			toolSchema(loadManifest("maniskill").primitives.find((e) => e.name === "move_delta")!, {
+				arms: ["left", "right"],
+			}).properties.arm as { enum?: string[] }
+		).enum,
+		["left", "right"],
+	);
 
 	const xarm = await fakeEnv("widowxai", ROBOTS.xarm6_robotiq.setup, true);
 	t.after(xarm.close);
@@ -593,9 +606,9 @@ test("--units on --robot widowxai: no wrist view, so fine steps, no target_in_wr
 		process.exitCode = undefined;
 		const prompt = (await s.emit("before_agent_start")).systemPrompt as string;
 		// 8 cm above the table: coarse on the Panda (the target not in the wrist view), fine without a wrist view.
-		const before = env.calls.filter((c) => c.method === "env.servo").length;
 		const r = await s.run("act", { unit: "MV_LEFT", target_in_wrist: false });
-		const servos = env.calls.filter((c) => c.method === "env.servo").length - before;
+		const move = env.calls.filter((c) => c.method === "env.move_delta").at(-1);
+		const servos = Math.round(Math.hypot(...(move?.kwargs.delta_xyz as number[])) / STEP_M);
 		await s.emit("agent_start");
 		await s.run("finish", { status: "failure", summary: "stop" });
 		await s.emit("agent_end", { messages: [] });
@@ -605,7 +618,7 @@ test("--units on --robot widowxai: no wrist view, so fine steps, no target_in_wr
 	const w = await run("widowxai", ROBOTS.widowxai.setup, false);
 	assert.deepEqual(w.active, ["act", "plan", "finish"]);
 	assert.ok(!("target_in_wrist" in w.schema) && !("plan" in w.schema), "act at load already follows --robot");
-	assert.equal(w.servos, 1, "one 2 cm waypoint: the fine step");
+	assert.equal(w.servos, 1, "one 2 cm unit: the fine step");
 	assert.match(w.head, /target_in_wrist ignored: this robot has no wrist view/);
 	assert.doesNotMatch(w.prompt, /WRIST CHECK|target_in_wrist|ACTION PLAN|coarse/);
 	assert.match(w.prompt, /There is no wrist view: the third-person view is the only guide/);
@@ -614,7 +627,7 @@ test("--units on --robot widowxai: no wrist view, so fine steps, no target_in_wr
 
 	const p = await run(undefined, VIEW_SETUP, true);
 	assert.ok("target_in_wrist" in p.schema && "plan" in p.schema);
-	assert.equal(p.servos, 2, "the 4 cm coarse step as two 2 cm waypoints");
+	assert.equal(p.servos, 2, "the 4 cm coarse step (two 2 cm waypoints on the server)");
 	assert.match(p.prompt, /WRIST CHECK/);
 	assert.deepEqual(p.result.units_plugins, [
 		"recovery",
@@ -661,6 +674,19 @@ test("--code=true: run_code runs on the env server and its result becomes the ob
 	assert.equal(result.code_api, "low-noexamples");
 });
 
+test("--ik: preview_reach passes the manifest's xyz / quat_xyzw straight to the env server (Panda and xArm6 only)", async (t) => {
+	const env = await fakeEnv(undefined, VIEW_SETUP, true);
+	t.after(env.close);
+	const s = stubPi({ env: env.url, "env-id": "PickCube-v1", ik: "http://127.0.0.1:1" });
+	maniskill(s.pi);
+	await s.emit("session_start");
+	process.exitCode = undefined;
+	assert.ok(s.active().includes("preview_reach"));
+	await s.run("preview_reach", { xyz: [0, 0.1, 0.05] });
+	assert.deepEqual(env.calls.find((c) => c.method === "env.preview_reach")?.kwargs, { xyz: [0, 0.1, 0.05] });
+	assert.deepEqual(IK_ROBOTS, ["panda", "xarm6_robotiq"]);
+});
+
 test("a drawing scene's spent step budget ends a move and says to finish", async (t) => {
 	const env = await fakeEnv("panda_stick", ROBOTS.panda_stick.setup, false, "DrawTriangle-v1");
 	t.after(env.close);
@@ -671,7 +697,7 @@ test("a drawing scene's spent step budget ends a move and says to finish", async
 	process.env.FAKE_STEP_LIMIT = "1";
 	t.after(() => delete process.env.FAKE_STEP_LIMIT);
 	const r = await s.run("move_delta", { delta_xyz: [0.06, 0, 0] });
-	// Three 2 cm waypoints, but the first returned step_limit: no further servo call.
-	assert.equal(env.calls.filter((c) => c.method === "env.servo").length, 1);
+	// The server stops at the spent budget and says so; pi shows it.
+	assert.equal(env.calls.filter((c) => c.method === "env.move_delta").length, 1);
 	assert.match(r.details.result.step_limit, /step limit is reached.*call finish/);
 });

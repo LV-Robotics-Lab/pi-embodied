@@ -108,9 +108,10 @@ def test_a_high_tier_run_reaches_the_goal_and_the_program_sees_no_object_state()
     out = f._rpc["code.run"](
         "a = state()\n"
         "b = move_delta([0, 0.1, 0])\n"
-        "c = set_gripper(False)\n"
+        "c = set_gripper(True)\n"
         "RESULT = [a, b, c, state()]\n",
         timeout_s=30,
+        tier="low",
     )
     assert out["status"] == "ran", out
     seen = keys(out["result"])
@@ -141,7 +142,7 @@ def test_the_low_tier_raw_steps_answer_with_the_robot_state_and_flags_only():
         "c = chunk_step([[0, 1, 0, 1]] * 2, return_all_frames=True)\n"
         "RESULT = [a, b, c]\n",
         timeout_s=30,
-        tier="low",
+        tier="raw",
     )
     assert out["status"] == "ran", out
     a, b, c = out["result"]
@@ -170,11 +171,11 @@ def test_the_privileged_tier_alone_reaches_the_ground_truth():
 
 def test_oversized_calls_are_refused_before_they_run():
     f = facade()
-    for code, why in [
-        ("chunk_step([[0, 0, 0, 0]] * 500)\n", "at most 200 actions"),
-        ('render_camera("agentview", 4096, 4096)\n', "at most 1024"),
+    for code, tier, why in [
+        ("chunk_step([[0, 0, 0, 0]] * 500)\n", "raw", "200"),
+        ('render_camera("agentview", 4096, 4096)\n', "low", "1024"),
     ]:
-        out = f._rpc["code.run"](code, timeout_s=30, tier="low")
+        out = f._rpc["code.run"](code, timeout_s=30, tier=tier)
         assert out["status"] == "error" and why in out["error"], out
     assert f._steps == 0
 
@@ -189,10 +190,54 @@ def test_the_run_video_is_bounded():
 
 def test_the_low_tier_shows_examples_and_s4_drops_them():
     f = facade()
-    low = f._rpc["code.api"]("low")["primitives"]
-    s4 = f._rpc["code.api"]("low-noexamples")["primitives"]
-    assert [p["name"] for p in s4] == [p["name"] for p in low]
-    named = {p["name"]: p for p in low}
-    for name in ("move_delta", "set_gripper", "step", "chunk_step", "render_camera"):
-        assert "example" in named[name], name
-    assert all("example" not in p for p in s4)
+    f._manifest_ready()
+    low = {p["name"]: p["doc"] for p in f._code.api("low")}
+    raw = {p["name"]: p["doc"] for p in f._code.api("raw")}
+    s4 = f._code.api("low-noexamples")
+    assert [p["name"] for p in s4] == list(low)
+    for name in ("move_delta", "set_gripper", "render_camera", "back_project"):
+        assert "Example:" in low[name], name
+    for name in ("step", "chunk_step"):
+        assert "Example:" in raw[name], name
+    assert all("Example:" not in p["doc"] for p in s4)
+    # segment needs --sam3, the chains a grasp planner; no joint space on a mocap hand.
+    api = set(f._rpc["code.api"]("low")["available"])
+    assert "back_project" in api and not api & {"segment", "execute_grasp", "solve_ik"}
+
+
+def test_the_server_checks_itself_against_its_manifest():
+    """A facade method the manifest does not declare (nor lists as internal) stops the server."""
+    from pi_embodied_services.components.manifest import ManifestError
+
+    facade()._manifest_ready()
+    g = facade()
+    g._rpc["env.secret_teleport"] = lambda: None
+    with pytest.raises(ManifestError, match="env.secret_teleport"):
+        g._manifest_ready()
+    h = facade()
+    del h._rpc["env.back_project"]
+    with pytest.raises(ManifestError, match="back_project"):
+        h._manifest_ready()
+
+
+def test_back_project_points_regions_and_pixel_lists_through_the_depth():
+    """env.back_project (the tool's and the program's): a pixel, a region's centre (midpoint of
+    x and y, median z) and a pixel list, all through the rendered depth."""
+    f = facade()
+    xyz = np.zeros((256, 256, 3))
+    rows, cols = np.mgrid[0:256, 0:256]
+    xyz[..., 0], xyz[..., 1], xyz[..., 2] = cols * 0.01, rows * 0.01, 0.1
+    xyz[0, 0] = np.nan
+    f._world_map = lambda camera, size: (np.zeros((size, size, 3), np.uint8), xyz)
+    assert f.back_project(10, 20)["world_xyz"] == [0.2, 0.1, 0.1]
+    assert "error" in f.back_project(0, 0)
+    assert "out of bounds" in f.back_project(300, 1)["error"]
+    r = f.back_project(row_range=[10, 20], col_range=[30, 40])
+    assert r["center_xyz"] == [0.345, 0.145, 0.1] and r["n_valid"] == 100
+    assert (
+        "too few"
+        in f.back_project(row_range=[1, 3], col_range=[1, 3], z_min=0.5)["error"]
+    )
+    assert f.back_project(pixels=[[0, 0], [1, 2]]) == [None, [0.02, 0.01, 0.1]]
+    with pytest.raises(ValueError, match="resolution"):
+        f.back_project(1, 1, resolution="ultra")

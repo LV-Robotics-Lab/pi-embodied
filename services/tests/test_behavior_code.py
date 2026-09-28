@@ -52,6 +52,7 @@ def facade(fake: FakeSim | None = None):
 
 def test_the_server_serves_code_run_with_a_token_and_exclusivity():
     _fake, f = facade()
+    f._manifest_ready()
     assert env_server.BehaviorEnvFacade.REQUIRE_TOKEN and f._rpc_token
     assert "code.run" in f._rpc and "code.helpers" in f._rpc
     with pytest.raises(PermissionError):
@@ -69,6 +70,7 @@ def test_a_run_reaches_the_primitives_and_hands_back_no_images_or_privileged_sta
         "g = grasp_object('left', [1.0, 0.5, 0.45])\n"
         "RESULT = [sorted(n), sorted(g), g['ok'], g['gripper_width']]\n",
         timeout_s=30,
+        tier="low",
     )
     assert out["status"] == "ran", out
     nav, grasp, ok, width = out["result"]
@@ -100,13 +102,16 @@ def test_the_low_tier_reads_and_raw_steps_carry_no_object_state():
     b[7] = 0.2  # left arm: one joint 0.2 rad from the current 0
     out = f._rpc["code.run"](
         f"a = {a.tolist()}\nb = {b.tolist()}\n"
-        "s = step(a)\nc = chunk_step([a, b])\nst = state()\nro = raw_obs()\n"
-        "RESULT = [sorted(s), sorted(s['state']), sorted(c), sorted(st), sorted(ro)]\n",
+        "s = step(a)\nc = chunk_step([a, b])\nro = raw_obs()\n"
+        "RESULT = [sorted(s), sorted(s['state']), sorted(c), sorted(ro)]\n",
         timeout_s=30,
-        tier="low",
+        tier="raw",
     )
     assert out["status"] == "ran", out
-    step, step_state, chunk, state, raw = out["result"]
+    step, step_state, chunk, raw = out["result"]
+    low = f._rpc["code.run"]("RESULT = sorted(state())\n", timeout_s=30, tier="low")
+    assert low["status"] == "ran", low
+    state = low["result"]
     assert step == ["reward", "state", "success", "terminated", "truncated"]
     assert {"state", "terminated", "truncated", "success"} <= set(chunk)
     for keys in (step_state, state):
@@ -119,7 +124,7 @@ def test_the_low_tier_reads_and_raw_steps_carry_no_object_state():
     out = f._rpc["code.run"](
         f"chunk_step([{a.tolist()}] * {env_server.CODE_MAX_CHUNK + 1})\n",
         timeout_s=30,
-        tier="low",
+        tier="raw",
     )
     assert out["status"] == "error" and "at most" in out["error"], out
 
@@ -147,7 +152,10 @@ def test_a_programs_primitives_run_on_the_thread_that_serves_every_rpc():
             got["run"] = f._dispatch_main_thread(
                 "code.run",
                 (),
-                {"code": "open_gripper('left')\nclose_gripper('right')\n"},
+                {
+                    "code": "open_gripper('left')\nclose_gripper('right')\n",
+                    "tier": "low",
+                },
                 token=f._rpc_token,
             )
         finally:

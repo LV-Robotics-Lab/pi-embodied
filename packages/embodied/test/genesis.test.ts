@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { ground, MOVE_UNITS } from "../src/modes/units/index.ts";
-import genesis, { CAMERAS, maskPixels, medianPoint, STEP_M, TASKS, VECTORS } from "../src/robots/genesis/index.ts";
+import genesis, { CAMERAS, STEP_M, SUCCESS_RULES, TASKS, VECTORS } from "../src/robots/genesis/index.ts";
+import { codeApiReply } from "./helpers/code-api.ts";
 import {
 	checkDetections,
 	checkPoint,
@@ -79,15 +80,25 @@ test("the task flag defaults to cube_pick, the only task, and the simulator regi
 	assert.equal(f.tools.has("ground_truth_poses"), false, "nothing privileged at load");
 	for (const name of [
 		"view_env_state",
-		"view_camera_meta",
+		"get_camera_meta",
 		"segment",
 		"back_project",
 		"move_delta",
-		"gripper",
+		"set_gripper",
 		"finish",
 	])
 		assert.ok(f.tools.has(name), name);
 	assert.deepEqual([...CAMERAS], ["agentview", "wrist"]);
+	// The schemas are the manifest's (manifests/genesis.json).
+	const props = (name: string) => f.tools.get(name)!.parameters.properties;
+	assert.equal(props("set_gripper").close.type, "boolean");
+	assert.deepEqual(f.tools.get("set_gripper")!.parameters.required, ["close"]);
+	assert.deepEqual(props("move_delta").gripper.enum, ["open", "close"]);
+	assert.equal(props("back_project").pixels, undefined, "a program-only argument");
+	assert.deepEqual(props("segment").camera.enum, ["agentview", "wrist"]);
+	assert.match(f.tools.get("move_delta")!.description, /at most 0\.2 m per call/);
+	assert.equal(f.flags["success-rule"], "grasp");
+	assert.deepEqual([...SUCCESS_RULES], ["grasp", "lift"]);
 });
 
 test("each MV_* unit is one 2 cm decision along the base-frame vector; MV_LEFT is -y", () => {
@@ -102,24 +113,32 @@ test("each MV_* unit is one 2 cm decision along the base-frame vector; MV_LEFT i
 	assert.deepEqual(VECTORS.MV_UP, [0, 0, 1]);
 });
 
-test("segment subsamples the mask evenly and takes the median of the back-projected points", () => {
-	const w = 8;
-	const data = new Uint8Array(w * w);
-	for (let r = 2; r < 6; r++) for (let c = 1; c < 5; c++) data[r * w + c] = 255; // a 4x4 blob
-	const m = maskPixels({ width: w, height: w, data }, 4);
-	assert.equal(m.n, 16);
-	assert.deepEqual(m.centroid, [4, 3]); // median row / col (rounded)
-	assert.equal(m.pixels.length, 4);
-	assert.deepEqual(m.pixels[0], [2, 1]);
-	assert.ok(m.pixels.every(([r, c]) => data[r * w + c] === 255));
-	assert.deepEqual(maskPixels({ width: w, height: w, data: new Uint8Array(w * w) }), {
-		n: 0,
-		centroid: null,
-		pixels: [],
+test("segment and back_project run the env server's methods with the manifest's parameters", async (t) => {
+	const env = await fakeGenesis();
+	t.after(env.close);
+	const s = simPi({ env: env.url });
+	genesis(s.pi);
+	await s.emit("session_start");
+	process.exitCode = undefined;
+	assert.ok(s.active().includes("segment"), "--sam3 has a default URL");
+	const r = await s.run("segment", { prompt: "red cube", camera: "wrist" });
+	assert.deepEqual(env.calls.find((c) => c.method === "env.segment")!.kwargs, { prompt: "red cube", camera: "wrist" });
+	assert.deepEqual(r.details.world_xyz, [0.4, 0, 0.02]);
+	assert.equal(r.details.mask, undefined, "the overlay shows the mask");
+	assert.deepEqual(
+		r.content.map((c: { type: string }) => c.type),
+		["text", "image"],
+	);
+	const b = await s.run("back_project", { row: 3, col: 4 });
+	assert.deepEqual(env.calls.filter((c) => c.method === "env.back_project").at(-1)!.kwargs, { row: 3, col: 4 });
+	assert.deepEqual(b.details.world_xyz, [0.4, 0, 0.02]);
+	const g = await s.run("set_gripper", { close: true });
+	assert.deepEqual(env.calls.find((c) => c.method === "env.set_gripper")!.kwargs, {
+		close: true,
+		return_frames: true,
 	});
-	const pts = Array.from({ length: 12 }, (_, i) => [0.5 + i * 0.001, -0.1, 0.02]);
-	assert.deepEqual(medianPoint([...pts, null, [Number.NaN, 0, 0]]), [0.5055, -0.1, 0.02]);
-	assert.equal(medianPoint(pts.slice(0, 5)), null, "too few points");
+	assert.equal(g.details.result.gripper, "close");
+	assert.equal(g.details.result.control_steps, 5);
 });
 
 /** A fake Genesis env server running cube_pick at seed 0. */
@@ -140,7 +159,11 @@ async function fakeGenesis(perception = false) {
 	return fakeEnv((c) => {
 		const p = perception ? perceptionAnswers(c) : undefined;
 		if (p !== undefined) return p;
-		if (c.method === "env.back_project") return [[0.4, 0, 0.02]];
+		if (c.method === "env.back_project")
+			return c.kwargs.pixels ? [[0.4, 0, 0.02]] : { camera: "agentview", pixel: [3, 4], world_xyz: [0.4, 0, 0.02] };
+		if (c.method === "env.segment")
+			return { found: true, camera: "wrist", world_xyz: [0.4, 0, 0.02], mask: [[true]], overlay_png_base64: "AAAA" };
+		if (c.method === "env.set_gripper") return { ...obs(), control_steps: 5 };
 		if (c.method === "env.get_env_meta")
 			return (perception ? withPerception : (m: Record<string, unknown>) => m)({
 				task: "cube_pick",
@@ -150,6 +173,7 @@ async function fakeGenesis(perception = false) {
 				z_floor_m: 0,
 				max_move_m: 0.2,
 				lift_m: 0.08,
+				success_rule: "grasp",
 			});
 		if (c.method === "env.reset") return [obs(), {}];
 		if (c.method === "env.move_delta")
@@ -195,7 +219,7 @@ test("--detections / --unidepth: the env server's perception primitives; detect 
 	const r = await s.run("detect", { prompt: "cube" });
 	assert.deepEqual(r.details.detections[0].centroid_world_xyz, [0.4, 0, 0.02]);
 	assert.deepEqual(env.calls.filter((c) => c.method === "env.back_project").at(-1)?.kwargs, {
-		camera_name: "agentview",
+		camera: "agentview",
 		pixels: [[1, 1]],
 	});
 });
@@ -213,23 +237,21 @@ test("--point: Molmo on the current images; the pixel's world xyz where the robo
 	assert.deepEqual(one.details.world_xyz, [0.4, 0, 0.02]);
 });
 
-test("--contact-graspnet: plan_grasp and execute_grasp, the claimed path run as move_delta calls of at most 0.2 m", async (t) => {
-	let tcp = [0.4, 0, 0.3];
-	const moves: number[][] = [];
+test("--contact-graspnet: plan_grasp, and execute_grasp runs env.execute_grasp (the chain is the server's)", async (t) => {
+	const obs = () => ({
+		agentview: rgb(),
+		wrist: rgb(),
+		tcp_pos: f32([0.5, 0.1, 0.12]),
+		tcp_quat_wxyz: f32([0, 1, 0, 0]),
+		gripper_width: 0.03,
+		gripper_command: "close",
+		qpos: f32([0]),
+		success: true,
+		is_grasped: true,
+		lift_m: 0.1,
+		env_steps: 40,
+	});
 	const env = await fakeEnv((c) => {
-		const obs = () => ({
-			agentview: rgb(),
-			wrist: rgb(),
-			tcp_pos: f32(tcp),
-			tcp_quat_wxyz: f32([0, 1, 0, 0]),
-			gripper_width: 0.08,
-			gripper_command: "open",
-			qpos: f32([0]),
-			success: false,
-			is_grasped: false,
-			lift_m: 0,
-			env_steps: 0,
-		});
 		if (c.method === "env.get_env_meta")
 			return {
 				task: "cube_pick",
@@ -240,29 +262,18 @@ test("--contact-graspnet: plan_grasp and execute_grasp, the claimed path run as 
 				max_move_m: 0.2,
 				lift_m: 0.08,
 			};
-		if (c.method === "env.reset") return [obs(), {}];
+		if (c.method === "env.reset") return [{ ...obs(), success: false, env_steps: 0 }, {}];
+		if (c.method === "code.api") return codeApiReply("genesis", c.kwargs.tier);
 		if (c.method === "env.plan_grasp") return { active: "g1", candidates: [{ id: "g1" }], expired_ids: [] };
-		if (c.method === "env.resolve_grasp") return { approach: [0, 0, -1] };
-		if (c.method === "env.claim_waypoints")
+		if (c.method === "env.execute_grasp")
 			return {
-				kind: "grasp",
-				waypoints: { pre_grasp: [0.5, 0.1, 0.12], grasp: [0.5, 0.1, 0.02], lift: [0.5, 0.1, 0.12] },
-				steps: [
-					{ to: "pre_grasp", gripper: -1 },
-					{ to: "grasp", gripper: -1 },
-					{ gripper: 1 },
-					{ to: "lift", gripper: 1 },
-				],
-				eef_yaw: 0,
-				expired_ids: [],
+				...obs(),
+				name: "execute_grasp",
+				id: "g1",
+				legs: [{ to: "pre_grasp" }, { to: "grasp" }, { gripper: "close" }, { to: "lift" }],
+				control_steps: 40,
+				frames: [nd("uint8", [2, 4, 3], Buffer.alloc(24))],
 			};
-		if (c.method === "env.move_delta") {
-			const d = c.args[0] as number[];
-			moves.push(d);
-			tcp = tcp.map((v, i) => v + d[i]);
-			return { ...obs(), commanded_m: d, moved_m: d, decisions: 1, control_steps: 1 };
-		}
-		if (c.method === "env.set_gripper") return { ...obs(), control_steps: 5 };
 		return undefined;
 	});
 	t.after(env.close);
@@ -270,20 +281,19 @@ test("--contact-graspnet: plan_grasp and execute_grasp, the claimed path run as 
 	genesis(s.pi);
 	await s.emit("session_start");
 	process.exitCode = undefined;
-	for (const name of ["plan_grasp", "plan_place", "check_attached", "execute_grasp", "execute_place"])
-		assert.ok(s.active().includes(name), name);
+	for (const name of ["plan_grasp", "check_attached", "execute_grasp"]) assert.ok(s.active().includes(name), name);
+	assert.ok(!s.active().includes("execute_place") && !s.active().includes("plan_place"), "places need --anyplace");
 	assert.equal((await s.run("plan_grasp", { object: "cube" })).details.active, "g1");
 	const r = await s.run("execute_grasp", { grasp_id: "g1" });
+	assert.deepEqual(env.calls.find((c) => c.method === "env.execute_grasp")!.kwargs, { grasp_id: "g1" });
 	assert.deepEqual(
 		r.details.result.legs.map((l: any) => l.to ?? l.gripper),
 		["pre_grasp", "grasp", "close", "lift"],
 	);
-	for (const d of moves) assert.ok(Math.hypot(...d) <= 0.2 + 1e-9);
-	assert.deepEqual(
-		env.calls.filter((c) => c.method === "env.set_gripper").map((c) => c.kwargs.open),
-		[false],
-	);
-	assert.ok(Math.abs(tcp[2] - 0.12) < 1e-6);
+	assert.equal(r.details.result.frames, undefined);
+	assert.equal(r.details.success, true);
+	assert.equal(r.details.step, 40);
+	assert.ok(!env.calls.some((c) => c.method === "env.move_delta"), "no legs from pi");
 	assert.match((await s.emit("before_agent_start")).systemPrompt as string, /`execute_grasp`/);
 
 	const off = simPi({ env: env.url });
@@ -301,11 +311,8 @@ test("--ik: preview_reach asks env.preview_reach and nothing moves; without --ik
 	await s.emit("session_start");
 	process.exitCode = undefined;
 	assert.ok(s.active().includes("preview_reach"));
-	await s.run("preview_reach", { xyz: [0.5, 0, 0.1] });
-	assert.deepEqual(env.calls.find((c) => c.method === "env.preview_reach")?.kwargs, {
-		pos: [0.5, 0, 0.1],
-		quat_xyzw: null,
-	});
+	await s.run("preview_reach", { pos: [0.5, 0, 0.1] });
+	assert.deepEqual(env.calls.find((c) => c.method === "env.preview_reach")?.kwargs, { pos: [0.5, 0, 0.1] });
 	assert.ok(!env.calls.some((c) => c.method === "env.move_delta"));
 	const off = simPi({ env: env.url });
 	genesis(off.pi);
@@ -339,7 +346,7 @@ async function fakeCodeEnv() {
 			const { method, kwargs = {} } = JSON.parse(body);
 			calls.push({ method, kwargs });
 			let result: unknown = { ok: true };
-			if (method === "code.api") result = { tier: kwargs.tier ?? null, primitives: [], digest: "d" };
+			if (method === "code.api") result = codeApiReply("genesis", kwargs.tier, (c) => c === "sam3");
 			else if (method === "env.get_env_meta")
 				result = { task: "cube_pick", seed: 0, instruction: "Pick up the red cube from the table and lift it." };
 			else if (method === "env.reset") result = [obs(false, 0), {}];
@@ -405,4 +412,5 @@ test("--code=true: run_code runs on the env server; its obs is absorbed into the
 	assert.equal(result.env_steps, 120);
 	assert.equal(result.code, "true");
 	assert.equal(result.code_api, "low");
+	assert.equal(result.success_rule, "grasp", "the rule the episode was scored by");
 });

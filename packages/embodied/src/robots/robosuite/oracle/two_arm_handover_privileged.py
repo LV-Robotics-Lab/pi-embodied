@@ -1,7 +1,8 @@
 # capx: env_configs/human_oracle_code/robosuite/two_arm_handover_privileged_oracle.yaml @53e9966
 # program: capx/envs/tasks/franka/two_arm_handover.py PRIVILEGED_ORACLE_CODE (FrankaHandoverPrivilegedApi)
 # task: TwoArmHandover
-# tier: privileged
+# tier: low+privileged
+# CaP-X's task API (not in the high tier) is the prelude over the low tier's primitives.
 # prelude: capx_handover_privileged.py
 # ---- CaP-X's program, verbatim ----
 import numpy as np

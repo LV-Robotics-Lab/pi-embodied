@@ -103,6 +103,7 @@ def test_a_run_reports_steps_success_the_new_obs_and_the_motion_frames():
         "move_delta([0, 0, 0.02], return_frames=True)\n"
         "r = move_delta([0, 0, 0.05])\nRESULT = sorted(r)\n",
         timeout_s=30,
+        tier="low",
     )
     assert out["status"] == "ran", out
     assert out["steps"] == 16 and out["success"] is True and out["terminated"] is True
@@ -117,17 +118,22 @@ def test_a_run_reports_steps_success_the_new_obs_and_the_motion_frames():
 def test_a_program_receives_no_images_and_no_subtask_judgement():
     f = facade()
     out = f._rpc["code.run"](
-        "a = move_delta([0.01, 0, 0])\nb = state()\n"
-        "c = step([0, 0, 0, 0, 0, 0, 0])\nd = chunk_step([[0] * 7] * 2, return_all_frames=True)\n"
-        "RESULT = [sorted(a), sorted(b), sorted(c), sorted(c['state']), sorted(d['obs'][0])]\n",
+        "a = move_delta([0.01, 0, 0])\nb = state()\nRESULT = [sorted(a), sorted(b)]\n",
         timeout_s=30,
         tier="low",
     )
     assert out["status"] == "ran", out
-    for keys in out["result"]:
+    raw = f._rpc["code.run"](
+        "c = step([0, 0, 0, 0, 0, 0, 0])\nd = chunk_step([[0] * 7] * 2, return_all_frames=True)\n"
+        "RESULT = [sorted(c), sorted(c['state']), sorted(d['obs'][0])]\n",
+        timeout_s=30,
+        tier="raw",
+    )
+    assert raw["status"] == "ran", raw
+    for keys in out["result"] + raw["result"]:
         assert not {"agentview", "wrist", "frames", "subtask"} & set(keys), keys
     assert "eef_pos" in out["result"][1]
-    assert out["result"][2] == ["reward", "state", "success", "terminated", "truncated"]
+    assert raw["result"][0] == ["reward", "state", "success", "terminated", "truncated"]
     # The finish still carries the evaluator's subtask to pi (details, never the planner).
     assert out["obs"]["subtask"] == SUBTASK
 
@@ -137,7 +143,7 @@ def test_the_move_cap_counts_raw_actions_by_the_ik_scale_and_refuses():
     out = f._rpc["code.run"](
         "step([0.2, 0, 0, 0, 0, 0, 0])\nchunk_step([[0.2, 0, 0, 0, 0, 0, 0]] * 4)\n",
         timeout_s=30,
-        tier="low",
+        tier="raw",
         max_move_m=0.3,
     )
     assert out["status"] == "error" and out["limit"] == "max_move_m", out
@@ -148,11 +154,11 @@ def test_the_move_cap_counts_raw_actions_by_the_ik_scale_and_refuses():
 def test_oversized_chunks_and_raw_steps_after_the_end_are_refused_before_they_run():
     f = facade()
     out = f._rpc["code.run"](
-        f"chunk_step([[0] * 7] * {CODE_MAX_CHUNK + 1})\n", timeout_s=30, tier="low"
+        f"chunk_step([[0] * 7] * {CODE_MAX_CHUNK + 1})\n", timeout_s=30, tier="raw"
     )
     assert out["status"] == "error" and f"at most {CODE_MAX_CHUNK}" in out["error"], out
     f._terminated = True
-    out = f._rpc["code.run"]("step([0] * 7)\n", timeout_s=30, tier="low")
+    out = f._rpc["code.run"]("step([0] * 7)\n", timeout_s=30, tier="raw")
     assert out["status"] == "error" and "the episode is over" in out["error"], out
     assert f.moves == []
 
@@ -165,8 +171,49 @@ def test_the_run_video_is_bounded():
 
 def test_the_low_tier_shows_examples_and_the_s4_tier_drops_them():
     f = facade()
-    low = f._rpc["code.api"]("low")["primitives"]
-    assert all(p.get("example") for p in low if p["name"] != "get_task_language")
-    assert all(
-        "example" not in p for p in f._rpc["code.api"]("low-noexamples")["primitives"]
+    low = f._rpc["code.api"]("low")
+    s4 = f._rpc["code.api"]("low-noexamples")
+    assert s4["available"] == low["available"]
+    assert {"state", "move_delta", "rotate_delta", "get_camera_meta"} <= set(
+        low["available"]
     )
+    assert (
+        "step" not in low["available"] and "ground_truth_poses" not in low["available"]
+    )
+    assert set(f._rpc["code.api"]("raw")["available"]) == {
+        "step",
+        "chunk_step",
+        "render_camera",
+    }
+    docs = {p["name"]: p["doc"] for p in f._code.api("low")}
+    assert all("Example:" in d for n, d in docs.items() if n != "get_task_language")
+    assert all("Example:" not in p["doc"] for p in f._code.api("low-noexamples"))
+
+
+def test_the_server_checks_itself_against_its_manifest():
+    """A facade method the manifest does not declare (nor lists as internal) stops the server;
+    so does a declared one it does not serve."""
+    from pi_embodied_services.components.manifest import ManifestError
+
+    f = facade()
+    f._manifest_ready()
+    assert f.manifest["robot"] == "robolab"
+    g = facade()
+    g._rpc["env.secret_teleport"] = lambda: None
+    with pytest.raises(ManifestError, match="env.secret_teleport"):
+        g._manifest_ready()
+    h = facade()
+    del h._rpc["env.rotate_delta"]
+    with pytest.raises(ManifestError, match="rotate_delta"):
+        h._manifest_ready()
+
+
+def test_perception_is_a_capability_of_the_server():
+    f = facade()
+    assert not f._has("sam3") and not f._has("unidepth") and f._has("privileged")
+    assert "detect" not in f._rpc["code.api"]("low")["available"]
+    g = facade()
+    for name in ("detect", "select_detection", "reject_detection"):
+        g._rpc[f"env.{name}"] = lambda id=None, **_: {}
+    assert g._has("sam3")
+    assert "detect" in g._rpc["code.api"]("low")["available"]

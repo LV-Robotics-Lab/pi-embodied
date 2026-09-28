@@ -99,7 +99,7 @@ the only depth ManiSkill, RoboLab and the Piper / UR5e webcams have; UR5e's `bac
 it); `src/primitives/detections.ts`, the env servers' `env.detect` & co.
 Metaworld and Genesis take the grasp flags too (`--contact-graspnet` & co): `plan_grasp`, `plan_place`,
 `check_attached` over their env server's planner, and `execute_grasp` / `execute_place`, which run a
-planned id's claimed path as bounded `move_delta` legs (`src/primitives/grasp-chain.ts`; a candidate
+planned id's claimed path as bounded `move_delta` legs on the env server (`services/.../utils/grasp_chain.py`; a candidate
 more than 20 deg from straight down, or turned more than 20 deg off the hand, is refused: the
 grippers cannot turn). `plan_place` places upright by default, keeping only AnyPlace's turn about
 the vertical (unlike upstream AnyPlace); `keep_tilt: true` keeps its full rotation for tilted
@@ -189,9 +189,11 @@ Shared modules:
   `act` answer with an option letter, `action_ablation` with `--units-ablation bare|letters|letters_blind`
   runs the paper's action-representation ablation (src/modes/units/experimental.ts).
 - `src/modes/code/`: code mode (CaP-X's run_code). `--code=true` hides the robot's tools: the model
-  writes Python programs that `run_code` executes on the env server against its primitive registry
-  (`code.api`; `--code-api=high|low|low-noexamples`, CaP-X's S2/S3/S4; `--privileged` runs the
-  privileged tier, S1),
+  writes Python programs that `run_code` executes on the env server against the robot's primitive
+  manifest (`src/primitives/manifests/<robot>.json`; `--code-api=high|low|low-noexamples|raw`:
+  CaP-X's semantic functions (S2), the perception / IK / motion parts (S3), the same without
+  examples (S4), the raw step; `--privileged` adds ground truth: the privileged tier (S1), or
+  `low+privileged`),
   in a spawned subprocess with no env object whose calls the server resolves through the registry
   (JSON over the pipe, never pickle; the child starts without the server's secret-looking
   environment variables, in its own process group, with no new processes or threads allowed;

@@ -34,7 +34,6 @@ from pi_embodied_services.robots.franka.env_server import (
     _StopPoller,
     main,
 )
-from pi_embodied_services.robots.franka.primitives import DUAL_FRANKA_PRIMITIVES
 from pi_embodied_services.utils.config import get_repo_root, get_rlinf_repo_path
 from pi_embodied_services.utils.reach import pose_matrix
 from pi_embodied_services.utils.serialization import to_numpy_tree
@@ -64,7 +63,6 @@ class DualFrankaEnvFacade(FrankaEnvFacade):
     SERVICE_NAME = "dual-franka-env"
 
     _METHODS = (*FrankaEnvFacade._METHODS, "recover_joint_posture")
-    _PRIMITIVES = DUAL_FRANKA_PRIMITIVES
     _ARMED = True
 
     def _arm_frame(self, arm: str | None) -> dict[str, Any]:
@@ -113,12 +111,13 @@ class DualFrankaEnvFacade(FrankaEnvFacade):
         records no frame per motion (pi's state step after the run has one)."""
         return None
 
-    def _code_tcp(self, arm: str | None) -> np.ndarray:
-        """The arm's TCP in right_base, the frame pi's --workspace-xy / --z-floor are in."""
+    def _tcp_pose(self, arm: str | None = None) -> np.ndarray:
+        """The arm's TCP (xyz + xyzw) in right_base, the frame pi's --workspace-xy / --z-floor
+        are in."""
         if arm not in ("left", "right"):
             raise ValueError("arm must be 'left' or 'right'")
         state = self._rpc["env.get_robot_state"]()
-        return np.asarray(state[f"{arm}_arm"]["tcp_pose"], dtype=np.float64)[:3]
+        return np.asarray(state[f"{arm}_arm"]["tcp_pose"], dtype=np.float64)[:7]
 
     @classmethod
     def perception_layout(cls, backend: Any):

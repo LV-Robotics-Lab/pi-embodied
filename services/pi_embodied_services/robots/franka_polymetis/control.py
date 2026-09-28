@@ -237,6 +237,8 @@ class PolymetisLimits:
     divergence_resync_m: float = 0.01
     max_tracking_error_m: float = 0.015
     max_tilt_rad: float = 0.5
+    #: move_to_joints: the largest turn of any joint per call (rad).
+    max_joint_step_rad: float = 0.3
     tcp_offset_m: tuple[float, float, float] = (0.0, 0.0, 0.0)
     tcp_yaw_deg: float = 0.0
     kx: tuple[float, ...] = DEFAULT_KX
@@ -316,6 +318,7 @@ class PolymetisLimits:
         bound("divergence_resync_m", 2e-3, 0.05)
         bound("max_tracking_error_m", 2e-3, 0.05)
         bound("max_tilt_rad", 1e-2, math.pi / 2)
+        bound("max_joint_step_rad", 1e-2, 0.5)
         offset = np.asarray(self.tcp_offset_m)
         if offset.shape != (3,) or np.any(np.abs(offset) > 0.3):
             raise ValueError("robot.tcp_offset_m must be [x, y, z] within +-0.3 m")
@@ -1049,6 +1052,61 @@ class PolymetisController:
             )
             ok = False
         return {"ok": ok, "info": info}
+
+    def move_joints(self, goal: Any) -> dict[str, Any]:
+        """Stream the joints to ``goal`` (the reset's joint stream: rest-to-rest, never faster
+        than MAX_JOINT_SPEED_RAD_S, ``stop`` polled every tick), then restart Cartesian
+        impedance where the arm is. Refused beyond ``max_joint_step_rad`` on any joint or
+        outside the joint limits; the caller checks the TCP path (env_server.move_to_joints)."""
+        q = np.asarray(goal, dtype=np.float64).reshape(-1)
+        if q.shape != (7,) or not np.all(np.isfinite(q)):
+            raise ValueError("joints must be 7 finite joint angles (rad)")
+        if np.any(q <= JOINT_MIN) or np.any(q >= JOINT_MAX):
+            raise ValueError(
+                f"joints {np.round(q, 4).tolist()} are outside the Franka joint limits"
+            )
+        q0 = np.asarray(self.robot.get_joint_positions(), dtype=np.float64).reshape(-1)
+        if q0.shape != (7,) or not np.all(np.isfinite(q0)):
+            raise RuntimeError(f"robot returned invalid joint positions {q0.tolist()}")
+        jump = float(np.max(np.abs(q - q0)))
+        if jump > self.limits.max_joint_step_rad + 1e-9:
+            raise ValueError(
+                f"the move turns a joint by {jump:.3f} rad; the limit is "
+                f"{self.limits.max_joint_step_rad} rad per call (limits.max_joint_step_rad)"
+            )
+        return self._motion(lambda: self._joint_stream(q0, q))
+
+    def _joint_stream(self, q0: np.ndarray, goal: np.ndarray) -> dict[str, Any]:
+        lim = self.limits
+        duration = max(
+            lim.tick_s,
+            PEAK_TO_MEAN * float(np.max(np.abs(goal - q0))) / MAX_JOINT_SPEED_RAD_S,
+        )
+        info: dict[str, Any] = {"duration_s": duration}
+        try:
+            self.robot.start_joint_impedance(None, None)
+            n = max(1, math.ceil(duration / lim.tick_s))
+            for i in range(1, n + 1):
+                if self._stop():
+                    self.start_impedance()
+                    return {"ok": False, "cancelled": True, "info": info}
+                f = 0.5 - 0.5 * math.cos(math.pi * i / n)  # rest-to-rest
+                self.robot.update_desired_joint_pos(q0 + (goal - q0) * f)
+                self._wait(lim.tick_s)
+            for _ in range(max(1, lim.settle_steps)):
+                self.robot.update_desired_joint_pos(goal)
+                self._wait(lim.settle_dt_s)
+        except Exception:
+            self.start_impedance()  # never leave joint impedance running
+            raise
+        self.start_impedance()
+        joints = np.asarray(self.robot.get_joint_positions(), dtype=np.float64)
+        info["joint_error_rad"] = float(np.max(np.abs(joints - goal)))
+        return {
+            "ok": info["joint_error_rad"] <= 0.05,
+            "final_tcp_pose": self.target_pose().tolist(),
+            "info": info,
+        }
 
     # -- state -------------------------------------------------------------
 

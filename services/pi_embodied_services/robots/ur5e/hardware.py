@@ -230,6 +230,20 @@ class RtdeArm:
             ctrl.getForwardKinematics([float(v) for v in q], tcp), dtype=np.float64
         )
 
+    def inverse_kinematics(self, pose: Any, qnear: Any) -> np.ndarray | None:
+        """Joints for the TCP ``pose`` ``[x, y, z, rx, ry, rz]`` near ``qnear``
+        (``getInverseKinematics``, the controller's model with the active TCP), or None
+        when it has no solution (``getInverseKinematicsHasSolution`` where ur_rtde has it).
+        The caller checks the answer with :meth:`forward_kinematics`."""
+        ctrl = self._control()
+        x = [float(v) for v in pose]
+        near = [float(v) for v in qnear]
+        has = getattr(ctrl, "getInverseKinematicsHasSolution", None)
+        if has is not None and not has(x, near):
+            return None
+        q = np.asarray(ctrl.getInverseKinematics(x, near), dtype=np.float64).reshape(-1)
+        return q if q.shape == (6,) and np.all(np.isfinite(q)) else None
+
     def joints_within_safety_limits(self, q: Any) -> bool | None:
         """``isJointsWithinSafetyLimits``: the controller's joint limits. None when
         the query itself failed: ur_rtde returns False as well when the command

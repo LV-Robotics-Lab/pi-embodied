@@ -161,6 +161,15 @@ export default function robolab(pi: ExtensionAPI) {
 	};
 	const robot = defineRobot(pi, {
 		name: "robolab",
+		// Tools and code primitives: ../../primitives/manifests/robolab.json (the env server reads it too).
+		manifest: "robolab",
+		vars: () => ({ cameras: ["agentview", "wrist"], max_move: MAX_MOVE_M, max_rotate: MAX_ROTATE_RAD }),
+		// As the server's `_has`: the perception it runs (--detections / --unidepth start it), from its meta.
+		capabilities: (c) =>
+			({
+				sam3: meta?.capabilities?.perception?.segment === true,
+				unidepth: meta?.capabilities?.perception?.enhance_depth === true,
+			})[c] ?? false,
 		services: { models: [SAM3, MOLMO] },
 		task: ["task", "seed"],
 		// The env server's primitive registry (code.api), recorded per episode.
@@ -400,35 +409,19 @@ export default function robolab(pi: ExtensionAPI) {
 		};
 	}
 
-	robot.tool(
-		"view_env_state",
-		"Current state with the front (third-person) and wrist images.",
-		Type.Object({}),
-		async () => observe({}),
-	);
+	robot.primitive("view_env_state", async () => observe({}));
 
-	robot.tool(
-		"move_delta",
-		`Translate the gripper by a base-frame [dx, dy, dz] in metres (+x away from the base, +y toward the robot's left, +z up; at most ${MAX_MOVE_M} m per call), optionally opening or closing the gripper first. The orientation is held. Returns the new state and images.`,
-		Type.Object({
-			delta_xyz: Type.Array(Type.Number(), { minItems: 3, maxItems: 3 }),
-			gripper: Type.Optional(StringEnum(["open", "close"] as const)),
-		}),
-		async ({ delta_xyz, gripper }, signal) => {
-			if (obs.success) return observe({ error: "the task is already solved; call finish" });
-			return observe(await move(delta_xyz as Vec3, gripper ?? null, signal));
-		},
-	);
+	// The motion tools are the server's methods with the manifest's parameters (manifests/robolab.json);
+	// the tool asks for the frames itself (return_frames is a program's option).
+	robot.primitive("move_delta", async ({ delta_xyz, gripper }, signal) => {
+		if (obs.success) return observe({ error: "the task is already solved; call finish" });
+		return observe(await move(delta_xyz as Vec3, gripper ?? null, signal));
+	});
 
-	robot.tool(
-		"rotate_delta",
-		`Turn the gripper by \`yaw\` radians about the vertical axis through it (+ = counter-clockwise seen from above, - = clockwise; at most ${MAX_ROTATE_RAD} rad per call), holding its position and downward tilt. The wrist view turns with it. Returns the new state and images.`,
-		Type.Object({ yaw: Type.Number() }),
-		async ({ yaw }, signal) => {
-			if (obs.success) return observe({ error: "the task is already solved; call finish" });
-			return observe(await rotate(yaw, signal));
-		},
-	);
+	robot.primitive("rotate_delta", async ({ yaw }, signal) => {
+		if (obs.success) return observe({ error: "the task is already solved; call finish" });
+		return observe(await rotate(yaw, signal));
+	});
 
 	// Molmo pointing on the current images (active with --point).
 	mountGraspTool(

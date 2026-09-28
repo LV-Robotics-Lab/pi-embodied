@@ -330,11 +330,13 @@ def test_camera_meta_ground_truth_and_reads():
     assert f.get_task_language() == tasks.LANGUAGE["turning_on_radio"]
 
 
-def test_code_api_is_the_registry_with_capx_motions_in_the_high_tier():
+def test_code_api_is_the_manifest_every_motion_in_the_low_tier():
     f = FakeSim().facade()
+    f._manifest_ready()
     api = f._rpc["code.api"]
-    high = [p["name"] for p in api("high")["primitives"]]
-    assert high == [
+    assert api("high")["available"] == []
+    low = api("low")["available"]
+    assert low[:8] == [
         "get_task_language",
         "get_robot_position",
         "navigate_to_pose",
@@ -344,22 +346,44 @@ def test_code_api_is_the_registry_with_capx_motions_in_the_high_tier():
         "open_gripper",
         "close_gripper",
     ]
-    assert "ground_truth_poses" in [p["name"] for p in api("privileged")["primitives"]]
-    assert "ground_truth_poses" not in [p["name"] for p in api()["primitives"]]
-    low = {p["name"]: p for p in api("low")["primitives"]}
-    assert {"render_camera", "step", "chunk_step", "state", "raw_obs"} <= set(low)
-    assert low["step"]["mutating"] is True and low["state"]["mutating"] is False
+    assert {"back_project", "state", "move_to_joints", "move_along_trajectory"} <= set(
+        low
+    )
+    # segment needs --sam3, point --molmo; neither is set here.
+    assert "segment" not in low and "point" not in low
+    assert api("raw")["available"] == ["raw_obs", "step", "chunk_step"]
+    assert "ground_truth_poses" in api("privileged")["available"]
+    assert "ground_truth_poses" not in api()["available"]
     # Every declared method is a registered RPC method, and a call resolves to it.
-    method, kwargs = f.code_api.resolve(
-        "move_hand", {"arm": "left", "position": [0.5, 0.2, 0.9]}, "high"
+    method, _kwargs = f.code_api.resolve(
+        "move_hand", {"arm": "left", "xyz": [0.5, 0.2, 0.9]}, "low"
     )
     assert method == "env.move_hand" and method in f._rpc
     with pytest.raises(ValueError, match="unknown parameter"):
         f.code_api.resolve(
             "move_hand",
-            {"arm": "left", "position": [0, 0, 0], "ignore_all_obstacles": True},
-            "high",
+            {"arm": "left", "xyz": [0, 0, 0], "ignore_all_obstacles": True},
+            "low",
         )
+
+
+def test_the_server_checks_itself_against_its_manifest():
+    """A facade method the manifest does not declare (nor lists as internal) stops the server,
+    and so does a declared one it lacks."""
+    from pi_embodied_services.components.manifest import ManifestError
+
+    f = FakeSim().facade()
+    f._rpc["env.secret_teleport"] = lambda: None
+    with pytest.raises(ManifestError, match="env.secret_teleport"):
+        f._manifest_ready()
+    g = FakeSim().facade()
+    del g._rpc["env.back_project"]
+    with pytest.raises(ManifestError, match="back_project"):
+        g._manifest_ready()
+    h = FakeSim().facade()
+    h._molmo_url = "http://molmo"
+    h._manifest_ready()
+    assert "point" in h._rpc["code.api"]("low")["available"]
 
 
 def test_task_manifest_and_scene_lookup(tmp_path):

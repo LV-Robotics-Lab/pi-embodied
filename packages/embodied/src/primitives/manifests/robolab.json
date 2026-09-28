@@ -1,0 +1,207 @@
+{
+	"robot": "robolab",
+	"internal": [],
+	"primitives": [
+		{
+			"use": "sim/get_task_language"
+		},
+		{
+			"name": "view_env_state",
+			"side": "ts",
+			"tier": "low",
+			"doc": {
+				"tool": "Current state with the front (third-person) and wrist images."
+			},
+			"result": "motion"
+		},
+		{
+			"name": "state",
+			"side": "code",
+			"method": "env.state",
+			"tier": "low",
+			"doc": {
+				"code": "Hand pose, gripper width and command, success and step count.\n\nExample:\n    st = state()\n    print(st[\"eef_pos\"], st[\"gripper_width\"], st[\"yaw_deg\"], st[\"success\"])"
+			}
+		},
+		{
+			"name": "move_delta",
+			"side": "env",
+			"method": "env.move_delta",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"delta_xyz": {
+					"type": "vec3",
+					"required": true,
+					"description": "Base-frame [dx, dy, dz] in metres"
+				},
+				"gripper": {
+					"type": "enum",
+					"values": [
+						"open",
+						"close"
+					],
+					"description": "Open or close the gripper first (default: keep)"
+				},
+				"return_frames": {
+					"type": "boolean",
+					"description": "Also return the front frame after every decision",
+					"modes": [
+						"code"
+					]
+				}
+			},
+			"doc": {
+				"tool": "Translate the gripper by a base-frame [dx, dy, dz] in metres (+x away from the base, +y toward the robot's left, +z up; at most {{max_move}} m per call), optionally opening or closing the gripper first. The orientation is held. Returns the new state and images.",
+				"code": "Translate the hand by a base-frame delta (m, at most 0.3 per call), optionally after a gripper command; the orientation is held.\n\nExample:\n    move_delta([0, 0, 0.1], gripper=\"open\")  # open, then lift 10 cm\n    r = move_delta([0.05, 0, -0.1])\n    print(r[\"moved_m\"], r[\"eef_pos\"])"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "rotate_delta",
+			"side": "env",
+			"method": "env.rotate_delta",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"yaw": {
+					"type": "number",
+					"required": true,
+					"description": "rad about the base vertical (+ = counter-clockwise seen from above)"
+				},
+				"return_frames": {
+					"type": "boolean",
+					"description": "Also return every decision's front frame",
+					"modes": [
+						"code"
+					]
+				}
+			},
+			"doc": {
+				"tool": "Turn the gripper by `yaw` radians about the vertical axis through it (+ = counter-clockwise seen from above, - = clockwise; at most {{max_rotate}} rad per call), holding its position and downward tilt. The wrist view turns with it. Returns the new state and images.",
+				"code": "Turn the hand by a yaw (rad) about the base vertical axis through it (+ = counter-clockwise seen from above; clipped to 0.3 per call), holding its position and tilt.\n\nExample:\n    r = rotate_delta(0.3)  # counter-clockwise seen from above\n    print(r[\"yaw\"], r[\"yaw_deg\"])"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "render_camera",
+			"side": "code",
+			"method": "env.render_camera",
+			"tier": "raw",
+			"params": {
+				"camera_name": {
+					"type": "enum",
+					"values": [
+						"agentview",
+						"wrist"
+					],
+					"description": "Default agentview"
+				},
+				"depth": {
+					"type": "boolean",
+					"description": "Also return the depth map, [rgb, depth_m]"
+				}
+			},
+			"doc": {
+				"code": "The latest frame of a camera.\n\nExample:\n    rgb = render_camera(\"agentview\")  # uint8 [H, W, 3]\n    wrist = render_camera(\"wrist\")      # fingertips at the top"
+			}
+		},
+		{
+			"name": "get_camera_meta",
+			"side": "code",
+			"method": "env.get_camera_meta",
+			"tier": "low",
+			"params": {
+				"camera_name": {
+					"type": "enum",
+					"values": [
+						"agentview"
+					],
+					"description": "Only the front camera has a fixed calibration"
+				}
+			},
+			"doc": {
+				"code": "The front camera's intrinsics and camera-to-base extrinsic.\n\nExample:\n    meta = get_camera_meta(\"agentview\")\n    K, T = meta[\"intrinsic_K\"], meta[\"extrinsic_cam2world\"]"
+			}
+		},
+		{
+			"name": "step",
+			"side": "code",
+			"method": "env.step",
+			"tier": "raw",
+			"mutating": true,
+			"params": {
+				"action": {
+					"type": "array",
+					"required": true,
+					"minItems": 7,
+					"maxItems": 7,
+					"description": "7 floats"
+				}
+			},
+			"doc": {
+				"code": "One raw relative-IK control step [dx, dy, dz, drx, dry, drz, gripper] (no orientation hold).\n\nExample:\n    r = step([0, 0, 0.02, 0, 0, 0, 0])  # up, gripper open (> 0.5 closes)\n    print(r[\"state\"][\"eef_pos\"], r[\"terminated\"])"
+			}
+		},
+		{
+			"name": "chunk_step",
+			"side": "code",
+			"method": "env.chunk_step",
+			"tier": "raw",
+			"mutating": true,
+			"params": {
+				"actions": {
+					"type": "array",
+					"required": true,
+					"items": {
+						"type": "array",
+						"items": "number",
+						"minItems": 7,
+						"maxItems": 7
+					},
+					"description": "N x 7 floats"
+				},
+				"return_all_frames": {
+					"type": "boolean",
+					"description": "One observation per step"
+				}
+			},
+			"doc": {
+				"code": "Raw control steps [N, 7] in one call.\n\nExample:\n    r = chunk_step([[0, 0, -0.02, 0, 0, 0, 0]] * 8)  # 8 steps down\n    print(r[\"obs\"][\"eef_pos\"], r[\"terminated\"])"
+			}
+		},
+		{
+			"use": "sim/ground_truth_poses"
+		},
+		{
+			"use": "perception/detect"
+		},
+		{
+			"use": "perception/select_detection"
+		},
+		{
+			"use": "perception/reject_detection"
+		},
+		{
+			"use": "perception/enhance_depth"
+		},
+		{
+			"use": "modules/finish"
+		},
+		{
+			"use": "modules/act"
+		},
+		{
+			"use": "modules/plan"
+		},
+		{
+			"use": "modules/point"
+		},
+		{
+			"use": "modules/reset"
+		},
+		{
+			"use": "modules/run_code"
+		}
+	]
+}

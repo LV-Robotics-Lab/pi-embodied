@@ -88,16 +88,16 @@ client's queued calls.
 | service | what `stop` interrupts | what it cannot interrupt |
 |---|---|---|
 | libero-env | queued calls | a running `env.chunk_step` (one RLinf `LiberoEnv.chunk_step`, typically 5 actions), `env.step`, `env.reset`, renders |
-| robocasa-env | queued calls | any running call (each is a single robosuite operation; there is no server-side chunk loop) |
+| robocasa-env | queued calls; the motion methods (`env.move_to`, `env.move_delta`, `env.rotate_pitch`, `env.set_gripper`, `env.release`, `env.scripted_grasp`, `env.navigate_to`, `env.move_base`, `env.goto_pose`, `env.home_pose`, `env.open_gripper`, `env.close_gripper`) before each env step (`cancelled: true`) | the robosuite `step` in progress, `env.reset`, renders |
 | robosuite-env | queued calls; `env.move_to` / `env.move_delta` / `env.set_gripper` before each control step and `env.chunk_step` before each action (`cancelled: true`) | the control step in progress (one robosuite `step`), `env.reset`, renders |
 | metaworld-env | queued calls; `env.chunk_step` before each action and `env.move_delta` / `env.set_gripper` before each control step (`cancelled: true`) | the control step in progress (one MuJoCo `step`), `env.reset`, renders |
-| robotwin-env | queued calls; `env.chunk_step` before each native action (`info.cancelled = true`) | the native action being executed (one `take_action`, i.e. one planned qpos/ee motion), `env.step`, `env.reset`, `env.plan_arm_path`, renders |
+| robotwin-env | queued calls; `env.chunk_step` and the motion methods (`env.move_to`, `env.rotate_wrist`, `env.set_gripper`, `env.release`, `env.move_to_joints`, `env.move_along_trajectory`) before each native action (`info.cancelled = true`) | the native action being executed (one `take_action`, i.e. one planned qpos/ee motion), `env.step`, `env.reset`, a cuRobo plan (`env.move_to`'s, `env.solve_ik`, `env.traj_plan`), renders |
 | robolab-env | queued calls; `env.move_delta` / `env.rotate_delta` before each control step; `env.chunk_step` before each action | the Isaac Lab `env.step` in progress (one control step of 8 physics substeps), `env.reset` |
 | robodojo-env | queued calls; `env.move_to` / `env.move_delta` / `env.rotate_delta` / `env.set_gripper` / `env.go_home` before each control step (`cancelled: true`); `env.chunk_step` before each action | the RoboDojo `take_action` in progress (one 25 Hz control step: 10 physics steps of 4 ms), `env.reset` (a layout load, 300+ settling steps and the stability check) |
 | behavior-env | queued calls; every primitive (`env.navigate_to_pose`, `env.move_hand`, `env.grasp_object`, `env.open_gripper`, `env.close_gripper`) between control steps (`cancelled: true`, `ok: false`); `env.chunk_step` before each action | the OmniGibson `env.step` in progress (one action, 4 physics substeps), a cuRobo plan being computed, `env.reset` |
 | franka-env | queued calls; `env.move_delta` / `env.rotate_delta` / `env.set_gripper` before each servo step; `env.chunk_step` after each action | the servo step in progress (one RLinf `env.step`: one Cartesian target plus the pacing sleep, and up to 0.6 s when it toggles the gripper); `env.reset` (RLinf go-to-rest / joint reset) |
 | franka-polymetis-env | queued calls; `env.move_delta` / `env.rotate_delta` before each servo tick (setpoint advance <= `servo_step_m` / `servo_step_rad`) and during settle; `env.set_gripper` between width polls; `env.reset` between lift ticks and joint-stream ticks (`reset.method: joint_stream`) | the ZeroRPC call in flight (one setpoint); a gripper command already sent; `env.reset` with `reset.method: move_to_joint_positions` (blocking on the NUC) |
-| ur5e-env | queued calls; `env.move_delta` / `env.move_pose` / `env.rotate_delta` between polls of the running moveL (`limits.poll_s`, default 20 ms), which is then brought to rest with ur_rtde `stopL`; `env.set_gripper` between Robotiq register polls; `env.reset` between polls of the moveJ (`stopJ`) | the deceleration itself (stopL at 10 m/s^2, stopJ at 2 rad/s^2); a Robotiq command already sent (the fingers finish it). After a stop the setpoint is cleared: the next command starts from the measured pose |
+| ur5e-env | queued calls; `env.move_delta` / `env.move_pose` / `env.rotate_delta` between polls of the running moveL (`limits.poll_s`, default 20 ms), which is then brought to rest with ur_rtde `stopL`; `env.open_gripper` / `env.close_gripper` between Robotiq register polls; `env.reset` and `env.move_to_joints` between polls of the moveJ (`stopJ`) | the deceleration itself (stopL at 10 m/s^2, stopJ at 2 rad/s^2); a Robotiq command already sent (the fingers finish it). After a stop the setpoint is cleared: the next command starts from the measured pose |
 | dual-franka-env | as franka-env; `env.recover_joint_posture` skips its return-to-start moves and reports `cancelled: true, ok: false` | as franka-env; in `recover_joint_posture` the two-arm joint reset and the gripper re-commands that restore the pre-recovery gripper state |
 | pi05-vla, openvla, openvla-oft, gr00t, rldx-vla, sam3, molmo, unidepth | queued calls | a running inference |
 | ik | queued calls | a running solve or plan (milliseconds with PyRoKi; up to the plan `timeout` with cuRobo) |
@@ -133,16 +133,23 @@ wrapper; single-env servers strip the leading env dimension.
 world frame, metres, rounded to 1e-5. The names are the simulator's own object list (per server
 below); an unknown name is an error that lists them.
 
-`code.api` (read-only; every env server: each robot's `primitives.py`): the server's
-primitive registry (`components/code_api.py`), what a code-as-policy caller may use. kw
-`tier=null` (`"high"`, `"low"`, `"privileged"` = high plus ground truth, `"low-noexamples"` = the
-low tier without the usage examples, CaP-X's S4; null = every non-privileged primitive) ->
-`{"tier": str | null, "primitives": [{"name", "method", "doc", "params": {name: {"type",
-"description", "required"}}, "mutating", "tiers", "example"?}], "digest": sha256 hex}` (`example`,
-a short Python usage, only on primitives that declare one and never in `low-noexamples`). Each
-primitive names the `env.*` method that runs it, so a primitive call is the tool's call, with the
-same limits; the digest names the API version an episode ran with (pi records it as
-`code_api_digest`). A server without a registry answers `unknown RPC method: 'code.api'`.
+`code.api` (read-only; every env server): derived from the robot's primitive manifest
+(`packages/embodied/src/primitives/manifests/<robot>.json`, read by `components/manifest.py`; pi
+reads the same file for its tool schemas and the code-mode prompt). kw `tier=null` (`"high"`: CaP-X's
+semantic functions, `"low"`: perception, IK and motion parts, `"low-noexamples"`: the low tier
+without the docs' examples (S4), `"raw"`: step and the raw observation, `"privileged"`: high with
+ground truth, `"<tier>+privileged"`: that tier with ground truth; null = every non-privileged
+primitive) -> `{"manifest_digest": sha256 hex (over the manifest file and the shared files it
+uses), "tier", "available": [names of the tier's primitives this run has: their `requires` and
+the server's state], "digest": sha256 of manifest digest + tier + available}`. pi compares the
+manifest digest with its own copy and refuses a server of another version, checks that its view of
+what is available agrees, renders the prompt from its manifest and records `digest` as
+`code_tier_digest`. A server checks its RPC methods against the manifest when it starts (`serve`):
+a declared, available primitive without its method, or a business method neither declared nor
+internal, stops it. A program's calls go through the server's `CodeApi.resolve`, the whitelist
+built from the manifest: only the tier's declared names, parameters, enum values and ranges;
+`env.reset`, `stop` and `code.*` are never primitives. A server without a manifest answers
+`unknown RPC method: 'code.api'`.
 
 `--geometry` (libero-env, robosuite-env on one-arm tasks, franka-env, franka-polymetis-env;
 `utils/geometry.py`, OpenETA's `openeta-for-codex` geometric tools) adds the methods below and
@@ -190,7 +197,7 @@ path instead (collision-free motion, below), and a server-side Robosuite `move_t
 `utils/reach.py`'s `require_reachable(self.preview_reach(xyz), "move_to")` before stepping. The
 LIBERO server converts the world target into the `robot0_base` frame (read from the worker once
 per reset). `path_checked` is always false: only the end pose is solved, not the path. Each
-robot's `primitives.py` declares `preview_reach` in `code.api` (high and low tiers).
+robot's manifest declares `preview_reach` (low tier, `requires: ["ik"]`).
 
 Placement (`env.plan_place`, `utils/grasp.py`): AnyPlace gets the clouds in the world frame
 (gravity-aligned, as it was trained; `extrinsic_cam2world`) and its transforms come back in the
@@ -248,24 +255,29 @@ What a program receives of a primitive is that facade method's result minus obje
 MetaWorld's 39-D observation and its reward metrics, Genesis' `lift_m`, BEHAVIOR's `privileged`
 block, RoboCasa's object observations, ManiSkill's dense rewards, RoboDojo's partial-credit
 `score`) and minus bulk (motion video
-frames, observation images). A real-robot server also takes `code.set_limits` (kw: the robot's
-pi-side per-call limits, e.g. `max_move_m`, `max_yaw_rad` / `max_rotate_rad`, Franka's workspace
-box and z floor): pi sends it when code mode starts, the server refuses every program motion until
-it is set and beyond it afterwards; it is not a registry primitive, so no program reaches it.
+frames, observation images). A real-robot server takes pi's per-call limits at spawn
+(`--max-move`, `--max-rotate` / `--max-yaw`, Franka's `--workspace-xy` / `--z-floor`;
+`utils/code_real.py`) and enforces them in its motion methods for every caller, a tool's call or a
+program's; `env.get_env_meta().motion_limits` reports them, and pi refuses an attached server whose
+limits are looser than its flags.
 
 libero-env serves `code.run` over its registry (`code.api`, above): the runner is
 `utils/code_exec.py` (`CodeRunner` + `registry_primitives`), and every call a program makes goes
 through `CodeApi.resolve` (the declared name, parameters and tier) to the registered `env.*`
 method, so a program's `move_to` steps the env under the same limits and stop generation as the
-robot's tools. The primitives it reaches are `robots/libero/primitives.py`: the raw surface
-(`LIBERO_PRIMITIVES`) plus `CODE_PRIMITIVES`, high tier `get_state`, `get_observation` (512x512
-upright rgb + metric depth + `intrinsic_K` + `extrinsic_cam2world` per camera: `agentview`,
-`wrist`), `back_project(row, col, camera)`, `move_to(xyz, gripper=None, tol, max_steps)`,
-`rotate_wrist(target_yaw | delta_yaw, gripper)`, `set_gripper(close, steps)` and, with
-`--sam3 <url>`, `segment(prompt, camera, min_score)`; low tier `get_state`, `get_observation`,
-`move_delta(dxyz <= 0.10 m, gripper)`, `rotate_delta(delta_yaw <= pi/2)`, `set_gripper`; the
-privileged tier is the high tier plus `ground_truth_poses`. `gripper=None` keeps the last command
-(unlike the `move_to` tool, whose default opens). Each motion primitive stops at the episode's end
+robot's tools. The primitives it reaches are declared in
+`packages/embodied/src/primitives/manifests/libero.json` (with pi's tools): high tier CaP-X's
+`get_object_pose(object_name, use_multiview)` / `sample_grasp_pose` (SAM3 + depth; a grasp server's
+best candidate when there is one), `goto_pose(position, quaternion_wxyz, z_approach)`, `home_pose`,
+`open_gripper`, `close_gripper`; low tier `get_state`, `get_observation` (512x512 upright rgb +
+metric depth + `intrinsic_K` + `extrinsic_cam2world` per camera: `agentview`, `wrist`),
+`back_project`, `segment` (`--sam3`), `move_to`, `move_pose`, `rotate_wrist`, `rotate_pitch`,
+`move_delta`, `rotate_delta`, `set_gripper(gripper, steps)`, `release`, the planned-grasp
+primitives; raw tier `step`, `chunk_step`, `raw_obs`, `render_camera`; the privileged tier adds
+`ground_truth_poses` and the simulator's `get_object_pose` / `sample_grasp_pose`. The motion
+methods are the tools' own (the same defaults: `move_to`'s `gripper` opens unless given, `None`
+keeps the last command); pi's tools pass `tool_call=true` (not a primitive parameter) to get every
+env step back as `transitions` and a refusal as `refused`. Each motion stops at the episode's end
 (success latched or truncated) and between env steps on `stop`.
 
 | method | args | result |
@@ -347,6 +359,19 @@ episode steps) ends an episode.
 | `env.get_task_progress` | - | dict of scalar success-check variables |
 | `env.get_task_language` | - | str or null |
 | `env.ground_truth_poses` | kw `names=null` | poses of the kitchen's objects (`obj_body_id`) and fixtures (root bodies) |
+| `env.get_state` | - | the robot's `robot0_*` observations and `env_steps` |
+| `env.move_to` / `env.move_delta` | `xyz` / `dxyz`, kw `gripper="hold"` (close / open / hold / a number), `step_clip=0.02`, `max_steps=200` / `80`, `tol=0.012` (move_to) | the OSC servo (a measured action Jacobian, probed again after the base turns): `{"ok", "steps", "final_dist", "eef", "gripper_qpos"}` |
+| `env.rotate_pitch` | kw `target_pitch=0.6`, `gripper=1`, `n=12` | `{"ok", "eef"}` |
+| `env.set_gripper` / `env.release` | kw `gripper=1`, `steps=10` / kw `steps=10` | `{"ok", "gripper_qpos"}` |
+| `env.scripted_grasp` | `xyz`, kw `approach_z=0.1`, `grasp_z_offset=0`, `step_clip=0.02` | open, hover, descend, close, lift: a move report (`stage` where it failed) |
+| `env.navigate_to` | `xy`, kw `tol=0.2`, `max_steps=300`, `gripper="hold"` | `{"ok", "steps", "final_dist", "moved", "stuck", "start_pos", "base_pos"}` |
+| `env.move_base` | kw `forward`, `lateral`, `turn` (each clipped to [-1, 1]), `steps=10`, `gripper="hold"` | `{"ok", "base_moved", "base_pos"}` |
+| `env.goto_pose` / `env.home_pose` / `env.open_gripper` / `env.close_gripper` | `position`, kw `z_approach=0` / - / - / - | the high tier (CaP-X's names; the servo holds the orientation) |
+| `env.get_object_pose` | `object_name`, kw `return_bbox_extent=false` | `[position, quaternion_wxyz (identity), extent or null]` from SAM3 (`--sam3`) and depth |
+| `env.set_recording` | kw `on=true` | the motion methods add the Flywheel's per-step records (`policy_frames`: action, success, RLDX-1's cameras and state) |
+
+Every motion method's reply also carries `frames` (the top-down agentview after every env step), `obs`
+(the new `robot0_*` observations) and `env_steps`.
 
 maniskill-env (`robots/maniskill/env_server.py`) serves `env.ground_truth_poses` over the scene's
 actors (goal markers included) and its articulations other than the robot. `env.servo`'s frames
@@ -378,7 +403,7 @@ task's metrics as scalars (`success`, `grasp_success`, `near_object`, `obj_to_ta
 | `env.get_camera_meta` | `camera_name`, `height=256`, `width=256` | `{"camera_name", "height", "width", "intrinsic_K" 3x3 (OpenCV), "extrinsic_cam2world" 4x4}` (the agentview's includes its 180 deg turn) |
 | `env.get_task_language` | - | str |
 | `env.ground_truth_poses` | kw `names=null` | poses of the scene's named MuJoCo bodies outside the robot and its stand, plus `goal` (the task's target position) |
-| `code.api` | kw `tier=null` | the registry of `robots/metaworld/primitives.py`: `state`, `move_delta`, `set_gripper` (high and low), `render_camera`, `get_camera_meta`, `step`, `chunk_step` (low), `ground_truth_poses` (privileged) |
+| `code.api` | kw `tier=null` | from the robot's manifest (`code.api`, above) |
 
 `env.reset` reseeds the env's RNG and the process's global numpy and Python RNGs with the episode
 seed, so a seed draws the same layout in any process and every reset restores the same state.
@@ -412,7 +437,7 @@ before each action (`cancelled: true`), not the Genesis step in progress.
 | `env.back_project` | `camera_name`, kw `pixels` [[row, col], ...] | list of `[x, y, z]` (world, m) or null where the depth is missing |
 | `env.get_task_language` | - | str |
 | `env.ground_truth_poses` | kw `names=null` | poses of the task objects (`cube`) |
-| `code.api` | kw `tier` | the registry of `robots/genesis/primitives.py` (high: state, move_delta, set_gripper, back_project; low adds render_camera, get_camera_meta, step, chunk_step) |
+| `code.api` | kw `tier=null` | from the robot's manifest (`code.api`, above) |
 
 ### robosuite-env (`robots/robosuite/env_server.py`)
 
@@ -451,7 +476,7 @@ handover task renders no instance segmentation.
 | `env.get_task_language` | - | str |
 | `env.ground_truth_poses` | kw `names=null` | poses of robosuite's task objects (`cube`; `cubeA`, `cubeB`; `SquareNut`, `RoundNut`, `peg1`, `peg2`; `pot` + `pot_handle0` / `pot_handle1`; `hammer` + `hammer_handle`; Wipe's dirt markers) |
 | `env.preview_reach` | `pos`, `quat_xyzw=null`, kw `arm` | the `--ik` reach preview (robot model `panda_libero`), or the `unknown` answer without it |
-| `code.api` | kw `tier=null` | the primitive registry (`robots/robosuite/primitives.py`): high = `get_state`, `get_observation`, `segment`, `back_project`, `preview_reach`, `move_to`, `set_gripper`; low = `get_state`, `get_observation`, `move_delta`, `set_gripper`, `raw_obs`, `render_camera`, `get_camera_meta`, `step`; privileged adds `ground_truth_poses`; a grasp server (`--contact-graspnet` ...) adds its planner's |
+| `code.api` | kw `tier=null` | from the robot's manifest (`code.api`, above) |
 | `code.run`, `code.helpers` | as libero-env (Code mode, above) | robosuite-env's run fields: `steps`, `success`, `success_step`, `obs`, `frames`; the server requires its RPC token |
 
 `stop` interrupts `env.move_to` / `env.move_delta` / `env.set_gripper` between control steps
@@ -470,7 +495,12 @@ handover task renders no instance segmentation.
 | `env.render_camera` | `camera_name` in head/left_wrist/right_wrist, `depth=false` | rgb, or `[rgb, depth float (NaN = no hit)]` |
 | `env.get_camera_meta` | `camera_name` | `{"intrinsic_K", "extrinsic_cv", "cam2world_gl", "width", "height"}` |
 | `env.get_task_language` | - | str |
-| `env.plan_arm_path` | `arm` left/right, `target_pose` float[7] | `{"status", "position", "velocity"}` |
+| `env.move_to` | `arm` left/right, `xyz`, kw `quat=null` (wxyz; default keep), `gripper=null`, `substeps=25` (0 = every planned waypoint), `return_policy_frames=false` | cuRobo plans the eef pose, the qpos waypoints run as one chunk: the motion report `{"completed", "requested_steps", "executed_steps", "stop_reason" (native_success / budget_exhausted / cancelled / completed / runtime_failure / plan_failed), "plan_status", "waypoints", "final_eef_xyz", "final_dist_m", "info" (the chunk's `robot_state`, `episode_status`, `executed_actions`), "frames" (head, one per action)[, "policy_frames", "per_step" {reward, terminated, truncated}]}` |
+| `env.rotate_wrist` | `arm`, `delta_yaw_deg`, kw `gripper=null`, `substeps=25` | `env.move_to` about world z at the same eef xyz, plus `requested_delta_yaw_deg` |
+| `env.set_gripper` / `env.release` | `arm`, `val` (release: default 1.0), kw `steps=10` | the gripper ramped linearly over `steps` native actions: the motion report plus `gripper_val` |
+| `env.solve_ik` | `position` float[3], `quaternion_wxyz` float[4], `arm` | `{"status", "joints" float[6] or null}`: the end of cuRobo's planned path (RoboTwin exposes its planner, not a bare IK) |
+| `env.traj_plan` | `start_pose_wxyz_xyz` float[7], `end_pose_wxyz_xyz` float[7], `arm` | `{"status", "trajectory" float[N,6] or null}` from the current joints (the start pose must be the current eef pose) |
+| `env.move_to_joints` / `env.move_along_trajectory` | `joints` float[6] / `trajectory` float[N,6], `arm`, kw `gripper=null` | one native qpos action per target: the motion report plus `final_joints` |
 
 The env worker runs torch with deterministic algorithms (`CUBLAS_WORKSPACE_CONFIG=:4096:8`) and cuRobo's
 L-BFGS step on torch ops instead of its fused CUDA kernel, so cuRobo returns the same plan for the same
@@ -488,8 +518,7 @@ RoboDojo's `take_action` (one 25 Hz control step, counted against the task's `st
 .. 0 closed. An observation is `{"head", "left_wrist", "right_wrist" uint8[480,640,3], "arms": {"left"|
 "right": {"eef_pos", "eef_quat_wxyz", "joints", "joints_command", "gripper", "gripper_command"}},
 "success", "ended", "truncated", "score", "env_steps", "step_lim", "seed"[, "policy_frames"]}`;
-`score` is RoboDojo's (1 on success, else its partial-credit tiers / 100). `code.api` serves the registry
-of `robots/robodojo/primitives.py`.
+`score` is RoboDojo's (1 on success, else its partial-credit tiers / 100). `code.api` serves its manifest (above).
 
 | method | args | result |
 |---|---|---|
@@ -503,6 +532,10 @@ of `robots/robodojo/primitives.py`.
 | `env.rotate_delta` | `arm`, `yaw` (rad, + counter-clockwise from above; clipped to 0.8) | as `env.move_to`, plus `commanded_yaw`, `yaw`[, `clipped`] |
 | `env.set_gripper` | `arm`, `value` | obs + `{"control_steps"}` |
 | `env.go_home` | `return_frames` | obs + `{"control_steps"}` (both arms to their reset joints) |
+| `env.solve_ik` | `position`, `quaternion_wxyz`, `arm` | 6 joint angles (cuRobo IK from the current joints; raises without a solution) |
+| `env.move_to_joints` | `joints` (6), `arm`, `gripper`, `return_frames` | obs + `{"moved_m", "final_joint_error_rad", "waypoints", "executed", "control_steps"[, "cancelled", "frames"]}` (joint-space, 0.05 rad per control step) |
+| `env.traj_plan` | `start_pose_wxyz_xyz` (the current pose), `end_pose_wxyz_xyz`, `arm` | joint waypoints [N, 6], N <= 100 (cuRobo `plan_path`, else IK along a line); nothing moves |
+| `env.move_along_trajectory` | `trajectory` [N, 6], `arm`, `gripper`, `return_frames` | as `env.move_to_joints` |
 | `env.back_project` | `pixels` [[col, row], ...], `camera_name` "head" | `{"frame": "env", "xyz": [[x, y, z] | null, ...]}` from the same step's depth |
 | `env.get_camera_meta` | `camera_name` "head" | `{"intrinsic_K", "extrinsic_cam2world" (OpenCV, camera to env), "width", "height", "frame"}` |
 | `env.render_camera` | `camera_name` head / left_wrist / right_wrist | uint8[H,W,3] |
@@ -520,8 +553,8 @@ about +z, counter-clockwise seen from above) and runs the hold with zero transla
 heading is reached. Each observation is `{"agentview" uint8[H,W,3], "wrist" uint8[256,256,3]
 (fingertips at the top), "eef_pos" float32[3], "eef_quat_wxyz" float32[4], "tilt_deg", "yaw_deg"
 (from the reset heading), "gripper_width", "gripper_command", "success", "terminated",
-"truncated", "env_steps"[, "subtask"]}`. `code.api` serves the registry of
-`robots/robolab/primitives.py`.
+"truncated", "env_steps"[, "subtask"]}`. `code.api` serves the primitive manifest
+`packages/embodied/src/primitives/manifests/robolab.json`.
 
 | method | args | result |
 |---|---|---|
@@ -573,7 +606,7 @@ primitive's result is the observation plus `{"primitive", "ok", "phase", "steps"
 | `env.get_camera_meta` | `camera_name` | `{"camera", "intrinsic_K" 3x3, "extrinsic_cam2world" 4x4, "convention": "opengl" (looks along -Z, +Y up), "width", "height"}` at the current pose |
 | `env.get_task_language` | - | str (the challenge's task description) |
 | `env.ground_truth_poses` | kw `names=null` | poses of the task's BDDL object instances (`task.object_scope` names) |
-| `code.api` | kw `tier` | the registry of `robots/behavior/primitives.py` (high: CaP-X's motions and get_robot_position; low adds state, raw_obs, render_camera, get_camera_meta, step, chunk_step) |
+| `code.api` | kw `tier=null` | from the robot's manifest (`code.api`, above) |
 
 ### franka-env (`robots/franka/env_server.py`)
 
@@ -588,7 +621,14 @@ primitive's result is the observation plus `{"primitive", "ok", "phase", "steps"
 | `env.rotate_delta` | `delta_rpy` float[3] (rad) | `{"ok", "requested_delta_rpy_base", "start_tcp_pose", "final_tcp_pose", "final_error_rad", "steps_used", "states"[, "cancelled"]}` |
 | `env.set_gripper` | kw `open` bool | `{"ok", "target_gripper_open", "steps_used", "robot_state", "states"[, "cancelled"]}` |
 | `env.chunk_step` | `actions` float[N,action_dim], kw `return_all_frames=false` | `{"observation", "terminated", "truncated", "info"[, "cancelled"]}` |
-| `env.preview_reach` | `pos` float[3] (m, base frame), kw `quat_xyzw=null` (null = the current TCP orientation) | reach preview (see libero-env); with `--ik`, `env.move_delta` / `env.rotate_delta` refuse an unreachable end pose |
+| `env.preview_reach` | `xyz` float[3] (m, base frame), kw `quat_xyzw=null` (null = the current TCP orientation) | reach preview (see libero-env); with `--ik`, `env.move_delta` / `env.rotate_delta` refuse an unreachable end pose |
+| `env.open_gripper` / `env.close_gripper` | - | `env.set_gripper`'s result (open / closed) |
+| `env.get_object_pose` | `object_name`, kw `return_bbox_extent=false` | `[position, quaternion_wxyz (identity), extent or null]`, base frame, from `env.segment` (`--sam3`) and depth through the hand-eye calibration |
+| `env.sample_grasp_pose` | `object_name` | `[position, quaternion_wxyz]` of a TCP pose: `env.plan_grasp`'s best candidate, or without a grasp server the object's median point with the current orientation |
+| `env.goto_pose` | `position`, `quaternion_wxyz`, kw `z_approach=0` | the last leg's result + `legs`, `reached`: rotate_delta then move_delta legs within pi's limits, at most 8 per call, the route checked before the first |
+| `env.home_pose` | - | `env.goto_pose` to the TCP pose of the last `env.reset` |
+| `env.solve_ik` / `env.traj_plan` | (`--ik`) pose; start and end poses (wxyz + xyz) | 7 joints / `[N, 7]` joint waypoints (nothing moves) |
+| `env.move_to_joints` / `env.move_along_trajectory` | (Polymetis with `--ik`) `joints` float[7]; `trajectory` float[N,7] | refused unless every joint turns at most `limits.max_joint_step_rad` per call and the forward-kinematics TCP path stays within pi's limits and the workspace; a stop-polled joint stream |
 
 ### franka-polymetis-env (`robots/franka_polymetis/env_server.py`)
 
@@ -615,13 +655,12 @@ refuses beyond; null = none), "servo_step_m", "servo_step_rad", "empty_grasp_reo
 Both franka servers compose the model servers over their *current observation*: the frames
 the last `env.get_observation` returned (the client's latest state step). Without the flags
 none of these methods exist; `capabilities.perception` = `{"segment": bool, "enhance_depth":
-bool}` says which are on, and `code.api` lists them (`robots/franka/primitives.py`:
-`SEGMENT_PRIMITIVES`, `ENHANCE_DEPTH_PRIMITIVES`) only then. `camera` is `"wrist"` (main) or
-`"third_person"` (extra_0).
+bool}` says which are on, and `code.api` lists them (the manifest's entries that require `sam3` /
+`unidepth`) only then. `camera` is `"wrist"` (main) or `"third_person"` (extra_0).
 
 | method | args | result |
 |---|---|---|
-| `env.segment` | `camera="wrist"`, kw exactly one of `text_prompt` / `point` `[row, col]`, `min_score=0.2`, `all=false` | `{"found", "observation", "camera", "count", "detections": [{"id", "rank", "score", "box", "area_px", "centroid_rc", "depth_m", "point_camera" (OpenCV camera frame, m), "mask_png_base64", "prompt", "point", "observation"}], "ids", "invalidated", "overlay"? uint8[H,W,3], "reason"?}` |
+| `env.segment` | `camera="wrist"`, kw exactly one of `prompt` / `point` `[row, col]`, `min_score=0.2`, `all=false` | `{"found", "observation", "camera", "count", "detections": [{"id", "rank", "score", "box", "area_px", "centroid_rc", "depth_m", "point_camera" (OpenCV camera frame, m), "mask_png_base64", "prompt", "point", "observation"}], "ids", "invalidated", "overlay"? uint8[H,W,3], "reason"?}` |
 | `env.select_detection` | `id` | `{"ok", "detection"?, "error"?, "observation", "ids", "selected", "rejected", "invalidated"}` |
 | `env.reject_detection` | `id` | same shape; the id stays resolvable and is listed in `rejected` |
 | `env.enhance_depth` | `camera="wrist"` | `{"ok", "observation", "camera", "depth" float32[H,W] (fused, m, 0 = none), "report" {mode `filled` / `mono_only` / `sensor_only`, scale, overlap_pixels, filled_pixels, ...}, "estimate", "invalidated"}` |
@@ -654,12 +693,14 @@ qw]`, `tcp_pose_rotvec` the UR `[x, y, z, rx, ry, rz]`. The config is bound to o
 `calibration.arm_id` must equal the controller's serial number (`--print-identity`), and each
 camera's hand-eye YAML (written by `robots/ur5e/calibrate.py`, applied by a human) must name the
 same arm and, when recorded, the same camera serial. `code.api` serves the primitives of
-`robots/ur5e/primitives.py` (the motion and state methods below; no privileged tier).
+`packages/embodied/src/primitives/manifests/ur5e.json` (the motion and state methods below; no
+privileged tier). pi's `--max-move` / `--max-rotate` arrive at spawn and hold for every caller, on
+top of the config's limits (`env.get_env_meta().motion_limits`).
 
 Refusals (error, nothing commanded): a translation beyond `limits.max_move_m`, a turn beyond
 `max_rotate_rad`, a target outside the workspace box or below `z_floor_m` (a move from outside
 back toward the box is allowed), a tool tilt past `max_tilt_rad`, `env.reset` without
-`calibration.begin_joints`, `env.set_gripper` without a gripper. A motion that is stopped, times
+`calibration.begin_joints`, `env.open_gripper` / `env.close_gripper` without a gripper. A motion that is stopped, times
 out (`move_timeout_s`, stopL), raises in the driver (stopL, `RuntimeError`) or ends farther than
 `move_tolerance_m` / `rotate_tolerance_rad` from its target reports `ok: false` and clears the
 setpoint (`raw_base_state.setpoint_pose` is null) so the next command starts from the measured pose.
@@ -674,7 +715,9 @@ setpoint (`raw_base_state.setpoint_pose` is null) so the next command starts fro
 | `env.move_delta` | `delta_xyz` float[3] (m, base frame) | `{"ok", "requested_delta_xyz_base", "start_tcp_pose", "target_tcp_pose", "final_tcp_pose", "final_error_m", "final_error_rad", "steps_used", "elapsed_s", "states": null[, "cancelled", "timed_out", "note"]}` |
 | `env.move_pose` | `xyz` float[3], kw `rotvec` float[3] or `rpy` float[3] (extrinsic xyz, rad; converted to a rotation vector) or neither (orientation held) | as `env.move_delta` plus `requested_pose_rotvec`; refused beyond `max_move_m` / `max_rotate_rad` from the current setpoint |
 | `env.rotate_delta` | `delta_rpy` float[3] (rad, about the base axes) | as `env.move_delta` with `requested_delta_rpy_base` |
-| `env.set_gripper` | kw `open` bool | `{"ok", "target_gripper_open", "object_detected", "steps_used", "gripper_width_m", "robot_state", "states": null[, "gripper_jammed", "grasp_empty", "note", "cancelled"]}`; a close ending at or below `gripper.empty_width_m` with nothing detected reopens (`grasp_empty`); fingers that did not move toward the command and hold nothing are `gripper_jammed` |
+| `env.solve_ik` | `position` float[3] (m), kw `quaternion_wxyz` float[4] (default: the current orientation) | `{"reachable", "joints" float[6] or null, "max_joint_change_rad", "max_joint_step_rad", "reason"}` (the controller's IK, checked with its FK; nothing moves) |
+| `env.move_to_joints` | `joints` float[6] (rad) | as the reset's `move` plus `max_joint_change_rad`, `robot_state`; refused whole beyond `limits.max_joint_step_rad` per joint, or when the TCP along the sampled joint path leaves the per-call limits, the workspace or the tilt limit |
+| `env.open_gripper` / `env.close_gripper` | - | `{"ok", "target_gripper_open", "object_detected", "steps_used", "gripper_width_m", "robot_state", "states": null[, "gripper_jammed", "grasp_empty", "note", "cancelled"]}`; a close ending at or below `gripper.empty_width_m` with nothing detected reopens (`grasp_empty`); fingers that did not move toward the command and hold nothing are `gripper_jammed` |
 
 ### dual-franka-env (`robots/dual_franka/env_server.py`)
 
@@ -691,7 +734,8 @@ Same method names; poses are reported in the `right_base` frame. `arm` is `"left
 | `env.move_delta` | `arm`, `delta_xyz` float[3] | pose/error report `[, "cancelled"]` |
 | `env.rotate_delta` | `arm`, `delta_rpy` float[3] | pose/error report `[, "cancelled"]` |
 | `env.set_gripper` | `arm`, kw `open` | `{"ok", "arm", "target_gripper_open", "steps_used", "robot_state"[, "cancelled"]}` |
-| `env.recover_joint_posture` | `reason=""`, `return_to_start=true` | recovery report `[, "cancelled"]` |
+| `env.open_gripper` / `env.close_gripper` | `arm` | `env.set_gripper`'s result |
+| `env.recover_joint_posture` | `reason=""`, `return_to_start=true` | recovery report `[, "cancelled"]` (a tool only: no program reaches it) |
 | `env.chunk_step` | `actions` float[N,20], kw `return_all_frames=false` | `{"observation", "terminated", "truncated", "info"[, "cancelled"]}` |
 
 ## Model servers

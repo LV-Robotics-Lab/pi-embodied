@@ -199,6 +199,9 @@ class UR5eLimits:
     divergence_resync_rad: float = 0.05
     reset_lift_m: float = 0.05
     reset_path_samples: int = 10
+    #: Largest |joint change| (rad, any joint) one bounded joint move (``move_to_joints``) may
+    #: command; its TCP path is also held to the per-call translation / rotation limits.
+    max_joint_step_rad: float = 0.3
     gripper_stroke_m: float = 0.085
     gripper_speed: int = 255
     gripper_force: int = 100
@@ -252,6 +255,7 @@ class UR5eLimits:
         bound("poll_s", 0.0, 0.5)
         bound("start_timeout_s", 0.05, 10.0)
         bound("reset_path_samples", 1, 100)
+        bound("max_joint_step_rad", 1e-3, 1.0)
         bound("gripper_settle_polls", 1, 20)
         bound("divergence_resync_rad", 1e-3, math.pi)
         bound("reset_lift_m", 0.0, 0.2)
@@ -657,15 +661,29 @@ class UR5eController:
         self._after_motion(result, "the move")
         return result
 
-    def move_delta(self, delta_xyz: Any) -> dict[str, Any]:
-        """Translate the TCP by a base-frame delta; the orientation is held."""
+    def _move_cap(self, max_move_m: float | None) -> float:
+        """The per-call translation limit: the config's, or pi's (--max-move) when tighter."""
+        cap = self.limits.max_move_m
+        return cap if max_move_m is None else min(cap, float(max_move_m))
+
+    def _rotate_cap(self, max_rotate_rad: float | None) -> float:
+        """The per-call rotation limit: the config's, or pi's (--max-rotate) when tighter."""
+        cap = self.limits.max_rotate_rad
+        return cap if max_rotate_rad is None else min(cap, float(max_rotate_rad))
+
+    def move_delta(
+        self, delta_xyz: Any, *, max_move_m: float | None = None
+    ) -> dict[str, Any]:
+        """Translate the TCP by a base-frame delta; the orientation is held. ``max_move_m``:
+        pi's per-call limit on top of the config's."""
         lim = self.limits
+        cap = self._move_cap(max_move_m)
         d = self._vec3(delta_xyz, "delta_xyz")
         norm = float(np.linalg.norm(d))
-        if norm > lim.max_move_m + 1e-9:
+        if norm > cap + 1e-9:
             raise ValueError(
-                f"delta_xyz moves {norm:.4f} m; the limit is {lim.max_move_m} m per call. "
-                "Split the motion into smaller calls; nothing was commanded"
+                f"delta_xyz moves {norm:.4f} m; the limit is {cap} m per call (--max-move / "
+                "limits.max_move_m). Split the motion into smaller calls; nothing was commanded"
             )
         start = self.setpoint()
         target = start.copy()
@@ -675,15 +693,20 @@ class UR5eController:
         result["requested_delta_xyz_base"] = d.tolist()
         return result
 
-    def rotate_delta(self, delta_rpy: Any) -> dict[str, Any]:
-        """Turn the TCP by extrinsic xyz Euler angles about the base axes."""
+    def rotate_delta(
+        self, delta_rpy: Any, *, max_rotate_rad: float | None = None
+    ) -> dict[str, Any]:
+        """Turn the TCP by extrinsic xyz Euler angles about the base axes. ``max_rotate_rad``:
+        pi's per-call limit on top of the config's."""
         lim = self.limits
+        cap = self._rotate_cap(max_rotate_rad)
         e = self._vec3(delta_rpy, "delta_rpy")
         norm = float(np.linalg.norm(e))
-        if norm > lim.max_rotate_rad + 1e-9:
+        if norm > cap + 1e-9:
             raise ValueError(
-                f"delta_rpy rotates {norm:.4f} rad; the limit is {lim.max_rotate_rad} rad "
-                "per call. Split the rotation into smaller calls; nothing was commanded"
+                f"delta_rpy rotates {norm:.4f} rad; the limit is {cap} rad per call "
+                "(--max-rotate / limits.max_rotate_rad). Split the rotation into smaller "
+                "calls; nothing was commanded"
             )
         start = self.setpoint()
         target = start.copy()
@@ -696,11 +719,19 @@ class UR5eController:
         return result
 
     def move_pose(
-        self, xyz: Any, rotvec: Any = None, rpy: Any = None
+        self,
+        xyz: Any,
+        rotvec: Any = None,
+        rpy: Any = None,
+        *,
+        max_move_m: float | None = None,
+        max_rotate_rad: float | None = None,
     ) -> dict[str, Any]:
-        """Move to an absolute base-frame pose, within the per-call limits from the
-        current setpoint (``rpy`` is converted to a rotation vector)."""
+        """Move to an absolute base-frame pose, within the per-call limits (the config's and
+        pi's) from the current setpoint (``rpy`` is converted to a rotation vector)."""
         lim = self.limits
+        move_cap = self._move_cap(max_move_m)
+        rot_cap = self._rotate_cap(max_rotate_rad)
         p = self._vec3(xyz, "xyz")
         start = self.setpoint()
         rv = (
@@ -709,16 +740,17 @@ class UR5eController:
             else start[3:].copy()
         )
         dist = float(np.linalg.norm(p - start[:3]))
-        if dist > lim.max_move_m + 1e-9:
+        if dist > move_cap + 1e-9:
             raise ValueError(
                 f"the pose is {dist:.4f} m from the current setpoint; the limit is "
-                f"{lim.max_move_m} m per call; nothing was commanded"
+                f"{move_cap} m per call (--max-move / limits.max_move_m); nothing was "
+                "commanded"
             )
         angle = rotation_gap(rv, start[3:])
-        if angle > lim.max_rotate_rad + 1e-9:
+        if angle > rot_cap + 1e-9:
             raise ValueError(
-                f"the pose turns the tool {angle:.4f} rad; the limit is {lim.max_rotate_rad} "
-                "rad per call; nothing was commanded"
+                f"the pose turns the tool {angle:.4f} rad; the limit is {rot_cap} rad per "
+                "call (--max-rotate / limits.max_rotate_rad); nothing was commanded"
             )
         target = np.concatenate([p, rv])
         self.check_target(self.measured(), target, "the pose")
@@ -995,6 +1027,121 @@ class UR5eController:
                 f"moveJ did not finish within {lim.reset_timeout_s} s and was stopped",
             )
         self._after_motion(result, "the joint move")
+        return result
+
+    # -- bounded joint-space motion (CaP-X solve_ik / move_to_joints) ------
+
+    def solve_ik(self, position: Any, quat_xyzw: Any = None) -> dict[str, Any]:
+        """Joints (6, rad) that put the TCP at ``position`` (base frame, m) with orientation
+        ``quat_xyzw`` (None: the current one), from the controller's inverse kinematics seeded
+        with the measured joints. The solution is checked with the controller's forward
+        kinematics (with the active TCP offset) before it is returned. Read-only."""
+        lim = self.limits
+        p = self._vec3(position, "position")
+        current = self.measured()
+        if quat_xyzw is None:
+            rv = current[3:].copy()
+        else:
+            quat = np.asarray(quat_xyzw, dtype=np.float64).reshape(-1)
+            if (
+                quat.shape != (4,)
+                or not np.all(np.isfinite(quat))
+                or not np.linalg.norm(quat) > 1e-6
+            ):
+                raise ValueError("the quaternion must be 4 finite numbers, not zero")
+            rv = Rotation.from_quat(quat).as_rotvec()
+        target = np.concatenate([p, rv])
+        q0 = np.asarray(self.arm.joints(), dtype=np.float64)
+        solve = getattr(self.arm, "inverse_kinematics", None)
+        sol = None if solve is None else solve(target, q0)
+        reason = None
+        if sol is None:
+            reason = "the controller's inverse kinematics found no solution"
+        else:
+            sol = np.asarray(sol, dtype=np.float64).reshape(-1)
+            if sol.shape != (6,) or not np.all(np.isfinite(sol)):
+                sol, reason = None, "the inverse kinematics returned no valid joints"
+            else:
+                got = self._fk(sol)
+                if (
+                    float(np.linalg.norm(got[:3] - p)) > lim.move_tolerance_m
+                    or rotation_gap(got[3:], rv) > lim.rotate_tolerance_rad
+                ):
+                    sol, reason = (
+                        None,
+                        (
+                            "the inverse kinematics' joints do not reach the pose "
+                            f"(forward kinematics gives {np.round(got[:3], 4).tolist()})"
+                        ),
+                    )
+        if sol is None:
+            return {
+                "reachable": False,
+                "joints": None,
+                "reason": reason,
+                "max_joint_step_rad": lim.max_joint_step_rad,
+            }
+        return {
+            "reachable": True,
+            "joints": sol.tolist(),
+            "max_joint_change_rad": float(np.max(np.abs(sol - q0))),
+            "max_joint_step_rad": lim.max_joint_step_rad,
+            "reason": None,
+        }
+
+    def move_to_joints_bounded(
+        self,
+        joints: Any,
+        *,
+        max_move_m: float | None = None,
+        max_rotate_rad: float | None = None,
+    ) -> dict[str, Any]:
+        """moveJ to ``joints`` (6 rad), bounded per call; refused whole (nothing commanded)
+        when a joint would change more than ``max_joint_step_rad``, or when, at any of
+        ``reset_path_samples`` points of the joint-space line (forward kinematics), the TCP
+        would be further than the per-call translation limit from where it starts, turned
+        more than the rotation limit, further outside the workspace / below the floor than it
+        starts, or tilted past ``max_tilt_rad``. Runs at the reset's joint speed and is
+        stopped with stopJ on ``stop`` (:meth:`move_joints`)."""
+        lim = self.limits
+        goal = np.asarray(joints, dtype=np.float64).reshape(-1)
+        if goal.shape != (6,) or not np.all(np.isfinite(goal)):
+            raise ValueError("joints must be 6 finite angles (rad)")
+        self._require_movable("the joint move")
+        move_cap = self._move_cap(max_move_m)
+        rot_cap = self._rotate_cap(max_rotate_rad)
+        start = np.asarray(self.arm.joints(), dtype=np.float64)
+        travel = float(np.max(np.abs(goal - start)))
+        if travel > lim.max_joint_step_rad + 1e-9:
+            raise ValueError(
+                f"a joint would change {travel:.3f} rad; the limit is "
+                f"{lim.max_joint_step_rad} rad per call (limits.max_joint_step_rad). Split "
+                "the motion into smaller calls; nothing was commanded"
+            )
+        p0 = self._fk(start)
+        n = int(lim.reset_path_samples)
+        for i in range(1, n + 1):
+            s = i / n
+            p = self._fk(start + s * (goal - start))
+            moved = float(np.linalg.norm(p[:3] - p0[:3]))
+            turned = rotation_gap(p[3:], p0[3:])
+            if moved > move_cap + 1e-9:
+                raise ValueError(
+                    f"the joint move takes the TCP {moved:.4f} m from where it starts "
+                    f"({s:.0%} of the way); the limit is {move_cap} m per call (--max-move / "
+                    "limits.max_move_m). Split the motion into smaller calls; nothing was "
+                    "commanded"
+                )
+            if turned > rot_cap + 1e-9:
+                raise ValueError(
+                    f"the joint move turns the TCP {turned:.4f} rad ({s:.0%} of the way); "
+                    f"the limit is {rot_cap} rad per call (--max-rotate / "
+                    "limits.max_rotate_rad). Split the motion into smaller calls; nothing "
+                    "was commanded"
+                )
+            self.check_target(p0, p, f"the joint move ({s:.0%} of the way)")
+        result = self.move_joints(goal, check_path=False)
+        result["max_joint_change_rad"] = travel
         return result
 
     def reset(self) -> dict[str, Any]:

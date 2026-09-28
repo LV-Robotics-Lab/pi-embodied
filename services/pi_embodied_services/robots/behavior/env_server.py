@@ -33,18 +33,29 @@ healthz answers only once the task is loaded. Every call runs on the main thread
 thread-safe). ``OMNIGIBSON_GPU_ID`` (``--gpu-id``) picks the simulator's GPU; the perception
 servers should sit on another one.
 
-Code mode (``code.run``, utils/code_exec.py ``CodeRunMixin``): a program calls the registry's
-primitives (primitives.py) from a sandboxed subprocess; ``code.run`` is itself a business call, so
+Code mode (``code.run``, utils/code_exec.py ``CodeRunMixin``): a program calls the primitives of
+the robot's manifest (packages/embodied/src/primitives/manifests/behavior.json, read by
+components/manifest.py; pi's tools take their schemas from the same file) from a sandboxed
+subprocess; ``code.run`` is itself a business call, so
 it runs on the main thread like every tool's RPC, and the primitive calls it answers go to the same
 facade methods on that same thread (never from another one: Kit is not thread-safe). What a
 primitive hands the program drops the camera images (the head frame goes to the run's video) and
 the simulator-only ``privileged`` block (the object in hand, the reference "picked"); the run
 reports its control steps, the latched success and the new observation (``_finish_run``).
+
+Perception runs here for the tools and the programs alike: ``segment`` (SAM3, ``--sam3``),
+``point`` (Molmo, ``--molmo``) and ``back_project`` read the latest camera frames through their
+metric depth. ``move_to_joints`` / ``move_along_trajectory`` (CaP-X's joint-space primitives)
+drive an arm's absolute position JointController straight to joint targets, clipped to the
+joint limits; there is no ``solve_ik`` / ``traj_plan``: CaP-X solves the R1Pro's IK with PyRoKi
+on its own URDF, which this server does not have.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
+import io
 import math
 import os
 import sys
@@ -54,10 +65,8 @@ from typing import Any
 
 import numpy as np
 
-from pi_embodied_services.components.code_api import register_code_api
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
 from pi_embodied_services.robots.behavior import sim
-from pi_embodied_services.robots.behavior.primitives import BEHAVIOR_PRIMITIVES
 from pi_embodied_services.robots.behavior.tasks import LANGUAGE, TASK_INDEX, TASK_NAMES
 from pi_embodied_services.utils import ground_truth
 from pi_embodied_services.utils.code_exec import CodeRunMixin
@@ -86,6 +95,14 @@ MAX_HAND_YAW_RAD = 0.3
 #: observation plus a report).
 CODE_MAX_FRAMES = 128
 CODE_MAX_CHUNK = 300
+#: Depth beyond this is no hit (OmniGibson's depth_linear on the sky), m.
+MAX_DEPTH_M = 20.0
+#: move_to_joints: the default joint tolerance (rad) and control-step budget; one waypoint of
+#: move_along_trajectory gets WAYPOINT_STEPS; a trajectory has at most MAX_WAYPOINTS.
+JOINT_TOL_RAD = 0.01
+JOINT_MAX_STEPS = 300
+WAYPOINT_STEPS = 60
+MAX_WAYPOINTS = 100
 MOTIONS = (
     "env.navigate_to_pose",
     "env.move_hand",
@@ -93,7 +110,11 @@ MOTIONS = (
     "env.grasp_object",
     "env.open_gripper",
     "env.close_gripper",
+    "env.move_to_joints",
+    "env.move_along_trajectory",
 )
+#: The perception reads whose tool picture a program does not receive.
+PICTURES = ("env.segment", "env.point")
 
 
 def check_arm(arm: str) -> str:
@@ -102,11 +123,11 @@ def check_arm(arm: str) -> str:
     return arm
 
 
-def as_pose(position, quat_xyzw, current: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def as_pose(xyz, quat_xyzw, current: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """A world pose from a position and an optional xyzw orientation (default ``current``)."""
-    pos = np.asarray(position, dtype=np.float64).reshape(3)
+    pos = np.asarray(xyz, dtype=np.float64).reshape(3)
     if not np.all(np.isfinite(pos)):
-        raise ValueError(f"position must be finite, got {position!r}")
+        raise ValueError(f"xyz must be finite, got {xyz!r}")
     quat = (
         current
         if quat_xyzw is None
@@ -116,6 +137,35 @@ def as_pose(position, quat_xyzw, current: np.ndarray) -> tuple[np.ndarray, np.nd
     if not norm > 0:
         raise ValueError("quat_xyzw must not be zero")
     return pos, quat / norm
+
+
+def project(depth: np.ndarray, meta: dict) -> np.ndarray:
+    """World xyz [H, W, 3] of every pixel of an OmniGibson camera: OpenGL convention (looks along
+    -Z, +Y up), so ``x = (c - cx) d / fx, y = -(r - cy) d / fy, z = -d`` before the cam-to-world
+    transform. NaN where there is no hit."""
+    d = np.asarray(depth, dtype=np.float64).reshape(np.shape(depth)[:2])
+    h, w = d.shape
+    K = np.asarray(meta["intrinsic_K"], dtype=np.float64)
+    T = np.asarray(meta["extrinsic_cam2world"], dtype=np.float64)
+    rows, cols = np.mgrid[0:h, 0:w]
+    cam = np.stack(
+        [(cols - K[0, 2]) * d / K[0, 0], -(rows - K[1, 2]) * d / K[1, 1], -d], axis=-1
+    )
+    xyz = cam @ T[:3, :3].T + T[:3, 3]
+    xyz[~((d > 0) & (d < MAX_DEPTH_M))] = np.nan
+    return xyz
+
+
+def _png_base64(rgb: np.ndarray) -> str:
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.fromarray(np.ascontiguousarray(rgb, dtype=np.uint8)).save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def _median_xyz(pts: np.ndarray) -> list[float]:
+    return [round(float(v), 4) for v in np.median(pts, axis=0)]
 
 
 class BehaviorEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
@@ -129,6 +179,8 @@ class BehaviorEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         handle: sim.Handle,
         meta: dict,
         max_primitive_steps: int = MAX_PRIMITIVE_STEPS,
+        sam3: str | None = None,
+        molmo: str | None = None,
     ):
         super().__init__()
         self._h = handle
@@ -151,6 +203,12 @@ class BehaviorEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         # Code mode: the control steps before the run, and the run's video frames.
         self._run_start = 0
         self._run_frames: list[np.ndarray] = []
+        # --sam3 / --molmo: the segment and point primitives (clients made at the first call).
+        self._sam3_url = sam3 or None
+        self._molmo_url = molmo or None
+        self._clients: dict[str, Any] = {}
+        #: World xyz per pixel of each camera's latest frame, for the env step it was made at.
+        self._world_maps: dict[str, tuple[int, np.ndarray, np.ndarray]] = {}
 
     def _register_rpc(self) -> None:
         super()._register_rpc()
@@ -164,15 +222,31 @@ class BehaviorEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         self._rpc["env.raw_obs"] = self.raw_obs
         self._rpc["env.state"] = self.state
         self._rpc["env.ground_truth_poses"] = self.ground_truth_poses
-        api = register_code_api(self, BEHAVIOR_PRIMITIVES)
-        self._install_code_run(
-            api,
+        self._rpc["env.segment"] = self.segment
+        self._rpc["env.point"] = self.point
+        self._rpc["env.back_project"] = self.back_project
+        self._rpc["env.move_to_joints"] = self.move_to_joints
+        self._rpc["env.move_along_trajectory"] = self.move_along_trajectory
+        # The primitives are packages/embodied/src/primitives/manifests/behavior.json (with
+        # pi); code.api, the programs' whitelist and the startup self-check come from it.
+        self._manifest_code_run(
+            "behavior",
+            have=self._has,
             move_m=self._code_move_m,
             check=self._code_check,
             reply=self._code_reply,
             begin=self._begin_run,
             finish=self._finish_run,
         )
+
+    def _has(self, capability: str) -> bool:
+        """What this server can serve of the manifest's ``requires``."""
+        return {
+            "sam3": bool(self._sam3_url),
+            "molmo": bool(self._molmo_url),
+            "unidepth": "env.enhance_depth" in self._rpc,
+            "privileged": True,
+        }.get(capability, False)
 
     # ---- code mode (run_code) ----
 
@@ -207,6 +281,9 @@ class BehaviorEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         call, without the images and the simulator-only state."""
         if method in MOTIONS or method == "env.state":
             return self._program_obs(out)
+        if method in PICTURES and isinstance(out, dict):
+            # The picture is the tool's; the program has the numbers (and segment's mask).
+            return {k: v for k, v in out.items() if k != "overlay_png_base64"}
         if method == "env.step":
             obs, rew, terminated, truncated, info = out
             return {
@@ -240,7 +317,7 @@ class BehaviorEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
             return float(np.linalg.norm(goal - pos[:2]))
         if method in ("env.move_hand", "env.grasp_object"):
             p, _q = sim.eef_pose(self._robot, check_arm(kwargs["arm"]))
-            target = np.asarray(kwargs["position"], dtype=np.float64).reshape(3)
+            target = np.asarray(kwargs["xyz"], dtype=np.float64).reshape(3)
             if method == "env.move_hand":
                 return float(np.linalg.norm(target - p))
             # To the pre-grasp above the target, down to it and back up.
@@ -250,6 +327,26 @@ class BehaviorEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         if method == "env.move_hand_delta":
             d = np.asarray(kwargs.get("delta_xyz", (0.0, 0.0, 0.0)), dtype=np.float64)
             return float(np.linalg.norm(d))
+        if method in ("env.move_to_joints", "env.move_along_trajectory"):
+            arm = check_arm(kwargs["arm"])
+            prev = sim.arm_joints(self._robot, arm)
+            total = 0.0
+            waypoints = (
+                [kwargs["joints"]]
+                if method == "env.move_to_joints"
+                else kwargs["trajectory"]
+            )
+            for q in waypoints:
+                q = np.asarray(q, dtype=np.float64).reshape(-1)
+                if q.shape != prev.shape:
+                    raise ValueError(
+                        f"a joint target has {q.size} values; the {arm} arm has {prev.size}"
+                    )
+                total += (
+                    float(np.max(np.abs(q - prev), initial=0.0)) * sim.REACH_PER_RAD_M
+                )
+                prev = q
+            return total
         if method == "env.step":
             return sim.action_move_m(self._robot, [kwargs["action"]])
         if method == "env.chunk_step":
@@ -465,12 +562,12 @@ class BehaviorEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         )
         return report
 
-    def move_hand(self, arm: str, position, quat_xyzw=None) -> dict:
+    def move_hand(self, arm: str, xyz, quat_xyzw=None) -> dict:
         """Plan and move ``arm``'s end effector to a world pose, obstacles respected (cuRobo).
         The orientation defaults to the current one. Refused beyond ``MAX_HAND_REACH_M`` of the base."""
         arm = check_arm(arm)
         _p, cur = sim.eef_pose(self._robot, arm)
-        pos, quat = as_pose(position, quat_xyzw, cur)
+        pos, quat = as_pose(xyz, quat_xyzw, cur)
         base, _q, _yaw = sim.base_pose(self._robot)
         reach = float(np.linalg.norm(pos[:2] - base[:2]))
         if not reach <= MAX_HAND_REACH_M:
@@ -539,7 +636,7 @@ class BehaviorEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
     def grasp_object(
         self,
         arm: str,
-        position,
+        xyz,
         quat_xyzw=None,
         pregrasp_offset_m: float = PREGRASP_OFFSET_M,
     ) -> dict:
@@ -554,7 +651,7 @@ class BehaviorEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
                 f"pregrasp_offset_m must be within [0.02, 0.5], got {offset}"
             )
         _p, cur = sim.eef_pose(self._robot, arm)
-        pos, quat = as_pose(position, quat_xyzw, cur)
+        pos, quat = as_pose(xyz, quat_xyzw, cur)
         above = pos + np.array([0.0, 0.0, offset])
         self._ctrl.arm = arm
         sticky = getattr(self._robot, "grasping_mode", "sticky") == "sticky"
@@ -616,6 +713,317 @@ class BehaviorEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
             "yaw": round(yaw, 4),
             "eef": eef,
         }
+
+    # ---- joint space (CaP-X's move_to_joints / move_along_trajectory) ----
+
+    def _joint_target(self, arm: str, joints) -> np.ndarray:
+        """The full-body position target: the current joints with ``arm``'s replaced by
+        ``joints`` (clipped to the joint limits)."""
+        idx = sim.to_np(self._robot.arm_control_idx[arm]).astype(int).reshape(-1)
+        target = np.asarray(joints, dtype=np.float64).reshape(-1)
+        if target.shape != idx.shape or not np.all(np.isfinite(target)):
+            raise ValueError(
+                f"joints must be {idx.size} finite angles (rad) for the {arm} arm, got {joints!r}"
+            )
+        lo, hi = sim.joint_limits(self._robot)
+        q = sim.to_np(self._robot.get_joint_positions()).astype(np.float64).copy()
+        q[idx] = np.clip(target, lo[idx], hi[idx])
+        return q
+
+    def _servo_joints(self, arm: str, q: np.ndarray, tol: float, steps: int):
+        """Actions holding the full-body target ``q`` until ``arm``'s joints are within ``tol``
+        of it or ``steps`` control steps ran (a generator for ``_primitive``)."""
+        idx = sim.to_np(self._robot.arm_control_idx[arm]).astype(int).reshape(-1)
+        action = sim.joint_target_action(self._robot, q)
+        for _ in range(steps):
+            if np.max(np.abs(sim.arm_joints(self._robot, arm) - q[idx])) <= tol:
+                return
+            yield action
+
+    def _joint_report(self, arm: str, q: np.ndarray, tol: float, report: dict) -> dict:
+        idx = sim.to_np(self._robot.arm_control_idx[arm]).astype(int).reshape(-1)
+        now = sim.arm_joints(self._robot, arm)
+        left = float(np.max(np.abs(now - q[idx]), initial=0.0))
+        p, quat = sim.eef_pose(self._robot, arm)
+        report.update(
+            arm=arm,
+            joints=[round(float(v), 4) for v in now],
+            joints_left_rad=round(left, 4),
+            reached=left <= tol,
+            eef_pos=[round(float(v), 4) for v in p],
+            eef_quat_xyzw=[round(float(v), 4) for v in quat],
+        )
+        return report
+
+    def move_to_joints(
+        self,
+        joints,
+        arm: str,
+        tol_rad: float = JOINT_TOL_RAD,
+        max_steps: int = JOINT_MAX_STEPS,
+    ) -> dict:
+        """Drive ``arm`` to a joint configuration (rad, the arm's control order; clipped to the
+        joint limits): its position controller holds the target until every joint is within
+        ``tol_rad`` or ``max_steps`` control steps ran. No collision checking: move_hand plans
+        around obstacles, this does not. Returns ok, reached, joints, joints_left_rad and the
+        observation."""
+        arm = check_arm(arm)
+        if not 0 < float(tol_rad) <= 0.5 or not 1 <= int(max_steps) <= self._max_steps:
+            raise ValueError(
+                f"tol_rad must be in (0, 0.5] and max_steps in [1, {self._max_steps}]"
+            )
+        q = self._joint_target(arm, joints)
+        report = self._primitive(
+            "move_to_joints",
+            ("move", self._servo_joints(arm, q, float(tol_rad), int(max_steps))),
+        )
+        return {**self._pack(), **self._joint_report(arm, q, float(tol_rad), report)}
+
+    def move_along_trajectory(self, trajectory, arm: str) -> dict:
+        """Drive ``arm`` through joint waypoints ``[N, dof]`` (N <= MAX_WAYPOINTS), each held
+        until within JOINT_TOL_RAD or WAYPOINT_STEPS control steps; stops early on a stop or the
+        episode's end. Returns the last waypoint's report with ``waypoints`` run."""
+        arm = check_arm(arm)
+        traj = np.asarray(trajectory, dtype=np.float64)
+        if traj.ndim != 2 or not 1 <= len(traj) <= MAX_WAYPOINTS:
+            raise ValueError(
+                f"trajectory must be [N, dof] joint waypoints with 1 <= N <= {MAX_WAYPOINTS}"
+            )
+        targets = [self._joint_target(arm, q) for q in traj]
+        report = self._primitive(
+            "move_along_trajectory",
+            *(
+                (
+                    f"waypoint {i}",
+                    self._servo_joints(arm, q, JOINT_TOL_RAD, WAYPOINT_STEPS),
+                )
+                for i, q in enumerate(targets)
+            ),
+        )
+        # Waypoints finished: all, or those before the one in progress when it ended.
+        report["waypoints"] = (
+            len(targets)
+            if report["ok"]
+            else int(report.get("phase", "waypoint 0").split()[-1])
+        )
+        return {
+            **self._pack(),
+            **self._joint_report(arm, targets[-1], JOINT_TOL_RAD, report),
+        }
+
+    # ---- perception (the tools' and the programs') ----
+
+    def _client(self, name: str, url: str | None, flag: str):
+        if not url:
+            raise RuntimeError(
+                f"{name} needs a server (start the env server with {flag})"
+            )
+        if name not in self._clients:
+            from pi_embodied_services.utils.rpc.http_rpc import HttpRpcClient
+
+            self._clients[name] = HttpRpcClient(url)
+        return self._clients[name]
+
+    def _world_map(self, camera: str) -> tuple[np.ndarray, np.ndarray]:
+        """The latest rgb of ``camera`` and the world xyz of its pixels (NaN: no depth), cached
+        per env step (the cameras move with the robot)."""
+        if camera not in sim.CAMERAS:
+            raise ValueError(
+                f"camera must be one of {sorted(sim.CAMERAS)}, got {camera!r}"
+            )
+        hit = self._world_maps.get(camera)
+        if hit is not None and hit[0] == self._steps:
+            return hit[1], hit[2]
+        imgs = sim.images(self._obs, self._robot)
+        meta = sim.camera_meta(self._robot, camera)
+        if meta["convention"] != "opengl":
+            raise RuntimeError(
+                f"camera {camera}: unexpected convention {meta['convention']}"
+            )
+        rgb, xyz = imgs[camera], project(imgs[f"{camera}_depth"], meta)
+        self._world_maps[camera] = (self._steps, rgb, xyz)
+        return rgb, xyz
+
+    def segment(
+        self,
+        prompt: str | None = None,
+        point=None,
+        camera: str = "head",
+        min_score: float = 0.2,
+    ) -> dict:
+        """SAM3 segmentation of the latest image of ``camera`` by a text prompt or a positive
+        point [row, col]; the top mask projected through that camera's metric depth.
+
+        Returns found, camera, score, box, mask (bool [H, W]), n_pixels, n_valid,
+        centroid_pixel [row, col], world_xyz (median over the mask) and top_xyz (median of its
+        highest tenth: a grasp point), or world_error when too few pixels have depth; the tool
+        also gets ``overlay_png_base64``."""
+        from PIL import Image
+
+        text = (prompt or "").strip()
+        if bool(text) == (point is not None):
+            raise ValueError("give exactly one of a text prompt or a point [row, col]")
+        sam3 = self._client("segment", self._sam3_url, "--sam3")
+        rgb, xyz = self._world_map(camera)
+        res = sam3.call(
+            "sam3.segment",
+            kwargs={
+                "image_base64": _png_base64(rgb),
+                **(
+                    {"text_prompt": text}
+                    if text
+                    else {"point": [int(v) for v in point]}
+                ),
+                "min_score": float(min_score),
+            },
+            timeout_s=120,
+        )
+        if not res.get("found") or not res.get("mask_png_base64"):
+            return {
+                "found": False,
+                "camera": camera,
+                "error": res.get("reason") or "no mask",
+                "fallback": "Pick pixels in the image and use back_project.",
+            }
+        mask = np.asarray(
+            Image.open(io.BytesIO(base64.b64decode(res["mask_png_base64"])))
+        )
+        if mask.ndim == 3:
+            mask = mask[..., 0]
+        if mask.shape != rgb.shape[:2]:
+            raise RuntimeError(
+                f"SAM3 mask {mask.shape} does not match the {rgb.shape[:2]} image"
+            )
+        mask = mask >= 128
+        rows, cols = np.nonzero(mask)
+        pts = xyz[mask]
+        pts = pts[np.all(np.isfinite(pts), axis=1)]
+        out: dict[str, Any] = {
+            "found": True,
+            "camera": camera,
+            "score": None
+            if res.get("score") is None
+            else round(float(res["score"]), 3),
+            "box": res.get("box"),
+            "mask": mask,
+            "n_pixels": int(mask.sum()),
+            "n_valid": len(pts),
+            "centroid_pixel": [int(np.median(rows)), int(np.median(cols))]
+            if len(rows)
+            else None,
+        }
+        if len(pts) < 10:
+            out["world_xyz"] = None
+            out["world_error"] = f"too few valid depth pixels ({len(pts)})"
+        else:
+            out["world_xyz"] = _median_xyz(pts)
+            top = pts[np.argsort(-pts[:, 2])][: max(10, len(pts) // 10)]
+            out["top_xyz"] = _median_xyz(top)
+        overlay = rgb.astype(np.float32)
+        overlay[mask] = 0.55 * overlay[mask] + 0.45 * np.array([255.0, 0.0, 0.0])
+        out["overlay_png_base64"] = _png_base64(overlay.round().astype(np.uint8))
+        return out
+
+    def _around(
+        self, xyz: np.ndarray, row: int, col: int, k: int
+    ) -> list[float] | None:
+        """Median world xyz of the valid pixels in a (2k+1)^2 window, or None (< 3 valid)."""
+        h, w = xyz.shape[:2]
+        win = xyz[
+            max(0, row - k) : min(h, row + k + 1), max(0, col - k) : min(w, col + k + 1)
+        ]
+        pts = win.reshape(-1, 3)
+        pts = pts[np.all(np.isfinite(pts), axis=1)]
+        return None if len(pts) < 3 else _median_xyz(pts)
+
+    def point(self, query: str, camera: str = "head") -> dict:
+        """Molmo points at what a short noun phrase names in the latest image of ``camera``:
+        found, pixel [row, col], world_xyz (median of a 7x7 window through the depth), Molmo's
+        answer; the tool also gets the image with the point marked."""
+        molmo = self._client("point", self._molmo_url, "--molmo")
+        rgb, xyz = self._world_map(camera)
+        res = molmo.call(
+            "molmo.ground",
+            kwargs={"image_base64": _png_base64(rgb), "query": str(query)},
+            timeout_s=120,
+        )
+        xy = res.get("point_xy")
+        if not xy:
+            return {
+                "found": False,
+                "camera": camera,
+                "answer": res.get("answer"),
+                "fallback": "Use segment or back_project.",
+            }
+        h, w = rgb.shape[:2]
+        col = int(np.clip(round(float(xy[0])), 0, w - 1))
+        row = int(np.clip(round(float(xy[1])), 0, h - 1))
+        marked = rgb.copy()
+        r = max(2, min(h, w) // 80)
+        marked[max(0, row - r) : row + r + 1, max(0, col - r) : col + r + 1] = (
+            255,
+            32,
+            32,
+        )
+        return {
+            "found": True,
+            "camera": camera,
+            "pixel": [row, col],
+            "world_xyz": self._around(xyz, row, col, 3),
+            "answer": res.get("answer"),
+            "overlay_png_base64": _png_base64(marked),
+        }
+
+    def back_project(
+        self,
+        row: int | None = None,
+        col: int | None = None,
+        camera: str = "head",
+        row_range=None,
+        col_range=None,
+    ) -> dict:
+        """World xyz of pixel (row, col) (row 0 = top) of the latest image of ``camera``, the
+        median of a 3x3 window through its metric depth; region mode (row_range and col_range,
+        [first, last)) returns the midpoint of the window's world x and y with its median z
+        (center_xyz), the median (median_xyz) and n_valid."""
+        _rgb, xyz = self._world_map(camera)
+        h, w = xyz.shape[:2]
+
+        def span(r):
+            return r if r is not None and len(r) == 2 and max(r) > min(r) else None
+
+        rows, cols = span(row_range), span(col_range)
+        if rows is not None or cols is not None:
+            if rows is None or cols is None:
+                raise ValueError("region mode needs both row_range and col_range")
+            r0, r1 = (int(np.clip(v, 0, h)) for v in (min(rows), max(rows)))
+            c0, c1 = (int(np.clip(v, 0, w)) for v in (min(cols), max(cols)))
+            pts = xyz[r0:r1, c0:c1].reshape(-1, 3)
+            pts = pts[np.all(np.isfinite(pts), axis=1)]
+            if len(pts) < 8:
+                raise ValueError(
+                    f"too few valid pixels in the region ({len(pts)}); widen the window"
+                )
+            return {
+                "camera": camera,
+                "mode": "region",
+                "center_xyz": [
+                    round(float((pts[:, 0].min() + pts[:, 0].max()) / 2), 4),
+                    round(float((pts[:, 1].min() + pts[:, 1].max()) / 2), 4),
+                    round(float(np.median(pts[:, 2])), 4),
+                ],
+                "median_xyz": _median_xyz(pts),
+                "n_valid": len(pts),
+            }
+        if row is None or col is None:
+            raise ValueError("give row and col, or row_range and col_range")
+        row, col = int(row), int(col)
+        if not (0 <= row < h and 0 <= col < w):
+            raise ValueError(f"pixel ({row}, {col}) out of bounds for {w}x{h}")
+        p = self._around(xyz, row, col, 1)
+        if p is None:
+            raise ValueError(f"no depth at ({row}, {col}); pick another pixel")
+        return {"camera": camera, "pixel": [row, col], "world_xyz": p}
 
     # ---- reads ----
 
@@ -726,6 +1134,9 @@ def main():
         help="exit when stdin closes (the parent died)",
     )
     add_perception_arguments(p, sam3=True)
+    p.add_argument(
+        "--molmo", default="", help="Molmo server URL: the `point` primitive"
+    )
     args = p.parse_args()
 
     # OmniGibson's macros read these at import: set them before anything imports it.
@@ -773,6 +1184,8 @@ def main():
                 "gpu_id": args.gpu_id,
             },
             max_primitive_steps=args.max_primitive_steps,
+            sam3=args.sam3,
+            molmo=args.molmo,
         )
         facade.reset()
         # --sam3 / --unidepth: env.detect, env.select_detection, env.reject_detection,
@@ -789,6 +1202,8 @@ def main():
                 "env.grasp_object",
                 "env.open_gripper",
                 "env.close_gripper",
+                "env.move_to_joints",
+                "env.move_along_trajectory",
             ),
         )
         print(

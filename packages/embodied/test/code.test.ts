@@ -4,7 +4,11 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { type Helper, type RunResult, renderHelpers, renderPrimitives } from "../src/modes/code/index.ts";
 import type { UnitsSpec } from "../src/modes/units/index.ts";
-import type { CodeApiPrimitive } from "../src/primitives/registry.ts";
+import { codeApiReply } from "./helpers/code-api.ts";
+
+// The toy robot's primitive manifest (./fixtures/manifests/toy.json).
+process.env.PI_EMBODIED_MANIFESTS = new URL("./fixtures/manifests/", import.meta.url).pathname;
+
 import { defineRobot, RESULT_ENTRY } from "../src/robot.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
@@ -61,53 +65,13 @@ function fakePi(flagValues: Record<string, unknown> = {}, hasUI = true, confirm 
 	return { pi, flags, tools, entries, emit, run, confirmed, stderr, active: () => active, stopped: () => shutdown };
 }
 
-/** The registry's declaration (services' primitives.py shape), as `code.api` answers it per tier. */
-const API: CodeApiPrimitive[] = [
-	{
-		name: "move_to",
-		method: "env.move_to",
-		doc: "Servo to xyz.",
-		params: {
-			xyz: { type: "vec3", description: "target [x, y, z] in metres", required: true },
-			gripper: { type: "number", description: "-1 opens, +1 closes", required: false },
-		},
-		mutating: true,
-		tiers: ["high"],
-	},
-	{
-		name: "get_state",
-		method: "env.get_state",
-		doc: "Proprioception.",
-		params: {},
-		mutating: false,
-		tiers: ["high", "low"],
-	},
-	{
-		name: "move_delta",
-		method: "env.move_delta",
-		doc: "Move by dxyz.",
-		params: { dxyz: { type: "vec3", description: "[dx, dy, dz]", required: true } },
-		mutating: true,
-		tiers: ["low"],
-	},
-	{
-		name: "ground_truth_poses",
-		method: "env.ground_truth_poses",
-		doc: "Poses.",
-		params: { names: { type: "array", description: "object names", required: false } },
-		mutating: false,
-		tiers: ["privileged"],
-	},
-];
 const HELPERS: Helper[] = [{ name: "normalize_vector", signature: "(v)", doc: "v / |v|" }];
-const inTier = (tier: string) =>
-	API.filter((p) => {
-		const tiers = p.tiers as readonly string[];
-		return tier === "privileged" ? tiers.includes("high") || tiers.includes("privileged") : tiers.includes(tier);
-	});
 
 /** A fake env server: `code.api` answers with API (+ helpers, + ground truth when privileged); `code.run` with `answer`. */
-function fakeEnv(answer: (kwargs: Record<string, unknown>) => Partial<RunResult> | Promise<Partial<RunResult>>) {
+function fakeEnv(
+	answer: (kwargs: Record<string, unknown>) => Partial<RunResult> | Promise<Partial<RunResult>>,
+	codeApi?: () => unknown,
+) {
 	const calls: { method: string; kwargs: Record<string, unknown>; signal?: AbortSignal }[] = [];
 	let interrupts = 0;
 	/** While set, `code.run` waits in the client's queue (behind another call) until it resolves. */
@@ -132,8 +96,7 @@ function fakeEnv(answer: (kwargs: Record<string, unknown>) => Partial<RunResult>
 			}
 			onSent?.();
 			calls.push({ method, kwargs, signal });
-			if (method === "code.api")
-				return { tier: kwargs.tier, primitives: inTier(String(kwargs.tier)), digest: "d".repeat(64) } as T;
+			if (method === "code.api") return (codeApi?.() ?? codeApiReply("toy", kwargs.tier as string | undefined)) as T;
 			if (method === "code.helpers") return HELPERS as T;
 			if (method === "code.run")
 				return {
@@ -180,13 +143,16 @@ async function toyRobot(
 		ended?: boolean;
 		/** `observe` fails on an aborted signal, as a robot's image calls do. */
 		observeNeedsSignal?: boolean;
+		/** Override the server's code.api reply. */
+		codeApi?: () => unknown;
 	} = {},
 ) {
 	const f = fakePi(flags, o.hasUI ?? true, o.confirm);
-	const env = fakeEnv(o.answer ?? (() => ({})));
+	const env = fakeEnv(o.answer ?? (() => ({})), o.codeApi);
 	const observed: RunResult[] = [];
 	defineRobot(f.pi, {
 		name: "toy",
+		manifest: "toy",
 		task: [],
 		keepImages: 2,
 		start: async () => ["move_to", "segment"],
@@ -261,11 +227,11 @@ test("--code=both adds run_code to the robot's tools and appends the code sectio
 	);
 	const prompt = (await both.emit("before_agent_start")).systemPrompt as string;
 	assert.match(prompt, /^ROBOT PROMPT\n\n# Code mode\n/);
-	assert.match(prompt, /PRIMITIVES \(low tier\):\ndef get_state\(\):/);
-	assert.match(prompt, /def move_delta\(dxyz: vec3\):/);
+	assert.match(prompt, /PRIMITIVES \(low tier\):\ndef move_delta\(dxyz: vec3\):/);
+	assert.match(prompt, / {4}Example:\n {8}move_delta\(\[0, 0, 0\.05\]\)/, "the low tier shows the examples");
 	assert.doesNotMatch(prompt, /def move_to/);
 	assert.match(prompt, /HELPERS .*\ndef normalize_vector\(v\):\n {4}v \/ \|v\|/);
-	assert.match(both.tools.get("run_code").description, /low tier.*get_state, move_delta and the numpy helpers/);
+	assert.match(both.tools.get("run_code").description, /low tier.*move_delta and the numpy helpers/);
 	assert.doesNotMatch(prompt, /one `run_code` call per reply/);
 	const off = await toyRobot({});
 	assert.deepEqual(off.active(), ["move_to", "segment"]);
@@ -378,6 +344,7 @@ test("--privileged asks for the ground-truth primitive and the prompt says so", 
 	const env = fakeEnv(() => ({}));
 	defineRobot(f.pi, {
 		name: "sim",
+		manifest: "toy",
 		task: [],
 		keepImages: 1,
 		start: async () => ["move"],
@@ -505,13 +472,13 @@ test("renderPrimitives and renderHelpers lay each entry out as a def with its do
 					b: { type: "string", description: "", required: false },
 				},
 				mutating: true,
-				tiers: ["high"],
+				tier: "high",
 			},
 		]),
 		"def f(a: integer, b: string = None):\n    Does a.\n\n    Args:\n        a (integer): the a\n        b (string, optional):\n\n    Moves the robot.",
 	);
 	assert.equal(
-		renderPrimitives([{ name: "g", method: "env.g", doc: "G.", params: {}, mutating: false, tiers: ["low"] }]),
+		renderPrimitives([{ name: "g", method: "env.g", doc: "G.", params: {}, mutating: false, tier: "low" }]),
 		"def g():\n    G.",
 	);
 	assert.equal(
@@ -562,26 +529,31 @@ test("after an abort the run's effects are absorbed and the result is clean, wit
 	assert.match(r.content[0].text, /"cancelled": true/);
 });
 
-test("S4 (--code-api=low-noexamples): the low tier's examples render as a section, and the S4 tier starts", async () => {
-	assert.equal(
-		renderPrimitives([
-			{
-				name: "m",
-				method: "env.m",
-				doc: "Moves.",
-				params: {},
-				mutating: false,
-				tiers: ["low"],
-				example: "m()\nprint(1)",
-			},
-		]),
-		"def m():\n    Moves.\n\n    Example:\n        m()\n        print(1)",
-	);
+test("S4 (--code-api=low-noexamples): the manifest's examples show in the low tier and not in S4", async () => {
+	const s3 = await toyRobot({ code: true, "code-api": "low" });
+	assert.match((await s3.emit("before_agent_start")).systemPrompt, /Example:\n {8}move_delta/);
 	const s4 = await toyRobot({ code: true, "code-api": "low-noexamples" });
 	assert.deepEqual(s4.active(), ["run_code", "finish"]);
 	assert.deepEqual(s4.env.calls[0], { method: "code.api", kwargs: { tier: "low-noexamples" }, signal: undefined });
+	const prompt = (await s4.emit("before_agent_start")).systemPrompt as string;
+	assert.match(prompt, /def move_delta\(dxyz: vec3\):\n {4}Move by dxyz\./);
+	assert.doesNotMatch(prompt, /Example:/);
 	const r = await result(s4);
 	assert.equal(r.code_api, "low-noexamples");
+});
+
+test("code mode refuses a server with another manifest, or one that disagrees on what is available", async () => {
+	const other = await toyRobot(
+		{ code: true },
+		{ hasUI: false, codeApi: () => ({ ...codeApiReply("toy", "high"), manifest_digest: "0".repeat(64) }) },
+	);
+	assert.deepEqual(other.active(), []);
+	assert.match(String((await result(other)).error), /runs primitive manifest 000000000000/);
+	const disagree = await toyRobot(
+		{ code: true },
+		{ hasUI: false, codeApi: () => ({ ...codeApiReply("toy", "high"), available: ["move_to"] }) },
+	);
+	assert.match(String((await result(disagree)).error), /disagree on the high primitives/);
 });
 
 test("--code-oracle needs pure code mode and a simulator", async () => {

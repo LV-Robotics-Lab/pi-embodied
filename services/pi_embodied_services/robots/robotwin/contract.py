@@ -121,7 +121,7 @@ def env_runtime_contract(
             },
             "get_camera_meta": True,
             "get_task_language": True,
-            "plan_arm_path": True,
+            "motion": ["move_to", "rotate_wrist", "set_gripper", "release"],
         },
     }
 

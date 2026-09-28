@@ -1,0 +1,507 @@
+{
+	"robot": "robodojo",
+	"internal": [
+		"env.set_recording"
+	],
+	"primitives": [
+		{
+			"use": "sim/get_task_language"
+		},
+		{
+			"name": "view_env_state",
+			"side": "ts",
+			"tier": "low",
+			"doc": {
+				"tool": "Current state with the head, left wrist and right wrist images."
+			},
+			"result": "motion"
+		},
+		{
+			"name": "state",
+			"side": "code",
+			"method": "env.state",
+			"tier": "low",
+			"doc": {
+				"code": "Both arms' end-effector poses (env frame), joints and grippers; success and step count (the partial-credit score is the evaluator's).\n\nExample:\n    st = state()\n    print(st[\"arms\"][\"left\"][\"tcp_pos\"], st[\"arms\"][\"right\"][\"gripper\"], st[\"env_steps\"])"
+			}
+		},
+		{
+			"name": "move_to",
+			"side": "env",
+			"method": "env.move_to",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"arm": {
+					"type": "enum",
+					"values": "{{arms}}",
+					"required": true,
+					"description": "Which arm"
+				},
+				"xyz": {
+					"type": "vec3",
+					"required": true,
+					"description": "Env-frame [x, y, z] in metres"
+				},
+				"quat_wxyz": {
+					"type": "quat",
+					"description": "[qw, qx, qy, qz] (default: keep the orientation)"
+				},
+				"gripper": {
+					"type": "number",
+					"minimum": 0,
+					"maximum": 1,
+					"description": "Gripper command first: 1 open .. 0 closed"
+				},
+				"return_frames": {
+					"type": "boolean",
+					"description": "Also return head frames along the motion",
+					"modes": [
+						"code"
+					]
+				}
+			},
+			"doc": {
+				"tool": "Move one arm's gripper in a straight line to an env-frame [x, y, z] in metres (+x toward the robot's right, +y away from the robot, +z up; the table top is z = 0.74; at most {{max_move}} m from where it is), optionally with a [qw, qx, qy, qz] orientation (default: keep it), after an optional gripper command. The other arm holds still. Stops at the first unreachable waypoint (`stopped`). Returns the new state and images.",
+				"code": "Move one arm's end effector in a straight line to an env-frame xyz (m, at most 0.5 m away) and optional wxyz orientation; the other arm holds.\n\nExample:\n    r = move_to(\"left\", [-0.3, -0.2, 0.9], gripper=1)  # open, then go\n    print(r[\"final_error_m\"], r.get(\"stopped\"))"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "move_delta",
+			"side": "env",
+			"method": "env.move_delta",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"arm": {
+					"type": "enum",
+					"values": "{{arms}}",
+					"required": true,
+					"description": "Which arm"
+				},
+				"delta_xyz": {
+					"type": "vec3",
+					"required": true,
+					"description": "Env-frame [dx, dy, dz] in metres"
+				},
+				"gripper": {
+					"type": "number",
+					"minimum": 0,
+					"maximum": 1,
+					"description": "Gripper command first: 1 open .. 0 closed"
+				},
+				"return_frames": {
+					"type": "boolean",
+					"description": "Also return head frames along the motion",
+					"modes": [
+						"code"
+					]
+				}
+			},
+			"doc": {
+				"tool": "Translate one arm's gripper by an env-frame [dx, dy, dz] in metres (at most {{max_move}} m per call), orientation held, after an optional gripper command. Returns the new state and images.",
+				"code": "Translate one arm's end effector by an env-frame delta (m, at most 0.5 per call), orientation held.\n\nExample:\n    r = move_delta(\"right\", [0, 0, -0.05])  # down 5 cm\n    print(r[\"moved_m\"], r[\"arms\"][\"right\"][\"tcp_pos\"])"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "rotate_delta",
+			"side": "env",
+			"method": "env.rotate_delta",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"arm": {
+					"type": "enum",
+					"values": "{{arms}}",
+					"required": true,
+					"description": "Which arm"
+				},
+				"yaw": {
+					"type": "number",
+					"required": true,
+					"description": "rad about env +z (+ counter-clockwise seen from above)"
+				},
+				"return_frames": {
+					"type": "boolean",
+					"description": "Also return head frames along the motion",
+					"modes": [
+						"code"
+					]
+				}
+			},
+			"doc": {
+				"tool": "Turn one arm's gripper by `yaw` radians about the vertical through it (+ counter-clockwise seen from above; at most {{max_rotate}} rad per call), holding its position. Returns the new state and images.",
+				"code": "Turn one arm's gripper by a yaw (rad, + counter-clockwise seen from above; clipped to 0.8) about the vertical through it.\n\nExample:\n    r = rotate_delta(\"left\", 0.3)\n    print(r[\"yaw\"], r.get(\"clipped\"))"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "set_gripper",
+			"side": "env",
+			"method": "env.set_gripper",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"arm": {
+					"type": "enum",
+					"values": "{{arms}}",
+					"required": true,
+					"description": "Which arm"
+				},
+				"value": {
+					"type": "number",
+					"required": true,
+					"minimum": 0,
+					"maximum": 1,
+					"description": "1 open .. 0 closed"
+				},
+				"return_frames": {
+					"type": "boolean",
+					"description": "Also return head frames along the motion",
+					"modes": [
+						"code"
+					]
+				}
+			},
+			"doc": {
+				"tool": "Move one gripper to `value`: 1 fully open .. 0 fully closed. Returns the new state and images.",
+				"code": "Move one gripper to a value, 1 open .. 0 closed.\n\nExample:\n    set_gripper(\"right\", 0.0)  # close the right gripper"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "go_home",
+			"side": "env",
+			"method": "env.go_home",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"return_frames": {
+					"type": "boolean",
+					"description": "Also return head frames along the motion",
+					"modes": [
+						"code"
+					]
+				}
+			},
+			"doc": {
+				"tool": "Drive both arms back to their start pose (grippers unchanged). Most tasks count as done only once both arms are back home with the grippers open.",
+				"code": "Drive both arms back to their start joints (most tasks require it for success).\n\nExample:\n    r = go_home()\n    print(r[\"success\"], r[\"ended\"])"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "back_project",
+			"side": "env",
+			"method": "env.back_project",
+			"tier": "low",
+			"params": {
+				"pixels": {
+					"type": "array",
+					"required": true,
+					"items": {
+						"type": "array",
+						"items": "number",
+						"minItems": 2,
+						"maxItems": 2
+					},
+					"minItems": 1,
+					"maxItems": 32,
+					"description": "[[col, row], ...] of the latest head image"
+				},
+				"camera_name": {
+					"type": "enum",
+					"values": [
+						"head"
+					],
+					"description": "Only the head camera has depth (default head)",
+					"modes": [
+						"code"
+					]
+				}
+			},
+			"doc": {
+				"tool": "Env-frame [x, y, z] (m) of [col, row] pixels of the latest head image, from its depth. Read-only.",
+				"code": "Env-frame xyz of [col, row] pixels of the latest head image, from its metric depth. Returns {frame, xyz: [[x, y, z] or None, ...]}.\n\nExample:\n    r = back_project([[320, 240]])\n    print(r[\"xyz\"][0])"
+			},
+			"result": "read"
+		},
+		{
+			"name": "solve_ik",
+			"side": "code",
+			"method": "env.solve_ik",
+			"tier": "low",
+			"params": {
+				"position": {
+					"type": "vec3",
+					"required": true,
+					"description": "Env-frame end-effector position, m"
+				},
+				"quaternion_wxyz": {
+					"type": "quat",
+					"required": true,
+					"description": "Orientation, wxyz"
+				},
+				"arm": {
+					"type": "enum",
+					"values": "{{arms}}",
+					"required": true,
+					"description": "Which arm"
+				}
+			},
+			"doc": {
+				"code": "Solve inverse kinematics for one arm's end effector (RoboDojo's cuRobo IK, from the arm's current joints); raises when there is no solution.\n\nReturns:\n    joints: 6 joint angles, rad.\n\nExample:\n    q = solve_ik([-0.3, -0.2, 0.9], [0, 1, 0, 0], \"left\")\n    move_to_joints(q, \"left\")"
+			}
+		},
+		{
+			"name": "move_to_joints",
+			"side": "code",
+			"method": "env.move_to_joints",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"joints": {
+					"type": "array",
+					"required": true,
+					"items": "number",
+					"minItems": 6,
+					"maxItems": 6,
+					"description": "6 joint angles, rad"
+				},
+				"arm": {
+					"type": "enum",
+					"values": "{{arms}}",
+					"required": true,
+					"description": "Which arm"
+				},
+				"gripper": {
+					"type": "number",
+					"minimum": 0,
+					"maximum": 1,
+					"description": "Gripper command first: 1 open .. 0 closed"
+				},
+				"return_frames": {
+					"type": "boolean",
+					"description": "Also return head frames along the motion",
+					"modes": [
+						"code"
+					]
+				}
+			},
+			"doc": {
+				"code": "Move one arm to a joint configuration, interpolating in joint space (at most 0.05 rad per joint per control step); the other arm holds. Returns the motion report with final_joint_error_rad.\n\nExample:\n    r = move_to_joints(solve_ik([-0.3, -0.2, 0.9], [0, 1, 0, 0], \"left\"), \"left\")\n    print(r[\"final_joint_error_rad\"], r[\"arms\"][\"left\"][\"tcp_pos\"])"
+			}
+		},
+		{
+			"name": "traj_plan",
+			"side": "code",
+			"method": "env.traj_plan",
+			"tier": "low",
+			"params": {
+				"start_pose_wxyz_xyz": {
+					"type": "array",
+					"required": true,
+					"items": "number",
+					"minItems": 7,
+					"maxItems": 7,
+					"description": "Start pose: wxyz then xyz; the arm's current end-effector pose (within 1 cm / 0.05 rad)"
+				},
+				"end_pose_wxyz_xyz": {
+					"type": "array",
+					"required": true,
+					"items": "number",
+					"minItems": 7,
+					"maxItems": 7,
+					"description": "End pose: wxyz then xyz"
+				},
+				"arm": {
+					"type": "enum",
+					"values": "{{arms}}",
+					"required": true,
+					"description": "Which arm"
+				}
+			},
+			"doc": {
+				"code": "Plan joint waypoints [N, 6] (N <= 100) from the arm's current pose to another (RoboDojo's cuRobo motion planner; without one, IK along a straight line). Nothing moves; raises when no path is found.\n\nExample:\n    st = state()[\"arms\"][\"left\"]\n    start = list(st[\"eef_quat_wxyz\"]) + list(st[\"eef_pos\"])\n    traj = traj_plan(start, [0, 1, 0, 0, -0.3, -0.2, 0.9], \"left\")\n    move_along_trajectory(traj, \"left\")"
+			}
+		},
+		{
+			"name": "move_along_trajectory",
+			"side": "code",
+			"method": "env.move_along_trajectory",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"trajectory": {
+					"type": "array",
+					"required": true,
+					"items": {
+						"type": "array",
+						"items": "number",
+						"minItems": 6,
+						"maxItems": 6
+					},
+					"minItems": 1,
+					"maxItems": 100,
+					"description": "Joint waypoints [N, 6], rad"
+				},
+				"arm": {
+					"type": "enum",
+					"values": "{{arms}}",
+					"required": true,
+					"description": "Which arm"
+				},
+				"gripper": {
+					"type": "number",
+					"minimum": 0,
+					"maximum": 1,
+					"description": "Gripper command first: 1 open .. 0 closed"
+				},
+				"return_frames": {
+					"type": "boolean",
+					"description": "Also return head frames along the motion",
+					"modes": [
+						"code"
+					]
+				}
+			},
+			"doc": {
+				"code": "Move one arm through joint-space waypoints in order (a waypoint farther than 0.05 rad per joint is interpolated); stops on stop or at the episode's end.\n\nExample:\n    r = move_along_trajectory(traj, \"left\")\n    print(r[\"executed\"], r[\"final_joint_error_rad\"])"
+			}
+		},
+		{
+			"name": "render_camera",
+			"side": "code",
+			"method": "env.render_camera",
+			"tier": "raw",
+			"params": {
+				"camera_name": {
+					"type": "enum",
+					"values": [
+						"head",
+						"left_wrist",
+						"right_wrist"
+					],
+					"description": "Default head"
+				},
+				"depth": {
+					"type": "boolean",
+					"description": "The head's [rgb, depth_m] (the wrists have no depth)"
+				}
+			},
+			"doc": {
+				"code": "The latest frame of 'head', 'left_wrist' or 'right_wrist'.\n\nExample:\n    rgb = render_camera(\"head\")  # uint8 [H, W, 3]"
+			}
+		},
+		{
+			"name": "get_camera_meta",
+			"side": "code",
+			"method": "env.get_camera_meta",
+			"tier": "low",
+			"params": {
+				"camera_name": {
+					"type": "enum",
+					"values": [
+						"head"
+					],
+					"description": "Only the head camera is calibrated"
+				}
+			},
+			"doc": {
+				"code": "The head camera's OpenCV intrinsics and camera-to-env extrinsic.\n\nExample:\n    meta = get_camera_meta(\"head\")\n    K, T = meta[\"intrinsic_K\"], meta[\"extrinsic_cam2world\"]"
+			}
+		},
+		{
+			"name": "get_obs",
+			"side": "code",
+			"method": "env.get_obs",
+			"tier": "raw",
+			"params": {
+				"depth": {
+					"type": "boolean",
+					"description": "Include metric depth"
+				}
+			},
+			"doc": {
+				"code": "RoboDojo's native observation dict (vision, state, action, instruction).\n\nExample:\n    obs = get_obs()\n    print(obs[\"state\"].keys(), obs[\"instruction\"])"
+			}
+		},
+		{
+			"name": "step",
+			"side": "code",
+			"method": "env.step",
+			"tier": "raw",
+			"mutating": true,
+			"params": {
+				"action": {
+					"type": "object",
+					"required": true,
+					"description": "RoboDojo action dict"
+				}
+			},
+			"doc": {
+				"code": "One native RoboDojo action dict (left/right_arm_joint_state 6 + left/right_ee_joint_state 1, or left/right_ee_pose 7) = one 25 Hz control step.\n\nExample:\n    q = state()[\"arms\"][\"left\"][\"joints_command\"]\n    r = step({\"left_arm_joint_state\": list(q), \"left_ee_joint_state\": [0.0]})  # close left\n    print(r[\"terminated\"], r[\"state\"][\"arms\"][\"left\"][\"gripper\"])"
+			}
+		},
+		{
+			"name": "chunk_step",
+			"side": "code",
+			"method": "env.chunk_step",
+			"tier": "raw",
+			"mutating": true,
+			"params": {
+				"actions": {
+					"type": "array",
+					"required": true,
+					"items": "object",
+					"description": "Action dicts, in order"
+				},
+				"return_all_frames": {
+					"type": "boolean",
+					"description": "A head frame per action"
+				}
+			},
+			"doc": {
+				"code": "Native RoboDojo action dicts in order, in one call.\n\nExample:\n    r = chunk_step([{\"right_ee_joint_state\": [1.0]}] * 8)  # open right, 8 control steps\n    print(r[\"info\"][\"executed\"], r[\"terminated\"])"
+			}
+		},
+		{
+			"use": "sim/ground_truth_poses"
+		},
+		{
+			"use": "perception/detect"
+		},
+		{
+			"use": "perception/select_detection"
+		},
+		{
+			"use": "perception/reject_detection"
+		},
+		{
+			"use": "perception/enhance_depth"
+		},
+		{
+			"use": "modules/finish"
+		},
+		{
+			"use": "modules/act"
+		},
+		{
+			"use": "modules/plan"
+		},
+		{
+			"use": "modules/point"
+		},
+		{
+			"use": "modules/reset"
+		},
+		{
+			"use": "modules/run_code"
+		},
+		{
+			"use": "modules/xpolicy_act"
+		}
+	]
+}

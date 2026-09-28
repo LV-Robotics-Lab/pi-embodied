@@ -739,115 +739,6 @@ class GraspPlanner:
             {"env.resolve_grasp", "env.attachment_frames", "env.grasp_capabilities"}
         )
 
-    def primitives(self) -> tuple[Any, ...]:
-        """The planner's entries for the env server's primitive registry (``code.api``,
-        ``components/code_api.py``), all in the high tier and none moving the robot."""
-        from pi_embodied_services.components.code_api import Param, Primitive
-
-        arm = {
-            "arm": Param("string", "which arm's calibration (two-arm robots)", False)
-        }
-        return (
-            Primitive(
-                "plan_grasp",
-                "env.plan_grasp",
-                "Grasp candidates for one object of the current observation, world frame, best first; ids (g3) expire when the robot moves.",
-                {
-                    "object": Param(
-                        "string", "SAM3 text prompt of the object (or mask_id)", False
-                    ),
-                    "mask_id": Param(
-                        "string", "a mask id of this observation (or object)", False
-                    ),
-                    "camera": Param(
-                        "string", "RGB-D camera (default the first configured)", False
-                    ),
-                    "backend": Param(
-                        "string",
-                        "contact_graspnet | graspgenx | anygrasp | graspnet1b",
-                        False,
-                    ),
-                    **arm,
-                    "max_candidates": Param("integer", "default 10", False),
-                },
-            ),
-            Primitive(
-                "next_grasp",
-                "env.next_grasp",
-                "Greedy candidate policy: reject a grasp id after a structured failure and activate the next rank of its plan.",
-                {
-                    "grasp_id": Param("string", "the failed id"),
-                    "reason": Param("string", "why it failed", False),
-                },
-            ),
-            Primitive(
-                "resolve_grasp",
-                "env.resolve_grasp",
-                "The EEF pose to command for a grasp or place id; refused when the id is from an earlier observation.",
-                {
-                    "grasp_id": Param("string", "a g or p id"),
-                    "standoff": Param(
-                        "number", "m backed off along the approach", False
-                    ),
-                },
-            ),
-            Primitive(
-                "claim_waypoints",
-                "env.claim_waypoints",
-                "Claim one grasp or place id for execution: its whole path from that one candidate (pre_grasp, grasp, lift; or pre_place, place, retreat) as world positions with the orientation and the gripper per step. Motions after it may use these coordinates though they expire the id; a claimed grasp is remembered as held for plan_place.",
-                {
-                    "grasp_id": Param(
-                        "string", "a g or p id of the current observation"
-                    ),
-                    "standoff": Param(
-                        "number",
-                        "m backed off along the approach (default 0.10)",
-                        False,
-                    ),
-                    "lift": Param(
-                        "number", "grasp: m lifted straight up (default 0.10)", False
-                    ),
-                },
-            ),
-            Primitive(
-                "plan_place",
-                "env.plan_place",
-                "AnyPlace: place poses (p ids) for the held object on a region. Before the grasp: region mask and grasp from one observation; after executing it: the executed grasp's id, the region from the current observation.",
-                {
-                    "region_mask_id": Param(
-                        "string", "mask id of the placement region"
-                    ),
-                    "grasp_id": Param(
-                        "string",
-                        "the grasp the object is held with (a current g id, or the executed one)",
-                    ),
-                    "object_mask_id": Param(
-                        "string",
-                        "mask id of the object (default: the mask the grasp was planned on)",
-                        False,
-                    ),
-                    "max_candidates": Param("integer", "default 5", False),
-                    "keep_tilt": Param(
-                        "boolean",
-                        "keep AnyPlace's full rotation (a tilted insertion) instead of only its turn about the vertical",
-                        False,
-                    ),
-                },
-            ),
-            Primitive(
-                "segment_mask",
-                "env.segment_mask",
-                "Segment an object (SAM3 text) in the current observation and register its mask under a short id (d2).",
-                {
-                    "object": Param("string", "SAM3 text prompt"),
-                    "camera": Param(
-                        "string", "camera (default the first configured)", False
-                    ),
-                    "min_score": Param("number", "default 0.2", False),
-                },
-            ),
-        )
-
     # -- snapshots -------------------------------------------------------------
 
     @property
@@ -1182,8 +1073,12 @@ class GraspPlanner:
         backend: str | None = None,
         arm: str | None = None,
         max_candidates: int | None = None,
+        next_after: str | None = None,
+        reason: str = "",
     ) -> dict:
         """Predict grasps for one object in the current observation, world frame, best first.
+        With ``next_after`` (a grasp id that failed before the robot moved): reject it and return
+        the next rank of its plan without planning again (``next_grasp``).
 
         Args:
             object: text prompt of the object to grasp (segmented with SAM3), or
@@ -1206,6 +1101,10 @@ class GraspPlanner:
         Example:
             >>> g = plan_grasp("black bowl"); pose = resolve_grasp(g["active"], standoff=0.1)
         """
+        if next_after:
+            return self.next_grasp(str(next_after), reason)
+        if not (object or "").strip() and not mask_id:
+            raise ValueError("give object (text) or mask_id")
         name, client = self._backend(backend)
         self._fresh_call()
         snap = self._snapshot(camera)
@@ -1514,11 +1413,13 @@ class GraspPlanner:
 
     def plan_place(
         self,
-        region_mask_id: str,
-        grasp_id: str,
+        region_mask_id: str | None = None,
+        grasp_id: str = "",
         object_mask_id: str | None = None,
         max_candidates: int | None = None,
         keep_tilt: bool = False,
+        region: str | None = None,
+        camera: str | None = None,
     ) -> dict:
         """Where to hold the grasped object so it comes to rest on the placement region.
 
@@ -1554,6 +1455,18 @@ class GraspPlanner:
         Example:
             >>> p = plan_place(region["id"], "g1"); claim_waypoints(p["active"])
         """
+        if not grasp_id:
+            raise ValueError("plan_place needs grasp_id")
+        if not region_mask_id:
+            text = (region or "").strip()
+            if not text:
+                raise ValueError("give region (text) or region_mask_id")
+            seg = self.segment_mask(text, camera=camera)
+            if not seg.get("found"):
+                raise ValueError(
+                    f"could not segment region '{text}': {seg.get('reason', 'no mask')}"
+                )
+            region_mask_id = str(seg["id"])
         if self._anyplace is None:
             raise GraspError(
                 "plan_place needs an AnyPlace server (start the env server with --anyplace)"
@@ -1968,14 +1881,13 @@ def install_grasp_planner(
     cameras: list[str],
     eef_pose: Callable[[str | None], tuple[Any, Any] | None],
     perception: Any | None = None,
-    primitives: tuple[Any, ...] = (),
     wrist_camera: str | None = None,
     mutating: tuple[str, ...] = MOTION_METHODS,
 ) -> GraspPlanner | None:
     """Install a planner for parsed :func:`add_grasp_arguments` on a constructed facade
     (nothing without a grasp or place URL): the primitives, their ids sharing ``perception``'s
-    book and epoch when there is one (``env.detect`` ids are accepted as ``mask_id``), and
-    ``code.api`` re-registered as the robot's ``primitives`` plus the planner's."""
+    book and epoch when there is one (``env.detect`` ids are accepted as ``mask_id``). Their
+    ``code.api`` entries are the robot's manifest's (``common/grasp.json``)."""
     planner = GraspPlanner.from_args(
         view,
         cameras=cameras,
@@ -1989,9 +1901,6 @@ def install_grasp_planner(
     if planner is None:
         return None
     planner.install(facade, mutating=mutating)
-    from pi_embodied_services.components.code_api import register_code_api
-
-    register_code_api(facade, tuple(primitives) + planner.primitives())
     return planner
 
 

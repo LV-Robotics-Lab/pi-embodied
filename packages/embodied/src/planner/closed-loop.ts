@@ -34,6 +34,9 @@ export const OBSERVE = ["view_env_state", "render"] as const;
 
 /** Robot tools that never move the robot: observation, perception, planning, checks, metadata, and halting an arm. */
 export const NON_MOTION: ReadonlySet<string> = new Set([
+	"get_camera_meta",
+	"get_object_pose",
+	"sample_grasp_pose",
 	...OBSERVE,
 	"get_robot_position",
 	"view_camera_meta",

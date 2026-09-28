@@ -141,7 +141,7 @@ const ROBOTS: {
 		robot: "ur5e",
 		files: ["ur5e/SYSTEM.md"],
 		load: ur5e,
-		core: ["view_env_state", "move_delta", "gripper", "finish"],
+		core: ["view_env_state", "move_delta", "close_gripper", "finish"],
 	},
 ];
 

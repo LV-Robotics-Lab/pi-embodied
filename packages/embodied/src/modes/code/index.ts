@@ -50,11 +50,18 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Type } from "typebox";
 import type { RpcClient } from "../../infra/rpc.ts";
 import { template } from "../../planner/context-version.ts";
-import { type CodeApi, type CodeApiPrimitive, type CodeApiTier, fetchCodeApi } from "../../primitives/registry.ts";
+import type { Manifest, Vars } from "../../primitives/manifest.ts";
+import {
+	type CodeApi,
+	type CodeApiPrimitive,
+	type CodeApiTier,
+	codePrimitives,
+	fetchCodeApi,
+} from "../../primitives/registry.ts";
 import { latestTurn, type ToolRegistrar } from "../units/index.ts";
 
 /** `--code-api` values (CaP-X's S2, S3, S4); `--privileged` runs the registry's privileged tier (S1) instead. */
-export const TIERS = ["high", "low", "low-noexamples"] as const;
+export const TIERS = ["high", "low", "low-noexamples", "raw"] as const;
 /** The session entry of an oracle run (`--code-oracle`). */
 export const ORACLE_ENTRY = "code_oracle";
 export type Tier = (typeof TIERS)[number];
@@ -153,17 +160,6 @@ export function renderPrimitives(primitives: CodeApiPrimitive[]): string {
 				p.doc.trim(),
 				...(args.length ? ["", "Args:", ...args] : []),
 				...(p.mutating ? ["", "Moves the robot."] : []),
-				// The registry sends none in the S4 tier (low-noexamples).
-				...(p.example?.trim()
-					? [
-							"",
-							"Example:",
-							...p.example
-								.trim()
-								.split("\n")
-								.map((l) => `    ${l}`),
-						]
-					: []),
 			];
 			return `def ${p.name}(${params}):\n${indent(body.join("\n"))}`;
 		})
@@ -190,6 +186,12 @@ export function code(
 		ready?: () => boolean;
 		/** An oracle ran instead of the model: the episode ran and is over. */
 		oracleRan?: () => void;
+		/** The robot's primitive manifest: the prompt is rendered from it, and the server must run the same one. */
+		manifest?: Manifest;
+		/** Whether the run has a capability a manifest entry requires (the robot's view; the server must agree). */
+		has?: (capability: string) => boolean;
+		/** The robot's manifest variables (`{{name}}` in the code docs). */
+		vars?: () => Vars;
 	} = { unitsOn: () => false, privileged: () => false },
 ) {
 	pi.registerFlag("code", {
@@ -248,7 +250,11 @@ export function code(
 	};
 	/** The registry tier this episode runs: --privileged wins over --code-api. */
 	const tier = (): CodeApiTier | string =>
-		base.privileged() ? "privileged" : String(pi.getFlag("code-api") ?? "high");
+		base.privileged()
+			? String(pi.getFlag("code-api") ?? "high") === "high"
+				? "privileged"
+				: `${String(pi.getFlag("code-api"))}+privileged`
+			: String(pi.getFlag("code-api") ?? "high");
 	const defaultTimeout = spec.timeoutS ?? DEFAULT_TIMEOUT_S;
 	const timeoutCap = () => Number(pi.getFlag("code-timeout")) || defaultTimeout;
 	const maxCalls = () => Math.max(1, Math.floor(Number(pi.getFlag("code-max-calls")) || DEFAULT_MAX_CALLS));
@@ -267,11 +273,13 @@ export function code(
 
 	/** The registry's declaration for this session's tier and the helpers (fetched at `start`). */
 	let api: CodeApi | undefined;
+	/** The tier's primitives as the prompt shows them (from the manifest, checked against the server). */
+	let primitives: CodeApiPrimitive[] = [];
 	let helpers: Helper[] = [];
 	let registered = "";
 
 	function registerTool() {
-		const names = (api?.primitives ?? []).map((p) => p.name);
+		const names = primitives.map((p) => p.name);
 		const description = `Execute a Python program on the robot (code mode, ${tier()} tier). It may call the primitives ${names.join(", ")}${helpersOn() ? " and the numpy helpers" : ""}; assign RESULT to report a value. Returns stdout, stderr, the traceback, RESULT, the primitive call log and the new camera images and state. Limits: ${timeoutCap()} s, ${maxCalls()} primitive calls, ${maxMove()} m of translation per call.`;
 		if (description === registered) return;
 		registered = description;
@@ -460,6 +468,21 @@ export function code(
 			const client = spec.rpc();
 			api = await fetchCodeApi(client as RpcClient, tier() as CodeApiTier);
 			if (!api) throw new Error("code mode needs an env server with a primitive registry (code.api)");
+			const m = base.manifest;
+			if (!m) throw new Error("code mode needs the robot's primitive manifest");
+			if (api.manifest_digest !== m.digest)
+				throw new Error(
+					`the env server runs primitive manifest ${api.manifest_digest.slice(0, 12)}, this pi ${m.digest.slice(0, 12)}: start the server from this checkout`,
+				);
+			primitives = codePrimitives(m, tier() as CodeApiTier, base.has ?? (() => false), base.vars?.() ?? {});
+			const mine = primitives.map((p) => p.name).sort();
+			const theirs = [...api.available].sort();
+			if (JSON.stringify(mine) !== JSON.stringify(theirs))
+				throw new Error(
+					`pi and the env server disagree on the ${tier()} primitives: pi has ${mine.join(", ") || "none"}, the server ${theirs.join(", ") || "none"}`,
+				);
+			if (!primitives.length)
+				throw new Error(`this robot has no ${tier()}-tier code primitives; pick another --code-api`);
 			helpers = helpersOn() ? await client.call<Helper[]>("code.helpers", {}, 30_000) : [];
 			registerTool();
 			return ["run_code"];
@@ -481,7 +504,7 @@ export function code(
 				timeout: String(timeoutCap()),
 				max_calls: String(maxCalls()),
 				max_move: String(maxMove()),
-				api: renderPrimitives(api?.primitives ?? []) || "(none)",
+				api: renderPrimitives(primitives) || "(none)",
 				helpers: renderHelpers(helpers),
 			};
 			return p.replace(/\{\{(\w+)\}\}/g, (match, k: string) => vars[k] ?? match).trim();

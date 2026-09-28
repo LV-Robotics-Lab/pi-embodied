@@ -12,7 +12,9 @@
  * tools are OmniGibson's semantic primitives as CaP-X's R1ProControlApi exposed them
  * (navigate_to_pose, move_hand, grasp_object, open/close_gripper, get_robot_position), the
  * perception tools (segment via SAM3, point via Molmo, back_project through the cameras' metric
- * depth) and view_env_state; every motion result carries the head and both wrist images. Success is
+ * depth; the env server runs them) and view_env_state; every motion result carries the head and
+ * both wrist images. Schemas and descriptions: ../../primitives/manifests/behavior.json, which the
+ * env server's code.api reads too. Success is
  * the BDDL task's `success`, and `q_score` (BEHAVIOR's partial credit) goes into `robot_result`;
  * what only the simulator knows (the object OmniGibson's grasping holds) reaches the planner only
  * under --privileged, and CaP-X's "picked" judgement is recorded as a reference field, never as
@@ -29,13 +31,13 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { MOLMO, SAM3 } from "../../infra/model-services.ts";
-import { decodePngChannel, encodePng } from "../../infra/png.ts";
-import { type NdArray, RpcClient } from "../../infra/rpc.ts";
+import { encodePng } from "../../infra/png.ts";
+import type { NdArray, RpcClient } from "../../infra/rpc.ts";
 import type { Move, MoveUnit, Vec3 } from "../../modes/units/index.ts";
 import { template } from "../../planner/context-version.ts";
 import { detectionActive, detectionArgs, detectionTools, registerDetectionFlags } from "../../primitives/detections.ts";
 import { mountGraspTool } from "../../primitives/grasp.ts";
-import { attach, defineRobot, type Mat, mark, median, round, SERVICES, toolResult } from "../../robot.ts";
+import { attach, defineRobot, type Json, round, SERVICES, toolResult } from "../../robot.ts";
 
 const SYSTEM = template(new URL("./SYSTEM.md", import.meta.url));
 const EXPLORE = template(new URL("./explore.md", import.meta.url));
@@ -104,8 +106,6 @@ export const ARMS = ["left", "right"] as const;
 export const CODE_MAX_MOVE_M = 20;
 /** Code mode: the default --code-timeout, s. */
 export const CODE_TIMEOUT_S = 900;
-/** Depth beyond this is no hit (OmniGibson's depth_linear on the sky), m. */
-export const MAX_DEPTH_M = 20;
 
 type Eef = { pos: NdArray; quat_xyzw: NdArray; gripper_width: number };
 type Privileged = { in_hand: Record<(typeof ARMS)[number], string | null>; picked: boolean };
@@ -148,33 +148,6 @@ type Meta = {
 	grasping_mode: string;
 	capabilities?: { perception?: { segment?: boolean; enhance_depth?: boolean } };
 };
-type CameraMeta = { intrinsic_K: Mat; extrinsic_cam2world: Mat; convention: string; width: number; height: number };
-type WorldMap = { step: number; width: number; height: number; rgb: Buffer; xyz: Float32Array };
-
-/**
- * World xyz of every pixel of an OmniGibson camera: OpenGL convention (looks along -Z, +Y up), so
- * `x = (c - cx) d / fx, y = -(r - cy) d / fy, z = -d` before the cam-to-world transform. NaN where
- * there is no hit.
- */
-export function project(depth: Float32Array, width: number, height: number, meta: CameraMeta): Float32Array {
-	const [[fx, , cx], [, fy, cy]] = meta.intrinsic_K;
-	const e = meta.extrinsic_cam2world;
-	const xyz = new Float32Array(width * height * 3);
-	for (let r = 0; r < height; r++)
-		for (let c = 0; c < width; c++) {
-			const d = depth[r * width + c];
-			const i = (r * width + c) * 3;
-			if (!(d > 0 && d < MAX_DEPTH_M)) {
-				xyz[i] = xyz[i + 1] = xyz[i + 2] = Number.NaN;
-				continue;
-			}
-			const x = ((c - cx) * d) / fx;
-			const y = (-(r - cy) * d) / fy;
-			const z = -d;
-			for (let k = 0; k < 3; k++) xyz[i + k] = e[k][0] * x + e[k][1] * y + e[k][2] * z + e[k][3];
-		}
-	return xyz;
-}
 
 /**
  * Units (../units, --units) run on `env.move_hand_delta`: each MV_* is a 2 cm step in the robot BASE
@@ -230,20 +203,27 @@ export default function behavior(pi: ExtensionAPI) {
 	});
 
 	let env: RpcClient;
-	let sam3: RpcClient;
-	let molmo: RpcClient;
 	let obs: Obs;
 	let meta: Meta;
-	const worldMaps = new Map<Camera, WorldMap>();
 	const privileged = () => pi.getFlag("privileged") === true;
 
 	/** The memory cell of this task at instance `seed`. */
 	const tag = (seed: string) => `behavior_${robot.task.task}_s${seed}`;
 	const robot = defineRobot(pi, {
 		name: "behavior",
+		// Tools and code primitives: ../../primitives/manifests/behavior.json (the env server reads it too).
+		manifest: "behavior",
+		vars: () => ({ cameras: [...CAMERAS] }),
+		// Must agree with the env server's `_has` (it gets --sam3 / --molmo / --unidepth from these flags).
+		capabilities: (c) =>
+			({
+				sam3: Boolean(flag("sam3", "")),
+				molmo: Boolean(flag("molmo", "")),
+				unidepth: Boolean(String(pi.getFlag("unidepth") ?? "").trim()),
+			})[c] ?? false,
 		services: { models: [SAM3, MOLMO] },
 		task: ["task", "seed"],
-		// The env server's primitive registry (code.api, services robots/behavior/primitives.py), recorded per episode.
+		// The env server's code.api (its manifest's digest and what this run has), recorded per episode.
 		codeApi: () => env,
 		// Code mode (../code): the env server runs the program against that registry; the result
 		// carries the control steps, the latched success, the new observation and the head frames.
@@ -394,7 +374,6 @@ export default function behavior(pi: ExtensionAPI) {
 
 	function absorb(o: Obs) {
 		obs = Object.fromEntries(Object.entries(o).filter(([k]) => k in OBS_KEYS)) as Obs;
-		worldMaps.clear();
 		video.frame(obs.head);
 	}
 
@@ -436,283 +415,39 @@ export default function behavior(pi: ExtensionAPI) {
 		};
 	}
 
-	/** World xyz per pixel of a camera's latest frame (cached per env step; the cameras move with the robot). */
-	async function worldMap(camera: Camera): Promise<WorldMap> {
-		const cached = worldMaps.get(camera);
-		if (cached?.step === obs.env_steps) return cached;
-		const rgb = obs[camera] as NdArray;
-		const depth = obs[`${camera}_depth`] as NdArray;
-		const [height, width] = rgb.shape;
-		const cm = await env.call<CameraMeta>("env.get_camera_meta", { camera_name: camera }, 60_000, [], robot.signal);
-		if (cm.convention !== "opengl") throw new Error(`camera ${camera}: unexpected convention ${cm.convention}`);
-		const map = {
-			step: obs.env_steps,
-			width,
-			height,
-			rgb: Buffer.from(rgb.data),
-			xyz: project(Float32Array.from(depth.toArray()), width, height, cm),
-		};
-		worldMaps.set(camera, map);
-		return map;
-	}
-
-	const valid = (p: number[]) => p.every(Number.isFinite);
-	/** Median world xyz of the valid pixels in a (2k+1)^2 window around (row, col), or null. */
-	function around(map: WorldMap, row: number, col: number, k: number) {
-		const pts: number[][] = [];
-		for (let r = Math.max(0, row - k); r <= Math.min(map.height - 1, row + k); r++)
-			for (let c = Math.max(0, col - k); c <= Math.min(map.width - 1, col + k); c++) {
-				const i = (r * map.width + c) * 3;
-				const p = [map.xyz[i], map.xyz[i + 1], map.xyz[i + 2]];
-				if (valid(p)) pts.push(p);
-			}
-		return pts.length < 3 ? null : [0, 1, 2].map((j) => round(median(pts.map((p) => p[j])), 4));
-	}
-
-	const arm = StringEnum(ARMS, { description: "Which arm" });
-	const camera = Type.Optional(StringEnum(CAMERAS, { description: "Default head" }));
-	const xyz = Type.Array(Type.Number(), { minItems: 3, maxItems: 3, description: "World [x, y, z], m" });
-	const quat = Type.Optional(
-		Type.Array(Type.Number(), {
-			minItems: 4,
-			maxItems: 4,
-			description: "World xyzw orientation (default: keep the current one)",
-		}),
-	);
 	const ended = (): ReturnType<typeof observe> | undefined => {
 		if (obs.truncated) return observe({ error: "the episode is over (max steps)" });
 		if (obs.success) return observe({ error: "the task is already solved; call finish" });
 		return undefined;
 	};
 
-	robot.tool(
-		"view_env_state",
-		"Current state with the head (ZED) image and the left and right wrist (RealSense) images. Pixel (row, col) in these images feed back_project.",
-		Type.Object({}),
-		async () => observe({}),
+	robot.tool("view_env_state", "", Type.Object({}), async () => observe({}));
+
+	// The manifest's tools run the server's methods with its parameters (manifests/behavior.json).
+	robot.tool("get_robot_position", "", Type.Object({}), async () =>
+		toolResult(await env.call<Json>("env.get_robot_position", {}, 60_000, [], robot.signal)),
 	);
 
-	robot.tool(
-		"get_robot_position",
-		"World pose of the base (position, xyzw, yaw in rad) and of both end effectors; no motion.",
-		Type.Object({}),
-		async () =>
-			toolResult(
-				(await env.call("env.get_robot_position", {}, 60_000, [], robot.signal)) as Record<string, unknown>,
-			),
-	);
+	for (const name of ["navigate_to_pose", "move_hand", "grasp_object", "open_gripper", "close_gripper"])
+		robot.tool(
+			name,
+			"",
+			Type.Object({}),
+			async (params: Json, signal) => ended() ?? observe(await motion(`env.${name}`, params, signal)),
+		);
 
-	robot.tool(
-		"navigate_to_pose",
-		"Drive the base to world (x, y) facing yaw (rad about +z; 0 = +x). The planner avoids obstacles and refuses goals inside them or farther than 5 m; stand about 0.5 m from a table edge, facing it. Returns ok, the pose reached and images.",
-		Type.Object({ x: Type.Number(), y: Type.Number(), yaw: Type.Number() }),
-		async ({ x, y, yaw }, signal) => ended() ?? observe(await motion("env.navigate_to_pose", { x, y, yaw }, signal)),
-	);
-
-	robot.tool(
-		"move_hand",
-		"Plan and move one arm's end effector to a world position (and xyzw orientation, default the current one), avoiding obstacles. Reach is about 1.5 m from the base in xy: navigate first. Returns ok, the eef pose reached, distance_left_m and images.",
-		Type.Object({ arm, position: xyz, quat_xyzw: quat }),
-		async ({ arm: a, position, quat_xyzw }, signal) =>
-			ended() ?? observe(await motion("env.move_hand", { arm: a, position, quat_xyzw: quat_xyzw ?? null }, signal)),
-	);
-
-	robot.tool(
-		"grasp_object",
-		"Grasp at a world pose with one arm: open, move to pregrasp_offset_m above it, descend along the approach, close, settle, lift back. Aim at the object's grasp point from segment / point / back_project. Judge the grasp from gripper_width (near 0 = nothing held) and the wrist image.",
-		Type.Object({
-			arm,
-			position: xyz,
-			quat_xyzw: quat,
-			pregrasp_offset_m: Type.Optional(Type.Number({ description: "Default 0.1 (0.02-0.5)" })),
-		}),
-		async ({ arm: a, position, quat_xyzw, pregrasp_offset_m }, signal) =>
-			ended() ??
-			observe(
-				await motion(
-					"env.grasp_object",
-					{ arm: a, position, quat_xyzw: quat_xyzw ?? null, pregrasp_offset_m: pregrasp_offset_m ?? 0.1 },
-					signal,
-				),
-			),
-	);
-
-	robot.tool(
-		"open_gripper",
-		"Open one arm's gripper fully (releases what it holds). Returns gripper_width and images.",
-		Type.Object({ arm }),
-		async ({ arm: a }, signal) => ended() ?? observe(await motion("env.open_gripper", { arm: a }, signal)),
-	);
-
-	robot.tool(
-		"close_gripper",
-		"Close one arm's gripper fully. Returns gripper_width and images.",
-		Type.Object({ arm }),
-		async ({ arm: a }, signal) => ended() ?? observe(await motion("env.close_gripper", { arm: a }, signal)),
-	);
-
-	robot.tool(
-		"segment",
-		"SAM3 segmentation of the latest image of a camera. Give exactly one of a text prompt or a positive point [row, col]. The top mask is projected through that camera's depth; world_xyz is the median over mask pixels, top_xyz the median of its highest points (a grasp point). Returns an overlay image.",
-		Type.Object({
-			prompt: Type.Optional(Type.String()),
-			point: Type.Optional(Type.Array(Type.Integer(), { minItems: 2, maxItems: 2 })),
-			camera,
-			min_score: Type.Optional(Type.Number({ description: "Default 0.2" })),
-		}),
-		async ({ prompt, point, camera: c = "head", min_score = 0.2 }) => {
-			const text = prompt?.trim();
-			if (!text && !point) return toolResult({ error: "give a text prompt or a point [row, col]" });
-			const map = await worldMap(c);
-			const png = encodePng(map.rgb, map.width, map.height);
-			const res = await sam3.call<{
-				found: boolean;
-				score?: number;
-				box?: number[];
-				mask_png_base64?: string;
-				reason?: string;
-			}>(
-				"sam3.segment",
-				{ image_base64: png.toString("base64"), ...(text ? { text_prompt: text } : { point }), min_score },
-				120_000,
-				[],
-				robot.signal,
-			);
-			if (!res.found || !res.mask_png_base64)
-				return toolResult({
-					found: false,
-					camera: c,
-					error: res.reason ?? "no mask",
-					fallback: "Pick pixels in the image and use back_project.",
-				});
-			const mask = decodePngChannel(Buffer.from(res.mask_png_base64, "base64"));
-			if (mask.width !== map.width || mask.height !== map.height)
-				return toolResult({
-					found: true,
-					error: `mask ${mask.width}x${mask.height} does not match the ${map.width}x${map.height} image`,
-				});
-			const rows: number[] = [];
-			const cols: number[] = [];
-			const pts: number[][] = [];
-			const overlay = Buffer.from(map.rgb);
-			for (let i = 0; i < mask.data.length; i++) {
-				if (mask.data[i] < 128) continue;
-				rows.push(Math.floor(i / map.width));
-				cols.push(i % map.width);
-				overlay[i * 3] = Math.round(0.55 * overlay[i * 3] + 0.45 * 255);
-				overlay[i * 3 + 1] = Math.round(0.55 * overlay[i * 3 + 1]);
-				overlay[i * 3 + 2] = Math.round(0.55 * overlay[i * 3 + 2]);
-				const p = [map.xyz[i * 3], map.xyz[i * 3 + 1], map.xyz[i * 3 + 2]];
-				if (valid(p)) pts.push(p);
-			}
-			const out: Record<string, unknown> = {
-				found: true,
-				camera: c,
-				score: res.score === undefined ? null : round(res.score, 3),
-				box: res.box,
-				n_pixels: rows.length,
-				n_valid: pts.length,
-				centroid_pixel: rows.length ? [Math.round(median(rows)), Math.round(median(cols))] : null,
-			};
-			if (pts.length < 10) {
-				out.world_xyz = null;
-				out.world_error = `too few valid depth pixels (${pts.length})`;
-			} else {
-				out.world_xyz = [0, 1, 2].map((k) => round(median(pts.map((p) => p[k])), 4));
-				// The object's top: the highest tenth of its points.
-				const top = [...pts].sort((a, b) => b[2] - a[2]).slice(0, Math.max(10, Math.floor(pts.length / 10)));
-				out.top_xyz = [0, 1, 2].map((k) => round(median(top.map((p) => p[k])), 4));
-			}
-			return toolResult(out, [encodePng(overlay, map.width, map.height)]);
-		},
-	);
-
-	robot.tool(
-		"point",
-		"Molmo points at what a short noun phrase names in a camera's latest image ('the radio on the table'). Returns the pixel, its world xyz through the depth (median of a 7x7 window) and the image with the point marked.",
-		Type.Object({ query: Type.String(), camera }),
-		async ({ query, camera: c = "head" }) => {
-			const map = await worldMap(c);
-			const png = encodePng(map.rgb, map.width, map.height);
-			const res = await molmo.call<{ point_xy?: number[] | null; answer?: string; image_size?: number[] }>(
-				"molmo.ground",
-				{ image_base64: png.toString("base64"), query },
-				120_000,
-				[],
-				robot.signal,
-			);
-			if (!res.point_xy)
-				return toolResult({
-					found: false,
-					camera: c,
-					answer: res.answer ?? null,
-					fallback: "Use segment or back_project.",
-				});
-			const col = Math.max(0, Math.min(map.width - 1, Math.round(res.point_xy[0])));
-			const row = Math.max(0, Math.min(map.height - 1, Math.round(res.point_xy[1])));
-			const marked = mark({ width: map.width, height: map.height, rgb: map.rgb }, row, col, [255, 32, 32]);
-			return toolResult(
-				{
-					found: true,
-					camera: c,
-					pixel: [row, col],
-					world_xyz: around(map, row, col, 3),
-					answer: res.answer ?? null,
-				},
-				[encodePng(marked, map.width, map.height)],
-			);
-		},
-	);
-
-	robot.tool(
-		"back_project",
-		"World xyz of a pixel (row, col; row 0 = top) in a camera's latest image, through its metric depth (median of a 3x3 window). Region mode: row_range + col_range returns the median and the xy midpoint over that window.",
-		Type.Object({
-			row: Type.Optional(Type.Integer()),
-			col: Type.Optional(Type.Integer()),
-			camera,
-			row_range: Type.Optional(Type.Array(Type.Integer(), { minItems: 2, maxItems: 2 })),
-			col_range: Type.Optional(Type.Array(Type.Integer(), { minItems: 2, maxItems: 2 })),
-		}),
-		async ({ row, col, camera: c = "head", row_range, col_range }) => {
-			const map = await worldMap(c);
-			const span = (r?: number[]) => (r && Math.max(...r) > Math.min(...r) ? r : undefined);
-			const rows = span(row_range);
-			const cols = span(col_range);
-			if (rows || cols) {
-				if (!rows || !cols) return toolResult({ error: "region mode needs both row_range and col_range" });
-				const clip = (v: number, hi: number) => Math.max(0, Math.min(hi, v));
-				const pts: number[][] = [];
-				for (let r = clip(Math.min(...rows), map.height); r < clip(Math.max(...rows), map.height); r++)
-					for (let cc = clip(Math.min(...cols), map.width); cc < clip(Math.max(...cols), map.width); cc++) {
-						const i = (r * map.width + cc) * 3;
-						const p = [map.xyz[i], map.xyz[i + 1], map.xyz[i + 2]];
-						if (valid(p)) pts.push(p);
-					}
-				if (pts.length < 8)
-					return toolResult({ error: `too few valid pixels in region (${pts.length}); widen the window` });
-				const axis = (k: number) => pts.map((p) => p[k]);
-				return toolResult({
-					camera: c,
-					mode: "region",
-					center_xyz: [
-						round((Math.min(...axis(0)) + Math.max(...axis(0))) / 2, 4),
-						round((Math.min(...axis(1)) + Math.max(...axis(1))) / 2, 4),
-						round(median(axis(2)), 4),
-					],
-					median_xyz: [0, 1, 2].map((k) => round(median(axis(k)), 4)),
-					n_valid: pts.length,
-				});
-			}
-			if (row === undefined || col === undefined)
-				return toolResult({ error: "give row and col, or row_range and col_range" });
-			if (row < 0 || row >= map.height || col < 0 || col >= map.width)
-				return toolResult({ error: `pixel (${row},${col}) out of bounds for ${map.width}x${map.height}` });
-			const p = around(map, row, col, 1);
-			if (!p) return toolResult({ error: `no depth at (${row},${col}); pick another pixel` });
-			return toolResult({ camera: c, pixel: [row, col], world_xyz: p });
-		},
-	);
+	/** A perception read on the server: its numbers, and the picture it drew (segment's overlay, point's mark). */
+	async function perceive(method: string, params: Json) {
+		const {
+			mask: _mask,
+			overlay_png_base64,
+			...rest
+		} = await env.call<Json>(method, params, 180_000, [], robot.signal);
+		return toolResult(rest, overlay_png_base64 ? [Buffer.from(String(overlay_png_base64), "base64")] : []);
+	}
+	robot.tool("segment", "", Type.Object({}), async (params: Json) => perceive("env.segment", params));
+	robot.tool("point", "", Type.Object({}), async (params: Json) => perceive("env.point", params));
+	robot.tool("back_project", "", Type.Object({}), async (params: Json) => perceive("env.back_project", params));
 
 	// SAM3 masks with ids and UniDepth over the env server's perception (active with --detections / --unidepth).
 	for (const d of detectionTools(pi, {
@@ -740,8 +475,6 @@ export default function behavior(pi: ExtensionAPI) {
 			throw new Error(`--task ${task} is not a BEHAVIOR-1K challenge task; one of: ${TASKS.join(", ")}`);
 		if (!/^\d+$/.test(seed))
 			throw new Error(`--seed must be a task instance id (a non-negative integer), got ${seed}`);
-		sam3 = new RpcClient(flag("sam3", ""));
-		molmo = new RpcClient(flag("molmo", ""));
 		const endpoint = pi.getFlag("env") as string | undefined;
 		if (endpoint) env = await attach(endpoint);
 		else {
@@ -752,7 +485,9 @@ export default function behavior(pi: ExtensionAPI) {
 					...["-m", "pi_embodied_services.robots.behavior.env_server"],
 					...["--task", task, "--seed", seed, "--gpu-id", flag("gpu-id", "0")],
 					...["--image-size", flag("image-size", "480"), "--grasping-mode", flag("grasping-mode", "sticky")],
-					...detectionArgs(pi, flag("sam3", "")),
+					// The server runs segment (--sam3) and point (--molmo) itself.
+					...["--sam3", flag("sam3", ""), "--molmo", flag("molmo", "")],
+					...detectionArgs(pi, ""),
 				],
 				cwd: services,
 				env: { ...process.env, PYTHONPATH: services, OMNI_KIT_ACCEPT_EULA: "YES" },

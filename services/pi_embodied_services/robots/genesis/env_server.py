@@ -27,8 +27,20 @@ close) for VLA-style clients. Every observation carries the front (``agentview``
 wrist RGB, the TCP pose, the gripper opening and the task flags. Limits (a workspace box, a
 Z floor, a per-call cap) are checked here, before anything moves.
 
-Code mode (``code.run``, utils/code_exec.py ``CodeRunMixin``): a program calls the registry's
-primitives (primitives.py) in a sandboxed subprocess; they reach the same facade methods on the
+Success (``--success-rule``, recorded in the env meta and pi's result): ``grasp`` (default) is
+OpenETA's own cube_pick rule: both fingers in contact, neither finger fully open, and the EEF
+point (0.11 m along the hand's z) within 0.08 m of the cube's centre, for 3 consecutive control
+steps. ``lift`` is the stricter rule this port used before: the cube's bottom face 8 cm above the
+table for 5 control steps.
+
+Joint space (CaP-X's reduced API): ``env.solve_ik`` (Genesis's IK for a TCP pose, nothing moves),
+``env.move_to_joints`` (a PD servo to a 7-joint target, stopped when the TCP would leave the
+workspace box or go below the Z floor), ``env.traj_plan`` (IK waypoints along a straight Cartesian
+path) and ``env.move_along_trajectory``.
+
+Code mode (``code.run``, utils/code_exec.py ``CodeRunMixin``): a program calls the primitives of
+the robot's manifest (packages/embodied/src/primitives/manifests/genesis.json, read by
+components/manifest.py) in a sandboxed subprocess; they reach the same facade methods on the
 same (main) thread as the tools' RPCs. What a primitive hands the program drops the camera images
 (they go to the run's video) and the cube's height (``lift_m``: object state no camera measures);
 the run reports its control steps, the latched success and the new observation (``_finish_run``).
@@ -37,16 +49,20 @@ the run reports its control steps, the latched success and the new observation (
 from __future__ import annotations
 
 import argparse
+import math
 from typing import Any
 
 import numpy as np
 
-from pi_embodied_services.components.code_api import register_code_api
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
-from pi_embodied_services.robots.genesis.primitives import GENESIS_PRIMITIVES
-from pi_embodied_services.utils import ground_truth, reach
+from pi_embodied_services.utils import grasp_chain as chain
+from pi_embodied_services.utils import ground_truth, reach, sam3_segment
 from pi_embodied_services.utils.code_exec import CodeRunMixin
-from pi_embodied_services.utils.grasp import add_grasp_arguments, install_grasp_planner
+from pi_embodied_services.utils.grasp import (
+    GraspPlanner,
+    add_grasp_arguments,
+    urls_from_args,
+)
 from pi_embodied_services.utils.logging import get_logger
 from pi_embodied_services.utils.perception import (
     add_perception_arguments,
@@ -58,7 +74,12 @@ from pi_embodied_services.utils.rpc.main_thread_serve import MainThreadServeMixi
 logger = get_logger("env_server")
 
 #: OpenETA sim/envs/genesis/tasks: the tasks and their text (cube_pick is the only one).
-TASKS = {"cube_pick": "Pick up the red cube from the table and lift it."}
+#: The text states the success rule's condition (``--success-rule``).
+TASKS = {"cube_pick": "Pick up the red cube from the table."}
+TASK_TEXT = {
+    ("cube_pick", "grasp"): "Pick up the red cube from the table.",
+    ("cube_pick", "lift"): "Pick up the red cube from the table and lift it.",
+}
 CAMERAS = ("agentview", "wrist")
 #: OpenETA tasks/cube_pick.py: the Genesis Franka MJCF, its 7 + 2 dofs and home pose.
 FRANKA_MJCF = "xml/franka_emika_panda/panda.xml"
@@ -75,10 +96,25 @@ EMPTY_WIDTH_M = 0.005
 CUBE_SIZE_M = 0.04
 CUBE_X = (0.45, 0.75)
 CUBE_Y = (-0.25, 0.25)
-#: Success: the cube's bottom face this far above the table for SUCCESS_HOLD_STEPS control
-#: steps (a lift, not a graze; OpenETA's grasp+distance hold counter replaced by a height).
+#: Success rules (``--success-rule``). ``grasp``: OpenETA tasks/cube_pick.py at 7d4a0a1 (its
+#: compute_step_outcomes): both finger links in contact, both finger joints below fully open,
+#: the EEF point (hand + 0.11 m along its z) within GRASP_DIST_M of the cube centre, held for
+#: GRASP_HOLD_STEPS consecutive control steps. ``lift``: the cube's bottom face LIFT_M above the
+#: table for SUCCESS_HOLD_STEPS control steps (this port's earlier, stricter rule).
+SUCCESS_RULES = ("grasp", "lift")
+UPSTREAM_EEF_OFFSET_M = 0.11
+GRASP_DIST_M = 0.08
+GRASP_HOLD_STEPS = 3
 LIFT_M = 0.08
 SUCCESS_HOLD_STEPS = 5
+#: Panda joint limits (rad) and the joint servo's defaults (move_to_joints).
+JOINT_LOW = np.array([-2.8973, -1.7628, -2.8973, -3.0718, -2.8973, -0.0175, -2.8973])
+JOINT_HIGH = np.array([2.8973, 1.7628, 2.8973, -0.0698, 2.8973, 3.7525, 2.8973])
+JOINT_TOL_RAD = 0.01
+JOINT_MAX_STEPS = 200
+#: traj_plan: Cartesian spacing of its IK waypoints, m, and the most waypoints one plan returns.
+TRAJ_STEP_M = 0.02
+TRAJ_MAX_POINTS = 50
 #: Motion limits, checked before anything moves (the TCP must stay inside).
 WORKSPACE = {"min": [0.25, -0.40, 0.012], "max": [0.85, 0.40, 0.60]}
 Z_FLOOR_M = WORKSPACE["min"][2]
@@ -111,6 +147,17 @@ _WRIST_R = np.array([[1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]])
 CODE_MAX_FRAMES = 128
 CODE_MAX_CHUNK = 200
 CODE_HIDDEN = ("lift_m",)
+#: The facade's motions: grasp and detection ids expire after any of them.
+MOTIONS = (
+    "env.move_delta",
+    "env.set_gripper",
+    "env.move_to_joints",
+    "env.move_along_trajectory",
+    "env.execute_grasp",
+    "env.execute_place",
+    "env.step",
+    "env.chunk_step",
+)
 
 
 def _np(value: Any) -> np.ndarray:
@@ -171,6 +218,50 @@ def lifted(
 ) -> bool:
     """The cube's bottom face is at least lift_m above the table (z = 0)."""
     return bool(cube_z - half >= lift_m)
+
+
+def upstream_grasped(
+    finger_contact: tuple[bool, bool], finger_q, eef_cube_dist: float
+) -> bool:
+    """OpenETA cube_pick's ``success_instant``: both fingers touch something, neither finger
+    joint is fully open (< FINGER_OPEN_M), and the EEF point is within GRASP_DIST_M of the cube."""
+    q = np.asarray(finger_q, dtype=np.float64).reshape(2)
+    return bool(
+        finger_contact[0]
+        and finger_contact[1]
+        and q[0] < FINGER_OPEN_M
+        and q[1] < FINGER_OPEN_M
+        and eef_cube_dist < GRASP_DIST_M
+    )
+
+
+def finger_contacts(contacts: dict, finger_links: tuple[int, int]) -> tuple[bool, bool]:
+    """Whether each finger link is in any contact (OpenETA reads a Contact sensor per finger)."""
+    links = set(
+        np.concatenate(
+            [
+                _np(contacts.get("link_a", [])).reshape(-1),
+                _np(contacts.get("link_b", [])).reshape(-1),
+            ]
+        )
+        .astype(int)
+        .tolist()
+    )
+    return (int(finger_links[0]) in links, int(finger_links[1]) in links)
+
+
+def slerp(q0, q1, t: float) -> np.ndarray:
+    """Spherical interpolation of two unit quaternions (any component order)."""
+    a = np.asarray(q0, dtype=np.float64) / np.linalg.norm(q0)
+    b = np.asarray(q1, dtype=np.float64) / np.linalg.norm(q1)
+    dot = float(a @ b)
+    if dot < 0:
+        b, dot = -b, -dot
+    if dot > 0.9995:
+        out = a + t * (b - a)
+        return out / np.linalg.norm(out)
+    theta = np.arccos(dot)
+    return (np.sin((1 - t) * theta) * a + np.sin(t * theta) * b) / np.sin(theta)
 
 
 def segmentation_index(seg_idx_dict: dict, entity_idx: int) -> int | None:
@@ -247,10 +338,20 @@ class GenesisEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         dt: float = 0.01,
         substeps: int = 2,
         view_size: int = VIEW_SIZE,
+        success_rule: str = "grasp",
     ):
         super().__init__()
         if task not in TASKS:
             raise ValueError(f"unknown task {task!r}; one of {sorted(TASKS)}")
+        if success_rule not in SUCCESS_RULES:
+            raise ValueError(
+                f"unknown success rule {success_rule!r}; one of {SUCCESS_RULES}"
+            )
+        self._rule = success_rule
+        #: --sam3 (env.segment), --ik (env.preview_reach), the grasp planner: set in main().
+        self._sam3 = sam3_segment.Sam3(None)
+        self._reach = None
+        self._grasp: GraspPlanner | None = None
         import genesis as gs
         import torch
 
@@ -329,7 +430,8 @@ class GenesisEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         self._meta = {
             "task": task,
             "seed": self._seed,
-            "instruction": TASKS[task],
+            "instruction": TASK_TEXT[(task, success_rule)],
+            "success_rule": success_rule,
             "backend": backend,
             "dt": float(dt),
             "substeps": int(substeps),
@@ -353,15 +455,45 @@ class GenesisEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         self._rpc["env.state"] = self.state
         self._rpc["env.back_project"] = self.back_project
         self._rpc["env.ground_truth_poses"] = self.ground_truth_poses
-        api = register_code_api(self, GENESIS_PRIMITIVES)
-        self._install_code_run(
-            api,
+        self._rpc["env.solve_ik"] = self.solve_ik
+        self._rpc["env.move_to_joints"] = self.move_to_joints
+        self._rpc["env.traj_plan"] = self.traj_plan
+        self._rpc["env.move_along_trajectory"] = self.move_along_trajectory
+        # Served always (so the perception and planner wrappers expire ids after them); they
+        # need the grasp planner (--contact-graspnet & co), which code.api requires too.
+        self._rpc["env.execute_grasp"] = self.execute_grasp
+        self._rpc["env.execute_place"] = self.execute_place
+        self._readonly_methods.update({"env.solve_ik", "env.traj_plan"})
+        # The primitives are packages/embodied/src/primitives/manifests/genesis.json (with pi);
+        # code.api, the programs' whitelist and the startup self-check come from it.
+        self._manifest_code_run(
+            "genesis",
+            have=self._has,
             move_m=self._code_move_m,
             check=self._code_check,
             reply=self._code_reply,
             begin=self._begin_run,
             finish=self._finish_run,
         )
+
+    def _has(self, capability: str) -> bool:
+        """What this server can serve of the manifest's ``requires``."""
+        return {
+            "sam3": bool(self._sam3),
+            "ik": self._reach is not None,
+            "grasp": self._grasp is not None,
+            "place": self._grasp is not None
+            and bool(self._grasp.capabilities().get("place")),
+            "unidepth": "env.enhance_depth" in self._rpc,
+            "privileged": True,
+        }.get(capability, False)
+
+    def install_grasp(self, planner: GraspPlanner | None) -> None:
+        """The grasp planner's primitives, and the chains that run its ids here."""
+        self._grasp = planner
+        if planner is None:
+            return
+        planner.install(self, mutating=GraspPlanner.MUTATING + MOTIONS)
 
     # ---- code mode (run_code) ----
 
@@ -400,8 +532,17 @@ class GenesisEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
     def _code_reply(self, method: str, out: Any) -> Any:
         """What a program receives of a primitive's result: the same facade method as the tools
         call, without the images and the cube's height."""
-        if method in ("env.move_delta", "env.set_gripper"):
+        if method in (
+            "env.move_delta",
+            "env.set_gripper",
+            "env.move_to_joints",
+            "env.move_along_trajectory",
+            "env.execute_grasp",
+            "env.execute_place",
+        ):
             return self._program_state(out)
+        if method == "env.segment":
+            return sam3_segment.for_program(out)
         if method == "env.state":
             return {k: v for k, v in out.items() if k not in CODE_HIDDEN}
         if method == "env.step":
@@ -502,11 +643,24 @@ class GenesisEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
             action = np.append(cmd - self._tcp(), 1.0 if self._gripper_open else -1.0)
         self._scene.step()
         self._steps += 1
-        cube_z = float(_np(self._cube.get_pos()).reshape(3)[2])
-        self._hold = self._hold + 1 if lifted(cube_z) else 0
-        self._success = self._success or self._hold >= SUCCESS_HOLD_STEPS
+        self._hold = self._hold + 1 if self._success_instant() else 0
+        need = GRASP_HOLD_STEPS if self._rule == "grasp" else SUCCESS_HOLD_STEPS
+        self._success = self._success or self._hold >= need
         if action is not None:
             self._record.append({**self._obs(), "action": action.astype(np.float32)})
+
+    def _success_instant(self) -> bool:
+        """This control step's success signal under the episode's rule (``--success-rule``)."""
+        cube = _np(self._cube.get_pos()).reshape(3).astype(np.float64)
+        if self._rule == "lift":
+            return lifted(float(cube[2]))
+        p, q = self._hand_pose()
+        eef = p + self._rot(q) @ np.array([0.0, 0.0, UPSTREAM_EEF_OFFSET_M])
+        return upstream_grasped(
+            finger_contacts(self._robot.get_contacts(), self._fingers),
+            self._qpos()[FINGER_DOFS],
+            float(np.linalg.norm(eef - cube)),
+        )
 
     # ---- observation ----
 
@@ -527,6 +681,12 @@ class GenesisEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
             self._fingers,
             self._width(),
         )
+
+    def _hand_yaw(self) -> float:
+        """The hand's yaw (the planner's eef_yaw: the EEF x axis about world +z)."""
+        _, q = self._hand_pose()
+        w, x, y, z = (float(v) for v in np.asarray(q).reshape(4))
+        return math.atan2(2 * (x * y + w * z), 1 - 2 * (y * y + z * z))
 
     def _state(self) -> dict:
         p, q = self._hand_pose()
@@ -605,7 +765,7 @@ class GenesisEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         self._hold_quat = self._hand_pose()[1]
         self._meta["layout"] = {"cube": [round(float(v), 4) for v in xy]}
         self.check_visible()
-        return self._obs(), {"instruction": TASKS[self._task], "seed": seed}
+        return self._obs(), {"instruction": self._meta["instruction"], "seed": seed}
 
     def _apply(self, action) -> None:
         a = np.asarray(action, dtype=np.float64).reshape(4)
@@ -741,11 +901,12 @@ class GenesisEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         return out
 
     def set_gripper(
-        self, *, open: bool, return_frames: bool = False, record: bool = False
+        self, close: bool, *, return_frames: bool = False, record: bool = False
     ):
-        """Open or close the gripper and hold GRIPPER_STEPS; a close that ends at or below
-        EMPTY_WIDTH_M reports ``grasp_empty``. ``record`` as ``move_delta``."""
-        self._gripper_open = bool(open)
+        """Close (``close=True``) or open the gripper and hold GRIPPER_STEPS; a close that ends
+        at or below EMPTY_WIDTH_M reports ``grasp_empty``. ``record`` as ``move_delta``."""
+        open = not bool(close)
+        self._gripper_open = open
         self._record = [] if record else None
         n, cancelled = self._grip()
         out = {**self._obs(), "control_steps": n}
@@ -791,16 +952,255 @@ class GenesisEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
             "height": int(cam.res[1]),
         }
 
-    def back_project(self, camera_name: str = "agentview", pixels=None) -> list:
-        """World xyz of ``pixels`` [[row, col], ...] of the current camera image (null where
-        the depth is missing)."""
-        if camera_name not in CAMERAS:
-            raise ValueError(f"unknown camera {camera_name!r}; one of {CAMERAS}")
-        _rgb, depth = self._render(camera_name, depth=True)
-        meta = self.get_camera_meta(camera_name)
+    def _locate(self, camera: str, pixels) -> list:
+        if camera not in CAMERAS:
+            raise ValueError(f"unknown camera {camera!r}; one of {CAMERAS}")
+        _rgb, depth = self._render(camera, depth=True)
+        meta = self.get_camera_meta(camera)
         return back_project(
-            depth, meta["intrinsic_K"], meta["extrinsic_cam2world"], pixels or []
+            depth, meta["intrinsic_K"], meta["extrinsic_cam2world"], pixels
         )
+
+    def back_project(
+        self,
+        row: int | None = None,
+        col: int | None = None,
+        camera: str = "agentview",
+        pixels=None,
+    ):
+        """World xyz (m, base frame) of pixel (row, col) of the current camera image through
+        the simulator's depth: ``{camera, pixel, world_xyz}``, or ``error`` where there is no
+        depth. ``pixels`` [[row, col], ...] instead returns a list (null where no depth)."""
+        if pixels is not None:
+            return self._locate(camera, pixels)
+        if row is None or col is None:
+            raise ValueError("give row and col (or pixels)")
+        [p] = self._locate(camera, [[row, col]])
+        out: dict[str, Any] = {"camera": camera, "pixel": [int(row), int(col)]}
+        if p is None:
+            out["error"] = "no depth at that pixel (background or out of the image)"
+        else:
+            out["world_xyz"] = p
+        return out
+
+    def segment(
+        self,
+        prompt: str | None = None,
+        point=None,
+        camera: str = "agentview",
+        min_score: float = 0.2,
+    ) -> dict:
+        """SAM3 mask of a text prompt (or a positive point [row, col]) on the current image of
+        ``camera``, its pixels back-projected through the depth (at most 400, evenly spread):
+        ``found``, ``score``, ``box``, ``mask``, ``n_pixels``, ``centroid_pixel``, ``world_xyz``
+        (their median) and the tool's ``overlay_png_base64``."""
+        if camera not in CAMERAS:
+            raise ValueError(f"unknown camera {camera!r}; one of {CAMERAS}")
+        rgb = letterbox(self._render(camera), self._view_size)
+        return sam3_segment.segment(
+            self._sam3,
+            rgb,
+            lambda px: self._locate(camera, px),
+            prompt=prompt,
+            point=point,
+            min_score=min_score,
+            extra={"camera": camera},
+        )
+
+    # ---- planned grasps (utils/grasp_chain.py) ----
+
+    def _chain(
+        self, kind: str, grasp_id: str, standoff: float | None, record: bool
+    ) -> dict:
+        if self._grasp is None:
+            raise RuntimeError(
+                f"execute_{kind} needs the grasp planner (start with --contact-graspnet & co)"
+            )
+
+        recorded: list = []
+
+        def move(delta, g):
+            r = self.move_delta(
+                list(delta), gripper=g, return_frames=True, record=record
+            )
+            recorded.extend(r.pop("steps", None) or [])
+            return r
+
+        def grip(g):
+            r = self.set_gripper(g == "close", return_frames=True, record=record)
+            recorded.extend(r.pop("steps", None) or [])
+            return r
+
+        out = chain.run_chain(
+            kind,
+            grasp_id,
+            rpc=self._rpc,
+            current=self._tcp,
+            max_step=MAX_MOVE_M,
+            move=move,
+            gripper=grip,
+            stop=self.stop_requested,
+            solved=lambda: self._success,
+            standoff=standoff,
+            yaw=self._hand_yaw,
+        )
+        frames, steps = out.pop("frames", []), out.pop("control_steps", 0)
+        out = {**self._obs(), **out, "control_steps": steps, "frames": frames}
+        if record:
+            out["steps"] = recorded
+        return out
+
+    def execute_grasp(
+        self, grasp_id: str, standoff: float | None = None, *, record: bool = False
+    ) -> dict:
+        """Run one planned grasp id: open at the standoff back along its approach, descend,
+        close, lift, each leg as bounded move_delta calls; refused (nothing moves) unless it
+        approaches from nearly straight above."""
+        return self._chain("grasp", grasp_id, standoff, record)
+
+    def execute_place(
+        self, place_id: str, standoff: float | None = None, *, record: bool = False
+    ) -> dict:
+        """Run one planned place id: to the pre-place above it, descend, open, retreat."""
+        return self._chain("place", place_id, standoff, record)
+
+    # ---- joint space (CaP-X's solve_ik / move_to_joints / traj_plan) ----
+
+    def _ik(self, position, quat_wxyz, init=None) -> np.ndarray:
+        t = self._torch
+        kwargs: dict[str, Any] = dict(
+            link=self._hand,
+            pos=t.as_tensor(np.asarray(position, dtype=np.float64), dtype=t.float32),
+            quat=t.as_tensor(np.asarray(quat_wxyz, dtype=np.float64), dtype=t.float32),
+            local_point=[0.0, 0.0, TCP_OFFSET_M],
+            dofs_idx_local=MOTOR_DOFS,
+        )
+        if init is not None:
+            full = self._qpos().copy()
+            full[: len(MOTOR_DOFS)] = init
+            try:
+                q = self._robot.inverse_kinematics(
+                    **kwargs, init_qpos=t.as_tensor(full, dtype=t.float32)
+                )
+            except (
+                TypeError
+            ):  # a Genesis without init_qpos: it starts from the current joints
+                q = self._robot.inverse_kinematics(**kwargs)
+        else:
+            q = self._robot.inverse_kinematics(**kwargs)
+        return _np(q).reshape(-1)[: len(MOTOR_DOFS)].astype(np.float64)
+
+    def solve_ik(self, position, quaternion_wxyz=None) -> list:
+        """Joint angles (7, rad) that put the TCP at ``position`` (m, base frame) with the hand
+        at ``quaternion_wxyz`` (default: the orientation held since reset); nothing moves."""
+        pos = np.asarray(position, dtype=np.float64).reshape(3)
+        quat = (
+            self._hold_quat
+            if quaternion_wxyz is None
+            else np.asarray(quaternion_wxyz, dtype=np.float64).reshape(4)
+        )
+        return [round(float(v), 5) for v in self._ik(pos, quat)]
+
+    def _check_joints(self, joints) -> np.ndarray:
+        q = np.asarray(joints, dtype=np.float64).reshape(-1)
+        if q.shape != (len(MOTOR_DOFS),) or not np.all(np.isfinite(q)):
+            raise ValueError(f"joints must be {len(MOTOR_DOFS)} finite angles (rad)")
+        bad = [i for i in range(len(q)) if not JOINT_LOW[i] <= q[i] <= JOINT_HIGH[i]]
+        if bad:
+            raise ValueError(f"joint(s) {bad} outside the Panda's limits")
+        return q
+
+    def _inside(self, p: np.ndarray) -> bool:
+        lo, hi = np.asarray(WORKSPACE["min"]), np.asarray(WORKSPACE["max"])
+        return bool(np.all(p >= lo - 1e-6) and np.all(p <= hi + 1e-6))
+
+    def _joint_servo(self, q: np.ndarray, tol_rad: float, max_steps: int) -> dict:
+        t = self._torch
+        steps, cancelled, error = 0, False, None
+        for steps in range(1, int(max_steps) + 1):
+            if self.stop_requested():
+                cancelled = True
+                break
+            self._robot.control_dofs_position(
+                t.as_tensor(q, dtype=t.float32), MOTOR_DOFS
+            )
+            self._command_gripper()
+            self._step()
+            if not self._inside(self._tcp()):
+                error = "stopped: the TCP left the workspace box (or went below the Z floor)"
+                break
+            if np.max(np.abs(self._qpos()[: len(MOTOR_DOFS)] - q)) < tol_rad:
+                break
+            if self._success:
+                break
+        # Cartesian motions servo afresh from here (the integral term and command were theirs).
+        self._offset = np.zeros(3)
+        self._cmd_tcp = None
+        if error:
+            self._command_arm(self._tcp())
+        err = float(np.max(np.abs(self._qpos()[: len(MOTOR_DOFS)] - q)))
+        return {
+            "control_steps": steps,
+            "joint_error_rad": round(err, 4),
+            **({"cancelled": True} if cancelled else {}),
+            **({"error": error} if error else {}),
+        }
+
+    def move_to_joints(
+        self,
+        joints,
+        tol_rad: float = JOINT_TOL_RAD,
+        max_steps: int = JOINT_MAX_STEPS,
+        return_frames: bool = False,
+    ) -> dict:
+        """PD servo of the 7 arm joints to ``joints`` (rad) with the gripper held, until every
+        joint is within ``tol_rad`` or ``max_steps`` control steps; refused outside the joint
+        limits, stopped when the TCP leaves the workspace box. Returns the observation plus
+        control_steps and joint_error_rad."""
+        if not 1 <= int(max_steps) <= 400:
+            raise ValueError("max_steps must be within [1, 400]")
+        q = self._check_joints(joints)
+        r = self._joint_servo(q, float(tol_rad), int(max_steps))
+        return {
+            **self._obs(),
+            **r,
+            **({"frames": [self._frame()]} if return_frames else {}),
+        }
+
+    def traj_plan(self, start_pose_wxyz_xyz, end_pose_wxyz_xyz) -> list:
+        """Joint waypoints [N, 7] from one TCP pose to another (each ``[qw, qx, qy, qz, x, y,
+        z]``): a straight Cartesian line in TRAJ_STEP_M steps (orientation slerped), IK at each
+        waypoint seeded with the previous one; nothing moves."""
+        a = np.asarray(start_pose_wxyz_xyz, dtype=np.float64).reshape(7)
+        b = np.asarray(end_pose_wxyz_xyz, dtype=np.float64).reshape(7)
+        n = int(np.ceil(np.linalg.norm(b[4:] - a[4:]) / TRAJ_STEP_M)) + 1
+        n = max(2, min(TRAJ_MAX_POINTS, n))
+        out: list = []
+        q = None
+        for i in range(n):
+            s = i / (n - 1)
+            q = self._ik(a[4:] + s * (b[4:] - a[4:]), slerp(a[:4], b[:4], s), init=q)
+            out.append([round(float(v), 5) for v in q])
+        return out
+
+    def move_along_trajectory(self, trajectory, return_frames: bool = False) -> dict:
+        """move_to_joints through each waypoint of ``trajectory`` [N, 7] (CaP-X: tolerance
+        0.025 rad, at most 15 control steps each); stops at an error, a stop or success."""
+        traj = [self._check_joints(q) for q in trajectory]
+        if len(traj) > 100:
+            raise ValueError("at most 100 waypoints per call")
+        steps, frames, last = 0, [], {}
+        for q in traj:
+            last = self._joint_servo(q, 0.025, 15)
+            steps += last["control_steps"]
+            if return_frames:
+                frames.append(self._frame())
+            if last.get("error") or last.get("cancelled") or self._success:
+                break
+        out = {**self._obs(), **last, "control_steps": steps, "waypoints": len(traj)}
+        if return_frames:
+            out["frames"] = frames
+        return out
 
     def ground_truth_poses(self, names=None) -> dict:
         """World poses of the task objects (``--privileged``)."""
@@ -847,6 +1247,12 @@ def main():
     p.add_argument("--substeps", type=int, default=2)
     p.add_argument("--view-size", type=int, default=VIEW_SIZE)
     p.add_argument(
+        "--success-rule",
+        choices=SUCCESS_RULES,
+        default="grasp",
+        help="grasp: OpenETA cube_pick's grasp+distance rule (default); lift: the cube 8 cm up",
+    )
+    p.add_argument(
         "--parent-watch",
         action="store_true",
         help="watch parent process via stdin pipe and exit when it dies",
@@ -863,7 +1269,10 @@ def main():
         dt=args.dt,
         substeps=args.substeps,
         view_size=args.view_size,
+        success_rule=args.success_rule,
     )
+    # --sam3: env.segment (and the perception primitives below).
+    facade._sam3 = sam3_segment.Sam3(args.sam3)
     # --sam3 / --unidepth: env.detect, env.select_detection, env.reject_detection, env.enhance_depth.
     # --ik: env.preview_reach (the Panda stands at the world origin, so targets are base-frame) and
     # move_delta refuses a target the ik service cannot reach.
@@ -876,19 +1285,21 @@ def main():
     )
     view = render_view(facade)
     perception = install_perception(
-        facade, args, cameras=["agentview", "wrist"], view=view
+        facade, args, cameras=["agentview", "wrist"], view=view, mutating=MOTIONS
     )
     # --contact-graspnet & co: env.plan_grasp, env.claim_waypoints and friends over the same views
-    # (the hand's quaternion as xyzw); pi's execute_grasp splits the claimed path into move_delta calls.
-    install_grasp_planner(
-        facade,
-        args,
-        view=view,
-        cameras=["agentview", "wrist"],
-        eef_pose=lambda arm: (facade._tcp(), _xyzw(facade._hand_pose()[1])),
-        perception=perception,
-        primitives=GENESIS_PRIMITIVES,
-        wrist_camera="wrist",
+    # (the hand's quaternion as xyzw); env.execute_grasp / env.execute_place run the claimed path
+    # as move_delta legs (utils/grasp_chain.py).
+    facade.install_grasp(
+        GraspPlanner.from_args(
+            view,
+            cameras=["agentview", "wrist"],
+            masks=perception.book if perception is not None else None,
+            sam3=args.sam3 or (perception.sam3 if perception is not None else None),
+            eef_pose=lambda arm: (facade._tcp(), _xyzw(facade._hand_pose()[1])),
+            wrist_camera="wrist",
+            **urls_from_args(args),
+        )
     )
     try:
         facade.serve(

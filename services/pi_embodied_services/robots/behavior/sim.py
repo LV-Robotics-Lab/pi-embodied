@@ -368,6 +368,32 @@ def action_move_m(robot: Any, actions) -> float:
     return total
 
 
+def arm_joints(robot: Any, arm: str) -> np.ndarray:
+    """An arm's joint positions (rad), in its control order."""
+    idx = to_np(robot.arm_control_idx[arm]).astype(int).reshape(-1)
+    return to_np(robot.get_joint_positions()).astype(np.float64)[idx]
+
+
+def joint_limits(robot: Any) -> tuple[np.ndarray, np.ndarray]:
+    """The robot's joint position limits (rad or m), lower and upper, over all its joints."""
+    return (
+        to_np(robot.joint_lower_limits).astype(np.float64).reshape(-1),
+        to_np(robot.joint_upper_limits).astype(np.float64).reshape(-1),
+    )
+
+
+def joint_target_action(robot: Any, q: np.ndarray) -> Any:
+    """The action that holds every joint at the full-body position target ``q``: the R1Pro's
+    controllers are absolute position JointControllers (``task_config``), the base's command in
+    its own frame (OmniGibson's ``holonomic_base_command_in_world_frame``, as CaP-X's
+    ``_move_to_joint_positions`` builds it)."""
+    from omnigibson.action_primitives.curobo import (
+        holonomic_base_command_in_world_frame,
+    )
+
+    return robot.q_to_action(holonomic_base_command_in_world_frame(robot, tensor(q)))
+
+
 def in_hand(robot: Any, arm: str) -> str | None:
     """Name of the object OmniGibson's grasping holds in ``arm``, or None (simulator state)."""
     obj = robot._ag_obj_in_hand[arm]

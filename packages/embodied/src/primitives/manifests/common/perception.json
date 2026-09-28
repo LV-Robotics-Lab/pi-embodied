@@ -1,0 +1,110 @@
+{
+	"internal": [],
+	"primitives": [
+		{
+			"name": "detect",
+			"side": "env",
+			"method": "env.detect",
+			"tier": "low",
+			"requires": [
+				"sam3"
+			],
+			"params": {
+				"prompt": {
+					"type": "string",
+					"description": "What to segment (or point)"
+				},
+				"point": {
+					"type": "array",
+					"items": "integer",
+					"minItems": 2,
+					"maxItems": 2,
+					"description": "A positive point [row, col] instead of prompt"
+				},
+				"camera": {
+					"type": "enum",
+					"values": "{{cameras}}",
+					"description": "Default: the first camera"
+				},
+				"min_score": {
+					"type": "number",
+					"minimum": 0,
+					"maximum": 1,
+					"description": "Default 0.2"
+				},
+				"all": {
+					"type": "boolean",
+					"description": "Every mask, not only the best (default false)"
+				}
+			},
+			"doc": {
+				"tool": "SAM3 masks on a camera's current image, each with a short id (d3) drawn on the returned overlay in rank order (red, blue, green, yellow, ...). Give exactly one of a text prompt or a positive point [row, col]. all=true returns every candidate instead of only the best; then choose one with select_detection or rule one out with reject_detection. Ids die with the observation: detect again after any motion.",
+				"code": "SAM3 masks on a camera's current image, each with a short id (d3): {detections: [{id, score, box, centroid_rowcol, world_xyz, ...}], invalidated}.\n\nExample:\n    d = detect(\"red cube\")\n    print(d[\"detections\"][0][\"id\"])"
+			},
+			"result": "read"
+		},
+		{
+			"name": "select_detection",
+			"side": "env",
+			"method": "env.select_detection",
+			"tier": "low",
+			"requires": [
+				"sam3"
+			],
+			"params": {
+				"id": {
+					"type": "string",
+					"required": true,
+					"description": "A detection id of the current observation (d3)"
+				}
+			},
+			"doc": {
+				"tool": "Choose one detect mask (by id) as the target of the current observation, after checking the overlay.",
+				"code": "Choose one detect mask (by id) as the target of the current observation."
+			},
+			"result": "read"
+		},
+		{
+			"name": "reject_detection",
+			"side": "env",
+			"method": "env.reject_detection",
+			"tier": "low",
+			"requires": [
+				"sam3"
+			],
+			"params": {
+				"id": {
+					"type": "string",
+					"required": true,
+					"description": "A detection id of the current observation (d3)"
+				}
+			},
+			"doc": {
+				"tool": "Rule out one detect mask (by id) of the current observation; it stays listed as rejected.",
+				"code": "Rule out one detect mask (by id) of the current observation."
+			},
+			"result": "read"
+		},
+		{
+			"name": "enhance_depth",
+			"side": "env",
+			"method": "env.enhance_depth",
+			"tier": "low",
+			"requires": [
+				"unidepth"
+			],
+			"params": {
+				"camera": {
+					"type": "enum",
+					"values": "{{cameras}}",
+					"description": "Default: the first camera"
+				}
+			},
+			"doc": {
+				"tool": "Fill the holes of a camera's current depth with a UniDepth estimate scaled to the sensor, or supply depth where the camera has none. detect then measures through it until the next motion.",
+				"code": "Fill a camera's depth holes with a UniDepth estimate scaled to the sensor (or supply depth where it has none); returns the fused depth and a report."
+			},
+			"result": "read"
+		}
+	]
+}

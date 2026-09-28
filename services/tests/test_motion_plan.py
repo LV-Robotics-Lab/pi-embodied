@@ -680,8 +680,11 @@ def test_franka_move_delta_follows_a_plan_and_refuses_a_blocked_one(
     monkeypatch.setenv(motion.WORLD_ENV, str(cell))
     backend = PointFranka()
     ik = PointIk()
+    # pi's --max-move wide enough for one 0.4 m call (the planner splits it into segments).
     f = FrankaEnvFacade(
-        backend, ik_motion=motion.MotionPlanner("http://ik", "panda", client=ik)
+        backend,
+        ik_motion=motion.MotionPlanner("http://ik", "panda", client=ik),
+        limits={"max_move_m": 1.0},
     )
     out = f._dispatch("env.move_delta", (), {"delta_xyz": [0.4, 0.0, 0.0]})
     assert (
@@ -693,7 +696,9 @@ def test_franka_move_delta_follows_a_plan_and_refuses_a_blocked_one(
     roof = '[{"type": "box", "name": "roof", "position": [0.3, 0, 0.3], "extent": [0.05, 2, 0.8]}]'
     cell.write_text(roof)
     blocked = FrankaEnvFacade(
-        backend, ik_motion=motion.MotionPlanner("http://ik", "panda", client=PointIk())
+        backend,
+        ik_motion=motion.MotionPlanner("http://ik", "panda", client=PointIk()),
+        limits={"max_move_m": 1.0},
     )
     n = len(backend.moves)
     with pytest.raises(ValueError, match="env.move_delta refused"):
@@ -785,7 +790,9 @@ def dual(ik):
 
     backend = PointDualFranka()
     return backend, DualFrankaEnvFacade(
-        backend, ik_motion=motion.MotionPlanner("http://ik", "panda", client=ik)
+        backend,
+        ik_motion=motion.MotionPlanner("http://ik", "panda", client=ik),
+        limits={"max_move_m": 1.0},  # pi's --max-move out of the planner's way
     )
 
 

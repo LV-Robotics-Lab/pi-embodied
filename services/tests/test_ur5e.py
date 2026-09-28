@@ -177,7 +177,7 @@ def test_methods_and_capabilities_follow_the_franka_layout():
     f = facade()
     assert {m for m in f._rpc} == {f"env.{m}" for m in METHODS} | {"code.api"}
     assert "env.chunk_step" not in f._rpc
-    names = {p["name"] for p in call(f, "code.api")["primitives"]}
+    names = set(call(f, "code.api")["available"])
     assert names == {
         "get_robot_state",
         "get_observation",
@@ -186,6 +186,10 @@ def test_methods_and_capabilities_follow_the_franka_layout():
         "move_pose",
         "rotate_delta",
         "set_gripper",
+        "open_gripper",
+        "close_gripper",
+        "solve_ik",
+        "move_to_joints",
     }
     rlinf = rlinf_capabilities(
         {
@@ -582,7 +586,7 @@ def test_reset_refuses_a_joint_path_that_dips_below_the_floor():
 def test_reset_releases_a_held_object_and_says_so():
     grip = MockRobotiq(object_pos=150)
     f = facade(gripper=grip)
-    assert call(f, "env.set_gripper", open=False)["object_detected"]
+    assert call(f, "env.close_gripper")["object_detected"]
     r = call(f, "env.reset")
     assert r["ok"] and grip.pos == 0 and r["info"]["released_object"] is True
     assert "released" in r["info"]["note"]
@@ -591,7 +595,7 @@ def test_reset_releases_a_held_object_and_says_so():
     grip = MockRobotiq(object_pos=150)
     arm = MockUrArm((0.5, 0.0, 0.3, *DOWN), step_m=0.001)
     f = facade(arm, grip)
-    assert call(f, "env.set_gripper", open=False)["object_detected"]
+    assert call(f, "env.close_gripper")["object_detected"]
     arm.protective_stop_after = arm.polls + 2
     r = call(f, "env.reset")
     assert not r["ok"] and r["info"]["released_object"] is True
@@ -665,13 +669,13 @@ def test_a_protective_stop_during_a_move_is_reported_in_the_result():
 def test_gripper_open_close_width_and_grasp():
     grip = MockRobotiq(object_pos=150)  # an object stops the fingers at 150/255
     f = facade(gripper=grip)
-    r = call(f, "env.set_gripper", open=False)
+    r = call(f, "env.close_gripper")
     assert r["ok"] and r["object_detected"] and not r.get("grasp_empty")
     assert r["gripper_width_m"] == pytest.approx(0.085 * (1 - 150 / 255))
     state = r["robot_state"]["raw_base_state"]
     assert state["gripper_open"] is False and state["gripper_grasped"] is True
     assert state["gripper_commanded_open"] is False
-    r = call(f, "env.set_gripper", open=True)
+    r = call(f, "env.open_gripper")
     assert r["ok"] and r["gripper_width_m"] == pytest.approx(0.085)
     assert {"target_gripper_open", "steps_used", "robot_state", "states"} <= set(r)
 
@@ -679,18 +683,18 @@ def test_gripper_open_close_width_and_grasp():
 def test_empty_grasp_reopens_and_jammed_fingers_are_reported():
     grip = MockRobotiq()  # nothing between the fingers: closes to 255 = 0 m
     f = facade(gripper=grip)
-    r = call(f, "env.set_gripper", open=False)
+    r = call(f, "env.close_gripper")
     assert r["grasp_empty"] is True and r["ok"] is False and grip.pos == 0
     assert r["steps_used"] == 2 and "reopened" in r["note"]
     jam = MockRobotiq(jammed=True)
     g = facade(gripper=jam)
-    r = call(g, "env.set_gripper", open=False)
+    r = call(g, "env.close_gripper")
     assert r["gripper_jammed"] is True and r["ok"] is False
     assert "jammed" in r["note"] and not r.get("grasp_empty")
     assert r["robot_state"]["raw_base_state"]["gripper_commanded_open"] is False
     # An idle open of an open gripper is not a jam.
     assert "gripper_jammed" not in call(
-        facade(gripper=MockRobotiq()), "env.set_gripper", open=True
+        facade(gripper=MockRobotiq()), "env.open_gripper"
     )
     # Without a gripper the call is refused.
     none = facade(
@@ -699,14 +703,14 @@ def test_empty_grasp_reopens_and_jammed_fingers_are_reported():
     )
     none.controller.gripper = None
     with pytest.raises(ValueError, match="no gripper configured"):
-        call(none, "env.set_gripper", open=True)
+        call(none, "env.open_gripper")
 
 
 def test_gripper_is_activated_once_before_the_first_command():
     grip = MockRobotiq(active=False)
     f = facade(gripper=grip)
-    call(f, "env.set_gripper", open=True)
-    call(f, "env.set_gripper", open=False)
+    call(f, "env.open_gripper")
+    call(f, "env.close_gripper")
     assert grip.activations == 1
 
 
@@ -716,13 +720,13 @@ def test_a_stale_object_status_is_not_taken_for_settled_fingers():
     # jammed. Grasping an object through the lag must report the grasp.
     grip = MockRobotiq(object_pos=150, stale_polls=3, moving_polls=2)
     f = facade(gripper=grip)
-    r = call(f, "env.set_gripper", open=False)
+    r = call(f, "env.close_gripper")
     assert r["ok"] and r["object_detected"] and "gripper_jammed" not in r
     assert grip.pos == 150
     # Opening an already open gripper (POS == PRE) settles without waiting.
     grip = MockRobotiq(stale_polls=3)
     f = facade(gripper=grip)
-    r = call(f, "env.set_gripper", open=True)
+    r = call(f, "env.open_gripper")
     assert r["ok"] and "gripper_jammed" not in r
     # Fingers that never report motion are still jammed, after the ack timeout.
     clock = {"t": 0.0}
@@ -744,7 +748,7 @@ def test_stop_during_a_gripper_command_stops_the_gripper():
     grip = MockRobotiq(object_pos=150, stale_polls=100)
     f = facade(gripper=grip)
     f.controller._stop = lambda: True
-    r = call(f, "env.set_gripper", open=False)
+    r = call(f, "env.close_gripper")
     assert r["cancelled"] is True and r["ok"] is False and grip.stopped == 1
 
 
@@ -776,7 +780,7 @@ def test_a_dead_camera_blocks_motion_until_it_delivers_frames_again():
     with pytest.raises(RuntimeError, match="camera 'front' is not delivering frames"):
         call(f, "env.move_delta", [0.01, 0.0, 0.0])
     with pytest.raises(RuntimeError, match="not delivering frames"):
-        call(f, "env.set_gripper", open=True)
+        call(f, "env.open_gripper")
     assert arm.moves == [] and f.controller.commands == 0
     # The camera came back (its reads succeed): motion is allowed again.
     front.fail_reads = 0
@@ -1375,7 +1379,7 @@ def test_gripper_waits_for_the_position_to_settle_when_obj_lags():
     # settled mid-motion and reported a half-closed width without the grasp.
     grip = MockRobotiq(object_pos=150, moving_polls=6, obj_lag=True)
     f = facade(gripper=grip)
-    r = call(f, "env.set_gripper", open=False)
+    r = call(f, "env.close_gripper")
     assert r["ok"] and r["object_detected"] and grip._pending is None
     assert r["gripper_width_m"] == pytest.approx(0.085 * (1 - 150 / 255))
     # An OBJ that disagrees with the command (contact-while-closing during an open)
@@ -1383,7 +1387,7 @@ def test_gripper_waits_for_the_position_to_settle_when_obj_lags():
     grip = MockRobotiq(position=150, object_pos=150, moving_polls=4, obj_lag=True)
     grip.obj = 2
     f = facade(gripper=grip)
-    r = call(f, "env.set_gripper", open=True)
+    r = call(f, "env.open_gripper")
     assert r["ok"] and grip.pos == 0 and r["gripper_width_m"] == pytest.approx(0.085)
 
 
@@ -1393,11 +1397,11 @@ def test_empty_grasp_threshold_follows_the_2f85_closed_width():
     assert EMPTY_WIDTH_FRACTION * 0.085 > 0.085 * (1 - 227 / 255)
     grip = MockRobotiq(closed_pos=228)
     f = facade(gripper=grip)
-    r = call(f, "env.set_gripper", open=False)
+    r = call(f, "env.close_gripper")
     assert r["grasp_empty"] is True and r["ok"] is False and grip.pos == 0
     # A thin object (6 mm) still grasps: contact was reported.
     thin = MockRobotiq(object_pos=int(255 * (1 - 0.006 / 0.085)))
-    r = call(facade(gripper=thin), "env.set_gripper", open=False)
+    r = call(facade(gripper=thin), "env.close_gripper")
     assert r["ok"] and r["object_detected"] and not r.get("grasp_empty")
     # Scaled to the stroke (2F-140), explicit values win, null disables.
     big = limits_from_config(cfg(gripper={"poll_s": 0.0, "stroke_m": 0.14}))

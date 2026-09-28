@@ -193,8 +193,7 @@ def test_libero_preview_reach_uses_the_base_frame_and_declares_the_primitive():
         reach.require_reachable(far, "move_to")
     assert facade._env.steps == 0  # the sim was never stepped
     # The primitive registry (code.api) declares it for code-as-policy callers.
-    names = [p["name"] for p in facade._dispatch("code.api", (), {})["primitives"]]
-    assert "preview_reach" in names
+    assert "preview_reach" in facade._dispatch("code.api", ("low",), {})["available"]
 
 
 def test_libero_without_ik_answers_unknown():
@@ -262,7 +261,7 @@ def test_franka_move_delta_is_checked_against_its_end_pose():
         "ok": True
     }
     assert np.allclose(ik.calls[-1]["target_pose"]["pos"], [0.6, 0.0, 0.3])
-    with pytest.raises(ValueError, match="env.move_delta refused"):
+    with pytest.raises(ValueError, match="per call"):
         facade._dispatch("env.move_delta", ([0.5, 0.0, 0.0],), {})
     assert facade._dispatch("env.rotate_delta", (), {"delta_rpy": [0.0, 0.0, 0.5]}) == {
         "ok": True
@@ -275,7 +274,10 @@ def test_franka_move_delta_is_checked_against_its_end_pose():
         plain._dispatch("env.preview_reach", ([0.6, 0.0, 0.3],), {})["status"]
         == "unknown"
     )
-    assert plain._dispatch("env.move_delta", ([0.5, 0.0, 0.0],), {}) == {"ok": True}
+    # The per-call limit is the server's own now (pi passes --max-move at spawn), with or without --ik.
+    with pytest.raises(ValueError, match="per call"):
+        plain._dispatch("env.move_delta", ([0.5, 0.0, 0.0],), {})
+    assert plain._dispatch("env.move_delta", ([0.05, 0.0, 0.0],), {}) == {"ok": True}
 
 
 def test_install_preview_reach_serves_the_check_and_answers_unknown_without_ik():

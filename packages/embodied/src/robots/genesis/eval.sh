@@ -27,7 +27,7 @@ expand() { for part in ${1//,/ }; do seq "${part%-*}" "${part#*-}"; done; }
 model="" thinking="" turns=0 limit=${TIME_LIMIT:-1800} limited="" units=false stateless=false
 anchor=false
 approval=standard max_tool_calls=0 max_tokens=0
-code=false code_api=high code_oracle=""
+code=false code_api=high code_oracle="" success_rule=grasp
 vdm=false vdm_model="" vdm_wrist=false vdm_video=false vdm_video_frames=8
 privileged=false
 fallback_model="" fallback_after=2 fallback_retry=0
@@ -102,6 +102,9 @@ for ((i = 0; i < ${#args[@]}; i++)); do
 	--code-api=*) code_api=${args[i]#*=} ;;
 	--code-oracle) code_oracle=${args[i + 1]:-} ;;
 	--code-oracle=*) code_oracle=${args[i]#*=} ;;
+	# --success-rule: grasp (OpenETA's cube_pick rule, the default) or lift (the cube 8 cm up).
+	--success-rule) success_rule=${args[i + 1]:-grasp} ;;
+	--success-rule=*) success_rule=${args[i]#*=} ;;
 	# --anchor-image (keep the first camera frame in context) is a boolean like --stateless.
 	--anchor-image) case ${args[i + 1]:-} in "" | -* | @* | true) anchor=true ;; *)
 		echo "--anchor-image takes no value: pi would turn it on and swallow '${args[i + 1]}'" >&2 && exit 2 ;;
@@ -126,12 +129,12 @@ done
 backstop=()
 [ "$limit" -gt 0 ] && command -v timeout >/dev/null && backstop=(timeout -k 30 $((limit + 900)))
 mkdir -p "$out"
-config=("$model" "$thinking" "$turns" "$limit" "$units" "$stateless" "$privileged" "$anchor" "$vdm" "$vdm_model" "$vdm_wrist" "$fallback_model" "$fallback_after" "$fallback_retry" "$approval" "$max_tool_calls" "$max_tokens" "$code" "$code_api" "$code_oracle" "$vdm_video")
+config=("$model" "$thinking" "$turns" "$limit" "$units" "$stateless" "$privileged" "$anchor" "$vdm" "$vdm_model" "$vdm_wrist" "$fallback_model" "$fallback_after" "$fallback_retry" "$approval" "$max_tool_calls" "$max_tokens" "$code" "$code_api" "$code_oracle" "$vdm_video" "$success_rule")
 
 record() { # <dir> <exit code>: write result.json from the episode's session
 	node --input-type=module -e '
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
-const [dir, code, model, thinking, turns, limit, units, stateless, privileged, anchor, vdm, vdmModel, vdmWrist, fallbackModel, fallbackAfter, fallbackRetry, approval, maxToolCalls, maxTokens, codeMode, codeApi, codeOracle, vdmVideo] = process.argv.slice(1);
+const [dir, code, model, thinking, turns, limit, units, stateless, privileged, anchor, vdm, vdmModel, vdmWrist, fallbackModel, fallbackAfter, fallbackRetry, approval, maxToolCalls, maxTokens, codeMode, codeApi, codeOracle, vdmVideo, successRule] = process.argv.slice(1);
 const results = [];
 for (const f of readdirSync(dir).filter((f) => f.endsWith(".jsonl"))) {
 	for (const line of readFileSync(`${dir}/${f}`, "utf8").split("\n")) {
@@ -156,7 +159,8 @@ const result = { ...(last ?? {}), status, exit_code: Number(code), model: model 
 	vdm: vdm === "true", vdm_model: vdmModel || null, vdm_wrist: vdmWrist === "true", vdm_video: vdmVideo ? Number(vdmVideo) : null, stateless: stateless === "true",
 	privileged: privileged === "true",
 	fallback_model: fallbackModel || null, fallback_after: fallbackModel ? Number(fallbackAfter) : null, fallback_retry_primary: fallbackModel ? Number(fallbackRetry) : null,
-	code: codeMode, code_api: codeMode === "false" ? null : codeApi, code_oracle: codeMode === "false" ? null : codeOracle || null };
+	code: codeMode, code_api: codeMode === "false" ? null : codeApi, code_oracle: codeMode === "false" ? null : codeOracle || null,
+	success_rule: last?.success_rule ?? successRule };
 writeFileSync(`${dir}/result.json`, `${JSON.stringify(result, null, 2)}\n`);
 console.log(JSON.stringify({ status, success: result.success, claimed: result.claimed, env_steps: result.env_steps }));
 ' "$1" "$2" "${config[@]}"
@@ -164,7 +168,7 @@ console.log(JSON.stringify({ status, success: result.success, claimed: result.cl
 
 valid() { # <dir>: 0 = a valid result of this configuration, 2 = a valid result of another one, 1 = none
 	node -e '
-const [path, model, thinking, turns, limit, units, stateless, privileged, anchor, vdm, vdmModel, vdmWrist, fallbackModel, fallbackAfter, fallbackRetry, approval, maxToolCalls, maxTokens, codeMode, codeApi, codeOracle, vdmVideo] = process.argv.slice(1);
+const [path, model, thinking, turns, limit, units, stateless, privileged, anchor, vdm, vdmModel, vdmWrist, fallbackModel, fallbackAfter, fallbackRetry, approval, maxToolCalls, maxTokens, codeMode, codeApi, codeOracle, vdmVideo, successRule] = process.argv.slice(1);
 const r = JSON.parse(require("fs").readFileSync(path, "utf8"));
 if (r.status !== "success" && r.status !== "failure") process.exit(1);
 const same = r.model === (model || null) && r.thinking === (thinking || null) && r.max_turns === Number(turns)
@@ -184,7 +188,9 @@ const same = r.model === (model || null) && r.thinking === (thinking || null) &&
 	&& (r.fallback_retry_primary ?? null) === (fallbackModel ? Number(fallbackRetry) : null)
 	// Results written before code mode existed here ran without it.
 	&& (r.code ?? "false") === codeMode && (r.code_api ?? null) === (codeMode === "false" ? null : codeApi)
-	&& (r.code_oracle ?? null) === (codeMode === "false" ? null : codeOracle || null);
+	&& (r.code_oracle ?? null) === (codeMode === "false" ? null : codeOracle || null)
+	// Results written before --success-rule existed were scored by the lift rule.
+	&& (r.success_rule ?? "lift") === successRule;
 process.exit(same ? 0 : 2);
 ' "$1/result.json" "${config[@]}" 2>/dev/null
 }
@@ -197,7 +203,7 @@ for task in ${tasks//,/ }; do
 		valid "$dir"
 		case $? in
 		0) continue ;;
-		2) echo "$dir holds a result of another model, thinking level, --max-turns, --time-limit, units mode, code mode, vdm, fallback, --privileged, --anchor-image, --approval, --max-tool-calls or --max-tokens; use another out dir" >&2 && exit 1 ;;
+		2) echo "$dir holds a result of another model, thinking level, --max-turns, --time-limit, units mode, code mode, --success-rule, vdm, fallback, --privileged, --anchor-image, --approval, --max-tool-calls or --max-tokens; use another out dir" >&2 && exit 1 ;;
 		esac
 		rm -rf "$dir" && mkdir -p "$dir"
 		echo "== $task seed $seed"

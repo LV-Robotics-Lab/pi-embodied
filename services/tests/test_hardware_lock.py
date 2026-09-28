@@ -125,7 +125,17 @@ def test_ur5e_server_refuses_to_start_on_a_held_arm_before_touching_hardware(
     with acquire([f"ur5e:{ip}"], directory=str(tmp_path / "locks")):
         with pytest.raises(SystemExit) as exc:
             env_server.main(
-                ["--robot-config", str(path), "--lock-dir", str(tmp_path / "locks")]
+                [
+                    "--robot-config",
+                    str(path),
+                    "--lock-dir",
+                    str(tmp_path / "locks"),
+                    # pi's limits at spawn parse before the lock is taken.
+                    "--max-move",
+                    "0.05",
+                    "--max-rotate",
+                    "0.1",
+                ]
             )
     assert exc.value.code == 3
     assert f"robot busy: arm ur5e:{ip}" in capsys.readouterr().err

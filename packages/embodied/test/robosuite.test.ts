@@ -21,6 +21,7 @@ import robosuite, {
 	VIEWS,
 	YAW_STEP_RAD,
 } from "../src/robots/robosuite/index.ts";
+import { codeApiReply } from "./helpers/code-api.ts";
 import {
 	type Call,
 	checkPoint,
@@ -128,26 +129,24 @@ test("tool schemas: the perception and motion tools, `arm` on every motion tool,
 	robosuite(f.pi);
 	for (const name of [
 		"view_env_state",
-		"view_camera_meta",
+		"get_camera_meta",
 		"segment",
 		"back_project",
 		"move_to",
 		"move_delta",
-		"gripper",
+		"set_gripper",
 		"finish",
 	])
 		assert.ok(f.tools.has(name), name);
 	const props = (name: string) => f.tools.get(name)!.parameters.properties;
-	for (const name of ["move_to", "move_delta", "gripper"]) {
-		assert.deepEqual(props(name).arm.enum, [...ARMS], `${name}.arm`);
-		assert.ok(!f.tools.get(name)!.parameters.required?.includes("arm"), `${name}.arm is optional (one-arm tasks)`);
-	}
+	// The schemas are the manifest's (manifests/robosuite.json); one arm: no `arm` (a two-arm session adds it).
+	for (const name of ["move_to", "move_delta", "set_gripper"]) assert.equal(props(name).arm, undefined, name);
 	assert.deepEqual(props("move_to").xyz.minItems, 3);
 	assert.deepEqual(props("move_to").gripper.enum, ["open", "close"]);
+	assert.equal(props("move_to").step_m, undefined, "a program-only servo argument");
 	assert.deepEqual(props("move_delta").delta_xyz.maxItems, 3);
-	assert.deepEqual(props("gripper").command.enum, ["open", "close"]);
-	assert.deepEqual(props("gripper").parameters?.required, undefined);
-	assert.deepEqual(f.tools.get("gripper")!.parameters.required, ["command"]);
+	assert.equal(props("set_gripper").close.type, "boolean");
+	assert.deepEqual(f.tools.get("set_gripper")!.parameters.required, ["close"]);
 	assert.deepEqual(props("segment").camera.enum, ["agentview", "wrist"]);
 	assert.deepEqual(props("back_project").row_range.minItems, 2);
 	assert.deepEqual(f.tools.get("finish")!.parameters.properties.status.enum, ["success", "failure"]);
@@ -180,7 +179,7 @@ test("SYSTEM.md wraps the optional tools in [tool:...] blocks and carries the fi
 	const text = readFileSync(new URL("../src/robots/robosuite/SYSTEM.md", import.meta.url), "utf8");
 	for (const key of ["{{task_language}}", "{{arms}}", "{{table_z}}", "{{max_move}}"])
 		assert.ok(text.includes(key), key);
-	for (const tool of ["gripper", "segment", "back_project", "view_camera_meta"])
+	for (const tool of ["set_gripper", "segment", "back_project", "get_camera_meta"])
 		assert.ok(text.includes(`[tool:${tool}]`) || text.includes(`[tool:segment|back_project]`), tool);
 });
 
@@ -216,8 +215,8 @@ test("grasp tools: plan_grasp, plan_place and check_attached are registered over
 	for (const name of ["plan_grasp", "plan_place", "check_attached"]) assert.ok(f.tools.has(name), name);
 	const props = (name: string) => f.tools.get(name)!.parameters.properties;
 	assert.deepEqual(props("plan_grasp").camera.enum, ["agentview", "wrist"]);
-	assert.deepEqual(props("plan_grasp").arm.enum, [...ARMS]);
-	assert.deepEqual(props("check_attached").arm.enum, [...ARMS]);
+	assert.equal(props("plan_grasp").arm, undefined, "one arm at load");
+	assert.equal(props("check_attached").arm, undefined);
 	const text = readFileSync(new URL("../src/robots/robosuite/SYSTEM.md", import.meta.url), "utf8");
 	assert.ok(text.includes("[tool:plan_grasp]") && text.includes("[tool:check_attached]"));
 });
@@ -275,7 +274,8 @@ test("--contact-graspnet activates plan_grasp / plan_place / check_attached; pla
 	robosuite(s.pi);
 	await s.emit("session_start");
 	process.exitCode = undefined;
-	for (const name of ["plan_grasp", "plan_place", "check_attached"]) assert.ok(s.active().includes(name), name);
+	for (const name of ["plan_grasp", "check_attached"]) assert.ok(s.active().includes(name), name);
+	assert.ok(!s.active().includes("plan_place"), "plan_place requires AnyPlace (--anyplace)");
 	const r = await s.run("plan_grasp", { object: "red cube", camera: "wrist" });
 	assert.equal(r.details.active, "g1");
 	const call = env.calls.find((c) => c.method === "env.plan_grasp")!;
@@ -301,7 +301,7 @@ test("Wipe's sponge has no fingers: no grasp tools even with a backend", async (
 	await s.emit("session_start");
 	process.exitCode = undefined;
 	assert.ok(s.active().includes("move_to"));
-	assert.ok(!s.active().includes("plan_grasp") && !s.active().includes("gripper"));
+	assert.ok(!s.active().includes("plan_grasp") && !s.active().includes("set_gripper"));
 });
 
 test("--ik activates preview_reach, which asks env.preview_reach for the named arm without moving", async (t) => {
@@ -317,7 +317,7 @@ test("--ik activates preview_reach, which asks env.preview_reach for the named a
 	const r = await s.run("preview_reach", { xyz: [0.1, 0.2, 0.9], arm: "robot1" });
 	assert.equal(r.details.status, "unreachable");
 	const call = env.calls.find((c) => c.method === "env.preview_reach")!;
-	assert.deepEqual(call.kwargs, { pos: [0.1, 0.2, 0.9], quat_xyzw: null, arm: "robot1" });
+	assert.deepEqual(call.kwargs, { xyz: [0.1, 0.2, 0.9], arm: "robot1" });
 	assert.ok(!env.calls.some((c) => c.method.startsWith("env.move")));
 	assert.match((await s.emit("before_agent_start")).systemPrompt as string, /`preview_reach` tells/);
 	// Two arms: the arm is required.
@@ -414,7 +414,7 @@ test("--detections activates detect / select_detection / reject_detection over e
 	const r = await s.run("detect", { prompt: "red cube", camera: "wrist", all: true });
 	assert.deepEqual(env.calls.find((c) => c.method === "env.detect")!.kwargs, {
 		camera: "wrist",
-		text_prompt: "red cube",
+		prompt: "red cube",
 		min_score: 0.2,
 		all: true,
 	});
@@ -495,7 +495,8 @@ async function fakeCodeEnv(run: Record<string, unknown>, task = "Lift") {
 			const { method, kwargs = {} } = JSON.parse(body);
 			calls.push({ method, kwargs });
 			let result: unknown = { ok: true };
-			if (method === "code.api") result = { tier: kwargs.tier ?? null, primitives: [], digest: "d" };
+			if (method === "code.api")
+				result = codeApiReply("robosuite", kwargs.tier, (c) => c === "sam3" || c === "fingers");
 			else if (method === "env.get_env_meta") result = { task, seed: 0, table_z: 0.8 };
 			else if (method === "env.reset") result = [obs(false, 0), {}];
 			else if (method === "env.get_task_language") result = "lift the red cube";
@@ -574,7 +575,7 @@ test("--code-oracle runs the ported CaP-X program once, without the model, and r
 	assert.deepEqual(await s.emit("input", { text: "Solve the task." }), { action: "handled" });
 	const run = env.calls.find((c) => c.method === "code.run")!;
 	assert.equal(run.kwargs.tier, "privileged");
-	assert.match(String(run.kwargs.code), /def goto_pose\(/, "the prelude: CaP-X's API over the registry");
+	assert.doesNotMatch(String(run.kwargs.code), /def goto_pose\(/, "CaP-X's functions are the server's high tier");
 	assert.match(String(run.kwargs.code), /sample_grasp_pose\("red cube"\)/, "CaP-X's program");
 	// A second prompt does not run it again.
 	assert.deepEqual(await s.emit("input", { text: "again" }), { action: "handled" });

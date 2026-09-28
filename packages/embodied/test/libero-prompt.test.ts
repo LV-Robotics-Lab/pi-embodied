@@ -10,6 +10,7 @@ import { encodePng } from "../src/infra/png.ts";
 import { RESULT_ENTRY, toolSections } from "../src/robot.ts";
 import { generateFlashPlan } from "../src/robots/libero/flash-generate.ts";
 import libero, { GUIDES, packDepth, renderRpent, unpackDepth } from "../src/robots/libero/index.ts";
+import { codeApiReply } from "./helpers/code-api.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 const src = (path: string) => readFileSync(new URL(`../src/robots/libero/${path}`, import.meta.url), "utf8");
@@ -80,6 +81,7 @@ async function listen(server: Server) {
 async function fakeEnv() {
 	const s = { steps: 0, eef: [0, 0, 1] };
 	const calls: string[] = [];
+	const kwargsOf: Record<string, Record<string, unknown>> = {};
 	const obs = () => ({
 		main_images: nd("uint8", [4, 4, 3], Buffer.alloc(48)),
 		wrist_images: nd("uint8", [4, 4, 3], Buffer.alloc(48)),
@@ -93,8 +95,9 @@ async function fakeEnv() {
 		req.on("end", () => {
 			const { method, args = [], kwargs = {} } = JSON.parse(body);
 			calls.push(method);
+			kwargsOf[method] = kwargs;
 			let result: unknown = { status: "ok" };
-			if (method === "code.api") result = { tier: null, primitives: [], digest: "d" };
+			if (method === "code.api") result = codeApiReply("libero", kwargs.tier);
 			else if (method === "env.reset") {
 				s.steps = 0;
 				s.eef = [0, 0, 1];
@@ -134,11 +137,34 @@ async function fakeEnv() {
 				s.eef = s.eef.map((v, i) => v + act[i] * 0.05);
 				s.steps++;
 				result = [obs(), 0, false, false, {}];
+			} else if (method === "env.move_to") {
+				// The server's servo: one env step per 2.5 cm, each returned for pi's video and recorder.
+				const target = kwargs.xyz as number[];
+				const transitions = [];
+				while (Math.hypot(...target.map((v, i) => v - s.eef[i])) > 0.012 && transitions.length < 80) {
+					const act = target.map((v, i) => Math.max(-0.5, Math.min(0.5, (v - s.eef[i]) / 0.05)));
+					s.eef = s.eef.map((v, i) => v + act[i] * 0.05);
+					s.steps++;
+					transitions.push({
+						action: f32([...act, 0, 0, 0, -1]),
+						obs: obs(),
+						reward: 0,
+						terminated: false,
+						truncated: false,
+					});
+				}
+				result = {
+					name: "move_to",
+					eef_pos: s.eef,
+					final_dist_m: 0,
+					steps_used: transitions.length,
+					...(kwargs.tool_call ? { transitions } : {}),
+				};
 			}
 			res.end(JSON.stringify({ ok: true, result }));
 		});
 	});
-	return { url: await listen(server), calls, state: s, close: stop(server) };
+	return { url: await listen(server), calls, kwargsOf, state: s, close: stop(server) };
 }
 
 /** A fake SAM3 server whose mask is the 100x100 square at rows/cols 400-500. */
@@ -353,4 +379,39 @@ test("persisted depth round-trips within 0.1 mm; missing depth stays missing", (
 	const back = unpackDepth(packDepth(depth));
 	for (const i of [0, 1, 2]) assert.ok(Math.abs(back[i] - depth[i]) <= 5e-5);
 	assert.ok(Number.isNaN(back[3]) && Number.isNaN(back[4]));
+});
+
+test("the motion tools run the env server's methods with the manifest's parameters; CaP-X's functions are tools too", async (t) => {
+	const s = await session(t);
+	const props = (name: string) => s.tools.get(name).parameters.properties;
+	// manifests/libero.json: the TS tools' parameters and defaults, now the server method's.
+	for (const k of ["xyz", "gripper", "tol", "step_clip", "max_steps", "action_scale", "target_yaw", "yaw_step_clip"])
+		assert.ok(k in props("move_to"), `move_to.${k}`);
+	assert.deepEqual(s.tools.get("move_to").parameters.required, ["xyz"]);
+	assert.equal(props("set_gripper").gripper.minimum, -1);
+	assert.ok("step" in props("back_project") && "step" in props("segment"), "the tools look back by step");
+	for (const name of [
+		"get_object_pose",
+		"sample_grasp_pose",
+		"goto_pose",
+		"home_pose",
+		"open_gripper",
+		"close_gripper",
+	]) {
+		assert.ok(s.tools.has(name), name);
+		assert.ok(!s.active().includes(name), `${name} is the high tier's (not a default tool)`);
+	}
+	assert.ok(!s.active().includes("preview_reach"), "requires --ik");
+	const r = text(await s.run("set_gripper", { gripper: 1, steps: 8 }));
+	assert.deepEqual(s.env.kwargsOf["env.set_gripper"], { gripper: 1, steps: 8, tool_call: true });
+	assert.equal(r.result.name, "set_gripper");
+	await s.run("rotate_pitch", { delta_pitch: 0.2 });
+	assert.deepEqual(s.env.kwargsOf["env.rotate_pitch"], { delta_pitch: 0.2, tool_call: true });
+	assert.ok(!s.env.calls.includes("env.step"), "no servo loop steps the env from pi");
+	// The server's steps are pi's episode steps: move_to returns them and the state step advances.
+	const before = text(await s.run("view_env_state", {})).step;
+	const moved = text(await s.run("move_to", { xyz: [0.05, 0, 1] }));
+	assert.ok(moved.step > before);
+	assert.equal(moved.result.steps_used, moved.step - before);
+	assert.deepEqual(moved.result.final_eef_pos, [0.05, 0, 1]);
 });

@@ -7,8 +7,12 @@
  *
  * Starts the env server (pi_embodied_services.robots.piper.env_server, ROS topics to the AgileX
  * arm node and the Orbbec cameras) or attaches to one with --robot-env. The server owns the
- * safety limits from the robot YAML: per-call step and yaw refusal, the Z floor, the optional
- * workspace box, the joint-stream speed, and the divergence and dropped-gripper guards. A real
+ * safety limits: pi's --max-move / --max-yaw (passed at spawn; an attached server must enforce
+ * them or tighter ones, ../../primitives/motion.ts servedLimits) and the robot YAML's per-call
+ * step and yaw refusal, the Z floor, the optional workspace box, the joint-stream speed, and the
+ * divergence and dropped-gripper guards. The tools and code primitives are the manifest's
+ * (../../primitives/manifests/piper.json): move_delta / rotate_yaw / open_gripper /
+ * close_gripper run the server methods of the same names, which a program calls too. A real
  * robot needs an operator: pi must have a UI, --operator must be on (the base then asks for a
  * verdict before `finish`), and the operator confirms the reset before any motion. Motion tools
  * record a state step (robot state, front and wrist RGB) under --out and return it with both
@@ -28,9 +32,9 @@
  * the base convention. The robot refuses to start with --view-select when the units module it runs
  * with has no view hook (every move would silently run in the base frame).
  *
- * Code mode (../code, `--code=true --code-real --operator`): the env server runs with --code and
- * takes pi's --max-move / --max-yaw (code.set_limits) for a program's steps; every program is
- * confirmed by the operator and becomes the next state step.
+ * Code mode (../code, `--code=true --code-real --operator`): the env server runs with --code; a
+ * program's calls meet the same server-side limits as the tools; every program is confirmed by the
+ * operator and becomes the next state step.
  *
  * Reset: on two arms the start and the operator's scene reset reset both arms (the operator
  * confirmed it); a gripper that holds an object is opened only after the operator confirms that too.
@@ -40,9 +44,8 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { type TSchema, Type } from "typebox";
+import { Type } from "typebox";
 import { encodePng } from "../../infra/png.ts";
 import { NdArray, type RpcClient, RpcUnavailable } from "../../infra/rpc.ts";
 import {
@@ -64,11 +67,11 @@ import {
 	registerDetectionFlags,
 } from "../../primitives/detections.ts";
 import { mountGraspTool } from "../../primitives/grasp.ts";
+import { limitArgs, type MotionLimits, servedLimits } from "../../primitives/motion.ts";
 import { pointActive, pointTool, registerPointFlags } from "../../primitives/pointing.ts";
 import { gripperCommand, poseDelta, toWxyz, type XPolicySpec } from "../../primitives/xpolicy.ts";
 import {
 	attach,
-	checkMove,
 	defineRobot,
 	frameOf,
 	type Json,
@@ -111,6 +114,8 @@ type Meta = {
 	smooth?: { enabled?: boolean; blend?: boolean };
 	/** One arm: the backend; two arms: per arm. */
 	motion_backend?: string | Record<string, string>;
+	/** pi's limits as the server enforces them (services utils/code_real.py). */
+	motion_limits?: MotionLimits;
 };
 type Step = { blob: Json; images: Record<string, string> };
 
@@ -269,12 +274,14 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 	pi.registerFlag("max-move", {
 		type: "string",
 		default: "0.05",
-		description: "Largest translation per call, m (the server's limits.max_step_m applies if tighter)",
+		description:
+			"Largest translation per call, m, enforced by the env server (its limits.max_step_m applies if tighter)",
 	});
 	pi.registerFlag("max-yaw", {
 		type: "string",
 		default: "0.2",
-		description: "Largest |yaw| per call, rad (the server's limits.max_yaw_rad applies if tighter)",
+		description:
+			"Largest |yaw| per call, rad, enforced by the env server (its limits.max_yaw_rad applies if tighter)",
 	});
 	pi.registerFlag("view-select", {
 		type: "boolean",
@@ -285,6 +292,8 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 
 	let env: RpcClient | undefined;
 	let meta: Meta | undefined;
+	/** The limits the env server enforces (at least pi's flags). */
+	let enforced: MotionLimits | undefined;
 	let task: Task | undefined;
 	let out = "";
 	const steps: Step[] = [];
@@ -357,6 +366,26 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 	};
 	const spec: RobotSpec = {
 		name: dual ? "piper_dual" : "piper",
+		// Tools and code primitives: ../../primitives/manifests/piper.json (the env server reads it too).
+		manifest: "piper",
+		vars: () => ({
+			// `arm` exists on the dual rig only (the one-arm tools and primitives leave it out).
+			arms: [...arms],
+			cameras: cameras(),
+			max_move: String(maxMove()),
+			max_yaw: String(maxYaw()),
+			the: dual ? "one Piper arm's" : "the Piper",
+			arm_frame: dual ? ", in that arm's own base frame" : "",
+			state_fields: dual ? "both arms' eef pose, gripper, limits" : "eef pose, gripper, limits",
+			image_names: dual ? "front, left wrist and right wrist" : "front and wrist",
+		}),
+		// Must agree with the env server's _has (code mode refuses otherwise).
+		capabilities: (c) =>
+			({
+				dual,
+				sam3: pi.getFlag("detections") === true && Boolean(flag("sam3")),
+				unidepth: Boolean(flag("unidepth").trim()),
+			})[c] ?? false,
 		task: ["task"],
 		// The env server's primitive registry (code.api), recorded per episode.
 		codeApi: () => env,
@@ -415,7 +444,7 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 		},
 		start: startRobot,
 		stop: () => {
-			env = meta = task = undefined;
+			env = meta = task = enforced = undefined;
 		},
 		prompt: () => {
 			if (!task || !meta) return undefined;
@@ -448,10 +477,18 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 
 	/** Exploration: the operator judged this attempt a success; no more motion. */
 	const successJudged = () => pi.getFlag("explore") === true && (op.result() as Json).operator_verdict === "success";
-	/** Code mode is on (--code): the env server serves code.run and takes pi's per-call limits. */
+	/** Code mode is on (--code): the env server serves code.run. */
 	const coding = () => (pi.getFlag("code") ?? "false") !== "false";
-	const maxMove = () => Math.min(Number(flag("max-move", "0.05")), meta?.limits.max_step_m ?? Infinity);
-	const maxYaw = () => Math.min(Number(flag("max-yaw", "0.2")), meta?.limits.max_yaw_rad ?? Infinity);
+	/** pi's limits (its flags), which the env server enforces. */
+	const wanted = (): MotionLimits => ({
+		max_move_m: Number(flag("max-move", "0.05")),
+		max_yaw_rad: Number(flag("max-yaw", "0.2")),
+	});
+	/** The per-call limits in force (for the prompt): the served ones and the config's caps. */
+	const maxMove = () =>
+		Math.min(enforced?.max_move_m ?? wanted().max_move_m ?? Infinity, meta?.limits.max_step_m ?? Infinity);
+	const maxYaw = () =>
+		Math.min(enforced?.max_yaw_rad ?? wanted().max_yaw_rad ?? Infinity, meta?.limits.max_yaw_rad ?? Infinity);
 	const unitsFrame = (): Frame => meta?.units_frame ?? "base";
 	/** The arm a motion drives: required (and checked) on two arms, none on one. */
 	function armName(arm: string | undefined): string | undefined {
@@ -469,7 +506,7 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 		return env.call<T>(method, kwargs, timeoutMs, [], signal);
 	}
 
-	/** Refuse a step beyond the limits, then run it on the server (which checks them again). */
+	/** One arm's step on the server (which holds it to the limits). */
 	async function guardedStep(
 		delta: number[],
 		yaw: number,
@@ -484,7 +521,7 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 		return call("env.step", kwargs, 120_000, signal);
 	}
 
-	/** The checked `env.step` arguments of one arm's step (the limits, the operator's verdict). */
+	/** The `env.step` arguments of one arm's step, after the gates (the operator's verdict). */
 	function stepArgs(
 		delta: number[],
 		yaw: number,
@@ -496,14 +533,9 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 		continuous: boolean,
 	): Json {
 		const side = armName(arm);
-		op.check();
-		if (signal?.aborted) throw new Error("tool operation interrupted");
-		if (successJudged()) throw new Error(SUCCESS_REFUSAL);
+		gate(signal);
 		if (delta.length !== 3 || !delta.every(Number.isFinite)) throw new Error("delta must be 3 finite numbers");
 		if (!Number.isFinite(yaw)) throw new Error("yaw must be finite");
-		checkMove(delta, maxMove());
-		if (Math.abs(yaw) > maxYaw())
-			throw new Error(`yaw ${round(yaw, 4)} rad exceeds the limit of ${maxYaw()} rad per call.`);
 		const kwargs: Json = {
 			delta_xyz: delta,
 			yaw,
@@ -514,6 +546,21 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 			...(continuous ? { continuous: true } : {}),
 		};
 		return side ? { ...kwargs, arm: side } : kwargs;
+	}
+
+	/** The gates every motion passes before the server call: the operator, an abort, a judged success. */
+	function gate(signal: AbortSignal | undefined) {
+		op.check();
+		if (signal?.aborted) throw new Error("tool operation interrupted");
+		if (successJudged()) throw new Error(SUCCESS_REFUSAL);
+	}
+
+	/** A motion tool: its manifest params straight to the server method of the same name (after the gates). */
+	function motion(method: string, p: Json, signal: AbortSignal | undefined): Promise<Json> {
+		const side = armName(p.arm as string | undefined);
+		gate(signal);
+		const { arm: _arm, ...rest } = p;
+		return call(method, side ? { ...rest, arm: side } : rest, 120_000, signal);
 	}
 
 	/** Proprioception for prompts and the units plugins (`eef_xyz`, `gripper_width`, `table_z`). */
@@ -589,76 +636,28 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 		}
 	}
 
-	robot.tool(
-		"view_env_state",
-		dual
-			? "Read a Piper state step (both arms' eef pose, gripper, limits) and its front, left wrist and right wrist images."
-			: "Read a Piper state step (eef pose, gripper, limits) and its front and wrist images.",
-		Type.Object({ step: Type.Optional(Type.Integer({ description: "State step (default -1 = latest)" })) }),
-		async ({ step = -1 }) => {
-			const s = steps[step < 0 ? steps.length + step : step];
-			if (!s) return toolResult({ error: `step ${step} is not recorded (have 0..${steps.length - 1})` });
-			return view(s);
-		},
-	);
+	// The tools' schemas and descriptions are the manifest's (manifests/piper.json).
+	robot.tool("view_env_state", "", Type.Object({}), async (p: Json) => {
+		const step = typeof p.step === "number" ? p.step : -1;
+		const s = steps[step < 0 ? steps.length + step : step];
+		if (!s) return toolResult({ error: `step ${step} is not recorded (have 0..${steps.length - 1})` });
+		return view(s);
+	});
 
-	const xyz = Type.Array(Type.Number(), { minItems: 3, maxItems: 3 });
-	/** Two arms: every motion tool takes the required `arm`; the other arm holds still. */
-	const armParam: Record<string, TSchema> = dual
-		? {
-				arm: StringEnum(arms, { description: "Which arm moves; the other holds still" }),
-			}
-		: {};
-	type ArmP = { arm?: string };
-	const armOf = (p: ArmP) => (dual ? { arm: p.arm } : {});
-	const the = dual ? "one Piper arm's" : "the Piper";
-	robot.tool(
-		"move_delta",
-		`Move ${the} gripper by a bounded base-frame xyz delta in meters (x forward, y left, z up${dual ? ", in that arm's own base frame" : ""}).`,
-		Type.Object({ delta_xyz: xyz, ...armParam }),
-		async (p, signal) =>
-			act({ action: "move_delta", delta_xyz: p.delta_xyz, ...armOf(p as ArmP) }, () =>
-				guardedStep(p.delta_xyz, 0, null, "base", signal, true, (p as ArmP).arm),
-			),
-	);
-	robot.tool(
-		"rotate_yaw",
-		`Rotate ${the} gripper about the base z axis by a bounded angle in radians.`,
-		Type.Object({ yaw: Type.Number(), ...armParam }),
-		async (p, signal) =>
-			act({ action: "rotate_yaw", yaw: p.yaw, ...armOf(p as ArmP) }, () =>
-				guardedStep([0, 0, 0], p.yaw, null, "base", signal, true, (p as ArmP).arm),
-			),
-	);
-	robot.tool(
-		"open_gripper",
-		`Open ${the} gripper and wait for it to settle.`,
-		Type.Object({ ...armParam }),
-		async (p, signal) =>
-			act({ action: "open_gripper", ...armOf(p as ArmP) }, () =>
-				guardedStep([0, 0, 0], 0, "open", "base", signal, true, (p as ArmP).arm),
-			),
-	);
-	robot.tool(
-		"close_gripper",
-		`Close ${the} gripper and wait for it to settle; an empty close reopens and says so in notes.`,
-		Type.Object({ ...armParam }),
-		async (p, signal) =>
-			act({ action: "close_gripper", ...armOf(p as ArmP) }, () =>
-				guardedStep([0, 0, 0], 0, "close", "base", signal, true, (p as ArmP).arm),
-			),
-	);
+	/** The recorded command of a motion tool: its name and parameters. */
+	const command = (action: string, p: Json): Json => ({ action, ...p });
+	for (const name of ["move_delta", "rotate_yaw", "open_gripper", "close_gripper"])
+		robot.tool(name, "", Type.Object({}), async (p: Json, signal) =>
+			act(command(name, p), () => motion(`env.${name}`, p, signal)),
+		);
 	if (dual)
-		robot.tool(
-			"halt_arm",
-			"Stop one arm for the rest of the episode (its part of the task is done, or it is in trouble): the server holds it where it is and refuses its motion until the operator resets it. The other arm keeps working.",
-			Type.Object({ ...armParam, reason: Type.String({ description: "Why the arm stops" }) }),
-			async (p) =>
-				act({ action: "halt_arm", ...armOf(p as ArmP), reason: p.reason }, async () => {
-					const side = armName((p as ArmP).arm);
-					op.check();
-					return call("env.halt_arm", { arm: side ?? null, reason: p.reason });
-				}),
+		// Stopping an arm stays allowed after a judged success (only the operator gate applies).
+		robot.tool("halt_arm", "", Type.Object({}), async (p: Json) =>
+			act(command("halt_arm", p), async () => {
+				const side = armName(p.arm as string | undefined);
+				op.check();
+				return call("env.halt_arm", { arm: side ?? null, reason: p.reason ?? "" });
+			}),
 		);
 
 	/**
@@ -782,6 +781,8 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 			"-m",
 			"pi_embodied_services.robots.piper.env_server",
 			...(config ? ["--robot-config", config] : []),
+			// pi's per-call limits, enforced by the server for tools and programs alike.
+			...limitArgs(wanted()),
 			...detectionArgs(pi, flag("sam3", "")),
 			...(coding() ? ["--code"] : []),
 		];
@@ -798,6 +799,8 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 					readyMs: 60_000,
 				});
 		const m = await rpc.call<Meta>("env.get_env_meta", {}, 30_000);
+		// An attached server must enforce pi's limits (or tighter ones); throws otherwise.
+		const limits = servedLimits(m.motion_limits, wanted());
 		const t = m.tasks?.[taskName()];
 		if (!t?.instruction)
 			throw new Error(
@@ -835,18 +838,12 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 		if (!go) throw new Error("operator declined the reset; the Piper tools stay disabled");
 		env = rpc;
 		meta = m;
+		enforced = limits;
 		ui = ctx.ui;
 		try {
-			// A program's steps pass none of the tools' checks here: the server applies pi's limits.
-			if (coding())
-				await rpc.call("code.set_limits", { max_move_m: maxMove(), max_yaw_rad: maxYaw() }).catch((err) => {
-					throw new Error(
-						`code mode needs an env server started with --code (--robot-env URL#token=HEX): ${message(err)}`,
-					);
-				});
 			await resetArm();
 		} catch (err) {
-			env = meta = undefined;
+			env = meta = enforced = undefined;
 			throw err;
 		}
 		task = t;

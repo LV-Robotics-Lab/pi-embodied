@@ -861,7 +861,7 @@ def test_an_abandoned_primitive_is_stopped_and_refused_when_it_wakes_to_move(
             return {"moved": True}
 
     f = FakeArm()
-    out = f._rpc["code.run"]("slow_move()\n", timeout_s=3)
+    out = f._rpc["code.run"]("slow_move()\n", timeout_s=3, tier="low")
     assert out["status"] == "timeout" and out["abandoned"] == "slow_move", out
     abandoned_at = time.monotonic()
     assert f.stops, "stop was called"

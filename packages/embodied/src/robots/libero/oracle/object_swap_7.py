@@ -4,6 +4,8 @@
 # task: 7
 # tier: high
 # prelude: capx_libero.py
+# The CaP-X API calls are the env server's high-tier primitives (manifests/libero.json); the
+# prelude only stubs the unused viser import.
 # ---- CaP-X's program, verbatim ----
 import numpy as np
 import viser.transforms as vtf

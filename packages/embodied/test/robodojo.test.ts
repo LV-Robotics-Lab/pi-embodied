@@ -9,6 +9,7 @@ import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { ground, MOVE_UNITS } from "../src/modes/units/index.ts";
 import robodojo, { ARMS, FLYWHEEL, MAX_MOVE_M, STEP_M, VECTORS, YAW_STEP_RAD } from "../src/robots/robodojo/index.ts";
+import { codeApiReply } from "./helpers/code-api.ts";
 import { checkDetections, checkPoint, perceptionAnswers } from "./sim-stub.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
@@ -131,7 +132,7 @@ async function fakeEnv(
 			};
 			let result: unknown = { status: "ok" };
 			const perceived = o.perception ? perceptionAnswers({ method, args, kwargs }) : undefined;
-			if (method === "code.api") result = { tier: kwargs.tier ?? null, primitives: [], digest: "d" };
+			if (method === "code.api") result = codeApiReply("robodojo", kwargs.tier);
 			else if (method === "code.run") {
 				// A program that solved the task in 12 control steps.
 				motions = o.solveAfter ?? motions;
@@ -259,7 +260,7 @@ test("a session resets the cell's layout and activates the per-arm tools", async
 		"rotate_delta",
 		"set_gripper",
 		"go_home",
-		"locate",
+		"back_project",
 		"finish",
 	]);
 	const reset = env.calls.find((c) => c.method === "env.reset")!;
@@ -312,12 +313,29 @@ test("the episode ends on RoboDojo's success: motions are answered without a cal
 	assert.match(r.content[0].text, /the task is solved; call finish/);
 });
 
-test("locate back-projects head pixels through the server", async (t) => {
+test("back_project (the tool once named locate) back-projects head pixels through the server", async (t) => {
 	const env = await fakeEnv();
 	t.after(env.close);
 	const s = await start({}, env);
-	const r = await s.run("locate", { pixels: [[320, 240]] });
+	const r = await s.run("back_project", { pixels: [[320, 240]] });
 	assert.deepEqual(r.details.points, [{ pixel: [320, 240], xyz: [3.2, 2.4, 0.75] }]);
+});
+
+test("tool schemas come from the manifest; program-only options and code primitives are not tools", async (t) => {
+	const env = await fakeEnv();
+	t.after(env.close);
+	const s = await start({}, env);
+	const props = (name: string) => s.tools.get(name)!.parameters.properties;
+	for (const name of ["move_to", "move_delta", "rotate_delta", "set_gripper"]) {
+		assert.deepEqual(props(name).arm.enum, ["left", "right"], name);
+		assert.ok(s.tools.get(name)!.parameters.required.includes("arm"), name);
+		assert.equal(props(name).return_frames, undefined, `${name}: return_frames is a program's option`);
+	}
+	assert.equal(props("back_project").camera_name, undefined);
+	assert.equal(props("back_project").pixels.maxItems, 32);
+	for (const name of ["locate", "solve_ik", "move_to_joints", "traj_plan", "move_along_trajectory", "step"])
+		assert.ok(!s.tools.has(name), name);
+	assert.match(s.tools.get("move_to")!.description, /at most 0\.5 m/);
 });
 
 test("a server running another task, a seed beyond its layouts or an unstable layout fails closed", async (t) => {

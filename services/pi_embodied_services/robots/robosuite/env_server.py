@@ -30,7 +30,8 @@ and TCP poses. Object poses leave the server only through ``env.ground_truth_pos
 ``--privileged``): ``env.raw_obs`` is the robots' state alone, CaP-X's ``cube_poses`` /
 ``nut_poses`` are not exposed, and the handover task renders no instance segmentation.
 
-The primitive registry (``code.api``, ./primitives.py, components/code_api.py) declares the
+The primitive manifest (packages/embodied/src/primitives/manifests/robosuite.json, read by
+components/manifest.py for ``code.api``) declares the
 same facade methods for a code-as-policy caller: ``move_to`` / ``move_delta`` / ``set_gripper``
 step the same env under the same limits and stop generation as pi's tools; ``segment`` needs
 ``--sam3``, ``preview_reach`` and the reach check before a move need ``--ik``, ``plan_grasp`` and
@@ -56,10 +57,8 @@ from typing import Any
 
 import numpy as np
 
-from pi_embodied_services.components.code_api import register_code_api
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
 from pi_embodied_services.robots.robosuite import tasks
-from pi_embodied_services.robots.robosuite.primitives import ROBOSUITE_PRIMITIVES
 from pi_embodied_services.utils import ground_truth, reach
 from pi_embodied_services.utils.code_exec import CodeRunMixin
 from pi_embodied_services.utils.geometry import (
@@ -186,6 +185,63 @@ def make_restack_class():
             )
 
     return RestackStack
+
+
+#: Motion methods whose reply to a program is their info without frames and images.
+MOTION_REPLIES = (
+    "env.move_to",
+    "env.move_delta",
+    "env.set_gripper",
+    "env.goto_pose",
+    "env.home_pose",
+    "env.open_gripper",
+    "env.close_gripper",
+    "env.move_to_joints",
+    "env.move_along_trajectory",
+)
+
+#: panda_hand -> robosuite's grip site: half a turn about the hand's z (wxyz).
+HAND_TO_SITE_WXYZ = np.array([0.0, 0.0, 0.0, 1.0])
+
+
+def _unit_quat(q) -> np.ndarray:
+    q = np.asarray(q, dtype=np.float64).reshape(4)
+    return q / np.linalg.norm(q)
+
+
+def _quat_mul(a, b) -> np.ndarray:
+    """Hamilton product of wxyz quaternions."""
+    w1, x1, y1, z1 = a
+    w2, x2, y2, z2 = b
+    return np.array(
+        [
+            w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+            w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+            w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+            w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+        ]
+    )
+
+
+def _quat_matrix(q_wxyz) -> np.ndarray:
+    w, x, y, z = _unit_quat(q_wxyz)
+    return np.array(
+        [
+            [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+        ]
+    )
+
+
+def _slerp(a, b, t: float) -> np.ndarray:
+    d = float(np.dot(a, b))
+    if d < 0:
+        b, d = -b, -d
+    if d > 0.9995:
+        return _unit_quat(a + (b - a) * t)
+    th = np.arccos(d)
+    return (np.sin((1 - t) * th) * a + np.sin(t * th) * b) / np.sin(th)
 
 
 class RobosuiteEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
@@ -328,6 +384,19 @@ class RobosuiteEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
                 "env.get_observation": self.get_observation,
                 "env.back_project": self.back_project,
                 "env.segment": self.segment,
+                # CaP-X's high tier (and its privileged variant) and joint-space parts.
+                "env.get_object_pose": self.get_object_pose,
+                "env.get_object_pose_privileged": self.get_object_pose_privileged,
+                "env.sample_grasp_pose": self.sample_grasp_pose,
+                "env.sample_grasp_pose_privileged": self.sample_grasp_pose_privileged,
+                "env.goto_pose": self.goto_pose,
+                "env.home_pose": self.home_pose,
+                "env.open_gripper": self.open_gripper,
+                "env.close_gripper": self.close_gripper,
+                "env.solve_ik": self.solve_ik,
+                "env.move_to_joints": self.move_to_joints,
+                "env.traj_plan": self.traj_plan,
+                "env.move_along_trajectory": self.move_along_trajectory,
             }
         )
         grasp = getattr(self, "_grasp", None)
@@ -336,20 +405,31 @@ class RobosuiteEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
             geometry.install(self)
         if grasp is not None:
             grasp.install(self, mutating=GraspPlanner.MUTATING + ("env.move_to",))
-        api = register_code_api(
-            self,
-            ROBOSUITE_PRIMITIVES
-            + (grasp.primitives() if grasp else ())
-            + (geometry.primitives() if geometry else ()),
-        )
-        self._install_code_run(
-            api,
+        # The primitives are packages/embodied/src/primitives/manifests/robosuite.json (with
+        # pi); code.api, the programs' whitelist and the startup self-check come from it.
+        self._manifest_code_run(
+            "robosuite",
+            have=self._has,
             move_m=self._code_move_m,
             check=self._code_check,
             reply=self._code_reply,
             begin=self._begin_run,
             finish=self._finish_run,
         )
+
+    def _has(self, capability: str) -> bool:
+        """What this server can serve of the manifest's ``requires``."""
+        grasp = getattr(self, "_grasp", None)
+        return {
+            "sam3": bool(getattr(self, "_sam3_url", None)),
+            "ik": getattr(self, "_reach", None) is not None,
+            "grasp": grasp is not None,
+            "place": grasp is not None and bool(grasp.capabilities().get("place")),
+            "geometry": getattr(self, "_geometry", None) is not None,
+            "unidepth": "env.enhance_depth" in self._rpc,
+            "fingers": self._task.gripper,
+            "privileged": True,
+        }.get(capability, False)
 
     # ---- code mode (run_code) ----
 
@@ -377,7 +457,7 @@ class RobosuiteEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
     def _code_reply(self, method: str, out: Any) -> Any:
         """What a program receives: a motion's info without its frames (they go to the run's
         video) and without the observation images; a raw step's robot state, not its images."""
-        if method in ("env.move_to", "env.move_delta", "env.set_gripper"):
+        if method in MOTION_REPLIES and isinstance(out, dict) and "info" in out:
             info = dict(out["info"])
             self._keep_frames(info.pop("frames", []))
             return info
@@ -390,12 +470,42 @@ class RobosuiteEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
                 "truncated": truncated,
                 "state": state,
             }
+        if method == "env.segment" and isinstance(out, dict):
+            # The overlay is the tool's picture; the program has the mask.
+            return {k: v for k, v in out.items() if k != "overlay_png_base64"}
         return out
 
     def _code_move_m(self, method: str, kwargs: dict) -> float:
         """How far a program's call may move an arm (the run's translation cap)."""
+        joint_or_pose = (
+            "env.goto_pose",
+            "env.home_pose",
+            "env.move_to_joints",
+            "env.move_along_trajectory",
+        )
+        i = self._arm_index(kwargs.get("arm")) if method in joint_or_pose else 0
+        if method == "env.goto_pose":
+            target = np.asarray(kwargs["position"], dtype=np.float64).reshape(3)
+            return float(
+                np.linalg.norm(target - self._eef(i)[0])
+                + 2 * abs(float(kwargs.get("z_approach", 0.0) or 0.0))
+            )
+        if method == "env.home_pose":
+            home = self._home.get(self._task.arms[i], self._eef(i)[0])
+            return float(np.linalg.norm(home - self._eef(i)[0]))
+        if method == "env.move_to_joints":
+            return float(
+                np.linalg.norm(self._fk(kwargs["joints"], i)[0] - self._eef(i)[0])
+            )
+        if method == "env.move_along_trajectory":
+            here, total = self._eef(i)[0], 0.0
+            for q in np.asarray(kwargs["trajectory"], dtype=np.float64)[:100]:
+                p = self._fk(q, i)[0]
+                total += float(np.linalg.norm(p - here))
+                here = p
+            return total
         if method == "env.move_to":
-            target = np.asarray(kwargs["target_xyz"], dtype=np.float64).reshape(3)
+            target = np.asarray(kwargs["xyz"], dtype=np.float64).reshape(3)
             pos, _ = self._eef(self._arm_index(kwargs.get("arm")))
             return float(np.linalg.norm(target - pos))
         if method == "env.move_delta":
@@ -698,7 +808,7 @@ class RobosuiteEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
 
     def move_to(
         self,
-        target_xyz,
+        xyz,
         *,
         arm: str | None = None,
         quat_xyzw=None,
@@ -714,7 +824,7 @@ class RobosuiteEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         """Servo one arm's TCP to a world position, holding its orientation.
 
         Args:
-            target_xyz: [x, y, z] in metres, world frame (+z up; on the one-arm tasks +x away
+            xyz: [x, y, z] in metres, world frame (+z up; on the one-arm tasks +x away
                 from robot0 and +y to its left; on the two-arm tasks the robots face each other
                 along y, robot0 at -y facing +y; the table top is at ``get_state()["table_z"]``).
             arm: "robot0" or "robot1" on the two-arm tasks; omit on one arm.
@@ -740,7 +850,7 @@ class RobosuiteEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         """
         i = self._arm_index(arm)
         name = self._task.arms[i]
-        target = np.asarray(target_xyz, dtype=np.float64).reshape(3)
+        target = np.asarray(xyz, dtype=np.float64).reshape(3)
         pos, quat = self._eef(i)
         ws = self._workspace()
         tasks.check_move(
@@ -1044,12 +1154,12 @@ class RobosuiteEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
 
         return Rotation.from_matrix(rot).as_quat()
 
-    def preview_reach(self, pos, quat_xyzw=None, *, arm: str | None = None) -> dict:
+    def preview_reach(self, xyz, quat_xyzw=None, *, arm: str | None = None) -> dict:
         """Whether an arm can reach a world position without moving: IK from its current joints
         by the ik service (``--ik``); the sim is not touched.
 
         Args:
-            pos: target [x, y, z] in metres (world frame), the point `move_to` would take.
+            xyz: target [x, y, z] in metres (world frame), the point `move_to` would take.
             quat_xyzw: target orientation; None (default) keeps the current one, as `move_to`.
             arm: "robot0" or "robot1" on the two-arm tasks; omit on one arm.
 
@@ -1069,12 +1179,12 @@ class RobosuiteEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         obs = self._obs()
         return self._reach.preview(
             obs[f"robot{i}_joint_pos"],
-            pos,
+            xyz,
             obs[f"robot{i}_eef_quat"] if quat_xyzw is None else quat_xyzw,
             base_pose=base,
         )
 
-    # ---- the code primitives (./primitives.py) ----------------------------------------------
+    # ---- the code primitives (manifests/robosuite.json) ------------------------------------------
 
     def get_state(self) -> dict:
         """Proprioception, no images.
@@ -1133,25 +1243,80 @@ class RobosuiteEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         )
         return (view["extrinsic_cam2world"] @ p)[:3]
 
-    def back_project(self, row: int, col: int, camera: str = "agentview") -> dict:
-        """World xyz of pixel (row, col) of the current 512x512 image of `camera` (row 0 = top).
+    def back_project(
+        self,
+        row: int | None = None,
+        col: int | None = None,
+        camera: str = "agentview",
+        row_range=None,
+        col_range=None,
+        z_min: float | None = None,
+        z_max: float | None = None,
+    ) -> dict:
+        """World xyz of pixel (row, col) of the current 512x512 image of `camera` (row 0 = top),
+        or, in region mode (row_range and col_range, optionally a z band), the midpoint of the
+        window's world x and y and its median z.
 
         Args:
             row, col: pixel in the image `get_observation` returns for that camera.
             camera: "agentview" (default) or "wrist".
+            row_range, col_range: [first, last) pixel rows and columns of a window.
+            z_min, z_max: region mode: keep pixels with world z in this band.
 
         Returns:
-            dict with ``world_xyz`` [x, y, z] in metres. Raises when the pixel has no depth.
+            dict with ``world_xyz`` [x, y, z] in metres (pixel mode), or ``center_xyz``,
+            ``median_xyz`` and ``n_valid`` (region mode). Raises when there is no depth.
 
         Example:
             >>> p = back_project(300, 260)["world_xyz"]
+            >>> top = back_project(row_range=[200, 260], col_range=[240, 300])["center_xyz"]
         """
+        view = self._view(camera)
+
+        def span(r):
+            return r if r is not None and len(r) == 2 and max(r) > min(r) else None
+
+        rows, cols = span(row_range), span(col_range)
+        if rows is not None or cols is not None:
+            if rows is None or cols is None:
+                raise ValueError("region mode needs both row_range and col_range")
+            r0, r1 = (int(np.clip(v, 0, CODE_RES)) for v in (min(rows), max(rows)))
+            c0, c1 = (int(np.clip(v, 0, CODE_RES)) for v in (min(cols), max(cols)))
+            pts = [
+                p
+                for p in (
+                    self._world_xyz(view, r, c)
+                    for r in range(r0, r1)
+                    for c in range(c0, c1)
+                )
+                if p is not None
+                and (z_min is None or p[2] >= z_min)
+                and (z_max is None or p[2] <= z_max)
+            ]
+            if len(pts) < 8:
+                raise ValueError(
+                    f"too few valid pixels in the region ({len(pts)}); widen the window or the z band"
+                )
+            a = np.asarray(pts)
+            return {
+                "camera": camera,
+                "mode": "region",
+                "center_xyz": [
+                    round(float((a[:, 0].min() + a[:, 0].max()) / 2), 4),
+                    round(float((a[:, 1].min() + a[:, 1].max()) / 2), 4),
+                    round(float(np.median(a[:, 2])), 4),
+                ],
+                "median_xyz": [round(float(v), 4) for v in np.median(a, axis=0)],
+                "n_valid": len(pts),
+            }
+        if row is None or col is None:
+            raise ValueError("give row and col, or row_range and col_range")
         row, col = int(row), int(col)
         if not (0 <= row < CODE_RES and 0 <= col < CODE_RES):
             raise ValueError(
                 f"pixel ({row}, {col}) out of bounds for {CODE_RES}x{CODE_RES}"
             )
-        p = self._world_xyz(self._view(camera), row, col)
+        p = self._world_xyz(view, row, col)
         if p is None:
             raise ValueError(f"no depth at pixel ({row}, {col}); pick another pixel")
         return {
@@ -1161,13 +1326,18 @@ class RobosuiteEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         }
 
     def segment(
-        self, prompt: str, camera: str = "agentview", min_score: float = 0.2
+        self,
+        prompt: str | None = None,
+        point=None,
+        camera: str = "agentview",
+        min_score: float = 0.2,
     ) -> dict:
-        """SAM3 segmentation of the current 512x512 image of `camera` by a text prompt, and the
-        top mask's median world position through the depth image.
+        """SAM3 segmentation of the current 512x512 image of `camera` by a text prompt or a
+        positive point, and the top mask's median world position through the depth image.
 
         Args:
-            prompt: what to segment, e.g. "red cube".
+            prompt: what to segment, e.g. "red cube" (or give point).
+            point: a positive point [row, col] instead of a prompt.
             camera: "agentview" (default) or "wrist".
             min_score: SAM3 score threshold (default 0.2).
 
@@ -1190,6 +1360,9 @@ class RobosuiteEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
             )
         if self._sam3 is None:
             self._sam3 = HttpRpcClient(self._sam3_url)
+        text = (prompt or "").strip()
+        if bool(text) == (point is not None):
+            raise ValueError("give exactly one of a text prompt or a point [row, col]")
         view = self._view(camera)
         buf = io.BytesIO()
         Image.fromarray(view["rgb"]).save(buf, format="PNG")
@@ -1197,7 +1370,11 @@ class RobosuiteEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
             "sam3.segment",
             kwargs={
                 "image_base64": base64.b64encode(buf.getvalue()).decode("ascii"),
-                "text_prompt": str(prompt),
+                **(
+                    {"text_prompt": text}
+                    if text
+                    else {"point": [int(v) for v in point]}
+                ),
                 "min_score": float(min_score),
             },
             timeout_s=120,
@@ -1232,6 +1409,281 @@ class RobosuiteEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         }
         if len(pts) >= 10:
             out["world_xyz"] = [round(float(v), 4) for v in np.median(pts, axis=0)]
+        else:
+            out["world_error"] = f"too few valid depth pixels ({len(pts)})"
+        # The tool shows the mask over the image (a program's reply drops it).
+        overlay = view["rgb"].astype(np.float32)
+        overlay[mask] = 0.55 * overlay[mask] + 0.45 * np.array([255.0, 0.0, 0.0])
+        png = io.BytesIO()
+        Image.fromarray(overlay.astype(np.uint8)).save(png, format="PNG")
+        out["overlay_png_base64"] = base64.b64encode(png.getvalue()).decode("ascii")
+        return out
+
+    # ---- CaP-X's high tier (FrankaControlApi) and its joint-space parts (FrankaControlApiReduced) --
+    #
+    # Quaternions are CaP-X's: wxyz of panda_hand. Robosuite's grip site (what move_to servos) is
+    # panda_hand turned half a turn about its own z (measured on bjb2, 2026-09-27), so an
+    # orientation is converted with HAND_TO_SITE_WXYZ on the way in and back on the way out.
+    # Positions are the grip site's (CaP-X's fingertip point): no TCP offset. The motions go through
+    # the registered env.move_to / env.set_gripper (their limits, stop handling and the planners' id
+    # expiry), as the tools do.
+
+    def _site_xyzw(self, q_wxyz) -> list[float]:
+        w, x, y, z = _quat_mul(_unit_quat(q_wxyz), HAND_TO_SITE_WXYZ)
+        return [float(x), float(y), float(z), float(w)]
+
+    @staticmethod
+    def _hand_wxyz(q_xyzw) -> list[float]:
+        x, y, z, w = np.asarray(q_xyzw, dtype=np.float64).reshape(4)
+        return [
+            float(v) for v in _quat_mul(_unit_quat([w, x, y, z]), HAND_TO_SITE_WXYZ)
+        ]
+
+    def _object_points(self, object_name: str) -> tuple[np.ndarray, dict]:
+        """The object's world points through the depth of the first camera whose SAM3 mask finds it."""
+        for camera in ("agentview", "wrist"):
+            seg = self.segment(prompt=str(object_name), camera=camera)
+            if not seg.get("found"):
+                continue
+            view = self._view(camera)
+            rows, cols = np.nonzero(seg["mask"])
+            pts = [
+                q
+                for q in (
+                    self._world_xyz(view, int(r), int(c)) for r, c in zip(rows, cols)
+                )
+                if q is not None
+            ]
+            if len(pts) >= 10:
+                return np.asarray(pts), seg
+        raise ValueError(f"no SAM3 detection with depth for {object_name!r}")
+
+    def get_object_pose(
+        self, object_name: str, return_bbox_extent: bool = False
+    ) -> list:
+        """CaP-X's get_object_pose from perception: [position (3,), quaternion_wxyz (4,),
+        bbox_extent (3,) or None] of an object named in words. The position is the median of the
+        mask's depth points; the extent the 5th-95th percentile span per world axis; the
+        orientation is identity (CaP-X: disregard it, use the grasp quaternion or [0, 0, 1, 0]).
+
+        Example:
+            pos, quat, ext = get_object_pose("green cube", return_bbox_extent=True)
+        """
+        pts, _ = self._object_points(object_name)
+        pos = np.median(pts, axis=0)
+        extent = np.percentile(pts, 95, axis=0) - np.percentile(pts, 5, axis=0)
+        return [
+            [round(float(v), 4) for v in pos],
+            [1.0, 0.0, 0.0, 0.0],
+            [round(float(v), 4) for v in extent] if return_bbox_extent else None,
+        ]
+
+    def get_object_pose_privileged(
+        self, object_name: str, return_bbox_extent: bool = False
+    ) -> list:
+        """CaP-X's privileged get_object_pose: the simulator's pose of an object named in words
+        (tasks.OBJECT_NAMES, or a ground-truth name) and CaP-X's hard-coded extent.
+
+        Example:
+            pos, quat, ext = get_object_pose("red cube", return_bbox_extent=True)
+        """
+        names = tasks.OBJECT_NAMES.get(self._task_name, {})
+        sim_name, extent = names.get(str(object_name), (str(object_name), None))
+        poses = self.ground_truth_poses([sim_name])["poses"]
+        pose = poses[sim_name]
+        x, y, z, w = pose["quat_xyzw"]
+        return [
+            [float(v) for v in pose["pos"]],
+            [float(w), float(x), float(y), float(z)],
+            list(extent) if (return_bbox_extent and extent is not None) else None,
+        ]
+
+    def sample_grasp_pose(self, object_name: str, arm: str | None = None) -> list:
+        """CaP-X's sample_grasp_pose: [position (3,), quaternion_wxyz (4,)] of a grasp of the
+        object. With a grasp server, the best candidate of plan_grasp; without one, the mask's
+        centre with the gripper pointing straight down (wxyz [0, 0, 1, 0]).
+
+        Example:
+            pos, quat = sample_grasp_pose("red cube")
+            goto_pose(pos, quat, z_approach=0.1)
+        """
+        if self._grasp is not None:
+            plan = self._grasp.plan_grasp(object=str(object_name), arm=arm)
+            best = plan["candidates"][0]
+            return [
+                [float(v) for v in best["eef_position"]],
+                self._hand_wxyz(best["eef_quat_xyzw"]),
+            ]
+        pts, _ = self._object_points(object_name)
+        return [
+            [round(float(v), 4) for v in np.median(pts, axis=0)],
+            [0.0, 0.0, 1.0, 0.0],
+        ]
+
+    def sample_grasp_pose_privileged(
+        self, object_name: str, arm: str | None = None
+    ) -> list:
+        """CaP-X's privileged sample_grasp_pose: the object's simulator position with the gripper
+        pointing down (wxyz [0, 0, 1, 0]).
+
+        Example:
+            pos, quat = sample_grasp_pose("red cube")
+        """
+        pos, _, _ = self.get_object_pose_privileged(object_name)
+        return [pos, [0.0, 0.0, 1.0, 0.0]]
+
+    def goto_pose(
+        self,
+        position,
+        quaternion_wxyz,
+        z_approach: float = 0.0,
+        arm: str | None = None,
+    ) -> dict:
+        """CaP-X's goto_pose: servo the grip site to a pose, first z_approach metres back along
+        the gripper's approach axis when given; a move longer than the per-call cap runs as
+        straight legs of move_to. Returns the last leg's report.
+
+        Example:
+            goto_pose([0.05, 0.0, 0.83], [0, 0, 1, 0], z_approach=0.1)
+        """
+        target = np.asarray(position, dtype=np.float64).reshape(3)
+        q = _unit_quat(quaternion_wxyz)
+        stops = []
+        if float(z_approach):
+            stops.append(
+                target + _quat_matrix(q) @ np.array([0.0, 0.0, -float(z_approach)])
+            )
+        stops.append(target)
+        out: dict = {}
+        leg_m = 0.9 * self._max_move
+        i = self._arm_index(arm)
+        for stop in stops:
+            start = self._eef(i)[0]
+            legs = max(1, int(np.ceil(np.linalg.norm(stop - start) / leg_m)))
+            for k in range(legs):
+                here = self._eef(i)[0]
+                left = legs - k
+                leg = here + (stop - here) / max(
+                    left, int(np.ceil(np.linalg.norm(stop - here) / leg_m))
+                )
+                out = self._rpc["env.move_to"](
+                    leg, arm=arm, quat_xyzw=self._site_xyzw(q), max_steps=200
+                )
+                if self.stop_requested():
+                    return out
+        return out
+
+    def home_pose(self, arm: str | None = None) -> dict:
+        """CaP-X's home_pose: back to the arm's reset position, gripper pointing down.
+
+        Example:
+            home_pose()
+        """
+        i = self._arm_index(arm)
+        home = self._home.get(self._task.arms[i], self._eef(i)[0])
+        return self.goto_pose(home, [0.0, 0.0, 1.0, 0.0], arm=arm)
+
+    def open_gripper(self, arm: str | None = None) -> dict:
+        """CaP-X's open_gripper (40 control steps at most).
+
+        Example:
+            open_gripper()
+        """
+        return self._rpc["env.set_gripper"](False, arm=arm, steps=40)
+
+    def close_gripper(self, arm: str | None = None) -> dict:
+        """CaP-X's close_gripper (60 control steps at most; the fingers stop on an object).
+
+        Example:
+            close_gripper()
+        """
+        return self._rpc["env.set_gripper"](True, arm=arm, steps=60)
+
+    def solve_ik(
+        self, position, quaternion_wxyz, arm: str | None = None
+    ) -> list[float]:
+        """CaP-X's solve_ik: the arm's 7 joint angles for a grip-site pose, by the ik service
+        (--ik) from the current joints. Raises when it has no solution.
+
+        Example:
+            q = solve_ik([0.05, 0.0, 0.95], [0, 0, 1, 0])
+            move_to_joints(q)
+        """
+        if self._reach is None:
+            raise RuntimeError("solve_ik needs the ik service (--ik)")
+        r = self.preview_reach(position, self._site_xyzw(quaternion_wxyz), arm=arm)
+        if r.get("status") != "reachable" or r.get("q") is None:
+            raise ValueError(f"no IK solution: {r.get('message') or r.get('status')}")
+        return [float(v) for v in np.asarray(r["q"]).reshape(-1)[:7]]
+
+    def _fk(self, joints, i: int) -> tuple[np.ndarray, np.ndarray]:
+        """The grip site's world position and xyzw orientation at ``joints`` (a scratch copy of
+        the MuJoCo state; the sim is not touched)."""
+        import mujoco
+
+        robot = self._env.robots[i]
+        model = self._sim.model._model
+        data = mujoco.MjData(model)
+        data.qpos[:] = self._sim.data.qpos
+        q = np.asarray(joints, dtype=np.float64).reshape(-1)
+        idx = list(robot._ref_joint_pos_indexes)[: len(q)]
+        if len(q) != len(idx):
+            raise ValueError(f"joints has {len(q)} values; the arm has {len(idx)}")
+        data.qpos[idx] = q
+        mujoco.mj_kinematics(model, data)
+        site = robot.eef_site_id[robot.arms[0]]
+        pos = np.array(data.site_xpos[site])
+        return pos, self._quat_of(np.array(data.site_xmat[site]).reshape(3, 3))
+
+    def move_to_joints(self, joints, arm: str | None = None) -> dict:
+        """CaP-X's move_to_joints: drive the arm to a joint configuration. The arms run OSC_POSE,
+        so the grip site servos (move_to, its per-call cap and workspace) to the pose those joints
+        put it at (forward kinematics); the joints follow the controller, not the target exactly.
+
+        Example:
+            move_to_joints(solve_ik([0.05, 0.0, 0.95], [0, 0, 1, 0]))
+        """
+        i = self._arm_index(arm)
+        pos, quat = self._fk(joints, i)
+        return self._rpc["env.move_to"](
+            pos, arm=arm, quat_xyzw=list(quat), max_steps=200
+        )
+
+    def traj_plan(
+        self, start_pose_wxyz_xyz, end_pose_wxyz_xyz, arm: str | None = None
+    ) -> list:
+        """CaP-X's traj_plan: joint waypoints [N, 7] from one pose (wxyz then xyz) to another.
+        Here a straight Cartesian line in 2 cm steps with the orientation slerped, solved by IK
+        from each waypoint's predecessor (CaP-X runs PyRoKi's trajectory optimisation).
+
+        Example:
+            traj = traj_plan([0, 0, 1, 0, 0.0, 0.0, 1.0], [0, 0, 1, 0, 0.05, 0.0, 0.9])
+            move_along_trajectory(traj)
+        """
+        a = np.asarray(start_pose_wxyz_xyz, dtype=np.float64).reshape(7)
+        b = np.asarray(end_pose_wxyz_xyz, dtype=np.float64).reshape(7)
+        n = max(1, min(100, int(np.ceil(np.linalg.norm(b[4:] - a[4:]) / 0.02))))
+        out = []
+        for k in range(1, n + 1):
+            t = k / n
+            q = _slerp(_unit_quat(a[:4]), _unit_quat(b[:4]), t)
+            out.append(self.solve_ik(a[4:] + (b[4:] - a[4:]) * t, q, arm=arm))
+        return out
+
+    def move_along_trajectory(self, trajectory, arm: str | None = None) -> dict:
+        """CaP-X's move_along_trajectory: move_to_joints through every waypoint (at most 100).
+
+        Example:
+            move_along_trajectory(traj_plan(start, end))
+        """
+        traj = np.asarray(trajectory, dtype=np.float64)
+        if traj.ndim != 2 or len(traj) > 100:
+            raise ValueError("trajectory must be [N, 7] with N <= 100")
+        out: dict = {}
+        for q in traj:
+            out = self.move_to_joints(q, arm=arm)
+            if self.stop_requested():
+                break
         return out
 
     def close(self) -> None:

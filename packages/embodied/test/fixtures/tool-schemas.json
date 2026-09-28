@@ -180,13 +180,16 @@
 					],
 					"properties": {
 						"x": {
-							"type": "number"
+							"type": "number",
+							"description": "World x, m"
 						},
 						"y": {
-							"type": "number"
+							"type": "number",
+							"description": "World y, m"
 						},
 						"yaw": {
-							"type": "number"
+							"type": "number",
+							"description": "Heading, rad about +z (0 = +x)"
 						}
 					}
 				}
@@ -198,7 +201,7 @@
 					"type": "object",
 					"required": [
 						"arm",
-						"position"
+						"xyz"
 					],
 					"properties": {
 						"arm": {
@@ -209,7 +212,7 @@
 							],
 							"description": "Which arm"
 						},
-						"position": {
+						"xyz": {
 							"type": "array",
 							"items": {
 								"type": "number"
@@ -237,7 +240,7 @@
 					"type": "object",
 					"required": [
 						"arm",
-						"position"
+						"xyz"
 					],
 					"properties": {
 						"arm": {
@@ -248,7 +251,7 @@
 							],
 							"description": "Which arm"
 						},
-						"position": {
+						"xyz": {
 							"type": "array",
 							"items": {
 								"type": "number"
@@ -268,7 +271,9 @@
 						},
 						"pregrasp_offset_m": {
 							"type": "number",
-							"description": "Default 0.1 (0.02-0.5)"
+							"description": "Height of the pre-grasp and the lift above the pose, m (default 0.1)",
+							"minimum": 0.02,
+							"maximum": 0.5
 						}
 					}
 				}
@@ -320,7 +325,8 @@
 					"type": "object",
 					"properties": {
 						"prompt": {
-							"type": "string"
+							"type": "string",
+							"description": "What to segment, e.g. 'the radio' (or give point)"
 						},
 						"point": {
 							"type": "array",
@@ -328,7 +334,8 @@
 								"type": "integer"
 							},
 							"minItems": 2,
-							"maxItems": 2
+							"maxItems": 2,
+							"description": "A positive point [row, col] instead of a prompt"
 						},
 						"camera": {
 							"type": "string",
@@ -341,7 +348,9 @@
 						},
 						"min_score": {
 							"type": "number",
-							"description": "Default 0.2"
+							"description": "SAM3 threshold (default 0.2)",
+							"minimum": 0,
+							"maximum": 1
 						}
 					}
 				}
@@ -356,7 +365,8 @@
 					],
 					"properties": {
 						"query": {
-							"type": "string"
+							"type": "string",
+							"description": "A short noun phrase, e.g. 'the radio on the table'"
 						},
 						"camera": {
 							"type": "string",
@@ -377,10 +387,14 @@
 					"type": "object",
 					"properties": {
 						"row": {
-							"type": "integer"
+							"type": "integer",
+							"description": "Pixel row (0 = top)",
+							"minimum": 0
 						},
 						"col": {
-							"type": "integer"
+							"type": "integer",
+							"description": "Pixel column",
+							"minimum": 0
 						},
 						"camera": {
 							"type": "string",
@@ -397,7 +411,8 @@
 								"type": "integer"
 							},
 							"minItems": 2,
-							"maxItems": 2
+							"maxItems": 2,
+							"description": "Region mode: [first, last) rows"
 						},
 						"col_range": {
 							"type": "array",
@@ -405,7 +420,8 @@
 								"type": "integer"
 							},
 							"minItems": 2,
-							"maxItems": 2
+							"maxItems": 2,
+							"description": "Region mode: [first, last) columns"
 						}
 					}
 				}
@@ -417,7 +433,8 @@
 					"type": "object",
 					"properties": {
 						"prompt": {
-							"type": "string"
+							"type": "string",
+							"description": "What to segment (or point)"
 						},
 						"point": {
 							"type": "array",
@@ -425,7 +442,8 @@
 								"type": "integer"
 							},
 							"minItems": 2,
-							"maxItems": 2
+							"maxItems": 2,
+							"description": "A positive point [row, col] instead of prompt"
 						},
 						"camera": {
 							"type": "string",
@@ -434,11 +452,13 @@
 								"left_wrist",
 								"right_wrist"
 							],
-							"description": "Default head"
+							"description": "Default: the first camera"
 						},
 						"min_score": {
 							"type": "number",
-							"description": "Default 0.2"
+							"description": "Default 0.2",
+							"minimum": 0,
+							"maximum": 1
 						},
 						"all": {
 							"type": "boolean",
@@ -492,7 +512,7 @@
 								"left_wrist",
 								"right_wrist"
 							],
-							"description": "Default head"
+							"description": "Default: the first camera"
 						}
 					}
 				}
@@ -747,8 +767,8 @@
 						},
 						"window_radius": {
 							"type": "integer",
-							"minimum": 0,
-							"description": "Depth median window radius (default 2)"
+							"description": "Depth median window radius (default 2)",
+							"minimum": 0
 						}
 					}
 				}
@@ -786,21 +806,21 @@
 						},
 						"min_score": {
 							"type": "number",
+							"description": "Default 0.2",
 							"minimum": 0,
-							"maximum": 1,
-							"description": "Default 0.2"
+							"maximum": 1
 						},
 						"min_valid_depth_pixels": {
 							"type": "integer",
-							"minimum": 1,
-							"description": "Default 25"
+							"description": "Default 25",
+							"minimum": 1
 						}
 					}
 				}
 			},
 			{
 				"name": "move_delta",
-				"description": "Move one Franka TCP by a bounded world-frame xyz delta in meters.",
+				"description": "Move one Franka TCP by a bounded world-frame (right_base) xyz delta in meters (at most 0.1 m per call; refused when it ends outside the workspace or below the z floor).",
 				"parameters": {
 					"type": "object",
 					"required": [
@@ -822,14 +842,15 @@
 								"type": "number"
 							},
 							"minItems": 3,
-							"maxItems": 3
+							"maxItems": 3,
+							"description": "right_base [dx, dy, dz] in m"
 						}
 					}
 				}
 			},
 			{
 				"name": "rotate_delta",
-				"description": "Rotate one Franka TCP by a bounded world-frame rpy delta in radians.",
+				"description": "Rotate one Franka TCP by a bounded world-frame (right_base) rpy delta in radians (at most 0.5 rad per call, norm of delta_rpy).",
 				"parameters": {
 					"type": "object",
 					"required": [
@@ -851,7 +872,8 @@
 								"type": "number"
 							},
 							"minItems": 3,
-							"maxItems": 3
+							"maxItems": 3,
+							"description": "right_base [droll, dpitch, dyaw] in rad"
 						}
 					}
 				}
@@ -928,9 +950,9 @@
 						},
 						"max_chunks": {
 							"type": "integer",
+							"description": "Default 20",
 							"minimum": 1,
-							"maximum": 20,
-							"description": "Default 20"
+							"maximum": 20
 						}
 					}
 				}
@@ -950,9 +972,9 @@
 						},
 						"max_chunks": {
 							"type": "integer",
+							"description": "Default 20",
 							"minimum": 1,
-							"maximum": 20,
-							"description": "Default 20"
+							"maximum": 20
 						}
 					}
 				}
@@ -972,9 +994,9 @@
 						},
 						"max_chunks": {
 							"type": "integer",
+							"description": "Default 20",
 							"minimum": 1,
-							"maximum": 20,
-							"description": "Default 20"
+							"maximum": 20
 						}
 					}
 				}
@@ -1043,7 +1065,8 @@
 							"description": "The surface it goes onto / into (SAM3 text), or region_mask_id"
 						},
 						"region_mask_id": {
-							"type": "string"
+							"type": "string",
+							"description": "Mask id of the placement region"
 						},
 						"grasp_id": {
 							"type": "string",
@@ -1052,10 +1075,6 @@
 						"object_mask_id": {
 							"type": "string",
 							"description": "The object's mask id; default the mask the grasp was planned on"
-						},
-						"keep_tilt": {
-							"type": "boolean",
-							"description": "Keep AnyPlace's full rotation (a tilted insertion or placement); default keeps only its turn about the vertical and places from above"
 						},
 						"camera": {
 							"type": "string",
@@ -1312,7 +1331,8 @@
 					"type": "object",
 					"properties": {
 						"prompt": {
-							"type": "string"
+							"type": "string",
+							"description": "What to segment, e.g. 'red block' (or give point)"
 						},
 						"point": {
 							"type": "array",
@@ -1320,7 +1340,8 @@
 								"type": "integer"
 							},
 							"minItems": 2,
-							"maxItems": 2
+							"maxItems": 2,
+							"description": "A positive point [row, col] instead of a prompt"
 						},
 						"camera": {
 							"type": "string",
@@ -1332,7 +1353,9 @@
 						},
 						"min_score": {
 							"type": "number",
-							"description": "Default 0.2"
+							"description": "Default 0.2",
+							"minimum": 0,
+							"maximum": 1
 						},
 						"all": {
 							"type": "boolean",
@@ -1435,23 +1458,23 @@
 					"properties": {
 						"third_person_row": {
 							"type": "integer",
-							"minimum": 0,
-							"description": "External-camera row"
+							"description": "External-camera row",
+							"minimum": 0
 						},
 						"third_person_col": {
 							"type": "integer",
-							"minimum": 0,
-							"description": "External-camera column"
+							"description": "External-camera column",
+							"minimum": 0
 						},
 						"wrist_row": {
 							"type": "integer",
-							"minimum": 0,
-							"description": "Wrist row"
+							"description": "Wrist row",
+							"minimum": 0
 						},
 						"wrist_col": {
 							"type": "integer",
-							"minimum": 0,
-							"description": "Wrist column"
+							"description": "Wrist column",
+							"minimum": 0
 						},
 						"pixels": {
 							"type": "array",
@@ -1475,7 +1498,7 @@
 			},
 			{
 				"name": "move_delta",
-				"description": "Move the Franka TCP by a bounded base-frame xyz delta in meters.",
+				"description": "Move the Franka TCP by a bounded base-frame xyz delta in meters (at most 0.1 m per call; refused when it ends outside the workspace or below the z floor).",
 				"parameters": {
 					"type": "object",
 					"required": [
@@ -1488,14 +1511,15 @@
 								"type": "number"
 							},
 							"minItems": 3,
-							"maxItems": 3
+							"maxItems": 3,
+							"description": "Base-frame [dx, dy, dz] in m"
 						}
 					}
 				}
 			},
 			{
 				"name": "rotate_delta",
-				"description": "Rotate the Franka TCP by a bounded base-frame rpy delta in radians.",
+				"description": "Rotate the Franka TCP by a bounded base-frame rpy delta in radians (at most 0.5 rad per call, norm of delta_rpy).",
 				"parameters": {
 					"type": "object",
 					"required": [
@@ -1508,7 +1532,8 @@
 								"type": "number"
 							},
 							"minItems": 3,
-							"maxItems": 3
+							"maxItems": 3,
+							"description": "Base-frame [droll, dpitch, dyaw] in rad"
 						}
 					}
 				}
@@ -1543,9 +1568,9 @@
 						},
 						"max_chunks": {
 							"type": "integer",
+							"description": "Default 4",
 							"minimum": 1,
-							"maximum": 20,
-							"description": "Default 4"
+							"maximum": 20
 						}
 					}
 				}
@@ -1570,7 +1595,7 @@
 								"wrist",
 								"third_person"
 							],
-							"description": "Default wrist"
+							"description": "Default: the first camera"
 						},
 						"backend": {
 							"type": "string",
@@ -1607,7 +1632,8 @@
 							"description": "The surface it goes onto / into (SAM3 text), or region_mask_id"
 						},
 						"region_mask_id": {
-							"type": "string"
+							"type": "string",
+							"description": "Mask id of the placement region"
 						},
 						"grasp_id": {
 							"type": "string",
@@ -1617,17 +1643,584 @@
 							"type": "string",
 							"description": "The object's mask id; default the mask the grasp was planned on"
 						},
-						"keep_tilt": {
-							"type": "boolean",
-							"description": "Keep AnyPlace's full rotation (a tilted insertion or placement); default keeps only its turn about the vertical and places from above"
-						},
 						"camera": {
 							"type": "string",
 							"enum": [
 								"wrist",
 								"third_person"
 							],
-							"description": "Default wrist"
+							"description": "Default: the first camera"
+						}
+					}
+				}
+			},
+			{
+				"name": "check_attached",
+				"description": "Independent visual check whether the gripper holds the object: a vision model judges the current wrist view and the other cameras cropped around the gripper. Use it after a grasp and lift, before carrying; it does not move the robot.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"object"
+					],
+					"properties": {
+						"object": {
+							"type": "string",
+							"description": "The object that should be in the gripper"
+						}
+					}
+				}
+			}
+		],
+		"genesis": [
+			{
+				"name": "act",
+				"description": "Execute one action unit (MV_FWD, MV_BACK, MV_LEFT, MV_RIGHT, MV_UP, MV_DOWN, STOP, GRASP, RELEASE, DONE), repeated n times. MV_* move the gripper ~2 cm; GRASP closes, RELEASE opens, STOP holds one step, DONE means the task is complete (call finish). Returns the new images and state.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"unit"
+					],
+					"properties": {
+						"unit": {
+							"type": "string",
+							"enum": [
+								"MV_FWD",
+								"MV_BACK",
+								"MV_LEFT",
+								"MV_RIGHT",
+								"MV_UP",
+								"MV_DOWN",
+								"STOP",
+								"GRASP",
+								"RELEASE",
+								"DONE"
+							],
+							"description": "The action unit"
+						},
+						"n": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 10,
+							"description": "Repeat count (default 1)"
+						},
+						"target_in_wrist": {
+							"type": "boolean",
+							"description": "WRIST CHECK: is the TARGET visible in the wrist view?"
+						},
+						"plan": {
+							"type": "array",
+							"items": {
+								"type": "string",
+								"enum": [
+									"MV_FWD",
+									"MV_BACK",
+									"MV_LEFT",
+									"MV_RIGHT",
+									"MV_UP",
+									"MV_DOWN"
+								]
+							},
+							"maxItems": 3,
+							"description": "Only with target_in_wrist false: up to 3 MV_* moves run in order (replaces unit and n)"
+						}
+					}
+				}
+			},
+			{
+				"name": "plan",
+				"description": "Subgoal plan: `stages` replaces the plan from the current stage on (ordered GRASP/LIFT/MOVE/PLACE/RELEASE/RETREAT/REASON stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"stages": {
+							"type": "array",
+							"items": {
+								"type": "object",
+								"required": [
+									"motion",
+									"target",
+									"completion"
+								],
+								"properties": {
+									"motion": {
+										"type": "string",
+										"description": "GRASP, LIFT, MOVE, PLACE, RELEASE, RETREAT or REASON"
+									},
+									"target": {
+										"type": "string"
+									},
+									"affordance": {
+										"type": "string",
+										"description": "The one visible part to aim at"
+									},
+									"description": {
+										"type": "string",
+										"description": "Visual strategy; for REASON the complete IF ... THEN rule"
+									},
+									"completion": {
+										"type": "string",
+										"description": "DONE WHEN: a condition visible in the images"
+									},
+									"arm": {
+										"type": "string",
+										"description": "Dual-arm robots: the arm of this stage"
+									}
+								}
+							}
+						},
+						"done": {
+							"type": "boolean",
+							"description": "The current stage's DONE WHEN is visible"
+						}
+					}
+				}
+			},
+			{
+				"name": "reset",
+				"description": "Exploration only. Abandon the current episode and restore the same initial scene. Archive the failed attempt first and state which strategy lever changes in the next attempt.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"reason"
+					],
+					"properties": {
+						"reason": {
+							"type": "string",
+							"description": "Why this episode is unrecoverable and what will change"
+						}
+					}
+				}
+			},
+			{
+				"name": "finish",
+				"description": "End the episode after checking the latest state. Success is the task's own predicate, not this call.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"status",
+						"summary"
+					],
+					"properties": {
+						"status": {
+							"type": "string",
+							"enum": [
+								"success",
+								"failure"
+							]
+						},
+						"summary": {
+							"type": "string"
+						}
+					}
+				}
+			},
+			{
+				"name": "view_env_state",
+				"description": "Current state with the front (third-person) and wrist images.",
+				"parameters": {
+					"type": "object",
+					"properties": {}
+				}
+			},
+			{
+				"name": "get_camera_meta",
+				"description": "Camera calibration of the current images: intrinsic K (3x3), camera-to-world extrinsic (4x4, OpenCV frame) and the image size.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"camera_name": {
+							"type": "string",
+							"enum": [
+								"agentview",
+								"wrist"
+							],
+							"description": "agentview (front, default) or wrist"
+						}
+					}
+				}
+			},
+			{
+				"name": "back_project",
+				"description": "World xyz (m, base frame) of a pixel (row, col; row 0 = top) of the current camera image, from the simulator's depth.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"row": {
+							"type": "integer",
+							"description": "Pixel row (0 = top)",
+							"minimum": 0
+						},
+						"col": {
+							"type": "integer",
+							"description": "Pixel column",
+							"minimum": 0
+						},
+						"camera": {
+							"type": "string",
+							"enum": [
+								"agentview",
+								"wrist"
+							],
+							"description": "agentview (front, default) or wrist"
+						}
+					}
+				}
+			},
+			{
+				"name": "segment",
+				"description": "SAM3 segmentation of the current camera image by a text prompt or a positive point [row, col] (give exactly one). The mask's pixels are back-projected through the depth; world_xyz is their median. Returns an overlay image.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"prompt": {
+							"type": "string",
+							"description": "What to segment, e.g. 'red cube' (or give point)"
+						},
+						"point": {
+							"type": "array",
+							"items": {
+								"type": "integer"
+							},
+							"minItems": 2,
+							"maxItems": 2,
+							"description": "A positive point [row, col] instead of a prompt"
+						},
+						"camera": {
+							"type": "string",
+							"enum": [
+								"agentview",
+								"wrist"
+							],
+							"description": "agentview (front, default) or wrist"
+						},
+						"min_score": {
+							"type": "number",
+							"description": "SAM3 threshold (default 0.2)",
+							"minimum": 0,
+							"maximum": 1
+						}
+					}
+				}
+			},
+			{
+				"name": "move_delta",
+				"description": "Translate the gripper by a base-frame [dx, dy, dz] in metres (+x away from the base, +y toward the robot's left, +z up; at most 0.2 m per call, inside the workspace box and above the table), optionally opening or closing the gripper first (the arm holds still until the fingers settle, then moves). The orientation is held. Returns the new state and images.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"delta_xyz"
+					],
+					"properties": {
+						"delta_xyz": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 3,
+							"maxItems": 3,
+							"description": "Base-frame [dx, dy, dz] in metres"
+						},
+						"gripper": {
+							"type": "string",
+							"enum": [
+								"open",
+								"close"
+							],
+							"description": "Open or close first, holding still (default: keep)"
+						}
+					}
+				}
+			},
+			{
+				"name": "set_gripper",
+				"description": "Open or close the gripper and hold it (the command persists). A close that ends nearly shut holds nothing (`grasp_empty`). Returns the new state and images.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"close"
+					],
+					"properties": {
+						"close": {
+							"type": "boolean",
+							"description": "true closes and holds, false opens"
+						}
+					}
+				}
+			},
+			{
+				"name": "preview_reach",
+				"description": "Whether the arm could reach a base-frame pos from its current joints (IK only; nothing moves), keeping its orientation unless quat_xyzw is given. status unreachable means a move there would fail or be refused; unknown means the check could not run.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"pos"
+					],
+					"properties": {
+						"pos": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 3,
+							"maxItems": 3,
+							"description": "Base-frame [x, y, z] of the TCP, m"
+						},
+						"quat_xyzw": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 4,
+							"maxItems": 4,
+							"description": "Default: the current orientation"
+						}
+					}
+				}
+			},
+			{
+				"name": "execute_grasp",
+				"description": "Execute one planned grasp (a g id of the current observation, from plan_grasp) in one call: open to the pre-grasp standoff back along its approach, descend to it, close, lift straight up, each leg as bounded moves. The gripper cannot turn, so only a candidate approaching from (nearly) straight above runs; a tilted one is refused before anything moves. Returns each leg's final_dist_m; stalled when a leg stopped short. The id is spent either way; afterwards plan_place with this grasp_id plans from the held object.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"grasp_id"
+					],
+					"properties": {
+						"grasp_id": {
+							"type": "string",
+							"description": "A g id from plan_grasp"
+						},
+						"standoff": {
+							"type": "number",
+							"description": "m back along the approach (default 0.10)",
+							"minimum": 0,
+							"maximum": 0.3
+						}
+					}
+				}
+			},
+			{
+				"name": "execute_place",
+				"description": "Execute one planned place (a p id from plan_place) in one call: carry to the pre-place above it, descend, open, retreat, each leg as bounded moves; refused when its approach is not (nearly) straight down.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"place_id"
+					],
+					"properties": {
+						"place_id": {
+							"type": "string",
+							"description": "A p id from plan_place"
+						},
+						"standoff": {
+							"type": "number",
+							"description": "m back along the approach (default 0.10)",
+							"minimum": 0,
+							"maximum": 0.3
+						}
+					}
+				}
+			},
+			{
+				"name": "point",
+				"description": "Molmo points at what a short noun phrase names ('the red mug handle') in a camera's current image and returns the pixel [row, col], its world point where the robot has depth, and the image with the point marked. With cameras (up to 4) it asks once over that ordered set (the query may say \"Image 1\" for the first) and every point names its camera.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"query"
+					],
+					"properties": {
+						"query": {
+							"type": "string"
+						},
+						"camera": {
+							"type": "string",
+							"enum": [
+								"agentview",
+								"wrist"
+							],
+							"description": "Default agentview"
+						},
+						"cameras": {
+							"type": "array",
+							"items": {
+								"type": "string",
+								"enum": [
+									"agentview",
+									"wrist"
+								]
+							},
+							"minItems": 2,
+							"maxItems": 4,
+							"description": "Several cameras at once (MolmoPoint)"
+						}
+					}
+				}
+			},
+			{
+				"name": "detect",
+				"description": "SAM3 masks on a camera's current image, each with a short id (d3) drawn on the returned overlay in rank order (red, blue, green, yellow, ...). Give exactly one of a text prompt or a positive point [row, col]. all=true returns every candidate instead of only the best; then choose one with select_detection or rule one out with reject_detection. Ids die with the observation: detect again after any motion.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"prompt": {
+							"type": "string",
+							"description": "What to segment (or point)"
+						},
+						"point": {
+							"type": "array",
+							"items": {
+								"type": "integer"
+							},
+							"minItems": 2,
+							"maxItems": 2,
+							"description": "A positive point [row, col] instead of prompt"
+						},
+						"camera": {
+							"type": "string",
+							"enum": [
+								"agentview",
+								"wrist"
+							],
+							"description": "Default: the first camera"
+						},
+						"min_score": {
+							"type": "number",
+							"description": "Default 0.2",
+							"minimum": 0,
+							"maximum": 1
+						},
+						"all": {
+							"type": "boolean",
+							"description": "Every mask, not only the best (default false)"
+						}
+					}
+				}
+			},
+			{
+				"name": "select_detection",
+				"description": "Choose one detect mask (by id) as the target of the current observation, after checking the overlay.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"id"
+					],
+					"properties": {
+						"id": {
+							"type": "string",
+							"description": "A detection id of the current observation (d3)"
+						}
+					}
+				}
+			},
+			{
+				"name": "reject_detection",
+				"description": "Rule out one detect mask (by id) of the current observation; it stays listed as rejected.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"id"
+					],
+					"properties": {
+						"id": {
+							"type": "string",
+							"description": "A detection id of the current observation (d3)"
+						}
+					}
+				}
+			},
+			{
+				"name": "enhance_depth",
+				"description": "Fill the holes of a camera's current depth with a UniDepth estimate scaled to the sensor, or supply depth where the camera has none. detect then measures through it until the next motion.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"camera": {
+							"type": "string",
+							"enum": [
+								"agentview",
+								"wrist"
+							],
+							"description": "Default: the first camera"
+						}
+					}
+				}
+			},
+			{
+				"name": "plan_grasp",
+				"description": "Predict grasps for one object from the current RGB-D observation, ranked best first, in the world frame. Give the object as text (segmented with SAM3) or a mask_id of this observation. Each candidate has a short id (g3) and its EEF pose (eef_position, eef_quat_xyzw, approach, width_m), valid until the robot moves or the scene changes; drive the arm to that pose with the motion tools. Try `active` first; when it is refused before the robot moves (unreachable), call again with next_after=<that id> to get the next rank without re-planning; after a failed motion, plan again.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"object": {
+							"type": "string",
+							"description": "Object to grasp (SAM3 text prompt), e.g. 'black bowl'"
+						},
+						"mask_id": {
+							"type": "string",
+							"description": "A mask id (d2) of the current observation instead of object"
+						},
+						"camera": {
+							"type": "string",
+							"enum": [
+								"agentview",
+								"wrist"
+							],
+							"description": "Default: the first camera"
+						},
+						"backend": {
+							"type": "string",
+							"enum": [
+								"contact_graspnet",
+								"graspgenx",
+								"anygrasp",
+								"graspnet1b"
+							],
+							"description": "Default: the first configured"
+						},
+						"next_after": {
+							"type": "string",
+							"description": "Greedy policy: reject this grasp id and return the next rank of its plan"
+						},
+						"reason": {
+							"type": "string",
+							"description": "With next_after: why that candidate failed"
+						}
+					}
+				}
+			},
+			{
+				"name": "plan_place",
+				"description": "Where to hold the grasped object so it comes to rest on a placement region (AnyPlace). Ask it before the grasp, from the observation the grasp was planned on: the region as text (segmented now) or a mask id, and that current g id (the object is the grasp's mask, or object_mask_id). Returns place poses (eef_position, eef_quat_xyzw) with ids (p1); after grasping with that grasp, drive the arm to the place pose and open.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"grasp_id"
+					],
+					"properties": {
+						"region": {
+							"type": "string",
+							"description": "The surface it goes onto / into (SAM3 text), or region_mask_id"
+						},
+						"region_mask_id": {
+							"type": "string",
+							"description": "Mask id of the placement region"
+						},
+						"grasp_id": {
+							"type": "string",
+							"description": "A current grasp (g id) of this observation, the one the object will be held with"
+						},
+						"object_mask_id": {
+							"type": "string",
+							"description": "The object's mask id; default the mask the grasp was planned on"
+						},
+						"camera": {
+							"type": "string",
+							"enum": [
+								"agentview",
+								"wrist"
+							],
+							"description": "Default: the first camera"
 						}
 					}
 				}
@@ -1909,23 +2502,33 @@
 						},
 						"gripper": {
 							"type": "number",
-							"description": "-1 open (default), +1 close"
+							"description": "-1 open (default), +1 close; a program may pass None to keep the last command",
+							"minimum": -1,
+							"maximum": 1
 						},
 						"tol": {
 							"type": "number",
-							"description": "Position tolerance, m (default 0.012)"
+							"description": "Position tolerance, m (default 0.012)",
+							"minimum": 0.001,
+							"maximum": 0.1
 						},
 						"step_clip": {
 							"type": "number",
-							"description": "Per-step xyz cap, m (default 0.025)"
+							"description": "Per-step xyz cap, m (default 0.025)",
+							"minimum": 0.001,
+							"maximum": 0.05
 						},
 						"max_steps": {
 							"type": "integer",
-							"description": "Step budget (default 80)"
+							"description": "Step budget (default 80)",
+							"minimum": 1,
+							"maximum": 400
 						},
 						"action_scale": {
 							"type": "number",
-							"description": "OSC action scale (default 0.05)"
+							"description": "OSC action scale (default 0.05)",
+							"minimum": 0.01,
+							"maximum": 0.2
 						},
 						"target_yaw": {
 							"type": "number",
@@ -1933,7 +2536,9 @@
 						},
 						"yaw_step_clip": {
 							"type": "number",
-							"description": "Per-step yaw clip, rad (default 0.10)"
+							"description": "Per-step yaw clip, rad (default 0.10)",
+							"minimum": 0.01,
+							"maximum": 0.5
 						}
 					}
 				}
@@ -1962,7 +2567,8 @@
 								"type": "number"
 							},
 							"minItems": 4,
-							"maxItems": 4
+							"maxItems": 4,
+							"description": "Default: the current orientation"
 						}
 					}
 				}
@@ -2126,7 +2732,9 @@
 						},
 						"max_chunks": {
 							"type": "integer",
-							"description": "Default 20"
+							"description": "Default 20",
+							"minimum": 1,
+							"maximum": 200
 						}
 					}
 				}
@@ -2139,7 +2747,9 @@
 					"properties": {
 						"max_steps": {
 							"type": "integer",
-							"description": "Default 20"
+							"description": "Default 20",
+							"minimum": 1,
+							"maximum": 200
 						}
 					}
 				}
@@ -2152,11 +2762,15 @@
 					"properties": {
 						"gripper": {
 							"type": "number",
-							"description": "-1 open (default), +1 close"
+							"description": "-1 open (default), +1 close; a program may pass None to keep the last command",
+							"minimum": -1,
+							"maximum": 1
 						},
 						"steps": {
 							"type": "integer",
-							"description": "Default 5"
+							"description": "Default 5",
+							"minimum": 1,
+							"maximum": 200
 						}
 					}
 				}
@@ -2177,19 +2791,27 @@
 						},
 						"gripper": {
 							"type": "number",
-							"description": "Default +1"
+							"description": "-1 open, +1 close (default); a program may pass None to keep the last command",
+							"minimum": -1,
+							"maximum": 1
 						},
 						"max_steps": {
 							"type": "integer",
-							"description": "Default 40"
+							"description": "Default 40",
+							"minimum": 1,
+							"maximum": 200
 						},
 						"tol": {
 							"type": "number",
-							"description": "rad, default 0.02"
+							"description": "rad, default 0.02",
+							"minimum": 0.002,
+							"maximum": 0.5
 						},
 						"step_clip": {
 							"type": "number",
-							"description": "rad, default 0.10"
+							"description": "rad, default 0.10",
+							"minimum": 0.01,
+							"maximum": 0.5
 						}
 					}
 				}
@@ -2210,19 +2832,27 @@
 						},
 						"gripper": {
 							"type": "number",
-							"description": "Default +1"
+							"description": "-1 open, +1 close (default); a program may pass None to keep the last command",
+							"minimum": -1,
+							"maximum": 1
 						},
 						"max_steps": {
 							"type": "integer",
-							"description": "Default 40"
+							"description": "Default 40",
+							"minimum": 1,
+							"maximum": 200
 						},
 						"tol": {
 							"type": "number",
-							"description": "rad, default 0.02"
+							"description": "rad, default 0.02",
+							"minimum": 0.002,
+							"maximum": 0.5
 						},
 						"step_clip": {
 							"type": "number",
-							"description": "rad, default 0.10"
+							"description": "rad, default 0.10",
+							"minimum": 0.01,
+							"maximum": 0.5
 						}
 					}
 				}
@@ -2255,37 +2885,154 @@
 						},
 						"gripper": {
 							"type": "number",
-							"description": "Default -1"
+							"description": "Default -1 (open); +1 while holding",
+							"minimum": -1,
+							"maximum": 1
 						},
 						"step_clip": {
 							"type": "number",
-							"description": "m, default 0.02"
+							"description": "m, default 0.02",
+							"minimum": 0.001,
+							"maximum": 0.05
 						},
 						"pitch_step": {
 							"type": "number",
-							"description": "rad, default 0.08"
+							"description": "rad, default 0.08",
+							"minimum": 0.005,
+							"maximum": 0.5
 						},
 						"yaw_step": {
 							"type": "number",
-							"description": "rad, default 0.08"
+							"description": "rad, default 0.08",
+							"minimum": 0.005,
+							"maximum": 0.5
 						},
 						"tol": {
 							"type": "number",
-							"description": "m, default 0.012"
+							"description": "m, default 0.012",
+							"minimum": 0.001,
+							"maximum": 0.1
 						},
 						"ori_tol": {
 							"type": "number",
-							"description": "rad, default 0.05"
+							"description": "rad, default 0.05",
+							"minimum": 0.005,
+							"maximum": 0.5
 						},
 						"action_scale": {
 							"type": "number",
-							"description": "Default 0.05"
+							"description": "Default 0.05",
+							"minimum": 0.01,
+							"maximum": 0.2
 						},
 						"max_steps": {
 							"type": "integer",
-							"description": "Default 150"
+							"description": "Default 150",
+							"minimum": 1,
+							"maximum": 400
 						}
 					}
+				}
+			},
+			{
+				"name": "get_object_pose",
+				"description": "Pose of an object named in words, from SAM3 masks and depth (agentview and wrist): [position (3,), quaternion_wxyz (4,)], or [null, null]. The quaternion may be unreliable: for placing use the grasp quaternion or [0, 1, 0, 0] (gripper down).",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"object_name"
+					],
+					"properties": {
+						"object_name": {
+							"type": "string",
+							"description": "The object in words, e.g. 'black bowl'"
+						},
+						"use_multiview": {
+							"type": "boolean",
+							"description": "Also segment in the wrist view (default true)"
+						}
+					}
+				}
+			},
+			{
+				"name": "sample_grasp_pose",
+				"description": "A grasp of an object named in words: [position (3,), quaternion_wxyz (4,)] for goto_pose. With a grasp server the best planned grasp, else top-down over the object's centre, 3 cm below its top.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"object_name"
+					],
+					"properties": {
+						"object_name": {
+							"type": "string",
+							"description": "The object in words"
+						},
+						"use_multiview": {
+							"type": "boolean",
+							"description": "Also segment in the wrist view (default true)"
+						}
+					}
+				}
+			},
+			{
+				"name": "goto_pose",
+				"description": "Go to a gripper pose (position and wxyz orientation), keeping the gripper command; with z_approach first stop that far back along the approach axis. The gripper stays pointing down and turns to the pose's yaw; long moves run as straight legs.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"position",
+						"quaternion_wxyz"
+					],
+					"properties": {
+						"position": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 3,
+							"maxItems": 3,
+							"description": "World [x, y, z] of the grip point, m"
+						},
+						"quaternion_wxyz": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 4,
+							"maxItems": 4,
+							"description": "Gripper (panda_hand) orientation, wxyz ([0, 1, 0, 0] = pointing down)"
+						},
+						"z_approach": {
+							"type": "number",
+							"description": "First stop this far back along the approach axis, m (default 0)",
+							"minimum": -0.5,
+							"maximum": 0.5
+						}
+					}
+				}
+			},
+			{
+				"name": "home_pose",
+				"description": "Move the gripper back to its position and yaw at the episode's start.",
+				"parameters": {
+					"type": "object",
+					"properties": {}
+				}
+			},
+			{
+				"name": "open_gripper",
+				"description": "Open the gripper fully (40 env steps).",
+				"parameters": {
+					"type": "object",
+					"properties": {}
+				}
+			},
+			{
+				"name": "close_gripper",
+				"description": "Close the gripper fully (60 env steps; the fingers stop on an object).",
+				"parameters": {
+					"type": "object",
+					"properties": {}
 				}
 			},
 			{
@@ -2324,7 +3071,8 @@
 					"type": "object",
 					"properties": {
 						"prompt": {
-							"type": "string"
+							"type": "string",
+							"description": "What to segment, e.g. 'black bowl' (or give point)"
 						},
 						"point": {
 							"type": "array",
@@ -2332,7 +3080,8 @@
 								"type": "integer"
 							},
 							"minItems": 2,
-							"maxItems": 2
+							"maxItems": 2,
+							"description": "A positive point [row, col] instead of a prompt"
 						},
 						"camera": {
 							"type": "string",
@@ -2344,7 +3093,9 @@
 						},
 						"min_score": {
 							"type": "number",
-							"description": "Default 0.2"
+							"description": "SAM3 threshold (default 0.2)",
+							"minimum": 0,
+							"maximum": 1
 						},
 						"step": {
 							"type": "integer",
@@ -2361,11 +3112,13 @@
 					"properties": {
 						"row": {
 							"type": "integer",
-							"description": "Pixel row"
+							"description": "Pixel row (0 = top)",
+							"minimum": 0
 						},
 						"col": {
 							"type": "integer",
-							"description": "Pixel column"
+							"description": "Pixel column",
+							"minimum": 0
 						},
 						"camera": {
 							"type": "string",
@@ -2380,7 +3133,8 @@
 							"enum": [
 								"high",
 								"low"
-							]
+							],
+							"description": "The image the pixel came from: high = 1024 (default), low = 256"
 						},
 						"row_range": {
 							"type": "array",
@@ -2388,7 +3142,8 @@
 								"type": "integer"
 							},
 							"minItems": 2,
-							"maxItems": 2
+							"maxItems": 2,
+							"description": "Region mode: [first, last) rows"
 						},
 						"col_range": {
 							"type": "array",
@@ -2396,7 +3151,8 @@
 								"type": "integer"
 							},
 							"minItems": 2,
-							"maxItems": 2
+							"maxItems": 2,
+							"description": "Region mode: [first, last) columns"
 						},
 						"z_min": {
 							"type": "number",
@@ -2433,7 +3189,7 @@
 								"agentview",
 								"wrist"
 							],
-							"description": "Default agentview"
+							"description": "Default: the first camera"
 						},
 						"backend": {
 							"type": "string",
@@ -2470,19 +3226,16 @@
 							"description": "The surface it goes onto / into (SAM3 text), or region_mask_id"
 						},
 						"region_mask_id": {
-							"type": "string"
+							"type": "string",
+							"description": "Mask id of the placement region"
 						},
 						"grasp_id": {
 							"type": "string",
-							"description": "The executed grasp (g id) the object is held with, or a current one"
+							"description": "A current grasp (g id) of this observation, the one the object will be held with"
 						},
 						"object_mask_id": {
 							"type": "string",
 							"description": "The object's mask id; default the mask the grasp was planned on"
-						},
-						"keep_tilt": {
-							"type": "boolean",
-							"description": "Keep AnyPlace's full rotation (a tilted insertion or placement); default keeps only its turn about the vertical and places from above"
 						},
 						"camera": {
 							"type": "string",
@@ -2490,7 +3243,7 @@
 								"agentview",
 								"wrist"
 							],
-							"description": "Default agentview"
+							"description": "Default: the first camera"
 						}
 					}
 				}
@@ -2518,7 +3271,8 @@
 					"type": "object",
 					"properties": {
 						"prompt": {
-							"type": "string"
+							"type": "string",
+							"description": "What to segment (or point)"
 						},
 						"point": {
 							"type": "array",
@@ -2526,7 +3280,8 @@
 								"type": "integer"
 							},
 							"minItems": 2,
-							"maxItems": 2
+							"maxItems": 2,
+							"description": "A positive point [row, col] instead of prompt"
 						},
 						"camera": {
 							"type": "string",
@@ -2534,11 +3289,13 @@
 								"agentview",
 								"wrist"
 							],
-							"description": "Default agentview"
+							"description": "Default: the first camera"
 						},
 						"min_score": {
 							"type": "number",
-							"description": "Default 0.2"
+							"description": "Default 0.2",
+							"minimum": 0,
+							"maximum": 1
 						},
 						"all": {
 							"type": "boolean",
@@ -2591,7 +3348,7 @@
 								"agentview",
 								"wrist"
 							],
-							"description": "Default agentview"
+							"description": "Default: the first camera"
 						}
 					}
 				}
@@ -2611,15 +3368,21 @@
 						},
 						"standoff": {
 							"type": "number",
-							"description": "Pre-grasp distance along the approach, m (default 0.10)"
+							"description": "Pre-grasp distance along the approach, m (default 0.10)",
+							"minimum": 0,
+							"maximum": 0.3
 						},
 						"lift": {
 							"type": "number",
-							"description": "Lift after closing, m (default 0.10)"
+							"description": "Lift after closing, m (default 0.10)",
+							"minimum": 0,
+							"maximum": 0.3
 						},
 						"max_steps": {
 							"type": "integer",
-							"description": "Step budget per leg (default 150)"
+							"description": "Step budget per leg (default 150)",
+							"minimum": 1,
+							"maximum": 400
 						}
 					}
 				}
@@ -2639,11 +3402,15 @@
 						},
 						"standoff": {
 							"type": "number",
-							"description": "Pre-place distance along the approach, m (default 0.10)"
+							"description": "Pre-place distance along the approach, m (default 0.10)",
+							"minimum": 0,
+							"maximum": 0.3
 						},
 						"max_steps": {
 							"type": "integer",
-							"description": "Step budget per leg (default 150)"
+							"description": "Step budget per leg (default 150)",
+							"minimum": 1,
+							"maximum": 400
 						}
 					}
 				}
@@ -2802,7 +3569,7 @@
 			},
 			{
 				"name": "move_delta",
-				"description": "Translate the gripper by a base-frame [dx, dy, dz] in metres (+x away from the base, +y toward the robot's left, +z up; at most 0.2 m per call), optionally opening or closing the gripper first (the arm holds still until the fingers settle, then moves). The orientation is locked. Returns the new state and images.",
+				"description": "Translate the gripper by a base-frame [dx, dy, dz] in metres (+x away from the base, +y toward the robot's left, +z up) (at most 0.2 m per call), optionally opening or closing the gripper first (the arm holds still until the fingers settle, then moves). The orientation is locked. Returns the new state and images.",
 				"parameters": {
 					"type": "object",
 					"required": [
@@ -2815,14 +3582,16 @@
 								"type": "number"
 							},
 							"minItems": 3,
-							"maxItems": 3
+							"maxItems": 3,
+							"description": "[dx, dy, dz] in metres, at most 0.2 m long"
 						},
 						"gripper": {
 							"type": "string",
 							"enum": [
 								"open",
 								"close"
-							]
+							],
+							"description": "Open or close the gripper first (omitted: keep the current command)"
 						}
 					}
 				}
@@ -2878,7 +3647,8 @@
 								"type": "number"
 							},
 							"minItems": 3,
-							"maxItems": 3
+							"maxItems": 3,
+							"description": "World-frame [x, y, z] in metres"
 						},
 						"quat_xyzw": {
 							"type": "array",
@@ -2886,7 +3656,8 @@
 								"type": "number"
 							},
 							"minItems": 4,
-							"maxItems": 4
+							"maxItems": 4,
+							"description": "Default: the current orientation"
 						}
 					}
 				}
@@ -2898,7 +3669,8 @@
 					"type": "object",
 					"properties": {
 						"prompt": {
-							"type": "string"
+							"type": "string",
+							"description": "What to segment (or point)"
 						},
 						"point": {
 							"type": "array",
@@ -2906,7 +3678,8 @@
 								"type": "integer"
 							},
 							"minItems": 2,
-							"maxItems": 2
+							"maxItems": 2,
+							"description": "A positive point [row, col] instead of prompt"
 						},
 						"camera": {
 							"type": "string",
@@ -2914,11 +3687,13 @@
 								"agentview",
 								"wrist"
 							],
-							"description": "Default agentview"
+							"description": "Default: the first camera"
 						},
 						"min_score": {
 							"type": "number",
-							"description": "Default 0.2"
+							"description": "Default 0.2",
+							"minimum": 0,
+							"maximum": 1
 						},
 						"all": {
 							"type": "boolean",
@@ -2971,7 +3746,602 @@
 								"agentview",
 								"wrist"
 							],
+							"description": "Default: the first camera"
+						}
+					}
+				}
+			}
+		],
+		"metaworld": [
+			{
+				"name": "act",
+				"description": "Execute one action unit (MV_FWD, MV_BACK, MV_LEFT, MV_RIGHT, MV_UP, MV_DOWN, STOP, GRASP, RELEASE, DONE), repeated n times. MV_* move the gripper ~2 cm; GRASP closes, RELEASE opens, STOP holds one step, DONE means the task is complete (call finish). Returns the new images and state.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"unit"
+					],
+					"properties": {
+						"unit": {
+							"type": "string",
+							"enum": [
+								"MV_FWD",
+								"MV_BACK",
+								"MV_LEFT",
+								"MV_RIGHT",
+								"MV_UP",
+								"MV_DOWN",
+								"STOP",
+								"GRASP",
+								"RELEASE",
+								"DONE"
+							],
+							"description": "The action unit"
+						},
+						"n": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 10,
+							"description": "Repeat count (default 1)"
+						},
+						"target_in_wrist": {
+							"type": "boolean",
+							"description": "WRIST CHECK: is the TARGET visible in the wrist view?"
+						},
+						"plan": {
+							"type": "array",
+							"items": {
+								"type": "string",
+								"enum": [
+									"MV_FWD",
+									"MV_BACK",
+									"MV_LEFT",
+									"MV_RIGHT",
+									"MV_UP",
+									"MV_DOWN"
+								]
+							},
+							"maxItems": 3,
+							"description": "Only with target_in_wrist false: up to 3 MV_* moves run in order (replaces unit and n)"
+						}
+					}
+				}
+			},
+			{
+				"name": "plan",
+				"description": "Subgoal plan: `stages` replaces the plan from the current stage on (ordered GRASP/LIFT/MOVE/PLACE/RELEASE/RETREAT/REASON stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"stages": {
+							"type": "array",
+							"items": {
+								"type": "object",
+								"required": [
+									"motion",
+									"target",
+									"completion"
+								],
+								"properties": {
+									"motion": {
+										"type": "string",
+										"description": "GRASP, LIFT, MOVE, PLACE, RELEASE, RETREAT or REASON"
+									},
+									"target": {
+										"type": "string"
+									},
+									"affordance": {
+										"type": "string",
+										"description": "The one visible part to aim at"
+									},
+									"description": {
+										"type": "string",
+										"description": "Visual strategy; for REASON the complete IF ... THEN rule"
+									},
+									"completion": {
+										"type": "string",
+										"description": "DONE WHEN: a condition visible in the images"
+									},
+									"arm": {
+										"type": "string",
+										"description": "Dual-arm robots: the arm of this stage"
+									}
+								}
+							}
+						},
+						"done": {
+							"type": "boolean",
+							"description": "The current stage's DONE WHEN is visible"
+						}
+					}
+				}
+			},
+			{
+				"name": "reset",
+				"description": "Exploration only. Abandon the current episode and restore the same initial scene. Archive the failed attempt first and state which strategy lever changes in the next attempt.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"reason"
+					],
+					"properties": {
+						"reason": {
+							"type": "string",
+							"description": "Why this episode is unrecoverable and what will change"
+						}
+					}
+				}
+			},
+			{
+				"name": "finish",
+				"description": "End the episode after checking the latest state. Success is Metaworld's own success flag, not this call.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"status",
+						"summary"
+					],
+					"properties": {
+						"status": {
+							"type": "string",
+							"enum": [
+								"success",
+								"failure"
+							]
+						},
+						"summary": {
+							"type": "string"
+						}
+					}
+				}
+			},
+			{
+				"name": "view_env_state",
+				"description": "Current state with the agentview (third-person) and wrist images.",
+				"parameters": {
+					"type": "object",
+					"properties": {}
+				}
+			},
+			{
+				"name": "get_camera_meta",
+				"description": "Camera calibration (OpenCV intrinsic K and camera-to-world extrinsic) of the agentview or wrist camera at an image size (default 256x256, the images shown).",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"camera_name": {
+							"type": "string",
+							"enum": [
+								"agentview",
+								"wrist"
+							],
 							"description": "Default agentview"
+						},
+						"height": {
+							"type": "integer",
+							"description": "Pixels (default 256, the images shown; 1024 = back_project's high resolution)",
+							"minimum": 16,
+							"maximum": 1024
+						},
+						"width": {
+							"type": "integer",
+							"description": "Pixels (default 256)",
+							"minimum": 16,
+							"maximum": 1024
+						}
+					}
+				}
+			},
+			{
+				"name": "segment",
+				"description": "SAM3 segmentation of the current camera image (256x256 as shown, or 1024 with resolution high). Give exactly one of a text prompt or a positive point [row, col]. The top mask is projected through the depth map; world_xyz is the median over its pixels. Returns an overlay image.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"prompt": {
+							"type": "string",
+							"description": "What to segment, e.g. 'red puck' (or give point)"
+						},
+						"point": {
+							"type": "array",
+							"items": {
+								"type": "integer"
+							},
+							"minItems": 2,
+							"maxItems": 2,
+							"description": "A positive point [row, col] instead of a prompt"
+						},
+						"camera": {
+							"type": "string",
+							"enum": [
+								"agentview",
+								"wrist"
+							],
+							"description": "Default agentview"
+						},
+						"resolution": {
+							"type": "string",
+							"enum": [
+								"low",
+								"high"
+							],
+							"description": "low = 256 (the images shown, default), high = 1024"
+						},
+						"min_score": {
+							"type": "number",
+							"description": "SAM3 threshold (default 0.2)",
+							"minimum": 0,
+							"maximum": 1
+						}
+					}
+				}
+			},
+			{
+				"name": "back_project",
+				"description": "World xyz of a pixel (row, col; row 0 = top) in the current camera image (256x256 as shown, or 1024 with resolution high), from the depth map. Region mode: row_range + col_range (+ optional z_min/z_max) returns the midpoint of world xy over that window, e.g. a container's interior centre.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"row": {
+							"type": "integer",
+							"description": "Pixel row (0 = top)",
+							"minimum": 0
+						},
+						"col": {
+							"type": "integer",
+							"description": "Pixel column",
+							"minimum": 0
+						},
+						"camera": {
+							"type": "string",
+							"enum": [
+								"agentview",
+								"wrist"
+							],
+							"description": "Default agentview"
+						},
+						"resolution": {
+							"type": "string",
+							"enum": [
+								"low",
+								"high"
+							],
+							"description": "low = 256 (the images shown, default), high = 1024"
+						},
+						"row_range": {
+							"type": "array",
+							"items": {
+								"type": "integer"
+							},
+							"minItems": 2,
+							"maxItems": 2,
+							"description": "Region mode: [first, last) rows"
+						},
+						"col_range": {
+							"type": "array",
+							"items": {
+								"type": "integer"
+							},
+							"minItems": 2,
+							"maxItems": 2,
+							"description": "Region mode: [first, last) columns"
+						},
+						"z_min": {
+							"type": "number",
+							"description": "Region mode: keep pixels with world z >= z_min"
+						},
+						"z_max": {
+							"type": "number",
+							"description": "Region mode: keep pixels with world z <= z_max"
+						}
+					}
+				}
+			},
+			{
+				"name": "point",
+				"description": "Molmo points at what a short noun phrase names ('the red mug handle') in a camera's current image and returns the pixel [row, col], its world point where the robot has depth, and the image with the point marked. With cameras (up to 4) it asks once over that ordered set (the query may say \"Image 1\" for the first) and every point names its camera.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"query"
+					],
+					"properties": {
+						"query": {
+							"type": "string"
+						},
+						"camera": {
+							"type": "string",
+							"enum": [
+								"agentview",
+								"wrist"
+							],
+							"description": "Default agentview"
+						},
+						"cameras": {
+							"type": "array",
+							"items": {
+								"type": "string",
+								"enum": [
+									"agentview",
+									"wrist"
+								]
+							},
+							"minItems": 2,
+							"maxItems": 4,
+							"description": "Several cameras at once (MolmoPoint)"
+						}
+					}
+				}
+			},
+			{
+				"name": "detect",
+				"description": "SAM3 masks on a camera's current image, each with a short id (d3) drawn on the returned overlay in rank order (red, blue, green, yellow, ...). Give exactly one of a text prompt or a positive point [row, col]. all=true returns every candidate instead of only the best; then choose one with select_detection or rule one out with reject_detection. Ids die with the observation: detect again after any motion.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"prompt": {
+							"type": "string",
+							"description": "What to segment (or point)"
+						},
+						"point": {
+							"type": "array",
+							"items": {
+								"type": "integer"
+							},
+							"minItems": 2,
+							"maxItems": 2,
+							"description": "A positive point [row, col] instead of prompt"
+						},
+						"camera": {
+							"type": "string",
+							"enum": [
+								"agentview",
+								"wrist"
+							],
+							"description": "Default: the first camera"
+						},
+						"min_score": {
+							"type": "number",
+							"description": "Default 0.2",
+							"minimum": 0,
+							"maximum": 1
+						},
+						"all": {
+							"type": "boolean",
+							"description": "Every mask, not only the best (default false)"
+						}
+					}
+				}
+			},
+			{
+				"name": "select_detection",
+				"description": "Choose one detect mask (by id) as the target of the current observation, after checking the overlay.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"id"
+					],
+					"properties": {
+						"id": {
+							"type": "string",
+							"description": "A detection id of the current observation (d3)"
+						}
+					}
+				}
+			},
+			{
+				"name": "reject_detection",
+				"description": "Rule out one detect mask (by id) of the current observation; it stays listed as rejected.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"id"
+					],
+					"properties": {
+						"id": {
+							"type": "string",
+							"description": "A detection id of the current observation (d3)"
+						}
+					}
+				}
+			},
+			{
+				"name": "enhance_depth",
+				"description": "Fill the holes of a camera's current depth with a UniDepth estimate scaled to the sensor, or supply depth where the camera has none. detect then measures through it until the next motion.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"camera": {
+							"type": "string",
+							"enum": [
+								"agentview",
+								"wrist"
+							],
+							"description": "Default: the first camera"
+						}
+					}
+				}
+			},
+			{
+				"name": "move_delta",
+				"description": "Translate the gripper by a world-frame [dx, dy, dz] in metres (+y away from the robot, +x toward the robot's right, +z up; at most 0.2 m per call, inside the workspace box), optionally opening or closing the gripper first (the arm holds still until the fingers settle, then moves). The orientation is fixed. Returns the new state and images.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"delta_xyz"
+					],
+					"properties": {
+						"delta_xyz": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 3,
+							"maxItems": 3,
+							"description": "World-frame [dx, dy, dz] in metres"
+						},
+						"gripper": {
+							"type": "string",
+							"enum": [
+								"open",
+								"close"
+							],
+							"description": "Open or close first, holding still (default: keep)"
+						}
+					}
+				}
+			},
+			{
+				"name": "set_gripper",
+				"description": "Open or close the gripper in place and hold until the fingers settle. The command persists across moves. Returns the new state and images.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"close"
+					],
+					"properties": {
+						"close": {
+							"type": "boolean",
+							"description": "true closes and holds, false opens"
+						}
+					}
+				}
+			},
+			{
+				"name": "execute_grasp",
+				"description": "Execute one planned grasp (a g id of the current observation, from plan_grasp) in one call: open to the pre-grasp standoff back along its approach, descend to it, close, lift straight up, each leg as bounded moves. The gripper cannot turn, so only a candidate approaching from (nearly) straight above runs; a tilted one is refused before anything moves. Returns each leg's final_dist_m; stalled when a leg stopped short. The id is spent either way; afterwards plan_place with this grasp_id plans from the held object.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"grasp_id"
+					],
+					"properties": {
+						"grasp_id": {
+							"type": "string",
+							"description": "A g id from plan_grasp"
+						},
+						"standoff": {
+							"type": "number",
+							"description": "m back along the approach (default 0.10)",
+							"minimum": 0,
+							"maximum": 0.3
+						}
+					}
+				}
+			},
+			{
+				"name": "execute_place",
+				"description": "Execute one planned place (a p id from plan_place) in one call: carry to the pre-place above it, descend, open, retreat, each leg as bounded moves; refused when its approach is not (nearly) straight down.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"place_id"
+					],
+					"properties": {
+						"place_id": {
+							"type": "string",
+							"description": "A p id from plan_place"
+						},
+						"standoff": {
+							"type": "number",
+							"description": "m back along the approach (default 0.10)",
+							"minimum": 0,
+							"maximum": 0.3
+						}
+					}
+				}
+			},
+			{
+				"name": "plan_grasp",
+				"description": "Predict grasps for one object from the current RGB-D observation, ranked best first, in the world frame. Give the object as text (segmented with SAM3) or a mask_id of this observation. Each candidate has a short id (g3) and its EEF pose (eef_position, eef_quat_xyzw, approach, width_m), valid until the robot moves or the scene changes; drive the arm to that pose with the motion tools. Try `active` first; when it is refused before the robot moves (unreachable), call again with next_after=<that id> to get the next rank without re-planning; after a failed motion, plan again.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"object": {
+							"type": "string",
+							"description": "Object to grasp (SAM3 text prompt), e.g. 'black bowl'"
+						},
+						"mask_id": {
+							"type": "string",
+							"description": "A mask id (d2) of the current observation instead of object"
+						},
+						"camera": {
+							"type": "string",
+							"enum": [
+								"agentview",
+								"wrist"
+							],
+							"description": "Default: the first camera"
+						},
+						"backend": {
+							"type": "string",
+							"enum": [
+								"contact_graspnet",
+								"graspgenx",
+								"anygrasp",
+								"graspnet1b"
+							],
+							"description": "Default: the first configured"
+						},
+						"next_after": {
+							"type": "string",
+							"description": "Greedy policy: reject this grasp id and return the next rank of its plan"
+						},
+						"reason": {
+							"type": "string",
+							"description": "With next_after: why that candidate failed"
+						}
+					}
+				}
+			},
+			{
+				"name": "plan_place",
+				"description": "Where to hold the grasped object so it comes to rest on a placement region (AnyPlace). Ask it before the grasp, from the observation the grasp was planned on: the region as text (segmented now) or a mask id, and that current g id (the object is the grasp's mask, or object_mask_id). Returns place poses (eef_position, eef_quat_xyzw) with ids (p1); after grasping with that grasp, drive the arm to the place pose and open.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"grasp_id"
+					],
+					"properties": {
+						"region": {
+							"type": "string",
+							"description": "The surface it goes onto / into (SAM3 text), or region_mask_id"
+						},
+						"region_mask_id": {
+							"type": "string",
+							"description": "Mask id of the placement region"
+						},
+						"grasp_id": {
+							"type": "string",
+							"description": "A current grasp (g id) of this observation, the one the object will be held with"
+						},
+						"object_mask_id": {
+							"type": "string",
+							"description": "The object's mask id; default the mask the grasp was planned on"
+						},
+						"camera": {
+							"type": "string",
+							"enum": [
+								"agentview",
+								"wrist"
+							],
+							"description": "Default: the first camera"
+						}
+					}
+				}
+			},
+			{
+				"name": "check_attached",
+				"description": "Independent visual check whether the gripper holds the object: a vision model judges the current wrist view and the other cameras cropped around the gripper. Use it after a grasp and lift, before carrying; it does not move the robot.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"object"
+					],
+					"properties": {
+						"object": {
+							"type": "string",
+							"description": "The object that should be in the gripper"
 						}
 					}
 				}
@@ -3166,7 +4536,7 @@
 			},
 			{
 				"name": "move_delta",
-				"description": "Move the Piper gripper by a bounded base-frame xyz delta in meters (x forward, y left, z up).",
+				"description": "Move the Piper gripper by a bounded base-frame xyz delta in meters (x forward, y left, z up; at most 0.05 m per call).",
 				"parameters": {
 					"type": "object",
 					"required": [
@@ -3179,14 +4549,15 @@
 								"type": "number"
 							},
 							"minItems": 3,
-							"maxItems": 3
+							"maxItems": 3,
+							"description": "[dx, dy, dz], m (at most 0.05 m per call)"
 						}
 					}
 				}
 			},
 			{
 				"name": "rotate_yaw",
-				"description": "Rotate the Piper gripper about the base z axis by a bounded angle in radians.",
+				"description": "Rotate the Piper gripper about the base z axis by a bounded angle in radians (at most 0.2 rad per call).",
 				"parameters": {
 					"type": "object",
 					"required": [
@@ -3194,7 +4565,8 @@
 					],
 					"properties": {
 						"yaw": {
-							"type": "number"
+							"type": "number",
+							"description": "rad, + turns counter-clockwise seen from above (at most 0.2 rad per call)"
 						}
 					}
 				}
@@ -3251,7 +4623,8 @@
 					"type": "object",
 					"properties": {
 						"prompt": {
-							"type": "string"
+							"type": "string",
+							"description": "What to segment (or point)"
 						},
 						"point": {
 							"type": "array",
@@ -3259,15 +4632,22 @@
 								"type": "integer"
 							},
 							"minItems": 2,
-							"maxItems": 2
+							"maxItems": 2,
+							"description": "A positive point [row, col] instead of prompt"
 						},
 						"camera": {
 							"type": "string",
-							"description": "Camera name (default: the main camera)"
+							"enum": [
+								"front",
+								"wrist"
+							],
+							"description": "Default: the first camera"
 						},
 						"min_score": {
 							"type": "number",
-							"description": "Default 0.2"
+							"description": "Default 0.2",
+							"minimum": 0,
+							"maximum": 1
 						},
 						"all": {
 							"type": "boolean",
@@ -3316,7 +4696,11 @@
 					"properties": {
 						"camera": {
 							"type": "string",
-							"description": "Camera name (default: the main camera)"
+							"enum": [
+								"front",
+								"wrist"
+							],
+							"description": "Default: the first camera"
 						}
 					}
 				}
@@ -3536,12 +4920,11 @@
 			},
 			{
 				"name": "move_delta",
-				"description": "Move one Piper arm's gripper by a bounded base-frame xyz delta in meters (x forward, y left, z up, in that arm's own base frame).",
+				"description": "Move one Piper arm's gripper by a bounded base-frame xyz delta in meters (x forward, y left, z up, in that arm's own base frame; at most 0.05 m per call).",
 				"parameters": {
 					"type": "object",
 					"required": [
-						"delta_xyz",
-						"arm"
+						"delta_xyz"
 					],
 					"properties": {
 						"delta_xyz": {
@@ -3550,7 +4933,8 @@
 								"type": "number"
 							},
 							"minItems": 3,
-							"maxItems": 3
+							"maxItems": 3,
+							"description": "[dx, dy, dz], m (at most 0.05 m per call)"
 						},
 						"arm": {
 							"type": "string",
@@ -3558,23 +4942,23 @@
 								"left",
 								"right"
 							],
-							"description": "Which arm moves; the other holds still"
+							"description": "Which arm: 'left' or 'right' (two arms; required there, the other arm holds still). Omit on one arm"
 						}
 					}
 				}
 			},
 			{
 				"name": "rotate_yaw",
-				"description": "Rotate one Piper arm's gripper about the base z axis by a bounded angle in radians.",
+				"description": "Rotate one Piper arm's gripper about the base z axis by a bounded angle in radians (at most 0.2 rad per call).",
 				"parameters": {
 					"type": "object",
 					"required": [
-						"yaw",
-						"arm"
+						"yaw"
 					],
 					"properties": {
 						"yaw": {
-							"type": "number"
+							"type": "number",
+							"description": "rad, + turns counter-clockwise seen from above (at most 0.2 rad per call)"
 						},
 						"arm": {
 							"type": "string",
@@ -3582,7 +4966,7 @@
 								"left",
 								"right"
 							],
-							"description": "Which arm moves; the other holds still"
+							"description": "Which arm: 'left' or 'right' (two arms; required there, the other arm holds still). Omit on one arm"
 						}
 					}
 				}
@@ -3592,9 +4976,6 @@
 				"description": "Open one Piper arm's gripper and wait for it to settle.",
 				"parameters": {
 					"type": "object",
-					"required": [
-						"arm"
-					],
 					"properties": {
 						"arm": {
 							"type": "string",
@@ -3602,7 +4983,7 @@
 								"left",
 								"right"
 							],
-							"description": "Which arm moves; the other holds still"
+							"description": "Which arm: 'left' or 'right' (two arms; required there, the other arm holds still). Omit on one arm"
 						}
 					}
 				}
@@ -3612,9 +4993,6 @@
 				"description": "Close one Piper arm's gripper and wait for it to settle; an empty close reopens and says so in notes.",
 				"parameters": {
 					"type": "object",
-					"required": [
-						"arm"
-					],
 					"properties": {
 						"arm": {
 							"type": "string",
@@ -3622,7 +5000,7 @@
 								"left",
 								"right"
 							],
-							"description": "Which arm moves; the other holds still"
+							"description": "Which arm: 'left' or 'right' (two arms; required there, the other arm holds still). Omit on one arm"
 						}
 					}
 				}
@@ -3632,10 +5010,6 @@
 				"description": "Stop one arm for the rest of the episode (its part of the task is done, or it is in trouble): the server holds it where it is and refuses its motion until the operator resets it. The other arm keeps working.",
 				"parameters": {
 					"type": "object",
-					"required": [
-						"arm",
-						"reason"
-					],
 					"properties": {
 						"arm": {
 							"type": "string",
@@ -3643,7 +5017,7 @@
 								"left",
 								"right"
 							],
-							"description": "Which arm moves; the other holds still"
+							"description": "Which arm: 'left' or 'right' (two arms; required there, the other arm holds still). Omit on one arm"
 						},
 						"reason": {
 							"type": "string",
@@ -3688,7 +5062,8 @@
 					"type": "object",
 					"properties": {
 						"prompt": {
-							"type": "string"
+							"type": "string",
+							"description": "What to segment (or point)"
 						},
 						"point": {
 							"type": "array",
@@ -3696,15 +5071,23 @@
 								"type": "integer"
 							},
 							"minItems": 2,
-							"maxItems": 2
+							"maxItems": 2,
+							"description": "A positive point [row, col] instead of prompt"
 						},
 						"camera": {
 							"type": "string",
-							"description": "Camera name (default: the main camera)"
+							"enum": [
+								"front",
+								"wrist_left",
+								"wrist_right"
+							],
+							"description": "Default: the first camera"
 						},
 						"min_score": {
 							"type": "number",
-							"description": "Default 0.2"
+							"description": "Default 0.2",
+							"minimum": 0,
+							"maximum": 1
 						},
 						"all": {
 							"type": "boolean",
@@ -3753,7 +5136,12 @@
 					"properties": {
 						"camera": {
 							"type": "string",
-							"description": "Camera name (default: the main camera)"
+							"enum": [
+								"front",
+								"wrist_left",
+								"wrist_right"
+							],
+							"description": "Default: the first camera"
 						}
 					}
 				}
@@ -3932,15 +5320,21 @@
 						},
 						"step_clip": {
 							"type": "number",
-							"description": "Per-step dxyz cap, m (default 0.02)"
+							"description": "Per-step dxyz cap, m (default 0.02)",
+							"minimum": 0.001,
+							"maximum": 0.1
 						},
 						"max_steps": {
 							"type": "integer",
-							"description": "Step budget (default 200)"
+							"description": "Step budget (default 200)",
+							"minimum": 1,
+							"maximum": 1000
 						},
 						"tol": {
 							"type": "number",
-							"description": "Position tolerance, m (default 0.012)"
+							"description": "Position tolerance, m (default 0.012)",
+							"minimum": 0.001,
+							"maximum": 0.1
 						}
 					}
 				}
@@ -3970,15 +5364,19 @@
 								"open",
 								"hold"
 							],
-							"description": "'close', 'open', or 'hold' (default 'hold')"
+							"description": "'close', 'open', or 'hold' to maintain the current finger width (default 'hold')"
 						},
 						"step_clip": {
 							"type": "number",
-							"description": "Per-step dxyz cap, m (default 0.02)"
+							"description": "Per-step dxyz cap, m (default 0.02)",
+							"minimum": 0.001,
+							"maximum": 0.1
 						},
 						"max_steps": {
 							"type": "integer",
-							"description": "Step budget (default 80)"
+							"description": "Step budget (default 80)",
+							"minimum": 1,
+							"maximum": 1000
 						}
 					}
 				}
@@ -3999,7 +5397,9 @@
 						},
 						"n": {
 							"type": "integer",
-							"description": "Number of env steps for the rotation (default 12)"
+							"description": "Number of env steps for the rotation (default 12)",
+							"minimum": 1,
+							"maximum": 200
 						}
 					}
 				}
@@ -4016,7 +5416,9 @@
 						},
 						"steps": {
 							"type": "integer",
-							"description": "Env steps to hold (default 10)"
+							"description": "Env steps to hold (default 10)",
+							"minimum": 1,
+							"maximum": 200
 						}
 					}
 				}
@@ -4029,7 +5431,9 @@
 					"properties": {
 						"steps": {
 							"type": "integer",
-							"description": "Env steps (default 10)"
+							"description": "Env steps (default 10)",
+							"minimum": 1,
+							"maximum": 200
 						}
 					}
 				}
@@ -4062,7 +5466,9 @@
 						},
 						"step_clip": {
 							"type": "number",
-							"description": "Per-step dxyz cap during approach, m (default 0.02)"
+							"description": "Per-step dxyz cap during approach, m (default 0.02)",
+							"minimum": 0.001,
+							"maximum": 0.1
 						}
 					}
 				}
@@ -4167,11 +5573,15 @@
 						},
 						"tol": {
 							"type": "number",
-							"description": "Distance threshold to stop, m (default 0.20)"
+							"description": "Distance threshold to stop, m (default 0.20)",
+							"minimum": 0.01,
+							"maximum": 2
 						},
 						"max_steps": {
 							"type": "integer",
-							"description": "Step budget (default 300)"
+							"description": "Step budget (default 300)",
+							"minimum": 1,
+							"maximum": 1000
 						},
 						"gripper": {
 							"type": "string",
@@ -4180,7 +5590,7 @@
 								"open",
 								"hold"
 							],
-							"description": "'close', 'open', or 'hold' (default 'hold')"
+							"description": "'close', 'open', or 'hold' to maintain the current finger width (default 'hold')"
 						}
 					}
 				}
@@ -4205,7 +5615,9 @@
 						},
 						"steps": {
 							"type": "integer",
-							"description": "Env steps (default 10)"
+							"description": "Env steps (default 10)",
+							"minimum": 1,
+							"maximum": 200
 						},
 						"gripper": {
 							"type": "string",
@@ -4214,7 +5626,7 @@
 								"open",
 								"hold"
 							],
-							"description": "'close', 'open', or 'hold' (default 'hold')"
+							"description": "'close', 'open', or 'hold' to maintain the current finger width (default 'hold')"
 						}
 					}
 				}
@@ -4252,7 +5664,8 @@
 								"maxItems": 2
 							},
 							"minItems": 1,
-							"maxItems": 50
+							"maxItems": 50,
+							"description": "[row, col] pixels"
 						},
 						"step": {
 							"type": "integer",
@@ -4379,7 +5792,8 @@
 					"type": "object",
 					"properties": {
 						"prompt": {
-							"type": "string"
+							"type": "string",
+							"description": "What to segment (or point)"
 						},
 						"point": {
 							"type": "array",
@@ -4387,7 +5801,8 @@
 								"type": "integer"
 							},
 							"minItems": 2,
-							"maxItems": 2
+							"maxItems": 2,
+							"description": "A positive point [row, col] instead of prompt"
 						},
 						"camera": {
 							"type": "string",
@@ -4396,11 +5811,13 @@
 								"navview",
 								"wrist"
 							],
-							"description": "Default agentview"
+							"description": "Default: the first camera"
 						},
 						"min_score": {
 							"type": "number",
-							"description": "Default 0.2"
+							"description": "Default 0.2",
+							"minimum": 0,
+							"maximum": 1
 						},
 						"all": {
 							"type": "boolean",
@@ -4454,7 +5871,484 @@
 								"navview",
 								"wrist"
 							],
-							"description": "Default agentview"
+							"description": "Default: the first camera"
+						}
+					}
+				}
+			}
+		],
+		"robodojo": [
+			{
+				"name": "act",
+				"description": "Execute one action unit (MV_FWD, MV_BACK, MV_LEFT, MV_RIGHT, MV_UP, MV_DOWN, ROTATE_CW, ROTATE_CCW, STOP, GRASP, RELEASE, DONE, STILL), repeated n times. MV_* move the gripper ~2 cm, ROTATE_* turn it ~9 deg; GRASP closes, RELEASE opens, STOP holds one step, DONE means the task is complete (call finish). Returns the new images and state.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"unit",
+						"arm"
+					],
+					"properties": {
+						"unit": {
+							"type": "string",
+							"enum": [
+								"MV_FWD",
+								"MV_BACK",
+								"MV_LEFT",
+								"MV_RIGHT",
+								"MV_UP",
+								"MV_DOWN",
+								"ROTATE_CW",
+								"ROTATE_CCW",
+								"STOP",
+								"GRASP",
+								"RELEASE",
+								"DONE",
+								"STILL"
+							],
+							"description": "The action unit"
+						},
+						"n": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 10,
+							"description": "Repeat count (default 1)"
+						},
+						"target_in_wrist": {
+							"type": "boolean",
+							"description": "WRIST CHECK: is the TARGET visible in the wrist view?"
+						},
+						"plan": {
+							"type": "array",
+							"items": {
+								"type": "string",
+								"enum": [
+									"MV_FWD",
+									"MV_BACK",
+									"MV_LEFT",
+									"MV_RIGHT",
+									"MV_UP",
+									"MV_DOWN"
+								]
+							},
+							"maxItems": 3,
+							"description": "Only with target_in_wrist false: up to 3 MV_* moves run in order (replaces unit and n)"
+						},
+						"arm": {
+							"type": "string",
+							"enum": [
+								"left",
+								"right"
+							],
+							"description": "Which arm the unit drives"
+						},
+						"other": {
+							"type": "string",
+							"enum": [
+								"MV_FWD",
+								"MV_BACK",
+								"MV_LEFT",
+								"MV_RIGHT",
+								"MV_UP",
+								"MV_DOWN",
+								"ROTATE_CW",
+								"ROTATE_CCW",
+								"GRASP",
+								"RELEASE",
+								"STILL"
+							],
+							"description": "Paired step: the OTHER arm's unit, run at the same time as `unit` (STILL = it holds); n repeats the pair"
+						}
+					}
+				}
+			},
+			{
+				"name": "plan",
+				"description": "Subgoal plan: `stages` replaces the plan from the current stage on (ordered GRASP/LIFT/MOVE/PLACE/RELEASE/RETREAT/REASON stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"stages": {
+							"type": "array",
+							"items": {
+								"type": "object",
+								"required": [
+									"motion",
+									"target",
+									"completion"
+								],
+								"properties": {
+									"motion": {
+										"type": "string",
+										"description": "GRASP, LIFT, MOVE, PLACE, RELEASE, RETREAT or REASON"
+									},
+									"target": {
+										"type": "string"
+									},
+									"affordance": {
+										"type": "string",
+										"description": "The one visible part to aim at"
+									},
+									"description": {
+										"type": "string",
+										"description": "Visual strategy; for REASON the complete IF ... THEN rule"
+									},
+									"completion": {
+										"type": "string",
+										"description": "DONE WHEN: a condition visible in the images"
+									},
+									"arm": {
+										"type": "string",
+										"description": "Dual-arm robots: the arm of this stage"
+									}
+								}
+							}
+						},
+						"done": {
+							"type": "boolean",
+							"description": "The current stage's DONE WHEN is visible"
+						}
+					}
+				}
+			},
+			{
+				"name": "reset",
+				"description": "Exploration only. Abandon the current episode and restore the same initial scene. Archive the failed attempt first and state which strategy lever changes in the next attempt.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"reason"
+					],
+					"properties": {
+						"reason": {
+							"type": "string",
+							"description": "Why this episode is unrecoverable and what will change"
+						}
+					}
+				}
+			},
+			{
+				"name": "finish",
+				"description": "End the episode after checking the latest state. Success is RoboDojo's own judgement, not this call.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"status",
+						"summary"
+					],
+					"properties": {
+						"status": {
+							"type": "string",
+							"enum": [
+								"success",
+								"failure"
+							]
+						},
+						"summary": {
+							"type": "string"
+						}
+					}
+				}
+			},
+			{
+				"name": "view_env_state",
+				"description": "Current state with the head, left wrist and right wrist images.",
+				"parameters": {
+					"type": "object",
+					"properties": {}
+				}
+			},
+			{
+				"name": "move_to",
+				"description": "Move one arm's gripper in a straight line to an env-frame [x, y, z] in metres (+x toward the robot's right, +y away from the robot, +z up; the table top is z = 0.74; at most 0.5 m from where it is), optionally with a [qw, qx, qy, qz] orientation (default: keep it), after an optional gripper command. The other arm holds still. Stops at the first unreachable waypoint (`stopped`). Returns the new state and images.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"arm",
+						"xyz"
+					],
+					"properties": {
+						"arm": {
+							"type": "string",
+							"enum": [
+								"left",
+								"right"
+							],
+							"description": "Which arm"
+						},
+						"xyz": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 3,
+							"maxItems": 3,
+							"description": "Env-frame [x, y, z] in metres"
+						},
+						"quat_wxyz": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 4,
+							"maxItems": 4,
+							"description": "[qw, qx, qy, qz] (default: keep the orientation)"
+						},
+						"gripper": {
+							"type": "number",
+							"description": "Gripper command first: 1 open .. 0 closed",
+							"minimum": 0,
+							"maximum": 1
+						}
+					}
+				}
+			},
+			{
+				"name": "move_delta",
+				"description": "Translate one arm's gripper by an env-frame [dx, dy, dz] in metres (at most 0.5 m per call), orientation held, after an optional gripper command. Returns the new state and images.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"arm",
+						"delta_xyz"
+					],
+					"properties": {
+						"arm": {
+							"type": "string",
+							"enum": [
+								"left",
+								"right"
+							],
+							"description": "Which arm"
+						},
+						"delta_xyz": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 3,
+							"maxItems": 3,
+							"description": "Env-frame [dx, dy, dz] in metres"
+						},
+						"gripper": {
+							"type": "number",
+							"description": "Gripper command first: 1 open .. 0 closed",
+							"minimum": 0,
+							"maximum": 1
+						}
+					}
+				}
+			},
+			{
+				"name": "rotate_delta",
+				"description": "Turn one arm's gripper by `yaw` radians about the vertical through it (+ counter-clockwise seen from above; at most 0.8 rad per call), holding its position. Returns the new state and images.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"arm",
+						"yaw"
+					],
+					"properties": {
+						"arm": {
+							"type": "string",
+							"enum": [
+								"left",
+								"right"
+							],
+							"description": "Which arm"
+						},
+						"yaw": {
+							"type": "number",
+							"description": "rad about env +z (+ counter-clockwise seen from above)"
+						}
+					}
+				}
+			},
+			{
+				"name": "set_gripper",
+				"description": "Move one gripper to `value`: 1 fully open .. 0 fully closed. Returns the new state and images.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"arm",
+						"value"
+					],
+					"properties": {
+						"arm": {
+							"type": "string",
+							"enum": [
+								"left",
+								"right"
+							],
+							"description": "Which arm"
+						},
+						"value": {
+							"type": "number",
+							"description": "1 open .. 0 closed",
+							"minimum": 0,
+							"maximum": 1
+						}
+					}
+				}
+			},
+			{
+				"name": "go_home",
+				"description": "Drive both arms back to their start pose (grippers unchanged). Most tasks count as done only once both arms are back home with the grippers open.",
+				"parameters": {
+					"type": "object",
+					"properties": {}
+				}
+			},
+			{
+				"name": "back_project",
+				"description": "Env-frame [x, y, z] (m) of [col, row] pixels of the latest head image, from its depth. Read-only.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"pixels"
+					],
+					"properties": {
+						"pixels": {
+							"type": "array",
+							"items": {
+								"type": "array",
+								"items": {
+									"type": "number"
+								},
+								"minItems": 2,
+								"maxItems": 2
+							},
+							"minItems": 1,
+							"maxItems": 32,
+							"description": "[[col, row], ...] of the latest head image"
+						}
+					}
+				}
+			},
+			{
+				"name": "detect",
+				"description": "SAM3 masks on a camera's current image, each with a short id (d3) drawn on the returned overlay in rank order (red, blue, green, yellow, ...). Give exactly one of a text prompt or a positive point [row, col]. all=true returns every candidate instead of only the best; then choose one with select_detection or rule one out with reject_detection. Ids die with the observation: detect again after any motion.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"prompt": {
+							"type": "string",
+							"description": "What to segment (or point)"
+						},
+						"point": {
+							"type": "array",
+							"items": {
+								"type": "integer"
+							},
+							"minItems": 2,
+							"maxItems": 2,
+							"description": "A positive point [row, col] instead of prompt"
+						},
+						"camera": {
+							"type": "string",
+							"enum": [
+								"head",
+								"left_wrist",
+								"right_wrist"
+							],
+							"description": "Default: the first camera"
+						},
+						"min_score": {
+							"type": "number",
+							"description": "Default 0.2",
+							"minimum": 0,
+							"maximum": 1
+						},
+						"all": {
+							"type": "boolean",
+							"description": "Every mask, not only the best (default false)"
+						}
+					}
+				}
+			},
+			{
+				"name": "select_detection",
+				"description": "Choose one detect mask (by id) as the target of the current observation, after checking the overlay.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"id"
+					],
+					"properties": {
+						"id": {
+							"type": "string",
+							"description": "A detection id of the current observation (d3)"
+						}
+					}
+				}
+			},
+			{
+				"name": "reject_detection",
+				"description": "Rule out one detect mask (by id) of the current observation; it stays listed as rejected.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"id"
+					],
+					"properties": {
+						"id": {
+							"type": "string",
+							"description": "A detection id of the current observation (d3)"
+						}
+					}
+				}
+			},
+			{
+				"name": "enhance_depth",
+				"description": "Fill the holes of a camera's current depth with a UniDepth estimate scaled to the sensor, or supply depth where the camera has none. detect then measures through it until the next motion.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"camera": {
+							"type": "string",
+							"enum": [
+								"head",
+								"left_wrist",
+								"right_wrist"
+							],
+							"description": "Default: the first camera"
+						}
+					}
+				}
+			},
+			{
+				"name": "point",
+				"description": "Molmo points at what a short noun phrase names ('the red mug handle') in a camera's current image and returns the pixel [row, col], its world point where the robot has depth, and the image with the point marked. With cameras (up to 4) it asks once over that ordered set (the query may say \"Image 1\" for the first) and every point names its camera.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"query"
+					],
+					"properties": {
+						"query": {
+							"type": "string"
+						},
+						"camera": {
+							"type": "string",
+							"enum": [
+								"head",
+								"left_wrist",
+								"right_wrist"
+							],
+							"description": "Default head"
+						},
+						"cameras": {
+							"type": "array",
+							"items": {
+								"type": "string",
+								"enum": [
+									"head",
+									"left_wrist",
+									"right_wrist"
+								]
+							},
+							"minItems": 2,
+							"maxItems": 4,
+							"description": "Several cameras at once (MolmoPoint)"
 						}
 					}
 				}
@@ -4628,14 +6522,16 @@
 								"type": "number"
 							},
 							"minItems": 3,
-							"maxItems": 3
+							"maxItems": 3,
+							"description": "Base-frame [dx, dy, dz] in metres"
 						},
 						"gripper": {
 							"type": "string",
 							"enum": [
 								"open",
 								"close"
-							]
+							],
+							"description": "Open or close the gripper first (default: keep)"
 						}
 					}
 				}
@@ -4650,7 +6546,8 @@
 					],
 					"properties": {
 						"yaw": {
-							"type": "number"
+							"type": "number",
+							"description": "rad about the base vertical (+ = counter-clockwise seen from above)"
 						}
 					}
 				}
@@ -4698,7 +6595,8 @@
 					"type": "object",
 					"properties": {
 						"prompt": {
-							"type": "string"
+							"type": "string",
+							"description": "What to segment (or point)"
 						},
 						"point": {
 							"type": "array",
@@ -4706,7 +6604,8 @@
 								"type": "integer"
 							},
 							"minItems": 2,
-							"maxItems": 2
+							"maxItems": 2,
+							"description": "A positive point [row, col] instead of prompt"
 						},
 						"camera": {
 							"type": "string",
@@ -4714,11 +6613,13 @@
 								"agentview",
 								"wrist"
 							],
-							"description": "Default agentview"
+							"description": "Default: the first camera"
 						},
 						"min_score": {
 							"type": "number",
-							"description": "Default 0.2"
+							"description": "Default 0.2",
+							"minimum": 0,
+							"maximum": 1
 						},
 						"all": {
 							"type": "boolean",
@@ -4771,7 +6672,766 @@
 								"agentview",
 								"wrist"
 							],
+							"description": "Default: the first camera"
+						}
+					}
+				}
+			}
+		],
+		"robosuite": [
+			{
+				"name": "act",
+				"description": "Execute one action unit (MV_FWD, MV_BACK, MV_LEFT, MV_RIGHT, MV_UP, MV_DOWN, ROTATE_CW, ROTATE_CCW, STOP, GRASP, RELEASE, DONE), repeated n times. MV_* move the gripper ~2 cm, ROTATE_* turn it ~9 deg; GRASP closes, RELEASE opens, STOP holds one step, DONE means the task is complete (call finish). Returns the new images and state.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"unit"
+					],
+					"properties": {
+						"unit": {
+							"type": "string",
+							"enum": [
+								"MV_FWD",
+								"MV_BACK",
+								"MV_LEFT",
+								"MV_RIGHT",
+								"MV_UP",
+								"MV_DOWN",
+								"ROTATE_CW",
+								"ROTATE_CCW",
+								"STOP",
+								"GRASP",
+								"RELEASE",
+								"DONE"
+							],
+							"description": "The action unit"
+						},
+						"n": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 10,
+							"description": "Repeat count (default 1)"
+						},
+						"target_in_wrist": {
+							"type": "boolean",
+							"description": "WRIST CHECK: is the TARGET visible in the wrist view?"
+						},
+						"plan": {
+							"type": "array",
+							"items": {
+								"type": "string",
+								"enum": [
+									"MV_FWD",
+									"MV_BACK",
+									"MV_LEFT",
+									"MV_RIGHT",
+									"MV_UP",
+									"MV_DOWN"
+								]
+							},
+							"maxItems": 3,
+							"description": "Only with target_in_wrist false: up to 3 MV_* moves run in order (replaces unit and n)"
+						}
+					}
+				}
+			},
+			{
+				"name": "plan",
+				"description": "Subgoal plan: `stages` replaces the plan from the current stage on (ordered GRASP/LIFT/MOVE/PLACE/RELEASE/RETREAT/REASON stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"stages": {
+							"type": "array",
+							"items": {
+								"type": "object",
+								"required": [
+									"motion",
+									"target",
+									"completion"
+								],
+								"properties": {
+									"motion": {
+										"type": "string",
+										"description": "GRASP, LIFT, MOVE, PLACE, RELEASE, RETREAT or REASON"
+									},
+									"target": {
+										"type": "string"
+									},
+									"affordance": {
+										"type": "string",
+										"description": "The one visible part to aim at"
+									},
+									"description": {
+										"type": "string",
+										"description": "Visual strategy; for REASON the complete IF ... THEN rule"
+									},
+									"completion": {
+										"type": "string",
+										"description": "DONE WHEN: a condition visible in the images"
+									},
+									"arm": {
+										"type": "string",
+										"description": "Dual-arm robots: the arm of this stage"
+									}
+								}
+							}
+						},
+						"done": {
+							"type": "boolean",
+							"description": "The current stage's DONE WHEN is visible"
+						}
+					}
+				}
+			},
+			{
+				"name": "reset",
+				"description": "Exploration only. Abandon the current episode and restore the same initial scene. Archive the failed attempt first and state which strategy lever changes in the next attempt.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"reason"
+					],
+					"properties": {
+						"reason": {
+							"type": "string",
+							"description": "Why this episode is unrecoverable and what will change"
+						}
+					}
+				}
+			},
+			{
+				"name": "finish",
+				"description": "End the episode after checking the latest state. Success is robosuite's own check, not this call.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"status",
+						"summary"
+					],
+					"properties": {
+						"status": {
+							"type": "string",
+							"enum": [
+								"success",
+								"failure"
+							]
+						},
+						"summary": {
+							"type": "string"
+						}
+					}
+				}
+			},
+			{
+				"name": "view_env_state",
+				"description": "Current state with the task camera (global layout) and wrist (close range) 512x512 images. Pixels (row, col) in these images feed back_project.",
+				"parameters": {
+					"type": "object",
+					"properties": {}
+				}
+			},
+			{
+				"name": "move_to",
+				"description": "Closed-loop servo of the TCP to a world xyz, holding the orientation (or turning by rotvec, a world-frame axis-angle in rad). The server refuses a target more than 0.3 m away, outside the table workspace or below the z floor; split long moves. gripper sets the held command first.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"xyz"
+					],
+					"properties": {
+						"xyz": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 3,
+							"maxItems": 3,
+							"description": "World-frame [x, y, z] in metres"
+						},
+						"quat_xyzw": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 4,
+							"maxItems": 4,
+							"description": "Absolute world orientation to reach (default: keep)"
+						},
+						"rotvec": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 3,
+							"maxItems": 3,
+							"description": "Instead: a world-frame turn, axis x angle, rad, from the current orientation"
+						},
+						"gripper": {
+							"type": "string",
+							"enum": [
+								"open",
+								"close"
+							],
+							"description": "Set the held gripper command first (default: keep)"
+						},
+						"tol_m": {
+							"type": "number",
+							"description": "Stop within this distance, m (default 0.005)",
+							"minimum": 0.001,
+							"maximum": 0.05
+						},
+						"max_steps": {
+							"type": "integer",
+							"description": "Control-step budget (default 100)",
+							"minimum": 1,
+							"maximum": 400
+						}
+					}
+				}
+			},
+			{
+				"name": "move_delta",
+				"description": "Translate the TCP by a world-frame [dx, dy, dz] in metres (+z up; in the task camera +x runs toward the image bottom and +y toward the image right: on the one-arm tasks +x is away from robot0 and +y to its left, on the two-arm tasks +y runs from robot0 toward robot1; at most 0.3 m per call), holding the orientation. gripper sets the held command first.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"delta_xyz"
+					],
+					"properties": {
+						"delta_xyz": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 3,
+							"maxItems": 3,
+							"description": "World-frame [dx, dy, dz] in metres"
+						},
+						"quat_xyzw": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 4,
+							"maxItems": 4,
+							"description": "Absolute world orientation to reach (default: keep)"
+						},
+						"rotvec": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 3,
+							"maxItems": 3,
+							"description": "Instead: a world-frame turn, axis x angle, rad, from the current orientation"
+						},
+						"gripper": {
+							"type": "string",
+							"enum": [
+								"open",
+								"close"
+							],
+							"description": "Set the held gripper command first (default: keep)"
+						},
+						"tol_m": {
+							"type": "number",
+							"description": "Stop within this distance, m (default 0.005)",
+							"minimum": 0.001,
+							"maximum": 0.05
+						},
+						"max_steps": {
+							"type": "integer",
+							"description": "Control-step budget (default 100)",
+							"minimum": 1,
+							"maximum": 400
+						}
+					}
+				}
+			},
+			{
+				"name": "set_gripper",
+				"description": "Hold the arm and open or close its gripper (up to `steps` control steps; the fingers stop on a grasped object). The command stays in force for later moves: carry with close.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"close"
+					],
+					"properties": {
+						"close": {
+							"type": "boolean",
+							"description": "true closes and holds, false opens"
+						},
+						"steps": {
+							"type": "integer",
+							"description": "Control steps to drive the fingers (default 15)",
+							"minimum": 1,
+							"maximum": 200
+						}
+					}
+				}
+			},
+			{
+				"name": "get_camera_meta",
+				"description": "Camera calibration (intrinsic K and cam-to-world extrinsic for the 512x512 image; depth is metric) for the current step.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"camera_name": {
+							"type": "string",
+							"enum": [
+								"agentview",
+								"wrist"
+							],
 							"description": "Default agentview"
+						},
+						"height": {
+							"type": "integer",
+							"description": "Pixels (default 512)",
+							"minimum": 16,
+							"maximum": 1024
+						},
+						"width": {
+							"type": "integer",
+							"description": "Pixels (default 512)",
+							"minimum": 16,
+							"maximum": 1024
+						}
+					}
+				}
+			},
+			{
+				"name": "segment",
+				"description": "SAM3 segmentation of the current 512x512 camera image. Give exactly one of a text prompt or a positive point [row, col]. The top mask is projected through the depth world map; world_xyz is the median over mask pixels. Returns an overlay image.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"prompt": {
+							"type": "string",
+							"description": "What to segment, e.g. 'red cube' (or give point)"
+						},
+						"point": {
+							"type": "array",
+							"items": {
+								"type": "integer"
+							},
+							"minItems": 2,
+							"maxItems": 2,
+							"description": "A positive point [row, col] instead of a prompt"
+						},
+						"camera": {
+							"type": "string",
+							"enum": [
+								"agentview",
+								"wrist"
+							],
+							"description": "Default agentview"
+						},
+						"min_score": {
+							"type": "number",
+							"description": "SAM3 threshold (default 0.2)",
+							"minimum": 0,
+							"maximum": 1
+						}
+					}
+				}
+			},
+			{
+				"name": "back_project",
+				"description": "World xyz of a pixel (row, col; row 0 = top) in the current 512x512 camera image, from the depth world map. Region mode: row_range + col_range (+ optional z_min/z_max) returns the midpoint of world xy over that window and the median z.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"row": {
+							"type": "integer",
+							"description": "Pixel row (0 = top)",
+							"minimum": 0
+						},
+						"col": {
+							"type": "integer",
+							"description": "Pixel column",
+							"minimum": 0
+						},
+						"camera": {
+							"type": "string",
+							"enum": [
+								"agentview",
+								"wrist"
+							],
+							"description": "Default agentview"
+						},
+						"row_range": {
+							"type": "array",
+							"items": {
+								"type": "integer"
+							},
+							"minItems": 2,
+							"maxItems": 2,
+							"description": "Region mode: [first, last) rows"
+						},
+						"col_range": {
+							"type": "array",
+							"items": {
+								"type": "integer"
+							},
+							"minItems": 2,
+							"maxItems": 2,
+							"description": "Region mode: [first, last) columns"
+						},
+						"z_min": {
+							"type": "number",
+							"description": "Region mode: keep pixels with world z >= z_min"
+						},
+						"z_max": {
+							"type": "number",
+							"description": "Region mode: keep pixels with world z <= z_max"
+						}
+					}
+				}
+			},
+			{
+				"name": "get_object_pose",
+				"description": "Pose of an object named in words, from SAM3 and depth: [position (3,), quaternion_wxyz (4,), bbox_extent (3,) or null]. The quaternion is identity: use the grasp quaternion, or [0, 0, 1, 0] (gripper down), when placing.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"object_name"
+					],
+					"properties": {
+						"object_name": {
+							"type": "string",
+							"description": "The object in words, e.g. 'red cube'"
+						},
+						"return_bbox_extent": {
+							"type": "boolean",
+							"description": "Also return the bounding-box extent (default false)"
+						}
+					}
+				}
+			},
+			{
+				"name": "sample_grasp_pose",
+				"description": "A grasp of an object named in words: [position (3,), quaternion_wxyz (4,)] for goto_pose. With a grasp server the best planned grasp, else the object's centre with the gripper pointing down.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"object_name"
+					],
+					"properties": {
+						"object_name": {
+							"type": "string",
+							"description": "The object in words"
+						}
+					}
+				}
+			},
+			{
+				"name": "goto_pose",
+				"description": "Go to a gripper pose (position and wxyz orientation); with z_approach first stop that far back along the approach axis. Long moves run as straight legs.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"position",
+						"quaternion_wxyz"
+					],
+					"properties": {
+						"position": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 3,
+							"maxItems": 3,
+							"description": "World [x, y, z] of the grip point, m"
+						},
+						"quaternion_wxyz": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 4,
+							"maxItems": 4,
+							"description": "Gripper orientation, wxyz ([0, 0, 1, 0] = pointing down)"
+						},
+						"z_approach": {
+							"type": "number",
+							"description": "First stop this far back along the approach axis, m (default 0)",
+							"minimum": 0,
+							"maximum": 0.3
+						}
+					}
+				}
+			},
+			{
+				"name": "home_pose",
+				"description": "Move the gripper back to its start position, pointing down.",
+				"parameters": {
+					"type": "object",
+					"properties": {}
+				}
+			},
+			{
+				"name": "open_gripper",
+				"description": "Open the gripper fully.",
+				"parameters": {
+					"type": "object",
+					"properties": {}
+				}
+			},
+			{
+				"name": "close_gripper",
+				"description": "Close the gripper fully (the fingers stop on an object).",
+				"parameters": {
+					"type": "object",
+					"properties": {}
+				}
+			},
+			{
+				"name": "preview_reach",
+				"description": "Whether move_to could reach a world xyz from the arm's current joints (IK only; nothing moves). status unreachable means move_to would refuse it; unknown means the check could not run.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"xyz"
+					],
+					"properties": {
+						"xyz": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 3,
+							"maxItems": 3,
+							"description": "World-frame [x, y, z] in metres"
+						},
+						"quat_xyzw": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 4,
+							"maxItems": 4,
+							"description": "Default: the current orientation"
+						}
+					}
+				}
+			},
+			{
+				"name": "plan_grasp",
+				"description": "Predict grasps for one object from the current RGB-D observation, ranked best first, in the world frame. Give the object as text (segmented with SAM3) or a mask_id of this observation. Each candidate has a short id (g3) and its EEF pose (eef_position, eef_quat_xyzw, approach, width_m), valid until the robot moves or the scene changes; drive the arm to that pose with the motion tools. Try `active` first; when it is refused before the robot moves (unreachable), call again with next_after=<that id> to get the next rank without re-planning; after a failed motion, plan again.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"object": {
+							"type": "string",
+							"description": "Object to grasp (SAM3 text prompt), e.g. 'black bowl'"
+						},
+						"mask_id": {
+							"type": "string",
+							"description": "A mask id (d2) of the current observation instead of object"
+						},
+						"camera": {
+							"type": "string",
+							"enum": [
+								"agentview",
+								"wrist"
+							],
+							"description": "Default: the first camera"
+						},
+						"backend": {
+							"type": "string",
+							"enum": [
+								"contact_graspnet",
+								"graspgenx",
+								"anygrasp",
+								"graspnet1b"
+							],
+							"description": "Default: the first configured"
+						},
+						"next_after": {
+							"type": "string",
+							"description": "Greedy policy: reject this grasp id and return the next rank of its plan"
+						},
+						"reason": {
+							"type": "string",
+							"description": "With next_after: why that candidate failed"
+						}
+					}
+				}
+			},
+			{
+				"name": "plan_place",
+				"description": "Where to hold the grasped object so it comes to rest on a placement region (AnyPlace). Ask it before the grasp, from the observation the grasp was planned on: the region as text (segmented now) or a mask id, and that current g id (the object is the grasp's mask, or object_mask_id). Returns place poses (eef_position, eef_quat_xyzw) with ids (p1); after grasping with that grasp, drive the arm to the place pose and open.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"grasp_id"
+					],
+					"properties": {
+						"region": {
+							"type": "string",
+							"description": "The surface it goes onto / into (SAM3 text), or region_mask_id"
+						},
+						"region_mask_id": {
+							"type": "string",
+							"description": "Mask id of the placement region"
+						},
+						"grasp_id": {
+							"type": "string",
+							"description": "A current grasp (g id) of this observation, the one the object will be held with"
+						},
+						"object_mask_id": {
+							"type": "string",
+							"description": "The object's mask id; default the mask the grasp was planned on"
+						},
+						"camera": {
+							"type": "string",
+							"enum": [
+								"agentview",
+								"wrist"
+							],
+							"description": "Default: the first camera"
+						}
+					}
+				}
+			},
+			{
+				"name": "check_attached",
+				"description": "Independent visual check whether the gripper holds the object: a vision model judges the current wrist view and the other cameras cropped around the gripper. Use it after a grasp and lift, before carrying; it does not move the robot.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"object"
+					],
+					"properties": {
+						"object": {
+							"type": "string",
+							"description": "The object that should be in the gripper"
+						}
+					}
+				}
+			},
+			{
+				"name": "point",
+				"description": "Molmo points at what a short noun phrase names ('the red mug handle') in a camera's current image and returns the pixel [row, col], its world point where the robot has depth, and the image with the point marked. With cameras (up to 4) it asks once over that ordered set (the query may say \"Image 1\" for the first) and every point names its camera.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"query"
+					],
+					"properties": {
+						"query": {
+							"type": "string"
+						},
+						"camera": {
+							"type": "string",
+							"enum": [
+								"agentview",
+								"wrist"
+							],
+							"description": "Default agentview"
+						},
+						"cameras": {
+							"type": "array",
+							"items": {
+								"type": "string",
+								"enum": [
+									"agentview",
+									"wrist"
+								]
+							},
+							"minItems": 2,
+							"maxItems": 4,
+							"description": "Several cameras at once (MolmoPoint)"
+						}
+					}
+				}
+			},
+			{
+				"name": "detect",
+				"description": "SAM3 masks on a camera's current image, each with a short id (d3) drawn on the returned overlay in rank order (red, blue, green, yellow, ...). Give exactly one of a text prompt or a positive point [row, col]. all=true returns every candidate instead of only the best; then choose one with select_detection or rule one out with reject_detection. Ids die with the observation: detect again after any motion.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"prompt": {
+							"type": "string",
+							"description": "What to segment (or point)"
+						},
+						"point": {
+							"type": "array",
+							"items": {
+								"type": "integer"
+							},
+							"minItems": 2,
+							"maxItems": 2,
+							"description": "A positive point [row, col] instead of prompt"
+						},
+						"camera": {
+							"type": "string",
+							"enum": [
+								"agentview",
+								"wrist"
+							],
+							"description": "Default: the first camera"
+						},
+						"min_score": {
+							"type": "number",
+							"description": "Default 0.2",
+							"minimum": 0,
+							"maximum": 1
+						},
+						"all": {
+							"type": "boolean",
+							"description": "Every mask, not only the best (default false)"
+						}
+					}
+				}
+			},
+			{
+				"name": "select_detection",
+				"description": "Choose one detect mask (by id) as the target of the current observation, after checking the overlay.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"id"
+					],
+					"properties": {
+						"id": {
+							"type": "string",
+							"description": "A detection id of the current observation (d3)"
+						}
+					}
+				}
+			},
+			{
+				"name": "reject_detection",
+				"description": "Rule out one detect mask (by id) of the current observation; it stays listed as rejected.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"id"
+					],
+					"properties": {
+						"id": {
+							"type": "string",
+							"description": "A detection id of the current observation (d3)"
+						}
+					}
+				}
+			},
+			{
+				"name": "enhance_depth",
+				"description": "Fill the holes of a camera's current depth with a UniDepth estimate scaled to the sensor, or supply depth where the camera has none. detect then measures through it until the next motion.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"camera": {
+							"type": "string",
+							"enum": [
+								"agentview",
+								"wrist"
+							],
+							"description": "Default: the first camera"
 						}
 					}
 				}
@@ -4997,7 +7657,8 @@
 								"maxItems": 2
 							},
 							"minItems": 1,
-							"maxItems": 256
+							"maxItems": 256,
+							"description": "[row, col] pixels"
 						},
 						"step": {
 							"type": "integer",
@@ -5005,9 +7666,9 @@
 						},
 						"neighborhood": {
 							"type": "integer",
+							"description": "Radius in pixels (default 1)",
 							"minimum": 0,
-							"maximum": 32,
-							"description": "Radius in pixels (default 1)"
+							"maximum": 32
 						}
 					}
 				}
@@ -5037,7 +7698,8 @@
 								"type": "integer"
 							},
 							"minItems": 4,
-							"maxItems": 4
+							"maxItems": 4,
+							"description": "[row_start, col_start, row_end, col_end], half-open"
 						},
 						"step": {
 							"type": "integer",
@@ -5045,9 +7707,9 @@
 						},
 						"max_points": {
 							"type": "integer",
+							"description": "Default 256",
 							"minimum": 1,
-							"maximum": 4096,
-							"description": "Default 256"
+							"maximum": 4096
 						}
 					}
 				}
@@ -5060,17 +7722,18 @@
 					"properties": {
 						"chunks": {
 							"type": "integer",
-							"minimum": 1,
-							"description": "Default 4"
+							"description": "Default 4",
+							"minimum": 1
 						},
 						"use_length": {
 							"type": "integer",
+							"description": "Must be 50",
 							"minimum": 50,
-							"maximum": 50,
-							"description": "Must be 50"
+							"maximum": 50
 						},
 						"prompt": {
-							"type": "string"
+							"type": "string",
+							"description": "Recorded, never sent to the policy"
 						}
 					}
 				}
@@ -5090,7 +7753,8 @@
 							"enum": [
 								"left",
 								"right"
-							]
+							],
+							"description": "Which arm"
 						},
 						"xyz": {
 							"type": "array",
@@ -5108,16 +7772,18 @@
 							},
 							"minItems": 4,
 							"maxItems": 4,
-							"description": "[qw, qx, qy, qz]"
+							"description": "[qw, qx, qy, qz] (default: keep the current orientation)"
 						},
 						"gripper": {
 							"type": "number",
-							"description": "Gripper command held along the path, 0 closed .. 1 open; omit to keep it"
+							"description": "Gripper command held along the path, 0 closed .. 1 open; omit to keep it",
+							"minimum": 0,
+							"maximum": 1
 						},
 						"substeps": {
 							"type": "integer",
-							"minimum": 0,
-							"description": "Planner waypoints executed, evenly subsampled (default 25; 0 = all)"
+							"description": "Planner waypoints executed, evenly subsampled (default 25; 0 = all)",
+							"minimum": 0
 						}
 					}
 				}
@@ -5137,19 +7803,23 @@
 							"enum": [
 								"left",
 								"right"
-							]
+							],
+							"description": "Which arm"
 						},
 						"delta_yaw_deg": {
-							"type": "number"
+							"type": "number",
+							"description": "Relative turn about world z, degrees"
 						},
 						"gripper": {
 							"type": "number",
-							"description": "Gripper command held along the path, 0 closed .. 1 open; omit to keep it"
+							"description": "Gripper command held along the path, 0 closed .. 1 open; omit to keep it",
+							"minimum": 0,
+							"maximum": 1
 						},
 						"substeps": {
 							"type": "integer",
-							"minimum": 0,
-							"description": "Planner waypoints executed, evenly subsampled (default 25; 0 = all)"
+							"description": "Planner waypoints executed, evenly subsampled (default 25; 0 = all)",
+							"minimum": 0
 						}
 					}
 				}
@@ -5169,16 +7839,20 @@
 							"enum": [
 								"left",
 								"right"
-							]
+							],
+							"description": "Which arm"
 						},
 						"val": {
 							"type": "number",
+							"description": "0 closed .. 1 open",
 							"minimum": 0,
 							"maximum": 1
 						},
 						"steps": {
 							"type": "integer",
-							"minimum": 1
+							"description": "Native actions (default 10)",
+							"minimum": 1,
+							"maximum": 200
 						}
 					}
 				}
@@ -5197,14 +7871,20 @@
 							"enum": [
 								"left",
 								"right"
-							]
+							],
+							"description": "Which arm"
 						},
 						"val": {
-							"type": "number"
+							"type": "number",
+							"description": "Opening (default 1.0)",
+							"minimum": 0,
+							"maximum": 1
 						},
 						"steps": {
 							"type": "integer",
-							"minimum": 1
+							"description": "Native actions (default 10)",
+							"minimum": 1,
+							"maximum": 200
 						}
 					}
 				}
@@ -5254,7 +7934,8 @@
 					"type": "object",
 					"properties": {
 						"prompt": {
-							"type": "string"
+							"type": "string",
+							"description": "What to segment (or point)"
 						},
 						"point": {
 							"type": "array",
@@ -5262,7 +7943,8 @@
 								"type": "integer"
 							},
 							"minItems": 2,
-							"maxItems": 2
+							"maxItems": 2,
+							"description": "A positive point [row, col] instead of prompt"
 						},
 						"camera": {
 							"type": "string",
@@ -5271,11 +7953,13 @@
 								"left_wrist",
 								"right_wrist"
 							],
-							"description": "Default head"
+							"description": "Default: the first camera"
 						},
 						"min_score": {
 							"type": "number",
-							"description": "Default 0.2"
+							"description": "Default 0.2",
+							"minimum": 0,
+							"maximum": 1
 						},
 						"all": {
 							"type": "boolean",
@@ -5329,9 +8013,471 @@
 								"left_wrist",
 								"right_wrist"
 							],
-							"description": "Default head"
+							"description": "Default: the first camera"
 						}
 					}
+				}
+			}
+		],
+		"ur5e": [
+			{
+				"name": "request_operator_verdict",
+				"description": "Human feedback gate. Ask the operator to mark the current task state as success, failure, or continue before you finish or start another attempt.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"question": {
+							"type": "string",
+							"description": "Default: does the current scene satisfy the task?"
+						}
+					}
+				}
+			},
+			{
+				"name": "request_scene_reset",
+				"description": "Ask the operator to restore the scene for another attempt (remove/secure held objects), wait for confirmation, then reset the robot.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"reason"
+					],
+					"properties": {
+						"reason": {
+							"type": "string",
+							"description": "Why the scene needs to be restored"
+						},
+						"expected_scene_state": {
+							"type": "string",
+							"description": "The restored layout, for the operator"
+						}
+					}
+				}
+			},
+			{
+				"name": "act",
+				"description": "Execute one action unit (MV_FWD, MV_BACK, MV_LEFT, MV_RIGHT, MV_UP, MV_DOWN, ROTATE_CW, ROTATE_CCW, STOP, GRASP, RELEASE, DONE), repeated n times. MV_* move the gripper ~2 cm, ROTATE_* turn it ~9 deg; GRASP closes, RELEASE opens, STOP holds one step, DONE means the task is complete (call finish). Returns the new images and state.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"unit"
+					],
+					"properties": {
+						"unit": {
+							"type": "string",
+							"enum": [
+								"MV_FWD",
+								"MV_BACK",
+								"MV_LEFT",
+								"MV_RIGHT",
+								"MV_UP",
+								"MV_DOWN",
+								"ROTATE_CW",
+								"ROTATE_CCW",
+								"STOP",
+								"GRASP",
+								"RELEASE",
+								"DONE"
+							],
+							"description": "The action unit"
+						},
+						"n": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 10,
+							"description": "Repeat count (default 1)"
+						},
+						"target_in_wrist": {
+							"type": "boolean",
+							"description": "WRIST CHECK: is the TARGET visible in the wrist view?"
+						},
+						"plan": {
+							"type": "array",
+							"items": {
+								"type": "string",
+								"enum": [
+									"MV_FWD",
+									"MV_BACK",
+									"MV_LEFT",
+									"MV_RIGHT",
+									"MV_UP",
+									"MV_DOWN"
+								]
+							},
+							"maxItems": 3,
+							"description": "Only with target_in_wrist false: up to 3 MV_* moves run in order (replaces unit and n)"
+						}
+					}
+				}
+			},
+			{
+				"name": "plan",
+				"description": "Subgoal plan: `stages` replaces the plan from the current stage on (ordered GRASP/LIFT/MOVE/PLACE/RELEASE/RETREAT/REASON stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"stages": {
+							"type": "array",
+							"items": {
+								"type": "object",
+								"required": [
+									"motion",
+									"target",
+									"completion"
+								],
+								"properties": {
+									"motion": {
+										"type": "string",
+										"description": "GRASP, LIFT, MOVE, PLACE, RELEASE, RETREAT or REASON"
+									},
+									"target": {
+										"type": "string"
+									},
+									"affordance": {
+										"type": "string",
+										"description": "The one visible part to aim at"
+									},
+									"description": {
+										"type": "string",
+										"description": "Visual strategy; for REASON the complete IF ... THEN rule"
+									},
+									"completion": {
+										"type": "string",
+										"description": "DONE WHEN: a condition visible in the images"
+									},
+									"arm": {
+										"type": "string",
+										"description": "Dual-arm robots: the arm of this stage"
+									}
+								}
+							}
+						},
+						"done": {
+							"type": "boolean",
+							"description": "The current stage's DONE WHEN is visible"
+						}
+					}
+				}
+			},
+			{
+				"name": "reset",
+				"description": "Exploration only. Abandon the current episode and restore the same initial scene. Archive the failed attempt first and state which strategy lever changes in the next attempt.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"reason"
+					],
+					"properties": {
+						"reason": {
+							"type": "string",
+							"description": "Why this episode is unrecoverable and what will change"
+						}
+					}
+				}
+			},
+			{
+				"name": "finish",
+				"description": "Call when the task is complete or unrecoverable. Halts the agent loop. With --operator, the operator gives a verdict first.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"status",
+						"summary"
+					],
+					"properties": {
+						"status": {
+							"type": "string",
+							"description": "Outcome, e.g. 'success', 'failure', or 'stuck'."
+						},
+						"summary": {
+							"type": "string",
+							"description": "Short natural-language summary of the run."
+						}
+					}
+				}
+			},
+			{
+				"name": "view_env_state",
+				"description": "Read a UR5e state step (TCP pose, joints, gripper, setpoint) and its camera images, main camera first.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"step": {
+							"type": "integer",
+							"description": "State step (default -1 = latest)"
+						}
+					}
+				}
+			},
+			{
+				"name": "view_camera_meta",
+				"description": "Read every camera's intrinsics, depth availability, mount and hand-eye calibration.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"step": {
+							"type": "integer",
+							"description": "State step (default -1 = latest)"
+						}
+					}
+				}
+			},
+			{
+				"name": "back_project",
+				"description": "Back-project one camera pixel (row, col; row 0 = top) into UR5e base coordinates through its depth, intrinsics and hand-eye calibration.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"row",
+						"col"
+					],
+					"properties": {
+						"row": {
+							"type": "integer",
+							"minimum": 0
+						},
+						"col": {
+							"type": "integer",
+							"minimum": 0
+						},
+						"camera": {
+							"type": "string",
+							"description": "Camera name (default: the main camera; have )"
+						},
+						"step": {
+							"type": "integer",
+							"description": "State step (default -1 = latest)"
+						}
+					}
+				}
+			},
+			{
+				"name": "point",
+				"description": "Molmo points at what a short noun phrase names ('the red mug handle') in a camera's current image and returns the pixel [row, col], its world point where the robot has depth, and the image with the point marked. With cameras (up to 4) it asks once over that ordered set (the query may say \"Image 1\" for the first) and every point names its camera.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"query"
+					],
+					"properties": {
+						"query": {
+							"type": "string"
+						},
+						"camera": {
+							"type": "string",
+							"description": "Camera name (default: the main camera)"
+						},
+						"cameras": {
+							"type": "array",
+							"items": {
+								"type": "string",
+								"description": "Camera name"
+							},
+							"minItems": 2,
+							"maxItems": 4,
+							"description": "Several cameras at once (MolmoPoint)"
+						}
+					}
+				}
+			},
+			{
+				"name": "detect",
+				"description": "SAM3 masks on a camera's current image, each with a short id (d3) drawn on the returned overlay in rank order (red, blue, green, yellow, ...). Give exactly one of a text prompt or a positive point [row, col]. all=true returns every candidate instead of only the best; then choose one with select_detection or rule one out with reject_detection. Ids die with the observation: detect again after any motion.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"prompt": {
+							"type": "string",
+							"description": "What to segment (or point)"
+						},
+						"point": {
+							"type": "array",
+							"items": {
+								"type": "integer"
+							},
+							"minItems": 2,
+							"maxItems": 2,
+							"description": "A positive point [row, col] instead of prompt"
+						},
+						"min_score": {
+							"type": "number",
+							"description": "Default 0.2",
+							"minimum": 0,
+							"maximum": 1
+						},
+						"all": {
+							"type": "boolean",
+							"description": "Every mask, not only the best (default false)"
+						}
+					}
+				}
+			},
+			{
+				"name": "select_detection",
+				"description": "Choose one detect mask (by id) as the target of the current observation, after checking the overlay.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"id"
+					],
+					"properties": {
+						"id": {
+							"type": "string",
+							"description": "A detection id of the current observation (d3)"
+						}
+					}
+				}
+			},
+			{
+				"name": "reject_detection",
+				"description": "Rule out one detect mask (by id) of the current observation; it stays listed as rejected.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"id"
+					],
+					"properties": {
+						"id": {
+							"type": "string",
+							"description": "A detection id of the current observation (d3)"
+						}
+					}
+				}
+			},
+			{
+				"name": "enhance_depth",
+				"description": "Fill the holes of a camera's current depth with a UniDepth estimate scaled to the sensor, or supply depth where the camera has none. detect then measures through it until the next motion.",
+				"parameters": {
+					"type": "object",
+					"properties": {}
+				}
+			},
+			{
+				"name": "segment",
+				"description": "SAM3 segmentation of a camera image from the latest (or given) step. Give exactly one of a text prompt or a positive point [row, col]. On a camera with depth the mask's pixels are back-projected and world_xyz is their median base-frame point. Returns an overlay image.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"prompt": {
+							"type": "string"
+						},
+						"point": {
+							"type": "array",
+							"items": {
+								"type": "integer"
+							},
+							"minItems": 2,
+							"maxItems": 2
+						},
+						"camera": {
+							"type": "string",
+							"description": "Camera name (default: the main camera; have )"
+						},
+						"step": {
+							"type": "integer",
+							"description": "State step (default -1 = latest)"
+						},
+						"min_score": {
+							"type": "number",
+							"description": "Default 0.2"
+						}
+					}
+				}
+			},
+			{
+				"name": "move_delta",
+				"description": "Move the UR5e TCP by a bounded base-frame xyz delta in meters (x forward, y left, z up; at most 0.08 m per call); the orientation is held.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"delta_xyz"
+					],
+					"properties": {
+						"delta_xyz": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 3,
+							"maxItems": 3,
+							"description": "Base-frame [dx, dy, dz], m (at most 0.08 m per call)"
+						}
+					}
+				}
+			},
+			{
+				"name": "move_pose",
+				"description": "Move the UR5e TCP to an absolute base-frame pose within the per-call limits (0.08 m, 0.2 rad): xyz in meters plus an orientation as rotvec (axis-angle, rad) or rpy (extrinsic xyz Euler, rad); omit both to keep the orientation.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"xyz"
+					],
+					"properties": {
+						"xyz": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 3,
+							"maxItems": 3,
+							"description": "Base-frame [x, y, z], m (at most 0.08 m from the current pose)"
+						},
+						"rotvec": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 3,
+							"maxItems": 3,
+							"description": "Orientation as an axis-angle rotation vector, rad"
+						},
+						"rpy": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 3,
+							"maxItems": 3,
+							"description": "Orientation as extrinsic xyz Euler angles, rad"
+						}
+					}
+				}
+			},
+			{
+				"name": "rotate_delta",
+				"description": "Rotate the UR5e TCP by a bounded base-frame rpy delta in radians (extrinsic xyz: roll about base x, pitch about y, yaw about z; norm at most 0.2 rad per call).",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"delta_rpy"
+					],
+					"properties": {
+						"delta_rpy": {
+							"type": "array",
+							"items": {
+								"type": "number"
+							},
+							"minItems": 3,
+							"maxItems": 3,
+							"description": "Base-frame [droll, dpitch, dyaw], rad (norm at most 0.2 rad per call)"
+						}
+					}
+				}
+			},
+			{
+				"name": "open_gripper",
+				"description": "Open the Robotiq gripper and wait for the fingers to settle; fingers that do not move report gripper_jammed.",
+				"parameters": {
+					"type": "object",
+					"properties": {}
+				}
+			},
+			{
+				"name": "close_gripper",
+				"description": "Close the Robotiq gripper and wait for the fingers to settle. A close that catches nothing reopens and reports grasp_empty; fingers that do not move report gripper_jammed.",
+				"parameters": {
+					"type": "object",
+					"properties": {}
 				}
 			}
 		],

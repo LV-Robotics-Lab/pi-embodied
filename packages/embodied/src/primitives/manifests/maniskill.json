@@ -1,0 +1,228 @@
+{
+	"robot": "maniskill",
+	"internal": [],
+	"primitives": [
+		{
+			"use": "sim/get_task_language"
+		},
+		{
+			"name": "view_env_state",
+			"side": "ts",
+			"tier": "low",
+			"doc": {
+				"tool": "Current state with the agentview (third-person) and wrist images."
+			},
+			"result": "motion"
+		},
+		{
+			"name": "state",
+			"side": "code",
+			"method": "env.state",
+			"tier": "low",
+			"doc": {
+				"code": "TCP pose, gripper opening and the success flags.\n\nExample:\n    st = state()\n    print(st[\"tcp_pos\"], st[\"gripper_width\"], st[\"info\"].get(\"success\"))"
+			}
+		},
+		{
+			"name": "move_delta",
+			"side": "env",
+			"method": "env.move_delta",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"delta_xyz": {
+					"type": "vec3",
+					"required": true,
+					"description": "[dx, dy, dz] in metres, at most {{max_move}} m long"
+				},
+				"gripper": {
+					"type": "enum",
+					"values": ["open", "close"],
+					"description": "Open or close the gripper first (omitted: keep the current command)"
+				},
+				"arm": {
+					"type": "enum",
+					"values": "{{arms}}",
+					"description": "The arm this call moves"
+				}
+			},
+			"doc": {
+				"tool": "Translate {{move_subject}} by {{move_frame}} (at most {{max_move}} m per call), optionally opening or closing the gripper first (the arm holds still until the fingers settle, then moves). The orientation is locked. Returns the new state and images.",
+				"code": "Translate the TCP by [dx, dy, dz] m (at most 0.2 m per call) as ~2 cm closed-loop waypoints, optionally opening or closing the gripper first (held still until the fingers settle); stops at success. Returns commanded_m, moved_m, gripper, env_steps, info (flags) and state.\n\nExample:\n    r = move_delta([0, 0, -0.04], gripper=\"open\")\n    r = move_delta([0, 0, 0], gripper=\"close\")\n    print(r[\"moved_m\"], r[\"info\"].get(\"is_grasped\"))"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "servo",
+			"side": "code",
+			"method": "env.servo",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"target_xyz": {
+					"type": "vec3",
+					"required": true,
+					"description": "world [x, y, z] in m"
+				},
+				"gripper": {
+					"type": "number",
+					"required": true,
+					"description": "> 0 open, <= 0 close"
+				},
+				"gain": {
+					"type": "number",
+					"description": "error gain (default 1.3)"
+				},
+				"tol_m": {
+					"type": "number",
+					"description": "stop below this error (default 0.002)"
+				},
+				"min_steps": {
+					"type": "integer",
+					"description": "default 2"
+				},
+				"max_steps": {
+					"type": "integer",
+					"description": "default 8 (at most 100 in code mode)"
+				},
+				"arm": {
+					"type": "string",
+					"description": "two-arm robots: left or right"
+				}
+			},
+			"doc": {
+				"code": "Drive the TCP to a world xyz (m) closed-loop with the gripper command held; returns [frames, info] (one state per control step).\n\nExample:\n    x, y, z = state()[\"tcp_pos\"]\n    frames, info = servo([x, y, z - 0.02], 1)  # down 2 cm, gripper open\n    print(frames[-1][\"tcp_pos\"], info.get(\"is_grasped\"))"
+			}
+		},
+		{
+			"name": "render_camera",
+			"side": "code",
+			"method": "env.render_camera",
+			"tier": "low",
+			"params": {
+				"camera_name": {
+					"type": "enum",
+					"values": ["agentview", "wrist"],
+					"description": "Default agentview"
+				},
+				"depth": {
+					"type": "boolean",
+					"description": "Also return metric depth (float32 m, 0 = none) on the same pixels"
+				}
+			},
+			"doc": {
+				"code": "The latest frame of a camera (with depth: [rgb, depth_m]).\n\nExample:\n    rgb = render_camera(\"wrist\")  # uint8 [256, 256, 3]"
+			}
+		},
+		{
+			"name": "get_camera_meta",
+			"side": "code",
+			"method": "env.get_camera_meta",
+			"tier": "low",
+			"params": {
+				"camera_name": {
+					"type": "enum",
+					"values": ["agentview", "wrist"],
+					"description": "Default agentview"
+				}
+			},
+			"doc": {
+				"code": "Camera intrinsics and camera-to-world extrinsic (raw sensor pixels, before the view's orientation and letterbox).\n\nExample:\n    meta = get_camera_meta(\"agentview\")\n    K, T = meta[\"intrinsic_K\"], meta[\"extrinsic_cam2world\"]"
+			}
+		},
+		{
+			"name": "step",
+			"side": "code",
+			"method": "env.step",
+			"tier": "raw",
+			"mutating": true,
+			"params": {
+				"action": {
+					"type": "array",
+					"required": true,
+					"description": "4 floats (3 without a gripper)"
+				}
+			},
+			"doc": {
+				"code": "One pd_ee_delta_pos action [dx, dy, dz, gripper] (gripper > 0 open, < 0 close on every robot; [dx, dy, dz] without a gripper; two arms: both concatenated).\n\nExample:\n    r = step([0, 0, 0.1, 1])  # up about 1 cm; the Panda's gripper +1 opens\n    print(r[\"state\"][\"tcp_pos\"], r[\"info\"].get(\"success\"))"
+			}
+		},
+		{
+			"name": "chunk_step",
+			"side": "code",
+			"method": "env.chunk_step",
+			"tier": "raw",
+			"mutating": true,
+			"params": {
+				"actions": {
+					"type": "array",
+					"required": true,
+					"description": "N x 4 floats (N x 3 without a gripper)"
+				},
+				"return_all_frames": {
+					"type": "boolean",
+					"description": "one observation per action"
+				}
+			},
+			"doc": {
+				"code": "Run actions [N, 4] in one call; stops early on termination or success.\n\nExample:\n    r = chunk_step([[0.1, 0, 0, 1]] * 5)  # about 5 cm along +x\n    print(r[\"steps\"], r[\"state\"][\"tcp_pos\"])"
+			}
+		},
+		{
+			"name": "preview_reach",
+			"side": "env",
+			"method": "env.preview_reach",
+			"tier": "low",
+			"requires": ["ik"],
+			"params": {
+				"xyz": {
+					"type": "vec3",
+					"required": true,
+					"description": "World-frame [x, y, z] in metres"
+				},
+				"quat_xyzw": {
+					"type": "quat",
+					"description": "Default: the current orientation"
+				}
+			},
+			"doc": {
+				"tool": "Whether the arm could reach a world-frame xyz from its current joints (IK only; nothing moves), keeping its orientation unless quat_xyzw is given. status unreachable means a move there would fail or be refused; unknown means the check could not run.",
+				"code": "IK reachability of a world xyz from the current joints (nothing moves): status reachable | unreachable | unknown.\n\nExample:\n    print(preview_reach([0.0, 0.1, 0.05])[\"status\"])"
+			},
+			"result": "read"
+		},
+		{
+			"use": "sim/ground_truth_poses"
+		},
+		{
+			"use": "perception/detect"
+		},
+		{
+			"use": "perception/select_detection"
+		},
+		{
+			"use": "perception/reject_detection"
+		},
+		{
+			"use": "perception/enhance_depth"
+		},
+		{
+			"use": "modules/finish"
+		},
+		{
+			"use": "modules/act"
+		},
+		{
+			"use": "modules/plan"
+		},
+		{
+			"use": "modules/point"
+		},
+		{
+			"use": "modules/reset"
+		},
+		{
+			"use": "modules/run_code"
+		}
+	]
+}

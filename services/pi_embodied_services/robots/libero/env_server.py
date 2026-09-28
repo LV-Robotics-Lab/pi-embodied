@@ -20,7 +20,9 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import io
+import math
 import os
 import random
 import sys
@@ -28,10 +30,14 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from pi_embodied_services.components.code_api import register_code_api
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
-from pi_embodied_services.robots.libero.primitives import libero_primitives
-from pi_embodied_services.utils import collision, ground_truth, motion, reach
+from pi_embodied_services.utils import (
+    collision,
+    ground_truth,
+    motion,
+    object_pose,
+    reach,
+)
 from pi_embodied_services.utils.code_exec import CodeRunMixin
 from pi_embodied_services.utils.geometry import (
     GripGeometry,
@@ -44,8 +50,10 @@ from pi_embodied_services.utils.grasp import (
     GraspPlanner,
     add_grasp_arguments,
     orientation_error,
+    pitch_of,
     quat_xyzw_matrix,
     urls_from_args,
+    yaw_of,
 )
 from pi_embodied_services.utils.logging import get_logger
 from pi_embodied_services.utils.perception import (
@@ -81,6 +89,52 @@ MAX_XY_MOVE_M = 0.30
 CODE_MAX_CHUNK = 64
 #: A program's ``render_camera`` renders at most this many pixels per side.
 CODE_MAX_RENDER = 1024
+#: goto_pose / home_pose split a move into straight move_to legs of at most this length.
+MAX_LEG_M = 0.25
+#: A goto_pose leg's move_to step budget.
+LEG_STEPS = 120
+#: The facade's motions beyond utils/detections.MOTION_METHODS: every planned id expires after
+#: them (the grasp planner's and perception's id epochs).
+LIBERO_MOTIONS = (
+    "env.move_pose",
+    "env.rotate_pitch",
+    "env.release",
+    "env.goto_pose",
+    "env.home_pose",
+    "env.open_gripper",
+    "env.close_gripper",
+)
+#: The motions pi's tools run with ``tool_call=True`` (LiberoEnvFacade._for_tools).
+TOOL_MOTIONS = (
+    "env.move_to",
+    "env.move_pose",
+    "env.rotate_wrist",
+    "env.rotate_pitch",
+    "env.release",
+    "env.set_gripper",
+    "env.goto_pose",
+    "env.home_pose",
+    "env.open_gripper",
+    "env.close_gripper",
+)
+
+
+class Refused(ValueError):
+    """A motion refused before anything moved (too long in xy, unreachable, no collision-free
+    path): a program gets the error, pi's tool shows it as the result's ``refused``."""
+
+
+def _current_only(resolution, step) -> None:
+    """The server holds the current state at 512x512: pi's tools look back at earlier states
+    and read their 1024 images themselves."""
+    if resolution not in (None, "low", "high") or step not in (None, -1):
+        raise ValueError(
+            "the env server reads the current 512x512 images only (no step / resolution)"
+        )
+
+
+def _wrap(a: float) -> float:
+    return (a + math.pi) % (2 * math.pi) - math.pi
 
 
 def _finite(name: str, value) -> np.ndarray:
@@ -298,6 +352,11 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
     _motion: "motion.MotionPlanner | None" = None
     _plan: dict | None = None
     _geometry: GripGeometry | None = None
+    _reach: "reach.ReachPreview | None" = None
+    #: The env steps of a tool's motion (``tool_call``), else None.
+    _record: list | None = None
+    #: The gripper's reset pose (position, xyzw), home_pose's target.
+    _home: tuple | None = None
 
     def __init__(
         self,
@@ -366,7 +425,7 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
                 empty_width=0.004,
                 envelope=self._workspace_envelope,
                 move=self._move_grip,
-                gripper=lambda close: self.set_gripper(close),
+                gripper=lambda close: self._actuate(1.0 if close else -1.0),
             )
         super().__init__()
 
@@ -391,46 +450,98 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
                 ),
             }
         )
-        # Code mode's primitives (primitives.py CODE_PRIMITIVES), registered before the grasp
-        # planner wraps the mutating ones with its id invalidation.
+        # The primitives of manifests/libero.json that the facade serves, registered before the
+        # grasp planner wraps the mutating ones with its id invalidation. The motions pi's tools
+        # run take `tool_call` (_for_tools): the result carries every env step for pi's video
+        # and recorder, and a refusal is a result.
         self._rpc.update(
             {
                 "env.get_state": self.get_state,
                 "env.get_observation": self.get_observation,
                 "env.back_project": self.back_project,
                 "env.move_to": self.move_to,
+                "env.move_pose": self.move_pose,
                 "env.move_delta": self.move_delta,
                 "env.rotate_wrist": self.rotate_wrist,
+                "env.rotate_pitch": self.rotate_pitch,
                 "env.rotate_delta": self.rotate_delta,
                 "env.set_gripper": self.set_gripper,
+                "env.release": self.release,
                 **({"env.segment": self.segment} if self._sam3_url else {}),
+                # CaP-X's high tier and its privileged variants.
+                "env.get_object_pose": self.get_object_pose,
+                "env.get_object_pose_privileged": self.get_object_pose_privileged,
+                "env.sample_grasp_pose": self.sample_grasp_pose,
+                "env.sample_grasp_pose_privileged": self.sample_grasp_pose_privileged,
+                "env.goto_pose": self.goto_pose,
+                "env.home_pose": self.home_pose,
+                "env.open_gripper": self.open_gripper,
+                "env.close_gripper": self.close_gripper,
             }
         )
+        for name in TOOL_MOTIONS:
+            self._rpc[name] = self._for_tools(
+                name.removeprefix("env."), self._rpc[name]
+            )
         self._readonly_methods.add("env.get_task_language")
-        primitives = libero_primitives(
-            sam3=bool(self._sam3_url), grasp=self._grasp is not None
-        )
         if self._geometry is not None:
             # Before the grasp planner, which wraps env.move_grip with its id invalidation.
             self._geometry.install(self)
-            primitives = (*primitives, *self._geometry.primitives())
         if self._grasp is not None:
             # Wrapped with the id invalidation like every motion (GraspPlanner.MUTATING).
             self._rpc["env.execute_grasp"] = self.execute_grasp
             self._rpc["env.execute_place"] = self.execute_place
-            self._grasp.install(self)
-            primitives = (*primitives, *self._grasp.primitives())
-        api = register_code_api(self, primitives)
-        # Code mode (run_code): a program's calls go through the registry's resolve to the
-        # methods above; the runner adds the sandbox, the budgets and the stop handling.
-        self._install_code_run(
-            api,
+            self._grasp.install(self, mutating=GraspPlanner.MUTATING + LIBERO_MOTIONS)
+        # Code mode (run_code): code.api, the programs' whitelist and the startup self-check come
+        # from packages/embodied/src/primitives/manifests/libero.json (with pi); the runner adds
+        # the sandbox, the budgets and the stop handling.
+        self._manifest_code_run(
+            "libero",
+            have=self._has,
             move_m=self._code_move_m,
             after=self._frame,
             check=self._code_check,
             begin=self._begin_run,
             finish=self._finish_run,
         )
+
+    def _has(self, capability: str) -> bool:
+        """What this server can serve of the manifest's ``requires``."""
+        grasp = self._grasp
+        return {
+            "sam3": bool(self._sam3_url),
+            "detections": "env.detect" in self._rpc,
+            "ik": self._reach is not None,
+            "motion": self._motion is not None,
+            "grasp": grasp is not None,
+            "place": grasp is not None and bool(grasp.capabilities().get("place")),
+            "geometry": self._geometry is not None,
+            "unidepth": "env.enhance_depth" in self._rpc,
+            "privileged": True,
+        }.get(capability, False)
+
+    def _for_tools(self, name: str, fn):
+        """``fn`` as pi's tools call it: with ``tool_call=True`` the result carries every env
+        step it took (``transitions``: action, obs, reward, terminated, truncated; pi's episode
+        video and Flywheel recorder) and a :class:`Refused` motion is a result with ``refused``.
+        A program never passes ``tool_call`` (the manifest does not declare it)."""
+
+        @functools.wraps(fn)
+        def call(*args, tool_call: bool = False, **kwargs):
+            if not tool_call:
+                return fn(*args, **kwargs)
+            self._record = []
+            try:
+                try:
+                    out = fn(*args, **kwargs)
+                except Refused as exc:
+                    out = self._motion_result(name, 0, False, refused=str(exc))
+                out["transitions"] = self._record
+                return out
+            finally:
+                self._record = None
+
+        return call
 
     # ---- grasp planning views ----
 
@@ -510,6 +621,7 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
         self._terminated = self._truncated = False
         self._grip = -1.0
         self._last_obs = obs
+        self._home = (self._eef(), self._quat_xyzw())
         return obs, to_numpy_tree(info)
 
     def _succeeded(self, info) -> np.bool_:
@@ -524,6 +636,16 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
         trunc = self._strip(to_numpy_tree(trunc))
         self._absorb(obs, bool(term), bool(np.any(trunc)))
         self._count_run_steps([bool(term)])
+        if self._record is not None:
+            self._record.append(
+                {
+                    "action": np.asarray(action, dtype=np.float32).reshape(-1),
+                    "obs": obs,
+                    "reward": self._strip(to_numpy_tree(rew)),
+                    "terminated": bool(term),
+                    "truncated": bool(np.any(trunc)),
+                }
+            )
         return (
             obs,
             self._strip(to_numpy_tree(rew)),
@@ -634,7 +756,7 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
 
     # ---- code mode (run_code) --------------------------------------------------------------
     #
-    # The facade methods behind the registry's CODE_PRIMITIVES (primitives.py): programs reach them
+    # The facade methods behind manifests/libero.json's code primitives: programs reach them
     # only through CodeApi.resolve, and they step the env as pi's LIBERO tools do (`env.step`), with
     # LIBERO's success latched and `stop` honoured between env steps. Images come from `_view`
     # (512x512, upright), so pixel (row, col) of `get_observation` back-projects with its K.
@@ -659,7 +781,16 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
     def _code_move_m(self, method: str, kwargs: dict) -> float:
         """How far a program's call may move the arm (the run's translation cap): move_to's
         distance to its target, move_delta's norm, a raw OSC step's clipped translation."""
-        if method == "env.move_to":
+        if method == "env.goto_pose":
+            target = np.asarray(kwargs["position"], dtype=np.float64).reshape(3)
+            return float(
+                np.linalg.norm(target - self._eef())
+                + 2 * abs(float(kwargs.get("z_approach") or 0.0))
+            )
+        if method == "env.home_pose":
+            home = self._home[0] if self._home is not None else self._eef()
+            return float(np.linalg.norm(home - self._eef()))
+        if method in ("env.move_to", "env.move_pose"):
             target = np.asarray(kwargs["xyz"], dtype=np.float64).reshape(3)
             return float(np.linalg.norm(target - self._eef()))
         if method == "env.move_delta":
@@ -761,8 +892,12 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
         tol: float,
         max_steps: int,
         step_clip: float,
+        action_scale: float = 0.05,
+        target_yaw: float | None = None,
+        yaw_step_clip: float = 0.1,
     ):
-        """Step toward `target` (world xyz) holding orientation; stops within `tol`, at the
+        """Step toward `target` (world xyz) holding orientation, or turning toward `target_yaw`
+        (rad) by at most `yaw_step_clip` per step; stops within `tol` (position only), at the
         step budget, at the episode's end, or at a stop."""
         steps = 0
         cancelled = False
@@ -773,7 +908,19 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
             diff = target - self._eef()
             if np.linalg.norm(diff) < tol:
                 break
-            self._act([*self._servo_action(diff, step_clip, 0.05), 0.0, 0.0, 0.0, grip])
+            a = [
+                *self._servo_action(diff, step_clip, action_scale),
+                0.0,
+                0.0,
+                0.0,
+                grip,
+            ]
+            if target_yaw is not None:
+                err = np.clip(
+                    _wrap(target_yaw - self._yaw()), -yaw_step_clip, yaw_step_clip
+                )
+                a[5] = float(np.clip(err / 0.1, -1, 1))
+            self._act(a)
             steps += 1
         return steps, cancelled
 
@@ -841,25 +988,69 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
         )
         return (view["extrinsic_cam2world"] @ p)[:3]
 
-    def back_project(self, row: int, col: int, camera: str = "agentview") -> dict:
-        """World xyz of pixel (row, col) of the current 512x512 image of `camera` (row 0 = top).
-
-        Args:
-            row, col: pixel in the image `get_observation` returns for that camera.
-            camera: "agentview" (default) or "wrist".
-
-        Returns:
-            dict with ``world_xyz`` [x, y, z] in metres. Raises when the pixel has no depth.
-
-        Example:
-            >>> p = back_project(300, 260)["world_xyz"]
-        """
+    def back_project(
+        self,
+        row: int | None = None,
+        col: int | None = None,
+        camera: str = "agentview",
+        row_range=None,
+        col_range=None,
+        z_min: float | None = None,
+        z_max: float | None = None,
+        resolution: str | None = None,
+        step: int | None = None,
+    ) -> dict:
+        """World xyz of pixel (row, col) of the current 512x512 image of `camera` (row 0 = top),
+        or region mode: row_range + col_range (+ z_min / z_max) give ``center_xyz`` (midpoint of
+        world x and y over the window's pixels with depth, median z) and ``median_xyz``.
+        `resolution` and `step` are pi's tool's (its 1024 images and state history)."""
+        _current_only(resolution, step)
+        self._camera(camera)
+        span = lambda r: r if r is not None and max(r) > min(r) else None  # noqa: E731
+        rows, cols = span(row_range), span(col_range)
+        if rows is not None or cols is not None:
+            if rows is None or cols is None:
+                raise ValueError("region mode needs both row_range and col_range")
+            view = self._view(camera)
+            r0, r1 = (int(np.clip(v, 0, CODE_RES)) for v in (min(rows), max(rows)))
+            c0, c1 = (int(np.clip(v, 0, CODE_RES)) for v in (min(cols), max(cols)))
+            pts = [
+                p
+                for p in (
+                    self._world_xyz(view, r, c)
+                    for r in range(r0, r1)
+                    for c in range(c0, c1)
+                )
+                if p is not None
+            ]
+            if z_min is not None:
+                pts = [p for p in pts if p[2] >= float(z_min)]
+            if z_max is not None:
+                pts = [p for p in pts if p[2] <= float(z_max)]
+            if len(pts) < 8:
+                raise ValueError(
+                    f"too few valid pixels in region ({len(pts)}); widen the window or the z band"
+                )
+            arr = np.asarray(pts)
+            lo, hi = arr.min(axis=0), arr.max(axis=0)
+            return {
+                "camera": camera,
+                "mode": "region",
+                "center_xyz": [
+                    round(float((lo[0] + hi[0]) / 2), 4),
+                    round(float((lo[1] + hi[1]) / 2), 4),
+                    round(float(np.median(arr[:, 2])), 4),
+                ],
+                "median_xyz": [round(float(v), 4) for v in np.median(arr, axis=0)],
+                "n_valid": len(pts),
+            }
+        if row is None or col is None:
+            raise ValueError("give row and col, or row_range and col_range")
         row, col = int(row), int(col)
         if not (0 <= row < CODE_RES and 0 <= col < CODE_RES):
             raise ValueError(
                 f"pixel ({row}, {col}) out of bounds for {CODE_RES}x{CODE_RES}"
             )
-        self._camera(camera)
         p = self._world_xyz(self._view(camera), row, col)
         if p is None:
             raise ValueError(f"no depth at pixel ({row}, {col}); pick another pixel")
@@ -869,26 +1060,9 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
             "world_xyz": [round(float(v), 4) for v in p],
         }
 
-    def segment(
-        self, prompt: str, camera: str = "agentview", min_score: float = 0.2
-    ) -> dict:
-        """SAM3 segmentation of the current 512x512 image of `camera` by a text prompt, and the
-        top mask's median world position through the depth image.
-
-        Args:
-            prompt: what to segment, e.g. "black bowl".
-            camera: "agentview" (default) or "wrist".
-            min_score: SAM3 score threshold (default 0.2).
-
-        Returns:
-            dict with ``found`` (bool); when found: ``score``, ``box`` [x1, y1, x2, y2] (pixels),
-            ``mask`` bool[512, 512], ``n_pixels``, ``centroid_rowcol`` [row, col] and
-            ``world_xyz`` (median over the mask's pixels with depth, or None when too few).
-
-        Example:
-            >>> seg = segment("black bowl")
-            >>> if seg["found"]: xyz = seg["world_xyz"]
-        """
+    def _sam3_mask(self, view: dict, prompt, point, min_score: float) -> dict:
+        """SAM3's top mask of an upright view by a text prompt or a point [row, col]:
+        ``{found, score, box, mask}`` or ``{found: False, reason}``."""
         import base64
 
         from PIL import Image
@@ -899,32 +1073,61 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
             raise RuntimeError(
                 "segment needs a SAM3 server (start the env server with --sam3)"
             )
+        text = str(prompt or "").strip()
+        if not text and point is None:
+            raise ValueError("give a text prompt or a point [row, col]")
         if self._sam3 is None:
             self._sam3 = HttpRpcClient(self._sam3_url)
-        self._camera(camera)
-        view = self._view(camera)
         buf = io.BytesIO()
         Image.fromarray(view["rgb"]).save(buf, format="PNG")
+        query = {"text_prompt": text} if text else {"point": [int(v) for v in point]}
         res = self._sam3.call(
             "sam3.segment",
             kwargs={
                 "image_base64": base64.b64encode(buf.getvalue()).decode("ascii"),
-                "text_prompt": str(prompt),
+                **query,
                 "min_score": float(min_score),
             },
             timeout_s=120,
         )
         if not res.get("found") or not res.get("mask_png_base64"):
             return {"found": False, "reason": res.get("reason", "no mask")}
-        mask_img = Image.open(io.BytesIO(base64.b64decode(res["mask_png_base64"])))
-        mask = np.asarray(mask_img)
+        mask = np.asarray(
+            Image.open(io.BytesIO(base64.b64decode(res["mask_png_base64"])))
+        )
         if mask.ndim == 3:
             mask = mask[..., 0]
         if mask.shape != (CODE_RES, CODE_RES):
             raise RuntimeError(
                 f"SAM3 mask {mask.shape} does not match the {CODE_RES} image"
             )
-        mask = mask >= 128
+        return {
+            "found": True,
+            "score": None
+            if res.get("score") is None
+            else round(float(res["score"]), 3),
+            "box": res.get("box"),
+            "mask": mask >= 128,
+        }
+
+    def segment(
+        self,
+        prompt: str | None = None,
+        point=None,
+        camera: str = "agentview",
+        min_score: float = 0.2,
+        step: int | None = None,
+    ) -> dict:
+        """SAM3 segmentation of the current 512x512 image of `camera` by a text prompt or a
+        positive point [row, col], and the top mask's median world position through depth.
+        `step` is pi's tool's (its state history)."""
+        _current_only(None, step)
+        self._camera(camera)
+        view = self._view(camera)
+        seg = self._sam3_mask(view, prompt, point, min_score)
+        if not seg["found"]:
+            return seg
+        mask = seg["mask"]
         rows, cols = np.nonzero(mask)
         pts = [
             p
@@ -932,88 +1135,89 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
             if p is not None
         ]
         out: dict[str, Any] = {
-            "found": True,
+            **seg,
             "camera": camera,
-            "score": None
-            if res.get("score") is None
-            else round(float(res["score"]), 3),
-            "box": res.get("box"),
-            "mask": mask,
             "n_pixels": int(mask.sum()),
             "centroid_rowcol": [int(np.median(rows)), int(np.median(cols))],
             "world_xyz": None,
         }
         if len(pts) >= 10:
-            arr = np.asarray(pts)
-            out["world_xyz"] = [round(float(v), 4) for v in np.median(arr, axis=0)]
+            out["world_xyz"] = [
+                round(float(v), 4) for v in np.median(np.asarray(pts), axis=0)
+            ]
         return out
 
+    def _require_planned(self, plan: dict, action: str) -> dict:
+        try:
+            return motion.require_planned(plan, action)
+        except ValueError as exc:
+            raise Refused(str(exc)) from exc
+
     def move_to(
-        self, xyz, gripper=None, tol: float = 0.012, max_steps: int = 80
+        self,
+        xyz,
+        gripper=-1,
+        tol: float = 0.012,
+        step_clip: float = 0.025,
+        max_steps: int = 80,
+        action_scale: float = 0.05,
+        target_yaw: float | None = None,
+        yaw_step_clip: float = 0.1,
     ) -> dict:
-        """Servo the end effector to a world position, holding its orientation.
-
-        Args:
-            xyz: target [x, y, z] in metres (world frame). Keep one call under 0.30 m in xy;
-                split longer moves into waypoints at carry height.
-            gripper: -1 opens, +1 closes and holds (carry with +1); None (default) keeps the
-                last command.
-            tol: stop within this distance (default 0.012 m).
-            max_steps: env-step budget (default 80; about 2.5 cm per step).
-
-        Returns:
-            dict with ``eef_pos``, ``final_dist_m``, ``steps_used``, ``gripper_width``,
-            ``terminated``. A large ``final_dist_m`` means the reach stalled (contact, limits).
-            With ``--ik`` a target the arm cannot reach is refused before anything moves.
-
-        Example:
-            >>> move_to([0.05, 0.12, 0.25])          # above the target
-            >>> move_to([0.05, 0.12, 0.06]); set_gripper(True); move_to([0.05, 0.12, 0.25])
-        """
+        """Servo the end effector to a world position holding its orientation (or turning to
+        `target_yaw`). Refused unmoved beyond 0.30 m in xy, and with --ik when unreachable or
+        when no collision-free path exists; with --ik the arm follows the planned path and is
+        checked against the scene before each segment (``stopped: contact``)."""
         target = _finite("xyz", xyz).reshape(3)
         tol = float(_finite("tol", tol))
+        step_clip = float(_finite("step_clip", step_clip))
+        action_scale = float(_finite("action_scale", action_scale))
+        yaw_step_clip = float(_finite("yaw_step_clip", yaw_step_clip))
+        if target_yaw is not None:
+            target_yaw = float(_finite("target_yaw", target_yaw))
         self._check_xy(target, "move_to")
         grip = self._grip_value(gripper)
         self._require_reachable(target, "move_to")
-        plan = None
+        waypoints, planned = [target], None
         if self._motion is not None:
-            plan = motion.require_planned(self.plan_motion(target.tolist()), "move_to")
-        self._grip = grip
-        if plan is None or plan["status"] != "planned":
-            steps, cancelled = self._servo(target, grip, tol, int(max_steps), 0.025)
-            return self._motion_result(
-                "move_to",
-                steps,
-                cancelled,
-                final_dist_m=round(float(np.linalg.norm(target - self._eef())), 4),
+            plan = self._require_planned(
+                self.plan_motion(target.tolist(), target_yaw=target_yaw), "move_to"
             )
-        # A planned move: one servo segment per waypoint within the call's step budget, the
-        # arm checked against the scene before each.
+            if plan["status"] == "planned":
+                planned = plan
+                waypoints = [
+                    np.asarray(w[:3], dtype=np.float64) for w in plan["waypoints"]
+                ]
+        self._grip = grip
+        max_steps = int(max_steps)
         steps, cancelled, stopped = 0, False, None
-        waypoints = plan["waypoints"]
         for i, wp in enumerate(waypoints):
-            verdict = self.check_motion(segment=i)
-            if verdict["status"] == "contact":
-                stopped = verdict
-                break
+            if planned is not None:
+                verdict = self.check_motion(segment=i)
+                if verdict["status"] == "contact":
+                    stopped = verdict
+                    break
             last = i == len(waypoints) - 1
             n, cancelled = self._servo(
-                np.asarray(wp[:3]),
+                wp,
                 grip,
                 tol if last else max(tol, 0.02),
-                int(max_steps) - steps,
-                0.025,
+                max_steps - steps,
+                step_clip,
+                action_scale,
+                target_yaw,
+                yaw_step_clip,
             )
             steps += n
-            if cancelled or steps >= int(max_steps) or not self._live():
+            if cancelled or steps >= max_steps or not self._live():
                 break
-        extra = {
-            "planned": {
+        extra: dict[str, Any] = {}
+        if planned is not None:
+            extra["planned"] = {
                 "segments": len(waypoints),
-                "path_m": plan["path_m"],
-                "backend": plan["backend"],
+                "path_m": planned["path_m"],
+                "backend": planned["backend"],
             }
-        }
         if stopped is not None:
             extra["stopped"] = "contact"
             extra["contact"] = stopped["message"]
@@ -1025,23 +1229,83 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
             **extra,
         )
 
+    def _pitch(self) -> float:
+        return pitch_of(quat_xyzw_matrix(self._quat_xyzw()))
+
+    def move_pose(
+        self,
+        xyz,
+        target_pitch: float | None = None,
+        target_yaw: float | None = None,
+        gripper=-1,
+        step_clip: float = 0.02,
+        pitch_step: float = 0.08,
+        yaw_step: float = 0.08,
+        tol: float = 0.012,
+        ori_tol: float = 0.05,
+        action_scale: float = 0.05,
+        max_steps: int = 150,
+    ) -> dict:
+        """Servo xyz and the pitch / yaw targets together each step; stops within `tol` and
+        `ori_tol`, at the budget, the episode's end or a stop."""
+        target = _finite("xyz", xyz).reshape(3)
+        pitch = (
+            None
+            if target_pitch is None
+            else float(_finite("target_pitch", target_pitch))
+        )
+        yaw = None if target_yaw is None else float(_finite("target_yaw", target_yaw))
+        step_clip, pitch_step, yaw_step, tol, ori_tol, action_scale = (
+            float(_finite(k, v))
+            for k, v in (
+                ("step_clip", step_clip),
+                ("pitch_step", pitch_step),
+                ("yaw_step", yaw_step),
+                ("tol", tol),
+                ("ori_tol", ori_tol),
+                ("action_scale", action_scale),
+            )
+        )
+        grip = self._grip_value(gripper)
+        self._grip = grip
+        steps, cancelled = 0, False
+        while steps < int(max_steps) and self._live():
+            if self.stop_requested():
+                cancelled = True
+                break
+            R = quat_xyzw_matrix(self._quat_xyzw())
+            diff = target - self._eef()
+            p_err = 0.0 if pitch is None else _wrap(pitch - pitch_of(R))
+            y_err = 0.0 if yaw is None else _wrap(yaw - yaw_of(R))
+            if (
+                np.linalg.norm(diff) < tol
+                and abs(p_err) < ori_tol
+                and abs(y_err) < ori_tol
+            ):
+                break
+            self._act(
+                [
+                    *self._servo_action(diff, step_clip, action_scale),
+                    float(
+                        np.clip(np.clip(p_err, -pitch_step, pitch_step) / 0.1, -1, 1)
+                    ),
+                    0.0,
+                    float(np.clip(np.clip(y_err, -yaw_step, yaw_step) / 0.1, -1, 1)),
+                    grip,
+                ]
+            )
+            steps += 1
+        return self._motion_result(
+            "move_pose",
+            steps,
+            cancelled,
+            final_dist_m=round(float(np.linalg.norm(target - self._eef())), 4),
+            final_pitch=round(self._pitch(), 4),
+        )
+
     def move_delta(self, dxyz, gripper=None, max_steps: int = 25) -> dict:
-        """Move the end effector by a world-frame offset, holding its orientation.
-
-        Args:
-            dxyz: [dx, dy, dz] in metres (world frame: +x away from the robot toward the
-                agentview camera, +y robot-left, +z up). Keep each call at or below 0.10 m.
-            gripper: -1 opens, +1 closes and holds; None (default) keeps the last command.
-            max_steps: env-step budget (default 25).
-
-        Returns:
-            dict with ``eef_pos``, ``moved_m`` (distance actually travelled), ``steps_used``,
-            ``gripper_width``, ``terminated``. ``moved_m`` well below the command means the
-            move was blocked (contact, table, workspace limit).
-
-        Example:
-            >>> move_delta([0, 0, -0.05])   # descend 5 cm
-        """
+        """Move the end effector by a world-frame offset (at most 0.10 m), holding its
+        orientation; ``moved_m`` well below the command means the move was blocked."""
         d = _finite("dxyz", dxyz).reshape(3)
         if np.linalg.norm(d) > 0.10 + 1e-9:
             raise ValueError(
@@ -1060,109 +1324,146 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
         )
 
     def _rotate(
-        self, goal: float, grip: float, max_steps: int, tol: float, step_clip: float
-    ):
-        steps = 0
-        cancelled = False
-        wrap = lambda a: (a + np.pi) % (2 * np.pi) - np.pi  # noqa: E731
-        while steps < max_steps and self._live():
+        self,
+        kind: str,
+        target: float | None,
+        delta: float | None,
+        gripper,
+        max_steps: int,
+        tol: float,
+        step_clip: float,
+    ) -> dict:
+        """Turn about world z (``yaw``, action[5]) or tilt (``pitch``, action[3]) to `target`
+        or by `delta` (rad), holding the position; pi's rotate_wrist / rotate_pitch."""
+        angle = self._yaw if kind == "yaw" else self._pitch
+        if target is None and delta is None:
+            raise ValueError(f"give target_{kind} or delta_{kind}")
+        start = angle()
+        goal = (
+            float(_finite(f"target_{kind}", target))
+            if target is not None
+            else start + float(_finite(f"delta_{kind}", delta))
+        )
+        tol, step_clip = (
+            float(_finite("tol", tol)),
+            float(_finite("step_clip", step_clip)),
+        )
+        grip = self._grip_value(gripper)
+        self._grip = grip
+        steps, cancelled = 0, False
+        while steps < int(max_steps) and self._live():
             if self.stop_requested():
                 cancelled = True
                 break
-            err = wrap(goal - self._yaw())
+            err = _wrap(goal - angle())
             if abs(err) < tol:
                 break
             a = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, grip]
-            a[5] = float(np.clip(np.clip(err, -step_clip, step_clip) / 0.1, -1, 1))
+            a[5 if kind == "yaw" else 3] = float(
+                np.clip(np.clip(err, -step_clip, step_clip) / 0.1, -1, 1)
+            )
             self._act(a)
             steps += 1
-        return steps, cancelled, float(wrap(goal - self._yaw()))
+        final = angle()
+        return self._motion_result(
+            "rotate_wrist" if kind == "yaw" else "rotate_pitch",
+            steps,
+            cancelled,
+            **{
+                f"start_{kind}": round(start, 4),
+                f"target_{kind}": round(goal, 4),
+                f"final_{kind}": round(final, 4),
+                "final_err": round(_wrap(goal - final), 4),
+            },
+            **({"yaw": round(final, 4)} if kind == "yaw" else {}),
+        )
 
     def rotate_wrist(
         self,
         target_yaw: float | None = None,
         delta_yaw: float | None = None,
-        gripper=None,
+        gripper=1,
         max_steps: int = 40,
+        tol: float = 0.02,
+        step_clip: float = 0.1,
     ) -> dict:
-        """Turn the gripper about world z, holding its position.
-
-        Args:
-            target_yaw: absolute yaw in radians (world frame), or
-            delta_yaw: relative turn in radians (positive = counter-clockwise seen from above).
-            gripper: -1 / +1 / None (keep).
-            max_steps: env-step budget (default 40; about 0.1 rad per step).
-
-        Returns:
-            dict with ``yaw`` (final), ``final_err`` (rad), ``steps_used``, ``eef_pos``.
-
-        Example:
-            >>> rotate_wrist(delta_yaw=1.5708)   # a quarter turn
-        """
-        if target_yaw is None and delta_yaw is None:
-            raise ValueError("give target_yaw or delta_yaw")
-        goal = (
-            float(_finite("target_yaw", target_yaw))
-            if target_yaw is not None
-            else self._yaw() + float(_finite("delta_yaw", delta_yaw))
+        """Turn the gripper about world z to `target_yaw` or by `delta_yaw` (rad, positive =
+        counter-clockwise seen from above), holding its position."""
+        return self._rotate(
+            "yaw", target_yaw, delta_yaw, gripper, max_steps, tol, step_clip
         )
-        grip = self._grip_value(gripper)
-        self._grip = grip
-        steps, cancelled, err = self._rotate(goal, grip, int(max_steps), 0.02, 0.1)
-        return self._motion_result(
-            "rotate_wrist",
-            steps,
-            cancelled,
-            yaw=round(self._yaw(), 4),
-            final_err=round(err, 4),
+
+    def rotate_pitch(
+        self,
+        target_pitch: float | None = None,
+        delta_pitch: float | None = None,
+        gripper=1,
+        max_steps: int = 40,
+        tol: float = 0.02,
+        step_clip: float = 0.1,
+    ) -> dict:
+        """Tilt the gripper about world x (pitch 0 = pointing down, +pi/2 = pointing +y) to
+        `target_pitch` or by `delta_pitch` (rad), holding its position and yaw."""
+        return self._rotate(
+            "pitch", target_pitch, delta_pitch, gripper, max_steps, tol, step_clip
         )
 
     def rotate_delta(self, delta_yaw: float, gripper=None, max_steps: int = 40) -> dict:
-        """Turn the gripper about world z by `delta_yaw` radians (positive = counter-clockwise
-        seen from above), holding its position. At most pi/2 per call.
-
-        Returns:
-            dict with ``yaw`` (final, rad), ``final_err``, ``steps_used``, ``eef_pos``.
-        """
+        """Turn the gripper about world z by `delta_yaw` radians (at most pi/2 per call),
+        holding its position; None keeps the gripper command."""
         if abs(float(_finite("delta_yaw", delta_yaw))) > np.pi / 2 + 1e-9:
             raise ValueError("rotate_delta turns at most pi/2 per call")
-        return self.rotate_wrist(
-            delta_yaw=float(delta_yaw), gripper=gripper, max_steps=max_steps
-        )
+        return self._rotate("yaw", None, delta_yaw, gripper, max_steps, 0.02, 0.1)
 
-    def set_gripper(self, close: bool, steps: int = 15) -> dict:
-        """Close or open the gripper in place.
-
-        Args:
-            close: True closes (and the following moves hold +1), False opens.
-            steps: env steps to drive the fingers (default 15; they stop early once they rest
-                on a grasped object).
-
-        Returns:
-            dict with ``gripper_width`` (about 0.08 open; 0.01-0.05 holding an object; near 0
-            closed on nothing), ``steps_used``, ``terminated`` (opening over the goal may end
-            the task).
-
-        Example:
-            >>> set_gripper(True); state = get_state()   # then judge gripper_width
-        """
-        grip = 1.0 if close else -1.0
+    def _drive(self, grip: float, steps: int) -> tuple[int, bool]:
+        """Hold the pose and command the gripper for `steps` env steps (fewer at the episode's
+        end or a stop)."""
         self._grip = grip
-        n = 0
-        cancelled = False
-        widths = [self._gripper_width()]
+        n, cancelled = 0, False
         while n < int(steps) and self._live():
             if self.stop_requested():
                 cancelled = True
                 break
             self._act([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, grip])
             n += 1
-            widths.append(self._gripper_width())
-            # LIBERO's fingers travel about 1 mm per step: they have stopped (on an object, or
-            # fully open / closed) when three steps moved them less than 1 mm in total.
-            if n > 3 and abs(widths[-1] - widths[-4]) < 1e-3:
+        return n, cancelled
+
+    def set_gripper(self, gripper=-1, steps: int = 5) -> dict:
+        """Hold the pose and drive the gripper (-1 open, +1 close) for `steps` env steps; the
+        command holds for the following moves that keep it."""
+        grip = self._grip_value(gripper)
+        n, cancelled = self._drive(grip, steps)
+        return self._motion_result("set_gripper", n, cancelled, gripper=int(grip))
+
+    def release(self, max_steps: int = 20) -> dict:
+        """Open the gripper in place for `max_steps` env steps (placing may end the task)."""
+        start = self._gripper_width()
+        n, cancelled = self._drive(-1.0, max_steps)
+        return self._motion_result(
+            "release",
+            n,
+            cancelled,
+            start_gripper_opening=round(start, 4),
+            final_gripper_opening=round(self._gripper_width(), 4),
+        )
+
+    def _actuate(self, grip: float, max_steps: int = 15) -> dict:
+        """Drive the gripper until the fingers stop (on an object, or fully open / closed): at
+        most `max_steps` steps, done once a step after the third moved them less than 0.5 mm
+        (the planned executors' and --geometry's closing)."""
+        self._grip = grip
+        n, cancelled, prev = 0, False, float("nan")
+        while n < max_steps and self._live():
+            if self.stop_requested():
+                cancelled = True
                 break
-        return self._motion_result("set_gripper", n, cancelled, close=bool(close))
+            self._act([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, grip])
+            n += 1
+            width = self._gripper_width()
+            if n > 3 and abs(width - prev) < 5e-4:
+                break
+            prev = width
+        return self._motion_result("set_gripper", n, cancelled, gripper=int(grip))
 
     def _check_xy(self, target, what: str) -> None:
         """Refuse (unmoved) a move longer than ``MAX_XY_MOVE_M`` in xy."""
@@ -1170,7 +1471,7 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
             np.linalg.norm((np.asarray(target, dtype=np.float64) - self._eef())[:2])
         )
         if xy > MAX_XY_MOVE_M + 1e-9:
-            raise ValueError(
+            raise Refused(
                 f"{what} would move {xy:.3f} m in xy, more than {MAX_XY_MOVE_M} m: split it "
                 "into waypoints at carry height"
             )
@@ -1223,7 +1524,7 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
             grip = float(leg["gripper"])
             self._grip = grip
             if "to" not in leg:
-                out = self.set_gripper(grip > 0)
+                out = self._actuate(grip)
                 steps, cancelled = out["steps_used"], bool(out.get("cancelled"))
                 legs.append(
                     {"gripper": int(grip), "gripper_width": out["gripper_width"]}
@@ -1331,6 +1632,184 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
         )
         return self._execute_claim(claim, max_steps, "execute_place")
 
+    # ---- CaP-X's high tier (FrankaLiberoApi) and its privileged variant ------------------------
+    #
+    # Quaternions are CaP-X's: wxyz of panda_hand; the grip site LIBERO reports (and move_to /
+    # rotate_wrist servo) is panda_hand turned half a turn about its z (utils/object_pose.py).
+    # Positions are the grip site's (the TCP point; no offset). The motions go through the
+    # registered env.move_to / env.rotate_wrist (their limits, stop handling and the planners' id
+    # expiry), holding the gripper command.
+
+    def _object_points(self, object_name: str, use_multiview: bool) -> np.ndarray:
+        """CaP-X's get_object_3d_points_and_masks_from_language: the name's SAM3 mask in the
+        agentview (and the wrist view) as world points, merged by CaP-X's rule, then filtered.
+        No Molmo here: SAM3 by text in each view."""
+        found = {}
+        for camera in ("agentview", "wrist") if use_multiview else ("agentview",):
+            view = self._view(camera)
+            seg = self._sam3_mask(view, object_name, None, 0.2)
+            if not seg["found"]:
+                raise ValueError(
+                    f"SAM3 segmentation failed for '{object_name}' on {camera}."
+                )
+            found[camera] = (
+                object_pose.mask_points(view, seg["mask"]),
+                float(seg.get("score") or 0.0),
+            )
+        return object_pose.filter_noise(object_pose.merge_views(found))
+
+    def get_object_pose(self, object_name: str, use_multiview: bool = True) -> list:
+        """CaP-X's get_object_pose: [position (3,), quaternion_wxyz (4,)] of an object named in
+        words, or [None, None] when too few points survive the filter."""
+        pos, q = object_pose.pose_of_points(
+            self._object_points(str(object_name), bool(use_multiview))
+        )
+        if pos is None:
+            return [None, None]
+        return [[round(float(v), 4) for v in pos], [float(v) for v in q]]
+
+    def sample_grasp_pose(self, object_name: str, use_multiview: bool = True) -> list:
+        """CaP-X's sample_grasp_pose: [position (3,), quaternion_wxyz (4,)]. With a grasp server
+        the active candidate of plan_grasp (agentview; its EEF position and yaw, gripper down);
+        without one a top-down grasp over the filtered points' centre, GRASP_DEPTH_M below their
+        top, closing across the shorter horizontal side."""
+        if self._grasp is not None:
+            plan = self._grasp.plan_grasp(object=str(object_name))
+            best = next(c for c in plan["candidates"] if c["id"] == plan["active"])
+            return [
+                [float(v) for v in best["eef_position"]],
+                [float(v) for v in object_pose.hand_of_yaw(float(best["eef_yaw"]))],
+            ]
+        pts = self._object_points(str(object_name), bool(use_multiview))
+        if len(pts) < 3:
+            raise ValueError(f"No valid points after filtering for '{object_name}'")
+        pos, q = object_pose.topdown_grasp(pts)
+        return [[round(float(v), 4) for v in pos], [float(v) for v in q]]
+
+    def _ground_truth_object(self, object_name: str) -> dict:
+        """CaP-X's simulator lookup (_get_object_pose): "<name>_1" exactly, else the one object
+        whose name without its _<n> suffix contains the query or is contained in it."""
+        poses = self.ground_truth_poses()["poses"]
+        query = str(object_name).replace(" ", "_").lower()
+        if f"{query}_1" in poses:
+            return poses[f"{query}_1"]
+        base: dict[str, list[str]] = {}
+        for k in poses:
+            stem, _, n = k.rpartition("_")
+            base.setdefault(stem if n.isdigit() and stem else k, []).append(k)
+        matches = [b for b in sorted(base) if query in b or b in query]
+        if len(matches) == 1:
+            return poses[sorted(base[matches[0]])[0]]
+        raise KeyError(
+            f"Object '{object_name}' not found. Available objects: {sorted(base)}"
+        )
+
+    def get_object_pose_privileged(self, object_name: str) -> list:
+        """CaP-X's privileged get_object_pose: [position (3,), quaternion_wxyz (4,)] from the
+        simulator."""
+        p = self._ground_truth_object(object_name)
+        x, y, z, w = p["quat_xyzw"]
+        return [[float(v) for v in p["pos"]], [float(w), float(x), float(y), float(z)]]
+
+    def sample_grasp_pose_privileged(self, object_name: str) -> list:
+        """CaP-X's privileged sample_grasp_pose: the object's position, gripper down."""
+        pos, _ = self.get_object_pose_privileged(object_name)
+        return [pos, [0.0, 1.0, 0.0, 0.0]]
+
+    def _turn_to(self, yaw: float, nearest: bool) -> dict | None:
+        """rotate_wrist to `yaw` (or, `nearest`, the half turn away when that is closer: the
+        fingers are symmetric), keeping the gripper command; None when already within 0.05."""
+        if nearest and abs(_wrap(yaw - self._yaw())) > math.pi / 2:
+            yaw = _wrap(yaw + math.pi)
+        if abs(_wrap(yaw - self._yaw())) <= 0.05:
+            return None
+        return self._rpc["env.rotate_wrist"](target_yaw=yaw, gripper=None)
+
+    def _legs_to(self, target: np.ndarray) -> tuple[int, bool]:
+        """move_to `target` in straight legs of at most MAX_LEG_M, keeping the gripper command."""
+        steps = 0
+        start = self._eef()
+        legs = max(1, math.ceil(np.linalg.norm(target - start) / MAX_LEG_M))
+        for k in range(1, legs + 1):
+            here = self._eef()
+            left = max(
+                legs - k + 1, math.ceil(np.linalg.norm(target - here) / MAX_LEG_M)
+            )
+            out = self._rpc["env.move_to"](
+                (here + (target - here) / left).tolist(),
+                gripper=None,
+                max_steps=LEG_STEPS,
+            )
+            steps += int(out.get("steps_used", 0))
+            if out.get("cancelled") or not self._live():
+                return steps, bool(out.get("cancelled"))
+        return steps, False
+
+    def _go(self, name: str, stops: list, yaw: float, nearest: bool) -> dict:
+        steps, cancelled = 0, False
+        for stop in stops:
+            turned = self._turn_to(yaw, nearest)
+            if turned is not None:
+                steps += int(turned.get("steps_used", 0))
+                if turned.get("cancelled") or not self._live():
+                    cancelled = bool(turned.get("cancelled"))
+                    break
+            n, cancelled = self._legs_to(stop)
+            steps += n
+            if cancelled or not self._live():
+                break
+        return self._motion_result(
+            name,
+            steps,
+            cancelled,
+            final_dist_m=round(float(np.linalg.norm(stops[-1] - self._eef())), 4),
+            yaw=round(self._yaw(), 4),
+        )
+
+    def goto_pose(self, position, quaternion_wxyz, z_approach: float = 0.0) -> dict:
+        """CaP-X's goto_pose: first `z_approach` metres back along the gripper's approach axis,
+        then the pose. The grip site pointing down (LIBERO's reset orientation) turns to the
+        quaternion's yaw, or the half turn away, whichever is nearer, then servos in straight
+        legs; the quaternion's tilt is not servoed (``tilt_rad`` reports it)."""
+        pos = _finite("position", position).reshape(3)
+        q = object_pose.unit(_finite("quaternion_wxyz", quaternion_wxyz))
+        z_approach = float(_finite("z_approach", z_approach))
+        stops = []
+        if z_approach != 0.0:
+            stops.append(
+                pos + object_pose.matrix(q) @ np.array([0.0, 0.0, -z_approach])
+            )
+        stops.append(pos)
+        out = self._go("goto_pose", stops, object_pose.site_yaw(q), nearest=True)
+        # The approach axis's angle from straight down (0: every orientation is reached).
+        approach = object_pose.matrix(
+            object_pose.mul(q, object_pose.HAND_TO_SITE_WXYZ)
+        )[:, 2]
+        out["tilt_rad"] = round(float(np.arccos(np.clip(-approach[2], -1, 1))), 4)
+        return out
+
+    def home_pose(self) -> dict:
+        """CaP-X's home pose: the gripper's position and yaw at the episode's reset."""
+        pos, quat = (
+            self._home if self._home is not None else (self._eef(), self._quat_xyzw())
+        )
+        return self._go(
+            "home_pose",
+            [np.asarray(pos, dtype=np.float64)],
+            yaw_of(quat_xyzw_matrix(quat)),
+            nearest=False,
+        )
+
+    def open_gripper(self) -> dict:
+        """CaP-X's open_gripper: 40 env steps open."""
+        n, cancelled = self._drive(-1.0, 40)
+        return self._motion_result("open_gripper", n, cancelled)
+
+    def close_gripper(self) -> dict:
+        """CaP-X's close_gripper: 60 env steps closed (the fingers stop on an object)."""
+        n, cancelled = self._drive(1.0, 60)
+        return self._motion_result("close_gripper", n, cancelled)
+
     # ---- grip-site geometry (--geometry, utils/geometry.py) ----
 
     def _grip_mech(self) -> dict:
@@ -1416,11 +1895,14 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
         """With ``--ik``, refuse (ValueError, the robot unmoved) a target the ik service cannot
         reach from the current joints, as the Robosuite and Franka servers' motions do."""
         if self._reach is not None:
-            reach.require_reachable(
-                self.preview_reach([float(v) for v in target]), f"env.{action}"
-            )
+            try:
+                reach.require_reachable(
+                    self.preview_reach([float(v) for v in target]), f"env.{action}"
+                )
+            except ValueError as exc:
+                raise Refused(str(exc)) from exc
 
-    def preview_reach(self, pos, quat_xyzw=None) -> dict:
+    def preview_reach(self, xyz, quat_xyzw=None) -> dict:
         """Whether the gripper can reach a world position without moving: IK from the current
         joints, solved by the ik service (``--ik``); the sim is not touched. ``quat_xyzw`` None
         keeps the current orientation (as ``move_to`` does). ``status`` is ``reachable``,
@@ -1430,7 +1912,7 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
         raw = to_numpy_tree(self._env.current_raw_obs[self._env_idx])
         return self._reach.preview(
             raw["robot0_joint_pos"],
-            pos,
+            xyz,
             raw["robot0_eef_quat"] if quat_xyzw is None else quat_xyzw,
             base_pose=self._robot_base(),
         )
@@ -1615,6 +2097,7 @@ def main():
         cameras=["agentview", "wrist"],
         view=facade._view,
         grasp=facade._grasp,
+        mutating=LIBERO_MOTIONS,
     )
     try:
         facade.serve(

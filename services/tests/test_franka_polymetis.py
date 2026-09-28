@@ -99,7 +99,10 @@ def cfg(**sections) -> dict:
 def facade(robot=None, config=None, sleep=lambda s: None) -> FrankaPolymetisFacade:
     robot = robot or MockPolymetisRobot((0.5, 0.0, 0.3, *DOWN))
     cams = {"wrist": MockRGBD("1"), "third_person": MockRGBD("2", depth_m=0.9)}
-    return FrankaPolymetisFacade(config or cfg(), robot, cams, sleep=sleep)
+    # pi's limits (--max-move ...) wide open: these tests exercise the controller's own.
+    return FrankaPolymetisFacade(
+        config or cfg(), robot, cams, sleep=sleep, limits=WIDE_OPEN
+    )
 
 
 def call(f: FrankaPolymetisFacade, method: str, *args, **kwargs):
@@ -125,6 +128,10 @@ class WallRobot(MockPolymetisRobot):
 # -- RPC parity with the RLinf backend ----------------------------------------
 
 
+#: pi's per-call limits too loose to bind (the controller's own limits are under test).
+WIDE_OPEN = {"max_move_m": 10.0, "max_rotate_rad": 10.0}
+
+
 def test_method_list_matches_the_rlinf_server():
     pytest.importorskip("omegaconf")
     from pi_embodied_services.robots.franka.env_server import FrankaEnvFacade
@@ -132,19 +139,25 @@ def test_method_list_matches_the_rlinf_server():
     assert METHODS == FrankaEnvFacade._METHODS
     f = facade()
     # Both servers also answer env.preview_reach (utils/reach.py; "unknown" without --ik).
-    assert {m for m in f._rpc if m.startswith("env.")} == {
-        f"env.{m}" for m in FrankaEnvFacade._METHODS
-    } | {"env.preview_reach"}
-    # Both backends serve the same primitive registry (without perception: the base set).
-    from pi_embodied_services.robots.franka.primitives import (
-        FRANKA_PRIMITIVES,
-        franka_primitives,
-    )
-
-    assert "code.api" in f._rpc and FrankaEnvFacade._PRIMITIVES is FRANKA_PRIMITIVES
-    assert franka_primitives(None) == FRANKA_PRIMITIVES
-    assert [p["name"] for p in f._rpc["code.api"]("high")["primitives"]] == [
-        p.name for p in FRANKA_PRIMITIVES if "high" in p.tiers
+    # Both backends serve the manifest's methods (manifests/franka.json; the high tier, the
+    # grippers) and the same code.api.
+    served = {m for m in f._rpc if m.startswith("env.")}
+    base = {f"env.{m}" for m in FrankaEnvFacade._METHODS} | {"env.preview_reach"}
+    assert served - base == {
+        "env.open_gripper",
+        "env.close_gripper",
+        "env.get_object_pose",
+        "env.sample_grasp_pose",
+        "env.goto_pose",
+        "env.home_pose",
+    }
+    f._manifest_ready()
+    assert f.manifest["robot"] == "franka"
+    assert sorted(f._rpc["code.api"]("high")["available"]) == [
+        "close_gripper",
+        "goto_pose",
+        "home_pose",
+        "open_gripper",
     ]
 
 
@@ -1122,6 +1135,9 @@ def test_mock_server_over_http_with_parent_watch(tmp_path):
             "--port",
             "0",
             "--parent-watch",
+            # pi's limits: loose here so the controller's own cap (0.08 m) is the one refusing.
+            "--max-move",
+            "0.5",
         ],
         cwd=SERVICES,
         env={**os.environ, MOCK_ENV: "1", "PYTHONPATH": str(SERVICES)},
@@ -1144,6 +1160,7 @@ def test_mock_server_over_http_with_parent_watch(tmp_path):
         assert client.call("healthz", timeout_s=5)["service"] == "franka-polymetis-env"
         meta = client.call("env.get_env_meta", timeout_s=5)
         assert meta["capabilities"]["has_vla"] is False
+        assert meta["motion_limits"]["max_move_m"] == 0.5
         assert client.call("env.reset", timeout_s=10)["ok"] is True
         r = client.call("env.move_delta", ([0.0, 0.0, 0.02],), timeout_s=10)
         assert r["ok"] is True
@@ -1167,18 +1184,19 @@ def test_mock_server_over_http_with_parent_watch(tmp_path):
 def test_code_api_lists_the_primitives_and_resolves_to_the_facade_methods():
     f = facade()
     high = call(f, "code.api", tier="high")
-    assert [p["name"] for p in high["primitives"]] == [
-        "get_robot_state",
-        "preview_reach",
-        "move_delta",
-        "rotate_delta",
-        "set_gripper",
+    assert high["available"] == [
+        "open_gripper",
+        "close_gripper",
+        "goto_pose",
+        "home_pose",
     ]
-    assert len(high["digest"]) == 64
-    low = call(f, "code.api", tier="low")
-    assert "get_observation" in [p["name"] for p in low["primitives"]]
-    assert call(f, "code.api")["primitives"] == low["primitives"]
-    method, kwargs = f.code_api.resolve("move_delta", {"delta_xyz": [0.0, 0.0, 0.01]})
+    assert len(high["digest"]) == 64 and len(high["manifest_digest"]) == 64
+    low = call(f, "code.api", tier="low")["available"]
+    assert {"get_observation", "move_delta", "rotate_delta", "set_gripper"} <= set(low)
+    assert "preview_reach" not in low, "needs --ik"
+    method, kwargs = f.code_api.resolve(
+        "move_delta", {"delta_xyz": [0.0, 0.0, 0.01]}, "low"
+    )
     assert method == "env.move_delta" and method in f._rpc
     # A resolved call is the tool's call: the facade's own limits refuse an oversized move.
     with pytest.raises(ValueError, match="per\\s+call"):

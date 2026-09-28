@@ -166,59 +166,41 @@ def test_arm_parameter_is_required_on_two_arms_and_refused_when_unknown():
 # ---- the primitive registry (code.api) -----------------------------------------------------
 
 
-def test_code_api_tiers_follow_capx_and_the_privileged_ground_truth():
-    """CaP-X's tiers on this server: high (S2) = perception + pose-level motion, low (S3) = raw
-    observation + relative moves, privileged (S1) = high + the simulator's poses."""
-    from pi_embodied_services.components.code_api import CodeApi
-    from pi_embodied_services.robots.robosuite.primitives import ROBOSUITE_PRIMITIVES
+def test_the_manifest_gives_every_motion_an_arm_and_marks_only_the_movers():
+    """robosuite.json: CaP-X's tiers (test_robosuite_code.py checks them on the server); every
+    motion takes `arm` (the two-arm tasks), and only the movers are mutating."""
+    from pi_embodied_services.components.manifest import load_manifest
 
-    f = facade("Lift", FakeEnv(success=False))
-    f._rpc, f._readonly_methods = {}, set()
-    f._grasp = None
-    RobosuiteEnvFacade._register_rpc(f)
-    api = f.code_api
-    assert isinstance(api, CodeApi) and f._rpc["code.api"]("high")["primitives"]
-
-    def names(tier):
-        return [p.name for p in api.primitives(tier)]
-
-    assert names("high") == [
-        "get_task_language",
-        "get_state",
-        "get_observation",
-        "segment",
-        "back_project",
-        "preview_reach",
-        "move_to",
-        "set_gripper",
-    ]
-    assert names("low") == [
-        "get_task_language",
-        "get_state",
-        "get_observation",
-        "move_delta",
-        "set_gripper",
-        "raw_obs",
-        "render_camera",
-        "get_camera_meta",
-        "step",
-    ]
-    assert names("privileged") == names("high") + ["ground_truth_poses"]
-    assert "solve_ik" not in names("low"), "OSC_POSE servo, not CaP-X's joint-space IK"
-    # Every motion primitive takes `arm` (the two-arm tasks), and only the movers are mutating.
-    by_name = {p.name: p for p in ROBOSUITE_PRIMITIVES}
-    for n in ("move_to", "move_delta", "set_gripper", "preview_reach"):
-        assert "arm" in by_name[n].params, n
-    assert {p.name for p in ROBOSUITE_PRIMITIVES if p.mutating} == {
-        "move_to",
-        "move_delta",
-        "set_gripper",
-        "step",
+    m = {
+        e["name"]: e
+        for e in load_manifest("robosuite")["primitives"]
+        if e["tier"] != "privileged"
     }
-    method, kw = api.resolve("move_to", {"target_xyz": [0, 0, 1], "arm": "robot0"})
-    assert method == "env.move_to" and kw["arm"] == "robot0"
-    with pytest.raises(ValueError, match="unknown parameter"):
-        api.resolve("move_to", {"target_xyz": [0, 0, 1], "joints": [0] * 7})
+    for n in (
+        "move_to",
+        "move_delta",
+        "set_gripper",
+        "preview_reach",
+        "goto_pose",
+        "move_to_joints",
+    ):
+        assert "arm" in m[n]["params"], n
+    movers = {n for n, e in m.items() if e.get("mutating")}
+    assert {
+        "move_to",
+        "move_delta",
+        "set_gripper",
+        "step",
+        "goto_pose",
+        "home_pose",
+    } <= movers
+    assert not movers & {
+        "get_state",
+        "back_project",
+        "segment",
+        "solve_ik",
+        "traj_plan",
+    }
 
 
 # ---- ground truth ------------------------------------------------------------------------

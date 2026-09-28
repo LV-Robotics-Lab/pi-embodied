@@ -7,7 +7,10 @@
  *
  * Starts one RoboCasa env server per session (PandaOmron mobile manipulator) and attaches
  * to a running RLDX-1 VLA server (see serve.sh) under a private RPC session, which holds
- * the policy's memory/RTC state. Tools are the RoboCasa primitives. Every action
+ * the policy's memory/RTC state. Tools are the RoboCasa primitives
+ * (../../primitives/manifests/robocasa.json, which the env server reads too): the arm servo,
+ * the base drive, the gripper and the scripted grasp are the env server's methods, shared with
+ * code mode; RLDX-1 runs here and steps the env action by action. Every action
  * returns a new numbered state with agentview, navview and wrist images; world maps are
  * kept per state for back-projection. Success is the env's own `_check_success()`
  * (`state.success`), recorded in the session's `robot_result` entry.
@@ -47,7 +50,6 @@ const EXPLORE = read("./explore.md");
 const CAMERAS = { agentview: "robot0_agentview_left", navview: "mobilebase0_navview", wrist: "robot0_eye_in_hand" };
 const VLA_CAMERAS = ["robot0_agentview_left", "robot0_agentview_right", "robot0_eye_in_hand"];
 const SIZE = 256; // env camera and RLDX observation resolution
-const OSC_ROT_SCALE = 0.5; // action 1.0 -> 0.5 rad
 const PRIMITIVES = [
 	"move_to",
 	"move_delta",
@@ -62,7 +64,6 @@ const PRIMITIVES = [
 ];
 
 type Raw = Record<string, NdArray>;
-type Grip = number | "close" | "open" | "hold" | undefined;
 type WorldMap = { size: number; xyz: Float32Array };
 type Image = { role: string; camera: string; artifact: string; png: Buffer };
 type State = {
@@ -120,22 +121,6 @@ function flipRows(data: Buffer, height: number): Buffer {
 	const out = Buffer.alloc(data.length);
 	for (let y = 0; y < height; y++) data.copy(out, (height - 1 - y) * row, y * row, (y + 1) * row);
 	return out;
-}
-
-/** Moore-Penrose inverse of a 3x3 matrix, as (JᵀJ + εI)⁻¹Jᵀ with a vanishing ε. */
-function pinv3(J: number[][]): number[][] {
-	const Jt = [0, 1, 2].map((c) => J.map((row) => row[c]));
-	const A = Jt.map((r) => [0, 1, 2].map((c) => r.reduce((s, v, k) => s + v * J[k][c], 0)));
-	const eps = 1e-12 + 1e-10 * (A[0][0] + A[1][1] + A[2][2]);
-	for (let i = 0; i < 3; i++) A[i][i] += eps;
-	const [[a, b, c], [d, e, f], [g, h, i]] = A;
-	const det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
-	const inv = [
-		[e * i - f * h, c * h - b * i, b * f - c * e],
-		[f * g - d * i, a * i - c * g, c * d - a * f],
-		[d * h - e * g, b * g - a * h, a * e - b * d],
-	].map((r) => r.map((v) => v / det));
-	return inv.map((r) => [0, 1, 2].map((c) => r.reduce((s, v, k) => s + v * Jt[k][c], 0)));
 }
 
 /** RpcClient bound to one RPC session (the RLDX server keys policy memory/RTC state by it). */
@@ -204,8 +189,6 @@ export default function robocasa(pi: ExtensionAPI) {
 	let criteria = "";
 	let states: State[] = [];
 	let envSteps = 0;
-	let posJac: number[][] | undefined; // world dpos per unit arm-xyz action (columns = action axes)
-	let fwdOffset: number | undefined; // world driving heading = base yaw + offset
 	// True whenever a non-VLA primitive stepped the env since the last RLDX call; the next
 	// RLDX call then reseeds its frame history instead of stitching stale frames on.
 	let vlaDesync = true;
@@ -264,8 +247,12 @@ export default function robocasa(pi: ExtensionAPI) {
 			const s = Math.sin(baseYaw());
 			const target = eef().map((v, k) => v + [dx * c - dy * s, dx * s + dy * c, dz][k]);
 			result = {
-				...(m.gripper ? { gripper: await setGripper(m.gripper === "close" ? 1 : -1) } : {}),
-				...(Math.hypot(dx, dy, dz) > 0 ? { move: await moveTo(target, m.gripper ?? "hold") } : {}),
+				...(m.gripper
+					? { gripper: await motion("env.set_gripper", { gripper: m.gripper === "close" ? 1 : -1 }) }
+					: {}),
+				...(Math.hypot(dx, dy, dz) > 0
+					? { move: await motion("env.move_to", { xyz: target, gripper: m.gripper ?? "hold" }) }
+					: {}),
 			};
 		} catch (err) {
 			result = {
@@ -281,12 +268,21 @@ export default function robocasa(pi: ExtensionAPI) {
 
 	const robot = defineRobot(pi, {
 		name: "robocasa",
+		// Tools and code primitives: ../../primitives/manifests/robocasa.json (the env server reads it too).
+		manifest: "robocasa",
+		vars: () => ({ cameras: ["agentview", "navview", "wrist"] }),
+		// What the env server serves of the manifest's `requires` (its `_has`): the perception it was started with.
+		capabilities: (c) =>
+			({
+				sam3: pi.getFlag("detections") === true && Boolean(flag("sam3", "")),
+				unidepth: Boolean(String(pi.getFlag("unidepth") ?? "").trim()),
+			})[c] ?? false,
 		// RLDX-1 reads its checkpoint from RLDX_MODEL_PATH, as robocasa/serve.sh does.
 		services: { models: [RLDX, SAM3, MOLMO], python: () => flag("robocasa-python", "python") },
 		task: ["task-name", "split", "seed", "scene"],
-		// The env server's primitive registry (code.api), recorded per episode.
+		// The env server's code.api (the manifest's digest and what this run has), recorded per episode.
 		codeApi: () => env,
-		// Code mode (../code): the env server runs the program against that registry; the result
+		// Code mode (../../modes/code): the env server runs the program over the manifest's primitives; the result
 		// carries the env steps, the success, the robot's observation after its last step and the
 		// run's agentview frames. The run becomes a new numbered state, like a tool's action.
 		code: {
@@ -298,10 +294,8 @@ export default function robocasa(pi: ExtensionAPI) {
 				if (r.obs) obs = { ...obs, ...(r.obs as Raw) };
 				if (steps > 0) {
 					envSteps += steps;
-					// The program stepped the env: RLDX's frame history and the arm servo's
-					// calibration (the base may have turned) no longer hold.
+					// The program stepped the env: RLDX's frame history no longer holds.
 					vlaDesync = true;
-					posJac = undefined;
 				}
 				return view(await capture({ action: "run_code" }, { status: r.status, env_steps: steps }, null));
 			},
@@ -458,10 +452,6 @@ export default function robocasa(pi: ExtensionAPI) {
 	const vec = (key: string) => obs[key].toArray();
 	const eef = () => vec("robot0_eef_pos");
 	const finger = () => vec("robot0_gripper_qpos")[0];
-	const zero = (baseMode = -1) => [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, baseMode];
-	/** a[6] for a motion step: "close" = +1, "open" = -1, a number passes through; "hold" servos the fingers back to `q`. */
-	const grip = (g: Grip, q: number) =>
-		g === "close" ? 1 : g === "open" ? -1 : typeof g === "number" ? clip(g, -1, 1) : clip(60 * (finger() - q), -1, 1);
 
 	/** One env step with the PandaOmron 12-D action [eef_pos 3, eef_rot 3, gripper, base 3, torso, base_mode]. */
 	async function step(a: number[]) {
@@ -614,74 +604,50 @@ export default function robocasa(pi: ExtensionAPI) {
 		});
 	}
 
-	// ---- arm ----
+	// ---- motion: the env server's methods ----
 
-	/** Probe 3 unit arm-xyz actions and measure world dpos: world_dpos ≈ J @ action_xyz. */
-	async function calibrateArm(g: number) {
-		const cols: number[][] = [];
-		for (let axis = 0; axis < 3; axis++) {
-			const p0 = eef();
-			const a = zero();
-			a[axis] = 0.4;
-			a[6] = g;
-			for (let i = 0; i < 3; i++) await step(a);
-			cols.push(eef().map((v, k) => (v - p0[k]) / 1.2));
-		}
-		posJac = [0, 1, 2].map((r) => cols.map((col) => col[r]));
-		return posJac;
-	}
-
-	async function moveTo(target: number[], gripper: Grip = "hold", step_clip = 0.02, max_steps = 200, tol = 0.012) {
+	/**
+	 * Run one of the env server's motion methods (manifests/robocasa.json): the arm servo, the base drive
+	 * and the gripper step there, polling the stop. Its agentview frames go to the video, its per-step
+	 * records to the Flywheel, its robot observation becomes `obs`; the rest is the tool's result.
+	 */
+	async function motion(method: string, params: Record<string, unknown>) {
 		vlaDesync = true;
-		const q = finger();
-		const Jinv = pinv3(posJac ?? (await calibrateArm(grip(gripper, q))));
-		const done = (ok: boolean, steps: number) => ({
-			ok,
-			steps,
-			final_dist: round(norm(target.map((v, k) => v - eef()[k]))),
-			eef: eef().map((v) => round(v)),
-			gripper_qpos: round(finger()),
-		});
-		for (let i = 0; i < max_steps; i++) {
-			const cur = eef();
-			const err = target.map((v, k) => v - cur[k]);
-			const dist = norm(err);
-			if (dist < tol) return done(true, i);
-			const d = dist <= step_clip ? err : err.map((e) => (e / dist) * step_clip);
-			const a = zero();
-			for (let k = 0; k < 3; k++) a[k] = clip(Jinv[k][0] * d[0] + Jinv[k][1] * d[1] + Jinv[k][2] * d[2], -1, 1);
-			a[6] = grip(gripper, q);
-			await step(a);
+		const r = await env.call<Record<string, unknown>>(method, params, 600_000, [], robot.signal);
+		const {
+			frames,
+			policy_frames,
+			obs: o,
+			env_steps,
+			...report
+		} = r as {
+			frames?: NdArray[];
+			policy_frames?: {
+				action: NdArray;
+				success: boolean;
+				state: Record<string, NdArray>;
+				video: Record<string, NdArray>;
+			}[];
+			obs?: Raw | null;
+			env_steps?: number;
+		} & Record<string, unknown>;
+		for (const f of frames ?? []) robot.video.frame(f);
+		for (const f of policy_frames ?? []) {
+			const fr: Frame = {
+				state: Object.fromEntries(Object.entries(f.state).map(([k, v]) => [k, v.toArray()])),
+				video: Object.fromEntries(Object.entries(f.video).map(([k, v]) => [k, v.data])),
+			};
+			fly.transition(f.action.toArray(), flyObs(fr), f.success ? 1 : 0, f.success, false, -1, -1);
 		}
-		return done(false, max_steps);
-	}
-
-	async function setGripper(g = 1, steps = 10) {
-		vlaDesync = true;
-		const a = zero();
-		a[6] = clip(g, -1, 1);
-		for (let i = 0; i < steps; i++) await step(a);
-		return { ok: true, gripper_qpos: vec("robot0_gripper_qpos").map((v) => round(v)) };
+		if (o) obs = { ...obs, ...o };
+		envSteps += Number(env_steps) || 0;
+		return report;
 	}
 
 	// ---- base ----
 
 	const basePos = () => vec("robot0_base_pos");
 	const baseYaw = () => yawOf(vec("robot0_base_quat"));
-
-	/** Drive forward briefly and measure the world direction the base actually goes. */
-	async function calibrateForward(g: number) {
-		const p0 = basePos();
-		const y0 = baseYaw();
-		const a = zero(1);
-		a[6] = clip(g, -1, 1);
-		a[7] = 1;
-		for (let i = 0; i < 6; i++) await step(a);
-		const p1 = basePos();
-		const [dx, dy] = [p1[0] - p0[0], p1[1] - p0[1]];
-		fwdOffset = Math.hypot(dx, dy) > 0.005 ? Math.atan2(dy, dx) - y0 : 0;
-		return fwdOffset;
-	}
 
 	// ---- RLDX-1 ----
 
@@ -878,11 +844,8 @@ export default function robocasa(pi: ExtensionAPI) {
 
 	// ---- tools ----
 
-	const xyz = Type.Array(Type.Number(), { minItems: 3, maxItems: 3, description: "World-frame [x, y, z] in meters" });
 	const num = (description: string) => Type.Optional(Type.Number({ description }));
 	const int = (description: string) => Type.Optional(Type.Integer({ description }));
-	const gripArg = (description: string) =>
-		Type.Optional(StringEnum(["close", "open", "hold"] as const, { description: `${description} (default 'hold')` }));
 	const camera = Type.Optional(
 		StringEnum(["agentview", "navview", "wrist"] as const, {
 			description: "Camera (default agentview)",
@@ -894,96 +857,9 @@ export default function robocasa(pi: ExtensionAPI) {
 		}),
 	);
 
-	tool(
-		"move_to",
-		"Scripted EEF servo to a world-frame XYZ target via the OSC controller. Holds pitch/yaw orientation (use rotate_pitch to reorient). gripper='hold' (default) maintains current finger width: carry-safe without crushing small objects. Pass 'close' to close, 'open' to open. Never command a single move_to with |dxyz| > 0.30: OSC flips IK; split long traversal into 2-3 waypoints at carry z.",
-		Type.Object({
-			xyz,
-			gripper: gripArg("'close', 'open', or 'hold' to maintain the current finger width"),
-			step_clip: num("Per-step dxyz cap, m (default 0.02)"),
-			max_steps: int("Step budget (default 200)"),
-			tol: num("Position tolerance, m (default 0.012)"),
-		}),
-		(p) => moveTo(p.xyz, p.gripper, p.step_clip, p.max_steps, p.tol),
-	);
-
-	tool(
-		"move_delta",
-		"Relative EEF displacement: target = current_eef + dxyz, then move_to. Use for small adjustments (micro-align for grasp, approach). gripper='hold' (default) maintains current finger width.",
-		Type.Object({
-			dxyz: Type.Array(Type.Number(), { minItems: 3, maxItems: 3, description: "Relative [dx, dy, dz], m" }),
-			gripper: gripArg("'close', 'open', or 'hold'"),
-			step_clip: num("Per-step dxyz cap, m (default 0.02)"),
-			max_steps: int("Step budget (default 80)"),
-		}),
-		(p) =>
-			moveTo(
-				eef().map((v, k) => v + p.dxyz[k]),
-				p.gripper,
-				p.step_clip,
-				p.max_steps ?? 80,
-			),
-	);
-
-	tool(
-		"rotate_pitch",
-		"Tilt the wrist forward (axis-angle about the control X-axis); pitches the gripper down/up. Holds xyz fixed. Use before threading the gripper into a narrow opening whose front face normal is along world +/-y.",
-		Type.Object({
-			target_pitch: num("Absolute pitch target, rad (clamped +/-1.5; default 0.6)"),
-			gripper: num("Gripper command held during rotation (default +1)"),
-			n: int("Number of env steps for the rotation (default 12)"),
-		}),
-		async ({ target_pitch = 0.6, gripper = 1, n = 12 }) => {
-			vlaDesync = true;
-			const per = clip(target_pitch, -1.5, 1.5) / n;
-			const a = zero();
-			a[3] = clip(per / OSC_ROT_SCALE, -1, 1);
-			a[6] = clip(gripper, -1, 1);
-			for (let i = 0; i < n; i++) await step(a);
-			return { ok: true, eef: eef().map((v) => round(v)) };
-		},
-	);
-
-	tool(
-		"set_gripper",
-		"Hold the current EEF pose and drive the gripper command for `steps` env steps. Use to firm up a grip mid-carry or to actively open/close the gripper.",
-		Type.Object({ gripper: num("+1 close, -1 open (default +1)"), steps: int("Env steps to hold (default 10)") }),
-		({ gripper = 1, steps = 10 }) => setGripper(gripper, steps),
-	);
-
-	tool(
-		"release",
-		"Open the gripper for `steps` env steps while holding the EEF in place (set_gripper(-1)). Use to drop a grasped object.",
-		Type.Object({ steps: int("Env steps (default 10)") }),
-		({ steps = 10 }) => setGripper(-1, steps),
-	);
-
-	tool(
-		"scripted_grasp",
-		"Coarse scripted grasp: open -> hover above target -> descend -> close -> lift. A fallback when the VLA closed-loop grasp is unavailable; for hard objects prefer rldx_arm. approach_z and grasp_z_offset are offsets from the target xyz.",
-		Type.Object({
-			xyz,
-			approach_z: num("Z offset above target before descent, m (default 0.10)"),
-			grasp_z_offset: num("Z offset at grasp point (default 0.0; negative = below target)"),
-			step_clip: num("Per-step dxyz cap during approach, m (default 0.02)"),
-		}),
-		async ({ xyz: t, approach_z = 0.1, grasp_z_offset = 0, step_clip = 0.02 }) => {
-			const at = (dz: number) => [t[0], t[1], t[2] + dz];
-			await setGripper(-1, 4);
-			let r: Record<string, unknown> = await moveTo(at(approach_z), -1, step_clip);
-			if (!r.ok) return { ...r, stage: "approach" };
-			r = await moveTo(at(grasp_z_offset), -1, 0.012, 200, 0.01);
-			if (!r.ok) return { ...r, stage: "descent" };
-			await setGripper(1, 14);
-			r = await moveTo(at(approach_z + 0.05), "hold", 0.015);
-			if (!r.ok) return { ...r, stage: "lift" };
-			return {
-				ok: true,
-				gripper_qpos: vec("robot0_gripper_qpos").map((v) => round(v)),
-				eef: eef().map((v) => round(v)),
-			};
-		},
-	);
+	// The motion tools are the env server's methods with the manifest's parameters (manifests/robocasa.json).
+	for (const name of ["move_to", "move_delta", "rotate_pitch", "set_gripper", "release", "scripted_grasp"])
+		tool(name, "", Type.Object({}), (p) => motion(`env.${name}`, p as Record<string, unknown>));
 
 	const rldxParams = (baseClip: string) =>
 		Type.Object({
@@ -1010,87 +886,14 @@ export default function robocasa(pi: ExtensionAPI) {
 		(p) => rldx({ ...p, base_clip: p.base_clip === undefined ? 0.1 : p.base_clip < 0 ? null : p.base_clip }),
 	);
 
-	tool(
-		"navigate_to",
-		"Drive the mobile base toward a WORLD (x, y) target. Online-calibrates the base forward heading, then turns to face and drives forward closed-loop. Holds the arm in place. gripper='hold' (default) maintains finger width while driving. Use tol = expected approach distance + object radius.",
-		Type.Object({
-			xy: Type.Array(Type.Number(), { minItems: 2, maxItems: 2, description: "World-frame [x, y], m" }),
-			tol: num("Distance threshold to stop, m (default 0.20)"),
-			max_steps: int("Step budget (default 300)"),
-			gripper: gripArg("'close', 'open', or 'hold'"),
-		}),
-		async ({ xy, tol = 0.2, max_steps = 300, gripper }) => {
-			vlaDesync = true;
-			const q = finger();
-			if (fwdOffset === undefined) await calibrateForward(grip(gripper, q));
-			const offset = fwdOffset ?? 0;
-			const start = basePos().slice(0, 2);
-			const end = (ok: boolean, steps: number) => {
-				posJac = undefined; // the base moved: recalibrate the arm servo
-				const bp = basePos();
-				const moved = Math.hypot(bp[0] - start[0], bp[1] - start[1]);
-				return {
-					ok,
-					steps,
-					final_dist: round(Math.hypot(xy[0] - bp[0], xy[1] - bp[1])),
-					moved: round(moved),
-					...(ok ? {} : { stuck: moved < 0.12 }), // barely moved: rammed a fixture (no path planning)
-					start_pos: start.map((v) => round(v)),
-					base_pos: bp.map((v) => round(v)),
-				};
-			};
-			for (let i = 0; i < max_steps; i++) {
-				const bp = basePos();
-				const to = [xy[0] - bp[0], xy[1] - bp[1]];
-				if (Math.hypot(to[0], to[1]) < tol) return end(true, i);
-				const e = Math.atan2(to[1], to[0]) - (baseYaw() + offset) + Math.PI;
-				const dyaw = e - 2 * Math.PI * Math.floor(e / (2 * Math.PI)) - Math.PI;
-				const a = zero(1);
-				a[6] = grip(gripper, q);
-				if (Math.abs(dyaw) > 0.3) a[9] = Math.sign(dyaw);
-				else {
-					a[7] = 1;
-					a[9] = clip(dyaw * 1.5, -0.4, 0.4);
-				}
-				await step(a);
-			}
-			return end(false, max_steps);
-		},
-	);
-
-	tool(
-		"move_base",
-		"Raw base velocity commands in the robot's LOCAL frame: +forward drives forward, +lateral strafes right, +turn rotates CCW (yaw). Values clamped to [-1, 1]. Use for fine base adjustments near a target; navigate_to for long range. gripper='hold' (default) maintains finger width while driving.",
-		Type.Object({
-			forward: num("Forward velocity, [-1, 1] (default 0)"),
-			lateral: num("Lateral / strafe velocity, [-1, 1] (default 0)"),
-			turn: num("Yaw rotation velocity, [-1, 1] (default 0)"),
-			steps: int("Env steps (default 10)"),
-			gripper: gripArg("'close', 'open', or 'hold'"),
-		}),
-		async ({ forward = 0, lateral = 0, turn = 0, steps = 10, gripper }) => {
-			vlaDesync = true;
-			const q = finger();
-			const a = zero(1);
-			a[7] = clip(forward, -1, 1);
-			a[8] = clip(lateral, -1, 1);
-			a[9] = clip(turn, -1, 1);
-			const bp0 = basePos();
-			for (let i = 0; i < steps; i++) {
-				a[6] = grip(gripper, q);
-				await step(a);
-			}
-			const bp1 = basePos();
-			return { ok: true, base_moved: bp1.map((v, k) => round(v - bp0[k])), base_pos: bp1.map((v) => round(v)) };
-		},
-	);
+	for (const name of ["navigate_to", "move_base"])
+		tool(name, "", Type.Object({}), (p) => motion(`env.${name}`, p as Record<string, unknown>));
 
 	/** Exploration's `reset`: a freshly sampled scene; arm/base calibration and the RLDX session start over. */
 	async function resetEpisode(signal?: AbortSignal) {
 		vlaDesync = true;
 		obs = await env.call<Raw>("env.reset", {}, 120_000, [], signal);
 		seeds.reset();
-		posJac = fwdOffset = undefined;
 		await vla?.call("vla.reset_session", {}, 30_000).catch(() => undefined);
 		lastPrompt = undefined;
 		hist = [];
@@ -1272,7 +1075,7 @@ export default function robocasa(pi: ExtensionAPI) {
 	async function startEpisode() {
 		states = [];
 		envSteps = 0;
-		posJac = fwdOffset = modality = lastPrompt = undefined;
+		modality = lastPrompt = undefined;
 		hist = [];
 		vlaDesync = true;
 		attempt = 1;
@@ -1330,6 +1133,8 @@ export default function robocasa(pi: ExtensionAPI) {
 			.catch((e) => `(unavailable: ${e})`);
 		await capture(null, null, null);
 		fly.reset(flyObs(await frame()), flyMeta());
+		// The server's motion methods return the Flywheel's per-step records while it records.
+		await env.call("env.set_recording", { on: fly.recording }, 30_000);
 		const perception = (meta.capabilities as { perception?: PerceptionCaps } | undefined)?.perception;
 		return [
 			...[...PRIMITIVES, "view_env_state", "back_project_batch", "query_world_map", "finish"],

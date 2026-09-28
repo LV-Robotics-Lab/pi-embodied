@@ -214,6 +214,15 @@ export default function robodojo(pi: ExtensionAPI) {
 
 	const robot = defineRobot(pi, {
 		name: "robodojo",
+		// Tools and code primitives: ../../primitives/manifests/robodojo.json (the env server reads it too).
+		manifest: "robodojo",
+		vars: () => ({ arms: [...ARMS], cameras: [...VIEWS], max_move: MAX_MOVE_M, max_rotate: MAX_ROTATE_RAD }),
+		// As the server's `_has`: the perception it runs (--detections / --unidepth start it), from its meta.
+		capabilities: (c) =>
+			({
+				sam3: meta?.capabilities?.perception?.segment === true,
+				unidepth: meta?.capabilities?.perception?.enhance_depth === true,
+			})[c] ?? false,
 		services: { models: [SAM3, MOLMO] },
 		task: ["task", "seed"],
 		codeApi: () => env,
@@ -471,109 +480,61 @@ export default function robodojo(pi: ExtensionAPI) {
 		obs.ended
 			? observe({ error: obs.success ? "the task is solved; call finish" : "the episode is over; call finish" })
 			: undefined;
-	const armParam = StringEnum(ARMS, { description: "Which arm" });
-	const gripperParam = Type.Optional(
-		Type.Number({ minimum: 0, maximum: 1, description: "Gripper command first: 1 open .. 0 closed" }),
-	);
 
-	robot.tool(
-		"view_env_state",
-		"Current state with the head, left wrist and right wrist images.",
-		Type.Object({}),
-		async () => {
-			obs = { ...obs, ...(await env.call<Obs>("env.state", {}, READ_MS)) };
-			const [head, left_wrist, right_wrist] = await Promise.all(
-				VIEWS.map((v) => env.call<NdArray>("env.render_camera", { camera_name: v }, READ_MS)),
+	// The tools are the server's methods with the manifest's parameters (manifests/robodojo.json); the
+	// motion tools ask for the frames themselves (return_frames is a program's option).
+	robot.primitive("view_env_state", async () => {
+		obs = { ...obs, ...(await env.call<Obs>("env.state", {}, READ_MS)) };
+		const [head, left_wrist, right_wrist] = await Promise.all(
+			VIEWS.map((v) => env.call<NdArray>("env.render_camera", { camera_name: v }, READ_MS)),
+		);
+		obs = { ...obs, head, left_wrist, right_wrist };
+		return observe({});
+	});
+
+	robot.primitive("move_to", async ({ arm, xyz, quat_wxyz, gripper }, signal) => {
+		const at = obs.arms[arm as Arm].eef_pos.toArray();
+		const dist = Math.hypot(...(xyz as number[]).map((v, i) => v - at[i]));
+		if (!(dist <= MAX_MOVE_M))
+			throw new Error(
+				`the target is ${round(dist)} m from the ${arm} gripper (eef_xyz); the limit is ${MAX_MOVE_M} m per call. Move in steps.`,
 			);
-			obs = { ...obs, head, left_wrist, right_wrist };
-			return observe({});
-		},
-	);
+		return (
+			over() ??
+			observe(
+				await motion("env.move_to", { arm, xyz, quat_wxyz: quat_wxyz ?? null, gripper: gripper ?? null }, signal),
+			)
+		);
+	});
 
-	robot.tool(
-		"move_to",
-		`Move one arm's gripper in a straight line to an env-frame [x, y, z] in metres (+x toward the robot's right, +y away from the robot, +z up; the table top is z = 0.74; at most ${MAX_MOVE_M} m from where it is), optionally with a [qw, qx, qy, qz] orientation (default: keep it), after an optional gripper command. The other arm holds still. Stops at the first unreachable waypoint (\`stopped\`). Returns the new state and images.`,
-		Type.Object({
-			arm: armParam,
-			xyz: Type.Array(Type.Number(), { minItems: 3, maxItems: 3 }),
-			quat_wxyz: Type.Optional(Type.Array(Type.Number(), { minItems: 4, maxItems: 4 })),
-			gripper: gripperParam,
-		}),
-		async ({ arm, xyz, quat_wxyz, gripper }, signal) => {
-			const at = obs.arms[arm].eef_pos.toArray();
-			const dist = Math.hypot(...xyz.map((v, i) => v - at[i]));
-			if (!(dist <= MAX_MOVE_M))
-				throw new Error(
-					`the target is ${round(dist)} m from the ${arm} gripper (eef_xyz); the limit is ${MAX_MOVE_M} m per call. Move in steps.`,
-				);
-			return (
-				over() ??
-				observe(
-					await motion(
-						"env.move_to",
-						{ arm, xyz, quat_wxyz: quat_wxyz ?? null, gripper: gripper ?? null },
-						signal,
-					),
-				)
-			);
-		},
-	);
+	robot.primitive("move_delta", async ({ arm, delta_xyz, gripper }, signal) => {
+		const norm = Math.hypot(...(delta_xyz as number[]));
+		if (!(norm <= MAX_MOVE_M))
+			throw new Error(`delta moves ${round(norm)} m; the limit is ${MAX_MOVE_M} m per call. Split the motion.`);
+		return over() ?? observe(await motion("env.move_delta", { arm, delta_xyz, gripper: gripper ?? null }, signal));
+	});
 
-	robot.tool(
-		"move_delta",
-		`Translate one arm's gripper by an env-frame [dx, dy, dz] in metres (at most ${MAX_MOVE_M} m per call), orientation held, after an optional gripper command. Returns the new state and images.`,
-		Type.Object({
-			arm: armParam,
-			delta_xyz: Type.Array(Type.Number(), { minItems: 3, maxItems: 3 }),
-			gripper: gripperParam,
-		}),
-		async ({ arm, delta_xyz, gripper }, signal) => {
-			const norm = Math.hypot(...delta_xyz);
-			if (!(norm <= MAX_MOVE_M))
-				throw new Error(`delta moves ${round(norm)} m; the limit is ${MAX_MOVE_M} m per call. Split the motion.`);
-			return over() ?? observe(await motion("env.move_delta", { arm, delta_xyz, gripper: gripper ?? null }, signal));
-		},
-	);
-
-	robot.tool(
+	robot.primitive(
 		"rotate_delta",
-		`Turn one arm's gripper by \`yaw\` radians about the vertical through it (+ counter-clockwise seen from above; at most ${MAX_ROTATE_RAD} rad per call), holding its position. Returns the new state and images.`,
-		Type.Object({ arm: armParam, yaw: Type.Number() }),
 		async ({ arm, yaw }, signal) => over() ?? observe(await motion("env.rotate_delta", { arm, yaw }, signal)),
 	);
 
-	robot.tool(
+	robot.primitive(
 		"set_gripper",
-		"Move one gripper to `value`: 1 fully open .. 0 fully closed. Returns the new state and images.",
-		Type.Object({ arm: armParam, value: Type.Number({ minimum: 0, maximum: 1 }) }),
 		async ({ arm, value }, signal) => over() ?? observe(await motion("env.set_gripper", { arm, value }, signal)),
 	);
 
-	robot.tool(
-		"go_home",
-		"Drive both arms back to their start pose (grippers unchanged). Most tasks count as done only once both arms are back home with the grippers open.",
-		Type.Object({}),
-		async (_p, signal) => over() ?? observe(await motion("env.go_home", {}, signal)),
-	);
+	robot.primitive("go_home", async (_p, signal) => over() ?? observe(await motion("env.go_home", {}, signal)));
 
-	robot.tool(
-		"locate",
-		"Env-frame [x, y, z] (m) of [col, row] pixels of the latest head image, from its depth. Read-only.",
-		Type.Object({
-			pixels: Type.Array(Type.Array(Type.Number(), { minItems: 2, maxItems: 2 }), { minItems: 1, maxItems: 32 }),
-		}),
-		async ({ pixels }) => {
-			const r = await env.call<{ xyz: (number[] | null)[] }>(
-				"env.back_project",
-				{ pixels },
-				READ_MS,
-				[],
-				robot.signal,
-			);
-			const out = { frame: "env", points: pixels.map((p, i) => ({ pixel: p, xyz: r.xyz[i] })) };
-			return { content: [{ type: "text" as const, text: JSON.stringify(out) }], details: out };
-		},
-	);
+	// `locate` before the manifest: one name for the tool and the program (env.back_project).
+	robot.primitive("back_project", async ({ pixels }) => {
+		const r = await env.call<{ xyz: (number[] | null)[] }>("env.back_project", { pixels }, READ_MS, [], robot.signal);
+		const out = {
+			frame: "env",
+			points: (pixels as number[][]).map((p, i) => ({ pixel: p, xyz: r.xyz[i] })),
+		};
+		return { content: [{ type: "text" as const, text: JSON.stringify(out) }], details: out };
+	});
 
 	// SAM3 masks with ids and UniDepth over the env server's perception (active with --detections / --unidepth).
 	for (const d of detectionTools(pi, {
@@ -699,7 +660,16 @@ export default function robodojo(pi: ExtensionAPI) {
 		meta = { ...meta, instruction: info.instruction };
 		await startFlywheel();
 		return [
-			...["view_env_state", "move_to", "move_delta", "rotate_delta", "set_gripper", "go_home", "locate", "finish"],
+			...[
+				"view_env_state",
+				"move_to",
+				"move_delta",
+				"rotate_delta",
+				"set_gripper",
+				"go_home",
+				"back_project",
+				"finish",
+			],
 			...detectionActive(pi, meta.capabilities?.perception),
 			...pointActive(pi),
 		];

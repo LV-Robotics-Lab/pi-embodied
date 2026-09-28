@@ -2,9 +2,7 @@
 # program: capx/envs/tasks/franka/franka_lift.py ORACLE_CODE (FrankaControlPrivilegedApi)
 # task: Lift
 # tier: privileged
-# prelude: capx_privileged.py
-OBJECTS = {"red cube": {"name": "cube", "extent": [0.05, 0.05, 0.05]}}
-
+# The CaP-X API calls are the env server's high-tier primitives (manifests/robosuite.json): no prelude.
 # ---- CaP-X's program, verbatim ----
 import numpy as np
 

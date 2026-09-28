@@ -1,7 +1,8 @@
 # capx: env_configs/human_oracle_code/robosuite/two_arm_handover_oracle.yaml @53e9966
 # program: capx/envs/tasks/franka/two_arm_handover.py UNPRIVILEGED_ORACLE_CODE (FrankaHandoverApi)
 # task: TwoArmHandover
-# tier: high
+# tier: low
+# CaP-X's task API (not in the high tier) is the prelude over the low tier's primitives.
 # prelude: capx_handover.py
 # CaP-X's config names no oracle_code, so TwoArmHandoverCodeEnv's class default,
 # PRIVILEGED_ORACLE_CODE, would run against FrankaHandoverApi and stop at get_hammer_pose (not

@@ -42,11 +42,19 @@ that arm succeeds, while the other arm keeps working. A refusal that sent nothin
 too-long step, the yaw budget) does not halt. ``halt_arm`` stops an arm the same way on
 request (e.g. its part of the task is done).
 
-Code mode (``code.run``, utils/code_real.py; only with ``--code``): a program's steps run through
-the same guarded ``step`` as pi's tools (the step and yaw caps, floor, box, the per-arm halt) and
-under pi's tighter ``--max-move`` / ``--max-yaw`` (``code.set_limits``). ``move_joints`` (the
-reset's joint-space move to a calibrated pose, whose travel no per-call cap covers) is refused in
-code mode, and so is ``halt_arm`` on one arm (pi's single-arm tools have none).
+pi's limits (utils/code_real.py): pi passes its ``--max-move`` / ``--max-yaw`` at spawn and every
+motion method holds them, next to the config's own caps, for every caller (pi's tools, the units,
+a program, a manual call); ``env.get_env_meta`` reports them as ``motion_limits``.
+
+Primitives (packages/embodied/src/primitives/manifests/piper.json, read for ``code.api`` and the
+startup self-check): ``move_delta`` / ``rotate_yaw`` / ``open_gripper`` / ``close_gripper`` are
+thin wrappers over the guarded ``step`` (pi's tools and a program call the same methods);
+``solve_ik`` / ``move_to_joints`` are CaP-X's joint-space pair, bounded per call (a joint change of
+at most ``limits.max_joint_step_rad``, the tool within --max-move and --max-yaw of where it starts
+at every waypoint, the yaw budget, the floor and box along the path). ``halt_arm`` exists on two
+arms only (capability ``dual``). ``move_joints`` (the reset's joint-space move to a calibrated
+pose, whose travel no per-call cap covers) and ``step_pair`` (the units' paired step) are
+internal: no program reaches them. Code mode (``code.run``) is served only with ``--code``.
 
 Reset: one arm (``arm``), or both only when asked (``both=True``). It opens the
 gripper, so a gripper that holds something (closed wider than ``empty_width_m``) is
@@ -65,14 +73,15 @@ from typing import Any
 import numpy as np
 import yaml
 
-from pi_embodied_services.components.code_api import register_code_api
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
 from pi_embodied_services.robots.piper.controller import PiperController, PiperLimits
-from pi_embodied_services.robots.piper.primitives import PIPER_PRIMITIVES
 from pi_embodied_services.utils import hardware_lock
 from pi_embodied_services.utils.code_real import (
     RealCodeMode,
     add_code_argument,
+    add_limit_arguments,
+    check_translation,
+    limits_from_args,
     vec3,
 )
 from pi_embodied_services.utils.logging import get_logger
@@ -253,8 +262,8 @@ class PiperEnvFacade(RealCodeMode, BaseEnvFacade):
     """
 
     SERVICE_NAME = "piper-env"
-    #: Code mode: pi's per-call limits (its --max-move / --max-yaw, when tighter than the arm's).
-    _CODE_LIMITS = {"max_move_m": True, "max_yaw_rad": True}
+    #: pi's per-call limits (its --max-move / --max-yaw defaults); the config's caps apply too.
+    _LIMIT_DEFAULTS = {"max_move_m": 0.05, "max_yaw_rad": 0.2}
 
     def __init__(
         self,
@@ -263,9 +272,11 @@ class PiperEnvFacade(RealCodeMode, BaseEnvFacade):
         cameras: dict[str, Any],
         config_path: str = "",
         code: bool = False,
+        limits: dict[str, Any] | None = None,
     ) -> None:
-        # --code: code.run over the registry, behind the RPC token (utils/code_real.py).
+        # --code: code.run over the manifest, behind the RPC token; pi's limits (utils/code_real.py).
         self._enable_code(code)
+        self._set_limits(limits)
         super().__init__()
         self._cfg = cfg
         self._config_path = config_path
@@ -318,11 +329,26 @@ class PiperEnvFacade(RealCodeMode, BaseEnvFacade):
             "get_camera_meta",
             "step",
             "step_pair",
+            "move_delta",
+            "rotate_yaw",
+            "open_gripper",
+            "close_gripper",
+            "solve_ik",
+            "move_to_joints",
             "move_joints",
             "halt_arm",
         ):
             self._rpc[f"env.{name}"] = getattr(self, name)
-        self._install_real_code_run(register_code_api(self, PIPER_PRIMITIVES))
+        # code.api, the programs' whitelist and the startup self-check: manifests/piper.json.
+        self._install_real("piper", have=self._has)
+
+    def _has(self, capability: str) -> bool:
+        """What this server can serve of the manifest's ``requires`` (pi's must agree)."""
+        return {
+            "dual": self._dual,
+            "sam3": "env.detect" in self._rpc,
+            "unidepth": "env.enhance_depth" in self._rpc,
+        }.get(capability, False)
 
     # -- code mode (run_code) ----------------------------------------------
 
@@ -333,39 +359,15 @@ class PiperEnvFacade(RealCodeMode, BaseEnvFacade):
         return images[names[0]] if names else None
 
     def _code_move_m(self, method: str, kwargs: dict) -> float:
-        """A step's translation (base or heading frame, the same length); a yaw turns the
-        gripper in place, a gripper command moves none."""
-        if method == "env.step":
+        """A step's translation (base or heading frame, the same length), a joint move's
+        TCP translation; a yaw turns the gripper in place, a gripper command moves none."""
+        if method in ("env.step", "env.move_delta"):
             d = kwargs.get("delta_xyz")
             return float(np.linalg.norm(vec3(d, "delta_xyz"))) if d is not None else 0.0
+        if method == "env.move_to_joints":
+            side = self._side(kwargs.get("arm"))
+            return self._controllers[side].joint_move_m(kwargs.get("joints"))
         return 0.0
-
-    def _code_check(self, method: str, kwargs: dict) -> None:
-        """Refuse a program's call as pi's tools would, before anything is commanded."""
-        if method == "env.move_joints":
-            raise ValueError(
-                "move_joints is not available in code mode: the joint-space move to a "
-                "calibrated pose is not bounded per call (the operator's reset runs it)"
-            )
-        if method == "env.halt_arm" and not self._dual:
-            raise ValueError(
-                "halt_arm stops one arm of two; this server drives one arm"
-            )
-        if method != "env.step":
-            return
-        d = kwargs.get("delta_xyz")
-        norm = float(np.linalg.norm(vec3(d, "delta_xyz"))) if d is not None else 0.0
-        yaw = float(kwargs.get("yaw") or 0.0)
-        move, turn = self._limit("max_move_m"), self._limit("max_yaw_rad")
-        if not norm <= move:
-            raise ValueError(
-                f"delta_xyz moves {norm:.4f} m; the limit is {move} m per call. Split the "
-                "motion into smaller calls."
-            )
-        if not abs(yaw) <= turn:
-            raise ValueError(
-                f"yaw {yaw:.4f} rad exceeds the limit of {turn} rad per call."
-            )
 
     def close(self) -> None:
         for cam in self._cameras.values():
@@ -515,8 +517,10 @@ class PiperEnvFacade(RealCodeMode, BaseEnvFacade):
         """One guarded step of one arm: translate (m), yaw (rad), then open/close.
 
         ``continuous``: another translation in about the same direction follows at once
-        (smooth chaining; see controller.py)."""
+        (smooth chaining; see controller.py). Refused beyond pi's --max-move / --max-yaw
+        before anything is commanded (the config's caps apply in the controller)."""
         side = self._side(arm)
+        self._check_step(delta_xyz, yaw)
         return self._guarded(
             side,
             lambda: self._controllers[side].step(
@@ -526,6 +530,74 @@ class PiperEnvFacade(RealCodeMode, BaseEnvFacade):
                 frame=frame,
                 reopen_empty=reopen_empty,
                 continuous=bool(continuous),
+            ),
+        )
+
+    def _check_step(self, delta_xyz: Any, yaw: Any) -> None:
+        """pi's per-call limits on one step (ValueError; nothing commanded)."""
+        check_translation(
+            (0.0, 0.0, 0.0) if delta_xyz is None else delta_xyz,
+            self._limit("max_move_m"),
+        )
+        turn, cap = float(yaw or 0.0), self._limit("max_yaw_rad")
+        if not math.isfinite(turn):
+            raise ValueError("yaw must be finite")
+        if cap is not None and not abs(turn) <= cap + 1e-9:
+            raise ValueError(
+                f"yaw {turn:.4f} rad exceeds the limit of {cap} rad per call (--max-yaw). "
+                "Split the rotation into smaller calls."
+            )
+
+    def move_delta(
+        self,
+        delta_xyz: Any,
+        arm: str | None = None,
+        frame: str = "base",
+        continuous: bool = False,
+    ) -> dict[str, Any]:
+        """Translate one arm's gripper by ``delta_xyz`` (m; base frame, or ``heading``),
+        holding the orientation: the guarded :meth:`step`."""
+        return self.step(delta_xyz, frame=frame, arm=arm, continuous=continuous)
+
+    def rotate_yaw(self, yaw: float, arm: str | None = None) -> dict[str, Any]:
+        """Turn one arm's gripper about the base z axis by ``yaw`` (rad): the guarded :meth:`step`."""
+        return self.step(yaw=yaw, arm=arm)
+
+    def open_gripper(self, arm: str | None = None) -> dict[str, Any]:
+        """Open one arm's gripper and wait for it to settle."""
+        return self.step(gripper="open", arm=arm)
+
+    def close_gripper(
+        self, arm: str | None = None, reopen_empty: bool = True
+    ) -> dict[str, Any]:
+        """Close one arm's gripper and wait for it to settle; an empty close reopens
+        (``reopen_empty=False`` leaves it closed) and says so in notes."""
+        return self.step(gripper="close", arm=arm, reopen_empty=reopen_empty)
+
+    def solve_ik(
+        self, position: Any, quaternion_wxyz: Any = None, arm: str | None = None
+    ) -> dict[str, Any]:
+        """CaP-X's solve_ik on one arm: joints (6, rad) for a TCP position (its base frame,
+        m) and orientation (wxyz; None: any), from the current joints. Nothing moves."""
+        side = self._side(arm)
+        quat = None
+        if quaternion_wxyz is not None:
+            w, x, y, z = np.asarray(quaternion_wxyz, dtype=float).reshape(-1)[:4]
+            quat = [x, y, z, w]
+        return self._controllers[side].solve_ik(vec3(position, "position"), quat)
+
+    def move_to_joints(self, joints: Any, arm: str | None = None) -> dict[str, Any]:
+        """CaP-X's move_to_joints on one arm, bounded per call (controller.py
+        ``move_to_joints_bounded``): pi's --max-move / --max-yaw, the config's caps and
+        ``max_joint_step_rad``, the floor and box along the path, the per-arm halt."""
+        side = self._side(arm)
+        move, turn = self._limit("max_move_m"), self._limit("max_yaw_rad")
+        return self._guarded(
+            side,
+            lambda: self._controllers[side].move_to_joints_bounded(
+                joints,
+                max_move_m=math.inf if move is None else move,
+                max_rotate_rad=math.inf if turn is None else turn,
             ),
         )
 
@@ -546,6 +618,9 @@ class PiperEnvFacade(RealCodeMode, BaseEnvFacade):
             raise ValueError(
                 "step_pair takes exactly one step per arm (two steps naming both arms)"
             )
+        # Both steps within pi's limits before either arm moves (refused whole).
+        for s in steps:
+            self._check_step(s.get("delta_xyz"), s.get("yaw"))
         results: dict[str, Any] = {}
         errors: dict[str, BaseException] = {}
 
@@ -743,7 +818,15 @@ def build(cfg: dict[str, Any]) -> tuple[Any, dict[str, Any]]:
 
 #: The Piper server's own motions beyond MOTION_METHODS: each expires the detection ids
 #: (``step_pair`` moves both arms at once).
-PIPER_MOTIONS = ("env.move_joints", "env.halt_arm", "env.step_pair")
+PIPER_MOTIONS = (
+    "env.step_pair",
+    "env.rotate_yaw",
+    "env.open_gripper",
+    "env.close_gripper",
+    "env.move_to_joints",
+    "env.move_joints",
+    "env.halt_arm",
+)
 
 
 def main() -> int:
@@ -766,6 +849,7 @@ def main() -> int:
     hardware_lock.add_lock_arguments(parser)
     add_perception_arguments(parser, sam3=True)
     add_code_argument(parser)
+    add_limit_arguments(parser, PiperEnvFacade._LIMIT_DEFAULTS)
     args = parser.parse_args()
     if args.print_identity:
         from pi_embodied_services.robots.piper.ros_io import arm_identity
@@ -795,6 +879,7 @@ def main() -> int:
         cameras,
         config_path=str(args.robot_config or DEFAULT_CONFIG),
         code=args.code,
+        limits=limits_from_args(args, PiperEnvFacade._LIMIT_DEFAULTS),
     )
     # --sam3 / --unidepth: env.detect, env.select_detection, env.reject_detection and
     # env.enhance_depth (the webcams have no depth: UniDepth supplies it) on get_observation's frames.

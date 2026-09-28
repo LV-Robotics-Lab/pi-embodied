@@ -37,7 +37,7 @@ judges them like any policy's actions.
 Isaac Sim starts in ``main`` before the server binds; every call runs on the main thread (Kit is
 not thread-safe).
 
-Code mode (``code.run``, utils/code_exec.py ``CodeRunMixin``): a program calls the registry's
+Code mode (``code.run``, utils/code_exec.py ``CodeRunMixin``): a program calls the manifest's
 primitives in a sandboxed subprocess, so the server requires its RPC token and refuses other
 business calls while a program runs. What a program receives drops the images (a motion's head
 frames and a raw step's head image go to the run's video) and RoboDojo's partial-credit score (the
@@ -53,14 +53,13 @@ import os
 import sys
 import time
 import traceback
+from copy import deepcopy
 from typing import Any
 
 import numpy as np
 
-from pi_embodied_services.components.code_api import register_code_api
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
 from pi_embodied_services.robots.robodojo import sim
-from pi_embodied_services.robots.robodojo.primitives import ROBODOJO_PRIMITIVES
 from pi_embodied_services.utils import ground_truth
 from pi_embodied_services.utils.code_exec import CodeRunMixin
 from pi_embodied_services.utils.perception import (
@@ -100,6 +99,12 @@ FRAME_EVERY = 5
 #: may cause (an upper bound over the X5's links, for a joint action's translation estimate).
 CODE_MAX_FRAMES = 128
 CODE_MAX_CHUNK = 64
+#: Joint waypoints one traj_plan returns / one move_along_trajectory runs.
+CODE_MAX_TRAJECTORY = 100
+#: traj_plan plans from the arm's current joints: a start pose farther than this from the current
+#: end-effector pose is refused (m, rad).
+TRAJ_START_TOL_M = 0.01
+TRAJ_START_TOL_RAD = 0.05
 CODE_M_PER_RAD = 0.7
 #: What a program never receives: images, video and Flywheel frames, and the evaluator's score.
 CODE_HIDDEN = ("head", "left_wrist", "right_wrist", "frames", "policy_frames", "score")
@@ -149,20 +154,35 @@ class RobodojoEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
             "set_gripper",
             "go_home",
             "back_project",
+            "solve_ik",
+            "move_to_joints",
+            "traj_plan",
+            "move_along_trajectory",
             "ground_truth_poses",
             "set_recording",
         ):
             self._rpc[f"env.{name}"] = getattr(self, name)
         self._readonly_methods.add("env.state")
-        api = register_code_api(self, ROBODOJO_PRIMITIVES)
-        self._install_code_run(
-            api,
+        # The primitives are packages/embodied/src/primitives/manifests/robodojo.json (with pi);
+        # code.api, the programs' whitelist and the startup self-check come from it.
+        self._manifest_code_run(
+            "robodojo",
+            have=self._has,
             move_m=self._code_move_m,
             check=self._code_check,
             reply=self._code_reply,
             begin=self._begin_run,
             finish=self._finish_run,
         )
+
+    def _has(self, capability: str) -> bool:
+        """What this server can serve of the manifest's ``requires`` (perception is installed
+        after ``_register_rpc``; the check runs at ``serve``)."""
+        return {
+            "sam3": "env.detect" in self._rpc,
+            "unidepth": "env.enhance_depth" in self._rpc,
+            "privileged": True,
+        }.get(capability, False)
 
     # ---- code mode (run_code) ----
 
@@ -203,6 +223,8 @@ class RobodojoEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
             "env.rotate_delta",
             "env.set_gripper",
             "env.go_home",
+            "env.move_to_joints",
+            "env.move_along_trajectory",
         ):
             self._keep_frames(out.get("frames") or [out["head"]])
             return self._program_state(out)
@@ -260,6 +282,25 @@ class RobodojoEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
                 for a in sim.ARMS
                 if a in self._home and a in self._q
             )
+        if method in ("env.move_to_joints", "env.move_along_trajectory"):
+            # Each waypoint's largest joint change times the reach per radian (an upper bound).
+            arm = kwargs["arm"]
+            here = np.asarray(self._q.get(arm, self._joints(arm)), dtype=np.float64)
+            path = (
+                [kwargs["joints"]]
+                if method == "env.move_to_joints"
+                else kwargs["trajectory"]
+            )
+            total = 0.0
+            for q in path[:CODE_MAX_TRAJECTORY]:
+                q = np.asarray(q, dtype=np.float64).reshape(-1)
+                if q.shape != here.shape:
+                    raise ValueError(
+                        f"joints must have {len(here)} values, got {len(q)}"
+                    )
+                total += float(np.max(np.abs(q - here))) * CODE_M_PER_RAD
+                here = q
+            return total
         if method in ("env.step", "env.chunk_step"):
             held = {a: np.asarray(self._q.get(a, self._joints(a))) for a in sim.ARMS}
             actions = [kwargs["action"]] if method == "env.step" else kwargs["actions"]
@@ -269,6 +310,13 @@ class RobodojoEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
 
     def _code_check(self, method: str, kwargs: dict) -> None:
         """Refuse a program's call that the run's wall clock could not bound."""
+        if (
+            method == "env.move_along_trajectory"
+            and len(kwargs["trajectory"]) > CODE_MAX_TRAJECTORY
+        ):
+            raise ValueError(
+                f"move_along_trajectory runs at most {CODE_MAX_TRAJECTORY} waypoints per call, got {len(kwargs['trajectory'])}"
+            )
         if method == "env.chunk_step" and len(kwargs["actions"]) > CODE_MAX_CHUNK:
             raise ValueError(
                 f"chunk_step runs at most {CODE_MAX_CHUNK} actions per call, got {len(kwargs['actions'])}"
@@ -791,6 +839,215 @@ class RobodojoEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
             out["frames"] = frames
         return out
 
+    # ---- CaP-X's joint-space primitives (capx/integrations/franka/control_reduced.py) ----
+
+    def _joint_target(self, arm: str, joints, what: str = "joints") -> np.ndarray:
+        q = np.asarray(joints, dtype=float).reshape(-1)
+        n = len(self._q[arm])
+        if q.shape != (n,) or not np.all(np.isfinite(q)):
+            raise ValueError(
+                f"{what} must be {n} finite joint angles (rad), got {joints!r}"
+            )
+        return q
+
+    def _pose(self, pose_wxyz_xyz, what: str) -> np.ndarray:
+        """A CaP-X pose (wxyz then xyz) as this server's ``[x, y, z, qw, qx, qy, qz]``."""
+        p = np.asarray(pose_wxyz_xyz, dtype=float).reshape(-1)
+        if p.shape != (7,) or not np.all(np.isfinite(p)):
+            raise ValueError(
+                f"{what} must be 7 finite numbers (wxyz then xyz), got {pose_wxyz_xyz!r}"
+            )
+        q = p[:4] / (np.linalg.norm(p[:4]) or 1.0)
+        return np.r_[p[4:], q]
+
+    def solve_ik(self, position, quaternion_wxyz, arm: str) -> list[float]:
+        """CaP-X's solve_ik: one arm's joint angles for an end-effector pose (env frame), by
+        RoboDojo's cuRobo IK from the arm's current joints. Raises when it has no solution.
+
+        Example:
+            q = solve_ik([-0.3, -0.2, 0.9], [0, 1, 0, 0], "left")
+            move_to_joints(q, "left")
+        """
+        arm_key(arm, "arm")
+        pose = self._pose(list(quaternion_wxyz) + list(position), "the pose")
+        q = self._ik(arm, pose)
+        if q is None:
+            raise ValueError(
+                "no IK solution for that pose (out of reach or orientation)"
+            )
+        return [float(v) for v in q]
+
+    def _joint_travel(
+        self,
+        arm: str,
+        path: list[np.ndarray],
+        gripper: float | None,
+        return_frames: bool,
+    ) -> dict:
+        """Shared body of move_to_joints / move_along_trajectory: each joint waypoint in order,
+        interpolated at most ``HOME_STEP_RAD`` per joint per control step; the other arm holds."""
+        report: dict[str, Any] = {"arm": arm}
+        why = self._refuse()
+        if why:
+            return {**self._pack(), **report, "error": why, "moved_m": [0.0, 0.0, 0.0]}
+        start = self._ee_pose(arm)
+        frames: list | None = [] if return_frames else None
+        steps = 0
+        if gripper is not None and abs(float(gripper) - self._grip[arm]) > 1e-6:
+            steps += self._gripper_to(arm, float(gripper), frames)
+        done = 0
+        for target in path:
+            begin = self._q[arm].copy()
+            n = max(
+                1,
+                math.ceil(float(np.max(np.abs(target - begin))) / HOME_STEP_RAD - 1e-9),
+            )
+            for i in range(1, n + 1):
+                if self.stop_requested():
+                    report["cancelled"] = True
+                    break
+                if self._ended():
+                    break
+                self._q[arm] = begin + (target - begin) * (i / n)
+                self._act(frames)
+                steps += 1
+            else:
+                done += 1
+                continue
+            break
+        end = self._ee_pose(arm)
+        report.update(
+            moved_m=[round(float(v), 4) for v in end[:3] - start[:3]],
+            final_joint_error_rad=round(
+                float(np.max(np.abs(self._joints(arm) - path[-1]))), 4
+            ),
+            waypoints=len(path),
+            executed=done,
+            control_steps=steps,
+        )
+        if frames is not None:
+            report["frames"] = frames
+        return {**self._pack(), **report}
+
+    def move_to_joints(
+        self,
+        joints,
+        arm: str,
+        gripper: float | None = None,
+        return_frames: bool = False,
+    ) -> dict:
+        """CaP-X's move_to_joints: drive one arm to a joint configuration (joint-space
+        interpolation, ``HOME_STEP_RAD`` per control step) after an optional gripper command
+        (1 open .. 0 closed); the other arm holds.
+
+        Example:
+            r = move_to_joints(solve_ik([-0.3, -0.2, 0.9], [0, 1, 0, 0], "left"), "left")
+            print(r["final_joint_error_rad"])
+        """
+        arm_key(arm, "arm")
+        target = self._joint_target(arm, joints)
+        return self._joint_travel(arm, [target], gripper, return_frames)
+
+    def _planner(self, arm: str) -> Any:
+        """RoboDojo's cuRobo motion planner for the arm (``robot_manager.planner``), if any."""
+        robot = self._robot(arm)
+        planners = getattr(self._env.robot_manager, "planner", None) or {}
+        planner = planners.get(getattr(robot, "robot_name", None))
+        return planner if hasattr(planner, "plan_path") else None
+
+    def traj_plan(self, start_pose_wxyz_xyz, end_pose_wxyz_xyz, arm: str) -> list:
+        """CaP-X's traj_plan: joint waypoints [N, 6] (N <= ``CODE_MAX_TRAJECTORY``) from one
+        end-effector pose (wxyz then xyz, env frame) to another. The plan starts at the arm's
+        current joints, so the start pose must be the current one (within ``TRAJ_START_TOL_M`` /
+        ``TRAJ_START_TOL_RAD``). RoboDojo's cuRobo motion planner (``plan_path``) plans it; without
+        one, IK along a straight line (``STEP_M`` / ``STEP_RAD`` apart) with the branch-flip check
+        of the motions. Nothing moves; raises when no path is found.
+
+        Example:
+            traj = traj_plan(start, [0, 1, 0, 0, -0.3, -0.2, 0.9], "left")
+            move_along_trajectory(traj, "left")
+        """
+        arm_key(arm, "arm")
+        a = self._pose(start_pose_wxyz_xyz, "start_pose_wxyz_xyz")
+        b = self._pose(end_pose_wxyz_xyz, "end_pose_wxyz_xyz")
+        here = self._ee_pose(arm)
+        off_m = float(np.linalg.norm(a[:3] - here[:3]))
+        off_rad = float(sim.quat_angle(a[3:], here[3:]))
+        if off_m > TRAJ_START_TOL_M or off_rad > TRAJ_START_TOL_RAD:
+            raise ValueError(
+                f"traj_plan plans from the {arm} arm's current pose; start_pose_wxyz_xyz is "
+                f"{off_m:.3f} m / {off_rad:.3f} rad from it (state()['arms']['{arm}'] "
+                "eef_quat_wxyz + eef_pos)"
+            )
+        planner = self._planner(arm)
+        if planner is not None:
+            robot = self._robot(arm)
+            res = planner.plan_path(
+                self._joints(arm),
+                b.tolist(),
+                real_robot_pose=deepcopy(robot.entity_origin_pose),
+            )
+            if res.get("status") != "Success" or res.get("position") is None:
+                raise ValueError("cuRobo found no path to that pose")
+            traj = np.asarray(res["position"], dtype=float).reshape(
+                len(res["position"]), -1
+            )
+            if len(traj) > CODE_MAX_TRAJECTORY:
+                keep = np.unique(
+                    np.linspace(0, len(traj) - 1, CODE_MAX_TRAJECTORY)
+                    .round()
+                    .astype(int)
+                )
+                traj = traj[keep]
+            return [[float(v) for v in q] for q in traj]
+        path = sim.waypoints(
+            here[:3], b[:3], here[3:], b[3:], step_m=STEP_M, step_rad=STEP_RAD
+        )
+        if len(path) > CODE_MAX_TRAJECTORY:
+            raise ValueError(
+                f"the straight line takes {len(path)} waypoints; at most {CODE_MAX_TRAJECTORY} (plan a closer pose)"
+            )
+        prev = self._q[arm]
+        out = []
+        for k, pose in enumerate(path):
+            q = self._ik(arm, np.asarray(pose, dtype=float))
+            if q is None:
+                raise ValueError(f"no IK solution at waypoint {k} of {len(path)}")
+            jump = float(np.max(np.abs(q - prev)))
+            if jump > MAX_JOINT_STEP_RAD:
+                raise ValueError(
+                    f"ik_jump at waypoint {k} ({jump:.2f} rad in one step)"
+                )
+            out.append([float(v) for v in q])
+            prev = q
+        return out
+
+    def move_along_trajectory(
+        self,
+        trajectory,
+        arm: str,
+        gripper: float | None = None,
+        return_frames: bool = False,
+    ) -> dict:
+        """CaP-X's move_along_trajectory: drive one arm through joint waypoints in order (each
+        as move_to_joints: a waypoint farther than ``HOME_STEP_RAD`` per joint is interpolated),
+        at most ``CODE_MAX_TRAJECTORY``; stops on stop or at the episode's end.
+
+        Example:
+            r = move_along_trajectory(traj_plan(start, end, "left"), "left")
+            print(r["executed"], r["final_joint_error_rad"])
+        """
+        arm_key(arm, "arm")
+        path = [
+            self._joint_target(arm, q, f"trajectory[{k}]")
+            for k, q in enumerate(list(trajectory))
+        ]
+        if not path or len(path) > CODE_MAX_TRAJECTORY:
+            raise ValueError(
+                f"trajectory must have 1..{CODE_MAX_TRAJECTORY} waypoints, got {len(path)}"
+            )
+        return self._joint_travel(arm, path, gripper, return_frames)
+
     # ---- perception / meta ----
 
     def state(self) -> dict:
@@ -985,7 +1242,11 @@ def main():
             args,
             cameras=["head", "left_wrist", "right_wrist"],
             view=render_view(facade),
-            mutating=("env.go_home",),
+            mutating=(
+                "env.go_home",
+                "env.move_to_joints",
+                "env.move_along_trajectory",
+            ),
         )
         _, info = facade.reset()
         print(

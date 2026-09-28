@@ -150,3 +150,18 @@ def check_move(
         raise ValueError(f"target z={z:.3f} is below the floor {z_floor:.3f} m")
     if not z <= z_ceiling:
         raise ValueError(f"target z={z:.3f} is above the ceiling {z_ceiling:.3f} m")
+
+
+#: CaP-X's object names (its privileged API, ``get_object_pose``) -> the simulator's object names
+#: (``ground_truth_poses``) and CaP-X's hard-coded bounding-box extents, m.
+OBJECT_NAMES: dict[str, dict[str, tuple[str, tuple[float, float, float]]]] = {
+    "Lift": {"red cube": ("cube", (0.05, 0.05, 0.05))},
+    "Stack": {
+        "red cube": ("cubeA", (0.05, 0.05, 0.05)),
+        "green cube": ("cubeB", (0.05, 0.05, 0.05)),
+    },
+    "Restack": {
+        "red cube": ("cubeA", (0.05, 0.05, 0.05)),
+        "green cube": ("cubeB", (0.05, 0.05, 0.05)),
+    },
+}

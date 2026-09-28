@@ -9,12 +9,14 @@
  * Starts one Genesis env server per session (services/.../robots/genesis/env_server.py, the `genesis`
  * venv; rendering needs a GPU). The server owns the motion: `move_delta` and the units hook `apply`
  * run a base-frame delta as ~2 cm IK decisions with the reset orientation held, inside a workspace
- * box, above a Z floor and within a per-call cap, all checked before anything moves; `gripper` opens
- * or closes and holds. Every result carries the front and wrist images and the state; success is the
- * task's own predicate (cube_pick: the cube lifted 8 cm off the table), recorded in `robot_result`.
+ * box, above a Z floor and within a per-call cap, all checked before anything moves; `set_gripper`
+ * opens or closes and holds. Every result carries the front and wrist images and the state; success
+ * is the task's own predicate, recorded in `robot_result` with the rule (`--success-rule`: `grasp`,
+ * OpenETA's cube_pick rule, by default; `lift`, the cube 8 cm off the table).
  * --vdm (../vdm.ts) differences the front and wrist views between observations.
  * `segment` (SAM3, `--sam3`) and `back_project` give world coordinates from the current image
- * through the server's depth. --collect-flywheel-data records every control step of a motion
+ * through the server's depth. Tools and code primitives: ../../primitives/manifests/genesis.json
+ * (the env server reads it too); every tool runs one env server method. --collect-flywheel-data records every control step of a motion
  * (services robots/genesis/flywheel.py).
  *
  * OpenETA (github.com/OpenETA at 7d4a0a1) sim/envs/genesis: its Franka scene and cube_pick task,
@@ -28,21 +30,22 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { FlywheelObs, FlywheelSpec } from "../../capabilities/flywheel.ts";
 import { MOLMO, SAM3 } from "../../infra/model-services.ts";
-import { decodePngChannel, encodePng } from "../../infra/png.ts";
-import { type NdArray, RpcClient } from "../../infra/rpc.ts";
+import { encodePng } from "../../infra/png.ts";
+import type { NdArray, RpcClient } from "../../infra/rpc.ts";
 import type { MoveUnit, Vec3 } from "../../modes/units/index.ts";
 import { template } from "../../planner/context-version.ts";
 import { detectionActive, detectionArgs, detectionTools, registerDetectionFlags } from "../../primitives/detections.ts";
 import { graspActive, graspArgs, graspTools, mountGraspTool, registerGraspFlags } from "../../primitives/grasp.ts";
-import { chainTools } from "../../primitives/grasp-chain.ts";
-import { ikArgs, previewReachTool, type Reach, registerIkFlag } from "../../primitives/ik.ts";
+import { ikArgs, type Reach, registerIkFlag } from "../../primitives/ik.ts";
 import { pointActive, pointTool, registerPointFlags } from "../../primitives/pointing.ts";
-import { attach, defineRobot, type Json, median, rgbOf, SERVICES } from "../../robot.ts";
+import { attach, defineRobot, type Json, rgbOf, SERVICES } from "../../robot.ts";
 
 const SYSTEM = template(new URL("./SYSTEM.md", import.meta.url));
 const EXPLORE = template(new URL("./explore.md", import.meta.url));
 const MEMORY = template(new URL("./memory.md", import.meta.url));
 
+/** The success rules (env_server SUCCESS_RULES): OpenETA's grasp rule (default) or the 8 cm lift. */
+export const SUCCESS_RULES = ["grasp", "lift"] as const;
 /** The env server's tasks (its TASKS table); `--task` takes one of them. */
 export const TASKS = ["cube_pick"] as const;
 export type Task = (typeof TASKS)[number];
@@ -62,9 +65,6 @@ export const STEP_M = 0.02;
 export const MAX_MOVE_M = 0.2;
 /** A closed gripper at or below this width holds nothing, m (env_server EMPTY_WIDTH_M). */
 export const EMPTY_WIDTH_M = 0.005;
-/** Mask pixels back-projected per segment call (a uniform subsample of the mask). */
-export const SEGMENT_SAMPLES = 400;
-
 /**
  * How the views look (env_server AGENTVIEW / WRIST_OFFSET): the front camera stands in front of the
  * table facing the robot, so the base is at the top of the image and image right is +y; the wrist
@@ -98,13 +98,6 @@ type Moved = Obs & {
 	steps?: Step[];
 	cancelled?: boolean;
 };
-type Gripped = Obs & {
-	control_steps: number;
-	frames?: NdArray[];
-	steps?: Step[];
-	grasp_empty?: boolean;
-	cancelled?: boolean;
-};
 type Meta = {
 	task: string;
 	seed: number;
@@ -113,6 +106,7 @@ type Meta = {
 	z_floor_m: number;
 	max_move_m: number;
 	lift_m: number;
+	success_rule?: string;
 	capabilities?: { perception?: { segment?: boolean; enhance_depth?: boolean } };
 };
 type CameraMeta = { intrinsic_K: number[][]; extrinsic_cam2world: number[][]; width: number; height: number };
@@ -132,35 +126,6 @@ const flyObs = (o: Obs): FlywheelObs => ({
 	state: [...o.tcp_pos.toArray(), ...o.tcp_quat_wxyz.toArray(), o.gripper_width],
 });
 
-/**
- * The (row, col) pixels of a SAM3 mask (a decoded PNG channel, >= 128 = in), at most `limit` of
- * them spread evenly over the mask, and the mask's pixel count and median pixel.
- */
-export function maskPixels(mask: { width: number; height: number; data: Uint8Array }, limit = SEGMENT_SAMPLES) {
-	const rows: number[] = [];
-	const cols: number[] = [];
-	for (let i = 0; i < mask.data.length; i++) {
-		if (mask.data[i] < 128) continue;
-		rows.push(Math.floor(i / mask.width));
-		cols.push(i % mask.width);
-	}
-	const stride = Math.max(1, Math.ceil(rows.length / limit));
-	const pixels: [number, number][] = [];
-	for (let i = 0; i < rows.length; i += stride) pixels.push([rows[i], cols[i]]);
-	return {
-		n: rows.length,
-		centroid: rows.length ? [Math.round(median(rows)), Math.round(median(cols))] : null,
-		pixels,
-	};
-}
-
-/** The per-axis median of the valid back-projected points, or null with fewer than `min` of them. */
-export function medianPoint(points: (number[] | null)[], min = 10): number[] | null {
-	const pts = points.filter((p): p is number[] => Array.isArray(p) && p.every(Number.isFinite));
-	if (pts.length < min) return null;
-	return [0, 1, 2].map((k) => round(median(pts.map((p) => p[k]))));
-}
-
 export default function genesis(pi: ExtensionAPI) {
 	const flag = (name: string, fallback: string) => String(pi.getFlag(name) ?? fallback);
 	pi.registerFlag("task", { type: "string", default: "cube_pick", description: `Genesis task: ${TASKS.join(", ")}` });
@@ -170,13 +135,18 @@ export default function genesis(pi: ExtensionAPI) {
 		default: "gpu",
 		description: "Genesis compute backend for the env server: gpu (default), cuda or cpu",
 	});
+	pi.registerFlag("success-rule", {
+		type: "string",
+		default: "grasp",
+		description: `Success rule: grasp (OpenETA cube_pick: both fingers on the cube within 8 cm for 3 steps, default) or lift (the cube 8 cm up for 5 steps)`,
+	});
 	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
 	pi.registerFlag("sam3", { type: "string", default: "http://127.0.0.1:18300", description: "SAM3 server (segment)" });
 	// --detections / --unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
 	// --ik: preview_reach over the env server's IK check (../ik.ts).
 	registerIkFlag(pi);
 	registerDetectionFlags(pi);
-	// --contact-graspnet & co: plan_grasp and friends, and execute_grasp / execute_place (../primitives/grasp-chain.ts).
+	// --contact-graspnet & co: plan_grasp and friends, and execute_grasp / execute_place (services/.../utils/grasp_chain.py on the env server).
 	registerGraspFlags(pi);
 	// --point: Molmo's point over its --molmo server (../primitives/pointing.ts).
 	registerPointFlags(pi, { molmo: true });
@@ -192,7 +162,6 @@ export default function genesis(pi: ExtensionAPI) {
 	});
 
 	let env: RpcClient;
-	let sam3: RpcClient;
 	let obs: Obs;
 	let meta: Meta;
 
@@ -200,6 +169,17 @@ export default function genesis(pi: ExtensionAPI) {
 	const tag = (seed: string) => `genesis_${robot.task.task}_s${seed}`;
 	const robot = defineRobot(pi, {
 		name: "genesis",
+		// Tools and code primitives: ../../primitives/manifests/genesis.json (the env server reads it too).
+		manifest: "genesis",
+		vars: () => ({ max_move: MAX_MOVE_M, cameras: [...CAMERAS], arms: [] }),
+		capabilities: (c) =>
+			({
+				sam3: Boolean(flag("sam3", "")),
+				ik: Boolean(flag("ik", "").trim()),
+				grasp: graspActive(pi).length > 0,
+				place: graspActive(pi).length > 0 && Boolean(flag("anyplace", "")),
+				unidepth: Boolean(flag("unidepth", "").trim()),
+			})[c] ?? false,
 		services: { models: [SAM3, MOLMO] },
 		task: ["task", "seed"],
 		keepImages: 4,
@@ -208,12 +188,12 @@ export default function genesis(pi: ExtensionAPI) {
 		vdm: { views: 2, wrist: 1 },
 		flywheel: { spec: FLYWHEEL, select: () => robot.task.task },
 		groundTruth: (names) => call("env.ground_truth_poses", { names: names ?? null }),
-		// The env server's primitive registry (code.api, robots/genesis/primitives.py), recorded per episode.
+		// The env server's code.api (from the manifest), recorded per episode.
 		codeApi: () => env,
 		// No corpus is published for Genesis: memory is what exploration writes locally, one cell per task and seed.
 		memory: {
 			cell: () => ({ tag: tag(robot.task.seed), reference: tag("0") }),
-			primitives: ["move_delta", "gripper", "act"],
+			primitives: ["move_delta", "set_gripper", "act"],
 			published: false,
 		},
 		explore: {
@@ -255,6 +235,7 @@ export default function genesis(pi: ExtensionAPI) {
 			task: robot.task.task,
 			seed: Number(robot.task.seed),
 			success: obs?.success ?? false,
+			success_rule: meta?.success_rule ?? flag("success-rule", "grasp"),
 			ever_grasped: everGrasped,
 			env_steps: obs?.env_steps ?? 0,
 		}),
@@ -322,8 +303,8 @@ export default function genesis(pi: ExtensionAPI) {
 	async function move(delta: Vec3, gripper: "open" | "close" | null, signal: AbortSignal | undefined) {
 		const r = await call<Moved>(
 			"env.move_delta",
-			{ gripper, return_frames: true, ...(fly.recording ? { record: true } : {}) },
-			[delta],
+			{ delta_xyz: delta, gripper, return_frames: true, ...(fly.recording ? { record: true } : {}) },
+			[],
 			signal,
 		);
 		for (const f of r.frames ?? []) video.frame(f);
@@ -362,141 +343,85 @@ export default function genesis(pi: ExtensionAPI) {
 		};
 	}
 
-	const camera = Type.Optional(StringEnum(CAMERAS, { description: "agentview (front, default) or wrist" }));
+	const text = (details: Json) => ({
+		content: [{ type: "text" as const, text: JSON.stringify(details) }],
+		details,
+	});
+	/** A motion's video frames and control-step records, then its observation absorbed; returns the rest. */
+	function motion(r: Json) {
+		for (const f of (r.frames as NdArray[] | undefined) ?? []) video.frame(f);
+		record(r.steps as Step[] | undefined);
+		absorb(r as unknown as Obs);
+		const {
+			frames: _f,
+			steps: _s,
+			agentview: _a,
+			wrist: _w,
+			tcp_pos: _p,
+			tcp_quat_wxyz: _q,
+			qpos: _j,
+			gripper_width: _gw,
+			gripper_command: _gc,
+			success: _ok,
+			is_grasped: _g,
+			lift_m: _l,
+			env_steps: _n,
+			...rest
+		} = r;
+		return rest;
+	}
+	const recording = () => (fly.recording ? { record: true } : {});
 
-	robot.tool(
-		"view_env_state",
-		"Current state with the front (third-person) and wrist images.",
-		Type.Object({}),
-		async () => observe({}),
+	// Every tool below runs one env server method with the manifest's parameters
+	// (../../primitives/manifests/genesis.json); here only what the planner sees is shaped.
+	robot.tool("view_env_state", "", Type.Object({}), async () => observe({}));
+
+	robot.tool("get_camera_meta", "", Type.Object({}), async (params: Json) => {
+		const m = await call<CameraMeta>("env.get_camera_meta", params);
+		return text({ camera: params.camera_name ?? "agentview", ...m });
+	});
+
+	robot.tool("back_project", "", Type.Object({}), async (params: Json) =>
+		text(await call<Json>("env.back_project", params)),
 	);
 
-	robot.tool(
-		"view_camera_meta",
-		"Camera calibration of the current images: intrinsic K (3x3), camera-to-world extrinsic (4x4, OpenCV frame) and the image size.",
-		Type.Object({ camera }),
-		async ({ camera: c = "agentview" }) => {
-			const m = await call<CameraMeta>("env.get_camera_meta", { camera_name: c });
-			return { content: [{ type: "text" as const, text: JSON.stringify({ camera: c, ...m }) }], details: m };
-		},
+	robot.tool("segment", "", Type.Object({}), async (params: Json) => {
+		const { mask: _mask, overlay_png_base64, ...rest } = await call<Json>("env.segment", params);
+		const details = rest.found === false ? { ...rest, error: rest.reason ?? "no mask" } : rest;
+		return {
+			content: [
+				{ type: "text" as const, text: JSON.stringify(details) },
+				...(overlay_png_base64
+					? [{ type: "image" as const, data: String(overlay_png_base64), mimeType: "image/png" }]
+					: []),
+			],
+			details,
+		};
+	});
+
+	robot.tool("move_delta", "", Type.Object({}), async (params: Json, signal) => {
+		if (obs.success) return observe({ error: "the task is already solved; call finish" });
+		return observe(await move(params.delta_xyz as Vec3, (params.gripper as "open" | "close") ?? null, signal));
+	});
+
+	robot.tool("set_gripper", "", Type.Object({}), async (params: Json, signal) => {
+		const r = motion(
+			await call<Json>("env.set_gripper", { ...params, return_frames: true, ...recording() }, [], signal),
+		);
+		return observe({ gripper: params.close ? "close" : "open", ...r });
+	});
+
+	robot.tool("preview_reach", "", Type.Object({}), async (params: Json) =>
+		text((await env.call<Reach>("env.preview_reach", params, 60_000, [], robot.signal)) as unknown as Json),
 	);
 
-	robot.tool(
-		"back_project",
-		"World xyz (m, base frame) of a pixel (row, col; row 0 = top) of the current camera image, from the simulator's depth.",
-		Type.Object({ row: Type.Integer(), col: Type.Integer(), camera }),
-		async ({ row, col, camera: c = "agentview" }) => {
-			const [p] = await call<(number[] | null)[]>("env.back_project", { camera_name: c, pixels: [[row, col]] });
-			const details = p
-				? { camera: c, pixel: [row, col], world_xyz: p }
-				: { camera: c, pixel: [row, col], error: "no depth at that pixel (background or out of the image)" };
-			return { content: [{ type: "text" as const, text: JSON.stringify(details) }], details };
-		},
-	);
-
-	robot.tool(
-		"segment",
-		"SAM3 segmentation of the current camera image by a text prompt or a positive point [row, col] (give exactly one). The mask's pixels are back-projected through the depth; world_xyz is their median. Returns an overlay image.",
-		Type.Object({
-			prompt: Type.Optional(Type.String()),
-			point: Type.Optional(Type.Array(Type.Integer(), { minItems: 2, maxItems: 2 })),
-			camera,
-			min_score: Type.Optional(Type.Number({ description: "Default 0.2" })),
-		}),
-		async ({ prompt, point, camera: c = "agentview", min_score = 0.2 }) => {
-			const text = prompt?.trim();
-			const fail = (error: string) => ({
-				content: [{ type: "text" as const, text: JSON.stringify({ error }) }],
-				details: { error },
-			});
-			if (!text && !point) return fail("give a text prompt or a point [row, col]");
-			const image = c === "wrist" ? obs.wrist : obs.agentview;
-			const [h, w] = image.shape;
-			const png = encodePng(image.data, w, h);
-			const res = await sam3.call<{
-				found: boolean;
-				score?: number;
-				box?: number[];
-				mask_png_base64?: string;
-				reason?: string;
-			}>(
-				"sam3.segment",
-				{ image_base64: png.toString("base64"), ...(text ? { text_prompt: text } : { point }), min_score },
-				120_000,
-			);
-			if (!res.found || !res.mask_png_base64)
-				return fail(`${res.reason ?? "no mask"}; pick a pixel and use back_project`);
-			const mask = decodePngChannel(Buffer.from(res.mask_png_base64, "base64"));
-			if (mask.width !== w || mask.height !== h)
-				return fail(`mask ${mask.width}x${mask.height} does not match the ${w}x${h} image`);
-			const { n, centroid, pixels } = maskPixels(mask);
-			const points = pixels.length
-				? await call<(number[] | null)[]>("env.back_project", { camera_name: c, pixels })
-				: [];
-			const overlay = Buffer.from(image.data);
-			for (let i = 0; i < mask.data.length; i++) {
-				if (mask.data[i] < 128) continue;
-				overlay[i * 3] = Math.round(0.55 * overlay[i * 3] + 0.45 * 255);
-				overlay[i * 3 + 1] = Math.round(0.55 * overlay[i * 3 + 1]);
-				overlay[i * 3 + 2] = Math.round(0.55 * overlay[i * 3 + 2]);
-			}
-			const world = medianPoint(points);
-			const details = {
-				found: true,
-				camera: c,
-				score: res.score === undefined ? null : round(res.score, 3),
-				box: res.box,
-				n_pixels: n,
-				centroid_pixel: centroid,
-				world_xyz: world,
-				...(world ? {} : { world_error: "too few pixels with depth" }),
-			};
-			return {
-				content: [
-					{ type: "text" as const, text: JSON.stringify(details) },
-					{ type: "image" as const, data: encodePng(overlay, w, h).toString("base64"), mimeType: "image/png" },
-				],
-				details,
-			};
-		},
-	);
-
-	robot.tool(
-		"move_delta",
-		`Translate the gripper by a base-frame [dx, dy, dz] in metres (+x away from the base, +y toward the robot's left, +z up; at most ${MAX_MOVE_M} m per call, inside the workspace box and above the table), optionally opening or closing the gripper first (the arm holds still until the fingers settle, then moves). The orientation is held. Returns the new state and images.`,
-		Type.Object({
-			delta_xyz: Type.Array(Type.Number(), { minItems: 3, maxItems: 3 }),
-			gripper: Type.Optional(StringEnum(["open", "close"] as const)),
-		}),
-		async ({ delta_xyz, gripper }, signal) => {
+	// Planned grasps (--contact-graspnet & co): the server runs the claimed path as move_delta legs
+	// (env.execute_grasp / env.execute_place, utils/grasp_chain.py).
+	for (const name of ["execute_grasp", "execute_place"])
+		robot.tool(name, "", Type.Object({}), async (params: Json, signal) => {
 			if (obs.success) return observe({ error: "the task is already solved; call finish" });
-			return observe(await move(delta_xyz as Vec3, gripper ?? null, signal));
-		},
-	);
-
-	robot.tool(
-		"gripper",
-		"Open or close the gripper and hold it (the command persists). A close that ends nearly shut holds nothing (`grasp_empty`). Returns the new state and images.",
-		Type.Object({ action: StringEnum(["open", "close"] as const) }),
-		async ({ action }, signal) => {
-			const r = await call<Gripped>(
-				"env.set_gripper",
-				{ open: action === "open", return_frames: true, ...(fly.recording ? { record: true } : {}) },
-				[],
-				signal,
-			);
-			for (const f of r.frames ?? []) video.frame(f);
-			record(r.steps);
-			const { frames: _frames, steps: _steps, control_steps, grasp_empty, cancelled, ...o } = r;
-			absorb(o);
-			return observe({
-				gripper: action,
-				control_steps,
-				...(grasp_empty ? { grasp_empty } : {}),
-				...(cancelled ? { cancelled } : {}),
-			});
-		},
-	);
+			return observe(motion(await call<Json>(`env.${name}`, { ...params, ...recording() }, [], signal)));
+		});
 
 	// Molmo pointing on the current images (active with --point).
 	mountGraspTool(
@@ -508,19 +433,11 @@ export default function genesis(pi: ExtensionAPI) {
 				return rgbOf(a);
 			},
 			locate: async (c, row, col) => {
-				const [p] = await call<(number[] | null)[]>("env.back_project", { camera_name: c, pixels: [[row, col]] });
+				const [p] = await call<(number[] | null)[]>("env.back_project", { camera: c, pixels: [[row, col]] });
 				return p ? { world_xyz: p } : undefined;
 			},
 			signal: () => robot.signal,
 		}),
-	);
-
-	mountGraspTool(
-		robot.tool,
-		previewReachTool(
-			(kwargs) => env.call<Reach>("env.preview_reach", kwargs, 60_000, [], robot.signal),
-			"base-frame",
-		),
 	);
 
 	// SAM3 masks with ids and UniDepth over the env server's perception (active with --detections / --unidepth).
@@ -531,40 +448,19 @@ export default function genesis(pi: ExtensionAPI) {
 		locate: async (c, d) => {
 			const rc = d.centroid_rc as number[] | null;
 			if (!rc) return {};
-			const [p] = await call<(number[] | null)[]>("env.back_project", { camera_name: c, pixels: [rc] });
+			const [p] = await call<(number[] | null)[]>("env.back_project", { camera: c, pixels: [rc] });
 			return p ? { centroid_world_xyz: p } : {};
 		},
 	}))
 		mountGraspTool(robot.tool, d);
 
-	// plan_grasp / plan_place / check_attached over the env server's planner (--contact-graspnet & co), and
-	// execute_grasp / execute_place running a planned id as bounded move_delta legs (../primitives/grasp-chain.ts).
+	// plan_grasp / plan_place / check_attached over the env server's planner (--contact-graspnet & co).
 	for (const d of graspTools(pi, {
 		call: (method, kwargs, timeoutMs) => env.call<Json>(method, kwargs, timeoutMs ?? 120_000, [], robot.signal),
 		cameras: ["agentview", "wrist"],
 		task: () => meta.instruction,
 	}))
 		mountGraspTool(robot.tool, d);
-	for (const d of chainTools({
-		call: (method, kwargs, timeoutMs) => env.call<Json>(method, kwargs, timeoutMs ?? 120_000, [], robot.signal),
-		current: () => obs.tcp_pos.toArray(),
-		maxStep: () => MAX_MOVE_M,
-		move: async (delta, g, signal) => move(delta as Vec3, g, signal),
-		gripper: async (g, signal) => {
-			const r = await call<Gripped>("env.set_gripper", { open: g === "open", return_frames: true }, [], signal);
-			for (const f of r.frames ?? []) video.frame(f);
-			const { frames: _frames, control_steps, grasp_empty, cancelled, ...o } = r;
-			absorb(o);
-			return { control_steps, ...(grasp_empty ? { grasp_empty } : {}), ...(cancelled ? { cancelled } : {}) };
-		},
-		observe: (result) => observe(result) as unknown as Json,
-		// The hand's yaw now (the planner's eef_yaw: the EEF x axis about world +z).
-		yaw: () => {
-			const [w, x, y, z] = obs.tcp_quat_wxyz.toArray();
-			return Math.atan2(2 * (x * y + w * z), 1 - 2 * (y * y + z * z));
-		},
-	}))
-		robot.tool(d.name, d.description, d.parameters, async (p, signal, ctx) => (await d.run(p, signal, ctx)) as never);
 
 	async function startEpisode() {
 		const { task, seed } = robot.task;
@@ -579,13 +475,12 @@ export default function genesis(pi: ExtensionAPI) {
 				args: [
 					...["-m", "pi_embodied_services.robots.genesis.env_server"],
 					...["--task", task, "--seed", seed, "--backend", flag("backend", "gpu")],
+					...["--success-rule", flag("success-rule", "grasp")],
 					...ikArgs(pi.getFlag("ik")),
-					...detectionArgs(pi, flag("sam3", "")),
+					// env.segment (and the planner's object text) segment with SAM3 on the server.
+					...(flag("sam3", "") ? ["--sam3", flag("sam3", "")] : []),
+					...detectionArgs(pi, ""),
 					...graspArgs(pi),
-					// The planner segments its object text with SAM3; --detections passes it already.
-					...(graspArgs(pi).length && pi.getFlag("detections") !== true && flag("sam3", "")
-						? ["--sam3", flag("sam3", "")]
-						: []),
 				],
 				cwd: services,
 				env: { ...process.env, PYTHONPATH: services },
@@ -594,18 +489,23 @@ export default function genesis(pi: ExtensionAPI) {
 				readyMs: 1_200_000,
 			});
 		}
-		sam3 = new RpcClient(flag("sam3", ""));
 		meta = await env.call<Meta>("env.get_env_meta");
 		if (meta.task !== task || meta.seed !== Number(seed))
 			throw new Error(`env server runs ${meta.task} seed ${meta.seed}, not ${task} seed ${seed}`);
+		const rule = flag("success-rule", "grasp");
+		if (!(SUCCESS_RULES as readonly string[]).includes(rule))
+			throw new Error(`unknown --success-rule ${rule}; one of ${SUCCESS_RULES.join(", ")}`);
+		if (meta.success_rule !== undefined && meta.success_rule !== rule)
+			throw new Error(`env server scores success by ${meta.success_rule}, not --success-rule ${rule}`);
 		everGrasped = false;
 		const [o] = await env.call<[Obs, unknown]>("env.reset", {}, 300_000);
 		absorb(o);
 		fly.reset(flyObs(o), flyMeta());
 		return [
-			...["view_env_state", "view_camera_meta", "segment", "back_project", "move_delta", "gripper", "finish"],
+			...["view_env_state", "get_camera_meta", "segment", "back_project", "move_delta", "set_gripper", "finish"],
 			...detectionActive(pi, meta.capabilities?.perception),
-			...(String(pi.getFlag("ik") ?? "").trim() ? ["preview_reach"] : []),
+			// preview_reach requires --ik, segment --sam3, the chains a planner (the manifest drops them without).
+			"preview_reach",
 			...graspActive(pi),
 			...(graspActive(pi).length ? ["execute_grasp", "execute_place"] : []),
 			...pointActive(pi),

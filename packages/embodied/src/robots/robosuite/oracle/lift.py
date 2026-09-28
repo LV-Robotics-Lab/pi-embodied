@@ -2,7 +2,7 @@
 # program: capx/envs/tasks/franka/franka_lift.py ORACLE_CODE (FrankaControlApi)
 # task: Lift
 # tier: high
-# prelude: capx_control.py
+# The CaP-X API calls are the env server's high-tier primitives (manifests/robosuite.json): no prelude.
 # ---- CaP-X's program, verbatim ----
 import numpy as np
 

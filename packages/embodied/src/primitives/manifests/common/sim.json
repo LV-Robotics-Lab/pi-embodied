@@ -1,0 +1,32 @@
+{
+	"internal": [],
+	"primitives": [
+		{
+			"name": "get_task_language",
+			"side": "code",
+			"method": "env.get_task_language",
+			"tier": "low",
+			"doc": {
+				"code": "The task instruction."
+			}
+		},
+		{
+			"name": "ground_truth_poses",
+			"side": "env",
+			"method": "env.ground_truth_poses",
+			"tier": "privileged",
+			"params": {
+				"names": {
+					"type": "array",
+					"items": "string",
+					"description": "Object names (default: all)"
+				}
+			},
+			"doc": {
+				"tool": "Privileged simulator ground truth: world-frame poses of the scene's objects, as pos [x, y, z] in m and quat_xyzw. Omit names for every object; names must come from that list.",
+				"code": "Simulator ground truth: {frame, poses: {name: {pos, quat_xyzw}}} of the named objects (default all).\n\nExample:\n    poses = ground_truth_poses()[\"poses\"]\n    print(sorted(poses))"
+			},
+			"result": "read"
+		}
+	]
+}

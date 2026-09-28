@@ -1,0 +1,824 @@
+{
+	"robot": "robosuite",
+	"internal": [
+		"env.state",
+		"env.chunk_step",
+		"env.set_recording"
+	],
+	"primitives": [
+		{
+			"use": "sim/get_task_language"
+		},
+		{
+			"name": "view_env_state",
+			"side": "ts",
+			"tier": "low",
+			"doc": {
+				"tool": "Current state with the task camera (global layout) and wrist (close range) {{image_size}}x{{image_size}} images. Pixels (row, col) in these images feed back_project."
+			},
+			"result": "motion"
+		},
+		{
+			"name": "get_state",
+			"side": "code",
+			"method": "env.get_state",
+			"tier": "low",
+			"doc": {
+				"code": "Per arm: <arm>_eef_pos (m, world), <arm>_eef_quat (xyzw), <arm>_joint_pos, <arm>_gripper_width, <arm>_gripper_command; success, env_steps, table_z, home_eef_pos.\n\nExample:\n    st = get_state()\n    print(st[\"robot0_eef_pos\"], st[\"robot0_gripper_width\"], st[\"success\"])"
+			}
+		},
+		{
+			"name": "get_observation",
+			"side": "code",
+			"method": "env.get_observation",
+			"tier": "low",
+			"doc": {
+				"code": "agentview and wrist, each {rgb uint8[512,512,3], depth float32[512,512] m, intrinsic_K 3x3, extrinsic_cam2world 4x4}, plus get_state's fields.\n\nExample:\n    obs = get_observation()\n    rgb, depth = obs[\"agentview\"][\"rgb\"], obs[\"agentview\"][\"depth\"]\n    K = obs[\"agentview\"][\"intrinsic_K\"]; T = obs[\"agentview\"][\"extrinsic_cam2world\"]"
+			}
+		},
+		{
+			"name": "segment",
+			"side": "env",
+			"method": "env.segment",
+			"tier": "low",
+			"requires": [
+				"sam3"
+			],
+			"params": {
+				"prompt": {
+					"type": "string",
+					"description": "What to segment, e.g. 'red cube' (or give point)"
+				},
+				"point": {
+					"type": "array",
+					"items": "integer",
+					"minItems": 2,
+					"maxItems": 2,
+					"description": "A positive point [row, col] instead of a prompt"
+				},
+				"camera": {
+					"type": "enum",
+					"values": [
+						"agentview",
+						"wrist"
+					],
+					"description": "Default agentview"
+				},
+				"min_score": {
+					"type": "number",
+					"minimum": 0,
+					"maximum": 1,
+					"description": "SAM3 threshold (default 0.2)"
+				}
+			},
+			"doc": {
+				"tool": "SAM3 segmentation of the current 512x512 camera image. Give exactly one of a text prompt or a positive point [row, col]. The top mask is projected through the depth world map; world_xyz is the median over mask pixels. Returns an overlay image.",
+				"code": "SAM3 mask of a text prompt (or a point [row, col]) in the current image: found, score, box, mask, centroid_rowcol, world_xyz (median through the depth).\n\nExample:\n    m = segment(\"red cube\")\n    if m[\"found\"]:\n        print(m[\"world_xyz\"], m[\"score\"])"
+			},
+			"result": "read"
+		},
+		{
+			"name": "back_project",
+			"side": "env",
+			"method": "env.back_project",
+			"tier": "low",
+			"params": {
+				"row": {
+					"type": "integer",
+					"minimum": 0,
+					"description": "Pixel row (0 = top)"
+				},
+				"col": {
+					"type": "integer",
+					"minimum": 0,
+					"description": "Pixel column"
+				},
+				"camera": {
+					"type": "enum",
+					"values": [
+						"agentview",
+						"wrist"
+					],
+					"description": "Default agentview"
+				},
+				"row_range": {
+					"type": "array",
+					"items": "integer",
+					"minItems": 2,
+					"maxItems": 2,
+					"description": "Region mode: [first, last) rows"
+				},
+				"col_range": {
+					"type": "array",
+					"items": "integer",
+					"minItems": 2,
+					"maxItems": 2,
+					"description": "Region mode: [first, last) columns"
+				},
+				"z_min": {
+					"type": "number",
+					"description": "Region mode: keep pixels with world z >= z_min"
+				},
+				"z_max": {
+					"type": "number",
+					"description": "Region mode: keep pixels with world z <= z_max"
+				}
+			},
+			"doc": {
+				"tool": "World xyz of a pixel (row, col; row 0 = top) in the current 512x512 camera image, from the depth world map. Region mode: row_range + col_range (+ optional z_min/z_max) returns the midpoint of world xy over that window and the median z.",
+				"code": "World xyz of pixel (row, col) of the current 512x512 image through its depth.\n\nExample:\n    print(back_project(256, 300)[\"world_xyz\"]) Region mode: row_range + col_range (+ z_min / z_max) returns center_xyz (midpoint of world x and y, median z)."
+			},
+			"result": "read"
+		},
+		{
+			"name": "preview_reach",
+			"side": "env",
+			"method": "env.preview_reach",
+			"tier": "low",
+			"requires": [
+				"ik"
+			],
+			"params": {
+				"xyz": {
+					"type": "vec3",
+					"required": true,
+					"description": "World-frame [x, y, z] in metres"
+				},
+				"quat_xyzw": {
+					"type": "quat",
+					"description": "Default: the current orientation"
+				},
+				"arm": {
+					"type": "enum",
+					"values": "{{arms}}",
+					"description": "'robot0' or 'robot1' on the two-arm tasks (required there); omit on one arm"
+				}
+			},
+			"doc": {
+				"tool": "Whether move_to could reach a world xyz from the arm's current joints (IK only; nothing moves). status unreachable means move_to would refuse it; unknown means the check could not run.",
+				"code": "Whether the TCP can reach a world position (IK by the ik service; unknown without --ik)."
+			},
+			"result": "read"
+		},
+		{
+			"name": "move_to",
+			"side": "env",
+			"method": "env.move_to",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"xyz": {
+					"type": "vec3",
+					"required": true,
+					"description": "World-frame [x, y, z] in metres"
+				},
+				"arm": {
+					"type": "enum",
+					"values": "{{arms}}",
+					"description": "'robot0' or 'robot1' on the two-arm tasks (required there); omit on one arm"
+				},
+				"quat_xyzw": {
+					"type": "quat",
+					"description": "Absolute world orientation to reach (default: keep)"
+				},
+				"rotvec": {
+					"type": "vec3",
+					"description": "Instead: a world-frame turn, axis x angle, rad, from the current orientation"
+				},
+				"gripper": {
+					"type": "enum",
+					"values": [
+						"open",
+						"close"
+					],
+					"description": "Set the held gripper command first (default: keep)"
+				},
+				"tol_m": {
+					"type": "number",
+					"minimum": 0.001,
+					"maximum": 0.05,
+					"description": "Stop within this distance, m (default 0.005)"
+				},
+				"tol_rad": {
+					"type": "number",
+					"minimum": 0.005,
+					"maximum": 0.5,
+					"description": "Orientation tolerance, rad (default 0.03)",
+					"modes": [
+						"code"
+					]
+				},
+				"step_m": {
+					"type": "number",
+					"minimum": 0.001,
+					"maximum": 0.05,
+					"description": "Per-step travel cap, m (default 0.02)",
+					"modes": [
+						"code"
+					]
+				},
+				"step_rad": {
+					"type": "number",
+					"minimum": 0.01,
+					"maximum": 0.5,
+					"description": "Per-step turn cap, rad (default 0.2)",
+					"modes": [
+						"code"
+					]
+				},
+				"max_steps": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 400,
+					"description": "Control-step budget (default 100)"
+				}
+			},
+			"doc": {
+				"tool": "Closed-loop servo of the TCP to a world xyz, holding the orientation (or turning by rotvec, a world-frame axis-angle in rad). The server refuses a target more than {{max_move}} m away, outside the table workspace or below the z floor; split long moves. gripper sets the held command first.",
+				"code": "Closed-loop OSC_POSE servo of the TCP to a world position, holding the orientation unless one is given; refused beyond the per-call cap, outside the workspace or below the table.\n\nExample:\n    move_to([0.05, 0.02, 0.95], gripper=\"open\")\n    r = move_to([0.05, 0.02, 0.83])\n    print(r[\"final_dist_m\"])"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "move_delta",
+			"side": "env",
+			"method": "env.move_delta",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"delta_xyz": {
+					"type": "vec3",
+					"required": true,
+					"description": "World-frame [dx, dy, dz] in metres"
+				},
+				"arm": {
+					"type": "enum",
+					"values": "{{arms}}",
+					"description": "'robot0' or 'robot1' on the two-arm tasks (required there); omit on one arm"
+				},
+				"quat_xyzw": {
+					"type": "quat",
+					"description": "Absolute world orientation to reach (default: keep)"
+				},
+				"rotvec": {
+					"type": "vec3",
+					"description": "Instead: a world-frame turn, axis x angle, rad, from the current orientation"
+				},
+				"gripper": {
+					"type": "enum",
+					"values": [
+						"open",
+						"close"
+					],
+					"description": "Set the held gripper command first (default: keep)"
+				},
+				"tol_m": {
+					"type": "number",
+					"minimum": 0.001,
+					"maximum": 0.05,
+					"description": "Stop within this distance, m (default 0.005)"
+				},
+				"tol_rad": {
+					"type": "number",
+					"minimum": 0.005,
+					"maximum": 0.5,
+					"description": "Orientation tolerance, rad (default 0.03)",
+					"modes": [
+						"code"
+					]
+				},
+				"step_m": {
+					"type": "number",
+					"minimum": 0.001,
+					"maximum": 0.05,
+					"description": "Per-step travel cap, m (default 0.02)",
+					"modes": [
+						"code"
+					]
+				},
+				"step_rad": {
+					"type": "number",
+					"minimum": 0.01,
+					"maximum": 0.5,
+					"description": "Per-step turn cap, rad (default 0.2)",
+					"modes": [
+						"code"
+					]
+				},
+				"max_steps": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 400,
+					"description": "Control-step budget (default 100)"
+				}
+			},
+			"doc": {
+				"tool": "Translate the TCP by a world-frame [dx, dy, dz] in metres (+z up; in the task camera +x runs toward the image bottom and +y toward the image right: on the one-arm tasks +x is away from robot0 and +y to its left, on the two-arm tasks +y runs from robot0 toward robot1; at most {{max_move}} m per call), holding the orientation. gripper sets the held command first.",
+				"code": "Servo the TCP by a world-frame offset, holding the orientation; the same limits as move_to.\n\nExample:\n    move_delta([0, 0, 0.1])                    # lift 10 cm\n    move_delta([0, 0, 0], rotvec=[0, 0, 0.5])  # turn the wrist 0.5 rad"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "set_gripper",
+			"side": "env",
+			"method": "env.set_gripper",
+			"tier": "low",
+			"mutating": true,
+			"requires": [
+				"fingers"
+			],
+			"params": {
+				"close": {
+					"type": "boolean",
+					"required": true,
+					"description": "true closes and holds, false opens"
+				},
+				"arm": {
+					"type": "enum",
+					"values": "{{arms}}",
+					"description": "'robot0' or 'robot1' on the two-arm tasks (required there); omit on one arm"
+				},
+				"steps": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 200,
+					"description": "Control steps to drive the fingers (default 15)"
+				}
+			},
+			"doc": {
+				"tool": "Hold the arm and open or close its gripper (up to `steps` control steps; the fingers stop on a grasped object). The command stays in force for later moves: carry with close.",
+				"code": "Open or close one gripper and hold; the command stays in force for later moves.\n\nExample:\n    r = set_gripper(True)\n    print(r[\"gripper_width\"])  # near 0: closed on nothing"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "get_camera_meta",
+			"side": "env",
+			"method": "env.get_camera_meta",
+			"tier": "low",
+			"params": {
+				"camera_name": {
+					"type": "enum",
+					"values": [
+						"agentview",
+						"wrist"
+					],
+					"description": "Default agentview"
+				},
+				"height": {
+					"type": "integer",
+					"minimum": 16,
+					"maximum": 1024,
+					"description": "Pixels (default 512)"
+				},
+				"width": {
+					"type": "integer",
+					"minimum": 16,
+					"maximum": 1024,
+					"description": "Pixels (default 512)"
+				}
+			},
+			"doc": {
+				"tool": "Camera calibration (intrinsic K and cam-to-world extrinsic for the 512x512 image; depth is metric) for the current step.",
+				"code": "OpenCV intrinsics and camera-to-world extrinsic for the upright image.\n\nExample:\n    meta = get_camera_meta(\"agentview\")\n    K, T = meta[\"intrinsic_K\"], meta[\"extrinsic_cam2world\"]"
+			},
+			"result": "read"
+		},
+		{
+			"name": "raw_obs",
+			"side": "code",
+			"method": "env.raw_obs",
+			"tier": "raw",
+			"doc": {
+				"code": "robosuite's robot*_ observations (joint state, eef pose, gripper); no object poses.\n\nExample:\n    o = raw_obs()\n    print(o[\"robot0_eef_pos\"], o[\"robot0_gripper_qpos\"])"
+			}
+		},
+		{
+			"name": "render_camera",
+			"side": "code",
+			"method": "env.render_camera",
+			"tier": "raw",
+			"params": {
+				"camera_name": {
+					"type": "enum",
+					"values": [
+						"agentview",
+						"wrist"
+					],
+					"description": "Default agentview"
+				},
+				"height": {
+					"type": "integer",
+					"minimum": 16,
+					"maximum": 1024,
+					"description": "Pixels (default 512)"
+				},
+				"width": {
+					"type": "integer",
+					"minimum": 16,
+					"maximum": 1024,
+					"description": "Pixels (default 512)"
+				},
+				"depth": {
+					"type": "boolean",
+					"description": "Also return the depth map"
+				}
+			},
+			"doc": {
+				"code": "Upright RGB (and metric depth) of a camera.\n\nExample:\n    rgb, depth = render_camera(\"wrist\", 256, 256, depth=True)"
+			}
+		},
+		{
+			"name": "step",
+			"side": "code",
+			"method": "env.step",
+			"tier": "raw",
+			"mutating": true,
+			"params": {
+				"action": {
+					"type": "array",
+					"required": true,
+					"description": "action_dim floats"
+				}
+			},
+			"doc": {
+				"code": "One raw composite action: per arm 6 OSC_POSE deltas in [-1, 1] then the gripper (+1 close, -1 open).\n\nExample:\n    step([0, 0, 0.5, 0, 0, 0, -1])  # up 2.5 cm, gripper open (one arm)"
+			}
+		},
+		{
+			"name": "get_object_pose",
+			"side": "env",
+			"method": "env.get_object_pose",
+			"tier": "high",
+			"requires": [
+				"sam3"
+			],
+			"params": {
+				"object_name": {
+					"type": "string",
+					"required": true,
+					"description": "The object in words, e.g. 'red cube'"
+				},
+				"return_bbox_extent": {
+					"type": "boolean",
+					"description": "Also return the bounding-box extent (default false)"
+				}
+			},
+			"doc": {
+				"tool": "Pose of an object named in words, from SAM3 and depth: [position (3,), quaternion_wxyz (4,), bbox_extent (3,) or null]. The quaternion is identity: use the grasp quaternion, or [0, 0, 1, 0] (gripper down), when placing.",
+				"code": "Get the pose of an object in the environment from a natural language description (SAM3 + depth).\nThe quaternion is identity: disregard it and use the grasp quaternion or [0, 0, 1, 0] (wxyz, gripper down) for placement.\n\nArgs:\n    object_name: the object, e.g. \"red cube\".\n    return_bbox_extent: also return the extent.\n\nReturns:\n    [position (3,), quaternion_wxyz (4,), bbox_extent (3,) or None]: world metres, full side lengths.\n\nExample:\n    pos, quat, ext = get_object_pose(\"green cube\", return_bbox_extent=True)"
+			},
+			"result": "read"
+		},
+		{
+			"name": "get_object_pose",
+			"side": "env",
+			"method": "env.get_object_pose_privileged",
+			"tier": "privileged",
+			"params": {
+				"object_name": {
+					"type": "string",
+					"required": true,
+					"description": "The object in words, e.g. 'red cube'"
+				},
+				"return_bbox_extent": {
+					"type": "boolean",
+					"description": "Also return the bounding-box extent (default false)"
+				}
+			},
+			"doc": {
+				"tool": "Privileged: the simulator's pose of an object named in words: [position (3,), quaternion_wxyz (4,), bbox_extent (3,) or null].",
+				"code": "Get the pose of an object from the simulator (privileged).\n\nReturns:\n    [position (3,), quaternion_wxyz (4,), bbox_extent (3,) or None].\n\nExample:\n    pos, quat, ext = get_object_pose(\"red cube\", return_bbox_extent=True)"
+			},
+			"result": "read"
+		},
+		{
+			"name": "sample_grasp_pose",
+			"side": "env",
+			"method": "env.sample_grasp_pose",
+			"tier": "high",
+			"requires": [
+				"sam3"
+			],
+			"params": {
+				"object_name": {
+					"type": "string",
+					"required": true,
+					"description": "The object in words"
+				},
+				"arm": {
+					"type": "enum",
+					"values": "{{arms}}",
+					"description": "'robot0' or 'robot1' on the two-arm tasks (required there); omit on one arm"
+				}
+			},
+			"doc": {
+				"tool": "A grasp of an object named in words: [position (3,), quaternion_wxyz (4,)] for goto_pose. With a grasp server the best planned grasp, else the object's centre with the gripper pointing down.",
+				"code": "Sample a grasp pose for an object from a natural language description. Use its quaternion.\n\nReturns:\n    [position (3,), quaternion_wxyz (4,)].\n\nExample:\n    pos, quat = sample_grasp_pose(\"red cube\")\n    goto_pose(pos, quat, z_approach=0.1)"
+			},
+			"result": "read"
+		},
+		{
+			"name": "sample_grasp_pose",
+			"side": "env",
+			"method": "env.sample_grasp_pose_privileged",
+			"tier": "privileged",
+			"params": {
+				"object_name": {
+					"type": "string",
+					"required": true,
+					"description": "The object in words"
+				},
+				"arm": {
+					"type": "enum",
+					"values": "{{arms}}",
+					"description": "'robot0' or 'robot1' on the two-arm tasks (required there); omit on one arm"
+				}
+			},
+			"doc": {
+				"tool": "Privileged: a grasp of an object named in words, from the simulator: its position with the gripper pointing down.",
+				"code": "Sample a grasp pose for an object (privileged: the simulator's position, gripper down [0, 0, 1, 0]).\n\nExample:\n    pos, quat = sample_grasp_pose(\"red cube\")"
+			},
+			"result": "read"
+		},
+		{
+			"name": "goto_pose",
+			"side": "env",
+			"method": "env.goto_pose",
+			"tier": "high",
+			"mutating": true,
+			"params": {
+				"position": {
+					"type": "vec3",
+					"required": true,
+					"description": "World [x, y, z] of the grip point, m"
+				},
+				"quaternion_wxyz": {
+					"type": "quat",
+					"required": true,
+					"description": "Gripper orientation, wxyz ([0, 0, 1, 0] = pointing down)"
+				},
+				"z_approach": {
+					"type": "number",
+					"minimum": 0,
+					"maximum": 0.3,
+					"description": "First stop this far back along the approach axis, m (default 0)"
+				},
+				"arm": {
+					"type": "enum",
+					"values": "{{arms}}",
+					"description": "'robot0' or 'robot1' on the two-arm tasks (required there); omit on one arm"
+				}
+			},
+			"doc": {
+				"tool": "Go to a gripper pose (position and wxyz orientation); with z_approach first stop that far back along the approach axis. Long moves run as straight legs.",
+				"code": "Go to pose. There is no need to call a second goto_pose with the same pose after calling it with z_approach.\n\nArgs:\n    position: (3,) XYZ in meters.\n    quaternion_wxyz: (4,) WXYZ unit quaternion.\n    z_approach: first arrive z_approach metres back along the gripper's approach axis.\n\nExample:\n    goto_pose(pos, quat, z_approach=0.1)"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "home_pose",
+			"side": "env",
+			"method": "env.home_pose",
+			"tier": "high",
+			"mutating": true,
+			"params": {
+				"arm": {
+					"type": "enum",
+					"values": "{{arms}}",
+					"description": "'robot0' or 'robot1' on the two-arm tasks (required there); omit on one arm"
+				}
+			},
+			"doc": {
+				"tool": "Move the gripper back to its start position, pointing down.",
+				"code": "Move the robot to a safe home pose.\n\nExample:\n    home_pose()"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "open_gripper",
+			"side": "env",
+			"method": "env.open_gripper",
+			"tier": "high",
+			"mutating": true,
+			"requires": [
+				"fingers"
+			],
+			"params": {
+				"arm": {
+					"type": "enum",
+					"values": "{{arms}}",
+					"description": "'robot0' or 'robot1' on the two-arm tasks (required there); omit on one arm"
+				}
+			},
+			"doc": {
+				"tool": "Open the gripper fully.",
+				"code": "Open gripper fully.\n\nExample:\n    open_gripper()"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "close_gripper",
+			"side": "env",
+			"method": "env.close_gripper",
+			"tier": "high",
+			"mutating": true,
+			"requires": [
+				"fingers"
+			],
+			"params": {
+				"arm": {
+					"type": "enum",
+					"values": "{{arms}}",
+					"description": "'robot0' or 'robot1' on the two-arm tasks (required there); omit on one arm"
+				}
+			},
+			"doc": {
+				"tool": "Close the gripper fully (the fingers stop on an object).",
+				"code": "Close gripper fully.\n\nExample:\n    close_gripper()"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "solve_ik",
+			"side": "code",
+			"method": "env.solve_ik",
+			"tier": "low",
+			"requires": [
+				"ik"
+			],
+			"params": {
+				"position": {
+					"type": "vec3",
+					"required": true,
+					"description": "World grip-point position, m"
+				},
+				"quaternion_wxyz": {
+					"type": "quat",
+					"required": true,
+					"description": "Orientation, wxyz"
+				},
+				"arm": {
+					"type": "enum",
+					"values": "{{arms}}",
+					"description": "'robot0' or 'robot1' on the two-arm tasks (required there); omit on one arm"
+				}
+			},
+			"doc": {
+				"code": "Solve inverse kinematics for the gripper (the ik service).\n\nReturns:\n    joints: 7 joint angles.\n\nExample:\n    joints = solve_ik([0.05, 0.0, 0.95], [0, 0, 1, 0])\n    move_to_joints(joints)"
+			}
+		},
+		{
+			"name": "move_to_joints",
+			"side": "code",
+			"method": "env.move_to_joints",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"joints": {
+					"type": "array",
+					"required": true,
+					"minItems": 7,
+					"maxItems": 7,
+					"description": "7 joint angles, rad"
+				},
+				"arm": {
+					"type": "enum",
+					"values": "{{arms}}",
+					"description": "'robot0' or 'robot1' on the two-arm tasks (required there); omit on one arm"
+				}
+			},
+			"doc": {
+				"code": "Move the arm to a joint configuration (the grip site servos to the pose those joints give; OSC_POSE arms).\n\nExample:\n    move_to_joints([0.0, -0.5, 0.0, -2.0, 0.0, 1.5, 0.8])"
+			}
+		},
+		{
+			"name": "traj_plan",
+			"side": "code",
+			"method": "env.traj_plan",
+			"tier": "low",
+			"requires": [
+				"ik"
+			],
+			"params": {
+				"start_pose_wxyz_xyz": {
+					"type": "array",
+					"required": true,
+					"minItems": 7,
+					"maxItems": 7,
+					"description": "Start pose: wxyz then xyz"
+				},
+				"end_pose_wxyz_xyz": {
+					"type": "array",
+					"required": true,
+					"minItems": 7,
+					"maxItems": 7,
+					"description": "End pose: wxyz then xyz"
+				},
+				"arm": {
+					"type": "enum",
+					"values": "{{arms}}",
+					"description": "'robot0' or 'robot1' on the two-arm tasks (required there); omit on one arm"
+				}
+			},
+			"doc": {
+				"code": "Plan joint waypoints [N, 7] between two poses (a straight line in 2 cm steps, IK per waypoint).\n\nExample:\n    traj = traj_plan([0, 0, 1, 0, 0.0, 0.0, 1.0], [0, 0, 1, 0, 0.05, 0.0, 0.9])\n    move_along_trajectory(traj)"
+			}
+		},
+		{
+			"name": "move_along_trajectory",
+			"side": "code",
+			"method": "env.move_along_trajectory",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"trajectory": {
+					"type": "array",
+					"required": true,
+					"items": {
+						"type": "array"
+					},
+					"maxItems": 100,
+					"description": "Joint waypoints [N, 7]"
+				},
+				"arm": {
+					"type": "enum",
+					"values": "{{arms}}",
+					"description": "'robot0' or 'robot1' on the two-arm tasks (required there); omit on one arm"
+				}
+			},
+			"doc": {
+				"code": "Move the arm along joint-space waypoints (move_to_joints each).\n\nExample:\n    move_along_trajectory(traj)"
+			}
+		},
+		{
+			"use": "sim/ground_truth_poses"
+		},
+		{
+			"use": "grasp/plan_grasp"
+		},
+		{
+			"use": "grasp/plan_place"
+		},
+		{
+			"use": "grasp/check_attached"
+		},
+		{
+			"use": "grasp/next_grasp"
+		},
+		{
+			"use": "grasp/resolve_grasp"
+		},
+		{
+			"use": "grasp/claim_waypoints"
+		},
+		{
+			"use": "grasp/segment_mask"
+		},
+		{
+			"use": "geometry/view_points"
+		},
+		{
+			"use": "geometry/mark_point"
+		},
+		{
+			"use": "geometry/grip_target"
+		},
+		{
+			"use": "geometry/grip_state"
+		},
+		{
+			"use": "geometry/move_grip"
+		},
+		{
+			"use": "perception/detect"
+		},
+		{
+			"use": "perception/select_detection"
+		},
+		{
+			"use": "perception/reject_detection"
+		},
+		{
+			"use": "perception/enhance_depth"
+		},
+		{
+			"use": "modules/finish"
+		},
+		{
+			"use": "modules/act"
+		},
+		{
+			"use": "modules/plan"
+		},
+		{
+			"use": "modules/point"
+		},
+		{
+			"use": "modules/reset"
+		},
+		{
+			"use": "modules/run_code"
+		}
+	]
+}

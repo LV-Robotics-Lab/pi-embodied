@@ -9,6 +9,7 @@ import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import robocasa from "../src/robots/robocasa/index.ts";
 import { envId, loadTable, nearMatches, resolveCell } from "../src/robots/robocasa/tasks.ts";
+import { codeApiReply } from "./helpers/code-api.ts";
 
 const SERVICES = new URL("../../../services", import.meta.url).pathname;
 const SCRIPT = new URL("../src/robots/robocasa/eval.sh", import.meta.url).pathname;
@@ -305,7 +306,7 @@ async function fakeEnv() {
 			calls.push({ method, kwargs, args });
 			let result: unknown = { ok: true };
 			const size = Number(kwargs.height ?? 256);
-			if (method === "code.api") result = { tier: kwargs.tier ?? null, primitives: [], digest: "d" };
+			if (method === "code.api") result = codeApiReply("robocasa", kwargs.tier);
 			else if (method === "env.get_env_meta")
 				result = { task_name: "OpenDrawer", split: "target", seed: 0, scene: null, env_id: null };
 			else if (method === "env.reset") result = raw(1);
@@ -318,6 +319,15 @@ async function fakeEnv() {
 				result = kwargs.depth ? [img, nd("float32", [size, size], Buffer.alloc(size * size * 4))] : img;
 			} else if (method === "env.get_camera_transform")
 				result = f64([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1], [4, 4]);
+			else if (method.startsWith("env.") && ["move_to", "navigate_to", "set_gripper"].includes(method.slice(4)))
+				result = {
+					ok: true,
+					steps: 2,
+					final_dist: 0.005,
+					frames: [nd("uint8", [2, 2, 3], Buffer.alloc(12)), nd("uint8", [2, 2, 3], Buffer.alloc(12))],
+					obs: raw(1.1),
+					env_steps: 11,
+				};
 			else if (method === "code.run") {
 				solved = true;
 				result = {
@@ -377,4 +387,34 @@ test("--code=true: run_code runs on the env server; the run becomes a state, its
 	assert.equal(result.env_steps, 12);
 	assert.equal(result.code, "true");
 	assert.equal(result.code_api, "low");
+});
+
+test("the motion tools are the env server's methods: manifest schemas, no env.step from pi, obs and steps absorbed", async (t) => {
+	const env = await fakeEnv();
+	t.after(env.close);
+	const s = stubPi({ env: env.url, rldx: env.url, services: SERVICES });
+	robocasa(s.pi);
+	const props = (name: string) => s.tools.get(name)!.parameters.properties;
+	assert.deepEqual(props("move_to").gripper.enum, ["close", "open", "hold"]);
+	assert.equal(props("move_to").xyz.minItems, 3);
+	assert.deepEqual(s.tools.get("navigate_to")!.parameters.required, ["xy"]);
+	assert.equal(props("move_delta").dxyz.maxItems, 3, "the recorded recipes' parameter names are kept");
+	await s.emit("session_start");
+	process.exitCode = undefined;
+	for (const name of ["move_to", "move_delta", "rotate_pitch", "set_gripper", "release", "navigate_to", "move_base"])
+		assert.ok(s.active().includes(name), name);
+	assert.ok(!s.active().includes("get_task_progress"), "no tool for the privileged progress read");
+	await s.emit("agent_start");
+	const r = await s.run("move_to", { xyz: [0.5, 0, 1.1], gripper: "open" });
+	const call = env.calls.find((c) => c.method === "env.move_to")!;
+	assert.deepEqual(call.kwargs, { xyz: [0.5, 0, 1.1], gripper: "open" });
+	assert.ok(!env.calls.some((c) => c.method === "env.step"), "pi steps nothing itself");
+	const view = JSON.parse(r.content[0].text);
+	assert.deepEqual(view.log.result, { ok: true, steps: 2, final_dist: 0.005 });
+	assert.deepEqual(view.state.robot0_eef_pos, [0.5, 0, 1.1], "the motion's robot obs, absorbed");
+	assert.equal(view.vla_desync, true);
+	await s.run("finish", { status: "failure", summary: "stopped" });
+	await s.emit("agent_end", { messages: [] });
+	const result = s.entries.find((e) => e.type === "robot_result")?.data;
+	assert.equal(result.env_steps, 11);
 });

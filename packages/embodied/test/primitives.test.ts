@@ -1,10 +1,19 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Static, TSchema } from "typebox";
 import { NdArray } from "../src/infra/rpc.ts";
-import { checkRotate, type MotionRig, moveDelta, rotateDelta, setGripper } from "../src/primitives/motion.ts";
+import {
+	checkRotate,
+	checkRoute,
+	limitArgs,
+	type MotionLimits,
+	type MotionRig,
+	moveDelta,
+	rotateDelta,
+	servedLimits,
+	setGripper,
+} from "../src/primitives/motion.ts";
 import { viewCameraMeta, viewEnvState } from "../src/primitives/perception.ts";
 import { getStep, outcome, type Step, type StepsIO, type ToolDef } from "../src/primitives/steps.ts";
 import type { Json } from "../src/robot.ts";
@@ -20,10 +29,6 @@ function rig(name: string, o: Partial<MotionRig> = {}) {
 			calls.push({ rig: name, method, kwargs });
 			return { ok: true, rig: name };
 		},
-		maxMove: () => 0.1,
-		maxRotate: () => 0.5,
-		constraints: () => undefined,
-		workspace: () => {},
 		...o,
 	};
 	return { r, calls };
@@ -34,30 +39,26 @@ const exec = <P extends TSchema>(d: ToolDef<P>, p: Json) => d.run(p as Static<P>
 
 test("one primitive mounted on two robots calls each robot's own env, with that robot's parameters", async () => {
 	const one = rig("one");
-	const two = rig("two", {
-		arm: { schema: StringEnum(["left", "right"] as const), name: (v) => String(v).trim().toLowerCase() },
-	});
-	const a = moveDelta(one.r, "one arm");
-	const b = moveDelta(two.r, "two arms");
-	assert.deepEqual(Object.keys(a.parameters.properties), ["delta_xyz"]);
-	assert.deepEqual(Object.keys(b.parameters.properties), ["arm", "delta_xyz"]);
+	const two = rig("two", { arm: (v) => String(v).trim().toLowerCase() });
+	const a = moveDelta(one.r);
+	const b = moveDelta(two.r);
 	assert.deepEqual(await exec(a, { delta_xyz: [0.0625, 0, 0] }), { ok: true, rig: "one" });
 	assert.deepEqual(await exec(b, { arm: "Left", delta_xyz: [0, 0.03125, 0] }), { ok: true, rig: "two" });
-	assert.deepEqual(await exec(setGripper(two.r, false, "close"), { arm: "right" }), { ok: true, rig: "two" });
-	assert.deepEqual(await exec(setGripper(one.r, true, "open"), {}), { ok: true, rig: "one" });
-	await exec(rotateDelta(two.r, "turn"), { arm: "left", delta_rpy: [0, 0, 0.125] });
+	assert.deepEqual(await exec(setGripper(two.r, false), { arm: "right" }), { ok: true, rig: "two" });
+	assert.deepEqual(await exec(setGripper(one.r, true), {}), { ok: true, rig: "one" });
+	await exec(rotateDelta(two.r), { arm: "left", delta_rpy: [0, 0, 0.125] });
 	assert.deepEqual(
 		one.calls.map((c) => [c.method, Object.fromEntries(Object.entries(c.kwargs).map(([k, v]) => [k, plain(v)]))]),
 		[
 			["env.move_delta", { delta_xyz: [0.0625, 0, 0] }],
-			["env.set_gripper", { open: true }],
+			["env.open_gripper", {}],
 		],
 	);
 	assert.deepEqual(
 		two.calls.map((c) => [c.method, Object.fromEntries(Object.entries(c.kwargs).map(([k, v]) => [k, plain(v)]))]),
 		[
 			["env.move_delta", { arm: "left", delta_xyz: [0, 0.03125, 0] }],
-			["env.set_gripper", { arm: "right", open: false }],
+			["env.close_gripper", { arm: "right" }],
 			["env.rotate_delta", { arm: "left", delta_rpy: [0, 0, 0.125] }],
 		],
 	);
@@ -66,39 +67,13 @@ test("one primitive mounted on two robots calls each robot's own env, with that 
 	assert.deepEqual(Object.keys(two.calls[0].kwargs), ["arm", "delta_xyz"]);
 });
 
-test("the motion primitives refuse before the env: limits, workspace, finiteness, operator gate", async () => {
-	const seen: unknown[] = [];
-	const { r, calls } = rig("r", {
-		maxMove: () => 0.05,
-		maxRotate: () => 0.2,
-		constraints: () => ["Keep translation commands at or below 0.02 m per call"],
-		workspace: (delta, arm) => {
-			seen.push([delta, arm]);
-			if (delta[2] < 0) throw new Error("below the floor");
-		},
-		arm: { schema: StringEnum(["left", "right"] as const), name: (v) => String(v) },
-	});
-	const move = moveDelta(r, "m");
-	// The task's documented 0.02 m is tighter than --max-move.
-	await assert.rejects(exec(move, { arm: "left", delta_xyz: [0.03, 0, 0] }), /the limit is 0\.02 m per call/);
-	await assert.rejects(exec(move, { arm: "left", delta_xyz: [0, 0, -0.6] }), /the limit is 0\.02 m per call/);
+test("the motion tools leave pi's limits to the server; finiteness and the operator gate stay in pi", async () => {
+	const { r, calls } = rig("r", { arm: (v) => String(v) });
+	const move = moveDelta(r);
+	// A large move reaches the env: the server enforces --max-move (services utils/code_real.py).
+	await assert.doesNotReject(exec(move, { arm: "left", delta_xyz: [0.6, 0, 0] }));
 	await assert.rejects(exec(move, { arm: "left", delta_xyz: [Number.NaN, 0, 0] }), /finite/);
 	await assert.rejects(exec(move, { arm: "left", delta_xyz: [0, 0] }), /exactly 3 values/);
-	assert.deepEqual(seen, [], "nothing reached the workspace check");
-	const loose = moveDelta({ ...r, constraints: () => [] }, "m");
-	await assert.rejects(exec(loose, { arm: "right", delta_xyz: [0, 0, -0.9] }), /the limit is 0\.05 m per call/);
-	await assert.rejects(exec(loose, { arm: "right", delta_xyz: [0, 0, -0.02] }), /below the floor/);
-	await assert.doesNotReject(exec(loose, { arm: "right", delta_xyz: [0, 0, 0.02] }));
-	assert.deepEqual(seen, [
-		[[0, 0, -0.02], "right"],
-		[[0, 0, 0.02], "right"],
-	]);
-	const turn = rotateDelta(r, "t");
-	await assert.rejects(
-		exec(turn, { arm: "left", delta_rpy: [0, 0, 0.3] }),
-		/delta_rpy rotates 0\.3 rad; the limit is 0\.2 rad per call/,
-	);
-	assert.throws(() => checkRotate([0.1, 0.1, 0.1], 0.1), /rotates 0\.1732 rad; the limit is 0\.1 rad/);
 	const gated = setGripper(
 		{
 			...r,
@@ -107,10 +82,40 @@ test("the motion primitives refuse before the env: limits, workspace, finiteness
 			},
 		},
 		true,
-		"o",
 	);
 	await assert.rejects(exec(gated, { arm: "left" }), /operator paused/);
-	assert.equal(calls.length, 1, "only the in-limit move reached the env");
+	assert.equal(calls.length, 1);
+});
+
+test("pi's limits: the spawn arguments, an attached server's check, a multi-call route's pre-check", () => {
+	const wanted: MotionLimits = {
+		max_move_m: 0.04,
+		max_rotate_rad: 0.5,
+		z_floor_m: 0.14,
+		workspace_xy: [0.2, 1, -0.5, 0.5],
+	};
+	assert.deepEqual(limitArgs(wanted), [
+		"--max-move",
+		"0.04",
+		"--max-rotate",
+		"0.5",
+		"--z-floor",
+		"0.14",
+		"--workspace-xy",
+		"0.2,1,-0.5,0.5",
+	]);
+	assert.deepEqual(limitArgs({ max_move_m: 0.1, workspace_xy: null }), ["--max-move", "0.1"]);
+	assert.deepEqual(servedLimits({ ...wanted, max_move_m: 0.03 }, wanted).max_move_m, 0.03, "tighter is fine");
+	assert.throws(() => servedLimits(undefined, wanted), /enforces none of pi's per-call limits/);
+	assert.throws(() => servedLimits({ ...wanted, max_move_m: 0.1 }, wanted), /--max-move is 0.1/);
+	assert.throws(() => servedLimits({ ...wanted, z_floor_m: 0.1 }, wanted), /--z-floor is 0.1/);
+	assert.throws(() => servedLimits({ ...wanted, workspace_xy: null }, wanted), /--workspace-xy is off/);
+	assert.throws(() => servedLimits({ ...wanted, workspace_xy: [0.1, 1, -0.5, 0.5] }, wanted), /--workspace-xy is/);
+	assert.throws(() => checkRoute([0.5, 0, 0.3], [[0.05, 0, 0]], wanted), /the limit is 0.04 m per call/);
+	assert.throws(() => checkRoute([0.5, 0, 0.16], [[0, 0, -0.03]], wanted), /outside the workspace/);
+	assert.doesNotThrow(() => checkRoute([0.5, 0, 0.1], [[0, 0, 0.02]], wanted), "back toward the box");
+	assert.throws(() => checkRotate([0.1, 0.1, 0.1], 0.1), /rotates 0\.1732 rad; the limit is 0\.1 rad/);
+	assert.doesNotThrow(() => checkRotate([3, 0, 0], null));
 });
 
 test("the recorded-state layer: steps by index, views with images, a mutating tool records a step", async () => {

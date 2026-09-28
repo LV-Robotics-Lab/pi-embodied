@@ -3,15 +3,18 @@
  *
  *   pi -e packages/embodied/src/robots/ur5e --operator --arm-id 2023300001 --task block_bowl --robot-config my_ur5e.yaml
  *   pi -e packages/embodied/src/robots/ur5e --operator --arm-id 2023300001 --task block_bowl --code=true --code-real
- *      (run_code: the env server runs with --code and takes pi's per-call caps; every program is confirmed)
+ *      (run_code: the env server runs with --code; a program meets the tools' server-side limits; every program is confirmed)
  *
  * Starts the env server (pi_embodied_services.robots.ur5e.env_server: ur_rtde to the controller, a
  * Robotiq gripper over the URCap socket, RealSense / webcam / RTSP cameras through the services'
- * shared camera layer) or attaches to one with --robot-env. The server owns the safety limits from
- * the robot YAML: per-call translation and rotation refusal, the workspace box and Z floor, the tool
- * tilt limit, `stop` that really stops the running moveL/moveJ (stopL/stopJ), the setpoint cleared
- * after a stop or failure, and the gripper's jammed / empty-grasp detection. The client refuses the
- * same per-call caps (the tighter of --max-move / --max-rotate and the server's) before any call.
+ * shared camera layer) or attaches to one with --robot-env. The server owns the safety limits: pi's
+ * --max-move / --max-rotate (passed at spawn; an attached server must enforce them or tighter ones,
+ * ../../primitives/motion.ts servedLimits) and the robot YAML's per-call translation and rotation
+ * refusal, the workspace box and Z floor, the tool tilt limit, `stop` that really stops the running
+ * moveL/moveJ (stopL/stopJ), the setpoint cleared after a stop or failure, and the gripper's jammed /
+ * empty-grasp detection. The tools and code primitives are the manifest's
+ * (../../primitives/manifests/ur5e.json): move_delta / move_pose / rotate_delta / open_gripper /
+ * close_gripper run the server methods of the same names, which a program calls too.
  *
  * A real robot needs an operator: pi must have a UI, --operator must be on (the base then asks for a
  * verdict before `finish`), and the operator confirms the reset before any motion. The robot is bound
@@ -30,9 +33,8 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { type Static, type TSchema, Type } from "typebox";
+import { Type } from "typebox";
 import { decodePngChannel, encodePng } from "../../infra/png.ts";
 import { NdArray, type RpcClient } from "../../infra/rpc.ts";
 import type { Move, MoveUnit, Vec3 } from "../../modes/units/index.ts";
@@ -45,11 +47,11 @@ import {
 	registerDetectionFlags,
 } from "../../primitives/detections.ts";
 import { mountGraspTool } from "../../primitives/grasp.ts";
+import { checkRotate, checkRoute, limitArgs, type MotionLimits, servedLimits } from "../../primitives/motion.ts";
 import { pointActive, pointTool, registerPointFlags } from "../../primitives/pointing.ts";
 import {
 	apply,
 	attach,
-	checkMove,
 	defineRobot,
 	frameOf,
 	gridOf,
@@ -74,7 +76,7 @@ import {
 const SYSTEM = template(new URL("./SYSTEM.md", import.meta.url));
 const EXPLORE = template(new URL("./explore.md", import.meta.url));
 /** The state-advancing tools a memory recipe keeps. */
-const MOTION = ["move_delta", "move_pose", "rotate_delta", "gripper", "act"];
+const MOTION = ["move_delta", "move_pose", "rotate_delta", "open_gripper", "close_gripper", "act"];
 
 type Task = { instruction: string; success_criteria?: string };
 type Meta = {
@@ -93,6 +95,8 @@ type Meta = {
 		reset_lift_m?: number;
 	};
 	tasks: Record<string, Task>;
+	/** pi's limits as the server enforces them (services utils/code_real.py). */
+	motion_limits?: MotionLimits;
 };
 type CameraMeta = {
 	name: string;
@@ -143,15 +147,12 @@ const TOOLS = [
 	"move_delta",
 	"move_pose",
 	"rotate_delta",
-	"gripper",
+	"open_gripper",
+	"close_gripper",
 	"finish",
 ];
-
-function vec3(v: unknown, name: string): number[] {
-	const a = vec(v);
-	if (a.length !== 3 || !a.every(Number.isFinite)) throw new Error(`${name} must contain exactly 3 finite values`);
-	return a;
-}
+/** The motion tools: each runs the server method of its name with the manifest's params. */
+const MOTION_TOOLS = ["move_delta", "move_pose", "rotate_delta", "open_gripper", "close_gripper"];
 
 export default function ur5e(pi: ExtensionAPI) {
 	const flag = (name: string, fallback = "") => String(pi.getFlag(name) ?? fallback);
@@ -207,17 +208,21 @@ export default function ur5e(pi: ExtensionAPI) {
 	pi.registerFlag("max-move", {
 		type: "string",
 		default: "0.08",
-		description: "Largest translation per call, m (the server's limits.max_move_m applies if tighter)",
+		description:
+			"Largest translation per call, m, enforced by the env server (its limits.max_move_m applies if tighter)",
 	});
 	pi.registerFlag("max-rotate", {
 		type: "string",
 		default: "0.2",
-		description: "Largest rotation per call, rad (the server's limits.max_rotate_rad applies if tighter)",
+		description:
+			"Largest rotation per call, rad, enforced by the env server (its limits.max_rotate_rad applies if tighter)",
 	});
 
 	let env: RpcClient | undefined;
 	let sam3: RpcClient | undefined;
 	let meta: Meta | undefined;
+	/** The limits the env server enforces (at least pi's flags). */
+	let enforced: MotionLimits | undefined;
 	let task: Task | undefined;
 	let out = "";
 	const steps: Step[] = [];
@@ -237,6 +242,22 @@ export default function ur5e(pi: ExtensionAPI) {
 
 	const robot = defineRobot(pi, {
 		name: "ur5e",
+		// Tools and code primitives: ../../primitives/manifests/ur5e.json (the env server reads it too).
+		manifest: "ur5e",
+		vars: () => ({ cameras: cameras(), max_move: String(maxMove()), max_rotate: String(maxRotate()) }),
+		// Must agree with the env server's _has (code mode refuses otherwise): what the flags ask for and the
+		// server serves (its perception capabilities); robot_sam3 is pi's own segment tool.
+		capabilities: (c) => {
+			const served = (meta as { capabilities?: { perception?: PerceptionCaps } } | undefined)?.capabilities
+				?.perception;
+			return (
+				{
+					sam3: pi.getFlag("detections") === true && Boolean(served?.segment),
+					unidepth: Boolean(flag("unidepth").trim()) && Boolean(served?.enhance_depth),
+					robot_sam3: Boolean(flag("robot-sam3")),
+				}[c] ?? false
+			);
+		},
 		task: ["task"],
 		keepImages: 4,
 		operator: { step: () => steps.length, reset: resetArm },
@@ -278,11 +299,11 @@ export default function ur5e(pi: ExtensionAPI) {
 			const wrist = c.flatMap((name, i) => (mountOf(name) === "wrist" ? [i] : []));
 			return { views: c.length, ...(wrist.length ? { wrist } : {}) };
 		},
-		// The env server's primitive registry (services robots/ur5e/primitives.py).
+		// The env server's code.api (from the same manifest), recorded per episode.
 		codeApi: () => env,
 		// Code mode (../code) on the real arm: --code-real and --operator, every program confirmed. The
-		// server (started with --code) runs it through the tools' own env methods, under pi's per-call
-		// limits too (code.set_limits at start); the run becomes the next state step.
+		// server (started with --code) runs it through the tools' own env methods, which hold pi's
+		// per-call limits for every caller; the run becomes the next state step.
 		code: {
 			real: true,
 			rpc: () => env as RpcClient,
@@ -295,7 +316,7 @@ export default function ur5e(pi: ExtensionAPI) {
 		},
 		start: startRobot,
 		stop: () => {
-			env = sam3 = meta = task = undefined;
+			env = sam3 = meta = task = enforced = undefined;
 		},
 		prompt: () => {
 			if (!task || !meta) return undefined;
@@ -345,9 +366,20 @@ export default function ur5e(pi: ExtensionAPI) {
 	});
 	const { op } = robot;
 
-	const maxMove = () => Math.min(Number(flag("max-move", "0.08")), meta?.limits.max_move_m ?? Infinity);
-	const maxRotate = () => Math.min(Number(flag("max-rotate", "0.2")), meta?.limits.max_rotate_rad ?? Infinity);
-	/** Code mode is on (--code): the env server serves code.run and takes pi's per-call limits. */
+	/** pi's limits (its flags), which the env server enforces. */
+	const wanted = (): MotionLimits => ({
+		max_move_m: Number(flag("max-move", "0.08")),
+		max_rotate_rad: Number(flag("max-rotate", "0.2")),
+	});
+	/** The per-call limits in force (prompt, units): the served ones and the config's caps. */
+	const maxMove = () =>
+		Math.min(enforced?.max_move_m ?? wanted().max_move_m ?? Infinity, meta?.limits.max_move_m ?? Infinity);
+	const maxRotate = () =>
+		Math.min(
+			enforced?.max_rotate_rad ?? wanted().max_rotate_rad ?? Infinity,
+			meta?.limits.max_rotate_rad ?? Infinity,
+		);
+	/** Code mode is on (--code): the env server serves code.run. */
 	const coding = () => (pi.getFlag("code") ?? "false") !== "false";
 
 	function call<T = Json>(method: string, kwargs: Json = {}, timeoutMs = 30_000, signal?: AbortSignal) {
@@ -433,18 +465,13 @@ export default function ur5e(pi: ExtensionAPI) {
 			.map((k) => readFileSync(s.images[k]));
 
 	/**
-	 * Register a tool. Mutating tools run, then record a fresh state step and return it (errors
-	 * included); read-only tools return their result or `{error}`, plus any PNGs in `_pngs`.
+	 * Register a manifest tool (its schema and description are manifests/ur5e.json's). Mutating tools
+	 * run, then record a fresh state step and return it (errors included); read-only tools return their
+	 * result or `{error}`, plus any PNGs in `_pngs`.
 	 */
-	function tool<P extends TSchema>(
-		name: string,
-		description: string,
-		parameters: P,
-		run: (p: Static<P>, signal: AbortSignal | undefined) => Promise<Json>,
-		mutating = true,
-	) {
-		robot.tool(name, description, parameters, (params, signal) =>
-			outcome(name, params as Json, () => run(params, signal), mutating),
+	function tool(name: string, run: (p: Json, signal: AbortSignal | undefined) => Promise<Json>, mutating = true) {
+		robot.tool(name, "", Type.Object({}), (params: Json, signal) =>
+			outcome(name, params, () => run(params, signal), mutating),
 		);
 	}
 
@@ -484,14 +511,6 @@ export default function ur5e(pi: ExtensionAPI) {
 
 	// ---- motion
 
-	function checkRotate(norm: number) {
-		const limit = maxRotate();
-		if (!(norm <= limit))
-			throw new Error(
-				`the rotation is ${round(norm, 4)} rad; the limit is ${limit} rad per call. Split it into smaller calls.`,
-			);
-	}
-
 	const motion = (method: string, kwargs: Json, signal?: AbortSignal) => call(method, kwargs, 120_000, signal);
 
 	/** Units mode (../units): one grounded action unit on the move primitives. */
@@ -501,16 +520,14 @@ export default function ur5e(pi: ExtensionAPI) {
 			{ move },
 			async () => {
 				check(signal);
+				// A unit is up to three server calls: refused whole before the first (the server checks each again).
+				checkRoute([0, 0, 0], [move.delta], { max_move_m: maxMove() });
+				checkRotate([0, 0, move.yaw ?? 0], maxRotate());
 				const out: Json = {};
-				if (move.gripper) out.gripper = await motion("env.set_gripper", { open: move.gripper === "open" }, signal);
-				if (Math.hypot(...move.delta) > 0) {
-					checkMove(move.delta, maxMove());
+				if (move.gripper) out.gripper = await motion(`env.${move.gripper}_gripper`, {}, signal);
+				if (Math.hypot(...move.delta) > 0)
 					out.move = await motion("env.move_delta", { delta_xyz: move.delta }, signal);
-				}
-				if (move.yaw) {
-					checkRotate(Math.abs(move.yaw));
-					out.rotate = await motion("env.rotate_delta", { delta_rpy: [0, 0, move.yaw] }, signal);
-				}
+				if (move.yaw) out.rotate = await motion("env.rotate_delta", { delta_rpy: [0, 0, move.yaw] }, signal);
 				return out;
 			},
 			true,
@@ -530,16 +547,12 @@ export default function ur5e(pi: ExtensionAPI) {
 		};
 	}
 
-	const stepParam = Type.Optional(Type.Integer({ description: "State step (default -1 = latest)" }));
-	const xyz = Type.Array(Type.Number(), { minItems: 3, maxItems: 3 });
-	const cameraParam = Type.Optional(Type.String({ description: "Camera name (default: the main camera)" }));
+	const stepOf = (p: Json): number => (typeof p.step === "number" ? p.step : -1);
 
 	tool(
 		"view_env_state",
-		"Read a UR5e state step (TCP pose, joints, gripper, setpoint) and its camera images, main camera first.",
-		Type.Object({ step: stepParam }),
-		async ({ step = -1 }) => {
-			const s = getStep(step);
+		async (p) => {
+			const s = getStep(stepOf(p));
 			return { ...s.blob, _pngs: stepImages(s) };
 		},
 		false,
@@ -547,9 +560,8 @@ export default function ur5e(pi: ExtensionAPI) {
 
 	tool(
 		"view_camera_meta",
-		"Read every camera's intrinsics, depth availability, mount and hand-eye calibration.",
-		Type.Object({ step: stepParam }),
-		async ({ step = -1 }) => {
+		async (p) => {
+			const step = stepOf(p);
 			const s = getStep(step);
 			if (!s.meta) return { error: "camera metadata is unavailable", step };
 			return { step: s.blob.step_idx, camera_meta: s.meta };
@@ -625,15 +637,8 @@ export default function ur5e(pi: ExtensionAPI) {
 
 	tool(
 		"back_project",
-		"Back-project one camera pixel (row, col; row 0 = top) into UR5e base coordinates through its depth, intrinsics and hand-eye calibration.",
-		Type.Object({
-			row: Type.Integer({ minimum: 0 }),
-			col: Type.Integer({ minimum: 0 }),
-			camera: cameraParam,
-			step: stepParam,
-		}),
 		async ({ row, col, camera, step }) => {
-			const s = getStep(step);
+			const s = getStep(step ?? -1);
 			const cam = cameraOf(s, camera);
 			const p = project(s, cam, row, col);
 			const selected = overlay(s, cam.name, row, col);
@@ -692,19 +697,11 @@ export default function ur5e(pi: ExtensionAPI) {
 
 	tool(
 		"segment",
-		"SAM3 segmentation of a camera image from the latest (or given) step. Give exactly one of a text prompt or a positive point [row, col]. On a camera with depth the mask's pixels are back-projected and world_xyz is their median base-frame point. Returns an overlay image.",
-		Type.Object({
-			prompt: Type.Optional(Type.String()),
-			point: Type.Optional(Type.Array(Type.Integer(), { minItems: 2, maxItems: 2 })),
-			camera: cameraParam,
-			step: stepParam,
-			min_score: Type.Optional(Type.Number({ description: "Default 0.2" })),
-		}),
 		async ({ prompt, point, camera, step, min_score = 0.2 }) => {
 			if (!sam3) throw new Error("segment requires --robot-sam3");
-			const text = prompt?.trim();
+			const text = typeof prompt === "string" ? prompt.trim() : "";
 			if (!text && !point) return { error: "give a text prompt or a point [row, col]" };
-			const s = getStep(step);
+			const s = getStep(step ?? -1);
 			const cam = cameraOf(s, camera);
 			const path = s.images[cam.name];
 			if (!path) throw new Error(`no image recorded for camera ${cam.name} at step ${s.blob.step_idx}`);
@@ -776,63 +773,13 @@ export default function ur5e(pi: ExtensionAPI) {
 		false,
 	);
 
-	tool(
-		"move_delta",
-		"Move the UR5e TCP by a bounded base-frame xyz delta in meters (x forward, y left, z up); the orientation is held.",
-		Type.Object({ delta_xyz: xyz }),
-		async ({ delta_xyz }, signal) => {
+	// The motion tools: the manifest's params straight to the server method of the same name, which holds
+	// pi's limits (and the config's) for the tools and a program alike.
+	for (const name of MOTION_TOOLS)
+		tool(name, async (p, signal) => {
 			check(signal);
-			const d = vec3(delta_xyz, "delta_xyz");
-			checkMove(d, maxMove());
-			return motion("env.move_delta", { delta_xyz: d }, signal);
-		},
-	);
-
-	tool(
-		"move_pose",
-		"Move the UR5e TCP to an absolute base-frame pose within the per-call limits: xyz in meters plus an orientation as rotvec (axis-angle, rad) or rpy (extrinsic xyz Euler, rad); omit both to keep the orientation.",
-		Type.Object({
-			xyz,
-			rotvec: Type.Optional(xyz),
-			rpy: Type.Optional(xyz),
-		}),
-		async ({ xyz: p, rotvec, rpy }, signal) => {
-			check(signal);
-			const target = vec3(p, "xyz");
-			if (rotvec !== undefined && rpy !== undefined) throw new Error("give rotvec or rpy, not both");
-			const tcp = tcpPose(getStep());
-			checkMove(
-				target.map((v, i) => v - tcp[i]),
-				maxMove(),
-			);
-			const kwargs: Json = { xyz: target };
-			if (rotvec !== undefined) kwargs.rotvec = vec3(rotvec, "rotvec");
-			if (rpy !== undefined) kwargs.rpy = vec3(rpy, "rpy");
-			return motion("env.move_pose", kwargs, signal);
-		},
-	);
-
-	tool(
-		"rotate_delta",
-		"Rotate the UR5e TCP by a bounded base-frame rpy delta in radians (extrinsic xyz: roll about base x, pitch about y, yaw about z).",
-		Type.Object({ delta_rpy: xyz }),
-		async ({ delta_rpy }, signal) => {
-			check(signal);
-			const d = vec3(delta_rpy, "delta_rpy");
-			checkRotate(Math.hypot(...d));
-			return motion("env.rotate_delta", { delta_rpy: d }, signal);
-		},
-	);
-
-	tool(
-		"gripper",
-		"Open or close the Robotiq gripper and wait for the fingers to settle. A close that catches nothing reopens and reports grasp_empty; fingers that do not move report gripper_jammed.",
-		Type.Object({ action: StringEnum(["open", "close"] as const) }),
-		async ({ action }, signal) => {
-			check(signal);
-			return motion("env.set_gripper", { open: action === "open" }, signal);
-		},
-	);
+			return motion(`env.${name}`, p, signal);
+		});
 
 	// ---- lifecycle
 
@@ -855,6 +802,7 @@ export default function ur5e(pi: ExtensionAPI) {
 			);
 		for (const name of ["max-move", "max-rotate"])
 			if (!(Number(flag(name)) > 0)) throw new Error(`--${name} must be a positive number (got '${flag(name)}')`);
+		const limits = wanted();
 		const r: Services = { root: flag("services"), python: flag("python", "python") };
 		const configFlag = flag("robot-config");
 		const config = configFlag ? resolve(ctx.cwd, configFlag) : "";
@@ -874,6 +822,8 @@ export default function ur5e(pi: ExtensionAPI) {
 							"pi_embodied_services.robots.ur5e.env_server",
 							...(config ? ["--robot-config", config] : []),
 							...(camerasFlag ? ["--cameras", camerasFlag] : []),
+							// pi's per-call limits, enforced by the server for tools and programs alike.
+							...limitArgs(limits),
 							...detectionArgs(pi, flag("robot-sam3")),
 							...(coding() ? ["--code"] : []),
 						],
@@ -887,6 +837,8 @@ export default function ur5e(pi: ExtensionAPI) {
 		const m = await rpc.call<Meta>("env.get_env_meta", {}, 30_000);
 		if (m.robot !== "ur5e")
 			throw new Error(`--robot-env serves ${m.robot ?? "an unknown robot"}, not a ur5e env server`);
+		// An attached server must enforce pi's limits (or tighter ones); throws otherwise.
+		const served = servedLimits(m.motion_limits, limits);
 		if (m.arm_id === null || m.arm_id === undefined)
 			throw new Error(
 				"the env server bound its config to no arm (robot.identity: none), so --arm-id cannot be verified; set robot.identity: serial and calibration.arm_id",
@@ -911,17 +863,11 @@ export default function ur5e(pi: ExtensionAPI) {
 		env = rpc;
 		sam3 = sam;
 		meta = m;
+		enforced = served;
 		try {
-			// A program's motions pass none of the tools' checks here: the server applies pi's limits.
-			if (coding())
-				await rpc.call("code.set_limits", { max_move_m: maxMove(), max_rotate_rad: maxRotate() }).catch((err) => {
-					throw new Error(
-						`code mode needs an env server started with --code (--robot-env URL#token=HEX): ${message(err)}`,
-					);
-				});
 			await resetArm();
 		} catch (err) {
-			env = sam3 = meta = undefined;
+			env = sam3 = meta = enforced = undefined;
 			throw err;
 		}
 		task = t;

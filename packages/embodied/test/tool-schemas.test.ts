@@ -8,13 +8,18 @@ import { geometryDefs } from "../src/primitives/geometry.ts";
 import behavior from "../src/robots/behavior/index.ts";
 import dualFranka, { DUAL_FRANKA_UNITS } from "../src/robots/dual_franka/index.ts";
 import franka from "../src/robots/franka/index.ts";
+import genesis from "../src/robots/genesis/index.ts";
 import libero from "../src/robots/libero/index.ts";
 import maniskill from "../src/robots/maniskill/index.ts";
+import metaworld from "../src/robots/metaworld/index.ts";
 import piperDual from "../src/robots/piper/dual.ts";
 import piper from "../src/robots/piper/index.ts";
 import robocasa from "../src/robots/robocasa/index.ts";
+import robodojo from "../src/robots/robodojo/index.ts";
 import robolab from "../src/robots/robolab/index.ts";
+import robosuite from "../src/robots/robosuite/index.ts";
 import robotwin from "../src/robots/robotwin/index.ts";
+import ur5e from "../src/robots/ur5e/index.ts";
 
 /**
  * Snapshot of what every robot registers with pi at default flags: each tool's name, description
@@ -37,13 +42,18 @@ const ROBOTS: Record<string, (pi: ExtensionAPI) => unknown> = {
 	behavior,
 	dual_franka: dualFranka,
 	franka,
+	genesis,
 	libero,
 	maniskill,
+	metaworld,
 	piper,
 	piper_dual: piperDual,
 	robocasa,
+	robodojo,
 	robolab,
+	robosuite,
 	robotwin,
+	ur5e,
 	// Dual Franka whose config streams an inline wrist camera (the default D455 alone has none, so the
 	// load-time `dual_franka` entry shows act without the wrist plugins): its units as mounted then.
 	dual_franka_wrist_camera: (pi) =>

@@ -35,6 +35,15 @@ import { CONTEXT_VERSION_ENTRY, gitCommit, sha256, usedTemplates } from "./plann
 import { ensemble } from "./planner/ensemble.ts";
 import { fallback } from "./planner/fallback.ts";
 import { human } from "./planner/human.ts";
+import {
+	available,
+	loadManifest,
+	type Manifest,
+	toolDescription,
+	toolEntry,
+	toolSchema,
+	type Vars,
+} from "./primitives/manifest.ts";
 import { CODE_API_ENTRY, CODE_API_EVENT, type CodeApi, fetchCodeApi } from "./primitives/registry.ts";
 import { type XPolicySpec, xpolicy } from "./primitives/xpolicy.ts";
 
@@ -199,6 +208,19 @@ export type RobotSpec = {
 	codeApi?: () => RpcClient | undefined;
 	/** The model servers `--serve-models` may start before `start` attaches to them (../model-services.ts). */
 	services?: ModelServicesSpec;
+	/**
+	 * The robot's primitive manifest (./primitives/manifests/<manifest>.json): every tool registered
+	 * with `primitive` takes its schema and description from it, and code mode renders its prompt
+	 * from it. Without one the robot's tools carry their own schemas (`tool`).
+	 */
+	manifest?: string;
+	/** The manifest's `{{name}}` variables (descriptions, enums), read at load and at every session start. */
+	vars?: () => Vars;
+	/**
+	 * Whether this run has a capability a manifest entry `requires` (read after `start`); a tool whose
+	 * requirements are unmet is not activated. `privileged` is --privileged; anything else is the robot's.
+	 */
+	capabilities?: (capability: string) => boolean;
 };
 
 /**
@@ -224,6 +246,7 @@ export type RobotSpec = {
  */
 export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	const { name } = spec;
+	const manifest: Manifest | undefined = spec.manifest ? loadManifest(spec.manifest) : undefined;
 	let task: Record<string, string> = {};
 	let ready = false;
 	let failed: string | undefined;
@@ -413,13 +436,35 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		}
 	}
 	/** Register a sequential robot tool; its result terminates the batch when the batch also calls `finish`. */
+	/** The manifest's tool entry for `toolName`; under --privileged its privileged variant when it has one. */
+	function manifestTool(toolName: string) {
+		const all = manifest?.primitives.filter((e) => e.name === toolName && e.side !== "code" && e.doc.tool) ?? [];
+		const priv = all.find((e) => e.tier === "privileged");
+		return (privileged() && priv) || all.find((e) => e.tier !== "privileged") || priv;
+	}
+	type PrimitiveRun = (params: any, signal: AbortSignal | undefined, ctx: ExtensionContext) => Promise<Result>;
+	/** Tools whose schema and description come from the manifest, with what they were registered with. */
+	const declared = new Map<string, { run: PrimitiveRun; registered: string }>();
 	function tool<P extends TSchema>(
 		toolName: string,
 		description: string,
 		parameters: P,
 		run: (params: Static<P>, signal: AbortSignal | undefined, ctx: ExtensionContext) => Promise<Result>,
 	) {
-		robotTools.push(toolName);
+		// A robot with a manifest: the manifest's schema and description win (a module-owned entry keeps the module's).
+		const declaredEntry = manifestTool(toolName);
+		if (manifest && !declaredEntry)
+			throw new Error(`${name}: tool ${toolName} is not declared in manifests/${spec.manifest}.json`);
+		if (declaredEntry && !declaredEntry.module) {
+			const vars = spec.vars?.() ?? {};
+			description = toolDescription(declaredEntry, vars);
+			parameters = toolSchema(declaredEntry, vars) as unknown as P;
+			declared.set(toolName, {
+				run: run as unknown as PrimitiveRun,
+				registered: JSON.stringify([description, parameters]),
+			});
+		}
+		if (!robotTools.includes(toolName)) robotTools.push(toolName);
 		const call: Call = async (params, sig, ctx) => {
 			signal = sig;
 			try {
@@ -442,6 +487,34 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 			execute: (_id, params, sig, _onUpdate, ctx) => locked(params, sig, ctx),
 		});
 	}
+	/** Register the manifest's tool `toolName` (its schema and description from the manifest) with `run`. */
+	function primitive(toolName: string, run: PrimitiveRun) {
+		if (!manifest) throw new Error(`${name}: primitive(${toolName}) needs a manifest in the robot spec`);
+		const e = manifestTool(toolName) ?? toolEntry(manifest, toolName);
+		const vars = spec.vars?.() ?? {};
+		tool(toolName, toolDescription(e, vars), toolSchema(e, vars), run);
+	}
+	/** At session start: re-register the manifest tools whose variables changed with the flags. */
+	function refreshPrimitives() {
+		if (!manifest) return;
+		const vars = spec.vars?.() ?? {};
+		for (const [toolName, d] of [...declared]) {
+			const e = manifestTool(toolName) ?? toolEntry(manifest, toolName);
+			if (JSON.stringify([toolDescription(e, vars), toolSchema(e, vars)]) !== d.registered)
+				tool(toolName, "", Type.Object({}), d.run);
+		}
+	}
+	/** Whether the run has a capability (`requires` of a manifest entry). */
+	const has = (capability: string) =>
+		capability === "privileged" ? privileged() : (spec.capabilities?.(capability) ?? false);
+	/** Drop the tools whose manifest entry this run cannot serve (unmet `requires`). */
+	const servable = (names: string[]) =>
+		manifest
+			? names.filter((n) => {
+					const e = manifest.primitives.find((p) => p.name === n && p.side !== "code");
+					return !e || available(e, has);
+				})
+			: names;
 	// An operator's unit (../gumi) passes the gates an `act` call passes, without counting as a planner turn.
 	const un = spec.units
 		? units(pi, spec.units, tool, () => task, {
@@ -462,6 +535,9 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 				oracleRan: () => {
 					ran = ended = true;
 				},
+				manifest,
+				has,
+				vars: () => spec.vars?.() ?? {},
 			})
 		: undefined;
 	const vd = spec.vdm
@@ -515,7 +591,8 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 			if (misconfigured) throw new Error(misconfigured);
 			api = undefined;
 			await models?.start();
-			const tools = await spec.start(ctx);
+			const tools = servable(await spec.start(ctx));
+			refreshPrimitives();
 			// The robot's configuration (its cameras) is known now: the units read its wrist view again.
 			un?.started(ctx);
 			await vz?.start(ctx, String(pi.getFlag("services") || SERVICES));
@@ -901,6 +978,10 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		},
 		/** Register a sequential robot tool; its result terminates the batch when the batch also calls `finish`. */
 		tool,
+		/** Register a manifest tool (`manifest` in the spec): schema and description from the manifest, `run` hand-written. */
+		primitive,
+		/** The robot's manifest (`manifest` in the spec), if any. */
+		manifest,
 		/** The episode's primitive registry (`codeApi`), once the robot is up; undefined without one. */
 		get codeApi() {
 			return api;

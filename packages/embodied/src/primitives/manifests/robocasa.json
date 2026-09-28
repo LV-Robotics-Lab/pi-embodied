@@ -1,0 +1,759 @@
+{
+	"robot": "robocasa",
+	"internal": [
+		"env.list_tasks",
+		"env.reassemble_env_action",
+		"env.set_recording",
+		"env.chunk_step"
+	],
+	"primitives": [
+		{
+			"use": "sim/get_task_language"
+		},
+		{
+			"name": "view_env_state",
+			"side": "ts",
+			"tier": "low",
+			"params": {
+				"step": {
+					"type": "integer",
+					"description": "0 = initial (default latest)"
+				}
+			},
+			"doc": {
+				"tool": "Read state NN (default latest): env state, success (robocasa_terminated), task_progress, vla_desync, the command log, and the agentview (calibration frame), navview (base floor view) and wrist images. Use agentview pixels for back-projection, navview for base navigation and floor walkability, wrist for close-range details near the gripper."
+			},
+			"result": "motion"
+		},
+		{
+			"name": "back_project_batch",
+			"side": "ts",
+			"tier": "low",
+			"params": {
+				"pixels": {
+					"type": "array",
+					"required": true,
+					"items": {
+						"type": "array",
+						"items": "integer",
+						"minItems": 2,
+						"maxItems": 2
+					},
+					"minItems": 1,
+					"maxItems": 50,
+					"description": "[row, col] pixels"
+				},
+				"step": {
+					"type": "integer",
+					"description": "State to use (default latest)"
+				},
+				"camera": {
+					"type": "enum",
+					"values": [
+						"agentview",
+						"navview",
+						"wrist"
+					],
+					"description": "Camera (default agentview)"
+				},
+				"resolution": {
+					"type": "enum",
+					"values": [
+						"high",
+						"low"
+					],
+					"description": "low = the 256x256 world map (default); high = the --hi-res agentview map"
+				}
+			},
+			"doc": {
+				"tool": "Back-project MULTIPLE pixels [row, col] (row 0 = image top) to world XYZ from one state's world map. Returns each pixel's world_xyz plus summary.median_xyz. For robust localization sample 3-8 pixels on the target and read summary.median_xyz. Max 50 pixels. Pixels from agentview_high need resolution 'high'."
+			},
+			"result": "read"
+		},
+		{
+			"name": "query_world_map",
+			"side": "ts",
+			"tier": "low",
+			"params": {
+				"z_min": {
+					"type": "number",
+					"description": "Minimum Z, m (default 0.85, counter height)"
+				},
+				"z_max": {
+					"type": "number",
+					"description": "Maximum Z, m (default 0.95)"
+				},
+				"x_range": {
+					"type": "array",
+					"items": "number",
+					"minItems": 2,
+					"maxItems": 2,
+					"description": "[min, max] world x, m (default: any)"
+				},
+				"y_range": {
+					"type": "array",
+					"items": "number",
+					"minItems": 2,
+					"maxItems": 2,
+					"description": "[min, max] world y, m (default: any)"
+				},
+				"camera": {
+					"type": "enum",
+					"values": [
+						"agentview",
+						"navview",
+						"wrist"
+					],
+					"description": "Camera (default agentview)"
+				},
+				"resolution": {
+					"type": "enum",
+					"values": [
+						"high",
+						"low"
+					],
+					"description": "low = the 256x256 world map (default); high = the --hi-res agentview map"
+				},
+				"min_cluster_size": {
+					"type": "integer",
+					"description": "Minimum sampled pixels per cluster (default 10)"
+				}
+			},
+			"doc": {
+				"tool": "Query the latest world map by Z band / XY region to find objects at specific heights: keeps pixels with z_min <= z <= z_max (optionally within x_range / y_range) and clusters them on an image grid. Typical: z 0.85-0.95 = countertop objects; z 0.0-0.12 with camera 'navview' = walkable floor."
+			},
+			"result": "read"
+		},
+		{
+			"name": "move_to",
+			"side": "env",
+			"method": "env.move_to",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"xyz": {
+					"type": "vec3",
+					"required": true,
+					"description": "World-frame [x, y, z] in meters"
+				},
+				"gripper": {
+					"type": "enum",
+					"values": [
+						"close",
+						"open",
+						"hold"
+					],
+					"description": "'close', 'open', or 'hold' to maintain the current finger width (default 'hold')"
+				},
+				"step_clip": {
+					"type": "number",
+					"minimum": 0.001,
+					"maximum": 0.1,
+					"description": "Per-step dxyz cap, m (default 0.02)"
+				},
+				"max_steps": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 1000,
+					"description": "Step budget (default 200)"
+				},
+				"tol": {
+					"type": "number",
+					"minimum": 0.001,
+					"maximum": 0.1,
+					"description": "Position tolerance, m (default 0.012)"
+				}
+			},
+			"doc": {
+				"tool": "Scripted EEF servo to a world-frame XYZ target via the OSC controller. Holds pitch/yaw orientation (use rotate_pitch to reorient). gripper='hold' (default) maintains current finger width: carry-safe without crushing small objects. Pass 'close' to close, 'open' to open. Never command a single move_to with |dxyz| > 0.30: OSC flips IK; split long traversal into 2-3 waypoints at carry z.",
+				"code": "Servo the eef to a world xyz with the OSC controller, holding the orientation (rotate_pitch reorients). gripper 'hold' keeps the finger width; 'close' / 'open' drive it. Keep |dxyz| <= 0.30 per call (OSC flips IK); split long traversals. Returns {ok, steps, final_dist, eef, gripper_qpos}.\n\nExample:\n    r = move_to([1.2, -0.4, 1.0], gripper=\"open\")\n    print(r[\"ok\"], r[\"final_dist\"])"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "move_delta",
+			"side": "env",
+			"method": "env.move_delta",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"dxyz": {
+					"type": "vec3",
+					"required": true,
+					"description": "Relative [dx, dy, dz], m"
+				},
+				"gripper": {
+					"type": "enum",
+					"values": [
+						"close",
+						"open",
+						"hold"
+					],
+					"description": "'close', 'open', or 'hold' to maintain the current finger width (default 'hold')"
+				},
+				"step_clip": {
+					"type": "number",
+					"minimum": 0.001,
+					"maximum": 0.1,
+					"description": "Per-step dxyz cap, m (default 0.02)"
+				},
+				"max_steps": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 1000,
+					"description": "Step budget (default 80)"
+				}
+			},
+			"doc": {
+				"tool": "Relative EEF displacement: target = current_eef + dxyz, then move_to. Use for small adjustments (micro-align for grasp, approach). gripper='hold' (default) maintains current finger width.",
+				"code": "Relative eef displacement in the world frame: move_to(current eef + dxyz). Returns {ok, steps, final_dist, eef, gripper_qpos}.\n\nExample:\n    move_delta([0, 0, -0.05])  # down 5 cm, finger width held"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "rotate_pitch",
+			"side": "env",
+			"method": "env.rotate_pitch",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"target_pitch": {
+					"type": "number",
+					"description": "Absolute pitch target, rad (clamped +/-1.5; default 0.6)"
+				},
+				"gripper": {
+					"type": "number",
+					"description": "Gripper command held during rotation (default +1)"
+				},
+				"n": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 200,
+					"description": "Number of env steps for the rotation (default 12)"
+				}
+			},
+			"doc": {
+				"tool": "Tilt the wrist forward (axis-angle about the control X-axis); pitches the gripper down/up. Holds xyz fixed. Use before threading the gripper into a narrow opening whose front face normal is along world +/-y.",
+				"code": "Tilt the wrist about the control x axis (pitches the gripper down / up), xyz held. Returns {ok, eef}.\n\nExample:\n    rotate_pitch(0.6, gripper=-1)"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "set_gripper",
+			"side": "env",
+			"method": "env.set_gripper",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"gripper": {
+					"type": "number",
+					"description": "+1 close, -1 open (default +1)"
+				},
+				"steps": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 200,
+					"description": "Env steps to hold (default 10)"
+				}
+			},
+			"doc": {
+				"tool": "Hold the current EEF pose and drive the gripper command for `steps` env steps. Use to firm up a grip mid-carry or to actively open/close the gripper.",
+				"code": "Hold the eef and drive the gripper command (+1 close, -1 open) for steps env steps. Returns {ok, gripper_qpos}.\n\nExample:\n    set_gripper(1, steps=14)  # close firmly"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "release",
+			"side": "env",
+			"method": "env.release",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"steps": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 200,
+					"description": "Env steps (default 10)"
+				}
+			},
+			"doc": {
+				"tool": "Open the gripper for `steps` env steps while holding the EEF in place (set_gripper(-1)). Use to drop a grasped object.",
+				"code": "Open the gripper for steps env steps, the eef held.\n\nExample:\n    release()"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "scripted_grasp",
+			"side": "env",
+			"method": "env.scripted_grasp",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"xyz": {
+					"type": "vec3",
+					"required": true,
+					"description": "World-frame [x, y, z] in meters"
+				},
+				"approach_z": {
+					"type": "number",
+					"description": "Z offset above target before descent, m (default 0.10)"
+				},
+				"grasp_z_offset": {
+					"type": "number",
+					"description": "Z offset at grasp point (default 0.0; negative = below target)"
+				},
+				"step_clip": {
+					"type": "number",
+					"minimum": 0.001,
+					"maximum": 0.1,
+					"description": "Per-step dxyz cap during approach, m (default 0.02)"
+				}
+			},
+			"doc": {
+				"tool": "Coarse scripted grasp: open -> hover above target -> descend -> close -> lift. A fallback when the VLA closed-loop grasp is unavailable; for hard objects prefer rldx_arm. approach_z and grasp_z_offset are offsets from the target xyz.",
+				"code": "Coarse scripted grasp: open, hover approach_z above xyz, descend to grasp_z_offset, close, lift. Returns a move report with stage (approach / descent / lift) where it failed.\n\nExample:\n    r = scripted_grasp([1.1, -0.3, 0.93], approach_z=0.12)\n    print(r[\"ok\"], r.get(\"stage\"))"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "rldx_skill",
+			"side": "ts",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"prompt": {
+					"type": "string",
+					"required": true,
+					"description": "Complete live task_language, copied verbatim"
+				},
+				"base_clip": {
+					"type": "number",
+					"description": "Base motion cap, >= 0 (default: no clamp); a negative value means no clamp"
+				},
+				"max_chunks": {
+					"type": "integer",
+					"description": "Action-chunk budget (default 70; RLDX_MAX_CHUNKS overrides)"
+				},
+				"force_reset": {
+					"type": "boolean",
+					"description": "Force VLA frame history reset (default false)"
+				},
+				"n_action_steps": {
+					"type": "integer",
+					"description": "Actions per VLA chunk (default 8)"
+				},
+				"settle_patience": {
+					"type": "integer",
+					"description": "Settle chunk budget before declaring done (default 999; do NOT set small)"
+				},
+				"settle_eps": {
+					"type": "number",
+					"description": "Settle position tolerance, m (default 0.012)"
+				}
+			},
+			"doc": {
+				"tool": "RLDX-1 VLA closed-loop skill with FULL base motion: the VLA drives both arm and mobile base. Use for full-body tasks where the base must reposition. Pass the complete live task_language verbatim; the runtime always uses that environment language. Do NOT interrupt consecutive VLA calls with manual primitives: that breaks VLA frame history continuity (sets vla_desync)."
+			},
+			"result": "motion"
+		},
+		{
+			"name": "rldx_arm",
+			"side": "ts",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"prompt": {
+					"type": "string",
+					"required": true,
+					"description": "Complete live task_language, copied verbatim"
+				},
+				"base_clip": {
+					"type": "number",
+					"description": "Base motion cap, >= 0 (default 0.1 = small); a negative value means no clamp"
+				},
+				"max_chunks": {
+					"type": "integer",
+					"description": "Action-chunk budget (default 70; RLDX_MAX_CHUNKS overrides)"
+				},
+				"force_reset": {
+					"type": "boolean",
+					"description": "Force VLA frame history reset (default false)"
+				},
+				"n_action_steps": {
+					"type": "integer",
+					"description": "Actions per VLA chunk (default 8)"
+				},
+				"settle_patience": {
+					"type": "integer",
+					"description": "Settle chunk budget before declaring done (default 999; do NOT set small)"
+				},
+				"settle_eps": {
+					"type": "number",
+					"description": "Settle position tolerance, m (default 0.012)"
+				}
+			},
+			"doc": {
+				"tool": "RLDX-1 VLA closed-loop skill with the base CLAMPED to small motions (base_clip 0.1): the VLA drives the arm for precise micro-alignment but cannot drive the base away. Pass the complete live task_language verbatim. Do NOT interrupt consecutive VLA calls with manual primitives."
+			},
+			"result": "motion"
+		},
+		{
+			"name": "navigate_to",
+			"side": "env",
+			"method": "env.navigate_to",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"xy": {
+					"type": "array",
+					"required": true,
+					"items": "number",
+					"minItems": 2,
+					"maxItems": 2,
+					"description": "World-frame [x, y], m"
+				},
+				"tol": {
+					"type": "number",
+					"minimum": 0.01,
+					"maximum": 2,
+					"description": "Distance threshold to stop, m (default 0.20)"
+				},
+				"max_steps": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 1000,
+					"description": "Step budget (default 300)"
+				},
+				"gripper": {
+					"type": "enum",
+					"values": [
+						"close",
+						"open",
+						"hold"
+					],
+					"description": "'close', 'open', or 'hold' to maintain the current finger width (default 'hold')"
+				}
+			},
+			"doc": {
+				"tool": "Drive the mobile base toward a WORLD (x, y) target. Online-calibrates the base forward heading, then turns to face and drives forward closed-loop. Holds the arm in place. gripper='hold' (default) maintains finger width while driving. Use tol = expected approach distance + object radius.",
+				"code": "Drive the mobile base toward a world (x, y): turn to face it, then drive forward closed-loop (the forward heading is measured once per scene); the arm is held. No path planning: stuck = rammed a fixture. Returns {ok, steps, final_dist, moved, stuck, start_pos, base_pos}.\n\nExample:\n    r = navigate_to([2.0, -1.5], tol=0.4)"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "move_base",
+			"side": "env",
+			"method": "env.move_base",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"forward": {
+					"type": "number",
+					"description": "Forward velocity, [-1, 1] (default 0)"
+				},
+				"lateral": {
+					"type": "number",
+					"description": "Lateral / strafe velocity, [-1, 1] (default 0)"
+				},
+				"turn": {
+					"type": "number",
+					"description": "Yaw rotation velocity, [-1, 1] (default 0)"
+				},
+				"steps": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 200,
+					"description": "Env steps (default 10)"
+				},
+				"gripper": {
+					"type": "enum",
+					"values": [
+						"close",
+						"open",
+						"hold"
+					],
+					"description": "'close', 'open', or 'hold' to maintain the current finger width (default 'hold')"
+				}
+			},
+			"doc": {
+				"tool": "Raw base velocity commands in the robot's LOCAL frame: +forward drives forward, +lateral strafes right, +turn rotates CCW (yaw). Values clamped to [-1, 1]. Use for fine base adjustments near a target; navigate_to for long range. gripper='hold' (default) maintains finger width while driving.",
+				"code": "Raw base velocities in the robot's frame (+forward, +lateral strafes right, +turn counter-clockwise), each clipped to [-1, 1], for steps env steps. Returns {ok, base_moved, base_pos}.\n\nExample:\n    move_base(turn=0.5, steps=8)"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "get_object_pose",
+			"side": "code",
+			"method": "env.get_object_pose",
+			"tier": "high",
+			"requires": [
+				"sam3"
+			],
+			"params": {
+				"object_name": {
+					"type": "string",
+					"required": true,
+					"description": "The object in words, e.g. 'red mug'"
+				},
+				"return_bbox_extent": {
+					"type": "boolean",
+					"description": "Also return the bounding-box extent (default false)"
+				}
+			},
+			"doc": {
+				"code": "Get the pose of an object from a natural language description (SAM3 on the agentview, then the wrist view, and depth). The quaternion is identity: disregard it (goto_pose holds the gripper's orientation).\n\nReturns:\n    [position (3,), quaternion_wxyz (4,), bbox_extent (3,) or None]: world metres, full side lengths.\n\nExample:\n    pos, _, ext = get_object_pose(\"mug\", return_bbox_extent=True)"
+			}
+		},
+		{
+			"name": "goto_pose",
+			"side": "code",
+			"method": "env.goto_pose",
+			"tier": "high",
+			"mutating": true,
+			"params": {
+				"position": {
+					"type": "vec3",
+					"required": true,
+					"description": "World [x, y, z] of the gripper, m"
+				},
+				"z_approach": {
+					"type": "number",
+					"minimum": 0,
+					"maximum": 0.3,
+					"description": "First stop this far above position, m (default 0)"
+				}
+			},
+			"doc": {
+				"code": "Go to a gripper position (RoboCasa's servo holds the gripper's orientation, so there is no quaternion); with z_approach first stop that far above it. There is no need to call goto_pose again after z_approach.\n\nExample:\n    pos, _, _ = get_object_pose(\"mug\")\n    goto_pose(pos, z_approach=0.1)"
+			}
+		},
+		{
+			"name": "home_pose",
+			"side": "code",
+			"method": "env.home_pose",
+			"tier": "high",
+			"mutating": true,
+			"doc": {
+				"code": "Move the gripper back to its reset position relative to the base (where the base stands now).\n\nExample:\n    home_pose()"
+			}
+		},
+		{
+			"name": "open_gripper",
+			"side": "code",
+			"method": "env.open_gripper",
+			"tier": "high",
+			"mutating": true,
+			"doc": {
+				"code": "Open gripper fully.\n\nExample:\n    open_gripper()"
+			}
+		},
+		{
+			"name": "close_gripper",
+			"side": "code",
+			"method": "env.close_gripper",
+			"tier": "high",
+			"mutating": true,
+			"doc": {
+				"code": "Close gripper fully (the fingers stop on an object).\n\nExample:\n    close_gripper()"
+			}
+		},
+		{
+			"name": "get_state",
+			"side": "code",
+			"method": "env.get_state",
+			"tier": "low",
+			"doc": {
+				"code": "The robot's proprioception: robot0_eef_pos, robot0_eef_quat (xyzw), robot0_gripper_qpos, robot0_base_pos, robot0_base_quat, robot0_base_to_eef_pos ... (world frame unless named relative) and env_steps.\n\nExample:\n    st = get_state()\n    print(st[\"robot0_eef_pos\"], st[\"robot0_base_pos\"])"
+			}
+		},
+		{
+			"name": "check_success",
+			"side": "code",
+			"method": "env.check_success",
+			"tier": "low",
+			"doc": {
+				"code": "Whether the task is solved.\n\nExample:\n    if check_success():\n        print(\"done\")"
+			}
+		},
+		{
+			"name": "get_success_criteria_text",
+			"side": "code",
+			"method": "env.get_success_criteria_text",
+			"tier": "low",
+			"doc": {
+				"code": "The task's success check (its source) as text.\n\nExample:\n    print(get_success_criteria_text()[:500])"
+			}
+		},
+		{
+			"name": "render_camera",
+			"side": "code",
+			"method": "env.render_camera",
+			"tier": "low",
+			"params": {
+				"camera_name": {
+					"type": "string",
+					"required": true,
+					"description": "Camera name, e.g. 'robot0_agentview_left'"
+				},
+				"height": {
+					"type": "integer",
+					"minimum": 16,
+					"maximum": 1024,
+					"description": "Pixels",
+					"required": true
+				},
+				"width": {
+					"type": "integer",
+					"minimum": 16,
+					"maximum": 1024,
+					"description": "Pixels",
+					"required": true
+				},
+				"depth": {
+					"type": "boolean",
+					"required": true,
+					"description": "Also return the depth map"
+				}
+			},
+			"doc": {
+				"code": "One camera's RGB (and depth) frame, robosuite-native orientation.\n\nExample:\n    rgb, depth = render_camera(\"robot0_agentview_left\", 256, 256, True)\n    rgb = rgb[::-1]  # robosuite renders bottom-up"
+			}
+		},
+		{
+			"name": "get_camera_meta",
+			"side": "code",
+			"method": "env.get_camera_meta",
+			"tier": "low",
+			"params": {
+				"camera_name": {
+					"type": "string",
+					"required": true,
+					"description": "'robot0_agentview_left', 'mobilebase0_navview', 'robot0_eye_in_hand', ..."
+				},
+				"height": {
+					"type": "integer",
+					"minimum": 16,
+					"maximum": 1024,
+					"description": "Pixels"
+				},
+				"width": {
+					"type": "integer",
+					"minimum": 16,
+					"maximum": 1024,
+					"description": "Pixels"
+				}
+			},
+			"doc": {
+				"code": "Camera intrinsics and extrinsics.\n\nExample:\n    meta = get_camera_meta(\"robot0_agentview_left\", 256, 256)\n    K, T = meta[\"intrinsic\"], meta[\"extrinsic_cam2world\"]"
+			}
+		},
+		{
+			"name": "get_camera_transform",
+			"side": "code",
+			"method": "env.get_camera_transform",
+			"tier": "low",
+			"params": {
+				"camera_name": {
+					"type": "string",
+					"required": true,
+					"description": "'robot0_agentview_left', 'mobilebase0_navview', 'robot0_eye_in_hand', ..."
+				},
+				"height": {
+					"type": "integer",
+					"minimum": 16,
+					"maximum": 1024,
+					"description": "Pixels"
+				},
+				"width": {
+					"type": "integer",
+					"minimum": 16,
+					"maximum": 1024,
+					"description": "Pixels"
+				}
+			},
+			"doc": {
+				"code": "The camera's pixel-to-world transform.\n\nExample:\n    T = np.asarray(get_camera_transform(\"robot0_agentview_left\", 256, 256))\n    xyz = T @ [col * z, row * z, z, 1]  # a depth pixel to world"
+			}
+		},
+		{
+			"name": "raw_obs",
+			"side": "code",
+			"method": "env.get_state",
+			"tier": "raw",
+			"doc": {
+				"code": "The robot's raw observations (robot0_* arrays, no images, no object state) and env_steps.\n\nExample:\n    print(raw_obs()[\"robot0_eef_pos\"])"
+			}
+		},
+		{
+			"name": "step",
+			"side": "code",
+			"method": "env.step",
+			"tier": "raw",
+			"mutating": true,
+			"params": {
+				"flat_action": {
+					"type": "array",
+					"required": true,
+					"items": "number",
+					"minItems": 12,
+					"maxItems": 12,
+					"description": "12 floats"
+				}
+			},
+			"doc": {
+				"code": "One PandaOmron action [eef_pos 3, eef_rot 3, gripper, base 3, torso, base_mode].\n\nExample:\n    r = step([0, 0, 0.5, 0, 0, 0, -1, 0, 0, 0, 0, -1])  # arm up 2.5 cm, gripper open\n    print(r[\"obs\"][\"robot0_eef_pos\"], r[\"done\"])"
+			}
+		},
+		{
+			"name": "get_task_progress",
+			"side": "code",
+			"method": "env.get_task_progress",
+			"tier": "privileged",
+			"doc": {
+				"code": "Privileged: the task's progress dict, the success check's variables (object distances, fixture states, which conditions hold).\n\nExample:\n    print(get_task_progress())"
+			}
+		},
+		{
+			"name": "grasp_contact",
+			"side": "code",
+			"method": "env.grasp_contact",
+			"tier": "privileged",
+			"doc": {
+				"code": "Privileged: [touching, object_name]: whether the gripper touches a task object, and which.\n\nExample:\n    touching, name = grasp_contact()"
+			}
+		},
+		{
+			"use": "sim/ground_truth_poses"
+		},
+		{
+			"use": "perception/detect"
+		},
+		{
+			"use": "perception/select_detection"
+		},
+		{
+			"use": "perception/reject_detection"
+		},
+		{
+			"use": "perception/enhance_depth"
+		},
+		{
+			"use": "modules/finish"
+		},
+		{
+			"use": "modules/act"
+		},
+		{
+			"use": "modules/plan"
+		},
+		{
+			"use": "modules/point"
+		},
+		{
+			"use": "modules/reset"
+		},
+		{
+			"use": "modules/run_code"
+		}
+	]
+}

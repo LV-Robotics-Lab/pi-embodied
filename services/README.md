@@ -32,6 +32,14 @@ services/
 `franka/perception.py` and `dual_franka/perception.py` hold the calibration and base-frame
 helpers.
 
+The robots' primitives are declared in the repo's
+`packages/embodied/src/primitives/manifests/<robot>.json` (shared entries in `common/`), not here:
+`components/manifest.py` reads them by repo-relative path (`services/../packages/embodied/...`), so
+a services checkout needs the package next to it, or `PI_EMBODIED_MANIFESTS=<dir>` pointing at a
+copy of that directory. An env server builds `code.api` and its programs' whitelist from its
+manifest and refuses to start when its RPC methods and the manifest disagree
+(packages/embodied/docs/adding-a-primitive.md).
+
 ## Behavior
 
 - One call at a time per server (process-wide lock).

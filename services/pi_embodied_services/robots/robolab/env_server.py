@@ -33,7 +33,7 @@ Isaac Sim starts in ``__init__`` (tens of seconds, minutes on a cold shader cach
 server binds, so healthz answers only once the task is loaded. Every call runs on the main
 thread (the Kit app is not thread-safe).
 
-Code mode (``code.run``, utils/code_exec.py ``CodeRunMixin``): a program calls the registry's
+Code mode (``code.run``, utils/code_exec.py ``CodeRunMixin``): a program calls the manifest's
 primitives in a sandboxed subprocess, so the server requires its RPC token and refuses other
 business calls while a program runs. What a program receives drops the images (a motion's and a
 raw step's frames go to the run's video) and the subtask judgement (the evaluator's, like
@@ -54,10 +54,8 @@ from typing import Any
 
 import numpy as np
 
-from pi_embodied_services.components.code_api import register_code_api
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
 from pi_embodied_services.robots.robolab import sim
-from pi_embodied_services.robots.robolab.primitives import ROBOLAB_PRIMITIVES
 from pi_embodied_services.utils import ground_truth
 from pi_embodied_services.utils.code_exec import CodeRunMixin
 from pi_embodied_services.utils.perception import (
@@ -127,15 +125,26 @@ class RobolabEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         self._rpc["env.rotate_delta"] = self.rotate_delta
         self._rpc["env.state"] = self.state
         self._rpc["env.ground_truth_poses"] = self.ground_truth_poses
-        api = register_code_api(self, ROBOLAB_PRIMITIVES)
-        self._install_code_run(
-            api,
+        # The primitives are packages/embodied/src/primitives/manifests/robolab.json (with pi);
+        # code.api, the programs' whitelist and the startup self-check come from it.
+        self._manifest_code_run(
+            "robolab",
+            have=self._has,
             move_m=self._code_move_m,
             check=self._code_check,
             reply=self._code_reply,
             begin=self._begin_run,
             finish=self._finish_run,
         )
+
+    def _has(self, capability: str) -> bool:
+        """What this server can serve of the manifest's ``requires`` (perception is installed
+        after ``_register_rpc``; the check runs at ``serve``)."""
+        return {
+            "sam3": "env.detect" in self._rpc,
+            "unidepth": "env.enhance_depth" in self._rpc,
+            "privileged": True,
+        }.get(capability, False)
 
     # ---- code mode (run_code) ----
 

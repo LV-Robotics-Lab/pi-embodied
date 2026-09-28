@@ -94,7 +94,8 @@ limits:                      # !! CAPTURE ON HARDWARE !!
   divergence_resync_m: 0.01  # measured vs setpoint gap that re-anchors the setpoint
   divergence_resync_rad: 0.05
   reset_lift_m: 0.05         # reset: straight-up moveL before the joint move (kept under workspace_max z)
-  reset_path_samples: 10     # points of the reset's joint path checked against the box (forward kinematics)
+  reset_path_samples: 10     # points of a joint path (reset, move_to_joints) checked against the box (forward kinematics)
+  max_joint_step_rad: 0.3    # move_to_joints: largest joint change per call (its TCP path also within max_move_m / max_rotate_rad)
 
 gripper:                     # Robotiq 2F-85: 0.085 m stroke (2F-140: 0.14)
   stroke_m: 0.085

@@ -16,7 +16,7 @@
 
 Methods and result shapes follow the Franka servers (``robots/franka_polymetis``):
 ``env.get_env_meta`` reports ``capabilities`` in the same layout, motions return the
-franka-env keys, and ``env.set_gripper`` reports ``gripper_jammed`` / ``grasp_empty``.
+franka-env keys, and ``env.open_gripper`` / ``env.close_gripper`` report ``gripper_jammed`` / ``grasp_empty``.
 Differences: ``env.move_pose`` (absolute pose within the per-call limits), no
 ``env.chunk_step`` (no VLA), and observations are per camera (``images`` /
 ``depths`` dicts) because the cameras may be RGB-only webcams or RTSP streams.
@@ -41,10 +41,18 @@ The config (limits, begin pose, every camera's hand-eye calibration) is bound to
 one arm: ``calibration.arm_id`` must equal the controller's serial number, and each
 calibration YAML must name the same arm.
 
-Code mode (``code.run``, utils/code_real.py; only with ``--code``): a program's motions run through
-these same guarded methods, and pi's tighter ``--max-move`` / ``--max-rotate`` arrive with
-``code.set_limits`` and are applied as pi's tools apply them (``move_pose``: the translation from
-the live TCP).
+pi's limits (utils/code_real.py): pi passes its ``--max-move`` / ``--max-rotate`` at spawn and
+every motion method holds them, next to the config's own caps, for every caller (pi's tools, the
+units, a program, a manual call); ``env.get_env_meta`` reports them as ``motion_limits``.
+
+Primitives (packages/embodied/src/primitives/manifests/ur5e.json, read for ``code.api`` and the
+startup self-check): ``move_delta`` / ``move_pose`` / ``rotate_delta`` / ``open_gripper`` /
+``close_gripper`` are what pi's tools and a program call alike. ``solve_ik`` / ``move_to_joints``
+are CaP-X's joint-space pair: the controller's IK (checked with its FK), and a moveJ bounded per
+call (a joint change of at most ``limits.max_joint_step_rad``; the TCP, at sampled points of the
+joint path, within --max-move / --max-rotate of where it starts, inside the workspace, under the
+tilt limit; the reset's joint speed; stopJ on ``stop``). Code mode (``code.run``) is served only
+with ``--code``.
 
 Deploying: on the UR pendant enable Remote Control and the RTDE/URCap ports; on the
 workstation install the services' ``ur5e`` extra (``ur-rtde``, cameras; add
@@ -74,7 +82,6 @@ from pi_embodied_services.components.cameras import (
     parse_sources,
     validate_device,
 )
-from pi_embodied_services.components.code_api import register_code_api
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
 from pi_embodied_services.robots.ur5e.calibrate import load_calibration_yaml
 from pi_embodied_services.robots.ur5e.control import (
@@ -83,11 +90,12 @@ from pi_embodied_services.robots.ur5e.control import (
     UR5eLimits,
     pose7_of,
 )
-from pi_embodied_services.robots.ur5e.primitives import UR5E_PRIMITIVES
 from pi_embodied_services.utils import hardware_lock
 from pi_embodied_services.utils.code_real import (
     RealCodeMode,
     add_code_argument,
+    add_limit_arguments,
+    limits_from_args,
     vec3,
 )
 from pi_embodied_services.utils.daemon import watch_parent_death
@@ -111,6 +119,10 @@ METHODS = (
     "move_pose",
     "rotate_delta",
     "set_gripper",
+    "open_gripper",
+    "close_gripper",
+    "solve_ik",
+    "move_to_joints",
 )
 
 #: ``gripper:`` section keys -> UR5eLimits fields.
@@ -276,8 +288,8 @@ class UR5eEnvFacade(RealCodeMode, BaseEnvFacade):
     """The ``env.*`` protocol on one UR5e (see the module docstring)."""
 
     SERVICE_NAME = "ur5e-env"
-    #: Code mode: pi's per-call limits (its --max-move / --max-rotate, when tighter than the arm's).
-    _CODE_LIMITS = {"max_move_m": True, "max_rotate_rad": True}
+    #: pi's per-call limits (its --max-move / --max-rotate defaults); the config's caps apply too.
+    _LIMIT_DEFAULTS = {"max_move_m": 0.08, "max_rotate_rad": 0.2}
 
     def __init__(
         self,
@@ -292,9 +304,11 @@ class UR5eEnvFacade(RealCodeMode, BaseEnvFacade):
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
         code: bool = False,
+        limits: dict[str, Any] | None = None,
     ) -> None:
-        # --code: code.run over the registry, behind the RPC token (utils/code_real.py).
+        # --code: code.run over the manifest, behind the RPC token; pi's limits (utils/code_real.py).
         self._enable_code(code)
+        self._set_limits(limits)
         super().__init__()
         self._cfg = cfg
         self._config_path = config_path
@@ -427,7 +441,15 @@ class UR5eEnvFacade(RealCodeMode, BaseEnvFacade):
     def _register_rpc(self) -> None:
         for name in METHODS:
             self._rpc[f"env.{name}"] = getattr(self, name)
-        self._install_real_code_run(register_code_api(self, UR5E_PRIMITIVES))
+        # code.api, the programs' whitelist and the startup self-check: manifests/ur5e.json.
+        self._install_real("ur5e", have=self._has)
+
+    def _has(self, capability: str) -> bool:
+        """What this server can serve of the manifest's ``requires`` (pi's must agree)."""
+        return {
+            "sam3": "env.detect" in self._rpc,
+            "unidepth": "env.enhance_depth" in self._rpc,
+        }.get(capability, False)
 
     # -- code mode (run_code) ----------------------------------------------
 
@@ -435,42 +457,24 @@ class UR5eEnvFacade(RealCodeMode, BaseEnvFacade):
         """pi's episode video follows the main camera."""
         return (obs.get("images") or {}).get(self._main)
 
-    def _code_translation(self, method: str, kwargs: dict) -> float:
+    def _code_move_m(self, method: str, kwargs: dict) -> float:
+        """A program call's translation (the run's move budget): move_delta's delta,
+        move_pose's distance from the setpoint, a joint move's TCP translation (forward
+        kinematics); a rotation turns the TCP in place, the gripper moves none."""
         if method == "env.move_delta":
             return float(np.linalg.norm(vec3(kwargs["delta_xyz"], "delta_xyz")))
         if method == "env.move_pose":
-            tcp = np.asarray(self.controller.state()["tcp_pose"][:3], dtype=np.float64)
-            return float(np.linalg.norm(vec3(kwargs["xyz"], "xyz") - tcp))
+            start = self.controller.setpoint()[:3]
+            return float(np.linalg.norm(vec3(kwargs["xyz"], "xyz") - start))
+        if method == "env.move_to_joints":
+            try:
+                q0 = np.asarray(self._arm.joints(), dtype=np.float64)
+                q1 = np.asarray(kwargs["joints"], dtype=np.float64).reshape(6)
+                a, b = self.controller._fk(q0), self.controller._fk(q1)
+                return float(np.linalg.norm(b[:3] - a[:3]))
+            except Exception:
+                return 0.0
         return 0.0
-
-    def _code_move_m(self, method: str, kwargs: dict) -> float:
-        """move_delta's delta, move_pose's distance from the live TCP; a rotation turns the TCP
-        in place, the gripper moves none."""
-        return self._code_translation(method, kwargs)
-
-    def _code_check(self, method: str, kwargs: dict) -> None:
-        """Refuse a program's motion as pi's tools would, before it is commanded (the server's
-        own caps, box, floor and tilt check it again)."""
-        if method in ("env.move_delta", "env.move_pose"):
-            norm, limit = (
-                self._code_translation(method, kwargs),
-                self._limit("max_move_m"),
-            )
-            if not norm <= limit:
-                raise ValueError(
-                    f"the move is {norm:.4f} m; the limit is {limit} m per call. Split the "
-                    "motion into smaller calls."
-                )
-        elif method == "env.rotate_delta":
-            rpy, limit = (
-                vec3(kwargs["delta_rpy"], "delta_rpy"),
-                self._limit("max_rotate_rad"),
-            )
-            if not np.linalg.norm(rpy) <= limit:
-                raise ValueError(
-                    f"the rotation is {np.linalg.norm(rpy):.4f} rad; the limit is {limit} rad "
-                    "per call. Split it into smaller calls."
-                )
 
     def close(self) -> None:
         for cam in self._cameras.values():
@@ -541,6 +545,7 @@ class UR5eEnvFacade(RealCodeMode, BaseEnvFacade):
                 "empty_width_m": lim.empty_width_m,
                 "gripper_stroke_m": lim.gripper_stroke_m,
                 "reset_lift_m": lim.reset_lift_m,
+                "max_joint_step_rad": lim.max_joint_step_rad,
             },
             "capabilities": self.capabilities(),
             "tasks": self._cfg.get("tasks") or {},
@@ -642,22 +647,78 @@ class UR5eEnvFacade(RealCodeMode, BaseEnvFacade):
     # -- motion -----------------------------------------------------------
 
     def move_delta(self, delta_xyz: Any) -> dict[str, Any]:
+        """Translate the TCP by a base-frame delta (m), orientation held; refused beyond pi's
+        --max-move and the config's limit, or out of the workspace."""
         self._require_cameras("the move")
-        return self.controller.move_delta(delta_xyz)
+        return self.controller.move_delta(
+            delta_xyz, max_move_m=self._limit("max_move_m")
+        )
 
     def move_pose(
         self, xyz: Any, rotvec: Any = None, rpy: Any = None
     ) -> dict[str, Any]:
+        """Move the TCP to an absolute base-frame pose within pi's --max-move / --max-rotate
+        and the config's limits from the setpoint."""
+        if rotvec is not None and rpy is not None:
+            raise ValueError("give rotvec or rpy, not both; nothing was commanded")
         self._require_cameras("the move")
-        return self.controller.move_pose(xyz, rotvec=rotvec, rpy=rpy)
+        return self.controller.move_pose(
+            xyz,
+            rotvec=rotvec,
+            rpy=rpy,
+            max_move_m=self._limit("max_move_m"),
+            max_rotate_rad=self._limit("max_rotate_rad"),
+        )
 
     def rotate_delta(self, delta_rpy: Any) -> dict[str, Any]:
+        """Rotate the TCP by base-frame rpy (rad); refused beyond pi's --max-rotate and the
+        config's limit, or past the tilt limit."""
         self._require_cameras("the rotation")
-        return self.controller.rotate_delta(delta_rpy)
+        return self.controller.rotate_delta(
+            delta_rpy, max_rotate_rad=self._limit("max_rotate_rad")
+        )
 
-    def set_gripper(self, *, open: bool) -> dict[str, Any]:
+    def _set_gripper(self, open: bool) -> dict[str, Any]:
         self._require_cameras("the gripper command")
-        result = self.controller.set_gripper(open=bool(open))
+        result = self.controller.set_gripper(open=open)
+        result["robot_state"] = self.get_robot_state()
+        result["states"] = None
+        return result
+
+    def set_gripper(self, open: bool) -> dict[str, Any]:
+        """Open (True) or close (False) the gripper: the low tier's open_gripper / close_gripper."""
+        return self._set_gripper(bool(open))
+
+    def open_gripper(self) -> dict[str, Any]:
+        """Open the Robotiq gripper and wait for the fingers to settle."""
+        return self._set_gripper(True)
+
+    def close_gripper(self) -> dict[str, Any]:
+        """Close the Robotiq gripper and wait for the fingers to settle; an empty close
+        reopens (``grasp_empty``)."""
+        return self._set_gripper(False)
+
+    def solve_ik(self, position: Any, quaternion_wxyz: Any = None) -> dict[str, Any]:
+        """CaP-X's solve_ik: joints (6, rad) for a TCP position (base frame, m) and
+        orientation (wxyz; None: the current one), from the current joints. Nothing moves."""
+        quat = None
+        if quaternion_wxyz is not None:
+            q = np.asarray(quaternion_wxyz, dtype=np.float64).reshape(-1)
+            if q.shape != (4,):
+                raise ValueError("quaternion_wxyz must be 4 numbers (w, x, y, z)")
+            quat = [q[1], q[2], q[3], q[0]]
+        return self.controller.solve_ik(vec3(position, "position"), quat)
+
+    def move_to_joints(self, joints: Any) -> dict[str, Any]:
+        """CaP-X's move_to_joints, bounded per call (control.py ``move_to_joints_bounded``):
+        pi's --max-move / --max-rotate and the config's caps along the FK-checked path,
+        ``limits.max_joint_step_rad`` per joint, the workspace and tilt limits."""
+        self._require_cameras("the joint move")
+        result = self.controller.move_to_joints_bounded(
+            joints,
+            max_move_m=self._limit("max_move_m"),
+            max_rotate_rad=self._limit("max_rotate_rad"),
+        )
         result["robot_state"] = self.get_robot_state()
         result["states"] = None
         return result
@@ -808,6 +869,7 @@ def main(argv: list[str] | None = None) -> int:
     hardware_lock.add_lock_arguments(parser)
     add_perception_arguments(parser, sam3=True)
     add_code_argument(parser)
+    add_limit_arguments(parser, UR5eEnvFacade._LIMIT_DEFAULTS)
     args = parser.parse_args(argv)
     if args.mock:
         from pi_embodied_services.robots.ur5e.mock import MOCK_ENV
@@ -855,6 +917,7 @@ def main(argv: list[str] | None = None) -> int:
             camera_flag=args.cameras,
             task_description=args.task_description,
             code=args.code,
+            limits=limits_from_args(args, UR5eEnvFacade._LIMIT_DEFAULTS),
         )
         # --sam3 / --unidepth: env.detect, env.select_detection, env.reject_detection and
         # env.enhance_depth (UniDepth fills an RGB-only camera's depth) on get_observation's frames.
@@ -865,7 +928,13 @@ def main(argv: list[str] | None = None) -> int:
             intrinsics=lambda key: (
                 facade.get_camera_meta()["cameras"].get(key) or {}
             ).get("intrinsic_K"),
-            mutating=("env.move_pose",),
+            mutating=(
+                "env.move_pose",
+                "env.set_gripper",
+                "env.open_gripper",
+                "env.close_gripper",
+                "env.move_to_joints",
+            ),
         )
     except Exception:
         for cam in cameras.values():

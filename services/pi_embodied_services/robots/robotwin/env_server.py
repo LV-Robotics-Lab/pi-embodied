@@ -45,9 +45,7 @@ import torch
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from pi_embodied_services.components.code_api import register_code_api
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
-from pi_embodied_services.robots.robotwin.primitives import ROBOTWIN_PRIMITIVES
 from pi_embodied_services.utils import ground_truth
 from pi_embodied_services.utils.code_exec import CodeRunMixin
 from pi_embodied_services.utils.logging import get_logger
@@ -63,6 +61,24 @@ CODE_MAX_CHUNK = 64
 #: any one arm joint. An upper bound: the aloha-agilex arms (Piper) reach about 0.63 m, and no
 #: joint is farther than that from the gripper.
 JOINT_REACH_M = 0.7
+#: The motion methods (pi's tools and the programs' primitives alike): one arm's joint and gripper
+#: offsets in qpos14, cuRobo's planner status that means a path, and the waypoints ``move_to``
+#: executes by default (evenly subsampled from the planned path; 0 = all of them).
+ARM_OFFSET = {"left": 0, "right": 7}
+PLAN_OK = "Success"
+DEFAULT_SUBSTEPS = 25
+#: traj_plan's start pose must be the current eef pose within this (cuRobo plans from the joints).
+START_TOL_M = 0.01
+START_TOL_RAD = 0.05
+#: Methods that step the env and answer a motion report (their frames go to a run's video).
+MOTION_METHODS = (
+    "env.move_to",
+    "env.rotate_wrist",
+    "env.set_gripper",
+    "env.release",
+    "env.move_to_joints",
+    "env.move_along_trajectory",
+)
 
 
 @lru_cache(maxsize=None)
@@ -187,6 +203,33 @@ from pi_embodied_services.utils.perception import (
 )
 
 
+def _arm(arm: str) -> str:
+    if arm not in ARM_OFFSET:
+        raise ValueError(f"arm must be 'left' or 'right', got {arm!r}")
+    return arm
+
+
+def _finite(value, n: int, name: str) -> np.ndarray:
+    a = np.asarray(value, dtype=np.float64).reshape(-1)
+    if a.shape != (n,) or not np.isfinite(a).all():
+        raise ValueError(f"{name} must be {n} finite numbers")
+    return a
+
+
+def _qmult(a, b) -> np.ndarray:
+    """Hamilton product of wxyz quaternions."""
+    w1, x1, y1, z1 = a
+    w2, x2, y2, z2 = b
+    return np.array(
+        [
+            w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+            w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+            w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+            w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+        ]
+    )
+
+
 class RoboTwinEnvFacade(CodeRunMixin, BaseEnvFacade):
     """Expose common and typed RoboTwin environment RPC contracts."""
 
@@ -248,18 +291,39 @@ class RoboTwinEnvFacade(CodeRunMixin, BaseEnvFacade):
 
     def _register_rpc(self) -> None:
         super()._register_rpc()
-        self._rpc["env.plan_arm_path"] = self.plan_arm_path
         self._rpc["env.ground_truth_poses"] = self.ground_truth_poses
         self._rpc["env.policy_frame"] = self.policy_frame
-        api = register_code_api(self, ROBOTWIN_PRIMITIVES)
-        self._install_code_run(
-            api,
+        for name in (
+            "move_to",
+            "rotate_wrist",
+            "set_gripper",
+            "release",
+            "solve_ik",
+            "traj_plan",
+            "move_to_joints",
+            "move_along_trajectory",
+        ):
+            self._rpc[f"env.{name}"] = getattr(self, name)
+        self._readonly_methods.update(["env.solve_ik", "env.traj_plan"])
+        # The primitives are packages/embodied/src/primitives/manifests/robotwin.json (with pi);
+        # code.api, the programs' whitelist and the startup self-check come from it.
+        self._manifest_code_run(
+            "robotwin",
+            have=self._has,
             move_m=self._code_move_m,
             check=self._code_check,
             reply=self._code_reply,
             begin=self._begin_run,
             finish=self._finish_run,
         )
+
+    def _has(self, capability: str) -> bool:
+        """What this server can serve of the manifest's ``requires``."""
+        return {
+            "sam3": "env.detect" in self._rpc,
+            "unidepth": "env.enhance_depth" in self._rpc,
+            "privileged": True,
+        }.get(capability, False)
 
     # ---- code mode (run_code) ----
 
@@ -334,6 +398,13 @@ class RoboTwinEnvFacade(CodeRunMixin, BaseEnvFacade):
         (``get_state``; the program renders what it needs); a raw step's reward, flags, robot state
         and status, without the camera observation (its head frames go to the run's video)."""
         out = to_numpy_tree(out)
+        if method in MOTION_METHODS:
+            out = dict(out)
+            self._keep_frames(out.pop("frames", []))
+            out.pop("policy_frames", None)
+            out.pop("per_step", None)
+            out["info"] = self._absorb_step_info(out["info"])
+            return out
         if method == "env.policy_frame":
             return {k: out[k] for k in ("qpos", "qpos_target", "state")}
         if method not in ("env.step", "env.chunk_step"):
@@ -364,6 +435,8 @@ class RoboTwinEnvFacade(CodeRunMixin, BaseEnvFacade):
         """How far a program's raw actions may move the grippers (the run's translation cap),
         from the state they start at: a qpos action's arm-joint changes times ``JOINT_REACH_M``
         (an upper bound), an ee action's change of the two eef positions."""
+        if method in MOTION_METHODS:
+            return self._motion_move_m(method, kwargs)
         if method not in ("env.step", "env.chunk_step"):
             return 0.0
         ee = kwargs.get("action_type") == "ee"
@@ -380,10 +453,40 @@ class RoboTwinEnvFacade(CodeRunMixin, BaseEnvFacade):
             prev = row
         return total
 
+    def _motion_move_m(self, method: str, kwargs: dict) -> float:
+        """A motion method's estimate: move_to the eef's straight distance to the target (the
+        planned path may be longer: the planner avoids collisions); a joint motion its joint
+        changes times ``JOINT_REACH_M``; a wrist turn or a gripper none."""
+        qpos, eef = self._code_ref()
+        arm = _arm(kwargs["arm"])
+        off = ARM_OFFSET[arm]
+        if method == "env.move_to":
+            pos = eef[0:3] if arm == "left" else eef[8:11]
+            return float(np.linalg.norm(_finite(kwargs["xyz"], 3, "xyz") - pos))
+        if method in ("env.move_to_joints", "env.move_along_trajectory"):
+            rows = np.asarray(
+                kwargs["joints"]
+                if method == "env.move_to_joints"
+                else kwargs["trajectory"],
+                dtype=np.float64,
+            ).reshape(-1, 6)
+            prev, total = qpos[off : off + 6], 0.0
+            for row in rows:
+                total += JOINT_REACH_M * float(np.abs(row - prev).sum())
+                prev = row
+            return total
+        return 0.0
+
     def _code_check(self, method: str, kwargs: dict) -> None:
         """Refuse a program's chunk longer than ``CODE_MAX_CHUNK``: a chunk polls the stop only
         between native actions (an ``ee`` one plans and runs a whole cuRobo path), and its
         frames and estimate must stay bounded."""
+        if method == "env.move_along_trajectory":
+            n = len(np.asarray(kwargs["trajectory"], dtype=np.float64).reshape(-1)) // 6
+            if n > CODE_MAX_CHUNK:
+                raise ValueError(
+                    f"move_along_trajectory runs at most {CODE_MAX_CHUNK} waypoints per call, got {n}"
+                )
         if method == "env.chunk_step":
             n = len(np.asarray(kwargs["actions"], dtype=np.float64).reshape(-1))
             dim = 16 if kwargs.get("action_type") == "ee" else 14
@@ -504,8 +607,300 @@ class RoboTwinEnvFacade(CodeRunMixin, BaseEnvFacade):
     def get_task_language(self) -> str:
         return self._env.get_task_language(env_id=0)
 
-    def plan_arm_path(self, arm: str, target_pose) -> dict[str, Any]:
-        return self._env.plan_arm_path(0, arm, target_pose)
+    # ---- motion (pi's tools and the programs' primitives run these same methods) ----
+
+    def _now(self) -> dict[str, Any]:
+        """The robot state and episode status now (no rendering)."""
+        return to_numpy_tree(self._env.robot_state(0))
+
+    @staticmethod
+    def _terminal(status: dict[str, Any]) -> bool:
+        limit = status.get("step_lim")
+        return bool(status["eval_success"]) or (
+            limit is not None and int(status["take_action_cnt"]) >= int(limit)
+        )
+
+    @staticmethod
+    def _stop_reason(status: dict[str, Any], completed: bool, cancelled: bool) -> str:
+        limit = status.get("step_lim")
+        if status["eval_success"]:
+            return "native_success"
+        if limit is not None and int(status["take_action_cnt"]) >= int(limit):
+            return "budget_exhausted"
+        if cancelled:
+            return "cancelled"
+        return "completed" if completed else "runtime_failure"
+
+    def _pose(self, arm: str, now: dict[str, Any]) -> np.ndarray:
+        """``arm``'s eef pose [x, y, z, qw, qx, qy, qz] in ``now``."""
+        return np.asarray(now["robot_state"][f"{_arm(arm)}_eef_pose"], dtype=np.float64)
+
+    def _run_rows(
+        self,
+        arm: str,
+        rows: list[tuple[np.ndarray | None, float | None]],
+        return_policy_frames: bool,
+        now: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Run ``rows`` (one arm's joints and/or gripper per native qpos action, the rest of qpos14
+        kept at the commanded target) as one chunk: RoboTwin stops it at success, the action budget
+        or a stop. The report: the counts, the completion, ``info`` (the chunk's robot state and
+        status), the head frame after every action (``frames``) and, when asked, the policy frames
+        with their reward / termination flags (the Flywheel's per-step record)."""
+        off = ARM_OFFSET[_arm(arm)]
+        base = np.asarray(now["robot_state"]["qpos_target14"], dtype=np.float64).copy()
+        chunk = []
+        for joints, gripper in rows:
+            q = base.copy()
+            if joints is not None:
+                q[off : off + 6] = joints
+            if gripper is not None:
+                q[off + 6] = gripper
+            chunk.append(q)
+            base = q
+        obs, rewards, terminated, truncated, info = self.chunk_step(
+            np.asarray(chunk, dtype=np.float64),
+            action_type="qpos",
+            return_all_frames=True,
+            return_policy_frames=bool(return_policy_frames),
+        )
+        info = to_numpy_tree(info)
+        info.pop("per_step", None)
+        executed = int(info.get("executed_actions", 0))
+        status = info["episode_status"]
+        out: dict[str, Any] = {
+            "action_type": "qpos",
+            "requested_actions": len(chunk),
+            "executed_actions": executed,
+            "completed": executed == len(chunk),
+            "requested_steps": len(chunk),
+            "executed_steps": executed,
+            "stop_reason": self._stop_reason(
+                status, executed == len(chunk), bool(info.get("cancelled"))
+            ),
+            "info": info,
+            "frames": list((obs or {}).get("frames") or []),
+        }
+        if return_policy_frames:
+            out["policy_frames"] = list((obs or {}).get("policy_frames") or [])
+            out["per_step"] = {
+                "reward": np.asarray(rewards).reshape(-1).tolist(),
+                "terminated": np.asarray(terminated, dtype=bool).reshape(-1).tolist(),
+                "truncated": np.asarray(truncated, dtype=bool).reshape(-1).tolist(),
+            }
+        return out
+
+    def _idle(self, now: dict[str, Any], **extra: Any) -> dict[str, Any]:
+        """A motion that ran no action (terminal episode, failed plan)."""
+        status = now["episode_status"]
+        return {
+            "action_type": "qpos",
+            "requested_actions": 0,
+            "executed_actions": 0,
+            "completed": False,
+            "requested_steps": 0,
+            "executed_steps": 0,
+            "stop_reason": self._stop_reason(status, False, False),
+            "info": {**now, "executed_actions": 0},
+            "frames": [],
+            **extra,
+        }
+
+    def _plan(
+        self, arm: str, xyz, quat_wxyz, now: dict[str, Any]
+    ) -> tuple[str, np.ndarray | None]:
+        """cuRobo's joint path of ``arm`` to ``xyz`` and ``quat_wxyz`` (default: the current
+        orientation), from the current joints: (status, [waypoints, 6] or None)."""
+        pose = self._pose(arm, now)
+        xyz = _finite(xyz, 3, "xyz")
+        quat = pose[3:] if quat_wxyz is None else _finite(quat_wxyz, 4, "quat_wxyz")
+        planned = to_numpy_tree(
+            self._env.plan_arm_path(0, _arm(arm), np.r_[xyz, quat].tolist())
+        )
+        position = planned.get("position")
+        status = str(planned.get("status", "Unknown"))
+        if status != PLAN_OK or position is None:
+            return status, None
+        return status, np.asarray(position, dtype=np.float64).reshape(-1, 6)
+
+    def move_to(
+        self,
+        arm: str,
+        xyz,
+        quat=None,
+        gripper: float | None = None,
+        substeps: int = DEFAULT_SUBSTEPS,
+        return_policy_frames: bool = False,
+    ) -> dict[str, Any]:
+        """Plan one arm's eef path to a world xyz and wxyz orientation (default: keep) with cuRobo
+        and run its qpos waypoints (``substeps`` of them, evenly subsampled; 0 = all, 1 = the last),
+        holding ``gripper`` (0 closed .. 1 open; default: keep) along the path."""
+        if int(substeps) < 0:
+            raise ValueError("substeps must be non-negative")
+        now = self._now()
+        if self._terminal(now["episode_status"]):
+            return self._idle(now, success=False)
+        status, path = self._plan(arm, xyz, quat, now)
+        if path is None:
+            return self._idle(
+                now,
+                stop_reason="plan_failed",
+                success=False,
+                plan_status=status,
+                hint="target may be unreachable or in collision",
+            )
+        n = len(path)
+        if int(substeps) == 1:
+            path = path[-1:]
+        elif int(substeps) >= 2 and n > int(substeps):
+            path = path[np.linspace(0, n - 1, int(substeps)).astype(int)]
+        g = None if gripper is None else float(gripper)
+        out = self._run_rows(arm, [(q, g) for q in path], return_policy_frames, now)
+        final = np.asarray(
+            out["info"]["robot_state"][f"{_arm(arm)}_eef_pose"], dtype=np.float64
+        )
+        target = _finite(xyz, 3, "xyz")
+        return {
+            **out,
+            "success": True,
+            "plan_status": status,
+            "waypoints": len(path),
+            "final_eef_xyz": [round(float(v), 4) for v in final[:3]],
+            "final_dist_m": round(float(np.linalg.norm(target - final[:3])), 4),
+        }
+
+    def rotate_wrist(
+        self,
+        arm: str,
+        delta_yaw_deg: float,
+        gripper: float | None = None,
+        substeps: int = DEFAULT_SUBSTEPS,
+        return_policy_frames: bool = False,
+    ) -> dict[str, Any]:
+        """Turn one eef about world z by ``delta_yaw_deg`` (eef xyz fixed), planned like
+        :meth:`move_to`."""
+        pose = self._pose(arm, self._now())
+        half = np.deg2rad(float(delta_yaw_deg)) / 2
+        quat = _qmult([np.cos(half), 0.0, 0.0, np.sin(half)], pose[3:])
+        return {
+            **self.move_to(
+                arm, pose[:3], quat, gripper, substeps, return_policy_frames
+            ),
+            "requested_delta_yaw_deg": float(delta_yaw_deg),
+        }
+
+    def set_gripper(
+        self,
+        arm: str,
+        val: float,
+        steps: int = 10,
+        return_policy_frames: bool = False,
+    ) -> dict[str, Any]:
+        """Move one normalized gripper (0 closed .. 1 open) linearly to ``val`` over ``steps``
+        native actions, the arm held."""
+        if int(steps) < 1:
+            raise ValueError("steps must be at least 1")
+        now = self._now()
+        current = float(now["robot_state"][f"{_arm(arm)}_gripper"])
+        target = float(val)
+        rows = [
+            (None, current + (target - current) * (i + 1) / int(steps))
+            for i in range(int(steps))
+        ]
+        out = self._run_rows(arm, rows, return_policy_frames, now)
+        return {
+            **out,
+            "success": True,
+            "gripper_val": round(
+                float(out["info"]["robot_state"][f"{_arm(arm)}_gripper"]), 4
+            ),
+        }
+
+    def release(
+        self,
+        arm: str,
+        val: float = 1.0,
+        steps: int = 10,
+        return_policy_frames: bool = False,
+    ) -> dict[str, Any]:
+        """Open one gripper to ``val`` (default fully) over ``steps`` native actions."""
+        return self.set_gripper(arm, val, steps, return_policy_frames)
+
+    def solve_ik(self, position, quaternion_wxyz, arm: str) -> list[float]:
+        """CaP-X's solve_ik: ``arm``'s six joint angles that put its eef at ``position`` with
+        ``quaternion_wxyz``, the end of cuRobo's collision-checked path to the pose from the
+        current joints (RoboTwin exposes its planner, not a bare IK solver). Raises when it
+        finds none. Nothing moves."""
+        status, path = self._plan(arm, position, quaternion_wxyz, self._now())
+        if path is None:
+            raise ValueError(f"no IK solution (cuRobo: {status})")
+        return [float(v) for v in path[-1]]
+
+    def traj_plan(self, start_pose_wxyz_xyz, end_pose_wxyz_xyz, arm: str) -> list:
+        """CaP-X's traj_plan: joint waypoints [N, 6] of ``arm`` from ``start_pose_wxyz_xyz`` to
+        ``end_pose_wxyz_xyz`` (each wxyz then xyz), cuRobo's planned path. RoboTwin plans from
+        the current joints, so the start pose must be the arm's current eef pose (within
+        START_TOL_M / START_TOL_RAD). Raises when planning fails. Nothing moves."""
+        start = _finite(start_pose_wxyz_xyz, 7, "start_pose_wxyz_xyz")
+        end = _finite(end_pose_wxyz_xyz, 7, "end_pose_wxyz_xyz")
+        now = self._now()
+        pose = self._pose(arm, now)
+        off_m = float(np.linalg.norm(start[4:] - pose[:3]))
+        q0, q1 = (
+            start[:4] / np.linalg.norm(start[:4]),
+            pose[3:] / np.linalg.norm(pose[3:]),
+        )
+        off_rad = 2 * float(np.arccos(min(1.0, abs(float(q0 @ q1)))))
+        if off_m > START_TOL_M or off_rad > START_TOL_RAD:
+            raise ValueError(
+                f"RoboTwin plans from the {arm} arm's current pose; the start pose is "
+                f"{off_m:.3f} m / {off_rad:.2f} rad away from it (move there first)"
+            )
+        status, path = self._plan(arm, end[4:], end[:4], now)
+        if path is None:
+            raise ValueError(f"no trajectory (cuRobo: {status})")
+        return path.tolist()
+
+    def move_to_joints(
+        self,
+        joints,
+        arm: str,
+        gripper: float | None = None,
+        return_policy_frames: bool = False,
+    ) -> dict[str, Any]:
+        """CaP-X's move_to_joints: command ``arm``'s six joints as one native qpos action
+        (RoboTwin runs the motion to them), optionally with a gripper value (0 closed .. 1 open)."""
+        q = _finite(joints, 6, "joints")
+        g = None if gripper is None else float(gripper)
+        return self._move_joints(arm, [q], g, return_policy_frames)
+
+    def move_along_trajectory(
+        self,
+        trajectory,
+        arm: str,
+        gripper: float | None = None,
+        return_policy_frames: bool = False,
+    ) -> dict[str, Any]:
+        """CaP-X's move_along_trajectory: ``arm`` through joint waypoints [N, 6] (traj_plan's),
+        one native qpos action each, holding ``gripper`` (default: keep)."""
+        path = np.asarray(trajectory, dtype=np.float64)
+        if path.ndim != 2 or path.shape[1] != 6 or len(path) < 1:
+            raise ValueError("trajectory must have shape [N, 6], N >= 1")
+        if not np.isfinite(path).all():
+            raise ValueError("trajectory must contain only finite values")
+        g = None if gripper is None else float(gripper)
+        return self._move_joints(arm, list(path), g, return_policy_frames)
+
+    def _move_joints(self, arm, path, gripper, return_policy_frames) -> dict[str, Any]:
+        now = self._now()
+        if self._terminal(now["episode_status"]):
+            return self._idle(now)
+        out = self._run_rows(
+            arm, [(q, gripper) for q in path], return_policy_frames, now
+        )
+        off = ARM_OFFSET[_arm(arm)]
+        target = np.asarray(out["info"]["robot_state"]["qpos_target14"])[off : off + 6]
+        return {**out, "final_joints": [round(float(v), 4) for v in target]}
 
     def policy_frame(self) -> dict[str, Any]:
         """What the VLA reads now: head and wrist RGB and the eef16 state, plus the joint state

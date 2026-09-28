@@ -1,14 +1,19 @@
 # Adding a primitive
 
-A primitive is one robot action or query (`move_delta`, `set_gripper`, `back_project`, `segment`,
-...). The model can reach it three ways, and all three must end in the same server method under
-the same limits:
+A primitive is one robot action or query (`move_delta`, `set_gripper`, `back_project`,
+`get_object_pose`, ...). The model reaches it three ways, and all three end in the same server
+method under the same limits:
 
-- a pi tool the robot registers (`robot.tool`, or a shared one from `src/primitives/`);
+- a pi tool the robot registers;
 - a Show-Harness unit (`act`), through the robot's `units.apply`;
-- a code-mode program (`run_code`, `--code`), through the server's primitive registry (`code.api`).
+- a code-mode program (`run_code`, `--code`), through the server's whitelist (`CodeApi.resolve`).
 
-So a primitive starts on the server, is declared once in its registry, and only then gets a tool.
+A primitive is declared **once**, in the robot's manifest
+`packages/embodied/src/primitives/manifests/<robot>.json`. pi reads it at load (tool schemas and
+descriptions, the code-mode prompt); the env server reads the same file
+(`services/.../components/manifest.py`) for `code.api`, the whitelist every program call goes
+through, and its startup self-check. There is no second declaration: no `primitives.py`, no
+TypeBox schema in the robot's `index.ts`.
 
 ## 1. The server method
 
@@ -16,71 +21,86 @@ In `services/pi_embodied_services/robots/<robot>/env_server.py`:
 
 - Implement it on the facade and register it in `_register_rpc`:
   `self._rpc["env.<name>"] = self.<name>`. A method that does not move the robot goes into
-  `self._readonly_methods` so it may run next to a motion.
+  `self._readonly_methods`.
 - Check every limit before anything moves and refuse instead of clamping: per-call translation and
   rotation caps, the workspace box, the Z floor, finite numbers. Say in the error what the caller
   should do ("Split the motion.").
 - A motion loop polls `self.stop_requested()` between control steps and returns `cancelled: true`
-  when it stops early, so an abort or a code-mode timeout ends it within one step.
-- Return plain data (numbers, lists, `np.ndarray`); images as arrays, which the RPC encodes.
+  when it stops early.
+- A tool whose behaviour needs several server calls or a servo loop runs it here, in one method:
+  the tool and the program then share the limits, the stop handling and the success latching.
+- A composite that calls another primitive calls it through `self._rpc["env.<other>"]` (the
+  registered, possibly wrapped method: the grasp planners' id expiry, for one).
 
-## 2. The registry entry
+## 2. The manifest entry
 
-Declare it in `robots/<robot>/primitives.py` (see `robots/genesis/primitives.py`):
-
-```python
-Primitive(
-    "push",                       # the name a program calls; a Python identifier
-    "env.push",                   # the RPC method it resolves to
-    "Push the TCP along a base-frame direction (m); refused beyond 0.1 m or outside the box.",
-    {"direction": Param("vec3", "unit vector"), "distance": Param("number", "m")},
-    mutating=True,                # it moves the robot
-    tiers=("high",),              # high, low; ground truth alone is privileged
-)
+```jsonc
+{
+	"name": "push",                  // the tool's and the program's name; a Python identifier
+	"side": "env",                   // env: this RPC method runs it for both; ts: a pi-side tool; code: no tool
+	"method": "env.push",
+	"tier": "low",                   // exactly one of high | low | raw | privileged (CaP-X's levels)
+	"mutating": true,
+	"requires": ["ik"],              // capabilities the run needs (flags, services, server state)
+	"params": {
+		"direction": { "type": "vec3", "required": true, "description": "unit vector, base frame" },
+		"distance": { "type": "number", "minimum": 0, "maximum": 0.1, "description": "m" },
+		"arm": { "type": "enum", "values": "{{arms}}" },          // a robot variable; [] drops the parameter
+		"steps": { "type": "integer", "maximum": 400, "modes": ["code"] }  // program-only
+	},
+	"doc": {
+		"tool": "Push the TCP along a direction; refused beyond {{max_move}} m.",
+		"code": "Push the TCP along a direction.\n\nExample:\n    push([1, 0, 0], 0.05)"
+	},
+	"result": "motion"               // the tool's display: motion (new images and state) or read
+}
 ```
 
-`register_code_api(self, PRIMITIVES)` (in `_register_rpc`) validates the declaration when the
-server starts: the name is an identifier and unique, the method is registered, the tiers are known
-(`privileged` only on its own), the parameter types are `number|integer|boolean|string|vec3|array|object`.
-The declaration's digest names the API version: each episode records it (`code_api` entry,
-`code_api_digest` in the result), so a changed primitive shows up in the results.
+- **Tiers** (PARAMS.md 4.1): `high` is CaP-X's semantic functions (`get_object_pose`,
+  `sample_grasp_pose`, `goto_pose`, `home_pose`, `open_gripper`, `close_gripper`); `low` the parts
+  (perception, IK, joint and Cartesian motion, the gripper); `raw` the step and the raw
+  observation; `privileged` ground truth (a same-name privileged entry replaces the high one under
+  `--privileged`; `low+privileged` adds ground truth to the low tier).
+- **Examples** go into `doc.code` as a Google `Example:` section: the S4 tier
+  (`--code-api=low-noexamples`) drops them.
+- **Shared entries** (`common/*.json`: grasp planner, perception, geometry, the simulators' ground
+  truth, the modules' tools) are used by name with overrides: `{"use": "grasp/plan_grasp", "doc": {...}}`.
+- Types: `number | integer | boolean | string | enum | vec3 | quat | array | object`; `minimum`,
+  `maximum` and enum `values` are enforced on both sides.
+- Methods that are never primitives (`env.reset`, `stop`, `code.*`) are refused by the loader;
+  the robot's other non-primitive RPC methods are listed in the manifest's `"internal"`.
 
-Tiers follow CaP-X's levels: `high` is perception plus pose-level motion, `low` is raw observations
-and small motions, `privileged` is the high tier plus ground truth (simulators, `--privileged`).
+The server checks itself at start (`serve`): a declared, available `env` / `code` entry without its
+RPC method, or a registered business method that is neither declared nor internal, stops it with
+the list. `code.api` answers the manifest's digest (pi refuses a server of another version) and the
+primitives of a tier available this run; pi checks that its own view (the robot's `capabilities`)
+agrees, and records `code_tier_digest`.
 
 ## 3. Code mode
 
-Code mode runs a program in a sandboxed subprocess whose only way to the robot is the registry
-(`utils/code_exec.py`, PROTOCOL.md "Code mode"). On a server that serves `code.run` (LIBERO today),
-a new mutating primitive also needs:
+A new mutating primitive also needs, on the server:
 
-- its translation estimate in the server's `_code_move_m(method, kwargs)`, so `--code-max-move`
-  bounds it before it runs (a primitive it does not know counts 0 m);
-- a refusal in `_code_check(method, kwargs)` for anything `--code-timeout` could not bound (a long
-  chunk, a large render).
+- its translation estimate in `_code_move_m(method, kwargs)`, so `--code-max-move` bounds it;
+- a refusal in `_code_check(method, kwargs)` for anything `--code-timeout` could not bound;
+- in `_code_reply(method, out)`, whatever a program must not see (object state) or need not
+  carry (images, video frames: they go to the run's video).
 
 ## 4. The tool
 
-- One robot: `robot.tool("push", description, TypeBox schema, run)` in `src/<robot>/index.ts`; `run`
-  checks what the TS side knows (the operator gate, `checkMove`) and calls
-  `env.call("env.push", kwargs, timeout, [], signal)`. Enums use `StringEnum`.
-- Two or more robots: put it in `src/primitives/` as a `toolDef(...)` that takes a rig (the robot's
-  env call, limits, checks: see `MotionRig` in `src/primitives/motion.ts`) and let each robot mount
-  it through its own `tool()`. Do not copy a tool between robots.
-- Describe it in the robot's `SYSTEM.md` inside `[tool:push]...[/tool:push]`, so the prompt mentions
-  it only when the tool is active (`toolSections`, `src/robot.ts`).
-- Add it to the list `start` returns (or leave it behind a flag: a feature that is off registers no
-  tool).
-- A unit that should use it goes through `units.apply` in the robot's spec, not around it.
+In `src/robots/<robot>/index.ts`, register the execution only:
+`robot.tool("push", "", Type.Object({}), async (params, signal) => call("env.push", params, [], signal))`
+(or `robot.primitive("push", run)`). The schema and description are the manifest's; registering a
+name the manifest does not declare throws. Describe it in the robot's `SYSTEM.md` inside
+`[tool:push]...[/tool:push]`, and add it to the list `start` returns; a tool whose `requires` the
+run cannot meet is not activated.
 
 ## 5. Tests and docs
 
-- `services/tests/`: the limits and refusals of the method (mock the simulator), and that the
-  registry validates (`test_code_api.py` shows the pattern).
-- `test/<robot>.test.ts`: the tool against a fake env server: the RPC it sends, a refusal, an abort.
+- `services/tests/`: the method's limits and refusals (mock the simulator), and the robot's server
+  self-check against its manifest.
+- `test/<robot>.test.ts`: the tool against a fake env server (`test/helpers/code-api.ts` answers
+  `code.api` from the manifest).
 - The tool-schema snapshot: `UPDATE_TOOL_SCHEMAS=1 node --test --experimental-strip-types
-  test/tool-schemas.test.ts`, and check the diff is only the new tool.
+  test/tool-schemas.test.ts`; the diff is the new tool.
 - `services/PROTOCOL.md`: the method's row in the robot's table.
-- If the primitive needs a model server, add it to the robot's `services` spec
-  (`src/infra/model-services.ts`) so `--serve-models` can start it, and a case to `test/gpu-e2e.test.ts`
-  when it only runs on a GPU.
+- A model server it needs goes into the robot's `services` spec (`src/infra/model-services.ts`).

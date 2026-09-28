@@ -11,7 +11,10 @@
  * Show-Harness's Polymetis NUC stack), or attaches to a running one with --robot-env. Both serve the
  * same env.* RPC; the server's env.get_env_meta capabilities hide what it cannot serve (vla_grasp
  * needs has_vla). Only one backend may drive the arm at a time. The VLA is attach-only. The
- * server enforces the workspace limits, per-step clips and servo tolerances from its config;
+ * server enforces pi's per-call limits (--max-move, --max-rotate, --workspace-xy, --z-floor: passed
+ * at spawn, checked on an attached server, ../../primitives/motion.ts) for every caller, on top of
+ * the workspace limits, per-step clips and servo tolerances from its config. Tools and code
+ * primitives are ../../primitives/manifests/franka.json;
  * task definitions and easy_handeye calibration come from the same services package. A real robot needs an operator: pi must have a UI, the operator confirms
  * the reset motion, and --operator adds the verdict gate (see ../operator.ts). The
  * single-arm robot has no success signal; the result entry records the agent's claim and
@@ -32,7 +35,17 @@ import type { Move } from "../../modes/units/index.ts";
 import { eulerXyz, geometryArgs, geometryTools, planRotation, splitImages } from "../../primitives/geometry.ts";
 import { graspActive, graspArgs, graspTools, registerGraspFlags } from "../../primitives/grasp.ts";
 import { ikArgs, registerIkFlag } from "../../primitives/ik.ts";
-import { checkRotate, type MotionRig, moveDelta, rotateDelta, setGripper } from "../../primitives/motion.ts";
+import {
+	checkRotate,
+	checkRoute,
+	limitArgs,
+	type MotionLimits,
+	type MotionRig,
+	moveDelta,
+	rotateDelta,
+	servedLimits,
+	setGripper,
+} from "../../primitives/motion.ts";
 import { viewCameraMeta, viewEnvState } from "../../primitives/perception.ts";
 import {
 	type Step as BaseStep,
@@ -48,7 +61,6 @@ import { gripperCommand, poseDelta, toWxyz, type XPolicySpec } from "../../primi
 import {
 	apply,
 	attach,
-	checkMove,
 	defineRobot,
 	f32,
 	frameOf,
@@ -315,6 +327,8 @@ export default function franka(pi: ExtensionAPI) {
 	let caps: Caps = { backend: "rlinf", has_vla: true };
 	/** env.get_env_meta().smooth.chaining: move_delta takes `continuous` (polymetis smooth + blend). */
 	let chaining = false;
+	/** pi's per-call limits as the env server enforces them (env.get_env_meta().motion_limits). */
+	let served: MotionLimits = {};
 	const steps: Step[] = [];
 	const task = () => robot.task.task;
 	/** The first state step of the current attempt: localization refuses older ones after a scene reset. */
@@ -323,6 +337,27 @@ export default function franka(pi: ExtensionAPI) {
 	const judgedSuccess = () => (op.result() as Json).operator_verdict === "success";
 	const robot = defineRobot(pi, {
 		name: "franka",
+		// Tools and code primitives: ../../primitives/manifests/franka.json (the env server reads it too).
+		manifest: "franka",
+		// The shared grasp entries' enums: the planner's cameras; one arm (no `arm` parameter).
+		vars: () => ({
+			max_move: String(maxMove()),
+			max_rotate: String(maxRotate()),
+			cameras: ["wrist", "third_person"],
+			arms: [],
+		}),
+		// What this run serves of the manifest's `requires` (the server's _has, code_mode.py, must agree).
+		capabilities: (c) =>
+			({
+				sam3: caps.perception?.segment === true,
+				unidepth: caps.perception?.enhance_depth === true,
+				ik: Boolean(flag("ik")),
+				grasp: graspActive(pi).length > 0,
+				place: Boolean(flag("anyplace")),
+				geometry: pi.getFlag("geometry") === true,
+				joints: caps.backend === "polymetis",
+				vla: caps.has_vla === true && Boolean(flag("robot-vla")),
+			})[c] ?? false,
 		task: ["task"],
 		keepImages: 4,
 		video: true,
@@ -365,11 +400,11 @@ export default function franka(pi: ExtensionAPI) {
 			budget: { sessions: 1, attempts: 3 },
 			operatorJudged: true,
 		},
-		// The env server's primitive registry (services robots/franka/primitives.py), both backends.
+		// The env server's code.api (from the same manifest), both backends.
 		codeApi: () => env,
 		// Code mode (../code) on the real arm: --code-real and --operator, every program confirmed. The
-		// server (started with --code) runs it through the tools' own env methods under pi's per-call
-		// limits (code.set_limits at start); the run becomes a recorded state step like a tool's motion.
+		// server (started with --code) runs it through the tools' own env methods, which hold pi's
+		// per-call limits; the run becomes a recorded state step like a tool's motion.
 		code: {
 			real: true,
 			rpc: () => env as RpcClient,
@@ -448,9 +483,24 @@ export default function franka(pi: ExtensionAPI) {
 	const remember = (states: unknown) => {
 		if (states !== undefined && states !== null) lastStates = states;
 	};
-	/** The tighter of the flag and the server's own per-call limit (it refuses larger calls). */
-	const maxMove = () => Math.min(Number(flag("max-move", "0.1")), caps.max_move_m ?? Number.POSITIVE_INFINITY);
-	const maxRotate = () => Math.min(Number(flag("max-rotate", "0.5")), caps.max_rotate_rad ?? Number.POSITIVE_INFINITY);
+	/** pi's limits from its flags (the task's documented translation limit if tighter), as the server takes them. */
+	function wanted(constraints = setup?.task.constraints): MotionLimits {
+		const { box, floor } = workspaceLimits(flag("workspace-xy"), flag("z-floor"));
+		return {
+			max_move_m: moveLimit(Number(flag("max-move", "0.1")), constraints),
+			max_rotate_rad: Number(flag("max-rotate", "0.5")),
+			z_floor_m: floor,
+			workspace_xy: box ?? null,
+		};
+	}
+	/** The tightest per-call limit in force: the server's (pi's, as it enforces them) and its config's own. */
+	const maxMove = () =>
+		Math.min(served.max_move_m ?? Number(flag("max-move", "0.1")), caps.max_move_m ?? Number.POSITIVE_INFINITY);
+	const maxRotate = () =>
+		Math.min(
+			served.max_rotate_rad ?? Number(flag("max-rotate", "0.5")),
+			caps.max_rotate_rad ?? Number.POSITIVE_INFINITY,
+		);
 	const check = (signal?: AbortSignal) => {
 		op.check();
 		if (signal?.aborted) throw new Error("tool operation interrupted");
@@ -610,18 +660,9 @@ export default function franka(pi: ExtensionAPI) {
 	const mount = <P extends TSchema>(d: ToolDef<P>, mutating = true) =>
 		tool(d.name, d.description, d.parameters, d.run, mutating);
 
-	/** Refuse a move whose target leaves the --workspace-xy box or goes below --z-floor (unless it moves back in). */
-	function checkWorkspace(delta: number[]) {
-		const { box, floor } = workspaceLimits(flag("workspace-xy"), flag("z-floor"));
-		const tcp = tcpPose(steps[steps.length - 1]);
-		const outside = (p: number[]) =>
-			(box ? Math.max(0, box[0] - p[0], p[0] - box[1]) + Math.max(0, box[2] - p[1], p[1] - box[3]) : 0) +
-			Math.max(0, floor - p[2]);
-		const target = tcp.slice(0, 3).map((v, i) => v + delta[i]);
-		if (outside(target) > 1e-6 && outside(target) >= outside(tcp) - 1e-6)
-			throw new Error(
-				`the move ends at [${roundAll(target, 3)}], outside the workspace (${box ? `x ${box[0]}..${box[1]}, y ${box[2]}..${box[3]}, ` : ""}z >= ${floor} m; --workspace-xy / --z-floor)`,
-			);
+	/** A route of several motion calls, refused whole before its first call (the server checks each call too). */
+	function checkPath(deltas: number[][], perCall = true) {
+		checkRoute(tcpPose(steps[steps.length - 1]), deltas, { ...served, max_move_m: perCall ? maxMove() : null });
 	}
 
 	/** Units mode (../units): one grounded action unit on the existing move primitives. */
@@ -630,9 +671,8 @@ export default function franka(pi: ExtensionAPI) {
 			check(signal);
 			const out: Json = {};
 			if (move.gripper) out.gripper = await motion("env.set_gripper", { open: move.gripper === "open" }, signal);
+			// The server holds each call to pi's limits (--max-move, --workspace-xy, --z-floor, --max-rotate).
 			if (Math.hypot(...move.delta) > 0) {
-				checkMove(move.delta, maxMove(), setup?.task.constraints);
-				checkWorkspace(move.delta);
 				out.move = await motion(
 					"env.move_delta",
 					{ delta_xyz: NdArray.f32(move.delta), ...(chaining && move.continuous ? { continuous: true } : {}) },
@@ -640,8 +680,6 @@ export default function franka(pi: ExtensionAPI) {
 				);
 			}
 			if (move.yaw) {
-				if (!(Math.abs(move.yaw) <= maxRotate()))
-					throw new Error(`yaw ${round(move.yaw, 4)} rad exceeds the limit of ${maxRotate()} rad per call`);
 				out.rotate = await motion("env.rotate_delta", { delta_rpy: NdArray.f32([0, 0, move.yaw]) }, signal);
 			}
 			return out;
@@ -813,7 +851,7 @@ export default function franka(pi: ExtensionAPI) {
 			const s = getStep(steps, -1);
 			const res = await call<Json>(
 				"env.segment",
-				{ camera: alias, ...(text ? { text_prompt: text } : { point }), min_score, all },
+				{ camera: alias, ...(text ? { prompt: text } : { point }), min_score, all },
 				120_000,
 			);
 			noteInvalidated(res);
@@ -1136,19 +1174,12 @@ export default function franka(pi: ExtensionAPI) {
 		false,
 	);
 
-	/** The motion primitives (../primitives/motion.ts) on this arm: its env, limits, workspace and operator gate. */
-	const rig: MotionRig = {
-		check,
-		motion,
-		maxMove,
-		maxRotate,
-		constraints: () => setup?.task.constraints,
-		workspace: (delta) => checkWorkspace(delta),
-	};
-	mount(moveDelta(rig, "Move the Franka TCP by a bounded base-frame xyz delta in meters."));
-	mount(rotateDelta(rig, "Rotate the Franka TCP by a bounded base-frame rpy delta in radians."));
-	mount(setGripper(rig, true, "Open the Franka gripper and wait for the command to settle."));
-	mount(setGripper(rig, false, "Close the Franka gripper and wait for the command to settle."));
+	/** The motion tools (../primitives/motion.ts; schemas and descriptions: the manifest) on this arm's env and operator gate. */
+	const rig: MotionRig = { check, motion };
+	mount(moveDelta(rig));
+	mount(rotateDelta(rig));
+	mount(setGripper(rig, true));
+	mount(setGripper(rig, false));
 
 	// OpenETA extras, each registered only with its flag: follow_waypoints (--waypoints: every segment
 	// one bounded env.move_delta) and align_wrist (--align-wrist: the wrist camera's hand-eye calibration).
@@ -1163,7 +1194,8 @@ export default function franka(pi: ExtensionAPI) {
 				maxSegment: maxMove,
 				maxPath: () => maxMove() * MAX_WAYPOINTS,
 				constraints: () => setup?.task.constraints,
-				workspace: (target) => checkWorkspace(target.map((v, i) => v - tcpXyz()[i])),
+				// The route's segments are checked against maxSegment; here only the box and the floor.
+				workspace: (target) => checkPath([target.map((v, i) => v - tcpXyz()[i])], false),
 				segment: async (from, to, _gripper, signal) => {
 					const delta = NdArray.f32(to.map((v, i) => v - from[i]));
 					const r = await motion("env.move_delta", { delta_xyz: delta }, signal);
@@ -1295,22 +1327,13 @@ export default function franka(pi: ExtensionAPI) {
 				const arm = a.arms[""] ?? {};
 				const b = await base();
 				if (arm.pose) {
-					const { box, floor } = workspaceLimits(flag("workspace-xy"), flag("z-floor"));
-					const [x, y, z] = arm.pose;
-					if (z < floor || (box && (x < box[0] || x > box[1] || y < box[2] || y > box[3])))
-						throw new Error(`the policy's target [${roundAll([x, y, z], 3)}] is outside the workspace`);
 					const { delta, rpy } = poseDelta(toWxyz(vec(b.tcp_pose)), arm.pose);
-					if (Math.hypot(...delta) > 1e-4) {
-						checkMove(delta, maxMove(), setup?.task.constraints);
+					// Two calls: both checked before the first (the server checks each again).
+					checkRoute(vec(b.tcp_pose), [delta], { ...served, max_move_m: maxMove() }, " (the policy's target)");
+					checkRotate(rpy, maxRotate());
+					if (Math.hypot(...delta) > 1e-4)
 						await motion("env.move_delta", { delta_xyz: NdArray.f32(delta) }, signal);
-					}
-					if (Math.hypot(...rpy) > 1e-3) {
-						if (!(Math.max(...rpy.map(Math.abs)) <= maxRotate()))
-							throw new Error(
-								`rotation ${roundAll(rpy, 3)} rad exceeds the limit of ${maxRotate()} rad per call`,
-							);
-						await motion("env.rotate_delta", { delta_rpy: NdArray.f32(rpy) }, signal);
-					}
+					if (Math.hypot(...rpy) > 1e-3) await motion("env.rotate_delta", { delta_rpy: NdArray.f32(rpy) }, signal);
 				}
 				const grip = arm.ee ? gripperCommand(arm.ee[0], widest, b.gripper_open === false) : null;
 				if (grip) await motion("env.set_gripper", { open: grip === "open" }, signal);
@@ -1335,8 +1358,8 @@ export default function franka(pi: ExtensionAPI) {
 					check(signal);
 					const delta = plan.motion ? plan.delta_mm.map((v) => v / 1000) : [0, 0, 0];
 					const rpy = plan.motion ? eulerXyz(planRotation(plan)) : [0, 0, 0];
-					checkMove(delta, maxMove(), setup?.task.constraints);
-					checkWorkspace(delta);
+					// A rotation then a translation: both checked before the first (the server checks each again).
+					checkPath([delta]);
 					checkRotate(rpy, maxRotate());
 					const out: Json = { name: "move_grip", target: plan.target };
 					if (plan.preview_id) out.preview_id = plan.preview_id;
@@ -1395,6 +1418,8 @@ export default function franka(pi: ExtensionAPI) {
 							...graspArgs(pi),
 							...geometryArgs(pi),
 							...(coding() ? ["--code"] : []),
+							// pi's per-call limits: the server enforces them for every caller.
+							...limitArgs(wanted(setup.task.constraints)),
 						],
 						cwd: r.root,
 						env: servicesEnv(r),
@@ -1404,6 +1429,8 @@ export default function franka(pi: ExtensionAPI) {
 		]);
 		const meta = await envRpc.call<Json>("env.get_env_meta", {}, 30_000);
 		caps = { backend: "rlinf", has_vla: true, ...(meta.capabilities ?? {}) };
+		// An attached server must enforce pi's limits (or tighter ones); a spawned one got them above.
+		served = servedLimits(meta.motion_limits, wanted(setup.task.constraints));
 		chaining = meta.smooth?.chaining === true;
 		if (backend && caps.backend !== backend)
 			throw new Error(`--robot-env serves the ${caps.backend} backend, not --robot-backend ${backend}`);
@@ -1416,22 +1443,6 @@ export default function franka(pi: ExtensionAPI) {
 			"The arm will move to its configured reset pose. Clear the workspace and keep the emergency stop in reach.",
 		);
 		if (!go) throw new Error("operator declined the reset; the Franka tools stay disabled");
-		if (coding()) {
-			// A program's motions pass none of the tools' checks here: the server applies them.
-			const { box, floor } = workspaceLimits(flag("workspace-xy"), flag("z-floor"));
-			await envRpc
-				.call("code.set_limits", {
-					max_move_m: moveLimit(maxMove(), setup.task.constraints),
-					max_rotate_rad: maxRotate(),
-					z_floor_m: floor,
-					workspace_xy: box ?? null,
-				})
-				.catch((err) => {
-					throw new Error(
-						`code mode needs an env server started with --code (--robot-env URL#token=HEX): ${message(err)}`,
-					);
-				});
-		}
 		const reset = await envRpc.call<Json>("env.reset", {}, 180_000);
 		env = envRpc;
 		vla = vlaRpc;

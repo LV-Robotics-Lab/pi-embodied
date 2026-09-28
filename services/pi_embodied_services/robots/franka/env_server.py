@@ -28,19 +28,18 @@ from typing import Any
 
 import numpy as np
 
-from pi_embodied_services.components.code_api import register_code_api
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
 from pi_embodied_services.robots.franka.code_mode import FrankaCodeMode
-from pi_embodied_services.robots.franka.primitives import (
-    FRANKA_PRIMITIVES,
-    franka_primitives,
-)
 from pi_embodied_services.robots.franka.runtime_config import (
     load_runtime_config,
     set_robot_config_path,
 )
 from pi_embodied_services.utils import hardware_lock, motion, reach
-from pi_embodied_services.utils.code_real import add_code_argument
+from pi_embodied_services.utils.code_real import (
+    add_code_argument,
+    add_limit_arguments,
+    limits_from_args,
+)
 from pi_embodied_services.utils.detections import state_digest
 from pi_embodied_services.utils.grasp import (
     GraspPlanner,
@@ -61,8 +60,10 @@ logger = get_logger("franka_env_server")
 class FrankaEnvFacade(FrankaCodeMode, BaseEnvFacade):
     """Expose the single-Franka ``env.*`` protocol from a Ray-backed worker.
 
-    Code mode (``code.run``, code_mode.py): a program's motions run through the same stoppable,
-    reach-checked handlers as pi's tools, under pi's per-call limits (``env.set_code_limits``).
+    pi's limits (``--max-move`` ..., code_mode.py) hold in ``env.move_delta`` / ``env.rotate_delta``
+    for every caller. The primitives are packages/embodied/src/primitives/manifests/franka.json
+    (dual_franka.json for the dual rig); code mode (``code.run``, ``--code``) runs a program's calls
+    through the same stoppable, reach-checked, limited handlers as pi's tools.
     """
 
     SERVICE_NAME = "franka-env"
@@ -80,8 +81,6 @@ class FrankaEnvFacade(FrankaCodeMode, BaseEnvFacade):
     )
 
     #: Worker methods with a servo/step loop that polls the stop flag.
-    #: The primitive registry served as ``code.api`` (../franka/primitives.py).
-    _PRIMITIVES = FRANKA_PRIMITIVES
     _STOPPABLE = frozenset(
         {
             "move_delta",
@@ -101,8 +100,11 @@ class FrankaEnvFacade(FrankaCodeMode, BaseEnvFacade):
         ik_motion: motion.MotionPlanner | None = None,
         geometry: bool = False,
         code: bool = False,
+        limits: dict[str, Any] | None = None,
     ) -> None:
         self._backend = backend
+        # pi's --max-move / --max-rotate / --workspace-xy / --z-floor (code_mode.py).
+        self._set_limits(limits)
         # --geometry: env.point_views, env.mark_point, env.grip_target, env.grip_state
         # (utils/geometry.py via grasp_views.franka_geometry); the client executes the targets.
         self._geometry_on = geometry
@@ -133,6 +135,8 @@ class FrankaEnvFacade(FrankaCodeMode, BaseEnvFacade):
                     handler = self._planned(name)
                 elif self._reach is not None:
                     handler = self._reach_checked(handler, name)
+                # pi's limits first, for every caller (code_mode.py).
+                handler = self._limited(name, handler)
             self._rpc[f"env.{name}"] = handler
         self._rpc["env.preview_reach"] = self.preview_reach
         self._readonly_methods.update(
@@ -149,20 +153,17 @@ class FrankaEnvFacade(FrankaCodeMode, BaseEnvFacade):
         if self._perception is not None:
             self._perception.epoch.set_digest(self._state_digest)
             self._perception.install(self)
-        primitives = self._PRIMITIVES
-        if primitives is FRANKA_PRIMITIVES:
-            primitives = franka_primitives(self._perception)
         if getattr(self, "_geometry_on", False):
             from pi_embodied_services.robots.franka.grasp_views import franka_geometry
 
-            kit = franka_geometry(self._backend, state_digest=self._state_digest)
-            kit.install(self)
-            primitives = (*primitives, *kit.primitives())
-        grasp = self._grasp_planner()
-        if grasp is not None:
-            grasp.install(self)
-            primitives = (*primitives, *grasp.primitives())
-        self._install_real_code_run(register_code_api(self, primitives))
+            franka_geometry(self._backend, state_digest=self._state_digest).install(
+                self
+            )
+        self._grasp = self._grasp_planner()
+        if self._grasp is not None:
+            self._grasp.install(self)
+        # The manifest's methods, then code.api (with the startup self-check) and --code's code.run.
+        self._install_franka()
 
     def _state_digest(self) -> tuple:
         """The arm's TCP pose and gripper, rounded (``utils/detections.state_digest``)."""
@@ -237,7 +238,7 @@ class FrankaEnvFacade(FrankaCodeMode, BaseEnvFacade):
             "robots": [],
         }
 
-    def preview_reach(self, pos, quat_xyzw=None, arm=None) -> dict[str, Any]:
+    def preview_reach(self, xyz, quat_xyzw=None, arm=None) -> dict[str, Any]:
         """Whether the TCP can reach a pose (the motion primitives' frame) from the current
         joints (IK only, the arm does not move); ``quat_xyzw`` None keeps the current
         orientation."""
@@ -246,7 +247,7 @@ class FrankaEnvFacade(FrankaCodeMode, BaseEnvFacade):
         frame = self._arm_frame(arm)
         return self._reach.preview(
             frame["q"],
-            pos,
+            xyz,
             frame["tcp"][3:] if quat_xyzw is None else quat_xyzw,
             base_pose=frame["base_pose"],
         )
@@ -875,6 +876,7 @@ def main(
     motion.add_unplanned_argument(parser)
     hardware_lock.add_lock_arguments(parser)
     add_code_argument(parser)
+    add_limit_arguments(parser, FrankaCodeMode._LIMIT_DEFAULTS)
     parser.add_argument(
         "--geometry",
         action="store_true",
@@ -933,6 +935,7 @@ def main(
         ik_motion=motion.planner_from_args(args, "panda"),
         **({"geometry": True} if args.geometry else {}),
         code=args.code,
+        limits=limits_from_args(args, FrankaCodeMode._LIMIT_DEFAULTS),
     )
     try:
         facade.serve(

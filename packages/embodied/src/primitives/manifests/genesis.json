@@ -1,0 +1,482 @@
+{
+	"robot": "genesis",
+	"internal": [
+		"env.release_held"
+	],
+	"primitives": [
+		{
+			"use": "sim/get_task_language"
+		},
+		{
+			"name": "view_env_state",
+			"side": "ts",
+			"tier": "low",
+			"doc": {
+				"tool": "Current state with the front (third-person) and wrist images."
+			},
+			"result": "motion"
+		},
+		{
+			"name": "state",
+			"side": "code",
+			"method": "env.state",
+			"tier": "low",
+			"doc": {
+				"code": "TCP pose (m, base frame), gripper opening and command, success, is_grasped.\n\nExample:\n    st = state()\n    print(st[\"tcp_pos\"], st[\"gripper_width\"], st[\"is_grasped\"])"
+			}
+		},
+		{
+			"name": "get_camera_meta",
+			"side": "env",
+			"method": "env.get_camera_meta",
+			"tier": "low",
+			"params": {
+				"camera_name": {
+					"type": "enum",
+					"values": [
+						"agentview",
+						"wrist"
+					],
+					"description": "agentview (front, default) or wrist"
+				}
+			},
+			"doc": {
+				"tool": "Camera calibration of the current images: intrinsic K (3x3), camera-to-world extrinsic (4x4, OpenCV frame) and the image size.",
+				"code": "Camera intrinsics (OpenCV K) and camera-to-world extrinsic.\n\nExample:\n    meta = get_camera_meta(\"agentview\")\n    K, T = meta[\"intrinsic_K\"], meta[\"extrinsic_cam2world\"]"
+			},
+			"result": "read"
+		},
+		{
+			"name": "back_project",
+			"side": "env",
+			"method": "env.back_project",
+			"tier": "low",
+			"params": {
+				"row": {
+					"type": "integer",
+					"minimum": 0,
+					"description": "Pixel row (0 = top)"
+				},
+				"col": {
+					"type": "integer",
+					"minimum": 0,
+					"description": "Pixel column"
+				},
+				"camera": {
+					"type": "enum",
+					"values": [
+						"agentview",
+						"wrist"
+					],
+					"description": "agentview (front, default) or wrist"
+				},
+				"pixels": {
+					"type": "array",
+					"items": {
+						"type": "array",
+						"items": "integer",
+						"minItems": 2,
+						"maxItems": 2
+					},
+					"maxItems": 4096,
+					"description": "Instead of row/col: [[row, col], ...]; returns a list (None where no depth)",
+					"modes": [
+						"code"
+					]
+				}
+			},
+			"doc": {
+				"tool": "World xyz (m, base frame) of a pixel (row, col; row 0 = top) of the current camera image, from the simulator's depth.",
+				"code": "World xyz (m, base frame) of pixel (row, col) of the current camera image through the simulator's depth: {camera, pixel, world_xyz} (error where there is no depth). pixels=[[row, col], ...] returns a list instead (None where the depth is missing).\n\nExample:\n    print(back_project(128, 128)[\"world_xyz\"])\n    xyz = back_project(camera=\"wrist\", pixels=[[128, 128], [140, 120]])"
+			},
+			"result": "read"
+		},
+		{
+			"name": "segment",
+			"side": "env",
+			"method": "env.segment",
+			"tier": "low",
+			"requires": [
+				"sam3"
+			],
+			"params": {
+				"prompt": {
+					"type": "string",
+					"description": "What to segment, e.g. 'red cube' (or give point)"
+				},
+				"point": {
+					"type": "array",
+					"items": "integer",
+					"minItems": 2,
+					"maxItems": 2,
+					"description": "A positive point [row, col] instead of a prompt"
+				},
+				"camera": {
+					"type": "enum",
+					"values": [
+						"agentview",
+						"wrist"
+					],
+					"description": "agentview (front, default) or wrist"
+				},
+				"min_score": {
+					"type": "number",
+					"minimum": 0,
+					"maximum": 1,
+					"description": "SAM3 threshold (default 0.2)"
+				}
+			},
+			"doc": {
+				"tool": "SAM3 segmentation of the current camera image by a text prompt or a positive point [row, col] (give exactly one). The mask's pixels are back-projected through the depth; world_xyz is their median. Returns an overlay image.",
+				"code": "SAM3 mask of a text prompt (or a point [row, col]) in the current image: found, score, box, mask, n_pixels, centroid_pixel [row, col], world_xyz (median of the mask's back-projected pixels, base frame).\n\nExample:\n    m = segment(\"red cube\")\n    if m[\"found\"]:\n        print(m[\"world_xyz\"], m[\"score\"])"
+			},
+			"result": "read"
+		},
+		{
+			"name": "preview_reach",
+			"side": "env",
+			"method": "env.preview_reach",
+			"tier": "low",
+			"requires": [
+				"ik"
+			],
+			"params": {
+				"pos": {
+					"type": "vec3",
+					"required": true,
+					"description": "Base-frame [x, y, z] of the TCP, m"
+				},
+				"quat_xyzw": {
+					"type": "quat",
+					"description": "Default: the current orientation"
+				}
+			},
+			"doc": {
+				"tool": "Whether the arm could reach a base-frame pos from its current joints (IK only; nothing moves), keeping its orientation unless quat_xyzw is given. status unreachable means a move there would fail or be refused; unknown means the check could not run.",
+				"code": "Whether the TCP can reach a base-frame position from the current joints (IK by the ik service); nothing moves.\n\nExample:\n    r = preview_reach([0.6, 0.0, 0.1])\n    print(r[\"status\"])"
+			},
+			"result": "read"
+		},
+		{
+			"name": "move_delta",
+			"side": "env",
+			"method": "env.move_delta",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"delta_xyz": {
+					"type": "vec3",
+					"required": true,
+					"description": "Base-frame [dx, dy, dz] in metres"
+				},
+				"gripper": {
+					"type": "enum",
+					"values": [
+						"open",
+						"close"
+					],
+					"description": "Open or close first, holding still (default: keep)"
+				}
+			},
+			"doc": {
+				"tool": "Translate the gripper by a base-frame [dx, dy, dz] in metres (+x away from the base, +y toward the robot's left, +z up; at most {{max_move}} m per call, inside the workspace box and above the table), optionally opening or closing the gripper first (the arm holds still until the fingers settle, then moves). The orientation is held. Returns the new state and images.",
+				"code": "Translate the TCP by a base-frame delta (m; +x away from the base, +y to the robot's left, +z up) in ~2 cm IK decisions with the orientation held, after an optional gripper command. Refused (nothing moves) beyond 0.2 m per call, below the Z floor or outside the workspace box.\n\nExample:\n    move_delta([0, 0, -0.1], gripper=\"open\")  # open, then down 10 cm\n    r = move_delta([0.05, 0, 0])\n    print(r[\"moved_m\"], r[\"tcp_pos\"])"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "set_gripper",
+			"side": "env",
+			"method": "env.set_gripper",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"close": {
+					"type": "boolean",
+					"required": true,
+					"description": "true closes and holds, false opens"
+				}
+			},
+			"doc": {
+				"tool": "Open or close the gripper and hold it (the command persists). A close that ends nearly shut holds nothing (`grasp_empty`). Returns the new state and images.",
+				"code": "Close (True) or open (False) the gripper and hold; a close ending nearly shut reports grasp_empty.\n\nExample:\n    r = set_gripper(True)\n    print(r[\"gripper_width\"], r.get(\"grasp_empty\", False))"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "execute_grasp",
+			"side": "env",
+			"method": "env.execute_grasp",
+			"tier": "low",
+			"mutating": true,
+			"requires": [
+				"grasp"
+			],
+			"params": {
+				"grasp_id": {
+					"type": "string",
+					"required": true,
+					"description": "A g id from plan_grasp"
+				},
+				"standoff": {
+					"type": "number",
+					"minimum": 0,
+					"maximum": 0.3,
+					"description": "m back along the approach (default 0.10)"
+				}
+			},
+			"doc": {
+				"tool": "Execute one planned grasp (a g id of the current observation, from plan_grasp) in one call: open to the pre-grasp standoff back along its approach, descend to it, close, lift straight up, each leg as bounded moves. The gripper cannot turn, so only a candidate approaching from (nearly) straight above runs; a tilted one is refused before anything moves. Returns each leg's final_dist_m; stalled when a leg stopped short. The id is spent either way; afterwards plan_place with this grasp_id plans from the held object.",
+				"code": "Run one planned grasp id: open at the standoff back along its approach, descend, close, lift, each leg as bounded move_delta calls; refused (nothing moves) unless it approaches from nearly straight above. Returns legs (final_dist_m each), stalled when a leg stopped short.\n\nExample:\n    g = plan_grasp(\"red cube\")\n    r = execute_grasp(g[\"active\"])\n    print(r[\"legs\"], r.get(\"stalled\", False))"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "execute_place",
+			"side": "env",
+			"method": "env.execute_place",
+			"tier": "low",
+			"mutating": true,
+			"requires": [
+				"grasp",
+				"place"
+			],
+			"params": {
+				"place_id": {
+					"type": "string",
+					"required": true,
+					"description": "A p id from plan_place"
+				},
+				"standoff": {
+					"type": "number",
+					"minimum": 0,
+					"maximum": 0.3,
+					"description": "m back along the approach (default 0.10)"
+				}
+			},
+			"doc": {
+				"tool": "Execute one planned place (a p id from plan_place) in one call: carry to the pre-place above it, descend, open, retreat, each leg as bounded moves; refused when its approach is not (nearly) straight down.",
+				"code": "Run one planned place id: carry to the pre-place above it, descend, open, retreat, each leg as bounded move_delta calls.\n\nExample:\n    r = execute_place(plan_place(region=\"plate\", grasp_id=\"g1\")[\"active\"])"
+			},
+			"result": "motion"
+		},
+		{
+			"name": "solve_ik",
+			"side": "code",
+			"method": "env.solve_ik",
+			"tier": "low",
+			"params": {
+				"position": {
+					"type": "vec3",
+					"required": true,
+					"description": "Base-frame TCP position, m"
+				},
+				"quaternion_wxyz": {
+					"type": "quat",
+					"description": "Hand orientation, wxyz (default: the orientation held since reset)"
+				}
+			},
+			"doc": {
+				"code": "Solve inverse kinematics for the TCP (Genesis's own IK); nothing moves.\n\nReturns:\n    joints: 7 joint angles, rad.\n\nExample:\n    joints = solve_ik([0.6, 0.0, 0.1])\n    move_to_joints(joints)"
+			}
+		},
+		{
+			"name": "move_to_joints",
+			"side": "code",
+			"method": "env.move_to_joints",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"joints": {
+					"type": "array",
+					"required": true,
+					"minItems": 7,
+					"maxItems": 7,
+					"description": "7 joint angles, rad"
+				},
+				"tol_rad": {
+					"type": "number",
+					"minimum": 0.001,
+					"maximum": 0.2,
+					"description": "Stop when every joint is this close, rad (default 0.01)"
+				},
+				"max_steps": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 400,
+					"description": "Control-step budget (default 200)"
+				}
+			},
+			"doc": {
+				"code": "Servo the arm to a joint configuration with the gripper held; refused outside the joint limits, stopped when the TCP leaves the workspace box or goes below the Z floor. Cartesian moves afterwards hold the reset orientation again.\n\nReturns the new state (tcp_pos, gripper_width, gripper_command, is_grasped, success, env_steps) plus joint_error_rad.\n\nExample:\n    move_to_joints([0.0, -0.4, 0.0, -2.2, 0.0, 2.0, 0.8])"
+			}
+		},
+		{
+			"name": "traj_plan",
+			"side": "code",
+			"method": "env.traj_plan",
+			"tier": "low",
+			"params": {
+				"start_pose_wxyz_xyz": {
+					"type": "array",
+					"required": true,
+					"minItems": 7,
+					"maxItems": 7,
+					"description": "Start TCP pose: wxyz then xyz"
+				},
+				"end_pose_wxyz_xyz": {
+					"type": "array",
+					"required": true,
+					"minItems": 7,
+					"maxItems": 7,
+					"description": "End TCP pose: wxyz then xyz"
+				}
+			},
+			"doc": {
+				"code": "Plan joint waypoints [N, 7] between two TCP poses (a straight line in 2 cm steps, orientation slerped, IK per waypoint seeded with the previous); nothing moves.\n\nExample:\n    st = state()\n    q = list(st[\"tcp_quat_wxyz\"])\n    traj = traj_plan(q + list(st[\"tcp_pos\"]), q + [0.6, 0.0, 0.1])\n    move_along_trajectory(traj)"
+			}
+		},
+		{
+			"name": "move_along_trajectory",
+			"side": "code",
+			"method": "env.move_along_trajectory",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"trajectory": {
+					"type": "array",
+					"required": true,
+					"items": {
+						"type": "array"
+					},
+					"maxItems": 100,
+					"description": "Joint waypoints [N, 7]"
+				}
+			},
+			"doc": {
+				"code": "Move the arm through joint-space waypoints (each within 0.025 rad or 15 control steps); stops at an error, a stop or success.\n\nExample:\n    move_along_trajectory(traj)"
+			}
+		},
+		{
+			"name": "render_camera",
+			"side": "code",
+			"method": "env.render_camera",
+			"tier": "low",
+			"params": {
+				"camera_name": {
+					"type": "enum",
+					"values": [
+						"agentview",
+						"wrist"
+					],
+					"description": "agentview (front, default) or wrist"
+				},
+				"depth": {
+					"type": "boolean",
+					"description": "Also return the metric depth: [rgb, depth]"
+				}
+			},
+			"doc": {
+				"code": "The current frame of a camera (as the model sees it).\n\nExample:\n    rgb = render_camera(\"wrist\")  # uint8 [256, 256, 3]"
+			}
+		},
+		{
+			"name": "step",
+			"side": "code",
+			"method": "env.step",
+			"tier": "raw",
+			"mutating": true,
+			"params": {
+				"action": {
+					"type": "array",
+					"required": true,
+					"minItems": 4,
+					"maxItems": 4,
+					"description": "[dx, dy, dz, gripper]: m, +1 open / -1 close"
+				}
+			},
+			"doc": {
+				"code": "One control step of [dx, dy, dz, gripper] (m; +1 open / -1 close), under the same limits.\n\nExample:\n    r = step([0, 0, 0.01, -1])  # up 1 cm, gripper closed\n    print(r[\"success\"], r[\"state\"][\"tcp_pos\"])"
+			}
+		},
+		{
+			"name": "chunk_step",
+			"side": "code",
+			"method": "env.chunk_step",
+			"tier": "raw",
+			"mutating": true,
+			"params": {
+				"actions": {
+					"type": "array",
+					"required": true,
+					"items": {
+						"type": "array"
+					},
+					"maxItems": 200,
+					"description": "N x 4 floats"
+				},
+				"return_all_frames": {
+					"type": "boolean",
+					"description": "One observation per action"
+				}
+			},
+			"doc": {
+				"code": "Run actions [N, 4] in one call; stops at success or stop.\n\nExample:\n    r = chunk_step([[0, 0, 0.01, -1]] * 10)  # 10 cm up in 1 cm steps\n    print(r[\"success\"], r[\"state\"][\"tcp_pos\"])"
+			}
+		},
+		{
+			"use": "sim/ground_truth_poses"
+		},
+		{
+			"use": "grasp/plan_grasp"
+		},
+		{
+			"use": "grasp/plan_place"
+		},
+		{
+			"use": "grasp/check_attached"
+		},
+		{
+			"use": "grasp/next_grasp"
+		},
+		{
+			"use": "grasp/resolve_grasp"
+		},
+		{
+			"use": "grasp/claim_waypoints"
+		},
+		{
+			"use": "grasp/segment_mask"
+		},
+		{
+			"use": "perception/detect"
+		},
+		{
+			"use": "perception/select_detection"
+		},
+		{
+			"use": "perception/reject_detection"
+		},
+		{
+			"use": "perception/enhance_depth"
+		},
+		{
+			"use": "modules/finish"
+		},
+		{
+			"use": "modules/act"
+		},
+		{
+			"use": "modules/plan"
+		},
+		{
+			"use": "modules/point"
+		},
+		{
+			"use": "modules/reset"
+		},
+		{
+			"use": "modules/run_code"
+		}
+	]
+}

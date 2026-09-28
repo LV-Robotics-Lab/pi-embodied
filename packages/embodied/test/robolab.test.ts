@@ -6,6 +6,7 @@ import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { ground, MOVE_UNITS } from "../src/modes/units/index.ts";
 import robolab, { MAX_ROTATE_RAD, STEP_M, VECTORS, YAW_STEP_RAD } from "../src/robots/robolab/index.ts";
+import { codeApiReply } from "./helpers/code-api.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
@@ -102,7 +103,7 @@ async function fakeEnv(solvedAfter = Infinity) {
 				control_hz: 15,
 			};
 			let result: unknown = { status: "ok" };
-			if (method === "code.api") result = { tier: kwargs.tier ?? null, primitives: [], digest: "d" };
+			if (method === "code.api") result = codeApiReply("robolab", kwargs.tier);
 			else if (method === "env.get_env_meta") result = meta;
 			else if (method === "env.reset") result = [obs(), {}];
 			else if (method === "env.move_delta") {

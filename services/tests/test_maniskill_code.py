@@ -100,6 +100,7 @@ def test_a_servo_run_reports_steps_success_obs_and_frames_and_hides_object_state
         "frames, info = servo([x, y, z + 0.15], -1, max_steps=20)\n"
         "RESULT = [state(), frames, info]\n",
         timeout_s=30,
+        tier="low",
     )
     assert out["status"] == "ran", out
     seen = keys(out["result"])
@@ -125,7 +126,7 @@ def test_the_low_tier_raw_steps_answer_without_reward_or_images():
         "b = chunk_step([[0.1, 0, 0, 1]] * 3, return_all_frames=True)\n"
         "RESULT = [a, b]\n",
         timeout_s=30,
-        tier="low",
+        tier="raw",
     )
     assert out["status"] == "ran", out
     a, b = out["result"]
@@ -141,8 +142,9 @@ def test_the_low_tier_raw_steps_answer_without_reward_or_images():
 def test_oversized_calls_are_refused_before_they_run():
     f = facade()
     for code, tier, why in [
-        ("servo([0, 0, 0.1], 1, max_steps=1000)\n", "high", "at most 100"),
-        ("chunk_step([[0, 0, 0, 1]] * 500)\n", "low", "at most 200 actions"),
+        ("servo([0, 0, 0.1], 1, max_steps=1000)\n", "low", "at most 100"),
+        ("chunk_step([[0, 0, 0, 1]] * 500)\n", "raw", "at most 200 actions"),
+        ("move_delta([0, 0, 0.3])\n", "low", "the limit is 0.2 m per call"),
     ]:
         out = f._rpc["code.run"](code, timeout_s=30, tier=tier)
         assert out["status"] == "error" and why in out["error"], out
@@ -158,10 +160,66 @@ def test_the_run_video_is_bounded():
 
 def test_the_low_tier_shows_examples_and_s4_drops_them():
     f = facade()
-    low = f._rpc["code.api"]("low")["primitives"]
-    s4 = f._rpc["code.api"]("low-noexamples")["primitives"]
-    assert [p["name"] for p in s4] == [p["name"] for p in low]
-    named = {p["name"]: p for p in low}
-    for name in ("state", "servo", "step", "chunk_step", "render_camera"):
-        assert "example" in named[name], name
-    assert all("example" not in p for p in s4)
+    low = f._rpc["code.api"]("low")
+    s4 = f._rpc["code.api"]("low-noexamples")
+    assert s4["available"] == low["available"]
+    assert s4["manifest_digest"] == low["manifest_digest"]
+    docs = {p["name"]: p["doc"] for p in f._code.api("low")}
+    for name in ("state", "servo", "move_delta", "render_camera"):
+        assert "Example:" in docs[name], name
+    assert all("Example:" not in p["doc"] for p in f._code.api("low-noexamples"))
+    assert [p["name"] for p in f._code.api("raw")] == ["step", "chunk_step"]
+
+
+def test_the_tiers_follow_the_relabel():
+    """raw = step / chunk_step, privileged = ground_truth_poses, everything else low; no high."""
+    f = facade()
+    # main() serves it with --ik on an arm with an IK model.
+    f._ik = True
+    f._rpc["env.preview_reach"] = lambda xyz, quat_xyzw=None: {"status": "unknown"}
+    assert f._rpc["code.api"]("low")["available"] == [
+        "get_task_language",
+        "state",
+        "move_delta",
+        "servo",
+        "render_camera",
+        "get_camera_meta",
+        "preview_reach",
+    ]
+    assert f._rpc["code.api"]("high")["available"] == []
+    assert f._rpc["code.api"]("privileged")["available"] == ["ground_truth_poses"]
+    # Without --ik (or on an arm without an IK model) preview_reach is not a primitive.
+    assert "preview_reach" not in facade()._rpc["code.api"]("low")["available"]
+
+
+def test_the_server_checks_itself_against_its_manifest():
+    """A facade method the manifest does not declare (nor lists as internal) stops the server;
+    so does a declared one it does not serve."""
+    from pi_embodied_services.components.manifest import ManifestError
+
+    facade()._manifest_ready()
+    f = facade()
+    f._rpc["env.secret_teleport"] = lambda: None
+    with pytest.raises(ManifestError, match="env.secret_teleport"):
+        f._manifest_ready()
+    g = facade()
+    del g._rpc["env.move_delta"]
+    with pytest.raises(ManifestError, match="move_delta"):
+        g._manifest_ready()
+
+
+def test_a_move_delta_program_gets_the_tool_result_without_images():
+    f = facade()
+    out = f._rpc["code.run"](
+        "RESULT = move_delta([0, 0, 0.04], gripper='close')\n", timeout_s=30, tier="low"
+    )
+    assert out["status"] == "ran", out
+    r = out["result"]
+    assert set(r) == {"commanded_m", "moved_m", "gripper", "env_steps", "info", "state"}
+    assert r["commanded_m"] == [0, 0, 0.04] and r["gripper"] == "close"
+    assert r["moved_m"][2] == pytest.approx(0.04, abs=0.003)
+    assert not keys(r) & (PRIVILEGED | {"agentview", "wrist"})
+    assert out["steps"] == r["env_steps"] == f._steps
+    assert len(out["frames"]) == r["env_steps"], "every control step goes to the video"
+    assert out["calls"][0]["move_m"] == pytest.approx(0.04)
+    assert out["gripper"] == -1

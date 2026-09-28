@@ -294,6 +294,25 @@ class ReachPreview:
         )
         return out
 
+    def joint_path(self, q0: Any, q1: Any, waypoints: int = 10) -> dict[str, Any]:
+        """The TCP poses (xyz + xyzw, base frame) along the straight joint path from ``q0`` to
+        ``q1`` (``ik.plan`` with ``goal_q``: forward kinematics, the joint-jump check), or the
+        service's refusal: ``{"ok", "error", "tcp_path"}``."""
+        result = self._call(
+            "ik.plan",
+            robot=self.robot,
+            start_q=[float(v) for v in np.asarray(q0, dtype=np.float64).reshape(-1)],
+            goal_q=[float(v) for v in np.asarray(q1, dtype=np.float64).reshape(-1)],
+            waypoints=int(waypoints),
+        )
+        if not isinstance(result, dict) or "ok" not in result:
+            raise ValueError(f"ik.plan returned an invalid result: {result!r}")
+        return {
+            "ok": bool(result["ok"]),
+            "error": result.get("error"),
+            "tcp_path": result.get("tcp_path"),
+        }
+
 
 def install_preview_reach(
     facade: Any,

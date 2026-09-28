@@ -16,7 +16,7 @@
 # - goto_pose servos the TCP (the grip site) with move_to instead of solving IK for panda_hand:
 #   CaP-X's positions are the fingertip point, so no TCP offset is applied. Quaternions are
 #   CaP-X's panda_hand wxyz, turned half a turn about the hand's z into the grip site's frame
-#   (HAND_TO_SITE_WXYZ, as capx_privileged.py). A move longer than the server's per-call cap is
+#   (HAND_TO_SITE_WXYZ, as the server's goto_pose). A move longer than the server's per-call cap is
 #   split into straight legs of <= MAX_LEG_M. The path is a Cartesian line, not a joint-space one.
 import math
 

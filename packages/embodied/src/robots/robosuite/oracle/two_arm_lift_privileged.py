@@ -1,7 +1,8 @@
 # capx: env_configs/human_oracle_code/robosuite/franka_robosuite_two_arm_lift_privileged_oracle.yaml @53e9966
 # program: capx/envs/tasks/franka/two_arm_lift.py ORACLE_CODE (FrankaTwoArmLiftPrivilegedApi)
 # task: TwoArmLift
-# tier: privileged
+# tier: low+privileged
+# CaP-X's task API (not in the high tier) is the prelude over the low tier's primitives.
 # prelude: capx_two_arm_lift_privileged.py
 # ---- CaP-X's program, verbatim ----
 import numpy as np

@@ -29,8 +29,16 @@ The env class is used directly (no ``metaworld.MT1`` task list): ``env.reset`` r
 env's RNG and the process's global numpy and Python RNGs with the episode seed, so a seed
 draws the same object layout in any process and every reset restores the same state.
 
-Code mode (``code.run``, utils/code_exec.py ``CodeRunMixin``): a program calls the registry's
-primitives (./primitives.py) in a sandboxed subprocess, so the server requires its RPC token and
+Perception runs here for the tools and programs alike: ``env.back_project`` (a pixel, a pixel
+list or a region of the current image through the rendered depth) and ``env.segment`` (SAM3 with
+``--sam3``, located through the same depth). ``env.execute_grasp`` / ``env.execute_place`` run a
+planned grasp id as bounded ``move_delta`` legs (utils/grasp_chain.py). The hand is a mocap
+target welded to the Sawyer: there is no joint-space control to offer (CaP-X's ``solve_ik`` /
+``move_to_joints`` do not apply).
+
+Code mode (``code.run``, utils/code_exec.py ``CodeRunMixin``): a program calls the primitives of
+the robot's manifest (packages/embodied/src/primitives/manifests/metaworld.json, read by
+components/manifest.py) in a sandboxed subprocess, so the server requires its RPC token and
 refuses other business calls while a program runs. What a program receives of a primitive's
 result carries no object state: Metaworld's 39-D observation holds the object and goal poses and
 its info metrics (``obj_to_target``, ``near_object``, the shaped reward, ...) are computed from
@@ -49,12 +57,15 @@ from typing import Any
 
 import numpy as np
 
-from pi_embodied_services.components.code_api import register_code_api
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
-from pi_embodied_services.robots.metaworld.primitives import METAWORLD_PRIMITIVES
-from pi_embodied_services.utils import ground_truth
+from pi_embodied_services.utils import grasp_chain as chain
+from pi_embodied_services.utils import ground_truth, sam3_segment
 from pi_embodied_services.utils.code_exec import CodeRunMixin
-from pi_embodied_services.utils.grasp import add_grasp_arguments, install_grasp_planner
+from pi_embodied_services.utils.grasp import (
+    GraspPlanner,
+    add_grasp_arguments,
+    urls_from_args,
+)
 from pi_embodied_services.utils.logging import get_logger
 from pi_embodied_services.utils.perception import (
     add_perception_arguments,
@@ -174,6 +185,17 @@ PROGRAM_INFO = ("success", "success_once", "grasp_success")
 CODE_MAX_FRAMES = 128
 CODE_MAX_RENDER = 1024
 CODE_MAX_CHUNK = 200
+#: back_project / segment resolutions: the images shown, or the 1024 px render.
+RESOLUTIONS = {"low": VIEW_SIZE, "high": 1024}
+#: The facade's motions: grasp and detection ids expire after any of them.
+MOTIONS = (
+    "env.move_delta",
+    "env.set_gripper",
+    "env.execute_grasp",
+    "env.execute_place",
+    "env.step",
+    "env.chunk_step",
+)
 
 
 def instruction(task: str) -> str:
@@ -275,6 +297,9 @@ class MetaworldEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
     _steps = 0
     _run_start = 0
     _run_frames: list | tuple = ()
+    #: --sam3 (env.segment) and the grasp planner (env.execute_*): set in main().
+    _sam3 = sam3_segment.Sam3(None)
+    _grasp: GraspPlanner | None = None
 
     def __init__(self, *, task: str, seed: int, view_size: int = VIEW_SIZE):
         super().__init__()
@@ -312,17 +337,42 @@ class MetaworldEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
                 "env.move_delta": self.move_delta,
                 "env.set_gripper": self.set_gripper,
                 "env.ground_truth_poses": self.ground_truth_poses,
+                "env.back_project": self.back_project,
+                "env.segment": self.segment,
+                # Served always (the id wrappers expire ids after them); they need the planner.
+                "env.execute_grasp": self.execute_grasp,
+                "env.execute_place": self.execute_place,
             }
         )
-        api = register_code_api(self, METAWORLD_PRIMITIVES)
-        self._install_code_run(
-            api,
+        self._readonly_methods.update({"env.back_project", "env.segment"})
+        # The primitives are packages/embodied/src/primitives/manifests/metaworld.json (with
+        # pi); code.api, the programs' whitelist and the startup self-check come from it.
+        self._manifest_code_run(
+            "metaworld",
+            have=self._has,
             move_m=self._code_move_m,
             check=self._code_check,
             reply=self._code_reply,
             begin=self._begin_run,
             finish=self._finish_run,
         )
+
+    def _has(self, capability: str) -> bool:
+        """What this server can serve of the manifest's ``requires``."""
+        return {
+            "sam3": bool(self._sam3),
+            "grasp": self._grasp is not None,
+            "place": self._grasp is not None
+            and bool(self._grasp.capabilities().get("place")),
+            "unidepth": "env.enhance_depth" in self._rpc,
+            "privileged": True,
+        }.get(capability, False)
+
+    def install_grasp(self, planner: GraspPlanner | None) -> None:
+        """The grasp planner's primitives (their ids expire after every motion)."""
+        self._grasp = planner
+        if planner is not None:
+            planner.install(self, mutating=GraspPlanner.MUTATING + MOTIONS)
 
     # ---- helpers ----
 
@@ -444,7 +494,14 @@ class MetaworldEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
     def _code_reply(self, method: str, out: Any) -> Any:
         """What a program receives: no object state (the 39-D obs, the info metrics, the
         shaped reward) and no images of a motion (they go to the run's video)."""
-        if method in ("env.move_delta", "env.set_gripper"):
+        if method == "env.segment":
+            return sam3_segment.for_program(out)
+        if method in (
+            "env.move_delta",
+            "env.set_gripper",
+            "env.execute_grasp",
+            "env.execute_place",
+        ):
             out = dict(out)
             self._keep_frames(out.pop("frames", []))
             out["info"] = program_info(out.get("info", {}))
@@ -646,11 +703,181 @@ class MetaworldEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
             **({"cancelled": True} if cancelled else {}),
         }
 
-    def set_gripper(self, open: bool) -> dict:
-        """Open or close the gripper in place for GRIPPER_STEPS control steps."""
-        return self.move_delta([0, 0, 0], "open" if open else "close") | {
-            "target_gripper_open": bool(open)
+    def set_gripper(self, close: bool) -> dict:
+        """Close (``close=True``) or open the gripper in place for GRIPPER_STEPS control
+        steps."""
+        return self.move_delta([0, 0, 0], "close" if close else "open")
+
+    # ---- perception through the rendered depth ----
+
+    def _world_map(self, camera: str, size: int) -> tuple[np.ndarray, np.ndarray]:
+        """The current image of ``camera`` at ``size`` px and the world xyz of every pixel
+        (NaN where the depth is invalid)."""
+        if camera not in CAMERAS:
+            raise ValueError(f"unknown camera {camera!r}; one of {sorted(CAMERAS)}")
+        rgb, depth = self.render_camera(camera, size, size, depth=True)
+        meta = self.get_camera_meta(camera, size, size)
+        K = np.asarray(meta["intrinsic_K"], dtype=np.float64)
+        T = np.asarray(meta["extrinsic_cam2world"], dtype=np.float64)
+        rows, cols = np.mgrid[0:size, 0:size]
+        z = np.asarray(depth, dtype=np.float64)
+        x = (cols - K[0, 2]) * z / K[0, 0]
+        y = (rows - K[1, 2]) * z / K[1, 1]
+        cam = np.stack([x, y, z], axis=-1)
+        xyz = cam @ T[:3, :3].T + T[:3, 3]
+        valid = np.isfinite(xyz).all(-1) & (np.abs(xyz).sum(-1) > 1e-6) & (z > 0)
+        xyz[~valid] = np.nan
+        return rgb, xyz
+
+    @staticmethod
+    def _size(resolution: str) -> int:
+        if resolution not in RESOLUTIONS:
+            raise ValueError(f"resolution must be one of {sorted(RESOLUTIONS)}")
+        return RESOLUTIONS[resolution]
+
+    def back_project(
+        self,
+        row: int | None = None,
+        col: int | None = None,
+        camera: str = "agentview",
+        resolution: str = "low",
+        row_range=None,
+        col_range=None,
+        z_min: float | None = None,
+        z_max: float | None = None,
+        pixels=None,
+    ):
+        """World xyz of pixel (row, col) of the current image (``resolution`` low = the
+        images shown, high = 1024 px) through the rendered depth. Region mode (row_range +
+        col_range, optional z band): ``center_xyz`` is the midpoint of world x and y over the
+        window and the median z. ``pixels`` [[row, col], ...] returns a list (None where the
+        depth is invalid). Errors come back as ``error``, as the tool shows them."""
+        size = self._size(resolution)
+        _rgb, xyz = self._world_map(camera, size)
+
+        def at(r: int, c: int):
+            if not (0 <= r < size and 0 <= c < size):
+                return None
+            p = xyz[r, c]
+            return None if np.isnan(p).any() else [round(float(v), 4) for v in p]
+
+        if pixels is not None:
+            return [at(int(r), int(c)) for r, c in pixels]
+        base = {"camera": camera, "resolution": resolution}
+
+        def span(v):
+            return v if v is not None and max(v) > min(v) else None
+
+        rows, cols = span(row_range), span(col_range)
+        if rows or cols:
+            if not (rows and cols):
+                return {"error": "region mode needs both row_range and col_range"}
+            r0, r1 = (int(np.clip(v, 0, size)) for v in (min(rows), max(rows)))
+            c0, c1 = (int(np.clip(v, 0, size)) for v in (min(cols), max(cols)))
+            pts = xyz[r0:r1, c0:c1].reshape(-1, 3)
+            pts = pts[~np.isnan(pts).any(1)]
+            if z_min is not None:
+                pts = pts[pts[:, 2] >= z_min]
+            if z_max is not None:
+                pts = pts[pts[:, 2] <= z_max]
+            if len(pts) < 8:
+                return {
+                    "error": f"too few valid pixels in region ({len(pts)}); widen the window or the z band"
+                }
+            lo, hi = pts.min(0), pts.max(0)
+            return {
+                **base,
+                "mode": "region",
+                "center_xyz": [
+                    round(float((lo[0] + hi[0]) / 2), 4),
+                    round(float((lo[1] + hi[1]) / 2), 4),
+                    round(float(np.median(pts[:, 2])), 4),
+                ],
+                "median_xyz": [round(float(v), 4) for v in np.median(pts, 0)],
+                "n_valid": int(len(pts)),
+            }
+        if row is None or col is None:
+            return {"error": "give row and col, or row_range and col_range"}
+        if not (0 <= row < size and 0 <= col < size):
+            return {"error": f"pixel ({row},{col}) out of bounds for {size}x{size}"}
+        p = at(int(row), int(col))
+        if p is None:
+            return {"error": f"invalid world xyz at ({row},{col}); pick another pixel"}
+        return {**base, "pixel": [int(row), int(col)], "world_xyz": p}
+
+    def segment(
+        self,
+        prompt: str | None = None,
+        point=None,
+        camera: str = "agentview",
+        resolution: str = "low",
+        min_score: float = 0.2,
+    ) -> dict:
+        """SAM3 mask of a text prompt (or a positive point [row, col]) on the current image
+        of ``camera``, located through the rendered depth: ``found``, ``score``, ``box``,
+        ``mask``, ``n_pixels``, ``centroid_pixel``, ``world_xyz`` (median over the mask) and
+        the tool's ``overlay_png_base64``."""
+        rgb, xyz = self._world_map(camera, self._size(resolution))
+
+        def locate(px):
+            out = []
+            for r, c in px:
+                p = xyz[r, c]
+                out.append(None if np.isnan(p).any() else p.tolist())
+            return out
+
+        return sam3_segment.segment(
+            self._sam3,
+            rgb,
+            locate,
+            prompt=prompt,
+            point=point,
+            min_score=min_score,
+            samples=10**9,
+            extra={"camera": camera, "resolution": resolution},
+        )
+
+    # ---- planned grasps (utils/grasp_chain.py) ----
+
+    def _chain(self, kind: str, grasp_id: str, standoff: float | None) -> dict:
+        if self._grasp is None:
+            raise RuntimeError(
+                f"execute_{kind} needs the grasp planner (start with --contact-graspnet & co)"
+            )
+        out = chain.run_chain(
+            kind,
+            grasp_id,
+            rpc=self._rpc,
+            current=self._tcp,
+            max_step=MAX_MOVE_M,
+            move=lambda d, g: self.move_delta(list(d), g),
+            gripper=lambda g: self.set_gripper(g == "close"),
+            stop=self.stop_requested,
+            solved=lambda: self._success_once,
+            standoff=standoff,
+            # The Sawyer hand points down at yaw 0 (the planner's eef_pose).
+            yaw=lambda: 0.0,
+        )
+        frames = out.pop("frames", []) or [self._pack()]
+        steps = out.pop("control_steps", 0)
+        return {
+            **out,
+            "gripper": "close" if self._gripper_effort > 0 else "open",
+            "gripper_width": round(self._gripper_width(), 5),
+            "steps_used": steps,
+            "frames": frames,
+            "info": dict(self._info),
         }
+
+    def execute_grasp(self, grasp_id: str, standoff: float | None = None) -> dict:
+        """Run one planned grasp id: open at the standoff back along its approach, descend,
+        close, lift, each leg as bounded move_delta calls; refused (nothing moves) unless it
+        approaches from nearly straight above. ``frames`` as move_delta's."""
+        return self._chain("grasp", grasp_id, standoff)
+
+    def execute_place(self, place_id: str, standoff: float | None = None) -> dict:
+        """Run one planned place id: to the pre-place above it, descend, open, retreat."""
+        return self._chain("place", place_id, standoff)
 
     def state(self) -> dict:
         """TCP position, gripper opening and the task metrics (no stepping): the
@@ -749,22 +976,26 @@ def main():
     facade = MetaworldEnvFacade(
         task=args.task, seed=args.seed, view_size=args.view_size
     )
-    # --sam3 / --unidepth: env.detect, env.select_detection, env.reject_detection, env.enhance_depth.
+    # --sam3: env.segment; --sam3 / --unidepth: env.detect, env.select_detection,
+    # env.reject_detection, env.enhance_depth.
+    facade._sam3 = sam3_segment.Sam3(args.sam3)
     view = render_view(facade)
     perception = install_perception(
-        facade, args, cameras=["agentview", "wrist"], view=view
+        facade, args, cameras=["agentview", "wrist"], view=view, mutating=MOTIONS
     )
     # --contact-graspnet & co: env.plan_grasp, env.claim_waypoints and friends over the same views
-    # (the gripper points straight down (xyzw, 180 deg about x)); pi's execute_grasp splits the claimed path into move_delta calls.
-    install_grasp_planner(
-        facade,
-        args,
-        view=view,
-        cameras=["agentview", "wrist"],
-        eef_pose=lambda arm: (facade._tcp(), np.array([1.0, 0.0, 0.0, 0.0])),
-        perception=perception,
-        primitives=METAWORLD_PRIMITIVES,
-        wrist_camera="wrist",
+    # (the gripper points straight down (xyzw, 180 deg about x)); env.execute_grasp /
+    # env.execute_place run the claimed path as move_delta legs.
+    facade.install_grasp(
+        GraspPlanner.from_args(
+            view,
+            cameras=["agentview", "wrist"],
+            masks=perception.book if perception is not None else None,
+            sam3=args.sam3 or (perception.sam3 if perception is not None else None),
+            eef_pose=lambda arm: (facade._tcp(), np.array([1.0, 0.0, 0.0, 0.0])),
+            wrist_camera="wrist",
+            **urls_from_args(args),
+        )
     )
     try:
         facade.serve(

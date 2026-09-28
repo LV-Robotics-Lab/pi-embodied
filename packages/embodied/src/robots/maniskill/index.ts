@@ -16,11 +16,13 @@
  *
  * Starts one ManiSkill env server per session (services/.../robots/maniskill/env_server.py, the
  * `maniskill` venv; rendering needs a GPU). `--robot` picks the arm (ROBOTS: the Panda by default, an xArm6
- * with a Robotiq gripper, a WidowX AI without a wrist camera); the rigs run their own Panda. `move_delta` and the units hook `apply` share one
- * motion path: a base-frame delta in metres becomes ~2 cm decisions, each a closed-loop servo of
- * 2-8 control steps to its waypoint (Show-Harness's step calibration and real2sim execution);
+ * with a Robotiq gripper, a WidowX AI without a wrist camera); the rigs run their own Panda. `move_delta`, the units hook `apply`
+ * and code mode's `move_delta` run one server method (env.move_delta): a base-frame delta in metres becomes ~2 cm
+ * decisions, each a closed-loop servo of 2-8 control steps to its waypoint (Show-Harness's step calibration and
+ * real2sim execution), with the per-call cap, stop and the latched success on the server;
  * every result carries the agentview and wrist images and the state; success is ManiSkill's own `success` flag, recorded in `robot_result`.
  * --collect-flywheel-data records every control step of a motion, per arm (services robots/maniskill/flywheel.py).
+ * Tools and code primitives: ../../primitives/manifests/maniskill.json (the env server reads it too).
  *
  * Copyright 2026 The Show-Harness Authors (github.com/showlab/Show-Harness @137d571).
  * Licensed under the Apache License, Version 2.0.
@@ -44,9 +46,9 @@ import { MOVE_UNITS, type MoveUnit, type Vec3 } from "../../modes/units/index.ts
 import { template } from "../../planner/context-version.ts";
 import { detectionActive, detectionArgs, detectionTools, registerDetectionFlags } from "../../primitives/detections.ts";
 import { mountGraspTool } from "../../primitives/grasp.ts";
-import { ikArgs, previewReachTool, type Reach, registerIkFlag } from "../../primitives/ik.ts";
+import { ikArgs, type Reach, registerIkFlag } from "../../primitives/ik.ts";
 import { pointActive, pointTool, registerPointFlags } from "../../primitives/pointing.ts";
-import { attach, defineRobot, rgbOf, SERVICES } from "../../robot.ts";
+import { attach, defineRobot, type Json, rgbOf, SERVICES, toolResult } from "../../robot.ts";
 
 const read = (name: string) => template(new URL(name, import.meta.url));
 const SYSTEM = read("./SYSTEM.md");
@@ -117,22 +119,13 @@ export const VECTORS: Record<MoveUnit, Vec3> = {
 	MV_UP: [0, 0, 1],
 	MV_DOWN: [0, 0, -1],
 };
-/** Physical metres per decision (the MVTOKEN 2 cm convention). */
+/**
+ * Physical metres per decision (the MVTOKEN 2 cm convention). The waypoint split, the servo gain and
+ * steps, each robot's gripper hold and the per-call cap live on the env server (env.move_delta,
+ * env_server.py STEP_M / GAIN / SERVO_* / RobotSpec.gripper_steps / MAX_MOVE_M).
+ */
 export const STEP_M = 0.02;
-/**
- * Servo gain, command per metre of remaining error: the yaml's step_m 0.026 per 2 cm decision
- * (0.026 x 2 control steps measured 20.2 mm on BlockPAP, 20.6 mm on PickCube from rest).
- */
-export const GAIN = 0.026 / 0.02;
-/**
- * Control steps per decision: at least the yaml's `sim_steps_per_decision` (2), and up to 8 until
- * the TCP is within 2 mm of the waypoint. Open-loop 2-step decisions fell short after a reversal
- * (measured on PickCube: MV_RIGHT right after MV_LEFT moved 0.6 of 2 cm, MV_UP after MV_DOWN 0.9).
- */
-export const SERVO = { minSteps: 2, maxSteps: 8, tolM: 0.002 };
-/** Control steps a gripper toggle holds still: closing takes 3 steps, opening ~6 (measured). */
-export const GRIPPER_STEPS = 6;
-/** Largest translation one call may command, m. */
+/** Largest translation one call may command, m (the env server's MAX_MOVE_M, which enforces it). */
 export const MAX_MOVE_M = 0.2;
 /** Closed-and-empty gripper width, m (yaml `empty_width_m`, measured in sim). */
 export const EMPTY_WIDTH_M = 0.005;
@@ -161,7 +154,8 @@ type Obs = {
 type Info = Record<string, unknown>;
 /** A servo control step: its observation, the env action it applied and its success (absent when none ran). */
 type Frame = Obs & { action?: NdArray; success?: boolean };
-type ServoReturn = [Frame[], Info];
+/** env.move_delta's answer: the call's result, every control step, the last observation and step info. */
+type MoveReturn = { result: Record<string, unknown>; frames: Frame[]; obs: Obs; info: Info };
 /**
  * The RLinf rigs (BlockPAP-v1 / BlockStack-v1), measured on BlockPAP seed 20000 by stepping each
  * unit 4 cm and tracking the block's segmentation centroid: agentview = the calibrated front
@@ -219,7 +213,7 @@ const THIRD_PERSON =
  * The xArm6 + Robotiq 2F-85 (env server ROBOTS["xarm6_robotiq"]): measured on PickCube / StackCube seed 0 with
  * pi's motion path, each MV_* 4 units from the reset: 19.7 mm per unit along its axis (cos 1.000, the Panda's
  * 19.7-20.0 mm), so the Panda's vectors, step and gain. The Robotiq closes from 86 mm to 0 in 5 control steps
- * and opens in 6 (GRIPPER_STEPS); closed on a 4 cm cube it reads ~50 mm (pad links), on nothing 0. Its wrist
+ * and opens in 6 (the server's 6-step hold); closed on a 4 cm cube it reads ~50 mm (pad links), on nothing 0. Its wrist
  * camera (xarm6_robotiq_wristcam's, on camera_link) renders +x to the image left and +y down; turned 90 deg
  * the directions match the agentview's, the fingertips sit at the top corners and the point under the TCP is
  * horizontally centred, ~41 % down at the table and ~25 % down at the TCP.
@@ -240,8 +234,6 @@ const XARM6_ROBOTIQ: ManiskillRobot = {
 	],
 	vectors: VECTORS,
 	stepM: STEP_M,
-	gain: GAIN,
-	gripperSteps: GRIPPER_STEPS,
 	emptyWidthM: EMPTY_WIDTH_M,
 	setup: { agentview: "oblique", wrist_mount: "camera_link", wrist_rotation: 90, wrist_flip: "none" },
 	views: XARM6_VIEWS,
@@ -265,8 +257,6 @@ const WIDOWXAI: ManiskillRobot = {
 	envs: ["PickCube-v1", "PickCubeWidowXAI-v1"],
 	vectors: VECTORS,
 	stepM: STEP_M,
-	gain: GAIN,
-	gripperSteps: 10,
 	emptyWidthM: EMPTY_WIDTH_M,
 	setup: { agentview: "oblique", wrist_mount: "none", wrist_rotation: 0, wrist_flip: "none" },
 	views: WIDOWXAI_VIEWS,
@@ -289,8 +279,6 @@ const PANDA_STICK: ManiskillRobot = {
 	envs: ["PushT-v1", "DrawTriangle-v1", "DrawSVG-v1"],
 	vectors: VECTORS,
 	stepM: STEP_M,
-	gain: GAIN,
-	gripperSteps: 0,
 	emptyWidthM: EMPTY_WIDTH_M,
 	gripper: false,
 	setup: { agentview: "oblique", wrist_mount: "none", wrist_rotation: 0, wrist_flip: "none" },
@@ -315,8 +303,6 @@ const PANDA_PAIR: ManiskillRobot = {
 	envs: ["TwoRobotPickCube-v1", "TwoRobotStackCube-v1"],
 	vectors: VECTORS,
 	stepM: STEP_M,
-	gain: GAIN,
-	gripperSteps: GRIPPER_STEPS,
 	emptyWidthM: EMPTY_WIDTH_M,
 	arms: ["left", "right"],
 	setup: { agentview: "oblique", wrist_mount: "none", wrist_rotation: 0, wrist_flip: "none" },
@@ -352,8 +338,6 @@ const WIDOWX250S: ManiskillRobot = {
 	],
 	vectors: VECTORS,
 	stepM: STEP_M,
-	gain: GAIN,
-	gripperSteps: 4,
 	emptyWidthM: 0.031,
 	frame: "a world-frame `[dx, dy, dz]` in metres: +x toward the camera and the robot base (the image bottom), +y toward the image right, +z up",
 	setup: { agentview: "3rd_view_camera", wrist_mount: "none", wrist_rotation: 0, wrist_flip: "none" },
@@ -371,12 +355,10 @@ export type ManiskillRobot = {
 	arm: string;
 	/** The stock env ids it runs (reset, visibility gate and reach measured); the rigs run their own Panda only. */
 	envs: readonly EnvId[];
-	/** Base-frame MV_* vectors (measured: each unit moves ~stepM along its axis), metres per unit and the servo gain. */
+	/** Base-frame MV_* vectors (measured: each unit moves ~stepM along its axis) and metres per unit. */
 	vectors: Record<MoveUnit, Vec3>;
 	stepM: number;
-	gain: number;
-	/** Control steps a gripper toggle holds still; the closed-and-empty gripper width, m. */
-	gripperSteps: number;
+	/** The closed-and-empty gripper width, m. */
 	emptyWidthM: number;
 	/** `false`: no gripper (a stick): the action is the translation alone and `gripper` commands are refused. */
 	gripper?: false;
@@ -407,8 +389,6 @@ export const ROBOTS = {
 		envs: ENV_IDS.slice(2).filter((e) => !OTHER_ROBOT_ENVS[e]),
 		vectors: VECTORS,
 		stepM: STEP_M,
-		gain: GAIN,
-		gripperSteps: GRIPPER_STEPS,
 		emptyWidthM: EMPTY_WIDTH_M,
 		setup: VIEW_SETUP,
 		views: VIEWS,
@@ -446,6 +426,8 @@ export function robotFor(robot: string, envId: string): ManiskillRobot {
 }
 
 const round = (v: number, d = 4) => Number(v.toFixed(d));
+/** The --robot values whose env server serves env.preview_reach from an IK model (env server IK_MODELS). */
+export const IK_ROBOTS: readonly string[] = ["panda", "xarm6_robotiq"];
 
 /**
  * The env action width of each `--robot` (services robots/maniskill/flywheel.py SPACES): pd_ee_delta_pos and
@@ -492,43 +474,6 @@ export function sideBySide(a: NdArray, b: NdArray): NdArray {
 	}
 	return new NdArray("uint8", [h, wa + wb, 3], out);
 }
-/**
- * The waypoints of one base-frame move: one per ~2 cm decision, ceil(|delta| / STEP_M) of them,
- * evenly spaced from `start` (a pure gripper command or STOP is one waypoint at `start`).
- */
-export function waypoints(start: number[], delta: Vec3, stepM = STEP_M): number[][] {
-	const n = Math.max(1, Math.ceil(Math.hypot(...delta) / stepM - 1e-9));
-	return Array.from({ length: n }, (_, i) => start.map((p, k) => p + (delta[k] * (i + 1)) / n));
-}
-
-/** One closed-loop servo call: drive to `target` in `minSteps`..`maxSteps` control steps. */
-export type Phase = { target: number[]; minSteps: number; maxSteps: number };
-/**
- * The servo phases of one call. A gripper change is its own phase first, holding still at `start`
- * for GRIPPER_STEPS until the fingers settle (Show-Harness's GRASP / RELEASE are separate tokens:
- * the fingers never close while the arm travels); then the ~2 cm waypoints of the move. A call
- * that neither moves nor changes the gripper (STOP) holds for one decision. `gripperSteps` / `stepM`: the robot's.
- */
-export function phases(
-	start: number[],
-	delta: Vec3,
-	gripperChanged: boolean,
-	gripperSteps = GRIPPER_STEPS,
-	stepM = STEP_M,
-): Phase[] {
-	const hold = (steps: number): Phase => ({ target: start, minSteps: steps, maxSteps: steps });
-	const out: Phase[] = gripperChanged ? [hold(gripperSteps)] : [];
-	if (Math.hypot(...delta) > 0)
-		out.push(
-			...waypoints(start, delta, stepM).map((target) => ({
-				target,
-				minSteps: SERVO.minSteps,
-				maxSteps: SERVO.maxSteps,
-			})),
-		);
-	return out.length ? out : [hold(SERVO.minSteps)];
-}
-
 /** One unit's probe: the TCP displacement after `n` units from the reset pose. */
 export type Probe = { unit: MoveUnit; n: number; moved: Vec3 };
 /** Units each MV_* is repeated from the reset pose (Show-Harness probe_move_axes: 8 control steps). */
@@ -634,13 +579,6 @@ export default function maniskill(pi: ExtensionAPI) {
 	const arms = () => (rig ? undefined : arm().arms);
 	/** One arm's proprioception (`a` undefined: the one arm). */
 	const armObs = (a?: string): ArmObs => (a ? obs.arms![a] : (obs as ArmObs));
-	/** `a` names an arm of a two-arm robot and is absent on one arm. */
-	function checkArm(a: string | undefined) {
-		const names = arms();
-		if (names && !(a && names.includes(a)))
-			throw new Error(`this robot has two arms; arm must be one of ${names.join(", ")}`);
-		if (!names && a) throw new Error("this robot has one arm; leave `arm` out");
-	}
 	/** The scene's raw-path part: its options as a tag, or `default`. */
 	const sceneTag = () => (robot.task.scene ? tagPart(robot.task.scene) : "default");
 	/** Every control step: the robot's views, its TCP state and the pd_ee_delta_pos action; one space per arm. */
@@ -680,6 +618,34 @@ export default function maniskill(pi: ExtensionAPI) {
 		`maniskill_${robotId === "panda" ? "" : `${robotId}_`}${tagPart(robot.task["env-id"])}${robot.task.scene ? `_${tagPart(robot.task.scene)}` : ""}_s${seed}`;
 	const robot = defineRobot(pi, {
 		name: "maniskill",
+		// Tools and code primitives: ../../primitives/manifests/maniskill.json (the env server reads it too).
+		manifest: "maniskill",
+		// Read at load and at session start (from --robot, like the move frame the description states).
+		vars: () => {
+			const r = flagRobot();
+			return {
+				max_move: MAX_MOVE_M,
+				cameras: ["agentview", "wrist"],
+				// `arm` exists on a two-arm robot only (one-arm robots' tools and primitives leave it out).
+				arms: r?.arms ? [...r.arms] : [],
+				move_subject: r?.arms
+					? `ONE arm's gripper (\`arm\`: ${r.arms.join(" or ")}; the other holds still)`
+					: "the gripper",
+				move_frame: r?.arms
+					? "a world-frame [dx, dy, dz] in metres (+x toward the camera, +y toward the right arm's base, +z up)"
+					: r?.frame
+						? r.frame.replaceAll("`", "")
+						: "a base-frame [dx, dy, dz] in metres (+x away from the base, +y toward the robot's left, +z up)",
+			};
+		},
+		// Must agree with the env server's `_has` (code mode refuses a server whose code.api differs).
+		capabilities: (c) =>
+			({
+				sam3: pi.getFlag("detections") === true && Boolean(flag("sam3", "")),
+				unidepth: Boolean(String(pi.getFlag("unidepth") ?? "").trim()),
+				// env.preview_reach answers from an IK model the Panda and the xArm6 have (env server IK_MODELS).
+				ik: Boolean(String(pi.getFlag("ik") ?? "").trim()) && IK_ROBOTS.includes(flag("robot", "panda")),
+			})[c] ?? false,
 		services: { models: [SAM3, MOLMO] },
 		task: ["env-id", "seed", "scene"],
 		// The env server's primitive registry (code.api), recorded per episode.
@@ -840,7 +806,16 @@ export default function maniskill(pi: ExtensionAPI) {
 			},
 			apply: async (m, signal) => {
 				if (m.yaw) throw new Error("this robot has no yaw (pd_ee_delta_pos holds the orientation)");
-				return observe(await move(m.delta, m.gripper, signal, m.arm));
+				return observe(
+					await move(
+						{
+							delta_xyz: m.delta,
+							...(m.gripper ? { gripper: m.gripper } : {}),
+							...(m.arm ? { arm: m.arm } : {}),
+						},
+						signal,
+					),
+				);
 			},
 			state: async (a) => ({
 				eef_xyz: armObs(a)
@@ -870,52 +845,23 @@ export default function maniskill(pi: ExtensionAPI) {
 	}
 
 	/**
-	 * Run one base-frame move (m) with an optional gripper command; every control step goes to the video.
-	 * A two-arm robot moves `a` (world frame), the other arm holding still.
+	 * Run one move on the env server (env.move_delta: the ~2 cm waypoints, the gripper hold, the per-call cap,
+	 * stop and the latched success live there); every control step goes to the video and the Flywheel.
+	 * A two-arm robot moves `arm` (world frame), the other arm holding still.
 	 */
-	async function move(delta: Vec3, grip: "open" | "close" | null, signal: AbortSignal | undefined, a?: string) {
-		const norm = Math.hypot(...delta);
-		if (!(norm <= MAX_MOVE_M))
-			throw new Error(`delta moves ${round(norm)} m; the limit is ${MAX_MOVE_M} m per call. Split the motion.`);
-		if (grip && !gripping()) throw new Error("this robot holds a stick and has no gripper; leave `gripper` out");
-		checkArm(a);
-		const before = gripOf(a);
-		if (grip) grippers[a ?? ""] = grip === "open" ? 1 : -1;
-		const gripper = gripOf(a);
-		const start = armObs(a).tcp_pos!.toArray();
-		let steps = 0;
-		let limited = false;
-		const r = arm();
-		for (const { target, minSteps, maxSteps } of phases(start, delta, gripper !== before, r.gripperSteps, r.stepM)) {
-			if (success) break;
-			const [frames, i] = await call<ServoReturn>(
-				"env.servo",
-				{ gain: r.gain, tol_m: SERVO.tolM, min_steps: minSteps, max_steps: maxSteps, ...(a ? { arm: a } : {}) },
-				[target, gripper],
-				signal,
-			);
-			for (const f of frames) {
-				video.frame(f.wrist ? sideBySide(f.agentview, f.wrist) : f.agentview);
-				// Flywheel: every control step the servo ran (a call that ran none returns no action).
-				if (fly.recording && f.action)
-					fly.transition(f.action.toArray(), flyObs(f, arms()), f.success ? 1 : 0, Boolean(f.success), false);
-			}
-			steps += frames.length;
-			envStep += frames.length;
-			absorb(frames[frames.length - 1], i);
-			limited = Boolean(i.step_limit);
-			if (i.cancelled || limited) break;
+	async function move(params: Json, signal: AbortSignal | undefined) {
+		const r = await env.call<MoveReturn>("env.move_delta", params, 300_000, [], signal);
+		for (const f of r.frames) {
+			video.frame(f.wrist ? sideBySide(f.agentview, f.wrist) : f.agentview);
+			// Flywheel: every control step the servo ran (a leg that ran none returns no action).
+			if (fly.recording && f.action)
+				fly.transition(f.action.toArray(), flyObs(f, arms()), f.success ? 1 : 0, Boolean(f.success), false);
 		}
-		const end = armObs(a).tcp_pos!.toArray();
-		return {
-			...(a ? { arm: a } : {}),
-			commanded_m: delta.map((v) => round(v)),
-			moved_m: end.map((v, k) => round(v - start[k])),
-			gripper: gripper > 0 ? "open" : "close",
-			env_steps: steps,
-			// The drawing scenes' step budget is spent (env server DOT_LIMIT): nothing more can run.
-			...(limited ? { step_limit: "the episode's step limit is reached; no further motion runs: call finish" } : {}),
-		};
+		envStep += Number(r.result.env_steps) || 0;
+		absorb(r.obs, r.info);
+		if (r.result.gripper === "open" || r.result.gripper === "close")
+			grippers[(params.arm as string | undefined) ?? ""] = r.result.gripper === "open" ? 1 : -1;
+		return r.result;
 	}
 
 	/** The motion result with the new state, then the agentview and (a robot with one) the wrist image. */
@@ -969,35 +915,10 @@ export default function maniskill(pi: ExtensionAPI) {
 		};
 	}
 
-	robot.tool(
-		"view_env_state",
-		"Current state with the agentview (third-person) and wrist images.",
-		Type.Object({}),
-		async () => observe({}),
-	);
+	robot.primitive("view_env_state", async () => observe({}));
 
-	const xyz = Type.Array(Type.Number(), { minItems: 3, maxItems: 3 });
-	// A two-arm --robot (read at load) moves one arm per call, in the world frame both arms share.
-	const pair = flagRobot()?.arms;
-	const worldFrame = flagRobot()?.frame;
-	robot.tool(
-		"move_delta",
-		pair
-			? `Translate ONE arm's gripper (\`arm\`: ${pair.join(" or ")}; the other holds still) by a world-frame [dx, dy, dz] in metres (+x toward the camera, +y toward the right arm's base, +z up; at most ${MAX_MOVE_M} m per call), optionally opening or closing that gripper first (the arm holds still until the fingers settle, then moves). The orientation is locked. Returns the new state and images.`
-			: worldFrame
-				? `Translate the gripper by ${worldFrame.replaceAll("`", "")} (at most ${MAX_MOVE_M} m per call), optionally opening or closing the gripper first (the arm holds still until the fingers settle, then moves). The orientation is locked. Returns the new state and images.`
-				: `Translate the gripper by a base-frame [dx, dy, dz] in metres (+x away from the base, +y toward the robot's left, +z up; at most ${MAX_MOVE_M} m per call), optionally opening or closing the gripper first (the arm holds still until the fingers settle, then moves). The orientation is locked. Returns the new state and images.`,
-		Type.Object({
-			delta_xyz: xyz,
-			gripper: Type.Optional(StringEnum(["open", "close"] as const)),
-			...(pair ? { arm: StringEnum([...pair], { description: "The arm this call moves" }) } : {}),
-		}),
-		async ({ delta_xyz, gripper: g, ...rest }, signal) => {
-			if (success) return observe({ error: "the task is already solved; call finish" });
-			const a = (rest as { arm?: string }).arm;
-			return observe(await move(delta_xyz as Vec3, g ?? null, signal, a));
-		},
-	);
+	// The manifest's parameters go to the server as they are (manifests/maniskill.json: delta_xyz, gripper, arm).
+	robot.primitive("move_delta", async (params, signal) => observe(await move(params as Json, signal)));
 
 	/** Show-Harness probe_move_axes: each unit PROBE_UNITS times from a fresh reset, no video. */
 	async function probeAxes(ctx: ExtensionContext) {
@@ -1007,16 +928,10 @@ export default function maniskill(pi: ExtensionAPI) {
 		for (const unit of MOVE_UNITS) {
 			const [o] = await env.call<[Obs, Info]>("env.reset", {}, 300_000);
 			const start = o.tcp_pos!.toArray();
-			let end = start;
 			const delta = r.vectors[unit].map((x) => x * r.stepM * PROBE_UNITS) as Vec3;
-			for (const target of waypoints(start, delta, r.stepM)) {
-				const [frames] = await call<ServoReturn>(
-					"env.servo",
-					{ gain: r.gain, tol_m: SERVO.tolM, min_steps: SERVO.minSteps, max_steps: SERVO.maxSteps },
-					[target, 1],
-				);
-				end = frames[frames.length - 1].tcp_pos!.toArray();
-			}
+			// The move's ~2 cm waypoints on the server, the gripper held open from the reset, no video.
+			const m = await env.call<MoveReturn>("env.move_delta", { delta_xyz: delta }, 300_000);
+			const end = m.obs.tcp_pos!.toArray();
 			probes.push({ unit, n: PROBE_UNITS, moved: end.map((v, k) => v - start[k]) as Vec3 });
 		}
 		const c = calibrate(r.vectors, r.stepM, probes);
@@ -1046,12 +961,9 @@ export default function maniskill(pi: ExtensionAPI) {
 		}),
 	);
 
-	mountGraspTool(
-		robot.tool,
-		previewReachTool(
-			(kwargs) => env.call<Reach>("env.preview_reach", kwargs, 60_000, [], robot.signal),
-			"world-frame",
-		),
+	// --ik: the env server's IK check (xyz, quat_xyzw as the manifest declares them).
+	robot.primitive("preview_reach", async (params) =>
+		toolResult((await env.call<Reach>("env.preview_reach", params as Json, 60_000, [], robot.signal)) as Json),
 	);
 
 	// SAM3 masks with ids and UniDepth over the env server's perception (active with --detections / --unidepth).

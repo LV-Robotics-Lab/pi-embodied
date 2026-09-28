@@ -700,6 +700,10 @@ def test_the_franka_planners_get_the_perception_sam3_and_its_camera_names(monkey
     )
     # The digest reads both arms' poses.
     assert len(dual._state_digest()) == 3
+    # Both servers' startup self-check passes with SAM3 and a grasp server (the manifests declare
+    # or list as internal every method perception and the planner install).
+    single._manifest_ready()
+    dual._manifest_ready()
 
 
 class _Scene:

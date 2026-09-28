@@ -243,6 +243,18 @@ robosuite = [
     "h5py",
     "pillow>=10",
 ]
+# The ik server (components/ik_server.py): PyRoKi + JAX on the CPU, its own venv.
+ik = [
+    "pyroki @ git+https://github.com/chungmin99/pyroki.git@388e43e1fc0d0ee382968d3dd72970fd62a0450c",
+    "robot_descriptions>=1.16",
+    "xacrodoc",
+    "yourdfpy",
+]
+# The ik server's cuRobo backend (components/ik_server.py --backend curobo; GPU, CUDA_HOME
+# to build). Install torch first; the PyRoKi backend (CPU, the default) needs none of it.
+ik-curobo = [
+    "nvidia-curobo @ git+https://github.com/NVlabs/curobo.git@v0.7.8",
+]
 robotwin = [
     "pi-embodied-services[rlinf]",
     "rlinf-robotwin-runtime==0.1.1",
@@ -296,6 +308,30 @@ conflicts = [
 
 [tool.uv.extra-build-dependencies]
 nvidia-curobo = ["torch==2.7.1"]
+
+# cuRobo's metadata, declared so that `uv lock` / `uv run` never build it: its setup.py compiles
+# CUDA extensions and fails without CUDA_HOME (a Mac), even when no extra that needs it is used.
+# From the v0.7.8 wheel's METADATA; update with the pin.
+[[tool.uv.dependency-metadata]]
+name = "nvidia-curobo"
+version = "0.7.8"
+requires-dist = [
+    "pybind11",
+    "networkx",
+    "numpy",
+    "numpy-quaternion",
+    "pyyaml",
+    "setuptools_scm>=6.2",
+    "torch>=1.10",
+    "trimesh",
+    "yourdfpy>=0.0.53",
+    "warp-lang>=0.9.0",
+    "scipy>=1.7.0",
+    "tqdm",
+    "wheel",
+    "importlib_resources",
+    "scikit-image",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

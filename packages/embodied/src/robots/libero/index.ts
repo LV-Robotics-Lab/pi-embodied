@@ -64,7 +64,7 @@ import {
 } from "../../primitives/vla-adapters.ts";
 import { waypointsTool } from "../../primitives/waypoints.ts";
 import { alignWristTool, projectPoints } from "../../primitives/wrist.ts";
-import { defineRobot, mark, median, message, rgbOf, SERVICES } from "../../robot.ts";
+import { attach, defineRobot, mark, median, message, rgbOf, SERVICES } from "../../robot.ts";
 import { liberoFlash } from "./flash.ts";
 
 const read = (name: string) => template(new URL(name, import.meta.url));
@@ -1692,8 +1692,8 @@ export default function libero(pi: ExtensionAPI) {
 		sam3 = new RpcClient(flag("sam3", ""));
 		const endpoint = pi.getFlag("env") as string | undefined;
 		if (endpoint) {
-			env = new RpcClient(endpoint);
-			await env.ready();
+			// `URL#token=HEX` for a server that requires its RPC token, as every robot attaches.
+			env = await attach(endpoint);
 		} else {
 			const services = flag("services", SERVICES);
 			const cuda = pi.getFlag("cuda-device") as string | undefined;

@@ -558,6 +558,11 @@ export default function genesis(pi: ExtensionAPI) {
 			return { control_steps, ...(grasp_empty ? { grasp_empty } : {}), ...(cancelled ? { cancelled } : {}) };
 		},
 		observe: (result) => observe(result) as unknown as Json,
+		// The hand's yaw now (the planner's eef_yaw: the EEF x axis about world +z).
+		yaw: () => {
+			const [w, x, y, z] = obs.tcp_quat_wxyz.toArray();
+			return Math.atan2(2 * (x * y + w * z), 1 - 2 * (y * y + z * z));
+		},
 	}))
 		robot.tool(d.name, d.description, d.parameters, async (p, signal, ctx) => (await d.run(p, signal, ctx)) as never);
 

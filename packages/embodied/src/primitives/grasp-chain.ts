@@ -5,8 +5,9 @@
  * as LIBERO's server-side `execute_grasp` does, with the path split into deltas here.
  *
  * The id is resolved first (`env.resolve_grasp`, read-only) and refused unless its approach points
- * within `maxTiltRad` of straight down: the gripper cannot turn, so a tilted grasp would close
- * somewhere else. Then `env.claim_waypoints` fixes the whole path from that one candidate (pre-grasp
+ * within `maxTiltRad` of straight down, and (a grasp) unless its fingers close within `maxYawRad`
+ * (mod pi) of the hand's fixed yaw (`yaw`): the gripper cannot turn, so a tilted or turned grasp
+ * would close somewhere else. Then `env.claim_waypoints` fixes the whole path from that one candidate (pre-grasp
  * standoff, grasp, lift; or pre-place, place, retreat) and the robot's `move` runs each leg as
  * deltas of at most `maxStep` metres, holding the leg's gripper command; an in-place gripper step
  * closes or opens. A leg that ends further than `tolM` from its waypoint, or a move that errors,
@@ -20,6 +21,8 @@ import type { GraspToolDef } from "./grasp.ts";
 export const CHAIN_TOOLS = ["execute_grasp", "execute_place"] as const;
 /** Default steepest approach a fixed, downward gripper can take, rad (20 deg). */
 export const MAX_TILT_RAD = 0.35;
+/** Default largest yaw difference (mod pi) between a grasp and the fixed hand, rad (20 deg). */
+export const MAX_YAW_RAD = 0.35;
 
 type Vec = number[];
 type Step = { to?: string; gripper?: number };
@@ -42,6 +45,10 @@ export type ChainRig = {
 	tolM?: number;
 	/** Steepest approach, rad from straight down (default MAX_TILT_RAD). */
 	maxTiltRad?: number;
+	/** The hand's fixed yaw (the planner's `eef_yaw` convention), rad; unset skips the yaw check. */
+	yaw?: () => number;
+	/** Largest grasp yaw difference from it, mod pi (default MAX_YAW_RAD). */
+	maxYawRad?: number;
 };
 
 const sub = (a: Vec, b: Vec) => a.map((v, i) => v - b[i]);
@@ -52,6 +59,12 @@ export function tilt(approach: Vec): number {
 	const n = norm(approach);
 	if (!(n > 0)) return Math.PI;
 	return Math.acos(Math.max(-1, Math.min(1, -approach[2] / n)));
+}
+
+/** The difference of two gripper yaws, rad in [0, pi/2]: a parallel gripper turned half is the same. */
+export function yawGap(a: number, b: number): number {
+	const d = (((a - b) % Math.PI) + Math.PI) % Math.PI;
+	return Math.min(d, Math.PI - d);
 }
 
 /** A straight leg from `from` to `to` as deltas of at most `step` metres, equal in length. */
@@ -74,6 +87,15 @@ export function chainTools(rig: ChainRig): GraspToolDef[] {
 				id,
 				refused: true,
 				error: `${id} approaches ${round((t * 180) / Math.PI, 1)} deg from straight down; this gripper only points down (at most ${round((maxTilt * 180) / Math.PI, 1)} deg). Ask plan_grasp for the next candidate (next_after).`,
+			});
+		const maxYaw = rig.maxYawRad ?? MAX_YAW_RAD;
+		const gap = kind === "grasp" && rig.yaw ? yawGap(Number(resolved.eef_yaw), rig.yaw()) : 0;
+		if (gap > maxYaw)
+			return rig.observe({
+				name: `execute_${kind}`,
+				id,
+				refused: true,
+				error: `${id} closes the fingers ${round((gap * 180) / Math.PI, 1)} deg off the hand's fixed direction; this gripper cannot turn (at most ${round((maxYaw * 180) / Math.PI, 1)} deg). Ask plan_grasp for the next candidate (next_after).`,
 			});
 		const claim = await rig.call("env.claim_waypoints", {
 			grasp_id: id,
@@ -126,7 +148,7 @@ export function chainTools(rig: ChainRig): GraspToolDef[] {
 		{
 			name: "execute_grasp",
 			description:
-				"Execute one planned grasp (a g id of the current observation, from plan_grasp) in one call: open to the pre-grasp standoff back along its approach, descend to it, close, lift straight up, each leg as bounded moves. The gripper cannot turn, so only a candidate approaching from (nearly) straight above runs; a tilted one is refused before anything moves. Returns each leg's final_dist_m; stalled when a leg stopped short. The id is spent either way; afterwards plan_place with this grasp_id plans from the held object.",
+				"Execute one planned grasp (a g id of the current observation, from plan_grasp) in one call: open to the pre-grasp standoff back along its approach, descend to it, close, lift straight up, each leg as bounded moves. The gripper cannot turn, so only a candidate approaching from (nearly) straight above with its fingers along the hand's direction runs; a tilted or turned one is refused before anything moves. Returns each leg's final_dist_m; stalled when a leg stopped short. The id is spent either way; afterwards plan_place with this grasp_id plans from the held object.",
 			parameters: Type.Object({
 				grasp_id: Type.String({ description: "A g id from plan_grasp" }),
 				standoff,

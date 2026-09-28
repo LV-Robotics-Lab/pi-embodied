@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { chainTools, split, tilt } from "../src/primitives/grasp-chain.ts";
+import { chainTools, split, tilt, yawGap } from "../src/primitives/grasp-chain.ts";
 
 const down = [0, 0, -1];
 
@@ -16,13 +16,13 @@ test("split: a leg as equal deltas of at most the step; tilt: the approach's ang
 });
 
 /** A rig whose EEF follows the commanded deltas exactly, unless `stall` caps a leg. */
-function rig(approach: number[], o: { stall?: boolean } = {}) {
+function rig(approach: number[], o: { stall?: boolean; eefYaw?: number; handYaw?: number } = {}) {
 	let pos = [0, 0.6, 0.3];
 	const calls: [string, unknown][] = [];
 	const tools = chainTools({
 		call: async (method, kwargs) => {
 			calls.push([method, kwargs]);
-			if (method === "env.resolve_grasp") return { approach };
+			if (method === "env.resolve_grasp") return { approach, eef_yaw: o.eefYaw ?? 0 };
 			return {
 				kind: "grasp",
 				waypoints: { pre_grasp: [0, 0.6, 0.2], grasp: [0, 0.6, 0.1], lift: [0, 0.6, 0.2] },
@@ -49,6 +49,7 @@ function rig(approach: number[], o: { stall?: boolean } = {}) {
 			return {};
 		},
 		observe: (result) => ({ observed: result }),
+		...(o.handYaw !== undefined ? { yaw: () => o.handYaw as number } : {}),
 	});
 	return {
 		tools,
@@ -95,4 +96,19 @@ test("a tilted candidate is refused before the claim; a blocked leg stops the ch
 	assert.equal(out.stalled, true);
 	assert.equal(out.legs.at(-1).error, "blocked");
 	assert.equal(out.legs.length, 4);
+});
+
+test("a grasp turned off the fixed hand's yaw is refused before the claim (mod pi)", async () => {
+	// Audit a2c880c #5: Metaworld / Genesis ignored the candidate's yaw.
+	assert.ok(Math.abs(yawGap(Math.PI, 0)) < 1e-12, "a half turn is the same grasp");
+	assert.ok(Math.abs(yawGap(Math.PI / 2 + 0.1, 0) - (Math.PI / 2 - 0.1)) < 1e-12);
+	const turned = rig(down, { eefYaw: 1.2, handYaw: 0 });
+	const out = (await turned.run("execute_grasp", { grasp_id: "g2" })).observed as any;
+	assert.equal(out.refused, true);
+	assert.match(out.error, /off the hand's fixed direction.*next_after/);
+	assert.ok(!turned.calls.some(([m]) => m === "env.claim_waypoints" || m === "move"));
+	const flipped = rig(down, { eefYaw: Math.PI - 0.1, handYaw: 0 });
+	const ran = (await flipped.run("execute_grasp", { grasp_id: "g1" })).observed as any;
+	assert.equal(ran.refused, undefined);
+	assert.equal(ran.legs.length, 4);
 });

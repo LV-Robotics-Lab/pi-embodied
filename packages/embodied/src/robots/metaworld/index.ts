@@ -678,6 +678,8 @@ export default function metaworld(pi: ExtensionAPI) {
 		move: async (delta, g, signal) => move(delta as Vec3, g, signal),
 		gripper: async (g, signal) => move([0, 0, 0], g, signal),
 		observe: (result) => observe(result) as unknown as Json,
+		// The Sawyer hand points down at yaw 0 (the planner's eef_pose, env_server.py).
+		yaw: () => 0,
 	}))
 		robot.tool(d.name, d.description, d.parameters, async (p, signal, ctx) => (await d.run(p, signal, ctx)) as never);
 

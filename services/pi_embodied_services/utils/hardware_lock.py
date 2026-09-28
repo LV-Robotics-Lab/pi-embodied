@@ -2,15 +2,19 @@
 
 OpenETA's real-robot MCP (real/mcp/observation_core.py ``RealEnvManager._acquire_lock``) holds a
 non-blocking ``fcntl.flock`` on one lock file while its env exists, so two agents on one machine
-cannot drive the bench at once. Here the lock is per arm: ``<lock dir>/<arm id>.lock``, where the
-arm id names the physical arm (``franka:172.16.0.2``, ``ur5e:192.168.1.10``, ``piper:<CAN serial>``),
-so two servers for different arms run side by side while a second server for the same arm (a
-single-arm and a dual-arm server sharing an arm included) is refused at startup, before it touches
-the hardware. The file records the holder (pid, server, time) for the refusal message; the kernel
-drops the lock when the holder exits, crashed or not.
+cannot drive the bench at once. Here each device has its own lock, ``<lock dir>/<id>.lock``: the
+arm by its serial when the config names one (``robot.serial`` / ``calibration.arm_id``, the same
+id whichever backend drives it: an RLinf and a Polymetis server of one Franka collide), else by
+its address (``franka:172.16.0.2``, ``ur5e:192.168.1.10``, ``piper:<CAN serial>``), and every
+camera device the config opens (``camera:<serial or /dev path>``). Two servers for different
+devices run side by side; a second server for a held one is refused at startup, before it
+touches the hardware, naming the holder (pid, server, time). The kernel drops a lock when its
+holder exits, crashed or not.
 
 The lock directory is ``--lock-dir``, else ``$PI_EMBODIED_LOCK_DIR``, else
-``/tmp/pi-embodied-locks``: every server on the machine must use the same one.
+``/tmp/pi-embodied-locks``: every server on the machine must use the same one. It must be a plain
+directory owned by this user (or root) and not group/world-writable; lock files are opened with
+O_NOFOLLOW; a lock file another user owns reads as the device being in use.
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ import errno
 import fcntl
 import os
 import re
+import stat
 import sys
 import time
 from collections.abc import Iterable, Mapping
@@ -77,20 +82,57 @@ class HardwareLock:
         self.release()
 
 
+def check_dir(root: Path) -> None:
+    """Refuse a lock directory another user could swap files in: it must be a real directory
+    (not a symlink) owned by this user or root, and not group- or world-writable."""
+    st = os.lstat(root)
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+        raise RuntimeError(f"hardware lock directory {root} is not a plain directory")
+    if st.st_uid not in (os.geteuid(), 0):
+        raise RuntimeError(
+            f"hardware lock directory {root} belongs to uid {st.st_uid}; set --lock-dir or ${LOCK_DIR_ENV}"
+        )
+    if st.st_mode & 0o022:
+        raise RuntimeError(
+            f"hardware lock directory {root} is group/world-writable (mode {oct(st.st_mode & 0o777)}); chmod go-w it"
+        )
+
+
 def acquire(
     arm_ids: Iterable[str], *, directory: str | None = None, holder: str = ""
 ) -> HardwareLock:
-    """Lock every arm in ``arm_ids`` (non-blocking), or none: raises ``RobotBusyError``
-    naming the first arm another process holds."""
+    """Lock every id in ``arm_ids`` (arms and cameras; non-blocking), or none: raises
+    ``RobotBusyError`` naming the first one another process holds. Lock files are opened with
+    O_NOFOLLOW (a planted symlink is refused); a lock file this user may not open is another
+    user's server holding the device, reported as in use."""
     ids = list(dict.fromkeys(a for a in arm_ids if a))
     if not ids:
         raise ValueError("no arm id to lock")
     root = lock_dir(directory)
-    root.mkdir(parents=True, exist_ok=True)
+    root.mkdir(mode=0o755, parents=True, exist_ok=True)
+    check_dir(root)
     held: dict[str, int] = {}
     try:
         for arm in ids:
-            fd = os.open(root / _file_name(arm), os.O_RDWR | os.O_CREAT, 0o644)
+            try:
+                fd = os.open(
+                    root / _file_name(arm),
+                    os.O_RDWR
+                    | os.O_CREAT
+                    | os.O_NOFOLLOW
+                    | getattr(os, "O_CLOEXEC", 0),
+                    0o644,
+                )
+            except PermissionError:
+                raise RobotBusyError(
+                    arm, "its lock file belongs to another user"
+                ) from None
+            except OSError as exc:
+                if exc.errno == errno.ELOOP:
+                    raise RuntimeError(
+                        f"lock file for {arm} is a symlink; refusing it"
+                    ) from None
+                raise
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError as exc:
@@ -101,7 +143,7 @@ def acquire(
                     except OSError:
                         pass
                 os.close(fd)
-                if exc.errno in (errno.EACCES, errno.EAGAIN):
+                if exc.errno in (errno.EACCES, errno.EAGAIN, errno.EPERM):
                     raise RobotBusyError(arm, prev) from None
                 raise
             os.ftruncate(fd, 0)
@@ -115,6 +157,83 @@ def acquire(
         HardwareLock(held).release()
         raise
     return HardwareLock(held)
+
+
+SERIAL_KEYS = r"serial|serial_number|arm_id"
+
+
+def arm_serials(kind: str, tree: Any) -> list[str]:
+    """``<kind>:<serial>`` of every arm in a robot config that names its serial (``serial``,
+    ``serial_number`` or ``arm_id`` in ``robot`` / ``robot.arms.*`` / ``calibration``); the
+    serial is the same whichever backend drives the arm, so RLinf and Polymetis servers of one
+    Franka lock the same id."""
+    found: list[str] = []
+    if not isinstance(tree, Mapping):
+        return found
+    robot = tree.get("robot") if isinstance(tree.get("robot"), Mapping) else {}
+    arms = robot.get("arms") if isinstance(robot.get("arms"), Mapping) else {}
+    for part in (robot, tree.get("calibration"), *arms.values()):
+        if not isinstance(part, Mapping):
+            continue
+        for k, v in part.items():
+            if (
+                re.fullmatch(SERIAL_KEYS, str(k))
+                and isinstance(v, (str, int))
+                and str(v).strip()
+            ):
+                found.append(f"{kind}:{str(v).strip()}")
+    return list(dict.fromkeys(found))
+
+
+def camera_ids(tree: Any) -> list[str]:
+    """``camera:<serial or device>`` of every camera device in a robot config (the ``cameras``
+    subtree: realsense serials, webcam devices, ``/dev`` paths), so two servers never open one
+    camera. Empty serials (the first device) and URLs are skipped."""
+    found: list[str] = []
+
+    def walk(v: Any) -> None:
+        if isinstance(v, Mapping):
+            for k, x in v.items():
+                if (
+                    k in ("serial", "device")
+                    and isinstance(x, (str, int))
+                    and str(x).strip()
+                ):
+                    value = str(x).strip()
+                    if "://" not in value:
+                        found.append(f"camera:{value}")
+                else:
+                    walk(x)
+        elif isinstance(v, (list, tuple)):
+            for x in v:
+                walk(x)
+
+    if isinstance(tree, Mapping):
+        walk(tree.get("cameras"))
+    return list(dict.fromkeys(found))
+
+
+def read_config(path: Any) -> dict[str, Any]:
+    """The robot YAML at ``path`` as a dict, or {} when there is none to read."""
+    if not path:
+        return {}
+    try:
+        import yaml
+
+        data = yaml.safe_load(Path(str(path)).expanduser().read_text())
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def hardware_ids(kind: str, tree: Any, addresses: Iterable[str] = ()) -> list[str]:
+    """What a server of ``kind`` locks: its arms by serial when the config names one, else by
+    ``addresses`` (or the config's addresses), plus its camera devices."""
+    robot = tree.get("robot") if isinstance(tree, Mapping) else None
+    arms = (
+        arm_serials(kind, tree) or list(addresses) or config_arm_ids(kind, robot or {})
+    )
+    return [*arms, *camera_ids(tree)]
 
 
 ADDRESS_KEYS = r"(\w+_)?robot_ip|ip|nuc_ip"

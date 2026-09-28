@@ -116,13 +116,15 @@ def test_ur5e_server_refuses_to_start_on_a_held_arm_before_touching_hardware(
     ur5e_tests = pytest.importorskip("test_ur5e")
     path = tmp_path / "ur5e.yaml"
     path.write_text(yaml.safe_dump(ur5e_tests.cfg()))
-    ip = ur5e_tests.cfg()["robot"]["ip"]
+    # The config names the controller serial (calibration.arm_id): that is the arm's lock id.
+    arm = hardware_lock.hardware_ids("ur5e", ur5e_tests.cfg())[0]
 
     def build(*_a, **_k):
         raise AssertionError("hardware touched")
 
     monkeypatch.setattr(env_server, "build", build)
-    with acquire([f"ur5e:{ip}"], directory=str(tmp_path / "locks")):
+    (tmp_path / "locks").mkdir(mode=0o755)
+    with acquire([arm], directory=str(tmp_path / "locks")):
         with pytest.raises(SystemExit) as exc:
             env_server.main(
                 [
@@ -138,4 +140,78 @@ def test_ur5e_server_refuses_to_start_on_a_held_arm_before_touching_hardware(
                 ]
             )
     assert exc.value.code == 3
-    assert f"robot busy: arm ur5e:{ip}" in capsys.readouterr().err
+    assert f"robot busy: arm {arm}" in capsys.readouterr().err
+
+
+def test_a_planted_symlink_and_an_unsafe_lock_dir_are_refused(tmp_path):
+    root = tmp_path / "locks"
+    root.mkdir(mode=0o755)
+    target = tmp_path / "victim"
+    target.write_text("keep")
+    (root / "franka_1.2.3.4.lock").symlink_to(target)
+    with pytest.raises(RuntimeError, match="symlink"):
+        acquire(["franka:1.2.3.4"], directory=str(root))
+    assert target.read_text() == "keep"
+    open_dir = tmp_path / "open"
+    open_dir.mkdir()
+    open_dir.chmod(0o777)
+    with pytest.raises(RuntimeError, match="world-writable"):
+        acquire(["franka:1.2.3.4"], directory=str(open_dir))
+    link = tmp_path / "link"
+    link.symlink_to(root)
+    with pytest.raises(RuntimeError, match="not a plain directory"):
+        acquire(["x:1"], directory=str(link))
+
+
+def test_a_lock_file_this_user_cannot_open_reads_as_in_use(tmp_path, monkeypatch):
+    real_open = hardware_lock.os.open
+
+    def denied(path, *a, **k):
+        if str(path).endswith("ur5e_10.0.0.9.lock"):
+            raise PermissionError(13, "Permission denied")
+        return real_open(path, *a, **k)
+
+    monkeypatch.setattr(hardware_lock.os, "open", denied)
+    with pytest.raises(RobotBusyError, match="in use|another user"):
+        acquire(["ur5e:10.0.0.9"], directory=str(tmp_path))
+
+
+def test_serials_come_first_and_one_arm_gets_one_id_under_both_franka_backends():
+    rlinf_yaml = {"robot": {"ip": "172.16.0.2", "serial": "295341-1325480"}}
+    polymetis_yaml = {"robot": {"nuc_ip": "192.168.1.100", "serial": "295341-1325480"}}
+    assert hardware_lock.hardware_ids("franka", rlinf_yaml, ["franka:172.16.0.2"]) == [
+        "franka:295341-1325480"
+    ]
+    assert hardware_lock.hardware_ids(
+        "franka", polymetis_yaml, ["franka-polymetis:192.168.1.100"]
+    ) == ["franka:295341-1325480"]
+    # Without a serial: the addresses given, else the config's.
+    assert hardware_lock.hardware_ids("ur5e", {"robot": {"ip": "10.0.0.9"}}) == [
+        "ur5e:10.0.0.9"
+    ]
+    # UR5e's calibration.arm_id is its controller serial.
+    assert hardware_lock.hardware_ids(
+        "ur5e", {"robot": {"ip": "10.0.0.9"}, "calibration": {"arm_id": "2023300001"}}
+    ) == ["ur5e:2023300001"]
+
+
+def test_camera_devices_are_locked_too():
+    cfg = {
+        "robot": {"ip": "10.0.0.9"},
+        "cameras": {
+            "width": 640,
+            "devices": {
+                "wrist": {"type": "realsense", "serial": "141722070657"},
+                "front": {"type": "webcam", "device": "/dev/video2"},
+                "any": {"type": "realsense", "serial": ""},
+                "net": {"type": "rtsp", "device": "rtsp://cam/1"},
+            },
+        },
+    }
+    assert hardware_lock.hardware_ids("ur5e", cfg) == [
+        "ur5e:10.0.0.9",
+        "camera:141722070657",
+        "camera:/dev/video2",
+    ]
+    dual = {"cameras": {"observation": {"base": [{"serial": "311322304048"}]}}}
+    assert hardware_lock.camera_ids(dual) == ["camera:311322304048"]

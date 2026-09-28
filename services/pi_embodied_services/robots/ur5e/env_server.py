@@ -900,7 +900,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.mock
         else hardware_lock.lock_from_args(
             args,
-            hardware_lock.config_arm_ids("ur5e", cfg.get("robot") or {}),
+            hardware_lock.hardware_ids("ur5e", cfg),
             "ur5e-env",
         )
     )

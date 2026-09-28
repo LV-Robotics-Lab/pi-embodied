@@ -745,7 +745,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.mock
         else hardware_lock.lock_from_args(
             args,
-            hardware_lock.config_arm_ids("franka-polymetis", cfg.get("robot") or {}),
+            # By serial when the config names it: the same id an RLinf server of this arm locks.
+            hardware_lock.hardware_ids(
+                "franka",
+                cfg,
+                hardware_lock.config_arm_ids(
+                    "franka-polymetis", cfg.get("robot") or {}
+                ),
+            ),
             "franka-polymetis-env",
         )
     )

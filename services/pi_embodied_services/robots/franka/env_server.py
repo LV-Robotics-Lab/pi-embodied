@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 import time
 from collections.abc import Callable
 from typing import Any
@@ -919,8 +920,14 @@ def main(
     from omegaconf import OmegaConf
 
     rlinf = OmegaConf.to_container(runtime.rlinf, resolve=True)
-    arms = hardware_lock.config_arm_ids("franka", rlinf, keys=r"(\w+_)?robot_ip")
-    _lock = hardware_lock.lock_from_args(args, arms, facade_class.SERVICE_NAME)
+    addresses = hardware_lock.config_arm_ids("franka", rlinf, keys=r"(\w+_)?robot_ip")
+    # The user YAML names the arm's serial (the same id a Polymetis server of this arm locks) and cameras.
+    raw = hardware_lock.read_config(
+        args.robot_config
+        or getattr(sys.modules[load_runtime_config.__module__], "DEFAULT_CONFIG", None)
+    )
+    ids = hardware_lock.hardware_ids("franka", raw, addresses)
+    _lock = hardware_lock.lock_from_args(args, ids, facade_class.SERVICE_NAME)
     worker, stop_flag = _launch_worker(
         runtime.rlinf, runtime.controller, create_worker_class=create_worker_class
     )

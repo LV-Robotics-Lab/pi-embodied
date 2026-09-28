@@ -381,7 +381,7 @@ Features ported from OpenETA beyond the core harness; each is off by default and
 | Wrist-view alignment | `--align-wrist` | `align_wrist` (`src/primitives/wrist.ts`) | LIBERO, Franka |
 | Grasp advisor | `--grasp-advisor` [`--grasp-advisor-model`], with a plan_grasp backend | `suggest_grasp` (`src/primitives/advisor.ts`), a side VLM call | LIBERO |
 | Task skills | `/skill:embodied-pick` ... | pi skills (`skills/`) | any |
-| One server per arm | always, real robots | `utils/hardware_lock.py` flock per arm (`--lock-id`, `--lock-dir`, `$PI_EMBODIED_LOCK_DIR`) | Franka (RLinf, Polymetis), dual Franka, Piper, UR5e |
+| One server per arm and camera | always, real robots | `utils/hardware_lock.py` flock per device: the arm by serial (`robot.serial` / `calibration.arm_id`; one id for RLinf and Polymetis) else address, and every camera serial / device (`--lock-id`, `--lock-dir`, `$PI_EMBODIED_LOCK_DIR`) | Franka (RLinf, Polymetis), dual Franka, Piper, UR5e |
 
 The flags that change what the agent can do are recorded in the result row as `extras`.
 

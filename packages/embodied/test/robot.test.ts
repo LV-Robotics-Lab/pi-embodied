@@ -19,11 +19,13 @@ import {
 	TASK_ENTRY,
 	toolSections,
 } from "../src/robot.ts";
+import { deployFlags } from "./helpers/deployment.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
 /** A stub pi that runs handlers in registration order, like pi's runner, and records what the base does. */
 function fakePi(flagValues: Record<string, unknown> = {}, branch: unknown[] = []) {
+	flagValues = deployFlags(flagValues);
 	const handlers = new Map<string, Handler[]>();
 	const flags: Record<string, unknown> = {};
 	const tools = new Map<string, any>();
@@ -178,7 +180,7 @@ test("the task entry overrides the flags and is resolved before the robot starts
 	await g.emit("session_start");
 	assert.deepEqual(g.entries[0], { type: TASK_ENTRY, data: { robot: "toy", suite: "cli", seed: "0" } });
 	// Every robot gets /robot-task and /robot-check from the base.
-	assert.deepEqual([...g.commands.keys()].sort(), ["robot-check", "robot-task"]);
+	assert.deepEqual([...g.commands.keys()].sort(), ["embodied-config", "robot-check", "robot-task"]);
 });
 
 test("memory's session_start sees the resolved task", async (t) => {
@@ -260,7 +262,9 @@ test("finish ends the episode, terminates its batch, and yields exactly one resu
 	// The context version (../src/context-version.ts) is checked in runtime-mech.test.ts.
 	assert.equal(typeof results[0]?.context_version?.git_commit, "string");
 	assert.deepEqual(
-		results.map(({ context_version: _, params: _p, params_default: _d, ...r }) => r),
+		results.map(
+			({ context_version: _, params: _p, params_default: _d, deployment: _e, deployment_sha: _s, ...r }) => r,
+		),
 		[
 			{
 				robot: "toy",

@@ -8,12 +8,14 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { RESULT_ENTRY, toolSections } from "../src/robot.ts";
 import behavior, { CODE_MAX_MOVE_M, STEP_M, TASKS, VECTORS } from "../src/robots/behavior/index.ts";
 import { codeApiReply } from "./helpers/code-api.ts";
+import { deployFlags } from "./helpers/deployment.ts";
 import { checkSimExplore } from "./sim-stub.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
 /** A stub pi that records flags, tools and entries and runs handlers in registration order. */
 function stubPi(values: Record<string, unknown> = {}) {
+	values = deployFlags(values);
 	const handlers = new Map<string, Handler[]>();
 	const flags: Record<string, unknown> = {};
 	const tools = new Map<string, any>();
@@ -245,7 +247,10 @@ test("the tools are CaP-X's primitive set plus perception; motions carry the thr
 	behavior(s.pi);
 	assert.equal(s.flags.task, "turning_on_radio");
 	assert.equal(s.flags.privileged, false, "a simulated robot: --privileged exists, off by default");
-	assert.equal(s.flags["gpu-id"], "", "no GPU by default: the env server resolves it (utils/gpu.py)");
+	assert.ok(
+		!("gpu-id" in s.flags),
+		"the GPU is the deployment's cuda_device; unset, the env server resolves it (utils/gpu.py)",
+	);
 	await s.emit("session_start");
 	// The robot's tools, then memory's file tools.
 	assert.deepEqual(s.active(), [

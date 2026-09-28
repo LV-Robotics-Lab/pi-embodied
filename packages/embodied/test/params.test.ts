@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { DEPLOYMENT, NUMERIC, numberError, params, trackedFlags } from "../src/infra/params.ts";
+import { deployFlags } from "./helpers/deployment.ts";
 
 /** Every robot extension, loaded into a stub pi (flags at their defaults). */
 const ROBOTS: Record<string, () => Promise<{ default: (pi: ExtensionAPI) => unknown }>> = {
@@ -24,6 +25,7 @@ const ROBOTS: Record<string, () => Promise<{ default: (pi: ExtensionAPI) => unkn
 };
 
 function stubPi(values: Record<string, unknown> = {}) {
+	values = deployFlags(values);
 	const flags: Record<string, unknown> = {};
 	const pi = {
 		on: () => {},

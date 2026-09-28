@@ -188,6 +188,8 @@ export {
 	type Vec3,
 } from "./vocabulary.ts";
 
+import { ffmpeg as cfgFfmpeg } from "../../infra/config.ts";
+
 /** A MV_* that travelled less than this fraction of the command did not move freely (proprioception). */
 const STALL_RATIO = 0.7;
 /** rotation: soft guard on the accumulated yaw (Franka joint 7 is about +-166 deg), and "back at neutral". */
@@ -1363,7 +1365,7 @@ export function units(
 		const key = `${path}#${frames}`;
 		if (demo?.key === key || demoError) return undefined;
 		try {
-			const { indices, images: shown } = await sampleFrames(path, frames, String(pi.getFlag("ffmpeg") || "ffmpeg"));
+			const { indices, images: shown } = await sampleFrames(path, frames, cfgFfmpeg(pi) || "ffmpeg");
 			const prompt = videoRefPrompt(shown.length, armNames);
 			const errors: string[] = [];
 			// A reply that is not a usable brief is asked once more (their guided-JSON try, then free JSON).

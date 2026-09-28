@@ -3,10 +3,12 @@ import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { defineRobot, RESULT_ENTRY } from "../src/robot.ts";
+import { deployFlags } from "./helpers/deployment.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
 function stubPi(values: Record<string, unknown> = {}) {
+	values = deployFlags(values);
 	const handlers = new Map<string, Handler[]>();
 	const flags: Record<string, unknown> = {};
 	const entries: { type: string; data: any }[] = [];

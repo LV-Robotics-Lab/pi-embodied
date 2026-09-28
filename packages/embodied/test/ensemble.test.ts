@@ -10,6 +10,7 @@ import { API_GATE_EVENT } from "../src/planner/api-gate.ts";
 import { candidates, ENSEMBLE_ENTRY, ensemble, ensembleArgs } from "../src/planner/ensemble.ts";
 import { FALLBACK_ENTRY, fallback } from "../src/planner/fallback.ts";
 import { defineRobot, RESULT_ENTRY } from "../src/robot.ts";
+import { deployFlags } from "./helpers/deployment.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 /** One scripted delegate reply: a tool call (and text), an error, or silence until aborted. */
@@ -42,6 +43,7 @@ const model = (ref: string): Model<any> => {
 
 /** A stub pi and registry. Replies are scripted per call key `<ref>@<temperature>` (or `<ref>` without one); `synth` scripts the call whose last message is the ensemble note. */
 function fakePi(flagValues: Record<string, unknown> = {}) {
+	flagValues = deployFlags(flagValues);
 	const handlers = new Map<string, Handler[]>();
 	const flags: Record<string, unknown> = {};
 	const providers: any[] = [];

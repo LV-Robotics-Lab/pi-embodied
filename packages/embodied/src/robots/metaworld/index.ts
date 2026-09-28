@@ -25,6 +25,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { simDistil } from "../../capabilities/explore.ts";
 import type { FlywheelObs, FlywheelSpec } from "../../capabilities/flywheel.ts";
+import { python, service, servicesDir } from "../../infra/config.ts";
 import { MOLMO, SAM3 } from "../../infra/model-services.ts";
 import { trackFlags } from "../../infra/params.ts";
 import { encodePng } from "../../infra/png.ts";
@@ -32,9 +33,16 @@ import type { NdArray, RpcClient } from "../../infra/rpc.ts";
 import type { MoveUnit, Vec3 } from "../../modes/units/index.ts";
 import { template } from "../../planner/context-version.ts";
 import { detectionActive, detectionArgs, detectionTools, registerDetectionFlags } from "../../primitives/detections.ts";
-import { graspActive, graspArgs, graspTools, mountGraspTool, registerGraspFlags } from "../../primitives/grasp.ts";
+import {
+	graspActive,
+	graspArgs,
+	graspTools,
+	mountGraspTool,
+	placeOn,
+	registerGraspFlags,
+} from "../../primitives/grasp.ts";
 import { pointActive, pointTool, registerPointFlags } from "../../primitives/pointing.ts";
-import { attach, defineRobot, type Json, type Mat, rgbOf, round, SERVICES } from "../../robot.ts";
+import { attach, defineRobot, type Json, type Mat, rgbOf, round } from "../../robot.ts";
 import { sideBySide } from "../maniskill/index.ts";
 
 const SYSTEM = template(new URL("./SYSTEM.md", import.meta.url));
@@ -181,7 +189,7 @@ const flyObs = (o: Obs): FlywheelObs => ({
 export default function metaworld(pi: ExtensionAPI) {
 	// Every flag this robot registers is tracked: numbers fail closed, the result records them (../../infra/params.ts).
 	trackFlags(pi);
-	const flag = (name: string, fallback: string) => String(pi.getFlag(name) ?? fallback);
+	const _flag = (name: string, fallback: string) => String(pi.getFlag(name) ?? fallback);
 	pi.registerFlag("task", {
 		type: "string",
 		default: "reach-v3",
@@ -189,23 +197,12 @@ export default function metaworld(pi: ExtensionAPI) {
 	});
 	pi.registerFlag("seed", { type: "string", default: "0", description: "Reset seed (the object layout)" });
 	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
-	pi.registerFlag("sam3", { type: "string", default: "http://127.0.0.1:18300", description: "SAM3 server (segment)" });
-	// --detections / --unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
+	// --detections / --depth unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
 	registerDetectionFlags(pi);
-	// --contact-graspnet & co: plan_grasp and friends, and execute_grasp / execute_place (services/.../utils/grasp_chain.py on the env server).
+	// --grasp: plan_grasp and friends, and execute_grasp / execute_place (services/.../utils/grasp_chain.py on the env server).
 	registerGraspFlags(pi);
-	// --point: Molmo's point over its --molmo server (../primitives/pointing.ts).
-	registerPointFlags(pi, { molmo: true });
-	pi.registerFlag("services", {
-		type: "string",
-		default: process.env.PI_EMBODIED_SERVICES ?? SERVICES,
-		description: "pi-embodied services dir",
-	});
-	pi.registerFlag("python", {
-		type: "string",
-		default: process.env.PI_EMBODIED_PYTHON ?? "python",
-		description: "Python for the env server (the metaworld venv)",
-	});
+	// --point: Molmo's point over services.molmo (../primitives/pointing.ts).
+	registerPointFlags(pi);
 
 	let env: RpcClient;
 	let obs: Obs;
@@ -225,10 +222,10 @@ export default function metaworld(pi: ExtensionAPI) {
 		vars: () => ({ max_move: MAX_MOVE_M, cameras: [...CAMERAS], arms: [] }),
 		capabilities: (c) =>
 			({
-				sam3: Boolean(flag("sam3", "")),
+				sam3: Boolean(service(pi, "sam3")),
 				grasp: graspActive(pi).length > 0,
-				place: graspActive(pi).length > 0 && Boolean(flag("anyplace", "")),
-				unidepth: Boolean(flag("unidepth", "").trim()),
+				place: graspActive(pi).length > 0 && placeOn(pi),
+				unidepth: Boolean(String(pi.getFlag("depth") ?? "").trim()),
 			})[c] ?? false,
 		services: { models: [SAM3, MOLMO] },
 		task: ["task", "seed"],
@@ -468,7 +465,7 @@ export default function metaworld(pi: ExtensionAPI) {
 		}),
 	);
 
-	// SAM3 masks with ids and UniDepth over the env server's perception (active with --detections / --unidepth).
+	// SAM3 masks with ids and UniDepth over the env server's perception (active with --detections / --depth unidepth).
 	for (const d of detectionTools(pi, {
 		call: (method, kwargs, timeoutMs) => env.call<Json>(method, kwargs, timeoutMs ?? 120_000, [], robot.signal),
 		cameras: CAMERAS,
@@ -493,7 +490,7 @@ export default function metaworld(pi: ExtensionAPI) {
 		return observe({ gripper: r.gripper, gripper_width: round(r.gripper_width, 4), env_steps: absorbMotion(r) });
 	});
 
-	// Planned grasps (--contact-graspnet & co): the server runs the claimed path as move_delta legs
+	// Planned grasps (--grasp): the server runs the claimed path as move_delta legs
 	// (env.execute_grasp / env.execute_place, utils/grasp_chain.py).
 	for (const name of ["execute_grasp", "execute_place"])
 		robot.tool(name, "", Type.Object({}), async (params: Json, signal) => {
@@ -503,7 +500,7 @@ export default function metaworld(pi: ExtensionAPI) {
 			return observe({ ...rest, env_steps: absorbMotion(r) });
 		});
 
-	// plan_grasp / plan_place / check_attached over the env server's planner (--contact-graspnet & co), and
+	// plan_grasp / plan_place / check_attached over the env server's planner (--grasp), and
 	// execute_grasp / execute_place running a planned id as bounded move_delta legs (services/.../utils/grasp_chain.py on the env server).
 	for (const d of graspTools(pi, {
 		call: (method, kwargs, timeoutMs) => env.call<Json>(method, kwargs, timeoutMs ?? 120_000, [], robot.signal),
@@ -518,14 +515,14 @@ export default function metaworld(pi: ExtensionAPI) {
 		const endpoint = pi.getFlag("env") as string | undefined;
 		if (endpoint) env = await attach(endpoint);
 		else {
-			const services = flag("services", SERVICES);
+			const services = servicesDir(pi);
 			env = await robot.serve({
-				python: flag("python", "python"),
+				python: python(pi, "metaworld"),
 				args: [
 					...["-m", "pi_embodied_services.robots.metaworld.env_server", "--task", task, "--seed", seed],
 					// env.segment (and the planner's object text) segment with SAM3 on the server.
-					...(flag("sam3", "") ? ["--sam3", flag("sam3", "")] : []),
-					...detectionArgs(pi, ""),
+					...(service(pi, "sam3") ? ["--sam3", service(pi, "sam3")] : []),
+					...detectionArgs(pi, { sam3: false }),
 					...graspArgs(pi),
 				],
 				cwd: services,
@@ -552,7 +549,7 @@ export default function metaworld(pi: ExtensionAPI) {
 		language = await env.call<string>("env.get_task_language");
 		fly.reset(flyObs(o), flyMeta());
 		return [
-			// segment requires --sam3, the chains a planner (the manifest drops them without).
+			// segment requires SAM3 on the server, the chains a planner (the manifest drops them without).
 			...["view_env_state", "get_camera_meta", "segment", "back_project", "move_delta", "set_gripper", "finish"],
 			...detectionActive(pi, meta.capabilities?.perception),
 			...graspActive(pi),

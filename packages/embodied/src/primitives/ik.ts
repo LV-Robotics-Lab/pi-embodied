@@ -1,14 +1,15 @@
 /**
- * The `--ik <url>` flag: an IK service (services/pi_embodied_services/components/ik_server.py) the
+ * The `--ik` switch: an IK service (endpoint: services.ik of the deployment config) (services/pi_embodied_services/components/ik_server.py) the
  * env server asks whether a target is reachable (`env.preview_reach`), plans collision-free paths
  * with (`env.plan_motion`, refused when none exists) and checks the arm against the scene with
  * before each servo segment (`env.check_motion`, utils/motion.py). The ik server's `--backend`
  * (pyroki, or curobo for collision-free trajectory optimisation) is chosen where it is started.
- * Off when empty; the robot then behaves as before.
+ * Off by default; the robot then behaves as before.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type TSchema, Type } from "typebox";
+import { requireService } from "../infra/config.ts";
 import type { Json } from "../robot.ts";
 
 /** `env.preview_reach`: `unknown` means the check could not run, which is not approval. */
@@ -40,17 +41,19 @@ export type MotionCheck = {
 
 export function registerIkFlag(pi: ExtensionAPI) {
 	pi.registerFlag("ik", {
-		type: "string",
-		default: "",
+		type: "boolean",
+		default: false,
 		description:
-			"IK server (components/ik_server.py): reach checks, collision-free planned moves and a collision check before each segment; off when empty",
+			"IK service (services.ik of the deployment config; components/ik_server.py): reach checks, collision-free planned moves and a collision check before each segment",
 	});
 }
 
-/** The env server arguments for the flag: `--ik <url>`, or nothing when it is off. */
-export function ikArgs(url: unknown): string[] {
-	const u = typeof url === "string" ? url.trim() : "";
-	return u ? ["--ik", u] : [];
+/** The env server arguments: `--ik <url>` with --ik, else nothing; --ik without services.ik throws. */
+export function ikArgs(pi: ExtensionAPI): string[] {
+	if (pi.getFlag("ik") !== true) return [];
+	const s = requireService(pi, "ik", "--ik");
+	if ("error" in s) throw new Error(s.error);
+	return ["--ik", s.url];
 }
 
 /** The refusal a motion tool returns instead of moving, or undefined when the target may be tried. */

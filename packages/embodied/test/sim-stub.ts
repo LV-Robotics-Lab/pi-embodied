@@ -10,11 +10,13 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { deployFlags } from "./helpers/deployment.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
 /** A stub pi (flags from `values`, else their defaults; tools; handlers in registration order) and a context without a UI. */
 export function stubPi(values: Record<string, unknown> = {}) {
+	values = deployFlags(values);
 	const handlers = new Map<string, Handler[]>();
 	const flags: Record<string, unknown> = {};
 	const tools = new Map<string, any>();

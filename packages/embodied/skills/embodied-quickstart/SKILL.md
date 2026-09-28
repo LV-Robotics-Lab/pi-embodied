@@ -24,7 +24,7 @@ Fine-tuned mode needs two more steps after the install: `FT_ADAPTER=<adapter> se
 finetuned` (default `qwen3_5_2b_sim`) fetches the released adapter and its base model with
 `finetuned/download.py` (pinned, verified), and `services/pi_embodied_services/finetuned/serve.sh`
 (`MODEL`, `LORA`, `VLLM_VENV` as setup.sh prints them) serves them on the vLLM endpoint the launch's
-`--ft-endpoint` expects (default http://127.0.0.1:8010/v1). Start it before the episodes and leave it
+services.finetuned names (default http://127.0.0.1:8010/v1). Start it before the episodes and leave it
 running. LIBERO's adapters are the user's own (`--model finetuned/local --ft-model <served adapter>`).
 
 The user confirms the plan once in `/embodied-setup`; pi does not gate each tool call, so ask before
@@ -52,7 +52,7 @@ Tools mode also needs the shared model servers: `packages/embodied/src/robots/<r
 
 ```bash
 source services/.venv-<target>/pi-embodied.env
-node packages/embodied/src/infra/check.ts <robot> --python "$PI_EMBODIED_PYTHON" --services services [--units]
+node packages/embodied/src/infra/check.ts <robot> [--deployment NAME] [--units]
 ```
 
 Fix every FAIL before running. Inside a robot session the same check is `/robot-check`.

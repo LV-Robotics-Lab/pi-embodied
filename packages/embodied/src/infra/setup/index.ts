@@ -261,7 +261,7 @@ function handoff(c: Choice, settingsText: string): string {
 	const settings = c.remote
 		? `write this to <experiment dir on the box>/.pi/settings.json (the package paths become ${c.remote.checkout}/packages/embodied):\n${settingsText}`
 		: `${join(c.dir, ".pi/settings.json")} is written`;
-	// Fine-tuned mode: the adapter and its base model, and the vLLM server the launch's --ft-endpoint (default :8010) expects.
+	// Fine-tuned mode: the adapter and its base model, and the vLLM server services.finetuned (default :8010) names.
 	const ft = c.robot.adapter ? `FT_ADAPTER=${c.robot.adapter} ${c.services}/setup.sh finetuned` : undefined;
 	const finetuned =
 		c.mode === "finetuned"
@@ -269,7 +269,7 @@ function handoff(c: Choice, settingsText: string): string {
 					ft
 						? `- adapter: \`${ft}\` (finetuned/download.py fetches the adapter and its base model, pinned and verified)`
 						: "- adapter: none is released for this robot; ask me which adapter to serve and where its files are",
-					`- serve: \`MODEL=<base dir> LORA=<name>=<adapter dir> VLLM_VENV=<venv with vllm> bash ${c.services}/pi_embodied_services/finetuned/serve.sh\` (${ft ? "setup.sh finetuned prints the exact command; " : ""}the launch's --ft-endpoint defaults to http://127.0.0.1:8010/v1); it must be running for the episodes`,
+					`- serve: \`MODEL=<base dir> LORA=<name>=<adapter dir> VLLM_VENV=<venv with vllm> bash ${c.services}/pi_embodied_services/finetuned/serve.sh\` (${ft ? "setup.sh finetuned prints the exact command; " : ""}services.finetuned defaults to http://127.0.0.1:8010/v1); it must be running for the episodes`,
 				]
 			: [];
 	return [

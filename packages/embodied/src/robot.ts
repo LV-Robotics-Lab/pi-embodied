@@ -21,6 +21,7 @@ import { approval, operator } from "./capabilities/operator.ts";
 import { probePerception, registerSkillFlags, type SkillState, withSkillsOff } from "./capabilities/skills.ts";
 import { webTools } from "./capabilities/web.ts";
 import { robotCheck } from "./infra/check.ts";
+import { configProblem, deploymentRecord, registerConfig, servicesDir } from "./infra/config.ts";
 import { type ModelServicesSpec, modelServices } from "./infra/model-services.ts";
 import { params, paramsError, trackFlags } from "./infra/params.ts";
 import { forgetUnresponsive, NdArray, type RpcClient, RpcUnavailable } from "./infra/rpc.ts";
@@ -289,6 +290,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	const { name } = spec;
 	// Flags the base and its modules register from here on are tracked too (a robot starts it earlier).
 	trackFlags(pi);
+	registerConfig(pi);
 	const manifest: Manifest | undefined = spec.manifest ? loadManifest(spec.manifest) : undefined;
 	let task: Record<string, string> = {};
 	let ready = false;
@@ -657,7 +659,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		try {
 			// A flag the robot cannot honour fails closed, before the robot boots.
 			const misconfigured =
-				paramsError(pi) ?? un?.configError() ?? co?.configError() ?? ap.configError(ctx.hasUI) ?? extrasInPureMode(pi);
+				configProblem(pi) ?? paramsError(pi) ?? un?.configError() ?? co?.configError() ?? ap.configError(ctx.hasUI) ?? extrasInPureMode(pi);
 			if (misconfigured) throw new Error(misconfigured);
 			api = undefined;
 			await models?.start();
@@ -668,7 +670,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 			refreshPrimitives();
 			// The robot's configuration (its cameras) is known now: the units read its wrist view again.
 			un?.started(ctx);
-			await vz?.start(ctx, String(pi.getFlag("services") || SERVICES));
+			await vz?.start(ctx, servicesDir(pi));
 			const client = spec.codeApi?.();
 			if (client) {
 				api = await fetchCodeApi(client, privileged() ? "privileged" : undefined);
@@ -985,6 +987,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 						planner: plannerOf(providers),
 						// Every experiment flag's effective value and default (./infra/params.ts): the eval scripts compare them.
 						...params(pi),
+						...deploymentRecord(pi),
 						cost_usd: Number(cost.toFixed(6)),
 						// An operator verdict (/success /failure /abort) aborts the model mid-request; that ends the run, it is not a planner failure.
 						planner_error: (op.result() as Json).operator_finished === true ? null : (plannerError ?? null),

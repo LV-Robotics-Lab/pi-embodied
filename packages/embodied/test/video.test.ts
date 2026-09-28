@@ -16,6 +16,7 @@ import {
 	type Note,
 	noteLines,
 } from "../src/observation/video.ts";
+import { deployFlags } from "./helpers/deployment.ts";
 
 const ffmpeg = (() => {
 	try {
@@ -29,6 +30,7 @@ const ffmpeg = (() => {
 type Handler = (event: any, ctx: any) => unknown;
 
 function fakePi(flagValues: Record<string, unknown>) {
+	flagValues = deployFlags(flagValues);
 	const handlers = new Map<string, Handler[]>();
 	const listeners = new Map<string, ((data: unknown) => void)[]>();
 	const flags: Record<string, unknown> = {};

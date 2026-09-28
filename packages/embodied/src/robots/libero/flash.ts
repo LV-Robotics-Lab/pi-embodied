@@ -2,22 +2,22 @@
  * LIBERO's Flash hook: how a recorded LIBERO plan meets the live scene (the replay itself is ../flash).
  *
  *   pi -p -e src/robots/libero --model flash/replay --suite libero_object_swap --task 3 --seed 0 \
- *     --molmo http://127.0.0.1:18400 "Solve the task."
+ *     "Solve the task."   (Molmo at services.molmo of the deployment config)
  *
  * Each anchor is re-read the way it was recorded: `segment` anchors by SAM3 (the segment tool), the
  * rest by Molmo pointing in the opening agentview image, profiled through back_project; the arm
  * then parks over each Molmo anchor and asks again from the wrist, kept only within 5 cm of the
  * coarse reading. Waypoints are replayed as offsets from their live anchor, and while an object is
  * held, as offsets of the object rather than the gripper. A `pi0_pick` that does not take hold is
- * retried by ../flash. With `--molmo off` nothing is pointed at: point anchors stay where they were
+ * retried by ../flash. With `--flash-reanchor=false` nothing is pointed at: point anchors stay where they were
  * recorded and picks keep their recorded thresholds without retries, so the plan replays its
  * recorded calls verbatim (meaningful only on the recorded seed). With `--molmo-set` (a MolmoPoint
  * server, `--model molmopoint`) the survey points at each anchor in the agentview and wrist images at
  * once (`molmo.ground_set`, OpenETA's Pointing Image Set) and profiles the agentview point, or the
  * wrist one when the agentview has none.
  *
- * Plans are `<family>_<suite>_t<task>_{plan,anchors}.json` in `--flash-plans`, else in the LIBERO memory root
- * (`--memory-dir`, or the synced HF memory) under `flash/` (flash-generate.ts) or `task_card/` (the HF
+ * Plans are `<family>_<suite>_t<task>_{plan,anchors}.json` in dirs.flash_plans, else in the LIBERO memory root
+ * (dirs.memory, or the synced HF memory) under `flash/` (flash-generate.ts) or `task_card/` (the HF
  * dataset). Molmo runs in its own env: `python -m pi_embodied_services.components.molmo_server` (see
  * services/README.md).
  */
@@ -34,6 +34,7 @@ import {
 	type FlashRobot,
 	flash,
 } from "../../capabilities/flash/index.ts";
+import { dir, service } from "../../infra/config.ts";
 import { RpcClient } from "../../infra/rpc.ts";
 import type { PlanEntry } from "./flash-generate.ts";
 
@@ -315,24 +316,20 @@ async function start(program: Program, robot: FlashRobot, molmo: RpcClient | und
 type Cell = () => { suite: string; task: string; liberoType?: string };
 
 /**
- * LIBERO's Flash hook; `cell` reads its --suite, --task and --libero-type. Registers the --molmo and
- * --flash-plans flags. The robot passes it as `flash` in its spec, and ../robot.ts mounts ../flash with it.
+ * LIBERO's Flash hook; `cell` reads its --suite, --task and --libero-type. Registers --flash-reanchor. The robot passes it as `flash` in its spec, and ../robot.ts mounts ../flash with it.
  */
 export function liberoFlash(pi: ExtensionAPI, cell: Cell): FlashHook<Program> {
-	pi.registerFlag("molmo", {
-		type: "string",
-		default: "http://127.0.0.1:18400",
-		description: "Molmo server, or off to replay point anchors at their recorded positions",
+	pi.registerFlag("flash-reanchor", {
+		type: "boolean",
+		default: true,
+		description:
+			"Flash re-anchors each point with Molmo (services.molmo); false replays anchors at their recorded positions",
 	});
 	pi.registerFlag("molmo-set", {
 		type: "boolean",
 		default: false,
 		description:
 			"Flash surveys each anchor in the agentview and wrist images at once (MolmoPoint's molmo.ground_set; needs --model molmopoint)",
-	});
-	pi.registerFlag("flash-plans", {
-		type: "string",
-		description: "Directory of Flash plans (default: <memory>/libero/flash, then task_card)",
 	});
 	let molmo: RpcClient | undefined;
 	return {
@@ -347,15 +344,14 @@ export function liberoFlash(pi: ExtensionAPI, cell: Cell): FlashHook<Program> {
 					`Flash plans cover libero_{10,goal,object,spatial} and their _{task,swap} variants, not ${suite}`,
 				);
 			const program = `${match[1]}${match[2] ? `_${match[2]}` : ""}_t${task}`;
-			const flag = pi.getFlag("flash-plans");
+			const flag = dir(pi, "flash_plans");
 			const memory =
-				(pi.getFlag("memory-dir") as string | undefined) ||
+				dir(pi, "memory") ||
 				join(process.env.PI_EMBODIED_MEMORY || join(homedir(), ".pi", "embodied", "memory"), "libero");
 			const dirs = flag ? [String(flag)] : ["flash", "task_card"].map((d) => join(memory, d));
 			const plans = dirs.map((d) => resolve(cwd, d));
 			const loaded = load(plans.find((d) => existsSync(join(d, `${program}_plan.json`))) ?? plans[0], program);
-			const endpoint = String(pi.getFlag("molmo") ?? "");
-			molmo = endpoint && endpoint !== "off" ? new RpcClient(endpoint) : undefined;
+			molmo = pi.getFlag("flash-reanchor") === false ? undefined : new RpcClient(service(pi, "molmo"));
 			return loaded;
 		},
 		start: (program, robot) => start(program, robot, molmo, pi.getFlag("molmo-set") === true),

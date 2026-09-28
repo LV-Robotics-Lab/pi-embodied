@@ -18,11 +18,13 @@ import {
 import franka from "../src/robots/franka/index.ts";
 import libero from "../src/robots/libero/index.ts";
 import robosuite from "../src/robots/robosuite/index.ts";
+import { deployFlags } from "./helpers/deployment.ts";
 
 type Json = Record<string, any>;
 
 /** A stub pi with flags (overridable) and a tool registry. */
 function fakePi(flagValues: Record<string, unknown> = {}) {
+	flagValues = deployFlags(flagValues);
 	const flags: Record<string, unknown> = {};
 	const tools = new Map<string, any>();
 	const api: Record<string, unknown> = {

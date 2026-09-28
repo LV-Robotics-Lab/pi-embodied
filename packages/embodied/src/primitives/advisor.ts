@@ -452,7 +452,7 @@ export function graspAdvisorTool(pi: ExtensionAPI, rig: AdvisorRig, mount: (d: G
 		const want = graspOn ? "rank" : "point";
 		if (!graspOn && !rig.point)
 			throw new Error(
-				"--grasp-advisor needs a plan_grasp backend (--contact-graspnet, --graspgenx, --anygrasp or --graspnet1b) on this robot",
+				"--grasp-advisor needs a plan_grasp backend (--grasp contact_graspnet|graspgenx|anygrasp|graspnet1b)",
 			);
 		if (mode && mode !== want)
 			throw new Error("--grasp-advisor: the grasp backend changed between sessions; restart pi");

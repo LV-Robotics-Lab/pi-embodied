@@ -6,6 +6,7 @@ import { test } from "node:test";
 import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { mergeMemory, renderLeaf, splitFrontmatter, validateMemory } from "../src/capabilities/memory/corpus.ts";
 import { canonicalPath, denied, memory, recipe } from "../src/capabilities/memory/index.ts";
+import { deployFlags } from "./helpers/deployment.ts";
 
 const leaf = (meta: string, body: string) => `---\n${meta}\n---\n${body}`;
 const globalDraft = (cells: string, body: string) =>
@@ -190,7 +191,7 @@ async function guarded(
 	writeFileSync(join(home, "libero", "MEMORY.md"), "# memory\n");
 	writeFileSync(join(base, "secret.txt"), "secret\n");
 	const hooks = new Map<string, (event: unknown, ctx: unknown) => unknown>();
-	const flags: Record<string, unknown> = { "output-dir": opts.output ?? run };
+	const flags: Record<string, unknown> = deployFlags({ "output-dir": opts.output ?? run });
 	const tools = new Map<string, any>();
 	const pi = {
 		on: (name: string, fn: (event: unknown, ctx: unknown) => unknown) => hooks.set(name, fn),

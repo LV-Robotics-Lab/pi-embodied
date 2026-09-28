@@ -7,10 +7,12 @@ import { inflateRawSync } from "node:zlib";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type FlywheelSpec, flywheel } from "../src/capabilities/flywheel.ts";
 import { NdArray } from "../src/infra/rpc.ts";
+import { deployFlags } from "./helpers/deployment.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
 function stubPi(flags: Record<string, unknown>) {
+	flags = deployFlags(flags);
 	const handlers = new Map<string, Handler[]>();
 	const entries: { type: string; data: any }[] = [];
 	const commands = new Map<string, any>();

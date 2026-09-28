@@ -23,7 +23,7 @@
  * Motion tools record a state step (robot state, every camera's RGB and, where the camera has it,
  * depth, camera metadata) under --out and return it with the images. back_project reads a pixel's
  * depth through the camera's intrinsics and its hand-eye calibration (robots/ur5e/calibrate.py); an
- * RGB-only camera has no depth to project. segment is active only with --robot-sam3.
+ * RGB-only camera has no depth to project. segment is active only with --segment.
  *
  * --explore (../explore.ts, `/explore`) runs operator-judged attempts: `reset` is the operator's scene
  * reset followed by the arm's, a success verdict is the solve, and the motion commands after the last
@@ -35,6 +35,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { dir, python, service, servicesDir } from "../../infra/config.ts";
 import { trackFlags } from "../../infra/params.ts";
 import { decodePngChannel, encodePng } from "../../infra/png.ts";
 import { NdArray, type RpcClient } from "../../infra/rpc.ts";
@@ -67,7 +68,6 @@ import {
 	rgbOf,
 	round,
 	roundAll,
-	SERVICES,
 	type Services,
 	servicesEnv,
 	toolResult,
@@ -140,7 +140,7 @@ export const UR5E_UNITS = {
 	yawStepRad: 0.15,
 };
 
-/** The robot's own tools; `segment` is activated only with --robot-sam3. */
+/** The robot's own tools; `segment` is activated only with --segment. */
 const TOOLS = [
 	"view_env_state",
 	"view_camera_meta",
@@ -184,30 +184,17 @@ export default function ur5e(pi: ExtensionAPI) {
 		description:
 			"Camera sources for the env server, overriding the YAML's cameras.devices: name=type:source,... (realsense:<serial>, webcam:<index|/dev/videoN>, rtsp://<url>); the first is the main camera",
 	});
-	pi.registerFlag("robot-sam3", {
-		type: "string",
-		default: "",
-		description: "SAM3 server (attach-only; enables segment)",
+	pi.registerFlag("segment", {
+		type: "boolean",
+		default: false,
+		description: "SAM3 on the env server (services.sam3 of the deployment config; enables segment)",
 	});
-	// --detections (the env server's SAM3 masks with ids through --robot-sam3) / --unidepth (enhance_depth:
+	const sam3Url = () => (pi.getFlag("segment") === true ? service(pi, "sam3") : "");
+	// --detections (the env server's SAM3 masks with ids through --segment) / --depth unidepth (enhance_depth:
 	// UniDepth depth for an RGB-only camera, which back_project then reads): ../primitives/detections.ts.
 	registerDetectionFlags(pi);
-	// --point: Molmo's point over its --molmo server (../primitives/pointing.ts).
-	registerPointFlags(pi, { molmo: true });
-	pi.registerFlag("services", {
-		type: "string",
-		default: process.env.PI_EMBODIED_SERVICES ?? SERVICES,
-		description: "pi-embodied services dir",
-	});
-	pi.registerFlag("python", {
-		type: "string",
-		default: process.env.PI_EMBODIED_PYTHON ?? "python",
-		description: "Python with the services' [ur5e] extra",
-	});
-	pi.registerFlag("out", {
-		type: "string",
-		description: "Step artifact directory (default: a new directory under the OS temp dir)",
-	});
+	// --point: Molmo's point over services.molmo (../primitives/pointing.ts).
+	registerPointFlags(pi);
 	pi.registerFlag("max-move", {
 		type: "string",
 		default: "0.08",
@@ -256,8 +243,8 @@ export default function ur5e(pi: ExtensionAPI) {
 			return (
 				{
 					sam3: pi.getFlag("detections") === true && Boolean(served?.segment),
-					unidepth: Boolean(flag("unidepth").trim()) && Boolean(served?.enhance_depth),
-					robot_sam3: Boolean(flag("robot-sam3")),
+					unidepth: Boolean(String(pi.getFlag("depth") ?? "").trim()) && Boolean(served?.enhance_depth),
+					robot_sam3: Boolean(sam3Url()),
 				}[c] ?? false
 			);
 		},
@@ -701,7 +688,7 @@ export default function ur5e(pi: ExtensionAPI) {
 	tool(
 		"segment",
 		async ({ prompt, point, camera, step, min_score = 0.2 }) => {
-			if (!sam3) throw new Error("segment requires --robot-sam3");
+			if (!sam3) throw new Error("segment requires --segment");
 			const text = typeof prompt === "string" ? prompt.trim() : "";
 			if (!text && !point) return { error: "give a text prompt or a point [row, col]" };
 			const s = getStep(step ?? -1);
@@ -806,11 +793,11 @@ export default function ur5e(pi: ExtensionAPI) {
 		for (const name of ["max-move", "max-rotate"])
 			if (!(Number(flag(name)) > 0)) throw new Error(`--${name} must be a positive number (got '${flag(name)}')`);
 		const limits = wanted();
-		const r: Services = { root: flag("services"), python: flag("python", "python") };
+		const r: Services = { root: servicesDir(pi), python: python(pi, "ur5e") };
 		const configFlag = flag("robot-config");
 		const config = configFlag ? resolve(ctx.cwd, configFlag) : "";
 		const stamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15);
-		out = resolve(ctx.cwd, flag("out") || join(tmpdir(), "pi-embodied", `ur5e_${taskName()}_${stamp}`));
+		out = resolve(ctx.cwd, dir(pi, "artifacts") || join(tmpdir(), "pi-embodied", `ur5e_${taskName()}_${stamp}`));
 		mkdirSync(out, { recursive: true });
 		steps.length = 0;
 		const endpoint = flag("robot-env");
@@ -827,7 +814,7 @@ export default function ur5e(pi: ExtensionAPI) {
 							...(camerasFlag ? ["--cameras", camerasFlag] : []),
 							// pi's per-call limits, enforced by the server for tools and programs alike.
 							...limitArgs(limits),
-							...detectionArgs(pi, flag("robot-sam3")),
+							...detectionArgs(pi, { sam3: Boolean(sam3Url()) }),
 							...(coding() ? ["--code"] : []),
 						],
 						cwd: r.root,
@@ -835,7 +822,7 @@ export default function ur5e(pi: ExtensionAPI) {
 						log: () => join(out, "ur5e_env_server.log"),
 						readyMs: 120_000,
 					}),
-			flag("robot-sam3") ? attach(flag("robot-sam3")) : undefined,
+			sam3Url() ? attach(sam3Url()) : undefined,
 		]);
 		const m = await rpc.call<Meta>("env.get_env_meta", {}, 30_000);
 		if (m.robot !== "ur5e")

@@ -46,6 +46,7 @@ import { join, resolve } from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { dir, python, service, servicesDir } from "../../infra/config.ts";
 import { trackFlags } from "../../infra/params.ts";
 import { encodePng } from "../../infra/png.ts";
 import { NdArray, type RpcClient, RpcUnavailable } from "../../infra/rpc.ts";
@@ -82,7 +83,6 @@ import {
 	type RobotSpec,
 	rgbOf,
 	round,
-	SERVICES,
 	type Services,
 	servicesEnv,
 	toolResult,
@@ -256,24 +256,10 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 		description:
 			"Colon-separated setup.bash files sourced before the env server starts (e.g. /opt/ros/noetic/setup.bash:~/cobot_magic/Piper_ros_private-ros-noetic/devel/setup.bash); empty = inherit pi's environment",
 	});
-	// --detections / --unidepth: the env server's SAM3 masks with ids and UniDepth depth for the webcams (../primitives/detections.ts).
-	registerDetectionFlags(pi, { sam3: true });
-	// --point: Molmo's point over its --molmo server (../primitives/pointing.ts).
-	registerPointFlags(pi, { molmo: true });
-	pi.registerFlag("services", {
-		type: "string",
-		default: process.env.PI_EMBODIED_SERVICES ?? SERVICES,
-		description: "pi-embodied services dir",
-	});
-	pi.registerFlag("python", {
-		type: "string",
-		default: process.env.PI_EMBODIED_PYTHON ?? "python",
-		description: "Python with the services' [piper] extra",
-	});
-	pi.registerFlag("out", {
-		type: "string",
-		description: "Step artifact directory (default: a new directory under the OS temp dir)",
-	});
+	// --detections / --depth unidepth: the env server's SAM3 masks with ids and UniDepth depth for the webcams (../primitives/detections.ts).
+	registerDetectionFlags(pi);
+	// --point: Molmo's point over services.molmo (../primitives/pointing.ts).
+	registerPointFlags(pi);
 	pi.registerFlag("max-move", {
 		type: "string",
 		default: "0.05",
@@ -386,8 +372,8 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 		capabilities: (c) =>
 			({
 				dual,
-				sam3: pi.getFlag("detections") === true && Boolean(flag("sam3")),
-				unidepth: Boolean(flag("unidepth").trim()),
+				sam3: pi.getFlag("detections") === true && Boolean(service(pi, "sam3")),
+				unidepth: Boolean(String(pi.getFlag("depth") ?? "").trim()),
 				xpolicy: Boolean(flag("xpolicy").trim()),
 			})[c] ?? false,
 		task: ["task"],
@@ -782,11 +768,11 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 			throw new Error(
 				"--view-select needs the units view hook (act's `view`, UnitsHandle.viewSelect), which the units module in use does not have: every move would run in the base frame. Start without --view-select",
 			);
-		const r: Services = { root: flag("services"), python: flag("python", "python") };
+		const r: Services = { root: servicesDir(pi), python: python(pi, "piper") };
 		const configFlag = flag("robot-config");
 		const config = configFlag ? resolve(ctx.cwd, configFlag) : "";
 		const stamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15);
-		out = resolve(ctx.cwd, flag("out") || join(tmpdir(), "pi-embodied", `piper_${taskName()}_${stamp}`));
+		out = resolve(ctx.cwd, dir(pi, "artifacts") || join(tmpdir(), "pi-embodied", `piper_${taskName()}_${stamp}`));
 		mkdirSync(out, { recursive: true });
 		steps.length = 0;
 		const endpoint = flag("robot-env");
@@ -797,7 +783,7 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 			...(config ? ["--robot-config", config] : []),
 			// pi's per-call limits, enforced by the server for tools and programs alike.
 			...limitArgs(wanted()),
-			...detectionArgs(pi, flag("sam3", "")),
+			...detectionArgs(pi, { sam3: true }),
 			...(coding() ? ["--code"] : []),
 		];
 		// Source the ROS workspaces in a shell that then execs Python; serve appends the transport flags.

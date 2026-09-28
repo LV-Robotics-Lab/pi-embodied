@@ -9,7 +9,7 @@
  * What an observation holds is the robot's (`FlywheelSpec`): its camera images, its state vector and
  * its action vector, the ones its VLA reads and emits. The episode is written when the session ends.
  * /flywheel-export runs `python -m pi_embodied_services.flywheel.cli export-lerobot` in the services
- * dir (--services, with --flywheel-python, else --python), which keeps each successful episode up
+ * dir (services_dir, with python.flywheel of the deployment config), which keeps each successful episode up
  * to its first `terminated` step and writes a LeRobot v3.0 dataset (lerobot 0.4 in that Python)
  * with the shared feature names `observation.images.<camera>`, `observation.state` and `action`.
  */
@@ -19,9 +19,9 @@ import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { dir as cfgDir, python as cfgPython, servicesDir } from "../infra/config.ts";
 import { type Npy, writeNpz } from "../infra/npz.ts";
 import type { NdArray } from "../infra/rpc.ts";
-import { SERVICES } from "../robot.ts";
 
 /** What a robot records: services pi_embodied_services/robots/<robot>/flywheel.py holds the same shapes. */
 export type FlywheelSpec = {
@@ -212,18 +212,8 @@ export function flywheel(pi: ExtensionAPI, spec: FlywheelSpec, select: () => str
 		default: false,
 		description: "Record this episode for Flywheel training",
 	});
-	pi.registerFlag("flywheel-root", {
-		type: "string",
-		description: "Flywheel data root (default ~/.pi/embodied/datacollection)",
-	});
-	pi.registerFlag("flywheel-python", {
-		type: "string",
-		description:
-			"Python with lerobot 0.4 (LeRobot v3.0) for /flywheel-export (default $PI_EMBODIED_FLYWHEEL_PYTHON, from services/setup.sh flywheel, else --python)",
-	});
 
-	const root = () =>
-		resolve(String(pi.getFlag("flywheel-root") || join(homedir(), ".pi", "embodied", "datacollection")));
+	const root = () => resolve(cfgDir(pi, "flywheel") || join(homedir(), ".pi", "embodied", "datacollection"));
 	let ep: Episode | undefined;
 	let tool: string | undefined;
 
@@ -267,14 +257,8 @@ export function flywheel(pi: ExtensionAPI, spec: FlywheelSpec, select: () => str
 			cli.push("--robot", spec.robot, "--select", selection, ...(id ? ["--dataset-id", id] : []));
 			if (spec.space) cli.push("--space", spec.space);
 			// LeRobot's pins (numpy 2, huggingface-hub) conflict with the env servers', hence its own Python.
-			const python = String(
-				pi.getFlag("flywheel-python") ||
-					process.env.PI_EMBODIED_FLYWHEEL_PYTHON ||
-					pi.getFlag("python") ||
-					process.env.PI_EMBODIED_PYTHON ||
-					"python",
-			);
-			const services = String(pi.getFlag("services") || process.env.PI_EMBODIED_SERVICES || SERVICES);
+			const python = cfgPython(pi, "flywheel", ["PI_EMBODIED_FLYWHEEL_PYTHON"]);
+			const services = servicesDir(pi);
 			const res = await pi.exec("env", [`PYTHONPATH=${services}`, python, ...cli], { cwd: services });
 			const out = res.code === 0 ? res.stdout.trim() : res.stderr.trim() || `exit code ${res.code}`;
 			if (ctx.hasUI) ctx.ui.notify(out, res.code === 0 ? "info" : "error");

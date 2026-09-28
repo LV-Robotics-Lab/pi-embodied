@@ -39,6 +39,7 @@ import { Type } from "typebox";
 import { anchorPlane, type CameraMeta, pixelOnPlane, unletterbox } from "../../capabilities/flash/plane.ts";
 import { recipeFlash } from "../../capabilities/flash/recipe.ts";
 import type { FlywheelObs, FlywheelSpec } from "../../capabilities/flywheel.ts";
+import { python, service, servicesDir } from "../../infra/config.ts";
 import { MOLMO, SAM3 } from "../../infra/model-services.ts";
 import { trackFlags } from "../../infra/params.ts";
 import { encodePng } from "../../infra/png.ts";
@@ -49,7 +50,7 @@ import { detectionActive, detectionArgs, detectionTools, registerDetectionFlags 
 import { mountGraspTool } from "../../primitives/grasp.ts";
 import { ikArgs, type Reach, registerIkFlag } from "../../primitives/ik.ts";
 import { pointActive, pointTool, registerPointFlags } from "../../primitives/pointing.ts";
-import { attach, defineRobot, type Json, rgbOf, SERVICES, toolResult } from "../../robot.ts";
+import { attach, defineRobot, type Json, rgbOf, toolResult } from "../../robot.ts";
 
 const read = (name: string) => template(new URL(name, import.meta.url));
 const SYSTEM = read("./SYSTEM.md");
@@ -531,27 +532,17 @@ export default function maniskill(pi: ExtensionAPI) {
 	});
 	pi.registerFlag("seed", { type: "string", default: "0", description: "Reset seed (the object layout)" });
 	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
-	// --detections / --unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
+	// --detections / --depth unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
 	// --ik: preview_reach over the env server's IK check (../ik.ts; the Panda and the xArm6).
 	registerIkFlag(pi);
-	registerDetectionFlags(pi, { sam3: true });
-	// --point: Molmo's point over --molmo (../primitives/pointing.ts).
+	registerDetectionFlags(pi);
+	// --point: Molmo's point over services.molmo (../primitives/pointing.ts).
 	registerPointFlags(pi);
 	pi.registerFlag("probe-axes", {
 		type: "boolean",
 		default: false,
 		description:
 			"Before the episode, step each MV_* unit from the reset pose, write calibration.json next to the session and use the measured vectors (Show-Harness --probe-axes)",
-	});
-	pi.registerFlag("services", {
-		type: "string",
-		default: process.env.PI_EMBODIED_SERVICES ?? SERVICES,
-		description: "pi-embodied services dir",
-	});
-	pi.registerFlag("python", {
-		type: "string",
-		default: process.env.PI_EMBODIED_PYTHON ?? "python",
-		description: "Python for the env server (the maniskill venv)",
 	});
 
 	let env: RpcClient;
@@ -643,10 +634,10 @@ export default function maniskill(pi: ExtensionAPI) {
 		// Must agree with the env server's `_has` (code mode refuses a server whose code.api differs).
 		capabilities: (c) =>
 			({
-				sam3: pi.getFlag("detections") === true && Boolean(flag("sam3", "")),
-				unidepth: Boolean(String(pi.getFlag("unidepth") ?? "").trim()),
+				sam3: pi.getFlag("detections") === true && Boolean(service(pi, "sam3")),
+				unidepth: Boolean(String(pi.getFlag("depth") ?? "").trim()),
 				// env.preview_reach answers from an IK model the Panda and the xArm6 have (env server IK_MODELS).
-				ik: Boolean(String(pi.getFlag("ik") ?? "").trim()) && IK_ROBOTS.includes(flag("robot", "panda")),
+				ik: pi.getFlag("ik") === true && IK_ROBOTS.includes(flag("robot", "panda")),
 			})[c] ?? false,
 		services: { models: [SAM3, MOLMO] },
 		task: ["env-id", "seed", "scene"],
@@ -967,7 +958,7 @@ export default function maniskill(pi: ExtensionAPI) {
 		toolResult((await env.call<Reach>("env.preview_reach", params as Json, 60_000, [], robot.signal)) as Json),
 	);
 
-	// SAM3 masks with ids and UniDepth over the env server's perception (active with --detections / --unidepth).
+	// SAM3 masks with ids and UniDepth over the env server's perception (active with --detections / --depth unidepth).
 	for (const d of detectionTools(pi, {
 		call: (method, kwargs, timeoutMs) =>
 			env.call<Record<string, any>>(method, kwargs, timeoutMs ?? 120_000, [], robot.signal),
@@ -987,9 +978,9 @@ export default function maniskill(pi: ExtensionAPI) {
 		const endpoint = pi.getFlag("env") as string | undefined;
 		if (endpoint) env = await attach(endpoint);
 		else {
-			const services = flag("services", SERVICES);
+			const services = servicesDir(pi);
 			env = await robot.serve({
-				python: flag("python", "python"),
+				python: python(pi, "maniskill"),
 				args: [
 					"-m",
 					"pi_embodied_services.robots.maniskill.env_server",
@@ -999,8 +990,8 @@ export default function maniskill(pi: ExtensionAPI) {
 					seed,
 					...(scene ? ["--scene", scene] : []),
 					...(robotId !== "panda" ? ["--robot", robotId] : []),
-					...ikArgs(pi.getFlag("ik")),
-					...detectionArgs(pi, flag("sam3", "")),
+					...ikArgs(pi),
+					...detectionArgs(pi, { sam3: true }),
 				],
 				cwd: services,
 				env: { ...process.env, PYTHONPATH: services },
@@ -1035,7 +1026,7 @@ export default function maniskill(pi: ExtensionAPI) {
 			"view_env_state",
 			"move_delta",
 			"finish",
-			...(String(pi.getFlag("ik") ?? "").trim() ? ["preview_reach"] : []),
+			...(pi.getFlag("ik") === true ? ["preview_reach"] : []),
 			...detectionActive(pi, meta.capabilities?.perception),
 			...pointActive(pi),
 		];

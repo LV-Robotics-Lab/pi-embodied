@@ -10,6 +10,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import robocasa from "../src/robots/robocasa/index.ts";
 import { envId, loadTable, nearMatches, resolveCell } from "../src/robots/robocasa/tasks.ts";
 import { codeApiReply } from "./helpers/code-api.ts";
+import { deployFlags } from "./helpers/deployment.ts";
 
 const SERVICES = new URL("../../../services", import.meta.url).pathname;
 const SCRIPT = new URL("../src/robots/robocasa/eval.sh", import.meta.url).pathname;
@@ -223,6 +224,7 @@ type Tool = { name: string; description: string; parameters: any; execute: (...a
 
 /** A stub pi recording the flags, tools and entries the robot registers (flags at their defaults, or `values`). */
 function stubPi(values: Record<string, unknown> = {}) {
+	values = deployFlags(values);
 	const handlers = new Map<string, Handler[]>();
 	const flags: Record<string, { default?: unknown; description?: string }> = {};
 	const tools = new Map<string, Tool>();

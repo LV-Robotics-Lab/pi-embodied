@@ -11,6 +11,7 @@ import { defineRobot } from "../src/robot.ts";
 import { inlineWrist } from "../src/robots/dual_franka/config.ts";
 import dualFranka from "../src/robots/dual_franka/index.ts";
 import { codeApiReply } from "./helpers/code-api.ts";
+import { deployFlags } from "./helpers/deployment.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
@@ -19,6 +20,7 @@ type Handler = (event: any, ctx: any) => unknown;
  * No robot starts: tests either drive tools that act before the env is needed, or a toy robot.
  */
 function fakePi(flagValues: Record<string, unknown> = {}) {
+	flagValues = deployFlags(flagValues);
 	const handlers = new Map<string, Handler[]>();
 	const flags: Record<string, unknown> = {};
 	const tools = new Map<string, any>();

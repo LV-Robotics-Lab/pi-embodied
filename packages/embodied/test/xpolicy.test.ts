@@ -19,6 +19,7 @@ import {
 	type XPolicySpec,
 } from "../src/primitives/xpolicy.ts";
 import { defineRobot, RESULT_ENTRY, type RobotSpec } from "../src/robot.ts";
+import { deployFlags } from "./helpers/deployment.ts";
 
 const DUAL = { arm_dim: [6, 6], ee_dim: [1, 1] };
 const SINGLE = { arm_dim: [7], ee_dim: [1] };
@@ -176,6 +177,7 @@ async function fakeBridge(chunks: unknown[][], failOn?: string) {
 }
 
 function fakePi(flagValues: Record<string, unknown>) {
+	flagValues = deployFlags(flagValues);
 	const handlers = new Map<string, ((event: any, ctx: any) => unknown)[]>();
 	const flags: Record<string, unknown> = {};
 	const tools = new Map<string, any>();

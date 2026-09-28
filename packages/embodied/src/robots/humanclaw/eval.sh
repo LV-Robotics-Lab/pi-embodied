@@ -2,7 +2,7 @@
 # Run HumanClawBench episodes with pi in print mode and report the paper metrics.
 #   eval.sh <out-dir> [--episodes one|val100|fullval|<list.json>] [--mode paper|pi] [--metrics] [--video] [pi args...]
 #   eval.sh runs/hc-paper --episodes one --mode paper --metrics --model humanclaw-psv/selfhost/muse-glimmer-30b
-#   eval.sh runs/hc-pi --episodes val100 --mode pi --metrics --model selfhost/muse-glimmer-30b --cuda-device 1
+#   eval.sh runs/hc-pi --episodes val100 --mode pi --metrics --model selfhost/muse-glimmer-30b   (GPU: cuda_device or PI_EMBODIED_CUDA_DEVICE)
 #
 # One pi process (and one env server: Habitat and the motion model are rebuilt per episode, as the
 # release's dispatcher runs one process per episode) per episode, in <out>/<scene>_ep<id>_<category>/,

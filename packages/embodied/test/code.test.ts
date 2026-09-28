@@ -22,11 +22,13 @@ import { codeApiReply } from "./helpers/code-api.ts";
 process.env.PI_EMBODIED_MANIFESTS = new URL("./fixtures/manifests/", import.meta.url).pathname;
 
 import { defineRobot, RESULT_ENTRY } from "../src/robot.ts";
+import { deployFlags } from "./helpers/deployment.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
 /** A stub pi that runs handlers in registration order and records flags, tools and entries. */
 function fakePi(flagValues: Record<string, unknown> = {}, hasUI = true, confirm = async () => true) {
+	flagValues = deployFlags(flagValues);
 	const handlers = new Map<string, Handler[]>();
 	const flags: Record<string, unknown> = {};
 	const tools = new Map<string, any>();

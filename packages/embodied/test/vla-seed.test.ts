@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { vlaSeeds } from "../src/planner/vla-seed.ts";
+import { deployFlags } from "./helpers/deployment.ts";
 
 /** A stub pi holding flags like pi's runner: registered defaults, overridden by `values`. */
 function fakePi(values: Record<string, unknown> = {}) {
+	values = deployFlags(values);
 	const flags: Record<string, unknown> = {};
 	return {
 		registerFlag: (name: string, o: { default?: unknown }) => {

@@ -4,7 +4,7 @@
 # settings and the task-memory revision come from
 # services/pi_embodied_services/robots/robocasa/eval/target50.json (TARGET50 overrides it).
 #   eval.sh <out-dir> <splits|all> [pi args...]
-#   eval.sh runs/t50 all --model openai/gpt-5.5 --thinking xhigh --memory-profile local --memory-dir target50-memory/robocasa
+#   eval.sh runs/t50 all --model openai/gpt-5.5 --thinking xhigh --memory-profile local   (memory root: PI_EMBODIED_DIRS_MEMORY=target50-memory/robocasa or dirs.memory)
 # TASKS=OpenDrawer,CloseFridge and SEEDS=1,2 narrow the matrix.
 #
 # Each episode runs in <out>/<split>/<Task>_s<seed>/ and ends with a result.json in the Target50
@@ -220,8 +220,8 @@ for (const split of splits.split(",")) {
 		start=$SECONDS
 		backstop=()
 		[ "$limit" -gt 0 ] && command -v timeout >/dev/null && backstop=(timeout -k 30 $((limit + 900)))
-		${backstop[@]+"${backstop[@]}"} $PI -p --session-dir "$dir" -e "$here" --task-name "$task" --split "$split" \
-			--scene "$scene" --max-turns "$turns" --time-limit "$limit" --log-dir "$dir" "Solve the task." "$@" \
+		PI_EMBODIED_DIRS_LOGS=$dir ${backstop[@]+"${backstop[@]}"} $PI -p --session-dir "$dir" -e "$here" --task-name "$task" --split "$split" \
+			--scene "$scene" --max-turns "$turns" --time-limit "$limit" "Solve the task." "$@" \
 			</dev/null >"$dir/stdout.log" 2>"$dir/stderr.log"
 		code=$?
 		record365 "$dir" "$code" "$split" "$task" "$scene" $((SECONDS - start))
@@ -425,8 +425,8 @@ while read -r split task seed limit; do
 	# args: a bare boolean flag at their end would take it as its value.
 	backstop=()
 	command -v timeout >/dev/null && backstop=(timeout -k 30 $((limit + 900)))
-	${backstop[@]+"${backstop[@]}"} $PI -p --session-dir "$dir" -e "$here" --task-name "$task" --split target \
-		--seed "$seed" --max-turns "$turns" --time-limit "$limit" --log-dir "$dir" "Solve the task." "$@" \
+	PI_EMBODIED_DIRS_LOGS=$dir ${backstop[@]+"${backstop[@]}"} $PI -p --session-dir "$dir" -e "$here" --task-name "$task" --split target \
+		--seed "$seed" --max-turns "$turns" --time-limit "$limit" "Solve the task." "$@" \
 		</dev/null >"$dir/stdout.log" 2>"$dir/stderr.log"
 	code=$?
 	record "$dir" "$code" "$split" "$task" "$seed" "$limit" $((SECONDS - start))

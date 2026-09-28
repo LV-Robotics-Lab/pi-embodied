@@ -4,7 +4,7 @@
  * enforces the memory access boundary, the published corpus is synced from Hugging Face, and the
  * solved recipe is rebuilt from the session branch. Loaded on its own it only adds the command:
  *
- *   pi -e packages/embodied/src/capabilities/memory -p "/memory validate" --memory-dir memory/libero
+ *   pi -e packages/embodied/src/capabilities/memory -p "/memory validate"   (local corpus: dirs.memory of the deployment config)
  */
 
 import { createHash } from "node:crypto";
@@ -14,6 +14,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { dir as cfgDir } from "../../infra/config.ts";
 import { branchProviders, plannerOf } from "../../planner/kind.ts";
 import { hasFiles, mergeMemory, rebuildIndex, str, validateMemory } from "./corpus.ts";
 import { syncMemory } from "./sync.ts";
@@ -233,8 +234,6 @@ function say(ctx: ExtensionContext, text: string, level: "info" | "warning" | "e
 
 export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 	pi.registerFlag("memory-profile", { type: "string", description: "hf (evaluation default) | local" });
-	pi.registerFlag("memory-dir", { type: "string", description: "Local memory root (local profile or exploration)" });
-	pi.registerFlag("output-dir", { type: "string", description: "Audit and recipe directory (default: session dir)" });
 	pi.registerFlag("auto-merge-memory", {
 		type: "boolean",
 		default: false,
@@ -249,9 +248,10 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 	/** The memory files the agent read this episode: path under the corpus -> SHA-256 when read (../context-version.ts). */
 	let loaded: Record<string, string> = {};
 
-	function locate(ctx: ExtensionContext) {
-		const dir = str(pi.getFlag("memory-dir"));
-		const out = str(pi.getFlag("output-dir")) || ctx.sessionManager.getSessionDir();
+	function locate(ctx: ExtensionContext, hf = false) {
+		// dirs.memory is the local corpus; the hf profile always reads the synced published one.
+		const dir = hf ? "" : cfgDir(pi, "memory");
+		const out = cfgDir(pi, "memory_out") || ctx.sessionManager.getSessionDir();
 		home = canonicalPath(opts.home?.() || defaultHome(), ctx.cwd);
 		root = canonicalPath(dir || join(home, opts.robot ?? "libero"), ctx.cwd);
 		outputDir = out ? canonicalPath(out, ctx.cwd) : "";
@@ -271,8 +271,7 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 		if (requested !== "hf" && requested !== "local") throw new Error(`unknown --memory-profile ${requested}`);
 		if (explore && requested === "hf") throw new Error("--explore cannot be used with --memory-profile hf");
 		profile = requested;
-		if (profile === "hf" && pi.getFlag("memory-dir"))
-			throw new Error("--memory-dir requires --memory-profile local or --explore");
+		if (profile === "hf") locate(ctx, true);
 		guard = {
 			root,
 			home,
@@ -283,10 +282,10 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 		};
 		if (explore) return;
 		if (profile === "hf") await syncMemory(root, (m) => say(ctx, m, "warning"));
-		// A run that asks for memory (a published corpus, --memory-profile, or --memory-dir) refuses to start
+		// A run that asks for memory (a published corpus, --memory-profile, or dirs.memory) refuses to start
 		// without one: the prompt would send the agent to files that do not exist.
 		else if (
-			(explicit || opts.published !== false || str(pi.getFlag("memory-dir"))) &&
+			(explicit || opts.published !== false || cfgDir(pi, "memory")) &&
 			!existsSync(join(root, "MEMORY.md")) &&
 			!["global", "suite", "task_only"].some((s) => hasFiles(join(root, s)))
 		)

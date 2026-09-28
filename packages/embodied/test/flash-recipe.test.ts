@@ -38,6 +38,7 @@ import {
 } from "../src/capabilities/flash/recipe.ts";
 import { encodePng } from "../src/infra/png.ts";
 import { NdArray, type RpcClient } from "../src/infra/rpc.ts";
+import { useDeployment } from "./helpers/deployment.ts";
 
 const RECIPE = [
 	{ action: "move_to", xyz: [0.5, 0.1, 0.9], gripper: "open" },
@@ -753,7 +754,8 @@ test("the hook finds the cell's program first, then the reference's, in flash/ t
 	const memory = mkdtempSync(join(tmpdir(), "memory-"));
 	for (const d of ["flash", "task_only"]) mkdirSync(join(memory, d));
 	recipeFile(join(memory, "task_only"), "ref");
-	const flags: Record<string, unknown> = { molmo: "off" };
+	const flags: Record<string, unknown> = { "flash-reanchor": false };
+	useDeployment({});
 	const pi = { registerFlag: () => {}, getFlag: (n: string) => flags[n] } as unknown as ExtensionAPI;
 	const hook = recipeFlash(pi, {
 		names: () => ["cell", "ref"],
@@ -767,6 +769,6 @@ test("the hook finds the cell's program first, then the reference's, in flash/ t
 	writeFileSync(join(memory, "flash", "cell_plan.json"), JSON.stringify(anchored));
 	const program = hook.load("/") as { name: string; anchors: unknown[] };
 	assert.deepEqual([program.name, program.anchors.length], ["cell", 1]);
-	flags["flash-plans"] = join(memory, "none");
+	useDeployment({ dirs: { flash_plans: join(memory, "none") } });
 	assert.throws(() => hook.load("/"), /no Flash program for this episode/);
 });

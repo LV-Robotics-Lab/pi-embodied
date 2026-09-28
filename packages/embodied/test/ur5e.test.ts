@@ -8,11 +8,13 @@ import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import ur5e, { cameraMount, hasWristCamera, UR5E_UNITS } from "../src/robots/ur5e/index.ts";
 import { codeApiReply } from "./helpers/code-api.ts";
+import { deployFlags } from "./helpers/deployment.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
 /** A stub pi (as in piper.test.ts); `confirm` answers from `confirms`. */
 function fakePi(flagValues: Record<string, unknown> = {}, hasUI = true) {
+	flagValues = deployFlags(flagValues);
 	const handlers = new Map<string, Handler[]>();
 	const flags: Record<string, unknown> = {};
 	const tools = new Map<string, any>();

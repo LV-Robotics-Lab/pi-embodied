@@ -2,7 +2,7 @@
  * BEHAVIOR-1K robot for pi: an R1Pro (holonomic base, torso, two arms with parallel grippers, a ZED
  * head camera and a RealSense on each wrist) on one 2025-challenge task in OmniGibson (Isaac Sim).
  *
- *   pi -e packages/embodied/src/robots/behavior --task turning_on_radio --seed 0 --gpu-id 1
+ *   pi -e packages/embodied/src/robots/behavior --task turning_on_radio --seed 0
  *   pi -e packages/embodied/src/robots/behavior --task picking_up_trash --seed 2 --privileged
  *   pi -e packages/embodied/src/robots/behavior --task turning_on_radio --seed 0 --code=true
  *      (run_code over the server's registry; a primitive takes minutes: --code-timeout defaults to 900 s)
@@ -30,6 +30,7 @@ import { join } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { cudaDevice, python, service, servicesDir } from "../../infra/config.ts";
 import { MOLMO, SAM3 } from "../../infra/model-services.ts";
 import { trackFlags } from "../../infra/params.ts";
 import { encodePng } from "../../infra/png.ts";
@@ -38,7 +39,7 @@ import type { Move, MoveUnit, Vec3 } from "../../modes/units/index.ts";
 import { template } from "../../planner/context-version.ts";
 import { detectionActive, detectionArgs, detectionTools, registerDetectionFlags } from "../../primitives/detections.ts";
 import { mountGraspTool } from "../../primitives/grasp.ts";
-import { attach, defineRobot, type Json, round, SERVICES, toolResult } from "../../robot.ts";
+import { attach, defineRobot, type Json, round, toolResult } from "../../robot.ts";
 
 const SYSTEM = template(new URL("./SYSTEM.md", import.meta.url));
 const EXPLORE = template(new URL("./explore.md", import.meta.url));
@@ -181,12 +182,6 @@ export default function behavior(pi: ExtensionAPI) {
 		description: `BEHAVIOR-1K challenge activity: ${TASKS.slice(0, 3).join(", ")}, ... (50)`,
 	});
 	pi.registerFlag("seed", { type: "string", default: "0", description: "The task's pre-sampled instance id" });
-	pi.registerFlag("gpu-id", {
-		type: "string",
-		default: "",
-		description:
-			"Physical GPU for Isaac Sim (default: the env server's PI_EMBODIED_CUDA_DEVICE, else the first CUDA_VISIBLE_DEVICES entry, else 0)",
-	});
 	pi.registerFlag("image-size", { type: "string", default: "480", description: "Camera frames, px (square)" });
 	pi.registerFlag("grasping-mode", {
 		type: "string",
@@ -194,20 +189,8 @@ export default function behavior(pi: ExtensionAPI) {
 		description: "OmniGibson grasping: sticky (CaP-X) or assisted",
 	});
 	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
-	pi.registerFlag("sam3", { type: "string", default: "http://127.0.0.1:18300", description: "SAM3 server (segment)" });
-	pi.registerFlag("molmo", { type: "string", default: "http://127.0.0.1:18400", description: "Molmo server (point)" });
-	// --detections / --unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
+	// --detections / --depth unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
 	registerDetectionFlags(pi);
-	pi.registerFlag("services", {
-		type: "string",
-		default: process.env.PI_EMBODIED_SERVICES ?? SERVICES,
-		description: "pi-embodied services dir",
-	});
-	pi.registerFlag("python", {
-		type: "string",
-		default: process.env.PI_EMBODIED_PYTHON ?? "python",
-		description: "Python for the env server (the behavior venv)",
-	});
 
 	let env: RpcClient;
 	let obs: Obs;
@@ -221,12 +204,12 @@ export default function behavior(pi: ExtensionAPI) {
 		// Tools and code primitives: ../../primitives/manifests/behavior.json (the env server reads it too).
 		manifest: "behavior",
 		vars: () => ({ cameras: [...CAMERAS] }),
-		// Must agree with the env server's `_has` (it gets --sam3 / --molmo / --unidepth from these flags).
+		// Must agree with the env server's `_has` (it gets --sam3 / --molmo / --unidepth from the deployment's services).
 		capabilities: (c) =>
 			({
-				sam3: Boolean(flag("sam3", "")),
-				molmo: Boolean(flag("molmo", "")),
-				unidepth: Boolean(String(pi.getFlag("unidepth") ?? "").trim()),
+				sam3: Boolean(service(pi, "sam3")),
+				molmo: Boolean(service(pi, "molmo")),
+				unidepth: Boolean(String(pi.getFlag("depth") ?? "").trim()),
 			})[c] ?? false,
 		services: { models: [SAM3, MOLMO] },
 		task: ["task", "seed"],
@@ -452,7 +435,7 @@ export default function behavior(pi: ExtensionAPI) {
 	robot.tool("point", "", Type.Object({}), async (params: Json) => perceive("env.point", params));
 	robot.tool("back_project", "", Type.Object({}), async (params: Json) => perceive("env.back_project", params));
 
-	// SAM3 masks with ids and UniDepth over the env server's perception (active with --detections / --unidepth).
+	// SAM3 masks with ids and UniDepth over the env server's perception (active with --detections / --depth unidepth).
 	for (const d of detectionTools(pi, {
 		call: (method, kwargs, timeoutMs) =>
 			env.call<Record<string, any>>(method, kwargs, timeoutMs ?? 120_000, [], robot.signal),
@@ -481,18 +464,18 @@ export default function behavior(pi: ExtensionAPI) {
 		const endpoint = pi.getFlag("env") as string | undefined;
 		if (endpoint) env = await attach(endpoint);
 		else {
-			const services = flag("services", SERVICES);
+			const services = servicesDir(pi);
 			env = await robot.serve({
-				python: flag("python", "python"),
+				python: python(pi, "behavior"),
 				args: [
 					...["-m", "pi_embodied_services.robots.behavior.env_server"],
 					...["--task", task, "--seed", seed],
 					// Unset: the server resolves the GPU as every env server does (utils/gpu.py).
-					...(flag("gpu-id", "").trim() ? ["--gpu-id", flag("gpu-id", "").trim()] : []),
+					...(cudaDevice(pi) ? ["--gpu-id", cudaDevice(pi)] : []),
 					...["--image-size", flag("image-size", "480"), "--grasping-mode", flag("grasping-mode", "sticky")],
 					// The server runs segment (--sam3) and point (--molmo) itself.
-					...["--sam3", flag("sam3", ""), "--molmo", flag("molmo", "")],
-					...detectionArgs(pi, ""),
+					...["--sam3", service(pi, "sam3"), "--molmo", service(pi, "molmo")],
+					...detectionArgs(pi, { sam3: false }),
 				],
 				cwd: services,
 				env: { ...process.env, PYTHONPATH: services, OMNI_KIT_ACCEPT_EULA: "YES" },

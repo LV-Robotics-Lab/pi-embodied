@@ -16,11 +16,13 @@ import genesis from "../src/robots/genesis/index.ts";
 import maniskill, { FLYWHEEL_ACTION, ROBOT_IDS, ROBOTS, VIEW_SETUP } from "../src/robots/maniskill/index.ts";
 import metaworld from "../src/robots/metaworld/index.ts";
 import robosuite from "../src/robots/robosuite/index.ts";
+import { deployFlags } from "./helpers/deployment.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
 /** A stub pi (flags, tools, handlers, commands, exec) and a context without a UI. */
 function stubPi(values: Record<string, unknown>) {
+	values = deployFlags(values);
 	const handlers = new Map<string, Handler[]>();
 	const flags: Record<string, unknown> = {};
 	const tools = new Map<string, any>();

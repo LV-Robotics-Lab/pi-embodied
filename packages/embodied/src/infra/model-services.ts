@@ -1,7 +1,7 @@
 /**
  * Model-service auto-start (RPent's `robots/runtime.py`): `--serve-models vla,sam3,molmo` launches
  * the robot's model servers itself instead of attaching to ones `serve.sh` started. Each listed
- * service is started on the port of the robot's own endpoint flag (`--vla`, `--sam3`, `--molmo`,
+ * service is started on the port of its endpoint in the deployment config (`services.vla`, `services.sam3`, `services.molmo`,
  * ...: a loopback URL), so the robot, Flash and /robot-check use it unchanged. All of them start at
  * once and are waited for (healthz); if any exits or is not ready in time, every one started here is
  * stopped and the robot fails closed. They run with `--parent-watch` and are stopped at the next
@@ -22,15 +22,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { SERVICES, servicesEnv, shutdown } from "../robot.ts";
+import { servicesEnv, shutdown } from "../robot.ts";
+import { python as cfgPython, cudaDevice, deployment, dir, type ServiceKey, service, servicesDir } from "./config.ts";
 import { RpcClient } from "./rpc.ts";
 
 /** One model server a robot can start: `python -m module ...args` on the port of its endpoint flag. */
 export type ModelService = {
-	/** Its name in --serve-models and --serve-python. */
+	/** Its name in --serve-models and in the deployment's python.<name>. */
 	name: string;
-	/** The robot flag that holds its endpoint (http://127.0.0.1:<port>). */
-	flag: string;
+	/** The deployment config's service key that holds its endpoint (http://127.0.0.1:<port>). */
+	service: ServiceKey;
 	module: string;
 	/** Arguments before the transport ones, read at start (a checkpoint from the environment). */
 	args?: () => string[];
@@ -40,22 +41,26 @@ export type ModelService = {
 
 export type ModelServicesSpec = {
 	models: ModelService[];
-	/** The robot's services Python (default: its --python flag); --serve-python overrides it per service. */
+	/** The robot's services Python (default: python.default of the deployment config); python.<service name> overrides it per service. */
 	python?: () => string;
 };
 
-export const SAM3: ModelService = { name: "sam3", flag: "sam3", module: "pi_embodied_services.components.sam3_server" };
-/** Molmo needs its own venv (its transformers pin): pass `--serve-python molmo=<venv>/bin/python`. */
+export const SAM3: ModelService = {
+	name: "sam3",
+	service: "sam3",
+	module: "pi_embodied_services.components.sam3_server",
+};
+/** Molmo needs its own venv (its transformers pin): set `python.molmo` in the deployment config. */
 export const MOLMO: ModelService = {
 	name: "molmo",
-	flag: "molmo",
+	service: "molmo",
 	module: "pi_embodied_services.components.molmo_server",
 	args: () => (process.env.MOLMO_MODEL ? ["--model", process.env.MOLMO_MODEL] : []),
 };
 /** The Pi0.5 VLA server with one embodiment preset. */
 export const pi05 = (embodiment: string): ModelService => ({
 	name: "vla",
-	flag: "vla",
+	service: "vla",
 	module: "pi_embodied_services.components.pi05_vla_server",
 	args: () => ["--embodiment", embodiment],
 });
@@ -68,27 +73,13 @@ export function servicePort(flag: string, url: string): number {
 	try {
 		u = new URL(url.includes("://") ? url : `http://${url}`);
 	} catch {
-		throw new Error(`--${flag} ${url || "(unset)"} is not a URL to start a service on`);
+		throw new Error(`services.${flag} ${url || "(unset)"} is not a URL to start a service on`);
 	}
 	if (u.protocol !== "http:" || !LOOPBACK.has(u.hostname) || !u.port)
 		throw new Error(
-			`--${flag} ${url}: a started service binds http://127.0.0.1:<port>; name one, or attach without --serve-models`,
+			`services.${flag} ${url}: a started service binds http://127.0.0.1:<port>; name one, or attach without --serve-models`,
 		);
 	return Number(u.port);
-}
-
-/** Parse `a=x,b=y`. */
-function pairs(value: string): Map<string, string> {
-	const out = new Map<string, string>();
-	for (const item of value
-		.split(",")
-		.map((s) => s.trim())
-		.filter(Boolean)) {
-		const i = item.indexOf("=");
-		if (i <= 0) throw new Error(`--serve-python expects name=python, got ${item}`);
-		out.set(item.slice(0, i), item.slice(i + 1));
-	}
-	return out;
 }
 
 const tail = (path: string) => {
@@ -215,17 +206,12 @@ export function modelServices(pi: ExtensionAPI, spec: ModelServicesSpec) {
 	pi.registerFlag("serve-models", {
 		type: "string",
 		default: "",
-		description: `Start these model services here and wait for them (${names.join(", ")}, or all), each on its endpoint flag's loopback port; any failure stops them all`,
-	});
-	pi.registerFlag("serve-python", {
-		type: "string",
-		default: "",
-		description: "Per-service Python for --serve-models, name=path,... (default: the robot's --python)",
+		description: `Start these model services here and wait for them (${names.join(", ")}, or all), each on its services.<name> loopback port; any failure stops them all`,
 	});
 	pi.registerFlag("serve-cuda-device", {
 		type: "string",
 		default: "",
-		description: "GPU ordinal for the --serve-models services (default: the robot's --cuda-device)",
+		description: "GPU ordinal for the --serve-models services (default: cuda_device of the deployment config)",
 	});
 	pi.registerFlag("serve-lock", {
 		type: "string",
@@ -242,11 +228,6 @@ export function modelServices(pi: ExtensionAPI, spec: ModelServicesSpec) {
 		type: "string",
 		default: "900",
 		description: "Seconds for --serve-lock and every --serve-models service to be ready",
-	});
-	pi.registerFlag("serve-log-dir", {
-		type: "string",
-		default: join(tmpdir(), "pi-embodied"),
-		description: "Logs of the --serve-models services (<name>-<port>.log)",
 	});
 	const flag = (name: string) => String(pi.getFlag(name) ?? "").trim();
 
@@ -297,10 +278,8 @@ export function modelServices(pi: ExtensionAPI, spec: ModelServicesSpec) {
 		await stop();
 		const models = selected();
 		if (!models.length) return;
-		const pythons = pairs(flag("serve-python"));
-		const unknownPy = [...pythons.keys()].filter((n) => !models.some((m) => m.name === n));
-		if (unknownPy.length) throw new Error(`--serve-python: ${unknownPy.join(", ")} not in --serve-models`);
-		const ports = models.map((m) => servicePort(m.flag, flag(m.flag)));
+		const pythons = deployment(pi).python ?? {};
+		const ports = models.map((m) => servicePort(m.service, service(pi, m.service)));
 		// A server already answering there is not ours to load or stop.
 		await Promise.all(
 			models.map(async (m, i) => {
@@ -311,15 +290,15 @@ export function modelServices(pi: ExtensionAPI, spec: ModelServicesSpec) {
 				);
 				if (up)
 					throw new Error(
-						`--serve-models ${m.name}: ${flag(m.flag)} already serves; drop it from --serve-models to attach to it`,
+						`--serve-models ${m.name}: ${service(pi, m.service)} already serves; drop it from --serve-models to attach to it`,
 					);
 			}),
 		);
 		const seconds = Number(flag("serve-timeout")) || 900;
 		const deadline = Date.now() + seconds * 1000;
-		const cuda = flag("serve-cuda-device") || flag("cuda-device");
-		const root = flag("services") || SERVICES;
-		const logDir = flag("serve-log-dir") || join(tmpdir(), "pi-embodied");
+		const cuda = flag("serve-cuda-device") || cudaDevice(pi);
+		const root = servicesDir(pi);
+		const logDir = dir(pi, "logs", join(tmpdir(), "pi-embodied"));
 		mkdirSync(logDir, { recursive: true });
 		const lockPath = flag("serve-lock");
 		const minFree = Number(flag("serve-min-free")) || 0;
@@ -337,7 +316,7 @@ export function modelServices(pi: ExtensionAPI, spec: ModelServicesSpec) {
 			await Promise.all(
 				models.map((m, i) =>
 					startOne({
-						python: pythons.get(m.name) ?? spec.python?.() ?? (flag("python") || "python"),
+						python: pythons[m.name] ?? spec.python?.() ?? cfgPython(pi, "default"),
 						module: m.module,
 						args: [...(m.args?.() ?? []), ...(cuda ? ["--cuda-device", cuda] : [])],
 						port: ports[i],

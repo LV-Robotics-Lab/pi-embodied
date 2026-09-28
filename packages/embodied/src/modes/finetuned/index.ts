@@ -2,7 +2,7 @@
  * Show-Harness fine-tuned mode for any units robot: a small VLM + LoRA picks one action unit per step.
  *
  *   pi -p -e packages/embodied/src/robots/maniskill -e packages/embodied/src/modes/finetuned --units \
- *     --model finetuned/qwen3_5_2b_showharness_sim --ft-endpoint http://127.0.0.1:8010/v1 \
+ *     --model finetuned/qwen3_5_2b_showharness_sim \
  *     --env-id PickCube-v1 --seed 0 "Solve the task."
  *
  * The policy is the planner, and in pi the planner is the model: this extension registers the
@@ -70,6 +70,7 @@ import {
 	type Usage,
 } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { service } from "../../infra/config.ts";
 import { encodePng } from "../../infra/png.ts";
 import { TASK_ENTRY } from "../../robot.ts";
 import { RT_UNITS, UNITS_EVENT, type UnitsHandle } from "../units/index.ts";
@@ -545,17 +546,16 @@ type Turn = { text: string; calls: ToolCall[] };
 
 export default function finetuned(pi: ExtensionAPI) {
 	const flag = (name: string) => String(pi.getFlag(name) ?? "");
-	pi.registerFlag("ft-endpoint", {
-		type: "string",
-		default: "http://127.0.0.1:8010/v1",
-		description: "OpenAI-compatible endpoint serving the fine-tuned adapter (finetuned/serve.sh)",
-	});
 	pi.registerFlag("ft-model", {
 		type: "string",
 		default: "",
 		description: "Adapter name to request (default: the model id; required for finetuned/local)",
 	});
-	pi.registerFlag("ft-api-key", { type: "string", default: "EMPTY", description: "Bearer key for --ft-endpoint" });
+	pi.registerFlag("ft-api-key", {
+		type: "string",
+		default: "EMPTY",
+		description: "Bearer key for services.finetuned",
+	});
 	pi.registerFlag("ft-prompt", {
 		type: "string",
 		default: "v3",
@@ -950,7 +950,7 @@ export default function finetuned(pi: ExtensionAPI) {
 				0,
 				choice,
 			);
-			const reply = await complete(flag("ft-endpoint"), flag("ft-api-key"), body, signal);
+			const reply = await complete(service(pi, "finetuned"), flag("ft-api-key"), body, signal);
 			let parsed: string | undefined;
 			try {
 				parsed = parseToken(reply.text, allowed);
@@ -989,7 +989,7 @@ export default function finetuned(pi: ExtensionAPI) {
 			fallback,
 			latency_ms: ms,
 			adapter,
-			endpoint: flag("ft-endpoint"),
+			endpoint: service(pi, "finetuned"),
 			prompt,
 			media: sent.map((s, slot) => ({
 				slot,
@@ -1057,7 +1057,7 @@ export default function finetuned(pi: ExtensionAPI) {
 			recent_right: recentText(recentDual.right),
 		};
 		const allowed = [...DUAL_ACTIONS];
-		const ask = async (body: unknown) => complete(flag("ft-endpoint"), flag("ft-api-key"), body, signal);
+		const ask = async (body: unknown) => complete(service(pi, "finetuned"), flag("ft-api-key"), body, signal);
 		const prompts: string[] = [];
 		const raws: string[] = [];
 		let ms = 0;
@@ -1120,7 +1120,7 @@ export default function finetuned(pi: ExtensionAPI) {
 			fallback,
 			latency_ms: ms,
 			adapter,
-			endpoint: flag("ft-endpoint"),
+			endpoint: service(pi, "finetuned"),
 			prompt: prompts.join("\n---\n"),
 			media: sent.map((x, slot) => ({
 				slot,

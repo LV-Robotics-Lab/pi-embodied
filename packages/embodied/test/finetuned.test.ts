@@ -25,6 +25,7 @@ import finetuned, {
 import { convertRun, findRuns, trainedTokens } from "../src/modes/finetuned/prepare.ts";
 import { decodePng, fingerprint, parseView, prepareView } from "../src/modes/finetuned/views.ts";
 import { RT_UNITS, UNITS, UNITS_EVENT, type UnitsHandle } from "../src/modes/units/index.ts";
+import { deployFlags } from "./helpers/deployment.ts";
 
 /**
  * The reference: Show-Harness @137d571's own MvTokenController + VLMClient.complete_action_token
@@ -197,6 +198,7 @@ function fakePi(
 	tools = ["act", "finish"],
 	units?: Partial<UnitsHandle>,
 ) {
+	flags = deployFlags(flags);
 	const handlers = new Map<string, Handler[]>();
 	const defaults: Record<string, unknown> = {};
 	const entries: { type: string; data: any }[] = [];

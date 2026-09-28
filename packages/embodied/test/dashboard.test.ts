@@ -6,11 +6,13 @@ import dashboard from "../src/capabilities/dashboard/index.ts";
 import { NdArray } from "../src/infra/rpc.ts";
 import { UNITS_EVENT, type UnitsHandle } from "../src/modes/units/index.ts";
 import { FRAME_EVENT, NOTE_EVENT, type VideoNote } from "../src/observation/video.ts";
+import { deployFlags } from "./helpers/deployment.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
 /** One pi runtime with the dashboard on a free port; `start()` returns its URL. */
 function fakePi(flagValues: Record<string, unknown> = {}) {
+	flagValues = deployFlags(flagValues);
 	const handlers = new Map<string, Handler[]>();
 	const listeners = new Map<string, ((data: unknown) => void)[]>();
 	const flags: Record<string, unknown> = {};

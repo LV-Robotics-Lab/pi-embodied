@@ -26,11 +26,13 @@ import {
 import { checkRoute, followWaypoints, type WaypointRig, waypointsTool } from "../src/primitives/waypoints.ts";
 import { alignWrist, compose, projectPoints, wristAlignment } from "../src/primitives/wrist.ts";
 import type { Json, Mat } from "../src/robot.ts";
+import { deployFlags } from "./helpers/deployment.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
 /** A stub pi: flags, tools, providers, entries, hooks and a working pi.events. */
 function fakePi(flagValues: Record<string, unknown> = {}, loaded: string[] = []) {
+	flagValues = deployFlags(flagValues);
 	const handlers = new Map<string, Handler[]>();
 	const listeners = new Map<string, ((data: unknown) => void)[]>();
 	const flags: Record<string, unknown> = {};

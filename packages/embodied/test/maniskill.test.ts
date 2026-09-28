@@ -27,6 +27,7 @@ import maniskill, {
 	VIEWS,
 } from "../src/robots/maniskill/index.ts";
 import { codeApiReply } from "./helpers/code-api.ts";
+import { deployFlags } from "./helpers/deployment.ts";
 
 const close = (a: number[], b: number[]) => a.every((x, k) => Math.abs(x - b[k]) < 1e-9);
 
@@ -232,6 +233,7 @@ test("--robot units: every arm's MV_* is one ~2 cm decision along its measured b
 type Handler = (event: any, ctx: any) => unknown;
 /** A stub pi (flags, tools, handlers in registration order) and a context without a UI. */
 function stubPi(values: Record<string, unknown> = {}) {
+	values = deployFlags(values);
 	const handlers = new Map<string, Handler[]>();
 	const flags: Record<string, unknown> = {};
 	const tools = new Map<string, any>();

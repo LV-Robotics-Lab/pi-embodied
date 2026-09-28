@@ -38,6 +38,7 @@ import { runSucceeded } from "../src/modes/finetuned/prepare.ts";
 import { ground, RT_UNITS, type Unit } from "../src/modes/units/index.ts";
 import { STATUS_EVENT } from "../src/robot.ts";
 import { LIBERO_TURNS, rotvecToMatrix, yawOf } from "../src/robots/libero/index.ts";
+import { deployFlags } from "./helpers/deployment.ts";
 
 const SINGLE = ["MV_FWD", "MV_BACK", "MV_LEFT", "MV_RIGHT", "MV_UP", "MV_DOWN", "STOP", "GRASP", "RELEASE", "DONE"];
 const WITH_YAW = [...SINGLE, "ROTATE_CW", "ROTATE_CCW"];
@@ -459,6 +460,7 @@ test("takeover: the agent waits while the operator drives; a decision older than
 
 type Handler = (event: any, ctx: any) => unknown;
 function fakePi(flags: Record<string, unknown>, vlm: string[] = []) {
+	flags = deployFlags(flags);
 	const handlers = new Map<string, Handler[]>();
 	const listeners = new Map<string, ((d: unknown) => void)[]>();
 	const sent: unknown[] = [];

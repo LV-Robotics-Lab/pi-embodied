@@ -2,9 +2,9 @@
  * Episode video: the agentview frame of every env step, written at
  * 20 fps to `episode.mp4` when the session ends, plus `action_<n>_<tool>.mp4` for each
  * tool call that stepped the env when --action-clips is set. Files go to
- * `<--video-dir>/<session id>/`, or next to the session file (`<session>.jsonl` ->
- * `<session>/`). Encoding pipes raw RGB into ffmpeg: --ffmpeg, else `ffmpeg` on PATH,
- * else the binary bundled with imageio-ffmpeg in the services venv (--python).
+ * `<dirs.video>/<session id>/`, or next to the session file (`<session>.jsonl` ->
+ * `<session>/`). Encoding pipes raw RGB into ffmpeg: the deployment's ffmpeg, else `ffmpeg` on PATH,
+ * else the binary bundled with imageio-ffmpeg in the services venv (python.default).
  *
  * --video-overlay also writes `episode_overlay.mp4` (Show-Harness's annotated visualization): every
  * frame carries the action it belongs to, as a band on top: the action index, who acted (AGENT, or
@@ -23,6 +23,7 @@ import { join } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { dir as cfgDir, ffmpeg as cfgFfmpeg, python } from "../infra/config.ts";
 import type { NdArray } from "../infra/rpc.ts";
 import { UNITS_EVENT, type UnitsHandle } from "../modes/units/index.ts";
 
@@ -186,7 +187,6 @@ function actionLabel(tool: string, args: unknown): string {
 }
 
 export function episodeVideo(pi: ExtensionAPI) {
-	pi.registerFlag("video-dir", { type: "string", description: "Episode videos go to <dir>/<session id>/" });
 	pi.registerFlag("action-clips", {
 		type: "boolean",
 		default: false,
@@ -197,7 +197,6 @@ export function episodeVideo(pi: ExtensionAPI) {
 		default: false,
 		description: "Also save episode_overlay.mp4 with the step, actor, action and gripper burnt in",
 	});
-	pi.registerFlag("ffmpeg", { type: "string", description: "ffmpeg binary for episode videos" });
 
 	let frames: NdArray[] = [];
 	/** The action each frame belongs to (--video-overlay). */
@@ -246,9 +245,7 @@ export function episodeVideo(pi: ExtensionAPI) {
 
 	async function save(name: string, clip: NdArray[], ctx: ExtensionContext, clipNotes?: (Note | undefined)[]) {
 		try {
-			ffmpeg ||=
-				String(pi.getFlag("ffmpeg") || "") ||
-				findFfmpeg(String(pi.getFlag("python") || process.env.PI_EMBODIED_PYTHON || "python"));
+			ffmpeg ||= cfgFfmpeg(pi) || findFfmpeg(python(pi, "default"));
 			mkdirSync(dir, { recursive: true });
 			if (!clipNotes) await writeMp4(join(dir, name), clip, ffmpeg);
 			else {
@@ -268,7 +265,7 @@ export function episodeVideo(pi: ExtensionAPI) {
 
 	pi.on("session_start", (_event, ctx) => {
 		const sm = ctx.sessionManager;
-		const base = pi.getFlag("video-dir");
+		const base = cfgDir(pi, "video");
 		const file = sm.getSessionFile();
 		if (base) dir = join(String(base), sm.getSessionId());
 		else dir = file ? file.replace(/\.jsonl$/, "") : join(tmpdir(), "pi-embodied", sm.getSessionId());

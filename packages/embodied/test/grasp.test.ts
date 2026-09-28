@@ -26,11 +26,13 @@ import libero, {
 	runClaim,
 	xyRefusal,
 } from "../src/robots/libero/index.ts";
+import { deployFlags } from "./helpers/deployment.ts";
 
 type Json = Record<string, any>;
 
 /** A stub pi: flags, tools, entries, a real event bus, and a faux VLM answering `replies` in order. */
 function fakePi(flagValues: Record<string, unknown> = {}, replies: { text: string; usd?: number }[] = []) {
+	flagValues = deployFlags(flagValues);
 	const flags: Record<string, unknown> = {};
 	const tools = new Map<string, any>();
 	const entries: { type: string; data: Json }[] = [];
@@ -105,18 +107,10 @@ const PNG = Buffer.from(
 	"base64",
 );
 
-test("the grasp flags are off by default: no env args and no active tool", () => {
+test("the grasp switches are off by default: no env args and no active tool", () => {
 	const f = fakePi();
 	registerGraspFlags(f.pi);
-	assert.deepEqual(Object.keys(f.flags).sort(), [
-		"anygrasp",
-		"anyplace",
-		"attach-vlm-model",
-		"contact-graspnet",
-		"grasp-max-tilt",
-		"graspgenx",
-		"graspnet1b",
-	]);
+	assert.deepEqual(Object.keys(f.flags).sort(), ["attach-vlm-model", "grasp", "grasp-max-tilt", "place"]);
 	assert.deepEqual(graspArgs(f.pi), []);
 	const t = fakePi({ graspgenx: "http://127.0.0.1:8121", "grasp-max-tilt": "20" });
 	registerGraspFlags(t.pi);
@@ -133,11 +127,17 @@ test("the grasp flags are off by default: no env args and no active tool", () =>
 	assert.deepEqual(graspActive(g.pi), [...GRASP_TOOLS]);
 });
 
-test("--graspnet1b alone configures a grasp backend", () => {
+test("--grasp graspnet1b alone configures a backend; an unknown or unconfigured one stops the start", () => {
 	const f = fakePi({ graspnet1b: "http://127.0.0.1:8124" });
 	registerGraspFlags(f.pi);
 	assert.deepEqual(graspArgs(f.pi), ["--graspnet1b", "http://127.0.0.1:8124"]);
 	assert.deepEqual(graspActive(f.pi), [...GRASP_TOOLS]);
+	const bad = fakePi({ grasp: "graspnet" });
+	registerGraspFlags(bad.pi);
+	assert.throws(() => graspArgs(bad.pi), /--grasp graspnet: not one of/);
+	const missing = fakePi({ grasp: "anygrasp" });
+	registerGraspFlags(missing.pi);
+	assert.throws(() => graspArgs(missing.pi), /--grasp anygrasp needs services\.anygrasp/);
 });
 
 test("every robot registers the three grasp tools at load, with the arm parameter only on the dual arm", () => {
@@ -154,7 +154,7 @@ test("every robot registers the three grasp tools at load, with the arm paramete
 		assert.ok("object" in props && "mask_id" in props && "next_after" in props);
 		assert.ok("grasp_id" in f.tools.get("plan_place").parameters.properties);
 		assert.ok("object" in f.tools.get("check_attached").parameters.properties);
-		assert.ok("contact-graspnet" in f.flags && "anyplace" in f.flags, `${name} registers the flags`);
+		assert.ok("grasp" in f.flags && "place" in f.flags, `${name} registers the flags`);
 	}
 	// LIBERO executes a planned id in one tool (one resolution); its free motions take xyz only.
 	const l = fakePi();

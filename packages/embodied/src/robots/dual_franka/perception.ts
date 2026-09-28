@@ -75,7 +75,7 @@ export type PerceptionDeps = {
 	/** A step to localize in (default the latest); one from before the last scene reset throws. */
 	freshStep: (step?: number | null) => Step;
 	setup: () => Setup | undefined;
-	/** The SAM3 client (--robot-sam3), if configured. */
+	/** The SAM3 client (--segment), if configured. */
 	sam3: () => RpcClient | undefined;
 	loadRgb: (s: Step, name: string) => Rgb;
 	loadDepth: (s: Step, name: string) => Grid | undefined;

@@ -26,6 +26,7 @@ import { type Static, type TSchema, Type } from "typebox";
 import { recipeFlash } from "../../capabilities/flash/recipe.ts";
 import type { FlywheelObs, FlywheelSpec } from "../../capabilities/flywheel.ts";
 import { probeSkill, type SkillState, skillsOff } from "../../capabilities/skills.ts";
+import { cudaDevice, dir, python, service, servicesDir } from "../../infra/config.ts";
 import { MOLMO, type ModelService, SAM3 } from "../../infra/model-services.ts";
 import { trackFlags } from "../../infra/params.ts";
 import { encodePng } from "../../infra/png.ts";
@@ -42,7 +43,7 @@ import {
 } from "../../primitives/detections.ts";
 import { mountGraspTool } from "../../primitives/grasp.ts";
 import { pointActive, pointTool, registerPointFlags } from "../../primitives/pointing.ts";
-import { attach, defineRobot, median, round, SERVICES } from "../../robot.ts";
+import { attach, defineRobot, median, round } from "../../robot.ts";
 import { type Cell, loadTable, resolveCell } from "./tasks.ts";
 
 const read = (name: string) => template(new URL(name, import.meta.url));
@@ -129,7 +130,7 @@ function flipRows(data: Buffer, height: number): Buffer {
 /** The RLDX-1 VLA server (robocasa/serve.sh), for --serve-models rldx. */
 const RLDX: ModelService = {
 	name: "rldx",
-	flag: "rldx",
+	service: "rldx",
 	module: "pi_embodied_services.robots.robocasa.vla_server",
 	args: () => {
 		if (!process.env.RLDX_MODEL_PATH)
@@ -166,25 +167,12 @@ export default function robocasa(pi: ExtensionAPI) {
 		description: "RoboCasa365 manifest scene index 0-49 (its seed comes from the task table; empty = --seed)",
 	});
 	pi.registerFlag("hi-res", { type: "string", default: "0", description: "Hi-res agentview resolution (0 = off)" });
-	pi.registerFlag("rldx", { type: "string", default: "http://127.0.0.1:18500", description: "RLDX-1 VLA server" });
 	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
-	// --detections / --unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
-	registerDetectionFlags(pi, { sam3: true });
-	// --point: Molmo's point over --molmo (../primitives/pointing.ts).
+	// --detections / --depth unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
+	registerDetectionFlags(pi);
+	// --point: Molmo's point over services.molmo (../primitives/pointing.ts).
 	registerPointFlags(pi);
 	const seeds = vlaSeeds(pi, () => ["robocasa", robot.task]);
-	pi.registerFlag("services", {
-		type: "string",
-		default: process.env.PI_EMBODIED_SERVICES ?? SERVICES,
-		description: "pi-embodied services dir",
-	});
-	pi.registerFlag("robocasa-python", {
-		type: "string",
-		default: process.env.ROBOCASA_PYTHON ?? process.env.PI_EMBODIED_PYTHON ?? "python",
-		description: "Python of the RoboCasa venv (the services' [robocasa] extra)",
-	});
-	pi.registerFlag("cuda-device", { type: "string", description: "GPU ordinal for MuJoCo EGL rendering" });
-	pi.registerFlag("log-dir", { type: "string", default: tmpdir(), description: "Env server log directory" });
 
 	let env: RpcClient;
 	let vla: RpcClient | undefined;
@@ -280,13 +268,13 @@ export default function robocasa(pi: ExtensionAPI) {
 		// What the env server serves of the manifest's `requires` (its `_has`): the perception it was started with.
 		capabilities: (c) =>
 			({
-				sam3: pi.getFlag("detections") === true && Boolean(flag("sam3", "")),
-				unidepth: Boolean(String(pi.getFlag("unidepth") ?? "").trim()),
+				sam3: pi.getFlag("detections") === true && Boolean(service(pi, "sam3")),
+				unidepth: Boolean(String(pi.getFlag("depth") ?? "").trim()),
 				// rldx_skill / rldx_arm: the RLDX-1 server answered at session start.
 				rldx: skills.rldx?.on === true,
 			})[c] ?? false,
 		// RLDX-1 reads its checkpoint from RLDX_MODEL_PATH, as robocasa/serve.sh does.
-		services: { models: [RLDX, SAM3, MOLMO], python: () => flag("robocasa-python", "python") },
+		services: { models: [RLDX, SAM3, MOLMO], python: () => python(pi, "robocasa", ["ROBOCASA_PYTHON"]) },
 		task: ["task-name", "split", "seed", "scene"],
 		// The env server's code.api (the manifest's digest and what this run has), recorded per episode.
 		codeApi: () => env,
@@ -1072,7 +1060,7 @@ export default function robocasa(pi: ExtensionAPI) {
 		}),
 	);
 
-	// SAM3 masks with ids and UniDepth over the env server's perception (active with --detections / --unidepth).
+	// SAM3 masks with ids and UniDepth over the env server's perception (active with --detections / --depth unidepth).
 	for (const d of detectionTools(pi, {
 		call: (method, kwargs, timeoutMs) =>
 			env.call<Record<string, any>>(method, kwargs, timeoutMs ?? 120_000, [], robot.signal),
@@ -1088,26 +1076,26 @@ export default function robocasa(pi: ExtensionAPI) {
 		vlaDesync = true;
 		attempt = 1;
 		seeds.reset();
-		const services = flag("services", SERVICES);
+		const services = servicesDir(pi);
 		// Checked against the task table before anything starts: an unknown task names its near matches.
 		picked = undefined;
 		picked = resolveCell(loadTable(services), cell());
 		const { task, split, seed, scene } = cell();
-		const rldxClient = sessionRpc(flag("rldx", ""));
+		const rldxClient = sessionRpc(service(pi, "rldx"));
 		vla = rldxClient;
 		const endpoint = pi.getFlag("env") as string | undefined;
-		const cuda = pi.getFlag("cuda-device") as string | undefined;
+		const cuda = cudaDevice(pi) || undefined;
 		[env] = await Promise.all([
 			endpoint
 				? attach(endpoint)
 				: robot.serve({
-						python: flag("robocasa-python", "python"),
+						python: python(pi, "robocasa", ["ROBOCASA_PYTHON"]),
 						args: [
 							...["-m", "pi_embodied_services.robots.robocasa.env_server"],
 							...["--task-name", task, "--split", split, "--seed", seed],
 							...(scene === "" ? [] : ["--scene", scene]),
 							...(cuda ? ["--cuda-device", cuda] : []),
-							...detectionArgs(pi, flag("sam3", "")),
+							...detectionArgs(pi, { sam3: true }),
 						],
 						cwd: services,
 						// RLDX_RESET_SEED would replay a legacy paired scene instead of --seed.
@@ -1118,10 +1106,10 @@ export default function robocasa(pi: ExtensionAPI) {
 							ROBOT_PLATFORM: "ROBOCASA",
 							RLDX_RESET_SEED: "",
 						},
-						log: (port) => join(flag("log-dir", tmpdir()), `robocasa-env-${tag()}-${port}.log`),
+						log: (port) => join(dir(pi, "logs", tmpdir()), `robocasa-env-${tag()}-${port}.log`),
 					}),
 			// RLDX-1 is optional: without it the rldx tools stay inactive and the result notes it.
-			probeSkill(pi, "rldx", flag("rldx", ""), () =>
+			probeSkill(pi, "rldx", service(pi, "rldx"), () =>
 				rldxClient.ready(3_000).then(() => rldxClient.call("session.register", {}, 30_000)),
 			).then((state) => {
 				skills.rldx = state;

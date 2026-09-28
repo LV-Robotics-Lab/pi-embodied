@@ -11,7 +11,7 @@
  * itself (HELLO handshake, request ids reused across a reconnect, ServerRestartedError, the numpy
  * msgpack extension) lives in the Python bridge (services pi_embodied_services/components/
  * xpolicy_bridge.py), which holds XPolicyLab's own `WsModelClient`; this module calls it over the
- * usual RPC (`xpolicy.*`). It starts the bridge with --xpolicy-python in the services dir, or
+ * usual RPC (`xpolicy.*`). It starts the bridge with python.xpolicy of the deployment config in the services dir, or
  * attaches to a running one (--xpolicy-bridge).
  *
  * With `--xpolicy <ws url>` the session start connects (a new trial per episode) and fails closed
@@ -36,8 +36,9 @@ import { join } from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
+import { python, servicesDir } from "../infra/config.ts";
 import { NdArray, RpcClient } from "../infra/rpc.ts";
-import { frameOf, type Json, message, quatMat, SERVICES, servicesEnv, shutdown } from "../robot.ts";
+import { frameOf, type Json, message, quatMat, servicesEnv, shutdown } from "../robot.ts";
 
 /** Session entry per connect and per `xpolicy_act`. */
 export const XPOLICY_ENTRY = "xpolicy";
@@ -322,11 +323,6 @@ export function xpolicy(
 		default: process.env.XPOLICYLAB_ROOT ?? "",
 		description: "XPolicyLab checkout whose websocket client the bridge uses (default XPOLICYLAB_ROOT)",
 	});
-	pi.registerFlag("xpolicy-python", {
-		type: "string",
-		default: process.env.PI_EMBODIED_XPOLICY_PYTHON ?? "python",
-		description: "Python with the services' [xpolicy] extra, for the bridge",
-	});
 	pi.registerFlag("xpolicy-encode-images", {
 		type: "boolean",
 		default: false,
@@ -360,8 +356,13 @@ export function xpolicy(
 			return bridge.rpc;
 		}
 		if (bridge?.proc && bridge.proc.exitCode === null && bridge.proc.signalCode === null) return bridge.rpc;
-		const services = String(pi.getFlag("services") || SERVICES);
-		bridge = await spawnBridge(flag("xpolicy-python") || "python", services, flag("xpolicylab"), 120_000);
+		const services = servicesDir(pi);
+		bridge = await spawnBridge(
+			python(pi, "xpolicy", ["PI_EMBODIED_XPOLICY_PYTHON"]),
+			services,
+			flag("xpolicylab"),
+			120_000,
+		);
 		// Registered now, after the base's handlers: the episode's trial ends (stop) before the bridge goes.
 		// A child with open pipes keeps pi's event loop alive, so pi would never exit without this.
 		if (!stopping) {

@@ -200,7 +200,7 @@ test("a remote box writes nothing locally and gives the agent the settings for t
 	// Fine-tuned mode: the adapter download and the vLLM server are part of the handoff.
 	assert.match(text, /FT_ADAPTER=qwen3_5_2b_sim \/data\/pi-embodied\/services\/setup\.sh finetuned/);
 	assert.match(text, /\/data\/pi-embodied\/services\/pi_embodied_services\/finetuned\/serve\.sh/);
-	assert.match(text, /--ft-endpoint defaults to http:\/\/127\.0\.0\.1:8010\/v1/);
+	assert.match(text, /services\.finetuned defaults to http:\/\/127\.0\.0\.1:8010\/v1/);
 	assert.match(
 		p.confirms.at(-1) ?? "",
 		/the adapter download and the vLLM server; the agent runs it after this confirmation/,

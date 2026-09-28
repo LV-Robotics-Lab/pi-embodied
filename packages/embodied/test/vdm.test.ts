@@ -13,6 +13,7 @@ import { HEADERS, sampleIndices, VDM_ENTRY } from "../src/observation/vdm.ts";
 import { FRAME_EVENT } from "../src/observation/video.ts";
 import { API_GATE_EVENT } from "../src/planner/api-gate.ts";
 import { defineRobot, RESULT_ENTRY, type RobotSpec } from "../src/robot.ts";
+import { deployFlags } from "./helpers/deployment.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 /** A faux VLM reply: its text and cost, an error, or "hang" (answers only when the call's signal aborts). */
@@ -20,6 +21,7 @@ type Reply = { text: string; usd?: number } | Error | "hang";
 
 /** A stub pi that runs handlers in registration order, with a real event bus; `vlm` answers side model calls in order. */
 function fakePi(flagValues: Record<string, unknown>, vlm: Reply[] = []) {
+	flagValues = deployFlags(flagValues);
 	const handlers = new Map<string, Handler[]>();
 	const flags: Record<string, unknown> = {};
 	const tools = new Map<string, any>();

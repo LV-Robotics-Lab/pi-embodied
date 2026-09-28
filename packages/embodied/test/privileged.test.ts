@@ -14,11 +14,13 @@ import robodojo from "../src/robots/robodojo/index.ts";
 import robolab from "../src/robots/robolab/index.ts";
 import robosuite from "../src/robots/robosuite/index.ts";
 import robotwin from "../src/robots/robotwin/index.ts";
+import { deployFlags } from "./helpers/deployment.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
 /** A stub pi that runs handlers in registration order and records flags, tools and entries. */
 function stubPi(values: Record<string, unknown> = {}) {
+	values = deployFlags(values);
 	const handlers = new Map<string, Handler[]>();
 	const flags: Record<string, unknown> = {};
 	const tools = new Map<string, any>();

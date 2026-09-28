@@ -9,10 +9,12 @@ import { Type } from "typebox";
 import { RpcClient } from "../src/infra/rpc.ts";
 import { parsePorts } from "../src/observation/viser.ts";
 import { defineRobot, type RobotStatus, STATUS_EVENT } from "../src/robot.ts";
+import { deployFlags } from "./helpers/deployment.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
 function fakePi(flagValues: Record<string, unknown>) {
+	flagValues = deployFlags(flagValues);
 	const handlers = new Map<string, Handler[]>();
 	const flags: Record<string, unknown> = {};
 	const bus = new EventEmitter();

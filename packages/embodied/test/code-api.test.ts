@@ -15,11 +15,13 @@ import {
 	renderCodeApi,
 } from "../src/primitives/registry.ts";
 import { defineRobot, RESULT_ENTRY, type RobotSpec } from "../src/robot.ts";
+import { deployFlags } from "./helpers/deployment.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
 /** A stub pi that runs handlers in registration order and records flags, entries and events. */
 function stubPi(values: Record<string, unknown> = {}) {
+	values = deployFlags(values);
 	const handlers = new Map<string, Handler[]>();
 	const flags: Record<string, unknown> = {};
 	const entries: { type: string; data: any }[] = [];

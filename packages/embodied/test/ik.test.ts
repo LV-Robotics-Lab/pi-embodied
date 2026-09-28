@@ -9,19 +9,23 @@ import {
 	reachRefusal,
 	registerIkFlag,
 } from "../src/primitives/ik.ts";
+import { useDeployment } from "./helpers/deployment.ts";
 
-test("--ik is off by default and only then adds nothing to the env server arguments", () => {
+test("--ik is off by default; on, it passes services.ik, and it fails closed without one", () => {
 	const flags: Record<string, unknown> = {};
 	registerIkFlag({
 		registerFlag: (name: string, o: { default?: unknown }) => {
 			flags[name] = o.default;
 		},
 	} as unknown as ExtensionAPI);
-	assert.deepEqual(flags, { ik: "" });
-	assert.deepEqual(ikArgs(flags.ik), []);
-	assert.deepEqual(ikArgs(undefined), []);
-	assert.deepEqual(ikArgs("  "), []);
-	assert.deepEqual(ikArgs("http://127.0.0.1:18400"), ["--ik", "http://127.0.0.1:18400"]);
+	assert.deepEqual(flags, { ik: false });
+	const pi = (ik: unknown) => ({ getFlag: (n: string) => (n === "ik" ? ik : undefined) }) as unknown as ExtensionAPI;
+	useDeployment({ services: { ik: "http://127.0.0.1:18400" } });
+	assert.deepEqual(ikArgs(pi(false)), []);
+	assert.deepEqual(ikArgs(pi(undefined)), []);
+	assert.deepEqual(ikArgs(pi(true)), ["--ik", "http://127.0.0.1:18400"]);
+	useDeployment({});
+	assert.throws(() => ikArgs(pi(true)), /--ik needs services.ik/);
 });
 
 test("only an unreachable preview refuses a move; unknown is not approval but does not block", () => {

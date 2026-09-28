@@ -14,6 +14,7 @@ import { defineRobot } from "../src/robot.ts";
 import piperDual from "../src/robots/piper/dual.ts";
 import piper, { chains, headingToBase, motionFrame, PIPER_UNITS, piperViews } from "../src/robots/piper/index.ts";
 import { codeApiReply } from "./helpers/code-api.ts";
+import { deployFlags } from "./helpers/deployment.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
@@ -25,6 +26,7 @@ const enumOf = (schema: any): string[] => schema.enum ?? schema.anyOf.map((u: an
  * `unitsHook: false` strips `viewSelect` from the units handle (a units module without the view hook).
  */
 function fakePi(flagValues: Record<string, unknown> = {}, hasUI = true, o: { unitsHook?: boolean } = {}) {
+	flagValues = deployFlags(flagValues);
 	const handlers = new Map<string, Handler[]>();
 	const flags: Record<string, unknown> = {};
 	const tools = new Map<string, any>();

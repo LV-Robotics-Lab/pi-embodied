@@ -24,6 +24,7 @@ import { type Static, type TSchema, Type } from "typebox";
 import { recipeFlash } from "../../capabilities/flash/recipe.ts";
 import type { FlywheelObs, FlywheelSpec } from "../../capabilities/flywheel.ts";
 import { probeSkill, type SkillState, skillsOff } from "../../capabilities/skills.ts";
+import { python, service, servicesDir } from "../../infra/config.ts";
 import { MOLMO, SAM3 } from "../../infra/model-services.ts";
 import { trackFlags } from "../../infra/params.ts";
 import { encodePng } from "../../infra/png.ts";
@@ -41,7 +42,7 @@ import {
 import { mountGraspTool } from "../../primitives/grasp.ts";
 import { pointActive, pointTool, registerPointFlags } from "../../primitives/pointing.ts";
 import type { XPolicyAction, XPolicyObs } from "../../primitives/xpolicy.ts";
-import { attach, defineRobot, median, rgbOf, SERVICES, u8 } from "../../robot.ts";
+import { attach, defineRobot, median, rgbOf, u8 } from "../../robot.ts";
 
 const read = (name: string) => template(new URL(name, import.meta.url));
 const SYSTEM = read("./SYSTEM.md");
@@ -407,23 +408,12 @@ export default function robotwin(pi: ExtensionAPI) {
 		default: process.env.ROBOTWIN_ASSETS_PATH ?? "",
 		description: "RoboTwin asset snapshot",
 	});
-	pi.registerFlag("lingbot", { type: "string", default: "ws://127.0.0.1:18400", description: "LingBot-VLA server" });
 	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
-	// --detections / --unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
-	registerDetectionFlags(pi, { sam3: true });
-	// --point: Molmo's point over --molmo (../primitives/pointing.ts).
+	// --detections / --depth unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
+	registerDetectionFlags(pi);
+	// --point: Molmo's point over services.molmo (../primitives/pointing.ts).
 	registerPointFlags(pi);
 	const seeds = vlaSeeds(pi, () => ["robotwin", robot.task]);
-	pi.registerFlag("services", {
-		type: "string",
-		default: process.env.PI_EMBODIED_SERVICES ?? SERVICES,
-		description: "pi-embodied services dir",
-	});
-	pi.registerFlag("python", {
-		type: "string",
-		default: process.env.PI_EMBODIED_PYTHON ?? "python",
-		description: "Python for the env server",
-	});
 
 	let env: RpcClient;
 	let lingbot: LingBot | undefined;
@@ -473,8 +463,8 @@ export default function robotwin(pi: ExtensionAPI) {
 		// What the env server serves of the manifest's `requires` (its `_has`): the perception it was started with.
 		capabilities: (c) =>
 			({
-				sam3: pi.getFlag("detections") === true && Boolean(flag("sam3", "")),
-				unidepth: Boolean(String(pi.getFlag("unidepth") ?? "").trim()),
+				sam3: pi.getFlag("detections") === true && Boolean(service(pi, "sam3")),
+				unidepth: Boolean(String(pi.getFlag("depth") ?? "").trim()),
 				// lingbot_act: the LingBot server answered at session start (or --xpolicy stands in).
 				lingbot: skills.lingbot?.on === true,
 			})[c] ?? false,
@@ -667,7 +657,7 @@ export default function robotwin(pi: ExtensionAPI) {
 	async function vla(): Promise<LingBot> {
 		if (lingbot && !lingbot.failed) return lingbot;
 		lingbot?.ws.close();
-		lingbot = await LingBot.connect(flag("lingbot", ""));
+		lingbot = await LingBot.connect(service(pi, "lingbot"));
 		for (const [k, v] of Object.entries(LINGBOT_CONTRACT))
 			if (lingbot.metadata[k] !== v)
 				throw new Error(`LingBot metadata ${k}=${JSON.stringify(lingbot.metadata[k])}, expected ${v}`);
@@ -1164,7 +1154,7 @@ export default function robotwin(pi: ExtensionAPI) {
 		}),
 	);
 
-	// SAM3 masks with ids and UniDepth over the env server's perception (active with --detections / --unidepth).
+	// SAM3 masks with ids and UniDepth over the env server's perception (active with --detections / --depth unidepth).
 	for (const d of detectionTools(pi, {
 		call: (method, kwargs, timeoutMs) =>
 			env.call<Record<string, any>>(method, kwargs, timeoutMs ?? 120_000, [], robot.signal),
@@ -1180,16 +1170,16 @@ export default function robotwin(pi: ExtensionAPI) {
 		const endpoint = pi.getFlag("env") as string | undefined;
 		if (endpoint) env = await attach(endpoint, 900_000);
 		else {
-			const services = flag("services", SERVICES);
+			const services = servicesDir(pi);
 			const assets = flag("assets", "");
 			if (!assets) throw new Error("set --assets (or ROBOTWIN_ASSETS_PATH) to the RoboTwin asset snapshot");
 			env = await robot.serve({
-				python: flag("python", "python"),
+				python: python(pi, "robotwin"),
 				args: [
 					...["-m", "pi_embodied_services.robots.robotwin.env_server"],
 					...["--task-name", task, "--task-config", config, "--seed", seed],
 					...["--max-episode-steps", flag("max-episode-steps", "10000"), "--assets-path", assets],
-					...detectionArgs(pi, flag("sam3", "")),
+					...detectionArgs(pi, { sam3: true }),
 				],
 				cwd: services,
 				env: { ...process.env, PYTHONPATH: services, ROBOTWIN_ASSETS_PATH: assets },
@@ -1216,7 +1206,7 @@ export default function robotwin(pi: ExtensionAPI) {
 		// LingBot is optional: without it lingbot_act stays inactive and the result notes it.
 		skills.lingbot = pi.getFlag("xpolicy")
 			? { on: true }
-			: await probeSkill(pi, "lingbot", flag("lingbot", ""), () => vla());
+			: await probeSkill(pi, "lingbot", service(pi, "lingbot"), () => vla());
 		await capture(
 			{ action: "reset" },
 			{ success: true, instruction: language, instruction_source: reset.instruction_source ?? null },

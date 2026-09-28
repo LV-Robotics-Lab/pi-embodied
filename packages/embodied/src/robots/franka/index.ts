@@ -1,7 +1,7 @@
 /**
  * One physical Franka arm for pi.
  *
- *   pi -e packages/embodied/src/robots/franka --task 1 --robot-config my_franka.yaml --robot-vla http://VLA_HOST:PORT
+ *   pi -e packages/embodied/src/robots/franka --task 1 --robot-config my_franka.yaml --vla http://VLA_HOST:PORT
  *   pi -e packages/embodied/src/robots/franka --robot-backend polymetis --robot-config my_polymetis.yaml
  *   pi -e packages/embodied/src/robots/franka --task 1 --z-floor 0.14 --operator --code=true --code-real
  *      (run_code: the env server runs with --code; every program is confirmed by the operator)
@@ -33,8 +33,9 @@ import { encodePng } from "../../infra/png.ts";
 import { NdArray, type RpcClient } from "../../infra/rpc.ts";
 import type { Move } from "../../modes/units/index.ts";
 import { graspAdvisorTool } from "../../primitives/advisor.ts";
+import { depthUrl, registerDepthFlag } from "../../primitives/detections.ts";
 import { eulerXyz, geometryArgs, geometryTools, planRotation, splitImages } from "../../primitives/geometry.ts";
-import { graspActive, graspArgs, graspTools, registerGraspFlags } from "../../primitives/grasp.ts";
+import { graspActive, graspArgs, graspTools, placeOn, registerGraspFlags } from "../../primitives/grasp.ts";
 import { ikArgs, registerIkFlag } from "../../primitives/ik.ts";
 import {
 	checkRotate,
@@ -79,7 +80,6 @@ import {
 	rgbOf,
 	round,
 	roundAll,
-	SERVICES,
 	type Services,
 	servicesEnv,
 	servicesJson,
@@ -117,7 +117,7 @@ type Caps = {
 	max_move_m?: number | null;
 	max_rotate_rad?: number | null;
 	table_z_m?: number | null;
-	/** Server-side perception (--robot-sam3 / --robot-unidepth): which of its primitives exist. */
+	/** Server-side perception (--segment / --depth unidepth): which of its primitives exist. */
 	perception?: { segment?: boolean; enhance_depth?: boolean };
 	[k: string]: unknown;
 };
@@ -165,6 +165,7 @@ except Exception as exc:
 print(json.dumps(out, default=lambda v: v.tolist() if hasattr(v, "tolist") else str(v)))
 `;
 
+import { dir, python, service, servicesDir } from "../../infra/config.ts";
 import { trackFlags } from "../../infra/params.ts";
 import { template } from "../../planner/context-version.ts";
 
@@ -271,32 +272,19 @@ export default function franka(pi: ExtensionAPI) {
 		type: "string",
 		description: "Attach to a running Franka env server instead of starting one",
 	});
-	pi.registerFlag("robot-vla", {
-		type: "string",
-		description: "External Franka Pi0.5 VLA server (attach-only; enables vla_grasp)",
+	pi.registerFlag("vla", {
+		type: "boolean",
+		default: false,
+		description: "Attach the Pi0.5 VLA server (services.vla of the deployment config; enables the VLA skills)",
 	});
-	pi.registerFlag("robot-sam3", {
-		type: "string",
-		description: "SAM3 server for the env server's segment / select_detection / reject_detection (off without it)",
+	pi.registerFlag("segment", {
+		type: "boolean",
+		default: false,
+		description: "SAM3 on the env server (services.sam3 of the deployment config; enables segment)",
 	});
-	pi.registerFlag("robot-unidepth", {
-		type: "string",
-		description: "UniDepth server for the env server's enhance_depth (off without it)",
-	});
-	pi.registerFlag("services", {
-		type: "string",
-		default: process.env.PI_EMBODIED_SERVICES ?? SERVICES,
-		description: "pi-embodied services dir",
-	});
-	pi.registerFlag("python", {
-		type: "string",
-		default: process.env.PI_EMBODIED_PYTHON ?? "python",
-		description: "Python with the services' [franka] extra",
-	});
-	pi.registerFlag("out", {
-		type: "string",
-		description: "Step artifact directory (default: a new directory under the OS temp dir)",
-	});
+	const vlaUrl = () => (pi.getFlag("vla") === true ? service(pi, "vla") : "");
+	const sam3Url = () => (pi.getFlag("segment") === true ? service(pi, "sam3") : "");
+	registerDepthFlag(pi);
 	pi.registerFlag("max-move", {
 		type: "string",
 		default: "0.1",
@@ -319,10 +307,10 @@ export default function franka(pi: ExtensionAPI) {
 		default: "0.5",
 		description: "Largest rotate_delta per call, rad (norm of delta_rpy)",
 	});
-	// --contact-graspnet/--graspgenx/--anyplace/--anygrasp/--graspnet1b: plan_grasp, plan_place, check_attached (../primitives/grasp.ts).
+	// --grasp <backends> [--place anyplace]: plan_grasp, plan_place, check_attached (../primitives/grasp.ts).
 	registerGraspFlags(pi);
-	// --point: Molmo's point over --molmo (../../primitives/pointing.ts).
-	registerPointFlags(pi, { molmo: true });
+	// --point: Molmo's point over services.molmo (../../primitives/pointing.ts).
+	registerPointFlags(pi);
 	registerIkFlag(pi);
 
 	let env: RpcClient | undefined;
@@ -357,16 +345,16 @@ export default function franka(pi: ExtensionAPI) {
 			({
 				sam3: caps.perception?.segment === true,
 				unidepth: caps.perception?.enhance_depth === true,
-				ik: Boolean(flag("ik")),
+				ik: pi.getFlag("ik") === true,
 				grasp: graspActive(pi).length > 0,
-				place: Boolean(flag("anyplace")),
+				place: placeOn(pi),
 				geometry: pi.getFlag("geometry") === true,
 				// The OpenETA extras (their flags).
 				waypoints: pi.getFlag("waypoints") === true,
 				align_wrist: pi.getFlag("align-wrist") === true,
 				grasp_advisor: pi.getFlag("grasp-advisor") === true,
 				joints: caps.backend === "polymetis",
-				vla: caps.has_vla === true && Boolean(flag("robot-vla")),
+				vla: caps.has_vla === true && Boolean(vlaUrl()),
 			})[c] ?? false,
 		task: ["task"],
 		keepImages: 4,
@@ -1250,7 +1238,7 @@ export default function franka(pi: ExtensionAPI) {
 		}),
 		async ({ prompt, max_chunks = 4 }, signal) => {
 			if (!caps.has_vla) throw new Error(`the ${caps.backend} backend has no VLA action space`);
-			if (!vla) throw new Error("vla_grasp requires --robot-vla");
+			if (!vla) throw new Error("vla_grasp requires --vla");
 			if (!prompt.trim()) throw new Error("prompt must be non-empty");
 			if (!(max_chunks >= 1 && max_chunks <= 20)) throw new Error("max_chunks must be between 1 and 20");
 			const chunks: Json[] = [];
@@ -1316,7 +1304,7 @@ export default function franka(pi: ExtensionAPI) {
 	}
 
 	// plan_grasp / plan_place / check_attached (../primitives/grasp.ts): the env server plans over its
-	// calibrated RGB-D cameras; active with --contact-graspnet/--graspgenx/--anyplace/--anygrasp/--graspnet1b.
+	// calibrated RGB-D cameras; active with --grasp.
 	for (const d of graspTools(pi, {
 		call: (method, kwargs, timeoutMs) => call(method, kwargs, timeoutMs ?? 120_000),
 		cameras: ["wrist", "third_person"],
@@ -1405,12 +1393,12 @@ export default function franka(pi: ExtensionAPI) {
 		if (!ctx.hasUI)
 			throw new Error("franka drives a real robot: run pi interactively (or over RPC) so an operator is present");
 		workspaceLimits(flag("workspace-xy"), flag("z-floor"));
-		const r: Services = { root: flag("services"), python: flag("python", "python") };
+		const r: Services = { root: servicesDir(pi), python: python(pi, "franka") };
 		const configFlag = pi.getFlag("robot-config");
 		const config = typeof configFlag === "string" && configFlag ? resolve(ctx.cwd, configFlag) : "";
 		setup = await servicesJson<Setup>(r, SETUP_PY, [task(), config]);
 		const stamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15);
-		out = resolve(ctx.cwd, flag("out") || join(tmpdir(), "pi-embodied", `franka_t${task()}_${stamp}`));
+		out = resolve(ctx.cwd, dir(pi, "artifacts") || join(tmpdir(), "pi-embodied", `franka_t${task()}_${stamp}`));
 		mkdirSync(out, { recursive: true });
 		const endpoint = flag("robot-env");
 		const backend = flag("robot-backend").trim().toLowerCase();
@@ -1424,9 +1412,9 @@ export default function franka(pi: ExtensionAPI) {
 						args: [
 							...["-m", BACKENDS[backend || "rlinf"]],
 							...["--task-description", setup.task.instruction, ...(config ? ["--robot-config", config] : [])],
-							...ikArgs(flag("ik")),
-							...(flag("robot-sam3") ? ["--sam3", flag("robot-sam3")] : []),
-							...(flag("robot-unidepth") ? ["--unidepth", flag("robot-unidepth")] : []),
+							...ikArgs(pi),
+							...(sam3Url() ? ["--sam3", sam3Url()] : []),
+							...(depthUrl(pi) ? ["--unidepth", depthUrl(pi)] : []),
 							...graspArgs(pi),
 							...(pi.getFlag("align-wrist") === true ? ["--align-wrist"] : []),
 							...geometryArgs(pi),
@@ -1438,7 +1426,7 @@ export default function franka(pi: ExtensionAPI) {
 						env: servicesEnv(r),
 						log: () => join(out, "franka_env_server.log"),
 					}),
-			flag("robot-vla") ? attach(flag("robot-vla")) : undefined,
+			vlaUrl() ? attach(vlaUrl()) : undefined,
 		]);
 		const meta = await envRpc.call<Json>("env.get_env_meta", {}, 30_000);
 		caps = { backend: "rlinf", has_vla: true, ...(meta.capabilities ?? {}) };
@@ -1449,7 +1437,7 @@ export default function franka(pi: ExtensionAPI) {
 			throw new Error(`--robot-env serves the ${caps.backend} backend, not --robot-backend ${backend}`);
 		if (!caps.has_vla && (vlaRpc || setup.task.name === "vla_grasp"))
 			throw new Error(
-				`the ${caps.backend} backend has no VLA action space: drop --robot-vla and use a task without vla_grasp`,
+				`the ${caps.backend} backend has no VLA action space: drop --vla and use a task without vla_grasp`,
 			);
 		const go = await ctx.ui.confirm(
 			`Reset the Franka arm (${caps.backend})?`,

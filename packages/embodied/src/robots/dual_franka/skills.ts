@@ -1,6 +1,6 @@
 /**
  * Named dual-Franka VLA skills (./index.ts): `vla_right_grasp`, `vla_handoff` and
- * `vla_left_place` roll out the Pi0.5 VLA (--robot-vla) chunk by chunk and stop at the skill's
+ * `vla_left_place` roll out the Pi0.5 VLA (--vla) chunk by chunk and stop at the skill's
  * semantic boundary (a gripper event followed by a lift or a settle delay). The task config owns
  * the policy instruction; the planner's prompt is only recorded.
  */
@@ -26,7 +26,7 @@ export type SkillDeps = {
 	/** Record the policy state vector of a step result. */
 	remember: (states: unknown) => void;
 	setup: () => Setup | undefined;
-	/** The VLA client (--robot-vla), if configured. */
+	/** The VLA client (--vla), if configured. */
 	vla: () => RpcClient | undefined;
 };
 
@@ -41,7 +41,7 @@ export function mountSkills(d: SkillDeps) {
 		maxChunks: number,
 		signal?: AbortSignal,
 	) {
-		if (!d.vla()) throw new Error(`${skill} requires --robot-vla`);
+		if (!d.vla()) throw new Error(`${skill} requires --vla`);
 		const requested = String(prompt).trim();
 		if (!requested) throw new Error("prompt must be non-empty");
 		// Task configuration owns policy conditioning; the planner's intent is only recorded.

@@ -30,6 +30,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { simDistil } from "../../capabilities/explore.ts";
 import type { FlywheelObs, FlywheelSpec } from "../../capabilities/flywheel.ts";
+import { python, service, servicesDir } from "../../infra/config.ts";
 import { MOLMO, SAM3 } from "../../infra/model-services.ts";
 import { trackFlags } from "../../infra/params.ts";
 import { encodePng } from "../../infra/png.ts";
@@ -37,10 +38,17 @@ import type { NdArray, RpcClient } from "../../infra/rpc.ts";
 import type { MoveUnit, Vec3 } from "../../modes/units/index.ts";
 import { template } from "../../planner/context-version.ts";
 import { detectionActive, detectionArgs, detectionTools, registerDetectionFlags } from "../../primitives/detections.ts";
-import { graspActive, graspArgs, graspTools, mountGraspTool, registerGraspFlags } from "../../primitives/grasp.ts";
+import {
+	graspActive,
+	graspArgs,
+	graspTools,
+	mountGraspTool,
+	placeOn,
+	registerGraspFlags,
+} from "../../primitives/grasp.ts";
 import { ikArgs, type Reach, registerIkFlag } from "../../primitives/ik.ts";
 import { pointActive, pointTool, registerPointFlags } from "../../primitives/pointing.ts";
-import { attach, defineRobot, type Json, rgbOf, SERVICES } from "../../robot.ts";
+import { attach, defineRobot, type Json, rgbOf } from "../../robot.ts";
 
 const SYSTEM = template(new URL("./SYSTEM.md", import.meta.url));
 const EXPLORE = template(new URL("./explore.md", import.meta.url));
@@ -144,25 +152,14 @@ export default function genesis(pi: ExtensionAPI) {
 		description: `Success rule: grasp (OpenETA cube_pick: both fingers on the cube within 8 cm for 3 steps, default) or lift (the cube 8 cm up for 5 steps)`,
 	});
 	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
-	pi.registerFlag("sam3", { type: "string", default: "http://127.0.0.1:18300", description: "SAM3 server (segment)" });
-	// --detections / --unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
+	// --detections / --depth unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
 	// --ik: preview_reach over the env server's IK check (../ik.ts).
 	registerIkFlag(pi);
 	registerDetectionFlags(pi);
-	// --contact-graspnet & co: plan_grasp and friends, and execute_grasp / execute_place (services/.../utils/grasp_chain.py on the env server).
+	// --grasp: plan_grasp and friends, and execute_grasp / execute_place (services/.../utils/grasp_chain.py on the env server).
 	registerGraspFlags(pi);
-	// --point: Molmo's point over its --molmo server (../primitives/pointing.ts).
-	registerPointFlags(pi, { molmo: true });
-	pi.registerFlag("services", {
-		type: "string",
-		default: process.env.PI_EMBODIED_SERVICES ?? SERVICES,
-		description: "pi-embodied services dir",
-	});
-	pi.registerFlag("python", {
-		type: "string",
-		default: process.env.PI_EMBODIED_PYTHON ?? "python",
-		description: "Python for the env server (the genesis venv)",
-	});
+	// --point: Molmo's point over services.molmo (../primitives/pointing.ts).
+	registerPointFlags(pi);
 
 	let env: RpcClient;
 	let obs: Obs;
@@ -177,11 +174,11 @@ export default function genesis(pi: ExtensionAPI) {
 		vars: () => ({ max_move: MAX_MOVE_M, cameras: [...CAMERAS], arms: [] }),
 		capabilities: (c) =>
 			({
-				sam3: Boolean(flag("sam3", "")),
-				ik: Boolean(flag("ik", "").trim()),
+				sam3: Boolean(service(pi, "sam3")),
+				ik: pi.getFlag("ik") === true,
 				grasp: graspActive(pi).length > 0,
-				place: graspActive(pi).length > 0 && Boolean(flag("anyplace", "")),
-				unidepth: Boolean(flag("unidepth", "").trim()),
+				place: graspActive(pi).length > 0 && placeOn(pi),
+				unidepth: Boolean(String(pi.getFlag("depth") ?? "").trim()),
 			})[c] ?? false,
 		services: { models: [SAM3, MOLMO] },
 		task: ["task", "seed"],
@@ -422,7 +419,7 @@ export default function genesis(pi: ExtensionAPI) {
 		text((await env.call<Reach>("env.preview_reach", params, 60_000, [], robot.signal)) as unknown as Json),
 	);
 
-	// Planned grasps (--contact-graspnet & co): the server runs the claimed path as move_delta legs
+	// Planned grasps (--grasp): the server runs the claimed path as move_delta legs
 	// (env.execute_grasp / env.execute_place, utils/grasp_chain.py).
 	for (const name of ["execute_grasp", "execute_place"])
 		robot.tool(name, "", Type.Object({}), async (params: Json, signal) => {
@@ -447,7 +444,7 @@ export default function genesis(pi: ExtensionAPI) {
 		}),
 	);
 
-	// SAM3 masks with ids and UniDepth over the env server's perception (active with --detections / --unidepth).
+	// SAM3 masks with ids and UniDepth over the env server's perception (active with --detections / --depth unidepth).
 	for (const d of detectionTools(pi, {
 		call: (method, kwargs, timeoutMs) => env.call<Json>(method, kwargs, timeoutMs ?? 120_000, [], robot.signal),
 		cameras: CAMERAS,
@@ -461,7 +458,7 @@ export default function genesis(pi: ExtensionAPI) {
 	}))
 		mountGraspTool(robot.tool, d);
 
-	// plan_grasp / plan_place / check_attached over the env server's planner (--contact-graspnet & co).
+	// plan_grasp / plan_place / check_attached over the env server's planner (--grasp).
 	for (const d of graspTools(pi, {
 		call: (method, kwargs, timeoutMs) => env.call<Json>(method, kwargs, timeoutMs ?? 120_000, [], robot.signal),
 		cameras: ["agentview", "wrist"],
@@ -476,17 +473,17 @@ export default function genesis(pi: ExtensionAPI) {
 		const endpoint = pi.getFlag("env") as string | undefined;
 		if (endpoint) env = await attach(endpoint);
 		else {
-			const services = flag("services", SERVICES);
+			const services = servicesDir(pi);
 			env = await robot.serve({
-				python: flag("python", "python"),
+				python: python(pi, "genesis"),
 				args: [
 					...["-m", "pi_embodied_services.robots.genesis.env_server"],
 					...["--task", task, "--seed", seed, "--backend", flag("backend", "gpu")],
 					...["--success-rule", flag("success-rule", "grasp")],
-					...ikArgs(pi.getFlag("ik")),
+					...ikArgs(pi),
 					// env.segment (and the planner's object text) segment with SAM3 on the server.
-					...(flag("sam3", "") ? ["--sam3", flag("sam3", "")] : []),
-					...detectionArgs(pi, ""),
+					...(service(pi, "sam3") ? ["--sam3", service(pi, "sam3")] : []),
+					...detectionArgs(pi, { sam3: false }),
 					...graspArgs(pi),
 				],
 				cwd: services,
@@ -511,7 +508,7 @@ export default function genesis(pi: ExtensionAPI) {
 		return [
 			...["view_env_state", "get_camera_meta", "segment", "back_project", "move_delta", "set_gripper", "finish"],
 			...detectionActive(pi, meta.capabilities?.perception),
-			// preview_reach requires --ik, segment --sam3, the chains a planner (the manifest drops them without).
+			// preview_reach requires --ik, segment SAM3, the chains a planner (the manifest drops them without).
 			"preview_reach",
 			...graspActive(pi),
 			...(graspActive(pi).length ? ["execute_grasp", "execute_place"] : []),

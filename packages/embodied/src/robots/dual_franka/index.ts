@@ -3,7 +3,7 @@
  *
  *   dual_franka/serve.sh                      # dual-Franka Pi0.5 VLA (+ SAM3) servers
  *   pi -e packages/embodied/src/robots/dual_franka --operator --task 3 --robot-config my_rig.yaml \
- *     --robot-vla http://127.0.0.1:18210 --robot-sam3 http://127.0.0.1:18310
+ *     --vla http://127.0.0.1:18210 --segment http://127.0.0.1:18310
  *   pi -e packages/embodied/src/robots/dual_franka --operator --task 3 --z-floor 0.02 --code=true --code-real
  *     (run_code: the env server runs with --code; every program is confirmed by the operator)
  *
@@ -29,12 +29,13 @@ import { join, resolve } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
+import { dir, python, service, servicesDir } from "../../infra/config.ts";
 import { trackFlags } from "../../infra/params.ts";
 import { encodePng } from "../../infra/png.ts";
 import { NdArray, type RpcClient } from "../../infra/rpc.ts";
 import type { Move, MoveUnit, Vec3 } from "../../modes/units/index.ts";
 import { template } from "../../planner/context-version.ts";
-import { graspActive, graspArgs, graspTools, registerGraspFlags } from "../../primitives/grasp.ts";
+import { graspActive, graspArgs, graspTools, placeOn, registerGraspFlags } from "../../primitives/grasp.ts";
 import {
 	limitArgs,
 	type MotionLimits,
@@ -61,7 +62,6 @@ import {
 	rgbOf,
 	round,
 	roundAll,
-	SERVICES,
 	type Services,
 	servicesEnv,
 	servicesJson,
@@ -126,28 +126,18 @@ export default function dualFranka(pi: ExtensionAPI) {
 		type: "string",
 		description: "Attach to a running dual-Franka env server instead of starting one",
 	});
-	pi.registerFlag("robot-vla", {
-		type: "string",
-		description: "Dual-Franka Pi0.5 VLA server (serve.sh: http://127.0.0.1:18210)",
+	pi.registerFlag("vla", {
+		type: "boolean",
+		default: false,
+		description: "Attach the Pi0.5 VLA server (services.vla of the deployment config; enables the VLA skills)",
 	});
-	pi.registerFlag("robot-sam3", {
-		type: "string",
-		description: "SAM3 server for segment (serve.sh: http://127.0.0.1:18310)",
+	pi.registerFlag("segment", {
+		type: "boolean",
+		default: false,
+		description: "SAM3 on the env server (services.sam3 of the deployment config; enables segment)",
 	});
-	pi.registerFlag("services", {
-		type: "string",
-		default: process.env.PI_EMBODIED_SERVICES ?? SERVICES,
-		description: "pi-embodied services dir",
-	});
-	pi.registerFlag("python", {
-		type: "string",
-		default: process.env.PI_EMBODIED_PYTHON ?? "python",
-		description: "Python with the services' [franka] extra",
-	});
-	pi.registerFlag("out", {
-		type: "string",
-		description: "Step artifact directory (default: a new directory under the OS temp dir)",
-	});
+	const vlaUrl = () => (pi.getFlag("vla") === true ? service(pi, "vla") : "");
+	const sam3Url = () => (pi.getFlag("segment") === true ? service(pi, "sam3") : "");
 	pi.registerFlag("max-move", {
 		type: "string",
 		default: "0.1",
@@ -171,10 +161,10 @@ export default function dualFranka(pi: ExtensionAPI) {
 		description:
 			"Lowest right_base TCP z for move_delta and units, m (required: the robot does not start without it)",
 	});
-	// --contact-graspnet/--graspgenx/--anyplace/--anygrasp/--graspnet1b: plan_grasp, plan_place, check_attached (../primitives/grasp.ts).
+	// --grasp <backends> [--place anyplace]: plan_grasp, plan_place, check_attached (../primitives/grasp.ts).
 	registerGraspFlags(pi);
-	// --point: Molmo's point over --molmo (../../primitives/pointing.ts).
-	registerPointFlags(pi, { molmo: true });
+	// --point: Molmo's point over services.molmo (../../primitives/pointing.ts).
+	registerPointFlags(pi);
 
 	let env: RpcClient | undefined;
 	let vla: RpcClient | undefined;
@@ -199,10 +189,10 @@ export default function dualFranka(pi: ExtensionAPI) {
 		// What this run serves of the manifest's `requires` (the server's _has, franka/code_mode.py, must agree).
 		capabilities: (c) =>
 			({
-				sam3: Boolean(flag("robot-sam3")),
+				sam3: Boolean(sam3Url()),
 				grasp: graspActive(pi).length > 0,
-				place: Boolean(flag("anyplace")),
-				vla: Boolean(flag("robot-vla")),
+				place: placeOn(pi),
+				vla: Boolean(vlaUrl()),
 				xpolicy: Boolean(flag("xpolicy").trim()),
 			})[c] ?? false,
 		task: ["task"],
@@ -743,7 +733,7 @@ export default function dualFranka(pi: ExtensionAPI) {
 	});
 
 	// plan_grasp / plan_place / check_attached (../primitives/grasp.ts): the env server plans over its
-	// calibrated RGB-D cameras; active with --contact-graspnet/--graspgenx/--anyplace/--anygrasp/--graspnet1b.
+	// calibrated RGB-D cameras; active with --grasp.
 	// Molmo pointing on the latest step's images (pixels; back_project gives their right_base point).
 	{
 		const d = pointTool(pi, {
@@ -773,18 +763,18 @@ export default function dualFranka(pi: ExtensionAPI) {
 		workspaceLimits(flag("workspace-xy"), flag("z-floor"));
 		// Ray must not re-run uv for workers on the pre-provisioned nodes (env override).
 		const r: Services = {
-			root: flag("services"),
-			python: flag("python", "python"),
+			root: servicesDir(pi),
+			python: python(pi, "dual_franka"),
 			env: { RAY_ENABLE_UV_RUN_RUNTIME_ENV: "0" },
 		};
 		const configFlag = pi.getFlag("robot-config");
 		const config = typeof configFlag === "string" && configFlag ? resolve(ctx.cwd, configFlag) : "";
 		setup = await servicesJson<Setup>(r, SETUP_PY, [task(), config]);
-		const vlaEndpoint = flag("robot-vla");
+		const vlaEndpoint = vlaUrl();
 		if (setup.task.vla_instruction !== null && !vlaEndpoint)
-			throw new Error(`task ${task()} runs named VLA skills: start dual_franka/serve.sh and pass --robot-vla`);
+			throw new Error(`task ${task()} runs named VLA skills: start dual_franka/serve.sh and pass --vla`);
 		const stamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15);
-		out = resolve(ctx.cwd, flag("out") || join(tmpdir(), "pi-embodied", `dual_franka_t${task()}_${stamp}`));
+		out = resolve(ctx.cwd, dir(pi, "artifacts") || join(tmpdir(), "pi-embodied", `dual_franka_t${task()}_${stamp}`));
 		mkdirSync(out, { recursive: true });
 		const envEndpoint = flag("robot-env");
 		const [envRpc, vlaRpc, sam3Rpc] = await Promise.all([
@@ -796,7 +786,7 @@ export default function dualFranka(pi: ExtensionAPI) {
 							...["-m", "pi_embodied_services.robots.dual_franka.env_server"],
 							...["--task-description", setup.task.instruction, ...(config ? ["--robot-config", config] : [])],
 							// SAM3 on the env server too: plan_grasp / plan_place segment their object and region text there.
-							...(flag("robot-sam3") ? ["--sam3", flag("robot-sam3")] : []),
+							...(sam3Url() ? ["--sam3", sam3Url()] : []),
 							...graspArgs(pi),
 							...(coding() ? ["--code"] : []),
 							// pi's per-call limits: the server enforces them for every caller.
@@ -807,7 +797,7 @@ export default function dualFranka(pi: ExtensionAPI) {
 						log: () => join(out, "dual_franka_env_server.log"),
 					}),
 			vlaEndpoint ? attach(vlaEndpoint) : undefined,
-			flag("robot-sam3") ? attach(flag("robot-sam3")) : undefined,
+			sam3Url() ? attach(sam3Url()) : undefined,
 		]);
 		envMeta = plain(await envRpc.call<Json>("env.get_env_meta", {}, 30_000)) as Json;
 		// An attached server must enforce pi's limits (or tighter ones); a spawned one got them above.

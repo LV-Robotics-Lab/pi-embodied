@@ -11,6 +11,7 @@ import { RESULT_ENTRY, toolSections } from "../src/robot.ts";
 import { generateFlashPlan } from "../src/robots/libero/flash-generate.ts";
 import libero, { GUIDES, packDepth, renderRpent, unpackDepth } from "../src/robots/libero/index.ts";
 import { codeApiReply } from "./helpers/code-api.ts";
+import { deployFlags } from "./helpers/deployment.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 const src = (path: string) => readFileSync(new URL(`../src/robots/libero/${path}`, import.meta.url), "utf8");
@@ -18,6 +19,7 @@ const FIXTURE = JSON.parse(readFileSync(new URL("./fixtures/libero-rpent-prompt.
 
 /** A stub pi that runs handlers in registration order; like pi, it activates only registered tools. */
 function stubPi(values: Record<string, unknown>, cwd: string) {
+	values = deployFlags(values);
 	const handlers = new Map<string, Handler[]>();
 	const flags: Record<string, unknown> = {};
 	const tools = new Map<string, any>();

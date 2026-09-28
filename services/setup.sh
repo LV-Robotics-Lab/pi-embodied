@@ -329,6 +329,6 @@ finetuned | llamafactory | graspnet1b | flywheel) robot="" ;;
 *) robot=$target ;;
 esac
 if [ -n "$robot" ] && [ -n "$PKG" ]; then
-	note "preflight: source $venv/pi-embodied.env && node $PKG/src/check.ts $robot --python $PY --services $SERVICES"
+	note "preflight: source $venv/pi-embodied.env && PI_EMBODIED_PYTHON=$PY PI_EMBODIED_SERVICES=$SERVICES node $PKG/src/infra/check.ts $robot"
 	note "in pi with the robot loaded: /robot-check"
 fi

@@ -7,6 +7,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { ground, MOVE_UNITS } from "../src/modes/units/index.ts";
 import genesis, { CAMERAS, STEP_M, SUCCESS_RULES, TASKS, VECTORS } from "../src/robots/genesis/index.ts";
 import { codeApiReply } from "./helpers/code-api.ts";
+import { deployFlags } from "./helpers/deployment.ts";
 import {
 	checkDetections,
 	checkPoint,
@@ -24,6 +25,7 @@ type Handler = (event: any, ctx: any) => unknown;
 
 /** A stub pi that records flags, tools, entries and the active set, and runs handlers and tools. */
 function stubPi(values: Record<string, unknown> = {}) {
+	values = deployFlags(values);
 	const handlers = new Map<string, Handler[]>();
 	const flags: Record<string, unknown> = {};
 	const tools = new Map<string, any>();

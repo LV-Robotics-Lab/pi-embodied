@@ -26,6 +26,7 @@ const FAKE_PI = `#!/usr/bin/env bash
 all=("$@") dir="" seed="" good=false
 while [ $# -gt 0 ]; do case $1 in --session-dir) dir=$2 && shift ;; --seed) seed=$2 && shift ;; --good) good=true ;; esac; shift; done
 printf '%s\\n' "\${all[@]}" >"$dir/argv"
+env | grep '^PI_EMBODIED_' >"$dir/env"
 echo $$ >"$dir/pid"
 echo "$dir CVD=\${CUDA_VISIBLE_DEVICES-unset} EGL=\${MUJOCO_EGL_DEVICE_ID-unset} ORDER=\${CUDA_DEVICE_ORDER-unset}" >>"$FAKE_LOG"
 if [ "$seed" = 2 ] && [ -n "\${FAKE_HANG:-}" ] && [ -e "$FAKE_HANG" ]; then sleep 30 & wait; fi
@@ -356,12 +357,11 @@ test("workers get their GPU and the EGL device on its PCI bus; only a heavy robo
 		["-n 9"],
 		"the lock is taken once, not per worker",
 	);
-	// RoboDojo (Isaac Sim) is heavy too, and its env server pins the GPU from --cuda-device.
+	// RoboDojo (Isaac Sim) is heavy too, and its env server pins the GPU from PI_EMBODIED_CUDA_DEVICE.
 	const dojo = s.run(["-j", "2", "--gpus", "1", "robodojo", join(s.dir, "dojo"), "stack_bowls", "0-1"], env);
 	assert.equal(dojo.status, 0, dojo.stdout + dojo.stderr);
 	assert.deepEqual(readFileSync(flocks, "utf8").trim().split("\n"), ["-n 9", "-n 9"]);
-	const dojoArgv = readFileSync(join(s.dir, "dojo/stack_bowls_s0/argv"), "utf8").split("\n");
-	assert.equal(dojoArgv[dojoArgv.indexOf("--cuda-device") + 1], "1");
+	assert.match(readFileSync(join(s.dir, "dojo/stack_bowls_s0/env"), "utf8"), /^PI_EMBODIED_CUDA_DEVICE=1$/m);
 	const two = s.run(["-j", "2", "--gpus", "0,1", "maniskill", join(s.dir, "two"), "PickCube-v1", "0-3"], env);
 	assert.equal(two.status, 0, two.stdout + two.stderr);
 	const byGpu = new Set(
@@ -374,8 +374,7 @@ test("workers get their GPU and the EGL device on its PCI bus; only a heavy robo
 	// The MuJoCo env servers pin the GPU themselves (and drop CUDA_VISIBLE_DEVICES before importing robosuite).
 	const lib = s.run(["--gpus", "1", "libero", join(s.dir, "lib"), "libero_10_task", "0", "0"], env);
 	assert.equal(lib.status, 0, lib.stdout + lib.stderr);
-	const argv = readFileSync(join(s.dir, "lib/libero_10_task_t0_s0/argv"), "utf8").split("\n");
-	assert.equal(argv[argv.indexOf("--cuda-device") + 1], "1");
+	assert.match(readFileSync(join(s.dir, "lib/libero_10_task_t0_s0/env"), "utf8"), /^PI_EMBODIED_CUDA_DEVICE=1$/m);
 	const plain = s.run(["maniskill", join(s.dir, "none"), "PickCube-v1", "0"]);
 	assert.equal(plain.status, 0);
 	assert.equal(s.calls().at(-1)?.slice(1).join(" "), "CVD=unset EGL=unset ORDER=unset");
@@ -436,7 +435,11 @@ test("--max-api-concurrency and --dashboard-ports reach every pi call", () => {
 		const argv = readFileSync(join(out, cell, "argv"), "utf8").split("\n");
 		assert.ok(argv.some((a) => a.endsWith("/api-gate.ts")));
 		assert.equal(argv[argv.indexOf("--max-api-concurrency") + 1], "1");
-		assert.equal(argv[argv.indexOf("--api-slots") + 1], join(out, ".parallel/api"));
+		assert.ok(
+			readFileSync(join(out, cell, "env"), "utf8").includes(
+				`PI_EMBODIED_DIRS_API_SLOTS=${join(out, ".parallel/api")}`,
+			),
+		);
 		ports.add(argv[argv.indexOf("--dashboard-port") + 1]);
 	}
 	assert.deepEqual([...ports].sort(), ["8765", "8767"]);

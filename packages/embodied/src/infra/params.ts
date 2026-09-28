@@ -8,7 +8,8 @@
  * - the result records `params` (every experiment flag's effective value) and `params_default`
  *   (its registered default), so a result names its configuration and the eval scripts compare
  *   runs generically (../scripts/params-match.mjs) instead of by hand-kept lists.
- * Deployment flags (where services and files live) are not experiment parameters and are left out.
+ * Where services and files live is deployment config (./config.ts), not flags; the few flags
+ * that remain about where things run (`--deployment`, `--env`, ...) are left out of `params`.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -63,26 +64,13 @@ export const NUMERIC: Record<string, { min?: number; max?: number; integer?: boo
 
 /**
  * Flags that say where things run or land, not how the experiment runs: left out of `params`
- * (PARAMS.md 3 moves them into the deployment config).
+ * (the rest of that kind is deployment config, ./config.ts).
  */
 export const DEPLOYMENT: ReadonlySet<string> = new Set([
+	"deployment",
 	"env",
 	"robot-env",
-	"services",
-	"python",
-	"robocasa-python",
-	"flywheel-python",
-	"cuda-device",
-	"gpu-id",
-	"ffmpeg",
-	"out",
-	"output-dir",
-	"log-dir",
-	"video-dir",
-	"memory-dir",
-	"flywheel-root",
-	"flash-plans",
-	"api-slots",
+	"serve-lock",
 	"dashboard",
 	"dashboard-port",
 	"dashboard-host",

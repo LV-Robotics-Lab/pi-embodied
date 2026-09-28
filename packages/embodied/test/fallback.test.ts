@@ -10,6 +10,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { FALLBACK_ENTRY, fallback, fallbackArgs } from "../src/planner/fallback.ts";
 import { defineRobot, RESULT_ENTRY } from "../src/robot.ts";
+import { deployFlags } from "./helpers/deployment.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 /** One scripted delegate turn: a reply, an error message, an error after some text, or silence. */
@@ -38,6 +39,7 @@ const model = (ref: string): Model<any> => {
 
 /** A stub pi and model registry: each delegate's turns follow its script; `calls` records who was asked with what. */
 function fakePi(flagValues: Record<string, unknown> = {}) {
+	flagValues = deployFlags(flagValues);
 	const handlers = new Map<string, Handler[]>();
 	const flags: Record<string, unknown> = {};
 	const providers: any[] = [];

@@ -51,9 +51,11 @@ methods in `services/PROTOCOL.md` under "Env servers".
 
 `src/<robot>/index.ts` exports `default function <robot>(pi: ExtensionAPI)`:
 
-1. Register the task flags (`--task`, `--seed`, ...) and the service flags: `--env` (attach to a
-   running server), `--services`, `--python` (default `$PI_EMBODIED_PYTHON`), and the endpoint flag
-   of every model server it attaches to (`--sam3 http://127.0.0.1:18300`, ...). Experiment
+1. Register the task flags (`--task`, `--seed`, ...) and `--env` (attach to a running server).
+   Where things live is deployment config, not flags (`src/infra/config.ts`): the services dir is
+   `servicesDir(pi)`, the env server's Python `python(pi, "<robot>")`, a model server's endpoint
+   `service(pi, "sam3")`, an output directory `dir(pi, "logs")`. A service that changes results
+   gets a switch that says what, never where (`--detections`, `--grasp contact_graspnet`). Experiment
    parameters are flags; enums use `StringEnum` from `@earendil-works/pi-ai`.
 2. Call `defineRobot(pi, spec)` before registering anything else. The spec names the robot, its task
    flags, `start` (bring the robot up and return the tools to activate; throwing fails closed),

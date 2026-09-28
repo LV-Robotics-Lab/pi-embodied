@@ -1,7 +1,7 @@
 /**
  * A cap on concurrent planner calls across pi processes, for eval-parallel.sh --max-api-concurrency.
  *
- *   pi -e packages/embodied/src/planner/api-gate.ts --api-slots <dir> --max-api-concurrency <n> ...
+ *   pi -e packages/embodied/src/planner/api-gate.ts --max-api-concurrency <n>   (slots: dirs.api_slots) ...
  *
  * Each model call takes one of n slot files in <dir> (created exclusively, holding the pid) before
  * the request and gives it back when the assistant message ends, so N workers whose episodes spend
@@ -14,6 +14,7 @@
 import { closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { dir as cfgDir } from "../infra/config.ts";
 
 const alive = (pid: number) => {
 	try {
@@ -81,10 +82,9 @@ export function release(path: string) {
 }
 
 export default function apiGate(pi: ExtensionAPI) {
-	pi.registerFlag("api-slots", { type: "string", description: "Directory of the shared model-call slots" });
 	pi.registerFlag("max-api-concurrency", {
 		type: "string",
-		description: "Model calls at once across the pi processes sharing --api-slots",
+		description: "Model calls at once across the pi processes sharing dirs.api_slots (deployment config)",
 	});
 	let held: string | undefined;
 	const free = () => {
@@ -92,7 +92,7 @@ export default function apiGate(pi: ExtensionAPI) {
 		held = undefined;
 	};
 	const config = () => {
-		const dir = pi.getFlag("api-slots") as string | undefined;
+		const dir = cfgDir(pi, "api_slots") || undefined;
 		const n = Number(pi.getFlag("max-api-concurrency"));
 		return dir && n > 0 ? { dir, n } : undefined;
 	};

@@ -5,7 +5,7 @@
 # chat templates copied verbatim into ./chat_templates/.
 #
 # Serve a base VLM + Show-Harness LoRA adapter(s) on an OpenAI-compatible endpoint for
-# `pi --model finetuned/<adapter> --ft-endpoint http://127.0.0.1:$PORT/v1` (packages/embodied/src/modes/finetuned).
+# `pi --model finetuned/<adapter>` with services.finetuned = http://127.0.0.1:$PORT/v1 (packages/embodied/src/modes/finetuned).
 #
 #   bash serve.sh                                      # the released sim adapter on GPU1, :8010
 #   MODEL=<base dir> FAMILY=qwen3_5 LORA=<name>=<adapter dir>[,<name>=<dir>] bash serve.sh

@@ -8,6 +8,7 @@ import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import franka, { DETECTIONS_ENTRY } from "../src/robots/franka/index.ts";
 import { codeApiReply } from "./helpers/code-api.ts";
+import { deployFlags } from "./helpers/deployment.ts";
 
 /** A stub pi that only records registrations (no robot starts: tools are inspected, not run). */
 function fakePi() {
@@ -59,6 +60,7 @@ type Handler = (event: any, ctx: any) => unknown;
 
 /** A stub pi with an operator UI: `confirms` answers ui.confirm in order (the reset, then each program). */
 function operatorPi(values: Record<string, unknown>, confirms: boolean[]) {
+	values = deployFlags(values);
 	const handlers = new Map<string, Handler[]>();
 	const flags: Record<string, unknown> = {};
 	const tools = new Map<string, any>();

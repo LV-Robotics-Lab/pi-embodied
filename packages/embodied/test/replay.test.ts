@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import replay, { loadRecording, REPLAY_ENTRY, taskDiff } from "../src/capabilities/replay/index.ts";
+import { deployFlags } from "./helpers/deployment.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
@@ -86,6 +87,7 @@ function recordSession(finish = true) {
 }
 
 function fakePi(flags: Record<string, unknown>, task: Record<string, string>) {
+	flags = deployFlags(flags);
 	const handlers = new Map<string, Handler[]>();
 	const entries: { type: string; data: any }[] = [];
 	const stderr: string[] = [];

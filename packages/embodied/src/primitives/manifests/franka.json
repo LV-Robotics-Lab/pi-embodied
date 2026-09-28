@@ -409,7 +409,7 @@
 				}
 			},
 			"doc": {
-				"code": "A TCP grasp pose for an object named in words (CaP-X's sample_grasp_pose): [position (3,), quaternion_wxyz (4,)], base frame. With a grasp server (--contact-graspnet, ...) the best plan_grasp candidate; without one, the object's median depth point with the current TCP orientation (a straight top-down grasp when the gripper points down).\n\nExample:\n    pos, quat = sample_grasp_pose(\"red block\")\n    goto_pose(pos, quat, z_approach=0.1)"
+				"code": "A TCP grasp pose for an object named in words (CaP-X's sample_grasp_pose): [position (3,), quaternion_wxyz (4,)], base frame. With a grasp server (--grasp contact_graspnet, ...) the best plan_grasp candidate; without one, the object's median depth point with the current TCP orientation (a straight top-down grasp when the gripper points down).\n\nExample:\n    pos, quat = sample_grasp_pose(\"red block\")\n    goto_pose(pos, quat, z_approach=0.1)"
 			}
 		},
 		{

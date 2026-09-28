@@ -1,8 +1,8 @@
 /**
  * Preflight check for a robot run (Show-Harness scripts/check_setup.py): read-only, nothing moves.
  *
- *   node packages/embodied/src/infra/check.ts libero [--python P] [--services DIR] [--units] \
- *     [--model provider/id] [--dashboard-port 8779] [--vla URL] [--sam3 URL] [--endpoint name=URL ...]
+ *   node packages/embodied/src/infra/check.ts libero [--deployment NAME] [--units] \
+ *     [--model provider/id] [--dashboard-port 8779] [--endpoint name=URL ...]
  *   pi -e packages/embodied/src/robots/libero ...   then /robot-check   (every robot: ./robot.ts registers it)
  *
  * Checks, per robot (SPECS): the services Python (its version, and importing the robot's env server
@@ -27,9 +27,11 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { python as cfgPython, type ServiceKey, service, servicesDir } from "./config.ts";
 import { parseEndpoint } from "./rpc.ts";
 
-const SERVICES = fileURLToPath(new URL("../../../../services", import.meta.url));
+/** The config readers take a pi; /robot-check has only the argv, so its `--deployment` is read from there. */
+const configPi = (flags: Flags) => ({ getFlag: (name: string) => flags[name] }) as unknown as ExtensionAPI;
 
 export type Status = "PASS" | "WARN" | "FAIL" | "SKIP";
 export type Row = { status: Status; check: string; detail: string };
@@ -47,16 +49,23 @@ type PathSpec = {
 	contains?: string;
 };
 /**
- * A server the robot attaches to: `flag` (and its default) names the endpoint. `calls`: read-only
+ * A server the robot attaches to: `flag` or the deployment's `services.<service>` names the endpoint. `calls`: read-only
  * methods sent after healthz, each a real request the robot makes too (an env server's `env.get_env_meta`).
  */
-type EndpointSpec = { flag: string; default?: string; why: string; toolsOnly?: boolean; calls?: string[] };
+type EndpointSpec = {
+	/** An attach flag naming the endpoint (`robot-env`), or `service`: the deployment config's services.<key>. */
+	flag?: string;
+	service?: ServiceKey;
+	why: string;
+	toolsOnly?: boolean;
+	calls?: string[];
+};
 /** What a running env server is asked beyond healthz: its facade methods are served under `env.` (as the robots call them). */
 export const ENV_CALLS = ["env.get_env_meta"];
 
 export type RobotCheckSpec = {
-	/** The flag naming the services Python, and the environment variables it defaults to. */
-	python: { flag: string; env: string[] };
+	/** The deployment config's python.<venv>, and the environment variables below it. */
+	python: { venv: string; env: string[] };
 	/** Modules imported with PYTHONPATH=<services>, as the env server imports them. */
 	imports: string[];
 	/** Packages only located (importlib.util.find_spec), where importing needs a running app (Isaac Sim). */
@@ -69,12 +78,12 @@ export type RobotCheckSpec = {
 	gpu: boolean;
 };
 
-const PY = (...env: string[]) => ({ flag: "python", env: [...env, "PI_EMBODIED_PYTHON"] });
+const PY = (venv: string, ...env: string[]) => ({ venv, env });
 const ENV_SERVER = (robot: string) => `pi_embodied_services.robots.${robot}.env_server`;
 
 export const SPECS: Record<string, RobotCheckSpec> = {
 	libero: {
-		python: PY(),
+		python: PY("libero"),
 		imports: [ENV_SERVER("libero"), "rlinf.envs.libero.libero_env", "mujoco"],
 		pyEnv: { MUJOCO_GL: "egl", ROBOT_PLATFORM: "LIBERO" },
 		paths: [
@@ -82,32 +91,32 @@ export const SPECS: Record<string, RobotCheckSpec> = {
 			{ env: "SAM3_CHECKPOINT_PATH", kind: "file", required: false, why: "SAM3 server (serve.sh)" },
 		],
 		endpoints: [
-			{ flag: "vla", default: "http://127.0.0.1:18200", why: "Pi0.5 VLA (pi0_pick)", toolsOnly: true },
-			{ flag: "sam3", default: "http://127.0.0.1:18300", why: "SAM3 (segment)", toolsOnly: true },
+			{ service: "vla", why: "Pi0.5 VLA (pi0_pick)", toolsOnly: true },
+			{ service: "sam3", why: "SAM3 (segment)", toolsOnly: true },
 		],
 		gpu: true,
 	},
 	maniskill: {
-		python: PY(),
+		python: PY("maniskill"),
 		imports: [ENV_SERVER("maniskill"), "mani_skill.envs", "sapien"],
 		paths: [{ env: "VK_ICD_FILENAMES", kind: "file", required: false, why: "SAPIEN's Vulkan renderer" }],
 		gpu: true,
 	},
 	metaworld: {
-		python: PY(),
+		python: PY("metaworld"),
 		imports: [ENV_SERVER("metaworld"), "metaworld.env_dict", "mujoco"],
 		pyEnv: { MUJOCO_GL: "egl" },
 		gpu: true,
 	},
 	robosuite: {
-		python: PY(),
+		python: PY("robosuite"),
 		imports: [ENV_SERVER("robosuite"), "robosuite", "mujoco"],
 		pyEnv: { MUJOCO_GL: "egl" },
-		endpoints: [{ flag: "sam3", default: "http://127.0.0.1:18300", why: "SAM3 (segment)", toolsOnly: true }],
+		endpoints: [{ service: "sam3", why: "SAM3 (segment)", toolsOnly: true }],
 		gpu: true,
 	},
 	robolab: {
-		python: PY(),
+		python: PY("robolab"),
 		imports: [ENV_SERVER("robolab")],
 		find: ["isaaclab", "isaacsim"],
 		paths: [
@@ -130,7 +139,7 @@ export const SPECS: Record<string, RobotCheckSpec> = {
 		gpu: true,
 	},
 	robodojo: {
-		python: PY(),
+		python: PY("robodojo"),
 		imports: [ENV_SERVER("robodojo")],
 		find: ["isaaclab", "isaacsim", "curobo"],
 		paths: [
@@ -147,40 +156,40 @@ export const SPECS: Record<string, RobotCheckSpec> = {
 		gpu: true,
 	},
 	robocasa: {
-		python: { flag: "robocasa-python", env: ["ROBOCASA_PYTHON", "PI_EMBODIED_PYTHON"] },
+		python: PY("robocasa", "ROBOCASA_PYTHON"),
 		imports: [ENV_SERVER("robocasa"), "robocasa", "robosuite"],
-		endpoints: [{ flag: "rldx", default: "http://127.0.0.1:18500", why: "RLDX-1 VLA" }],
+		endpoints: [{ service: "rldx", why: "RLDX-1 VLA" }],
 		gpu: true,
 	},
 	robotwin: {
-		python: PY(),
+		python: PY("robotwin"),
 		imports: [ENV_SERVER("robotwin")],
 		find: ["sapien", "robotwin"],
 		paths: [{ env: "ROBOTWIN_ASSETS_PATH", flag: "assets", kind: "dir", required: true, why: "RoboTwin assets" }],
-		endpoints: [{ flag: "lingbot", default: "ws://127.0.0.1:18400", why: "LingBot-VLA", toolsOnly: true }],
+		endpoints: [{ service: "lingbot", why: "LingBot-VLA", toolsOnly: true }],
 		gpu: true,
 	},
 	franka: {
-		python: PY(),
+		python: PY("franka"),
 		imports: [ENV_SERVER("franka")],
 		endpoints: [
 			{ flag: "robot-env", why: "running env server", calls: ENV_CALLS },
-			{ flag: "robot-vla", why: "Pi0.5 VLA", toolsOnly: true },
+			{ service: "vla", why: "Pi0.5 VLA", toolsOnly: true },
 		],
 		gpu: false,
 	},
 	dual_franka: {
-		python: PY(),
+		python: PY("dual_franka"),
 		imports: [ENV_SERVER("dual_franka")],
 		endpoints: [
 			{ flag: "robot-env", why: "running env server", calls: ENV_CALLS },
-			{ flag: "robot-vla", why: "Pi0.5 VLA", toolsOnly: true },
-			{ flag: "robot-sam3", why: "SAM3", toolsOnly: true },
+			{ service: "vla", why: "Pi0.5 VLA", toolsOnly: true },
+			{ service: "sam3", why: "SAM3", toolsOnly: true },
 		],
 		gpu: false,
 	},
 	piper: {
-		python: PY(),
+		python: PY("piper"),
 		imports: [ENV_SERVER("piper")],
 		endpoints: [{ flag: "robot-env", why: "running env server", calls: ENV_CALLS }],
 		gpu: false,
@@ -248,8 +257,9 @@ type ImportReport = {
 };
 
 async function pythonRows(spec: RobotCheckSpec, flags: Flags, timeoutMs: number): Promise<Row[]> {
-	const python = str(flags[spec.python.flag]) ?? spec.python.env.map((k) => process.env[k]).find(Boolean) ?? "python";
-	const services = str(flags.services) ?? process.env.PI_EMBODIED_SERVICES ?? SERVICES;
+	const cfg = configPi(flags);
+	const python = cfgPython(cfg, spec.python.venv, spec.python.env);
+	const services = servicesDir(cfg);
 	if (!existsSync(join(services, "pi_embodied_services")))
 		return [{ status: "FAIL", check: "services", detail: `${services} has no pi_embodied_services package` }];
 	const rows: Row[] = [{ status: "PASS", check: "services", detail: services }];
@@ -425,7 +435,11 @@ async function endpointRows(spec: RobotCheckSpec, flags: Flags): Promise<Row[]> 
 	const units = flags.units === true || flags.units === "true" || flags.units === "pure";
 	const named = (str(flags.endpoint) ?? "").split(",").filter((s) => s.includes("="));
 	const wanted = [
-		...(spec.endpoints ?? []).map((e) => ({ ...e, url: str(flags[e.flag]) ?? e.default })),
+		...(spec.endpoints ?? []).map((e) => ({
+			...e,
+			flag: e.flag ?? `services.${e.service}`,
+			url: e.flag ? str(flags[e.flag]) : e.service ? service(configPi(flags), e.service) || undefined : undefined,
+		})),
 		...(str(flags.env)
 			? [{ flag: "env", why: "running env server", url: str(flags.env), toolsOnly: false, calls: ENV_CALLS }]
 			: []),
@@ -438,7 +452,7 @@ async function endpointRows(spec: RobotCheckSpec, flags: Flags): Promise<Row[]> 
 	];
 	return Promise.all(
 		wanted.map(async (e): Promise<Row> => {
-			const check = `--${e.flag}`;
+			const check = e.flag.startsWith("services.") ? e.flag : `--${e.flag}`;
 			if (!e.url) return { status: "SKIP", check, detail: `not set (${e.why})` };
 			const r = await probeEndpoint(e.url, 3000, "calls" in e ? (e.calls ?? []) : []);
 			// The printed endpoint leaves out a `#token=`.
@@ -671,7 +685,7 @@ export function robotCheck(pi: ExtensionAPI, robot?: string) {
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
 	const robot = process.argv.slice(2).find((a) => !a.startsWith("--"));
 	if (!robot || process.argv.includes("--help")) {
-		console.log(`usage: node check.ts <${Object.keys(SPECS).join("|")}> [--python P] [--services DIR] [--units]
+		console.log(`usage: node check.ts <${Object.keys(SPECS).join("|")}> [--deployment NAME] [--units]
   [--model provider/id] [--dashboard-port N] [--<endpoint flag> URL] [--endpoint name=URL,...] [--timeout s]`);
 		process.exit(robot ? 0 : 2);
 	}

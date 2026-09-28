@@ -22,6 +22,7 @@ import robosuite, {
 	YAW_STEP_RAD,
 } from "../src/robots/robosuite/index.ts";
 import { codeApiReply } from "./helpers/code-api.ts";
+import { deployFlags } from "./helpers/deployment.ts";
 import {
 	type Call,
 	checkPoint,
@@ -38,6 +39,7 @@ type Tool = { name: string; description: string; parameters: any; execute: (...a
 
 /** A stub pi recording the flags and tools the robot registers (flags at their defaults, or `values`). */
 function stubPi(values: Record<string, unknown> = {}) {
+	values = deployFlags(values);
 	const handlers = new Map<string, Handler[]>();
 	const flags: Record<string, { default?: unknown; description?: string }> = {};
 	const tools = new Map<string, Tool>();
@@ -110,15 +112,15 @@ test("the seven CaP-X tasks, their arms and grippers", () => {
 	assert.equal(hasGripper("Stack"), true);
 });
 
-test("flags: --task lists the tasks, --seed, --max-move, the service URLs, and no privileged tool at load", () => {
+test("flags: --task lists the tasks, --seed, --max-move, the service switches, and no privileged tool at load", () => {
 	const f = stubPi();
 	robosuite(f.pi);
 	assert.equal(f.flags.task.default, "Lift");
 	for (const t of TASKS) assert.match(String(f.flags.task.description), new RegExp(t));
 	assert.equal(f.flags.seed.default, "0");
 	assert.equal(f.flags["max-move"].default, String(MAX_MOVE_M));
-	assert.equal(f.flags.sam3.default, "http://127.0.0.1:18300");
-	assert.ok("ik" in f.flags && "contact-graspnet" in f.flags && "cuda-device" in f.flags && "privileged" in f.flags);
+	assert.ok(!("sam3" in f.flags) && !("cuda-device" in f.flags), "where services run is deployment config");
+	assert.ok("ik" in f.flags && "grasp" in f.flags && "privileged" in f.flags);
 	assert.ok(!f.tools.has("ground_truth_poses"), "--privileged off registers nothing");
 	// Units and VDM are mounted.
 	assert.ok("units" in f.flags && "vdm" in f.flags);
@@ -210,8 +212,7 @@ test("the frame text matches robosuite's cameras and the opposed two-arm layout"
 test("grasp tools: plan_grasp, plan_place and check_attached are registered over the env server's planner", () => {
 	const f = stubPi();
 	robosuite(f.pi);
-	for (const name of ["contact-graspnet", "graspgenx", "anyplace", "anygrasp", "graspnet1b", "attach-vlm-model"])
-		assert.ok(name in f.flags, name);
+	for (const name of ["grasp", "place", "attach-vlm-model"]) assert.ok(name in f.flags, name);
 	for (const name of ["plan_grasp", "plan_place", "check_attached"]) assert.ok(f.tools.has(name), name);
 	const props = (name: string) => f.tools.get(name)!.parameters.properties;
 	assert.deepEqual(props("plan_grasp").camera.enum, ["agentview", "wrist"]);

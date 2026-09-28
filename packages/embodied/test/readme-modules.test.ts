@@ -13,14 +13,14 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 const MODULES: Record<string, string> = {
 	memory: "memory-profile",
 	explore: "explore",
-	video: "video-dir",
+	video: "video-overlay",
 	units: "units",
 	VDM: "vdm",
 	code: "code",
 	"`--privileged`": "privileged",
 	flywheel: "collect-flywheel-data",
 	operator: "operator",
-	Flash: "flash-plans",
+	Flash: "flash-reanchor",
 	XPolicyLab: "xpolicy",
 };
 

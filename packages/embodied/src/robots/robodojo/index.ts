@@ -1,7 +1,7 @@
 /**
  * RoboDojo robot for pi: one RoboDojo simulation task (Isaac Sim / Isaac Lab) on its two ARX X5 arms.
  *
- *   pi -e packages/embodied/src/robots/robodojo --task stack_bowls --seed 0 --cuda-device 1
+ *   pi -e packages/embodied/src/robots/robodojo --task stack_bowls --seed 0
  *   pi -e packages/embodied/src/robots/robodojo --units --task push_T --seed 3     (Show-Harness action units, per arm)
  *   pi -e packages/embodied/src/robots/robodojo --task stack_bowls --code=true --code-api=low   (run_code, CaP-X's S3)
  *
@@ -31,6 +31,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { recipeFlash } from "../../capabilities/flash/recipe.ts";
 import type { FlywheelObs, FlywheelSpec } from "../../capabilities/flywheel.ts";
+import { cudaDevice, python, servicesDir } from "../../infra/config.ts";
 import { MOLMO, SAM3 } from "../../infra/model-services.ts";
 import { trackFlags } from "../../infra/params.ts";
 import { encodePng } from "../../infra/png.ts";
@@ -47,7 +48,7 @@ import {
 import { mountGraspTool } from "../../primitives/grasp.ts";
 import { pointActive, pointTool, registerPointFlags } from "../../primitives/pointing.ts";
 import type { XPolicyAction, XPolicyObs } from "../../primitives/xpolicy.ts";
-import { attach, defineRobot, type Json, rgbOf, SERVICES, u8 } from "../../robot.ts";
+import { attach, defineRobot, type Json, rgbOf, u8 } from "../../robot.ts";
 
 const read = (name: string) => template(new URL(name, import.meta.url));
 const SYSTEM = read("./SYSTEM.md");
@@ -188,26 +189,11 @@ export default function robodojo(pi: ExtensionAPI) {
 		default: "0",
 		description: "RoboDojo layout set (Assets/Eval_Layout/RoboDojo/arx_x5/<eval-seed>)",
 	});
-	pi.registerFlag("cuda-device", {
-		type: "string",
-		default: "0",
-		description: "GPU for Isaac Sim and cuRobo (the server sets CUDA_VISIBLE_DEVICES to it)",
-	});
 	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
-	// --detections (with --sam3) / --unidepth: SAM3 masks with ids and UniDepth on the env server; --point:
-	// Molmo's point over --molmo (../primitives/detections.ts, ../primitives/pointing.ts).
-	registerDetectionFlags(pi, { sam3: true });
+	// --detections / --depth unidepth: SAM3 masks with ids and UniDepth on the env server; --point:
+	// Molmo's point over services.molmo (../primitives/detections.ts, ../primitives/pointing.ts).
+	registerDetectionFlags(pi);
 	registerPointFlags(pi);
-	pi.registerFlag("services", {
-		type: "string",
-		default: process.env.PI_EMBODIED_SERVICES ?? SERVICES,
-		description: "pi-embodied services dir",
-	});
-	pi.registerFlag("python", {
-		type: "string",
-		default: process.env.PI_EMBODIED_PYTHON ?? "python",
-		description: "Python for the env server (the robodojo venv)",
-	});
 
 	let env: RpcClient;
 	let obs: Obs;
@@ -219,7 +205,7 @@ export default function robodojo(pi: ExtensionAPI) {
 		// Tools and code primitives: ../../primitives/manifests/robodojo.json (the env server reads it too).
 		manifest: "robodojo",
 		vars: () => ({ arms: [...ARMS], cameras: [...VIEWS], max_move: MAX_MOVE_M, max_rotate: MAX_ROTATE_RAD }),
-		// As the server's `_has`: the perception it runs (--detections / --unidepth start it), from its meta.
+		// As the server's `_has`: the perception it runs (--detections / --depth unidepth start it), from its meta.
 		capabilities: (c) =>
 			({
 				sam3: meta?.capabilities?.perception?.segment === true,
@@ -537,7 +523,7 @@ export default function robodojo(pi: ExtensionAPI) {
 		return { content: [{ type: "text" as const, text: JSON.stringify(out) }], details: out };
 	});
 
-	// SAM3 masks with ids and UniDepth over the env server's perception (active with --detections / --unidepth).
+	// SAM3 masks with ids and UniDepth over the env server's perception (active with --detections / --depth unidepth).
 	for (const d of detectionTools(pi, {
 		call: (method, kwargs, timeoutMs) => env.call<Json>(method, kwargs, timeoutMs ?? READ_MS, [], robot.signal),
 		cameras: VIEWS,
@@ -626,14 +612,14 @@ export default function robodojo(pi: ExtensionAPI) {
 		const endpoint = pi.getFlag("env") as string | undefined;
 		if (endpoint) env = await attach(endpoint, 1_200_000);
 		else {
-			const services = flag("services", SERVICES);
+			const services = servicesDir(pi);
 			env = await robot.serve({
-				python: flag("python", "python"),
+				python: python(pi, "robodojo"),
 				args: [
 					...["-m", "pi_embodied_services.robots.robodojo.env_server"],
 					...["--task", task, "--seed", seed, "--eval-seed", flag("eval-seed", "0")],
-					...["--cuda-device", flag("cuda-device", "0")],
-					...detectionArgs(pi, flag("sam3", "")),
+					...["--cuda-device", cudaDevice(pi) || "0"],
+					...detectionArgs(pi, { sam3: true }),
 				],
 				cwd: services,
 				env: { ...process.env, PYTHONPATH: services, OMNI_KIT_ACCEPT_EULA: "YES" },

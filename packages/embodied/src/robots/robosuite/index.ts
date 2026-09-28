@@ -26,6 +26,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
 import { simDistil } from "../../capabilities/explore.ts";
 import type { FlywheelObs, FlywheelSpec } from "../../capabilities/flywheel.ts";
+import { cudaDevice, python, service, servicesDir } from "../../infra/config.ts";
 import { MOLMO, SAM3 } from "../../infra/model-services.ts";
 import { trackFlags } from "../../infra/params.ts";
 import { encodePng } from "../../infra/png.ts";
@@ -34,10 +35,17 @@ import { finishMove, type Move, type MoveUnit, type Vec3 } from "../../modes/uni
 import { template } from "../../planner/context-version.ts";
 import { detectionActive, detectionArgs, detectionTools, registerDetectionFlags } from "../../primitives/detections.ts";
 import { geometryArgs, geometryTools, SERVO, splitImages } from "../../primitives/geometry.ts";
-import { graspActive, graspArgs, graspTools, mountGraspTool, registerGraspFlags } from "../../primitives/grasp.ts";
+import {
+	graspActive,
+	graspArgs,
+	graspTools,
+	mountGraspTool,
+	placeOn,
+	registerGraspFlags,
+} from "../../primitives/grasp.ts";
 import { ikArgs, type Reach, registerIkFlag } from "../../primitives/ik.ts";
 import { pointActive, pointTool, registerPointFlags } from "../../primitives/pointing.ts";
-import { attach, defineRobot, type Json, plain, rgbOf, SERVICES, toolResult } from "../../robot.ts";
+import { attach, defineRobot, type Json, plain, rgbOf, toolResult } from "../../robot.ts";
 
 const SYSTEM = template(new URL("./SYSTEM.md", import.meta.url));
 const EXPLORE = template(new URL("./explore.md", import.meta.url));
@@ -141,39 +149,20 @@ export default function robosuite(pi: ExtensionAPI) {
 		description: `Task: ${TASKS.join(" | ")}`,
 	});
 	pi.registerFlag("seed", { type: "string", default: "0", description: "Reset seed (the object layout)" });
-	pi.registerFlag("sam3", {
-		type: "string",
-		default: "http://127.0.0.1:18300",
-		description: "SAM3 server (segment, and code mode's segment primitive)",
-	});
 	// --ik: the env server checks reach before every move, and preview_reach asks it (../ik.ts).
 	registerIkFlag(pi);
-	// --contact-graspnet / --graspgenx / --anyplace / --anygrasp: plan_grasp, plan_place and check_attached (../primitives/grasp.ts).
+	// --grasp <backends> [--place anyplace]: plan_grasp, plan_place and check_attached (../primitives/grasp.ts).
 	registerGraspFlags(pi);
-	// --detections / --unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
+	// --detections / --depth unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
 	registerDetectionFlags(pi);
-	// --point: Molmo's point over its --molmo server (../primitives/pointing.ts).
-	registerPointFlags(pi, { molmo: true });
+	// --point: Molmo's point over services.molmo (../primitives/pointing.ts).
+	registerPointFlags(pi);
 	pi.registerFlag("max-move", {
 		type: "string",
 		default: String(MAX_MOVE_M),
 		description: "Largest translation one move_to / move_delta may command, m",
 	});
-	pi.registerFlag("cuda-device", {
-		type: "string",
-		description: "GPU for the env server's MuJoCo EGL rendering (physical CUDA ordinal)",
-	});
 	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
-	pi.registerFlag("services", {
-		type: "string",
-		default: process.env.PI_EMBODIED_SERVICES ?? SERVICES,
-		description: "pi-embodied services dir",
-	});
-	pi.registerFlag("python", {
-		type: "string",
-		default: process.env.PI_EMBODIED_PYTHON ?? "python",
-		description: "Python for the env server (the robosuite venv)",
-	});
 
 	let env: RpcClient;
 	let obs: Obs;
@@ -220,12 +209,12 @@ export default function robosuite(pi: ExtensionAPI) {
 		}),
 		capabilities: (c) =>
 			({
-				sam3: Boolean(flag("sam3", "")),
-				ik: Boolean(flag("ik", "")),
+				sam3: Boolean(service(pi, "sam3")),
+				ik: pi.getFlag("ik") === true,
 				grasp: graspActive(pi).length > 0,
-				place: Boolean(flag("anyplace", "")),
+				place: placeOn(pi),
 				geometry: pi.getFlag("geometry") === true && !twoArm(),
-				unidepth: Boolean(String(pi.getFlag("unidepth") ?? "").trim()),
+				unidepth: Boolean(String(pi.getFlag("depth") ?? "").trim()),
 				fingers: hasGripper(robot.task.task),
 			})[c] ?? false,
 		services: { models: [SAM3, MOLMO] },
@@ -690,7 +679,7 @@ export default function robosuite(pi: ExtensionAPI) {
 		}),
 	);
 
-	// SAM3 masks with ids and UniDepth over the env server's perception (active with --detections / --unidepth).
+	// SAM3 masks with ids and UniDepth over the env server's perception (active with --detections / --depth unidepth).
 	for (const d of detectionTools(pi, {
 		call: (method, kwargs, timeoutMs) => call<Json>(method, kwargs, [], robot.signal, timeoutMs ?? 120_000),
 		cameras: ["agentview", "wrist"],
@@ -767,20 +756,20 @@ export default function robosuite(pi: ExtensionAPI) {
 		const endpoint = pi.getFlag("env") as string | undefined;
 		if (endpoint) env = await attach(endpoint);
 		else {
-			const services = flag("services", SERVICES);
-			const cuda = pi.getFlag("cuda-device") as string | undefined;
+			const services = servicesDir(pi);
+			const cuda = cudaDevice(pi) || undefined;
 			env = await robot.serve({
-				python: flag("python", "python"),
+				python: python(pi, "robosuite"),
 				args: [
 					"-m",
 					"pi_embodied_services.robots.robosuite.env_server",
 					...["--task", task, "--seed", seed, "--max-move", flag("max-move", String(MAX_MOVE_M))],
-					...["--sam3", flag("sam3", "")],
+					...["--sam3", service(pi, "sam3")],
 					...(cuda ? ["--cuda-device", cuda] : []),
-					...ikArgs(pi.getFlag("ik")),
+					...ikArgs(pi),
 					...graspArgs(pi),
 					// The server takes --sam3 for its own segment already.
-					...detectionArgs(pi, ""),
+					...detectionArgs(pi, { sam3: false }),
 					...(TWO_ARM.includes(task as Task) ? [] : geometryArgs(pi)),
 				],
 				cwd: services,

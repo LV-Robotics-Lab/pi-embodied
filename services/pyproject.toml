@@ -87,7 +87,7 @@ viser = [
 flywheel = [
     # LeRobot v3.0 export of Flywheel episodes (/flywheel-export; lerobot 0.4 writes
     # v3.0, Python >= 3.10). Its numpy 2 and huggingface-hub pins break the LIBERO
-    # extra, so install it into its own environment and point pi's --flywheel-python at it.
+    # extra, so install it into its own environment and point pi's python.flywheel at it.
     "lerobot>=0.4.4,<0.5",
 ]
 # Third-party VLA adapters (components/openvla_server.py, openvla_oft_server.py,

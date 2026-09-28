@@ -20,6 +20,7 @@ import {
 	SPECS,
 } from "../src/infra/check.ts";
 import { parseEndpoint } from "../src/infra/rpc.ts";
+import { useDeployment } from "./helpers/deployment.ts";
 
 /** A services-style RPC server answering healthz with `ok`. */
 async function rpcServer(ok: boolean) {
@@ -258,16 +259,20 @@ test(
 	{ skip: !python },
 	async () => {
 		const spec: RobotCheckSpec = {
-			python: { flag: "python", env: [] },
+			python: { venv: "fake", env: [] },
 			imports: ["json", "pi_embodied_services", "no_such_module_xyz"],
 			find: ["os", "no_such_package_xyz"],
 			endpoints: [
-				{ flag: "vla", default: `http://127.0.0.1:${await closedPort()}`, why: "VLA", toolsOnly: true },
-				{ flag: "rldx", why: "RLDX" },
+				{ service: "vla", why: "VLA", toolsOnly: true },
+				{ service: "anyplace", why: "AnyPlace" },
 			],
 			gpu: false,
 		};
-		const rows = await runChecks("fake", { python: python as string, units: "true" }, { spec, timeoutMs: 60_000 });
+		useDeployment({
+			python: { default: python as string },
+			services: { vla: `http://127.0.0.1:${await closedPort()}` },
+		});
+		const rows = await runChecks("fake", { units: "true" }, { spec, timeoutMs: 60_000 });
 		const status = Object.fromEntries(rows.map((r) => [r.check, r.status]));
 		assert.equal(status.services, "PASS");
 		assert.equal(status.python, "PASS");
@@ -276,15 +281,17 @@ test(
 		assert.equal(status["import no_such_module_xyz"], "FAIL");
 		assert.equal(status["find os"], "PASS");
 		assert.equal(status["find no_such_package_xyz"], "FAIL");
-		assert.equal(status["--vla"], "WARN");
-		assert.equal(status["--rldx"], "SKIP");
+		assert.equal(status["services.vla"], "WARN");
+		assert.equal(status["services.anyplace"], "SKIP");
 		assert.equal(status.planner, "SKIP");
 		const table = formatTable(rows);
 		assert.match(table, /^NOT READY: \d+ pass, 1 warn, 2 fail, \d+ skip$/m);
 
-		const missing = await runChecks("fake", { python: "/nonexistent/python" }, { spec, timeoutMs: 10_000 });
+		const vla = `http://127.0.0.1:${await closedPort()}`;
+		useDeployment({ python: { default: "/nonexistent/python" }, services: { vla } });
+		const missing = await runChecks("fake", {}, { spec, timeoutMs: 10_000 });
 		assert.match(missing.find((r) => r.check === "python")?.detail ?? "", /not found/);
-		assert.equal(missing.find((r) => r.check === "--vla")?.status, "FAIL");
+		assert.equal(missing.find((r) => r.check === "services.vla")?.status, "FAIL");
 	},
 );
 
@@ -320,7 +327,7 @@ test("/robot-check sends a URL#token=HEX endpoint's token, as attach() does, and
 			{ "robot-env": `${url}#token=abc123` },
 			{
 				spec: {
-					python: { flag: "python", env: [] },
+					python: { venv: "x", env: [] },
 					imports: [],
 					gpu: false,
 					endpoints: [{ flag: "robot-env", why: "env", calls: ENV_CALLS }],

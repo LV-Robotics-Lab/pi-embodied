@@ -7,6 +7,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { ground, MOVE_UNITS } from "../src/modes/units/index.ts";
 import metaworld, { EMPTY_WIDTH_M, STEP_M, TASKS, VECTORS, VIEW_SETUP } from "../src/robots/metaworld/index.ts";
 import { codeApiReply } from "./helpers/code-api.ts";
+import { deployFlags } from "./helpers/deployment.ts";
 import {
 	checkDetections,
 	checkPoint,
@@ -22,6 +23,7 @@ type Handler = (event: any, ctx: any) => unknown;
 
 /** A stub pi that records flags, tools and handlers; `values` override flag defaults. */
 function stubPi(values: Record<string, unknown> = {}) {
+	values = deployFlags(values);
 	const handlers = new Map<string, Handler[]>();
 	const flags: Record<string, unknown> = {};
 	const tools = new Map<string, any>();
@@ -92,7 +94,7 @@ test("flags: --task and --seed name the episode, --privileged is registered, not
 	assert.equal(f.flags.seed, "0");
 	assert.equal(f.flags.privileged, false);
 	assert.equal(f.flags.units, "false");
-	assert.match(String(f.flags.sam3), /^http/);
+	assert.ok(!("sam3" in f.flags), "SAM3's endpoint is deployment config");
 	assert.deepEqual(f.active(), []);
 	for (const name of [
 		"view_env_state",

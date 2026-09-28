@@ -4,10 +4,11 @@
  * The Franka robots serve the same primitives under their own names (../franka: `segment`);
  * every other robot's env server serves them as `env.detect` & co.
  *
- *   pi -e packages/embodied/src/robots/metaworld --detections [--sam3 URL] [--unidepth URL]
+ *   pi -e packages/embodied/src/robots/metaworld --detections [--depth unidepth]
  *
- * `--detections` passes the robot's SAM3 server to its env server and activates the three mask
- * tools; `--unidepth <url>` passes the UniDepth server and activates `enhance_depth`. Without
+ * `--detections` passes SAM3 (services.sam3 of the deployment config) to the env server and
+ * activates the three mask tools; `--depth unidepth` passes UniDepth (services.unidepth) and
+ * activates `enhance_depth`. Without
  * them nothing is registered as active and the env server is started as before; the robot
  * activates only what its env server reports in `capabilities.perception` (an attached server
  * may lack a service). Ids (`d3`) are bound to the observation they were cut from: a motion
@@ -17,6 +18,7 @@
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type TSchema, Type } from "typebox";
+import { requireService, service } from "../infra/config.ts";
 import { encodePng } from "../infra/png.ts";
 import { NdArray } from "../infra/rpc.ts";
 import { type Json, message, rgbOf, round } from "../robot.ts";
@@ -52,32 +54,45 @@ export type DetectionRig = {
 	onDepth?: (camera: string, depth: NdArray) => Promise<Json | undefined> | Json | undefined;
 };
 
-/** The flags; `sam3` also registers `--sam3` for a robot that has no SAM3 flag of its own. */
-export function registerDetectionFlags(pi: ExtensionAPI, o: { sam3?: boolean } = {}) {
-	if (o.sam3)
-		pi.registerFlag("sam3", {
-			type: "string",
-			default: "http://127.0.0.1:18300",
-			description: "SAM3 server for --detections",
-		});
+/** `--detections` and `--depth` (`registerDepthFlag`). */
+export function registerDetectionFlags(pi: ExtensionAPI) {
 	pi.registerFlag("detections", {
 		type: "boolean",
 		default: false,
 		description:
-			"SAM3 masks with ids on the env server (detect, select_detection, reject_detection), through the --sam3 server",
+			"SAM3 masks with ids on the env server (detect, select_detection, reject_detection), through services.sam3",
 	});
-	pi.registerFlag("unidepth", {
+	registerDepthFlag(pi);
+}
+
+/** `--depth unidepth`: the env server's enhance_depth through services.unidepth (off when empty). */
+export function registerDepthFlag(pi: ExtensionAPI) {
+	pi.registerFlag("depth", {
 		type: "string",
 		default: "",
-		description: "UniDepth server for the env server's enhance_depth (off when empty)",
+		description:
+			"Depth estimator for the env server's enhance_depth: unidepth (endpoint: services.unidepth); off when empty",
 	});
 }
 
-/** The env server arguments: `--sam3 <url>` with --detections, `--unidepth <url>` when set. */
-export function detectionArgs(pi: ExtensionAPI, sam3: string): string[] {
-	const depth = String(pi.getFlag("unidepth") ?? "").trim();
+/** The UniDepth endpoint `--depth unidepth` asks for, "" when off; an unknown or unconfigured value throws. */
+export function depthUrl(pi: ExtensionAPI): string {
+	const v = String(pi.getFlag("depth") ?? "").trim();
+	if (!v) return "";
+	if (v !== "unidepth") throw new Error(`--depth ${v}: only unidepth`);
+	const s = requireService(pi, "unidepth", "--depth unidepth");
+	if ("error" in s) throw new Error(s.error);
+	return s.url;
+}
+
+/**
+ * The env server arguments: `--sam3 <url>` with --detections (unless the robot passes SAM3 itself:
+ * `sam3: false`), `--unidepth <url>` with --depth unidepth.
+ */
+export function detectionArgs(pi: ExtensionAPI, o: { sam3: boolean }): string[] {
+	const depth = depthUrl(pi);
 	return [
-		...(pi.getFlag("detections") === true && sam3 ? ["--sam3", sam3] : []),
+		...(pi.getFlag("detections") === true && o.sam3 ? ["--sam3", service(pi, "sam3")] : []),
 		...(depth ? ["--unidepth", depth] : []),
 	];
 }
@@ -86,7 +101,7 @@ export function detectionArgs(pi: ExtensionAPI, sam3: string): string[] {
 export function detectionActive(pi: ExtensionAPI, caps: PerceptionCaps | undefined): string[] {
 	return [
 		...(pi.getFlag("detections") === true && caps?.segment ? MASK_TOOLS : []),
-		...(String(pi.getFlag("unidepth") ?? "").trim() && caps?.enhance_depth ? DEPTH_TOOLS : []),
+		...(String(pi.getFlag("depth") ?? "").trim() && caps?.enhance_depth ? DEPTH_TOOLS : []),
 	];
 }
 

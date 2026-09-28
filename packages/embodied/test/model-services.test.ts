@@ -8,9 +8,11 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import type { ServiceKey } from "../src/infra/config.ts";
 import { gpuFreeMiB, lockFile, type ModelService, modelServices, servicePort } from "../src/infra/model-services.ts";
 import { RpcClient } from "../src/infra/rpc.ts";
 import { defineRobot } from "../src/robot.ts";
+import { deployFlags } from "./helpers/deployment.ts";
 
 const PYTHON = process.env.PYTHON ?? "python3";
 
@@ -64,6 +66,7 @@ async function freePort(): Promise<number> {
 }
 
 function stubPi(flags: Record<string, string>) {
+	flags = deployFlags(flags);
 	const values: Record<string, unknown> = {};
 	const handlers = new Map<string, ((e: unknown, ctx: unknown) => unknown)[]>();
 	const pi = {
@@ -89,7 +92,7 @@ function stubPi(flags: Record<string, string>) {
 
 const fake = (name: string, extra: string[] = []): ModelService => ({
 	name,
-	flag: name,
+	service: name as ServiceKey,
 	module: "fake_model",
 	args: () => extra,
 	env: () => ({ FAKE_ENV: name }),
@@ -104,7 +107,7 @@ const healthy = (port: number) =>
 test("servicePort takes only loopback http URLs with a port", () => {
 	assert.equal(servicePort("sam3", "http://127.0.0.1:18300"), 18300);
 	assert.equal(servicePort("sam3", "localhost:18301"), 18301);
-	assert.throws(() => servicePort("molmo", "off"), /--molmo off/);
+	assert.throws(() => servicePort("molmo", "off"), /services\.molmo off/);
 	assert.throws(() => servicePort("vla", "http://gpu-box:18200"), /127\.0\.0\.1/);
 	assert.throws(() => servicePort("lingbot", "ws://127.0.0.1:18400"), /127\.0\.0\.1/);
 });
@@ -166,7 +169,7 @@ test("one service failing stops the others and fails with its log", async () => 
 	assert.equal(await healthy(a), false);
 });
 
-test("refuses unknown names, a --serve-python for a service it does not start, and a port that already serves", async () => {
+test("refuses unknown names, an endpoint that is not a loopback URL, and a port that already serves", async () => {
 	const other = createHttpServer((_req, res) => res.end(JSON.stringify({ ok: true, result: {} })));
 	await new Promise<void>((r) => other.listen(0, "127.0.0.1", r));
 	const port = (other.address() as AddressInfo).port;
@@ -175,12 +178,8 @@ test("refuses unknown names, a --serve-python for a service it does not start, a
 		const flags = { services: servicesDir(), python: PYTHON, sam3: `http://127.0.0.1:${port}`, molmo: "off" };
 		const unknown = modelServices(stubPi({ ...flags, "serve-models": "sam3,vla" }).pi, { models });
 		await assert.rejects(unknown.start(), /unknown vla; this robot serves sam3, molmo/);
-		const py = modelServices(stubPi({ ...flags, "serve-models": "sam3", "serve-python": "molmo=/x/python" }).pi, {
-			models,
-		});
-		await assert.rejects(py.start(), /--serve-python: molmo not in --serve-models/);
 		const off = modelServices(stubPi({ ...flags, "serve-models": "molmo" }).pi, { models });
-		await assert.rejects(off.start(), /--molmo off/);
+		await assert.rejects(off.start(), /services\.molmo \(unset\)/);
 		const busy = modelServices(stubPi({ ...flags, "serve-models": "sam3" }).pi, { models });
 		await assert.rejects(busy.start(), /already serves; drop it from --serve-models to attach to it/);
 		assert.deepEqual(busy.running(), []);
@@ -259,7 +258,7 @@ test("--serve-min-free waits for the GPU's free memory and gives up at --serve-t
 			"serve-timeout": "2",
 			"serve-log-dir": mkdtempSync(join(tmpdir(), "model-services-logs-")),
 		};
-		const short = modelServices(stubPi(flags).pi, { models: [fake("sam3")] });
+		const short = modelServices(stubPi({ ...flags }).pi, { models: [fake("sam3")] });
 		await assert.rejects(short.start(), /GPU 1 has 2607 MiB free, not 8000/);
 		assert.deepEqual(short.running(), []);
 		report(1000);

@@ -19,6 +19,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
 import { type FlywheelObs, type FlywheelSpec, flywheelSuite } from "../../capabilities/flywheel.ts";
 import { probeSkill, type SkillState, skillsOff } from "../../capabilities/skills.ts";
+import { cudaDevice, python, requireService, service, servicesDir } from "../../infra/config.ts";
 import { MOLMO, pi05, SAM3 } from "../../infra/model-services.ts";
 import { trackFlags } from "../../infra/params.ts";
 import { decodePng, decodePngChannel, encodePng } from "../../infra/png.ts";
@@ -42,6 +43,7 @@ import {
 	graspTools,
 	isStale,
 	mountGraspTool,
+	placeOn,
 	registerGraspFlags,
 } from "../../primitives/grasp.ts";
 import {
@@ -66,7 +68,7 @@ import {
 } from "../../primitives/vla-adapters.ts";
 import { waypointsTool } from "../../primitives/waypoints.ts";
 import { alignWristTool, projectPoints } from "../../primitives/wrist.ts";
-import { attach, defineRobot, mark, median, message, rgbOf, SERVICES } from "../../robot.ts";
+import { attach, defineRobot, mark, median, message, rgbOf } from "../../robot.ts";
 import { liberoFlash } from "./flash.ts";
 
 const read = (name: string) => template(new URL(name, import.meta.url));
@@ -411,25 +413,21 @@ export default function libero(pi: ExtensionAPI) {
 		description:
 			"State records for `step` look-back: clean (default; kept during the session, removed at its end except segments/) | keep | off (no look-back)",
 	});
-	pi.registerFlag("vla", { type: "string", default: "http://127.0.0.1:18200", description: "Pi0.5 VLA server" });
-	// The third-party VLAs (../vla-adapters.ts): `--openvla <url>` mounts `openvla_act`, and so on; unset mounts nothing.
-	for (const a of VLA_ADAPTERS)
-		pi.registerFlag(a.flag, { type: "string", description: `${a.model} server; mounts ${a.tool}` });
+	// The third-party VLAs (../vla-adapters.ts): `--vla-adapter openvla` mounts `openvla_act` over
+	// services.openvla, and so on; unset mounts nothing.
+	pi.registerFlag("vla-adapter", {
+		type: "string",
+		default: "",
+		description: `Third-party VLAs to mount, comma-separated: ${VLA_ADAPTERS.map((a) => a.flag).join(" | ")} (endpoints: services.<name> of the deployment config)`,
+	});
+	const vlaAdapterNames = () =>
+		String(pi.getFlag("vla-adapter") ?? "")
+			.split(",")
+			.map((x) => x.trim())
+			.filter(Boolean);
 	const seeds = vlaSeeds(pi, () => ["libero", robot.task]);
-	pi.registerFlag("sam3", { type: "string", default: "http://127.0.0.1:18300", description: "SAM3 server" });
 	registerIkFlag(pi);
 	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
-	pi.registerFlag("services", {
-		type: "string",
-		default: process.env.PI_EMBODIED_SERVICES ?? SERVICES,
-		description: "pi-embodied services dir",
-	});
-	pi.registerFlag("python", {
-		type: "string",
-		default: process.env.PI_EMBODIED_PYTHON ?? "python",
-		description: "Python for the env server",
-	});
-	pi.registerFlag("cuda-device", { type: "string", description: "GPU ordinal for MuJoCo EGL rendering and torch" });
 	// 4 mm stops a 2 cm unit about 3.6 mm short (measured: 16.4 mm in 5 steps); the aaroncaozj adapters
 	// were labelled with full 2 cm steps.
 	pi.registerFlag("unit-tol", {
@@ -437,11 +435,11 @@ export default function libero(pi: ExtensionAPI) {
 		default: "0.004",
 		description: "Units mode: an MV_* servo stops within this distance of its target, m",
 	});
-	// --contact-graspnet/--graspgenx/--anyplace/--anygrasp/--graspnet1b: plan_grasp, plan_place, check_attached (../primitives/grasp.ts).
+	// --grasp <backends> [--place anyplace]: plan_grasp, plan_place, check_attached (../primitives/grasp.ts).
 	registerGraspFlags(pi);
-	// --point: Molmo's point as molmo_point (the units' point plugin owns `point`); LIBERO's Flash registers --molmo.
+	// --point: Molmo's point as molmo_point (the units' point plugin owns `point`); Molmo is services.molmo.
 	registerPointFlags(pi);
-	// --detections / --unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
+	// --detections / --depth unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
 	registerDetectionFlags(pi);
 
 	let env: RpcClient;
@@ -504,19 +502,19 @@ export default function libero(pi: ExtensionAPI) {
 		// As the env server's `_has`: the flags pi starts it with.
 		capabilities: (c) =>
 			({
-				sam3: Boolean(flag("sam3", "")),
+				sam3: Boolean(service(pi, "sam3")),
 				// The env server installs env.detect & co. whenever it has a SAM3 server.
-				detections: Boolean(flag("sam3", "")),
-				ik: Boolean(flag("ik", "")),
-				motion: Boolean(flag("ik", "")),
+				detections: Boolean(service(pi, "sam3")),
+				ik: pi.getFlag("ik") === true,
+				motion: pi.getFlag("ik") === true,
 				grasp: graspActive(pi).length > 0,
-				place: Boolean(flag("anyplace", "")),
+				place: placeOn(pi),
 				geometry: pi.getFlag("geometry") === true,
 				// The OpenETA extras (their flags).
 				waypoints: pi.getFlag("waypoints") === true,
 				align_wrist: pi.getFlag("align-wrist") === true,
 				grasp_advisor: pi.getFlag("grasp-advisor") === true,
-				unidepth: Boolean(String(pi.getFlag("unidepth") ?? "").trim()),
+				unidepth: Boolean(String(pi.getFlag("depth") ?? "").trim()),
 				// pi0_pick / pi0_doubled: the Pi0.5 server answered at session start.
 				pi0: skills.pi0?.on === true,
 			})[c] ?? false,
@@ -1098,7 +1096,7 @@ export default function libero(pi: ExtensionAPI) {
 			});
 			const far = xyRefusal(eef(), pre.eef_position, `${name}'s first leg`);
 			if (far) return { name, id, refused: far, steps_used: 0 };
-			const planned = Boolean(flag("ik", ""));
+			const planned = pi.getFlag("ik") === true;
 			if (planned) {
 				const grasp = await call<{ eef_position: number[] }>(env, "env.resolve_grasp", {
 					grasp_id: id,
@@ -1226,9 +1224,9 @@ export default function libero(pi: ExtensionAPI) {
 		(p) => pick(vla, "pi0", p),
 	);
 
-	// The same grasp tool per third-party VLA (`--openvla <url>` etc.): registered always, because pi sets
+	// The same grasp tool per third-party VLA (`--vla-adapter openvla` etc.): registered always, because pi sets
 	// the command-line flag values only after the extensions have loaded (a getFlag here reads the
-	// default), and made active at start only when its flag names a server; the client is made there too.
+	// default), and made active at start only when --vla-adapter names it; the client is made there too.
 	for (const a of VLA_ADAPTERS)
 		tool(a.tool, pickDescription(a.model), PICK_PARAMETERS, (p) => pick(adapters.get(a.tool)!, a.tool, p));
 
@@ -1504,7 +1502,7 @@ export default function libero(pi: ExtensionAPI) {
 	}))
 		mountGraspTool(robot.tool, d);
 
-	// SAM3 masks with ids and UniDepth over the env server's perception (active with --detections / --unidepth).
+	// SAM3 masks with ids and UniDepth over the env server's perception (active with --detections / --depth unidepth).
 	for (const d of detectionTools(pi, {
 		call: (method, kwargs, timeoutMs) => call(env, method, kwargs, timeoutMs),
 		cameras: ["agentview", "wrist"],
@@ -1757,32 +1755,38 @@ export default function libero(pi: ExtensionAPI) {
 			throw new Error(`--step-history must be clean, keep or off, not ${history()}`);
 		if (!(LIBERO_PROMPTS as readonly string[]).includes(variant()))
 			throw new Error(`--libero-prompt must be one of ${LIBERO_PROMPTS.join(", ")}, not ${variant()}`);
-		vla = new RpcClient(flag("vla", ""));
+		vla = new RpcClient(service(pi, "vla"));
 		// Pi0.5 is optional: without it the pi0 tools stay inactive and the result notes it.
-		skills.pi0 = await probeSkill(pi, "pi0", flag("vla", ""), () => vla.ready(3_000));
-		for (const a of VLA_ADAPTERS) if (flag(a.flag, "")) adapters.set(a.tool, new RpcClient(flag(a.flag, "")));
+		skills.pi0 = await probeSkill(pi, "pi0", service(pi, "vla"), () => vla.ready(3_000));
+		for (const name of vlaAdapterNames()) {
+			const a = VLA_ADAPTERS.find((x) => x.flag === name);
+			if (!a) throw new Error(`--vla-adapter ${name}: not one of ${VLA_ADAPTERS.map((x) => x.flag).join(", ")}`);
+			const s = requireService(pi, a.service, `--vla-adapter ${name}`);
+			if ("error" in s) throw new Error(s.error);
+			adapters.set(a.tool, new RpcClient(s.url));
+		}
 		for (const k of Object.keys(vlaUsed)) delete vlaUsed[k];
-		sam3 = new RpcClient(flag("sam3", ""));
+		sam3 = new RpcClient(service(pi, "sam3"));
 		const endpoint = pi.getFlag("env") as string | undefined;
 		if (endpoint) {
 			// `URL#token=HEX` for a server that requires its RPC token, as every robot attaches.
 			env = await attach(endpoint);
 		} else {
-			const services = flag("services", SERVICES);
-			const cuda = pi.getFlag("cuda-device") as string | undefined;
+			const services = servicesDir(pi);
+			const cuda = cudaDevice(pi) || undefined;
 			env = await robot.serve({
-				python: flag("python", "python"),
+				python: python(pi, "libero"),
 				args: [
 					...["-m", "pi_embodied_services.robots.libero.env_server"],
 					...["--suite", suite, "--task", task, "--seed", seed],
 					// Code mode's `segment` primitive asks the same SAM3 server as the `segment` tool.
-					...(flag("sam3", "") ? ["--sam3", flag("sam3", "")] : []),
-					...ikArgs(flag("ik", "")),
+					...(service(pi, "sam3") ? ["--sam3", service(pi, "sam3")] : []),
+					...ikArgs(pi),
 					...(cuda ? ["--cuda-device", cuda] : []),
 					...graspArgs(pi),
 					...(pi.getFlag("align-wrist") === true ? ["--align-wrist"] : []),
 					// --sam3 goes to the server already (above).
-					...detectionArgs(pi, ""),
+					...detectionArgs(pi, { sam3: false }),
 					...geometryArgs(pi),
 				],
 				cwd: services,
@@ -1799,7 +1803,7 @@ export default function libero(pi: ExtensionAPI) {
 		await resetEpisode();
 		language = await call<string>(env, "env.get_task_language");
 		fly.reset(flyObs(obs), flyMeta());
-		const tools = flag("ik", "") ? TOOLS : TOOLS.filter((name) => name !== "preview_reach");
+		const tools = pi.getFlag("ik") === true ? TOOLS : TOOLS.filter((name) => name !== "preview_reach");
 		const grasp = graspActive(pi);
 		const extra = [...extras.flatMap((on) => on()), ...advisor(grasp.length > 0)];
 		const perception = (await call<{ capabilities?: { perception?: PerceptionCaps } }>(env, "env.get_env_meta"))

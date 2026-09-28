@@ -28,7 +28,7 @@
 #                              on the same PCI bus (nvidia-smi bus id -> /dev/dri/by-path card -> EGL
 #                              device's DRM file, as OpenETA's sim worker pool does; probed with
 #                              $EGL_PYTHON, default $PI_EMBODIED_PYTHON). LIBERO, RoboCasa and RoboLab
-#                              also get --cuda-device <gpu>: their env servers pin the GPU themselves.
+#                              also get PI_EMBODIED_CUDA_DEVICE=<gpu>: their env servers pin the GPU themselves.
 #   --variant NAME=ARGS        repeatable: extra pi args (split on spaces) for variant NAME, whose cells
 #                              go to <out-dir>/NAME; every variant runs the same cells and seeds. With no
 #                              --variant the cells go to <out-dir> itself, as with a serial eval.sh run.
@@ -52,7 +52,8 @@
 # robosuite, genesis and robocasa (an EGL, SAPIEN or Genesis renderer per episode, the planner off the
 # GPU); they share the GPU with whatever else runs and never take LOCK (it is noted and ignored), so a
 # lock queue of light jobs cannot form. Genesis and BEHAVIOR take their GPU from the workers' CUDA
-# environment (their env servers pin it, services utils/gpu.py) unless --gpu-id is among the pi args.
+# environment (their env servers pin it, services utils/gpu.py) unless the deployment's cuda_device
+# (or PI_EMBODIED_CUDA_DEVICE) names one.
 # Check the GPU's free memory before starting a light run on a shared GPU.
 #
 # The summary gives, per variant, the success rate over valid cells, Pass@k (the unbiased estimator
@@ -234,11 +235,12 @@ worker() { # <k>
 		[ -n "${egl[gpu]:-}" ] && export MUJOCO_EGL_DEVICE_ID=${egl[gpu]}
 		# robosuite asserts at import that MUJOCO_EGL_DEVICE_ID is among CUDA_VISIBLE_DEVICES (it takes the EGL
 		# index for a CUDA ordinal). Widening CUDA_VISIBLE_DEVICES to <gpu>,<egl> would satisfy it but expose a
-		# second GPU to the worker; instead the MuJoCo env servers get --cuda-device, clear CUDA_VISIBLE_DEVICES
+		# second GPU to the worker; instead the MuJoCo env servers get the GPU ($PI_EMBODIED_CUDA_DEVICE, read by
+		# ../infra/config.ts and passed as the server's --cuda-device), clear CUDA_VISIBLE_DEVICES
 		# for themselves before importing robosuite and pin torch with set_device.
-		case $robot in libero | robocasa | robolab | robodojo | robosuite | humanclaw) extra+=(--cuda-device "$gpu") ;; esac
+		case $robot in libero | robocasa | robolab | robodojo | robosuite | humanclaw) export PI_EMBODIED_CUDA_DEVICE=$gpu ;; esac
 	fi
-	[ "$api" -gt 0 ] && extra+=(-e "$here/../planner/api-gate.ts" --api-slots "$state/api" --max-api-concurrency "$api")
+	[ "$api" -gt 0 ] && export PI_EMBODIED_DIRS_API_SLOTS=$state/api && extra+=(-e "$here/../planner/api-gate.ts" --max-api-concurrency "$api")
 	[ ${#ports[@]} -gt 0 ] && extra+=(-e "$here/../capabilities/dashboard" --dashboard=true --dashboard-port "${ports[k]}")
 	echo "[w$k] gpu=${gpu:--} CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES-} MUJOCO_EGL_DEVICE_ID=${MUJOCO_EGL_DEVICE_ID-}" >>"$log"
 	local i=0

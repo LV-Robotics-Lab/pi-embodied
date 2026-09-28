@@ -11,6 +11,7 @@ import { type FlashCall, type FlashHook, type FlashProgram, flash } from "../src
 import { defineRobot, type RobotSpec } from "../src/robot.ts";
 import { liberoFlash } from "../src/robots/libero/flash.ts";
 import { AUDIT_FIELDS, generateFlashPlan, readAudit } from "../src/robots/libero/flash-generate.ts";
+import { deployFlags } from "./helpers/deployment.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 type Result = { json?: unknown; text?: string; isError?: boolean };
@@ -18,6 +19,7 @@ type Exec = (name: string, args: any) => Result;
 
 /** A stub pi with just what Flash and the robot base use; `turn` asks the registered provider for one model turn. */
 function fakePi(flagValues: Record<string, unknown> = {}) {
+	flagValues = deployFlags(flagValues);
 	const handlers = new Map<string, Handler[]>();
 	const flags: Record<string, unknown> = {};
 	const providers: any[] = [];

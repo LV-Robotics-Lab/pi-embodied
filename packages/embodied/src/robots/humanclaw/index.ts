@@ -33,11 +33,12 @@ import { join } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { cudaDevice, python, servicesDir } from "../../infra/config.ts";
 import { trackFlags } from "../../infra/params.ts";
 import { encodePng } from "../../infra/png.ts";
 import type { NdArray, RpcClient } from "../../infra/rpc.ts";
 import { template } from "../../planner/context-version.ts";
-import { attach, defineRobot, SERVICES } from "../../robot.ts";
+import { attach, defineRobot } from "../../robot.ts";
 import { KEYS, skillCall, toJson, UNITS } from "./actions.ts";
 import { DECISION_EVENT, mountPsv, psvBase } from "./provider.ts";
 import type { Decision } from "./psv.ts";
@@ -130,22 +131,7 @@ export default function humanclaw(pi: ExtensionAPI) {
 		description: "Paper mode: request a JSON object (response_format)",
 	});
 	pi.registerFlag("scene-dataset-config", { type: "string", default: "", description: "Prepared HSSD scene config" });
-	pi.registerFlag("cuda-device", {
-		type: "string",
-		default: "0",
-		description: "GPU for Habitat and the motion model",
-	});
 	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
-	pi.registerFlag("services", {
-		type: "string",
-		default: process.env.PI_EMBODIED_SERVICES ?? SERVICES,
-		description: "pi-embodied services dir",
-	});
-	pi.registerFlag("python", {
-		type: "string",
-		default: process.env.PI_EMBODIED_PYTHON ?? "python",
-		description: "Python for the env server (the humanclaw venv)",
-	});
 
 	const base = psvBase();
 	if (base) mountPsv(pi, base);
@@ -333,14 +319,14 @@ export default function humanclaw(pi: ExtensionAPI) {
 		const endpoint = pi.getFlag("env") as string | undefined;
 		if (endpoint) env = await attach(endpoint);
 		else {
-			const services = flag("services", SERVICES);
+			const services = servicesDir(pi);
 			const steps = flag("humanclaw-max-steps", "");
 			const scenes = flag("scene-dataset-config", "");
 			env = await robot.serve({
-				python: flag("python", "python"),
+				python: python(pi, "humanclaw", ["HUMANCLAW_PYTHON"]),
 				args: [
 					...["-m", "pi_embodied_services.robots.humanclaw.env_server"],
-					...["--output-root", flag("humanclaw-output", ""), "--cuda-device", flag("cuda-device", "0")],
+					...["--output-root", flag("humanclaw-output", ""), "--cuda-device", cudaDevice(pi) || "0"],
 					...(pi.getFlag("humanclaw-metrics") ? ["--metrics"] : []),
 					...(pi.getFlag("humanclaw-video") ? ["--video"] : []),
 					...(steps ? ["--max-steps", steps] : []),

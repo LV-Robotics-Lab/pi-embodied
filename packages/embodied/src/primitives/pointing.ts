@@ -5,10 +5,9 @@
  * the ordered image set (OpenETA's Pointing Image Set: "Image 1" is the first camera), and every
  * point carries the camera it lies in.
  *
- *   pi -e packages/embodied/src/robots/metaworld --point [--molmo http://127.0.0.1:18400]
+ *   pi -e packages/embodied/src/robots/metaworld --point
  *
- * `--point` activates `point` over the robot's --molmo server (off by default; a robot without
- * that flag gets it here, and --molmo off disables pointing too); a set of cameras needs a server
+ * `--point` activates `point` over services.molmo of the deployment config (off by default); a set of cameras needs a server
  * started with `--model molmopoint`. The robot supplies each camera's current image and,
  * optionally, the world point of a pixel.
  */
@@ -16,6 +15,7 @@
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type TSchema, Type } from "typebox";
+import { service } from "../infra/config.ts";
 import { encodePng } from "../infra/png.ts";
 import { RpcClient } from "../infra/rpc.ts";
 import { type Json, mark, message, round } from "../robot.ts";
@@ -41,25 +41,16 @@ export type PointRig = {
 	signal?: () => AbortSignal | undefined;
 };
 
-/** `--point`, and `--molmo` for a robot that has no Molmo flag of its own (Flash robots register it). */
-export function registerPointFlags(pi: ExtensionAPI, o: { molmo?: boolean } = {}) {
-	if (o.molmo)
-		pi.registerFlag("molmo", {
-			type: "string",
-			default: "http://127.0.0.1:18400",
-			description: "Molmo server for point (a set of cameras needs --model molmopoint)",
-		});
+/** `--point`: Molmo pointing through services.molmo of the deployment config. */
+export function registerPointFlags(pi: ExtensionAPI) {
 	pi.registerFlag("point", {
 		type: "boolean",
 		default: false,
-		description: "Molmo pointing (point) over the --molmo server",
+		description: "Molmo pointing (point) through services.molmo",
 	});
 }
 
-const molmoUrl = (pi: ExtensionAPI) => {
-	const url = String(pi.getFlag("molmo") ?? "").trim();
-	return url === "off" ? "" : url;
-};
+const molmoUrl = (pi: ExtensionAPI) => service(pi, "molmo");
 
 /** `point` with --point and a Molmo server, else nothing. */
 export function pointActive(pi: ExtensionAPI, name = "point"): string[] {

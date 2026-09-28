@@ -121,8 +121,8 @@ uv pip install -e "services[molmo]"
 
 # Flywheel LeRobot export: its own venv, Python >= 3.10 (lerobot 0.4 pins numpy 2 /
 # huggingface-hub). `services/setup.sh flywheel` builds it, checks that its lerobot writes
-# LeRobot v3.0 (lerobot 0.3 writes v2.1) and exports PI_EMBODIED_FLYWHEEL_PYTHON, the default of
-# pi's --flywheel-python; by hand:
+# LeRobot v3.0 (lerobot 0.3 writes v2.1) and exports PI_EMBODIED_FLYWHEEL_PYTHON, which pi's
+# /flywheel-export uses unless the deployment config names python.flywheel; by hand:
 uv pip install -e "services[flywheel]"
 
 # IK / reach preview (components/ik_server.py, PyRoKi on the CPU): its own venv; the env
@@ -288,8 +288,9 @@ Environment variables read by the servers: `PI05_CHECKPOINT_PATH`,
 `sys.path`; default `<services>/../rlinf`), `PI_EMBODIED_SERVICES` (overrides the project root,
 default `services/`).
 
-From pi, the robots in `packages/embodied` start the env servers themselves (`--services` /
-`PI_EMBODIED_SERVICES`, default this directory; `--python` / `PI_EMBODIED_PYTHON` for the venv),
+From pi, the robots in `packages/embodied` start the env servers themselves (`services_dir` of
+the deployment config or `PI_EMBODIED_SERVICES`, default this directory; `python.<robot>` or
+`PI_EMBODIED_PYTHON` for the venv; packages/embodied/docs/flags-migration.md),
 and `packages/embodied/src/robots/<robot>/serve.sh` starts the shared model servers the same way.
 
 ## Fine-tuned mode

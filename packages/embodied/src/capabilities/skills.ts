@@ -1,7 +1,7 @@
 /**
  * Optional VLA skill servers (LIBERO's Pi0.5, RoboCasa's RLDX-1, RoboTwin's LingBot): a robot starts
  * without one. At session start the robot probes each skill's server; one that is switched off
- * (`--<flag> off` or empty) or does not answer leaves its tools inactive (the manifest entries
+ * (`"off"` in the deployment's services, ../infra/config.ts) or does not answer leaves its tools inactive (the manifest entries
  * `requires` the skill's name) and the result row records it in `skills_off`. Only a run that
  * asks for the skill, `--require-skills <name,...>`, refuses to start without it.
  *
@@ -12,6 +12,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { service } from "../infra/config.ts";
 import { RpcClient } from "../infra/rpc.ts";
 import { message } from "../robot.ts";
 
@@ -67,16 +68,38 @@ export function skillsOff(states: Record<string, SkillState>): { skills_off?: Re
 	return Object.keys(off).length ? { skills_off: off } : {};
 }
 
-/** The perception servers, the tools that need them, and the flags naming their address (first set wins). */
-export const PERCEPTION_SKILLS = [
+/** A flag the robot registered (a stub or pi answers undefined for one it did not). */
+const has = (pi: ExtensionAPI, flag: string) => pi.getFlag(flag) !== undefined;
+
+/**
+ * The perception servers, the tools that need them, and their endpoint for this run: the deployment's
+ * services.<skill> (../infra/config.ts), "" when the robot's switch for it is off (the real arms'
+ * --segment, --depth), undefined when the robot has no way to reach the server at all.
+ */
+export const PERCEPTION_SKILLS: readonly {
+	skill: "sam3" | "unidepth" | "molmo";
+	tools: readonly string[];
+	url: (pi: ExtensionAPI) => string | undefined;
+}[] = [
 	{
 		skill: "sam3",
 		tools: ["segment", "detect", "select_detection", "reject_detection"],
-		flags: ["sam3", "robot-sam3"],
+		// The real arms attach SAM3 with --segment; the simulators' env servers always have it.
+		url: (pi) =>
+			has(pi, "segment") ? (pi.getFlag("segment") === true ? service(pi, "sam3") : "") : service(pi, "sam3"),
 	},
-	{ skill: "unidepth", tools: ["enhance_depth"], flags: ["unidepth", "robot-unidepth"] },
-	{ skill: "molmo", tools: ["point", "molmo_point"], flags: ["molmo"] },
-] as const;
+	{
+		skill: "unidepth",
+		tools: ["enhance_depth"],
+		url: (pi) =>
+			has(pi, "depth")
+				? String(pi.getFlag("depth") ?? "").trim() === "unidepth"
+					? service(pi, "unidepth")
+					: ""
+				: undefined,
+	},
+	{ skill: "molmo", tools: ["point", "molmo_point"], url: (pi) => service(pi, "molmo") },
+];
 
 /** A perception server answers healthz within 3 s. */
 export const healthz = (url: string) => new RpcClient(url).ready(3_000);
@@ -96,10 +119,9 @@ export async function probePerception(
 	for (const p of PERCEPTION_SKILLS) {
 		const needed = p.tools.filter((t) => tools.includes(t));
 		if (!needed.length) continue;
-		// A robot without any of the skill's flags does not reach it through one (its own tool).
-		const values = p.flags.map((f) => pi.getFlag(f)).filter((v) => v !== undefined);
-		if (!values.length) continue;
-		const url = values.map((v) => String(v).trim()).find(Boolean) ?? "";
+		// A robot with no way to reach the server does not use it (its own tool).
+		const url = p.url(pi);
+		if (url === undefined) continue;
 		const state = await probeSkill(pi, p.skill, url, () => probe(url));
 		if (state.on) continue;
 		off[p.skill] = state;

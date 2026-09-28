@@ -2,7 +2,7 @@
  * Live 3D view (`--viser`): CaP-X's Viser scene (github.com/capgym/cap-x @53e9966,
  * capx/envs/simulators/robosuite_base.py `_update_viser_server`) for a robot's env server.
  *
- *   pi -e packages/embodied/src/robots/libero --viser [--viser-port 8080] [--viser-python <venv>/bin/python] ...
+ *   pi -e packages/embodied/src/robots/libero --viser [--viser-port 8080] ...
  *
  * A robot opts in with `viser` in its defineRobot spec (which source the view reads, and its env
  * server); ../robot.ts mounts this module. With `--viser`, every episode start launches
@@ -19,6 +19,7 @@ import { closeSync, openSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { python as cfgPython } from "../infra/config.ts";
 import { RpcClient } from "../infra/rpc.ts";
 
 export type ViserSpec = {
@@ -51,11 +52,6 @@ export function viserView(pi: ExtensionAPI, spec: ViserSpec) {
 		default: "1",
 		description: "--viser: seconds between reads of the env server",
 	});
-	pi.registerFlag("viser-python", {
-		type: "string",
-		default: "",
-		description: "--viser: Python with the services' `viser` extra (default: --python)",
-	});
 	const on = () => pi.getFlag("viser") === true;
 	let view: { proc: ChildProcess; rpc: RpcClient; port: number } | undefined;
 	let hooked = false;
@@ -76,9 +72,7 @@ export function viserView(pi: ExtensionAPI, spec: ViserSpec) {
 		env: RpcClient,
 		services: string,
 	): Promise<{ proc: ChildProcess; rpc: RpcClient; port: number }> {
-		const python = String(
-			pi.getFlag("viser-python") || pi.getFlag("python") || process.env.PI_EMBODIED_PYTHON || "python",
-		);
+		const python = cfgPython(pi, "viser");
 		const args = [
 			...["-m", "pi_embodied_services.components.viser_view"],
 			...["--robot", spec.source, "--env", env.url.replace(/\/call$/, "")],

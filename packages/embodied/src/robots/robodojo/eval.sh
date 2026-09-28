@@ -2,8 +2,8 @@
 # Run RoboDojo episodes with pi in print mode and report RoboDojo-judged success (its
 # is_episode_end, `success`) and its mean episode score (1 on success, else the task's partial credit).
 #   eval.sh <out-dir> <tasks> <seeds> [pi args...]
-#   eval.sh runs/rd stack_bowls,push_T 0-4 --cuda-device 1 --model <provider/model> --thinking low
-#   eval.sh runs/rd-units stack_bowls 0-2 --units=true --cuda-device 1 --model <provider/model> --thinking low
+#   eval.sh runs/rd stack_bowls,push_T 0-4 --model <provider/model> --thinking low
+#   eval.sh runs/rd-units stack_bowls 0-2 --units=true --model <provider/model> --thinking low
 #
 # <seeds> are RoboDojo eval layout ids (Assets/Eval_Layout/RoboDojo/arx_x5/<eval-seed>/<task>_<n>.json).
 # RoboDojo's own sweep (SeedManager) walks a task's layouts in order and evaluates eval_nums episodes (25

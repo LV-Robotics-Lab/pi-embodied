@@ -1,7 +1,7 @@
 /**
  * RoboLab robot for pi: one NVIDIA RoboLab (Isaac Lab) benchmark task on a Franka + Panda hand.
  *
- *   pi -e packages/embodied/src/robots/robolab --task BananaInBowlTask --seed 0 --cuda-device 1
+ *   pi -e packages/embodied/src/robots/robolab --task BananaInBowlTask --seed 0
  *   pi -e packages/embodied/src/robots/robolab --units --task RubiksCubeTask   (Show-Harness action units)
  *   pi -e packages/embodied/src/robots/robolab --task BananaInBowlTask --code=true --code-api=low   (run_code, CaP-X's S3)
  *
@@ -31,6 +31,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { anchorPlane, type CameraMeta, pixelOnPlane } from "../../capabilities/flash/plane.ts";
 import { recipeFlash } from "../../capabilities/flash/recipe.ts";
+import { cudaDevice, python, servicesDir } from "../../infra/config.ts";
 import { MOLMO, SAM3 } from "../../infra/model-services.ts";
 import { trackFlags } from "../../infra/params.ts";
 import { encodePng } from "../../infra/png.ts";
@@ -40,7 +41,7 @@ import { template } from "../../planner/context-version.ts";
 import { detectionActive, detectionArgs, detectionTools, registerDetectionFlags } from "../../primitives/detections.ts";
 import { mountGraspTool } from "../../primitives/grasp.ts";
 import { pointActive, pointTool, registerPointFlags } from "../../primitives/pointing.ts";
-import { attach, defineRobot, rgbOf, SERVICES } from "../../robot.ts";
+import { attach, defineRobot, rgbOf } from "../../robot.ts";
 
 const read = (name: string) => template(new URL(name, import.meta.url));
 const SYSTEM = read("./SYSTEM.md");
@@ -131,26 +132,11 @@ export default function robolab(pi: ExtensionAPI) {
 		default: false,
 		description: "Track RoboLab's subtask progress (partial-credit score in results; extra physics queries)",
 	});
-	pi.registerFlag("cuda-device", {
-		type: "string",
-		default: "0",
-		description: "GPU for Isaac Sim (physics, rendering; Vulkan ignores CUDA_VISIBLE_DEVICES)",
-	});
 	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
-	// --detections / --unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
-	registerDetectionFlags(pi, { sam3: true });
-	// --point: Molmo's point over --molmo (../primitives/pointing.ts).
+	// --detections / --depth unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
+	registerDetectionFlags(pi);
+	// --point: Molmo's point over services.molmo (../primitives/pointing.ts).
 	registerPointFlags(pi);
-	pi.registerFlag("services", {
-		type: "string",
-		default: process.env.PI_EMBODIED_SERVICES ?? SERVICES,
-		description: "pi-embodied services dir",
-	});
-	pi.registerFlag("python", {
-		type: "string",
-		default: process.env.PI_EMBODIED_PYTHON ?? "python",
-		description: "Python for the env server (the robolab venv)",
-	});
 
 	let env: RpcClient;
 	let obs: Obs;
@@ -166,7 +152,7 @@ export default function robolab(pi: ExtensionAPI) {
 		// Tools and code primitives: ../../primitives/manifests/robolab.json (the env server reads it too).
 		manifest: "robolab",
 		vars: () => ({ cameras: ["agentview", "wrist"], max_move: MAX_MOVE_M, max_rotate: MAX_ROTATE_RAD }),
-		// As the server's `_has`: the perception it runs (--detections / --unidepth start it), from its meta.
+		// As the server's `_has`: the perception it runs (--detections / --depth unidepth start it), from its meta.
 		capabilities: (c) =>
 			({
 				sam3: meta?.capabilities?.perception?.segment === true,
@@ -434,7 +420,7 @@ export default function robolab(pi: ExtensionAPI) {
 		}),
 	);
 
-	// SAM3 masks with ids and UniDepth over the env server's perception (active with --detections / --unidepth).
+	// SAM3 masks with ids and UniDepth over the env server's perception (active with --detections / --depth unidepth).
 	for (const d of detectionTools(pi, {
 		call: (method, kwargs, timeoutMs) =>
 			env.call<Record<string, any>>(method, kwargs, timeoutMs ?? 120_000, [], robot.signal),
@@ -447,15 +433,15 @@ export default function robolab(pi: ExtensionAPI) {
 		const endpoint = pi.getFlag("env") as string | undefined;
 		if (endpoint) env = await attach(endpoint);
 		else {
-			const services = flag("services", SERVICES);
+			const services = servicesDir(pi);
 			env = await robot.serve({
-				python: flag("python", "python"),
+				python: python(pi, "robolab"),
 				args: [
 					...["-m", "pi_embodied_services.robots.robolab.env_server"],
-					...["--task", task, "--seed", seed, "--cuda-device", flag("cuda-device", "0")],
+					...["--task", task, "--seed", seed, "--cuda-device", cudaDevice(pi) || "0"],
 					...["--instruction-type", flag("instruction-type", "default")],
 					...(pi.getFlag("subtask") ? ["--enable-subtask"] : []),
-					...detectionArgs(pi, flag("sam3", "")),
+					...detectionArgs(pi, { sam3: true }),
 				],
 				cwd: services,
 				env: { ...process.env, PYTHONPATH: services, OMNI_KIT_ACCEPT_EULA: "YES" },

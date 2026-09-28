@@ -10,7 +10,7 @@ sessions, interactive/print/json/rpc modes) is pi.
 
 Load one robot per process (`-e`, or an experiment directory's settings). Robots share flag and
 tool names (`--seed`, `--task`, `finish`, `move_to`, and the shared modules' `--operator`,
-`--memory-dir`, ...), and pi rejects two loaded extensions that register the same flag or tool, so
+`--detections`, ...), and pi rejects two loaded extensions that register the same flag or tool, so
 they cannot all be listed in `pi.extensions`; a robot also replaces the coding tools. The package
 manifest therefore loads only the onboarding extension (`src/infra/setup`) and the
 `embodied-quickstart` skill.
@@ -52,7 +52,7 @@ The package is publishable to npm on its own (`keywords: ["pi-package"]`, host p
 `files` = src, skills, README, `publishConfig.access: public`): `cd packages/embodied && npm publish`.
 It is not part of pi's lockstep release (`scripts/release-packages.mjs` takes only the
 `@earendil-works/*` packages), so its version moves independently. An npm install has no `services/`:
-setup clones this repository for them (`--services` / `PI_EMBODIED_SERVICES` point the robots at it).
+setup clones this repository for them (`services_dir` of the deployment config, or `PI_EMBODIED_SERVICES`, points the robots at it).
 
 Docker images (planned, not built): one image per services venv, since the extras pin conflicting
 Torch/Transformers stacks. LIBERO / LIBERO-PRO / ManiSkill / RoboTwin on
@@ -60,7 +60,7 @@ Torch/Transformers stacks. LIBERO / LIBERO-PRO / ManiSkill / RoboTwin on
 the devel image), RoboCasa on the same base with Python 3.10, RoboLab on NVIDIA's Isaac Sim 6.1
 container, Piper on `ros:noetic` with the `[piper]` extra. Each image runs `services/setup.sh
 <robot> --weights` at build time with weights in a mounted volume; pi runs outside and attaches
-with `--env` / `--vla` / `--sam3`. Real-arm robots (Franka, dual Franka) stay on the controller host.
+with `--env` and the deployment's `services.*`. Real-arm robots (Franka, dual Franka) stay on the controller host.
 
 Source layout (`src/`, one directory per layer; `src/robot.ts`, the `defineRobot` base, stays at the top):
 
@@ -93,27 +93,27 @@ Source layout (`src/`, one directory per layer; `src/robot.ts`, the `defineRobot
 | Piper / dual Piper (real) | `src/robots/piper` | operator verdict (required) | memory, explore, video, units, VDM, code, operator; explore resets through the operator; XPolicyLab on the dual rig only (`piper/dual.ts`: `piper`, ee; fine-tuning required) |
 | UR5e (real) | `src/robots/ur5e` | operator verdict (required) | memory, explore, video, units, VDM, code, operator; explore resets through the operator; bound to one arm (`--arm-id`) |
 
-Every robot but the Frankas (whose `segment` does this with `--robot-sam3` / `--robot-unidepth`) takes
+Every robot but the Frankas (whose `segment` does this with `--segment` / `--depth unidepth`) takes
 `--detections` (SAM3 masks with ids on the env server: `detect`, `select_detection`,
-`reject_detection`, through its `--sam3`) and `--unidepth <url>` (`enhance_depth`: UniDepth depth
+`reject_detection`, through `services.sam3`) and `--depth unidepth` (`enhance_depth`: UniDepth depth
 fused with the sensor's, or the only depth the Piper / UR5e webcams have; UR5e's `back_project` then
 reads it); `src/primitives/detections.ts`, the env servers' `env.detect` & co. The simulators render
 metric sensor depth (ManiSkill and RoboLab included); ManiSkill hands UniDepth the intrinsics of its
 oriented, letterboxed views (`view_intrinsics`).
-Metaworld and Genesis take the grasp flags too (`--contact-graspnet` & co): `plan_grasp`, `plan_place`,
+Metaworld and Genesis take the grasp switches too (`--grasp contact_graspnet[,graspgenx,...]`, `--place anyplace`): `plan_grasp`, `plan_place`,
 `check_attached` over their env server's planner, and `execute_grasp` / `execute_place`, which run a
 planned id's claimed path as bounded `move_delta` legs on the env server (`services/.../utils/grasp_chain.py`; a candidate
 more than 20 deg from straight down, or turned more than 20 deg off the hand, is refused: the
 grippers cannot turn). `plan_place` places upright by default, keeping only AnyPlace's turn about
 the vertical (unlike upstream AnyPlace); `keep_tilt: true` keeps its full rotation for tilted
 insertions, which only LIBERO's full-orientation `execute_place` can run (services/PROTOCOL.md).
-ManiSkill (the Panda and the xArm6) and Genesis take `--ik <url>` too: `preview_reach` over the env
+ManiSkill (the Panda and the xArm6) and Genesis take `--ik` too: `preview_reach` over the env
 server's `env.preview_reach` (the ik service gained an `xarm6` model); Genesis's `move_delta` then
 refuses an unreachable target before it moves.
 `--point` adds Molmo's `point` on every arm (Metaworld, Genesis, ManiSkill, Robosuite, RoboCasa, RoboLab,
 RoboDojo, RoboTwin, Piper, UR5e, the Franka and dual Franka; BEHAVIOR has it by default; on LIBERO it is
-`molmo_point`, since its units' `point` plugin owns the name) over `--molmo`, a running Molmo server
-(services `components/molmo_server.py`, default `http://127.0.0.1:18400`; `--molmo off` or none leaves
+`molmo_point`, since its units' `point` plugin owns the name) over `services.molmo`, a running Molmo server
+(services `components/molmo_server.py`, default `http://127.0.0.1:18400`; `"off"` or none leaves
 pointing off, and a set of cameras needs one started with `--model molmopoint`): one camera through
 `molmo.ground`, several at once through MolmoPoint's `molmo.ground_set`, each point with its camera and,
 where the robot has depth, its world point (the Franka: the pixel's base-frame point; `src/primitives/pointing.ts`).
@@ -175,8 +175,8 @@ Shared modules:
   step of a motion with the env action it applied on Metaworld, Genesis, Robosuite and ManiSkill
   (their env servers return the steps; one dataset per Robosuite arm layout and ManiSkill `--robot`,
   its `--space`). The UR5e's session data has export rules but no converter. `/flywheel-export
-  [selection]` writes a LeRobot v3.0 dataset with the shared feature names (`--flywheel-python`,
-  default `--python`; LeRobot needs its own venv, see services/README.md, which also covers GUMI runs).
+  [selection]` writes a LeRobot v3.0 dataset with the shared feature names (`python.flywheel` of the deployment
+  config, default `python.default`; LeRobot needs its own venv, see services/README.md, which also covers GUMI runs).
 - `src/modes/units/`: Show-Harness action units. `--units=true` hides the robot's tools: the model drives
   the arm with `act` (one unit: MV_FWD/BACK/LEFT/RIGHT/UP/DOWN, ROTATE_CW/CCW where the robot has
   yaw, GRASP, RELEASE, STOP, DONE; optional repeat `n`), `finish`, and the plugins' `point` / `plan`,
@@ -243,10 +243,10 @@ Shared modules:
   now; new VLAs go through XPolicyLab.
 - `src/infra/model-services.ts`: model-service auto-start (RPent's `robots/runtime.py`), opt-in with
   `--serve-models vla,sam3,molmo` (or `all`; RoboCasa's VLA is `rldx`) on the simulators: each named
-  server starts on its endpoint flag's loopback port (`--vla`, `--sam3`, `--molmo`, `--rldx`), all
+  server starts on its endpoint's loopback port (`services.vla`, `.sam3`, `.molmo`, `.rldx`), all
   at once, and the robot starts only once every one answers `healthz`; one that exits or misses
   `--serve-timeout` stops them all and the start fails closed. A port that already serves is refused
-  (attach to it without `--serve-models`). `--serve-python molmo=<venv>/bin/python` (Molmo's own
+  (attach to it without `--serve-models`). `python.molmo` in the deployment (Molmo's own
   venv), `--serve-cuda-device`, and `--serve-lock <file>` (default `$PI_EMBODIED_GPU_LOCK`; on a
   shared GPU box its gpu1.lock) holds flock(1) on the file while the models load and run, after
   `--serve-min-free <MiB>` found that much free on the GPU without the lock (checked again under it;
@@ -284,13 +284,40 @@ the planner did not fail, and rerun the others. LIBERO and RoboTwin episodes get
 900 s later (the episode is invalid and rerun).
 
 Every result records `params` (the effective value of every experiment flag the robot registered)
-and `params_default` (their defaults), next to `extras`; deployment flags (where services, files
-and GPUs are) are left out (`src/infra/params.ts`). The eval scripts compare a recorded result
+and `params_default` (their defaults), next to `extras`; where services, files and GPUs are is not
+a flag and is left out (`src/infra/params.ts`). The eval scripts compare a recorded result
 with the run they are asked for through `src/scripts/params-match.mjs` (a flag given on the
 command line must have run with that value, every other one with its default) on top of their own
 checks, and refuse an out dir that would mix configurations. A numeric flag that does not parse
 or is out of range stops the robot at start instead of falling back to a default, and every flag
 has one owner (`test/params.test.ts`).
+
+Where things run is deployment config, not flags (`src/infra/config.ts`): `~/.pi/agent/embodied.json`
+(`$PI_EMBODIED_CONFIG` replaces the path) and `<cwd>/.pi/embodied.json` (the project's, which wins),
+one entry per machine under `deployments`, picked with `--deployment <name>` (default: `default`, or
+the only one). A deployment names model-server endpoints (`services.sam3`, `.molmo`, `.vla`, `.ik`,
+`.contact_graspnet`, `.graspgenx`, `.anygrasp`, `.graspnet1b`, `.anyplace`, `.unidepth`, `.openvla`,
+`.openvla_oft`, `.gr00t`, `.rldx`, `.lingbot`, `.finetuned`), Pythons (`python.default`,
+`python.<robot>`, `python.flywheel`, `python.viser`, `python.xpolicy`, `python.<model service>`),
+`services_dir`, `dirs` (`artifacts`, `memory`, `memory_out`, `logs`, `video`, `flywheel`,
+`flash_plans`, `api_slots`), `ffmpeg` and `cuda_device`; an unknown key or deployment stops the robot
+at start, and `/embodied-config` prints what is in effect. Below it sit the built-in ports (SAM3
+18300, Molmo 18400, Pi0.5 18200, ...) and `PI_EMBODIED_SERVICES` / `PI_EMBODIED_PYTHON`; the eval
+scripts' per-worker `PI_EMBODIED_CUDA_DEVICE` and `PI_EMBODIED_DIRS_<KIND>` win over it. A service
+that changes results is switched on by a flag that says what, not where: `--detections`,
+`--depth unidepth`, `--point`, `--ik`, `--grasp contact_graspnet[,...]`, `--place anyplace`,
+`--vla-adapter openvla[,...]`, `--segment` / `--vla` (real arms), `--flash-reanchor`. A result
+records the deployment's name and a hash of it (`deployment`, `deployment_sha`), for provenance only.
+
+```jsonc
+{ "deployments": { "bjb2": {
+    "services": { "sam3": "http://127.0.0.1:18300", "ik": "http://127.0.0.1:18500" },
+    "python": { "default": "/root/autodl-tmp/pi-embodied/.local/venvs/rpent/bin/python",
+                "maniskill": "/root/autodl-tmp/pi-embodied/.local/venvs/maniskill/bin/python" },
+    "services_dir": "/root/autodl-tmp/pi-embodied/services",
+    "dirs": { "logs": "/root/autodl-tmp/pi-embodied/.local/logs" },
+    "cuda_device": "1" } } }
+```
 
 `src/scripts/eval-parallel.sh` runs a robot's eval.sh matrix (LIBERO, ManiSkill, Metaworld, Robosuite, Genesis,
 BEHAVIOR, RoboLab, RoboTwin, RoboCasa) on N workers (`-j N --gpus 1`: several workers
@@ -299,7 +326,7 @@ over `--variant NAME=ARGS` (same cells, one subdirectory each), and reports succ
 invalid cells per variant; `--min-success N` fails a regression run, `--max-api-concurrency M` caps
 model calls across workers. Every cell is its own eval.sh call, so validity and reruns are eval.sh's.
 
-Developer guides: [adding a robot](docs/adding-a-robot.md) and [adding a primitive](docs/adding-a-primitive.md).
+Developer guides: [adding a robot](docs/adding-a-robot.md) and [adding a primitive](docs/adding-a-primitive.md); [flags moved to the deployment config](docs/flags-migration.md).
 `test/gpu-e2e.test.ts` is the GPU end-to-end suite (real simulators and model servers, no model API;
 skipped unless `PI_EMBODIED_E2E` names a robot and a GPU answers); `test/gpu-e2e.sh` runs it robot by
 robot on a GPU box (docs/adding-a-robot.md, "Testing on a GPU").
@@ -309,8 +336,8 @@ robot on a GPU box (docs/adding-a-robot.md, "Testing on a GPU").
 Needs the repository's Python services (`services/`, package `pi_embodied_services`) installed
 with the `[libero]` extra (`services/setup.sh libero`, or see services/README.md); the extension
 speaks their HTTP RPC directly.
-Robots spawn their env servers from `--services` (env `PI_EMBODIED_SERVICES`, default the repo's
-`services/`) with `PYTHONPATH` set to it; `serve.sh` and `eval.sh` default to the same directory.
+Robots spawn their env servers from `services_dir` of the deployment config (env
+`PI_EMBODIED_SERVICES`, default the repo's `services/`) with `PYTHONPATH` set to it; `serve.sh` and `eval.sh` default to the same directory.
 
 ```bash
 export PI_EMBODIED_PYTHON=services/.venv-libero/bin/python
@@ -355,20 +382,21 @@ in a new session. Boolean flags take the next word as their value; write them as
 - Robosuite: the services' `[robosuite]` extra (Python 3.11, robosuite 1.5 in its own venv: LIBERO and
   RoboCasa pin 1.4 forks); CaP-X's seven tasks (`--task Lift --seed 0`, two-arm tasks take `arm`),
   closed-loop `move_to` / `move_delta` under `--max-move`, `gripper`, depth tools, planned grasps
-  (`plan_grasp` / `plan_place` / `check_attached` with `--contact-graspnet` & co), `preview_reach` with `--ik`,
+  (`plan_grasp` / `plan_place` / `check_attached` with `--grasp`), `preview_reach` with `--ik`,
   units mode and `--privileged`; `src/robots/robosuite/eval.sh`.
 - Genesis: the services' `[genesis]` extra (Python 3.11, Genesis 1.4, a GPU for rendering, no assets);
   OpenETA's Franka `cube_pick` (`--task cube_pick --seed 0`), a base-frame `move_delta` plus `gripper`,
   depth tools, units mode and `--privileged`; `src/robots/genesis/eval.sh`.
 - BEHAVIOR-1K: the venv `services/setup.sh behavior` builds (Isaac Sim, OmniGibson and BDDL from a
   BEHAVIOR-1K checkout, the challenge dataset; see services/pi_embodied_services/robots/behavior/README.md);
-  the 50 2025-challenge activities on the R1Pro (`--task turning_on_radio --seed <instance> --gpu-id N`),
+  the 50 2025-challenge activities on the R1Pro (`--task turning_on_radio --seed <instance>`; GPU: `cuda_device`),
   OmniGibson's semantic primitives as tools (`navigate_to_pose`, `move_hand`, `grasp_object`, the
   grippers), `segment` / `point` / `back_project` on three cameras, `--grasping-mode` and
   `--privileged`; `src/robots/behavior/eval.sh`.
 - Franka / dual Franka: the services' `[franka]` extra, a Ray cluster on the controller nodes,
   hand-eye calibration, and an operator at the emergency stop. Flags use a `--robot-`
-  prefix (`--robot-env`, `--robot-vla`, `--robot-sam3`, `--robot-config`).
+  prefix (`--robot-env`, `--robot-config`); `--vla` / `--segment` attach the deployment's
+  `services.vla` / `services.sam3`.
 - UR5e: the services' `[ur5e]` extra (ur_rtde, the shared `components/cameras` layer: RealSense
   D400 / L515 with `[realsense-l515]`, webcams, RTSP; `--robot-cameras name=type:source,...`), a
   Robotiq gripper over the URCap socket, `--operator` and `--arm-id <controller serial>` (the config,

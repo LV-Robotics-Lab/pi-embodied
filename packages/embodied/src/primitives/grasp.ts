@@ -2,7 +2,9 @@
  * Grasp and placement tools over the env servers' grasp primitives (services
  * `utils/grasp.py`): `plan_grasp`, `plan_place` and the VLM attachment probe `check_attached`.
  *
- *   pi -e packages/embodied/src/robots/libero --contact-graspnet http://127.0.0.1:8120 [--graspgenx URL] [--anyplace URL] [--anygrasp URL] [--graspnet1b URL]
+ *   pi -e packages/embodied/src/robots/libero --grasp contact_graspnet[,graspgenx,anygrasp,graspnet1b] [--place anyplace]
+ *
+ * Endpoints come from `services.<backend>` of the deployment config (../infra/config.ts).
  *
  * The robot registers the flags (`registerGraspFlags`) and passes them to its env server
  * (`graspArgs`), which composes SAM3, the grasp servers and its own camera calibration and hands
@@ -13,7 +15,7 @@
  * LIBERO's `execute_grasp` / `execute_place`), and the server remembers the executed grasp so
  * `plan_place` can be asked after it, from the held object. A stale id is refused (the server
  * answers "is stale"), which this module records as a `detections_expired` session entry, as it
- * does the `expired_ids` every plan result lists. Without any backend flag `graspActive` names no
+ * does the `expired_ids` every plan result lists. Without `--grasp` `graspActive` names no
  * tool and the env server is started without the primitives.
  *
  * Greedy Grasp Candidate Policy (OpenETA): a plan's `active` candidate is tried first; only a
@@ -30,6 +32,7 @@ import type { ImageContent } from "@earendil-works/pi-ai";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
+import { requireService, type ServiceKey } from "../infra/config.ts";
 import { askVlm, parseJson, VLM_COST_EVENT } from "../modes/units/vlm.ts";
 import { type Json, message, toolResult } from "../robot.ts";
 
@@ -39,8 +42,6 @@ export const DETECTIONS_EXPIRED_ENTRY = "detections_expired";
 export const CHECK_ATTACHED_ENTRY = "check_attached";
 export const GRASP_TOOLS = ["plan_grasp", "plan_place", "check_attached"] as const;
 export const BACKENDS = ["contact_graspnet", "graspgenx", "anygrasp", "graspnet1b"] as const;
-/** The env-server flag per grasp service: `--<name> <url>`. */
-const SERVICES = ["contact-graspnet", "graspgenx", "anyplace", "anygrasp", "graspnet1b"] as const;
 
 /** A grasp tool as the robot mounts it: `run` gets the abort signal and the pi context (for the VLM). */
 export type GraspToolDef<P extends TSchema = TSchema> = {
@@ -69,18 +70,15 @@ export type GraspRig = {
 };
 
 export function registerGraspFlags(pi: ExtensionAPI) {
-	pi.registerFlag("contact-graspnet", {
+	pi.registerFlag("grasp", {
 		type: "string",
 		default: "",
-		description: "Contact-GraspNet server for plan_grasp",
+		description: `Grasp backends for plan_grasp, comma-separated: ${BACKENDS.join(" | ")} (endpoints: services.<backend> of the deployment config)`,
 	});
-	pi.registerFlag("graspgenx", { type: "string", default: "", description: "GraspGenX server for plan_grasp" });
-	pi.registerFlag("anyplace", { type: "string", default: "", description: "AnyPlace server for plan_place" });
-	pi.registerFlag("anygrasp", { type: "string", default: "", description: "AnyGrasp server for plan_grasp" });
-	pi.registerFlag("graspnet1b", {
+	pi.registerFlag("place", {
 		type: "string",
 		default: "",
-		description: "GraspNet-1Billion server (graspnet-baseline or GSNet) for plan_grasp",
+		description: "Placement backend for plan_place: anyplace (endpoint: services.anyplace)",
 	});
 	pi.registerFlag("grasp-max-tilt", {
 		type: "string",
@@ -95,18 +93,44 @@ export function registerGraspFlags(pi: ExtensionAPI) {
 	});
 }
 
-const url = (pi: ExtensionAPI, name: string) => String(pi.getFlag(name) ?? "").trim();
+/** The grasp backends `--grasp` names (validated by `graspArgs`). */
+export const graspBackends = (pi: ExtensionAPI) =>
+	String(pi.getFlag("grasp") ?? "")
+		.split(",")
+		.map((b) => b.trim())
+		.filter(Boolean);
 
-/** The env server arguments for the configured grasp services (`--contact-graspnet URL ...`). */
+/** Whether `--place anyplace` is on. */
+export const placeOn = (pi: ExtensionAPI) => String(pi.getFlag("place") ?? "").trim() === "anyplace";
+
+/**
+ * The env server arguments for the switched-on grasp services (`--contact-graspnet URL ...`); an
+ * unknown backend or one the deployment has no endpoint for stops the robot (throws).
+ */
 export function graspArgs(pi: ExtensionAPI): string[] {
-	const services = SERVICES.flatMap((name) => (url(pi, name) ? [`--${name}`, url(pi, name)] : []));
-	const tilt = url(pi, "grasp-max-tilt");
-	return services.length && tilt ? [...services, "--max-approach-tilt-deg", tilt] : services;
+	const out: string[] = [];
+	for (const b of graspBackends(pi)) {
+		if (!(BACKENDS as readonly string[]).includes(b))
+			throw new Error(`--grasp ${b}: not one of ${BACKENDS.join(", ")}`);
+		const s = requireService(pi, b as ServiceKey, `--grasp ${b}`);
+		if ("error" in s) throw new Error(s.error);
+		out.push(`--${b.replace("_", "-")}`, s.url);
+	}
+	const place = String(pi.getFlag("place") ?? "").trim();
+	if (place && place !== "anyplace") throw new Error(`--place ${place}: only anyplace`);
+	if (place) {
+		if (!out.length) throw new Error("--place anyplace needs a --grasp backend");
+		const s = requireService(pi, "anyplace", "--place anyplace");
+		if ("error" in s) throw new Error(s.error);
+		out.push("--anyplace", s.url);
+	}
+	const tilt = String(pi.getFlag("grasp-max-tilt") ?? "").trim();
+	return out.length && tilt ? [...out, "--max-approach-tilt-deg", tilt] : out;
 }
 
-/** The grasp tools to activate: all three once any grasp service is configured, else none. */
+/** The grasp tools to activate: all three once any grasp backend is switched on, else none. */
 export function graspActive(pi: ExtensionAPI): string[] {
-	return SERVICES.some((name) => url(pi, name)) ? [...GRASP_TOOLS] : [];
+	return graspBackends(pi).length ? [...GRASP_TOOLS] : [];
 }
 
 /** Whether an env error is the server refusing an id from an earlier observation. */

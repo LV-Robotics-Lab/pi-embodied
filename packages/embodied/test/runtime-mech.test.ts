@@ -20,6 +20,7 @@ import {
 	usedTemplates,
 } from "../src/planner/context-version.ts";
 import { defineRobot, RESULT_ENTRY, type RobotSpec } from "../src/robot.ts";
+import { deployFlags, useDeployment } from "./helpers/deployment.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
@@ -28,6 +29,7 @@ function fakePi(
 	flagValues: Record<string, unknown> = {},
 	o: { hasUI?: boolean; confirm?: boolean; review?: string } = {},
 ) {
+	flagValues = deployFlags(flagValues);
 	const handlers = new Map<string, Handler[]>();
 	const flags: Record<string, unknown> = {};
 	const entries: { type: string; data: any }[] = [];
@@ -584,7 +586,7 @@ test("memory records the corpus files the agent read, with their digest", async 
 	writeFileSync(join(root, "suite", "lesson.md"), "grasp low\n");
 	writeFileSync(join(f.dir, "elsewhere.md"), "not memory\n");
 	const mem = memory(f.pi, { cell: () => ({ tag: "cell", reference: "ref" }), home: () => f.dir });
-	f.flags["memory-dir"] = root;
+	useDeployment({ dirs: { memory: root } });
 	await f.emit("session_start");
 	for (const path of [join(root, "suite", "lesson.md"), join(f.dir, "elsewhere.md")])
 		await f.emit("tool_result", { toolName: "read", isError: false, input: { path }, content: [] });

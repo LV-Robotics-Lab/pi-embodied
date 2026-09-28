@@ -30,6 +30,7 @@ import robodojo from "../src/robots/robodojo/index.ts";
 import robolab from "../src/robots/robolab/index.ts";
 import robosuite from "../src/robots/robosuite/index.ts";
 import robotwin from "../src/robots/robotwin/index.ts";
+import { deployFlags } from "./helpers/deployment.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
@@ -109,18 +110,24 @@ function load(robot: (pi: ExtensionAPI) => void, values: Record<string, unknown>
 	return { emit, call, entries, status, errors, active: () => active, dir };
 }
 
-/** The common flags: the services checkout and an empty local memory corpus (no download). */
+/** The services checkout this suite runs against. */
+const servicesRoot = process.env.PI_EMBODIED_SERVICES ?? SERVICES;
+
+/**
+ * The common flags and deployment (a temporary config file, ./helpers/deployment.ts): the services
+ * checkout, $PI_EMBODIED_PYTHON and an empty local memory corpus (no download).
+ */
 function flags(extra: Record<string, unknown>) {
 	const dir = mkdtempSync(join(tmpdir(), "gpu-e2e-mem-"));
 	writeFileSync(join(dir, "MEMORY.md"), "# GPU e2e\n");
-	return {
+	return deployFlags({
 		python: process.env.PI_EMBODIED_PYTHON,
-		services: process.env.PI_EMBODIED_SERVICES ?? SERVICES,
+		services: servicesRoot,
 		"memory-profile": "local",
 		"memory-dir": dir,
 		...(process.env.PI_EMBODIED_E2E_CUDA ? { "cuda-device": process.env.PI_EMBODIED_E2E_CUDA } : {}),
 		...extra,
-	};
+	});
 }
 
 const text = (r: any) => (r.content ?? []).map((c: any) => c.text ?? "").join("\n");
@@ -306,7 +313,7 @@ for (const c of FLYWHEEL_ROBOTS)
 					"--space",
 					c.robot,
 				],
-				{ cwd: flags({}).services, env: { ...process.env, PYTHONPATH: flags({}).services }, encoding: "utf8" },
+				{ cwd: servicesRoot, env: { ...process.env, PYTHONPATH: servicesRoot }, encoding: "utf8" },
 			);
 			const meta = JSON.parse(out);
 			assert.equal(meta.maniskill_robot, c.robot);

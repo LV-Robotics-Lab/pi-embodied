@@ -3,7 +3,7 @@
 # predicate, `success`).
 #   eval.sh <out-dir> <tasks> <seeds> [pi args...]
 #   eval.sh runs/rl BananaInBowlTask,BananaOnPlateTask 0-4 --model <provider/model> --thinking low
-#   eval.sh runs/rl-units BananaInBowlTask 0-2 --units=true --cuda-device 1 --model <provider/model> --thinking low
+#   eval.sh runs/rl-units BananaInBowlTask 0-2 --units=true --model <provider/model> --thinking low
 #
 # Every episode starts its own Isaac Sim env server (minutes of cold start); on a shared GPU run the
 # whole script under that GPU's lock.

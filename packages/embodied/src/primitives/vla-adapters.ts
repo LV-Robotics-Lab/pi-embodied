@@ -3,18 +3,33 @@
  * `gr00t_server` (../../../services/pi_embodied_services/components) all speak the Pi0.5 wire format
  * and answer in the env's own action space, so a robot mounts each of them the way it mounts
  * `pi0_pick`: `<name>_act` runs the policy closed-loop with the pick heuristics and records its
- * `vla_seeds`. A tool exists only when its `--<flag> <url>` is given (nothing is registered when off);
+ * `vla_seeds`. A tool exists only when `--vla-adapter` names it (endpoint: services.<name>) (nothing is registered when off);
  * `serve.sh` starts the servers.
  */
 
 import { Type } from "typebox";
 import type { RpcClient } from "../infra/rpc.ts";
 
-export type VlaAdapter = { tool: string; flag: string; model: string };
+export type VlaAdapter = { tool: string; flag: string; service: "openvla" | "openvla_oft" | "gr00t"; model: string };
 export const VLA_ADAPTERS: readonly VlaAdapter[] = [
-	{ tool: "openvla_act", flag: "openvla", model: "OpenVLA (7B, LIBERO fine-tune; one action per call)" },
-	{ tool: "openvla_oft_act", flag: "openvla-oft", model: "OpenVLA-OFT (7B, LIBERO fine-tune; 8-step chunks)" },
-	{ tool: "gr00t_act", flag: "gr00t", model: "GR00T N1.6/N1.7 (LIBERO libero_panda fine-tune; 16-step chunks)" },
+	{
+		tool: "openvla_act",
+		flag: "openvla",
+		service: "openvla",
+		model: "OpenVLA (7B, LIBERO fine-tune; one action per call)",
+	},
+	{
+		tool: "openvla_oft_act",
+		flag: "openvla-oft",
+		service: "openvla_oft",
+		model: "OpenVLA-OFT (7B, LIBERO fine-tune; 8-step chunks)",
+	},
+	{
+		tool: "gr00t_act",
+		flag: "gr00t",
+		service: "gr00t",
+		model: "GR00T N1.6/N1.7 (LIBERO libero_panda fine-tune; 16-step chunks)",
+	},
 ];
 
 /** The `pi0_pick` parameters, shared by every closed-loop grasp tool. */

@@ -10,12 +10,14 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { ground, MOVE_UNITS } from "../src/modes/units/index.ts";
 import robodojo, { ARMS, FLYWHEEL, MAX_MOVE_M, STEP_M, VECTORS, YAW_STEP_RAD } from "../src/robots/robodojo/index.ts";
 import { codeApiReply } from "./helpers/code-api.ts";
+import { deployFlags } from "./helpers/deployment.ts";
 import { checkDetections, checkPoint, perceptionAnswers } from "./sim-stub.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
 /** A stub pi that records flags and tools and runs handlers in registration order (no env server is started). */
 function stubPi(values: Record<string, unknown> = {}) {
+	values = deployFlags(values);
 	const handlers = new Map<string, Handler[]>();
 	const flags: Record<string, unknown> = {};
 	const tools = new Map<string, any>();
@@ -352,13 +354,12 @@ test("a server running another task, a seed beyond its layouts or an unstable la
 	}
 });
 
-test("flags default to the benchmark's first layout set on GPU 0", () => {
+test("flags default to the benchmark's first layout set", () => {
 	const s = stubPi();
 	robodojo(s.pi);
 	assert.equal(s.flags.task, "stack_bowls");
 	assert.equal(s.flags.seed, "0");
 	assert.equal(s.flags["eval-seed"], "0");
-	assert.equal(s.flags["cuda-device"], "0");
 	assert.equal(s.flags.privileged, false, "a simulator: --privileged is registered");
 	const schema = JSON.stringify(s.tools.get("move_to").parameters);
 	assert.doesNotMatch(schema, /anyOf/);

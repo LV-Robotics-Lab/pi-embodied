@@ -2,7 +2,7 @@
 # Run BEHAVIOR-1K episodes with pi in print mode and report BDDL-judged success (the activity's
 # `success`) and the mean q_score (BEHAVIOR's partial credit).
 #   eval.sh <out-dir> <tasks> <seeds> [pi args...]      (seeds are the tasks' pre-sampled instance ids)
-#   eval.sh runs/b1k turning_on_radio,picking_up_trash 0-4 --model <provider/model> --thinking low --gpu-id 1
+#   eval.sh runs/b1k turning_on_radio,picking_up_trash 0-4 --model <provider/model> --thinking low   (GPU: cuda_device of the deployment config, or PI_EMBODIED_CUDA_DEVICE=1)
 #   eval.sh runs/b1k-gt turning_on_radio 0-2 --privileged --model <provider/model> --thinking low
 #
 # Every episode starts its own OmniGibson env server (minutes of cold start: a whole house); on a

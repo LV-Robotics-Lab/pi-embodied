@@ -2,7 +2,7 @@
  * Exploration: enabled with --explore, driven by /explore.
  *
  *   pi -p -e packages/embodied/src/robots/libero --explore --suite libero_10 --task 2 --seed 0 \
- *     --memory-dir memory/libero --output-dir runs/explore/10_t2_s0 --auto-merge-memory "/explore"
+ *     --auto-merge-memory "/explore"
  *
  * /explore runs up to --explore-sessions fresh pi sessions on the cell, each opening on a clean
  * episode (the robot's session_start), and stops at the first solve; later sessions open with a

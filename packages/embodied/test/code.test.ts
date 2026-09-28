@@ -580,11 +580,18 @@ test("code mode refuses a server with another manifest, or one that disagrees on
 });
 
 test("--code-oracle needs pure code mode and a simulator", async () => {
+	const privilegedOracle = join(mkdtempSync(join(tmpdir(), "oracle-")), "gt.py");
+	writeFileSync(privilegedOracle, "# tier: privileged\nprint(1)\n");
 	for (const [flags, o, why] of [
 		[{ "code-oracle": "x" }, {}, /needs --code=true/],
 		[{ code: "both", "code-oracle": "x" }, {}, /needs --code=true/],
 		[{ code: true, "code-oracle": "x", "code-real": true, operator: true }, { real: true }, /for simulators/],
 		[{ code: true, "code-oracle": "x" }, {}, /no oracle x/],
+		[
+			{ code: true, "code-oracle": privilegedOracle },
+			{},
+			/privileged tier, this episode runs high \(add --privileged with --code-api=high\)/,
+		],
 	] as const) {
 		const f = await toyRobot(flags, { ...o, hasUI: false });
 		assert.deepEqual(f.active(), [], JSON.stringify(flags));

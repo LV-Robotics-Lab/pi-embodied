@@ -465,7 +465,7 @@ export function code(
 		}
 		const want = o.header.tier;
 		if (want && want !== tier())
-			return `--code-oracle ${o.name} is written for the ${want} tier, this episode runs ${tier()} (${want === "privileged" ? "add --privileged" : `pass --code-api=${want}${base.privileged() ? " without --privileged" : ""}`})`;
+			return `--code-oracle ${o.name} is written for the ${want} tier, this episode runs ${tier()} (${want === "privileged" ? (base.privileged() ? "pass --code-api=high" : "add --privileged with --code-api=high") : `pass --code-api=${want}${base.privileged() ? " without --privileged" : ""}`})`;
 		const fields = task();
 		for (const [k, v] of Object.entries(fields))
 			if (o.header[k] !== undefined && o.header[k] !== v)

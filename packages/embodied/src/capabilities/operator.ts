@@ -451,7 +451,7 @@ type ApprovalRobot = {
  *             --approval-large-move; on a real robot every motion)
  *   human     the operator confirms every motion call (`ui.confirm`); a declined call is blocked.
  *   Both need a UI: a run without one does not start. One prompt per call: code mode's own
- *   real-robot program confirmation is skipped when this gate asked (`confirms`), and the prompt
+ *   real-robot program confirmation is skipped when the operator approved that program here (`consumeApproved`), and the prompt
  *   shows the program itself
  *   reviewed  every motion call first goes to a reviewer model (`--approval-model`, default
  *             --units-vlm-model, else the session's model) with the task, the call and the latest
@@ -502,6 +502,8 @@ export function approval(pi: ExtensionAPI, robot: ApprovalRobot) {
 	});
 	const counts = { requests: 0, approved: 0, rejected: 0, errors: 0, cost: 0 };
 	let hooked = false;
+	/** The program of the last run_code the operator approved here, until code mode consumes it. */
+	let approvedCode: string | undefined;
 	pi.on("session_start", () => {
 		Object.assign(counts, { requests: 0, approved: 0, rejected: 0, errors: 0, cost: 0 });
 		if (mode() !== "off" && !hooked && (APPROVAL_MODES as readonly string[]).includes(mode())) {
@@ -609,6 +611,8 @@ export function approval(pi: ExtensionAPI, robot: ApprovalRobot) {
 			}
 		}
 		if (allowed) counts.approved++;
+		if (allowed && entry.source === "human" && event.toolName === "run_code" && typeof event.input?.code === "string")
+			approvedCode = event.input.code;
 		else if (entry.decision !== "error") counts.rejected++;
 		Object.assign(entry, { reason, ms: Date.now() - started });
 		pi.appendEntry(APPROVAL_ENTRY, entry);
@@ -623,14 +627,19 @@ export function approval(pi: ExtensionAPI, robot: ApprovalRobot) {
 			const m = mode();
 			if (!(APPROVAL_MODES as readonly string[]).includes(m))
 				return `--approval must be one of ${APPROVAL_MODES.join(", ")}, got "${m}"`;
-			if ((m === "human" || m === "standard") && !hasUI)
-				return `--approval ${m} needs an operator UI (interactive or RPC mode)${robot.real() && !pi.getFlag("approval") ? "; a real robot defaults to human, pass --approval off to run without one" : ""}`;
+			// A real robot's default without a UI: the robot's own start refuses with its own reason.
+			if ((m === "human" || m === "standard") && !hasUI && pi.getFlag("approval"))
+				return `--approval ${m} needs an operator UI (interactive or RPC mode)`;
 			return undefined;
 		},
-		/** Whether this gate already asked the operator about a call to `tool` (code mode then asks no second time). */
-		confirms: (tool: string) => {
-			const m = mode();
-			return (m === "human" || m === "standard") && asksOperator(tool);
+		/**
+		 * Whether the operator approved this very program at this gate (consumed once): code mode then
+		 * asks no second time. A run_code that did not pass the gate (a direct call) is still confirmed there.
+		 */
+		consumeApproved: (code: string) => {
+			const hit = approvedCode === code;
+			approvedCode = undefined;
+			return hit;
 		},
 		/** The robot result's approval summary (none when off). */
 		result: () =>

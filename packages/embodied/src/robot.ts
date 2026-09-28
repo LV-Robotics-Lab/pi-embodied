@@ -558,7 +558,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 				unitsOn: () => un?.mode() !== undefined,
 				privileged,
 				// --approval already asked the operator about run_code: one prompt, not two.
-				confirmed: () => ap.confirms("run_code"),
+				confirmed: (program) => ap.consumeApproved(program),
 				robot: name,
 				ready: () => ready && broken === undefined,
 				// --code-oracle ran a reference program instead of the model: the episode ran and is over.

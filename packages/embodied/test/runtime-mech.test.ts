@@ -316,13 +316,13 @@ test("a real robot defaults to --approval human; one prompt covers a real-robot 
 	await g.emit("session_start");
 	assert.equal(await call(g, "move"), undefined);
 	assert.deepEqual(g.confirms, ["Approve move?"], "real: human");
-	// Without a UI a real robot does not start unless --approval off.
-	const h = fakePi({});
+	// Asked for explicitly without a UI, the robot does not start.
+	const h = fakePi({ approval: "standard" });
 	t.after(h.restore);
 	toy(h, ["move", "view_env_state"], { code: real as RobotSpec["code"] });
 	await h.emit("session_start");
 	await h.emit("session_shutdown");
-	assert.match(result(h)?.error ?? "", /real robot defaults to human, pass --approval off/);
+	assert.match(result(h)?.error ?? "", /--approval standard needs an operator UI/);
 	// run_code: the gate shows the program under code mode's title; code mode then asks no more.
 	const k = fakePi({ approval: "human" }, { hasUI: true, confirm: false });
 	t.after(k.restore);

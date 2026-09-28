@@ -222,7 +222,7 @@ export function code(
 		/** The robot's manifest variables (`{{name}}` in the code docs). */
 		vars?: () => Vars;
 		/** --approval already asked the operator about each run_code (../../capabilities/operator.ts): skip the real-robot prompt. */
-		confirmed?: () => boolean;
+		confirmed?: (code: string) => boolean;
 	} = { unitsOn: () => false, privileged: () => false },
 ) {
 	pi.registerFlag("code", {
@@ -354,7 +354,7 @@ export function code(
 		if (refused) return { content: [text(refused)], details: { status: "error", error: refused } };
 		const cap = timeoutCap();
 		const timeout_s = Math.min(params.timeout_s ?? Math.min(defaultTimeout, cap), cap);
-		if (spec.real && !(base.confirmed?.() ?? false)) {
+		if (spec.real && !(base.confirmed?.(params.code) ?? false)) {
 			// A real robot: the operator reads the program before it moves anything.
 			const go = ctx.hasUI ? await ctx.ui.confirm("Run this program on the robot?", params.code) : false;
 			if (!go) {

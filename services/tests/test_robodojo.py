@@ -741,3 +741,22 @@ def test_step_reports_terminated_on_a_judged_end_and_truncated_on_the_step_limit
     assert (term, trunc, info["success"]) == (True, False, True)
     _, term, trunc, info = facade.chunk_step([act])
     assert (term, trunc) == (True, False) and "episode is over" in info["error"]
+
+
+def test_checkpoint_paths_by_policy_and_action_type():
+    from pi_embodied_services.robots.robodojo import download_ckpt
+
+    assert (
+        download_ckpt.checkpoint_dir("G05", "joint", 0)
+        == "ckpt/RoboDojo/G05/RoboDojo-sim-arx_x5-joint-0"
+    )
+    with pytest.raises(ValueError, match="joint or ee"):
+        download_ckpt.checkpoint_dir("G05", "qpos", 0)
+    files = [
+        "ckpt/RoboDojo/G05/RoboDojo-sim-arx_x5-joint-0/checkpoints/checkpoint",
+        "ckpt/RoboDojo/G05/RoboDojo-sim-arx_x5-joint-0/.hydra/config.yaml",
+        "ckpt/RoboDojo/InternVLA_A1/RoboDojo-sim-arx_x5-joint-1/model.safetensors",
+        "ckpt/RoboDojo/G05/README.md",
+    ]
+    assert download_ckpt.available(files, "G05") == ["RoboDojo-sim-arx_x5-joint-0"]
+    assert download_ckpt.available(files, "Pi_05") == []

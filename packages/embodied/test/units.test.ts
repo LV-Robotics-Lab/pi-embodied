@@ -874,6 +874,11 @@ test(
 		assert.match(bad.notes.join("\n"), /video_ref: could not extract a demo brief/);
 		assert.match(head(await bad.run("act", { unit: "MV_LEFT" })), /video_ref failed/);
 		assert.equal(bad.moves.length, 0);
+		// A robot's own vocabulary refuses the same way (#26).
+		const hum = await humanoid({ "units-video-ref": mp4 }, { vlm: ["no json", '{"task": ""}'] });
+		await hum.emit("before_agent_start");
+		assert.match(head(await hum.run("act", { unit: "WALK" })), /video_ref failed/);
+		assert.equal(hum.ran.length, 0);
 		const missing = await toyRobot({ "units-video-ref": join(dir, "nope.mp4") }, { vlm: [brief] });
 		await missing.emit("before_agent_start");
 		assert.equal(missing.asked.length, 0);
@@ -1545,6 +1550,8 @@ test("action_ablation (experimental): letters_blind reviews each blind move with
 	assert.doesNotMatch(head(r), /If height >|MV_DOWN/);
 	const images = r.content.filter((c: any) => c.type === "image").map((c: any) => c.data);
 	assert.deepEqual(images, ["m2", "m1"], "the frame from before ACT_F rides last");
+	// The robot's own text (its command, whose delta names the direction) never reaches the model (#26).
+	assert.deepEqual(r.content.filter((c: any) => c.type === "text").length, 1, "only the funnelled units block");
 	// Only the reviewed symbol's note is recorded.
 	const next = await f.run("act", {
 		unit: "ACT_E",

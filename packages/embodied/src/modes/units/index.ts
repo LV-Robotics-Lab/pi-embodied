@@ -759,7 +759,11 @@ export function units(
 		const [head, ...rest] = r.content;
 		const lines = [head?.type === "text" ? ablation.filter(head.text) : ""];
 		if (harvested) lines.push(`Recorded in your table: ${harvested}`);
-		const images = [...rest];
+		// The robot's own text (its state JSON, the command it ran: a Piper result names the move's
+		// delta) passes the funnel too; blind, it is dropped whole, since its numbers reveal directions.
+		const images: Result["content"] = rest.flatMap((c): Result["content"] =>
+			c.type !== "text" ? [c] : ablation?.mode === "letters_blind" ? [] : [text(ablation?.filter(c.text) ?? c.text)],
+		);
 		if (ablation.mode === "letters_blind") {
 			lines.push(ablation.table());
 			const m = /^units: (MV_\w+) x1\n/.exec(head?.type === "text" ? head.text : "");
@@ -1066,6 +1070,9 @@ export function units(
 	 */
 	async function customAct(params: ActParams, signal: AbortSignal | undefined): Promise<Result> {
 		const vocabulary = custom as NonNullable<typeof custom>;
+		// A replication run without its demo brief would silently become ordinary planning.
+		if (demoError)
+			return { content: [text(`video_ref failed: ${demoError}`)], details: { unit: params.unit, error: demoError } };
 		const [name, inline] = splitUnit(String(params.unit ?? ""));
 		if (params.param !== undefined && inline !== undefined)
 			throw new Error(`act: give ${name}'s parameter once (\`param\` or ${name}(...))`);

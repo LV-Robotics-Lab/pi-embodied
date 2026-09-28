@@ -238,12 +238,26 @@ export type RobotSpec = {
  *   first agent_end after the episode ended, otherwise at session_shutdown once an agent ran, or
  *   `env_error: true` when the start failed. The robot breaking mid-episode (its env server exits,
  *   or a service stops answering: `RpcUnavailable` from a tool) ends the episode with
- *   `env_error: true` too. `planner_error` is set when the model's last reply was an error;
+ *   `env_error: true` too. `planner_error` is set when the model's last reply was an error (or a tool call left unparsed in its text);
  *   evaluations treat both as invalid episodes, whatever the outcome.
  * - The env server started with `serve`, pruning of older camera frames, the system prompt, the
  *   /robot-task and /robot-check (../check.ts) commands, the status published on `pi.events`, and
  *   the mounted modules.
  */
+/** A tool call the serving stack failed to parse, left as reply text (e.g. `<x:invoke>...</x:function_calls>`). */
+const LEAKED_CALL = /<\/?[\w-]*:?(?:function_calls|invoke|tool_call)\b|<[\w-]*:?parameter name=/;
+
+/**
+ * Why a reply with no tool calls is really a failed one: its text holds tool-call markup, so the model
+ * called a tool the server never parsed and pi ends the run on a text reply (an unparsed call, not a
+ * decision). Undefined for a reply with tool calls or plain text.
+ */
+export function leakedToolCall(content: readonly { type: string; text?: string }[]): string | undefined {
+	if (content.some((c) => c.type === "toolCall")) return undefined;
+	const text = content.map((c) => (c.type === "text" ? (c.text ?? "") : "")).join("");
+	return LEAKED_CALL.test(text) ? "unparsed tool call in the reply text" : undefined;
+}
+
 export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	const { name } = spec;
 	const manifest: Manifest | undefined = spec.manifest ? loadManifest(spec.manifest) : undefined;
@@ -732,8 +746,14 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		finishing = m.content.some((c) => c.type === "toolCall" && c.name === "finish");
 		// The model failing (after pi's own retries) makes the episode's outcome meaningless, whatever it is;
 		// a reply the time-limit abort cut off (some providers report it as an error, "This operation was
-		// aborted") is the budget ending the episode, not the model failing.
-		plannerError = m.stopReason === "error" && !timedOut ? (m.errorMessage ?? "model error") : undefined;
+		// aborted") is the budget ending the episode, not the model failing. A reply whose text holds an
+		// unparsed tool call is a failed one too (leakedToolCall).
+		plannerError =
+			m.stopReason === "error"
+				? timedOut
+					? undefined
+					: (m.errorMessage ?? "model error")
+				: leakedToolCall(m.content);
 	});
 	pi.on("turn_end", () => {
 		turns++;

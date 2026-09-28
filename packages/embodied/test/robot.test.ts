@@ -10,6 +10,7 @@ import { UNITS_EVENT, type UnitsHandle, type UnitsSpec } from "../src/modes/unit
 import { CLOSED_LOOP } from "../src/planner/closed-loop.ts";
 import {
 	defineRobot,
+	leakedToolCall,
 	RESULT_ENTRY,
 	type RobotSpec,
 	STATUS_EVENT,
@@ -437,4 +438,25 @@ test("a robot without a prompt of its own records nothing", async (t) => {
 		f.entries.filter((e) => e.type === SYSTEM_PROMPT_ENTRY),
 		[],
 	);
+});
+
+test("a reply whose text holds an unparsed tool call is a planner error", async (t) => {
+	const f = fakePi();
+	t.after(f.restore);
+	toy(f.pi, async () => ["move"]);
+	await f.emit("session_start");
+	await f.emit("agent_start");
+	await f.emit("before_agent_start");
+	const leaked =
+		'">\n<atem:parameter name="path">/root/.pi/embodied/memory/maniskill</atem:parameter>\n</atem:invoke>\n</atem:function_calls>';
+	await f.emit("message_end", {
+		message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: leaked }] },
+	});
+	await f.emit("turn_end");
+	await f.emit("agent_end");
+	await f.emit("session_shutdown");
+	const [result] = f.entries.filter((e) => e.type === RESULT_ENTRY).map((e) => e.data);
+	assert.equal(result.planner_error, "unparsed tool call in the reply text");
+	assert.equal(leakedToolCall([{ type: "text", text: "The cube is left of the gripper." }]), undefined);
+	assert.equal(leakedToolCall([{ type: "text", text: "<invoke>" }, { type: "toolCall" }]), undefined);
 });

@@ -10,6 +10,7 @@ import {
 	isLocalEndpoint,
 	ORACLE_MAX_CALLS,
 	ORACLE_TIMEOUT_S,
+	oracleTierHint,
 	type RunResult,
 	renderHelpers,
 	renderPrimitives,
@@ -656,4 +657,14 @@ test("--code-api defaults to the robot's highest tier; an explicit tier it lacks
 	assert.ok(!bad.active().includes("run_code"));
 	const r = bad.entries.find((e) => e.type === RESULT_ENTRY)?.data ?? (await result(bad));
 	assert.match(String(r.error), /--code-api=high: this robot has no high-tier code primitives; its tiers are low/);
+});
+
+test("an oracle's tier hint names flags --code-api accepts", () => {
+	// low+privileged is --code-api=low with --privileged; --code-api itself refuses "low+privileged".
+	assert.equal(oracleTierHint("low+privileged", true), "pass --code-api=low");
+	assert.equal(oracleTierHint("low+privileged", false), "add --privileged with --code-api=low");
+	assert.equal(oracleTierHint("privileged", false), "add --privileged with --code-api=high");
+	assert.equal(oracleTierHint("privileged", true), "pass --code-api=high");
+	assert.equal(oracleTierHint("low", true), "pass --code-api=low without --privileged");
+	assert.equal(oracleTierHint("high", false), "pass --code-api=high");
 });

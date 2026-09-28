@@ -455,6 +455,7 @@ class GenesisEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         self._rpc["env.set_gripper"] = self.set_gripper
         self._rpc["env.state"] = self.state
         self._rpc["env.back_project"] = self.back_project
+        self._rpc["env.segment"] = self.segment
         self._rpc["env.ground_truth_poses"] = self.ground_truth_poses
         self._rpc["env.solve_ik"] = self.solve_ik
         self._rpc["env.move_to_joints"] = self.move_to_joints

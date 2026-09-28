@@ -201,6 +201,19 @@ def test_the_server_checks_itself_against_its_manifest():
         g3._manifest_ready()
 
 
+def test_with_sam3_the_server_serves_segment():
+    """pi passes --sam3 by default: the manifest's segment then needs env.segment served."""
+    f = facade(ready=False)
+    from pi_embodied_services.components.manifest import ManifestError
+
+    f._sam3 = g.sam3_segment.Sam3("http://127.0.0.1:1")
+    assert "env.segment" in f._rpc
+    # The detection ids come from install_perception in main(); only they may be missing here.
+    with pytest.raises(ManifestError) as e:
+        f._manifest_ready()
+    assert "env.detect" in str(e.value) and "env.segment" not in str(e.value)
+
+
 def test_both_success_rules():
     """grasp (default): OpenETA's both-finger contact, fingers not fully open, EEF within 8 cm;
     lift: the cube's bottom 8 cm up."""

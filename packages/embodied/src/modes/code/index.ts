@@ -65,6 +65,14 @@ import { latestTurn, type ToolRegistrar } from "../units/index.ts";
 
 /** `--code-api` values (CaP-X's S2, S3, S4); `--privileged` runs the registry's privileged tier (S1) instead. */
 export const TIERS = ["high", "low", "low-noexamples", "raw"] as const;
+/** The flags that run an oracle written for tier `want`: `privileged` is `--code-api=high --privileged`,
+ * `<tier>+privileged` is `--code-api=<tier> --privileged` (a value --code-api itself refuses). */
+export function oracleTierHint(want: string, privileged: boolean): string {
+	const api =
+		want === "privileged" ? "high" : want.endsWith("+privileged") ? want.slice(0, -"+privileged".length) : undefined;
+	if (api) return privileged ? `pass --code-api=${api}` : `add --privileged with --code-api=${api}`;
+	return `pass --code-api=${want}${privileged ? " without --privileged" : ""}`;
+}
 /** The session entry of an oracle run (`--code-oracle`). */
 export const ORACLE_ENTRY = "code_oracle";
 export type Tier = (typeof TIERS)[number];
@@ -475,7 +483,7 @@ export function code(
 		}
 		const want = o.header.tier;
 		if (want && want !== tier())
-			return `--code-oracle ${o.name} is written for the ${want} tier, this episode runs ${tier()} (${want === "privileged" ? (base.privileged() ? "pass --code-api=high" : "add --privileged with --code-api=high") : `pass --code-api=${want}${base.privileged() ? " without --privileged" : ""}`})`;
+			return `--code-oracle ${o.name} is written for the ${want} tier, this episode runs ${tier()} (${oracleTierHint(want, base.privileged())})`;
 		const fields = task();
 		for (const [k, v] of Object.entries(fields))
 			if (o.header[k] !== undefined && o.header[k] !== v)

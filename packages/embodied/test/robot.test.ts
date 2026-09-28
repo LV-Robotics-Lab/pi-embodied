@@ -273,6 +273,7 @@ test("finish ends the episode, terminates its batch, and yields exactly one resu
 				max_tokens: 0,
 				turns: 0,
 				planner_budget_exhausted: null,
+				planner: "model",
 				cost_usd: 0,
 				planner_error: null,
 				env_error: false,

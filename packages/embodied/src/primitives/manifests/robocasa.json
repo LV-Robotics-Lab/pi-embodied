@@ -354,7 +354,10 @@
 			"doc": {
 				"tool": "RLDX-1 VLA closed-loop skill with FULL base motion: the VLA drives both arm and mobile base. Use for full-body tasks where the base must reposition. Pass the complete live task_language verbatim; the runtime always uses that environment language. Do NOT interrupt consecutive VLA calls with manual primitives: that breaks VLA frame history continuity (sets vla_desync)."
 			},
-			"result": "motion"
+			"result": "motion",
+			"requires": [
+				"rldx"
+			]
 		},
 		{
 			"name": "rldx_arm",
@@ -395,7 +398,10 @@
 			"doc": {
 				"tool": "RLDX-1 VLA closed-loop skill with the base CLAMPED to small motions (base_clip 0.1): the VLA drives the arm for precise micro-alignment but cannot drive the base away. Pass the complete live task_language verbatim. Do NOT interrupt consecutive VLA calls with manual primitives."
 			},
-			"result": "motion"
+			"result": "motion",
+			"requires": [
+				"rldx"
+			]
 		},
 		{
 			"name": "navigate_to",

@@ -25,6 +25,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
 import { recipeFlash } from "../../capabilities/flash/recipe.ts";
 import type { FlywheelObs, FlywheelSpec } from "../../capabilities/flywheel.ts";
+import { probeSkill, registerSkillFlags, type SkillState, skillsOff } from "../../capabilities/skills.ts";
 import { MOLMO, type ModelService, SAM3 } from "../../infra/model-services.ts";
 import { encodePng } from "../../infra/png.ts";
 import { NdArray, RpcClient } from "../../infra/rpc.ts";
@@ -166,6 +167,8 @@ export default function robocasa(pi: ExtensionAPI) {
 	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
 	// --detections / --unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
 	registerDetectionFlags(pi, { sam3: true });
+	// --require-skills: RLDX-1 is optional unless named (../../capabilities/skills.ts).
+	registerSkillFlags(pi);
 	// --point: Molmo's point over --molmo (../primitives/pointing.ts).
 	registerPointFlags(pi);
 	const seeds = vlaSeeds(pi, () => ["robocasa", robot.task]);
@@ -266,6 +269,8 @@ export default function robocasa(pi: ExtensionAPI) {
 		});
 	}
 
+	/** Optional VLA skills at this session's start (RLDX-1). */
+	const skills: Record<string, SkillState> = {};
 	const robot = defineRobot(pi, {
 		name: "robocasa",
 		// Tools and code primitives: ../../primitives/manifests/robocasa.json (the env server reads it too).
@@ -276,6 +281,8 @@ export default function robocasa(pi: ExtensionAPI) {
 			({
 				sam3: pi.getFlag("detections") === true && Boolean(flag("sam3", "")),
 				unidepth: Boolean(String(pi.getFlag("unidepth") ?? "").trim()),
+				// rldx_skill / rldx_arm: the RLDX-1 server answered at session start.
+				rldx: skills.rldx?.on === true,
 			})[c] ?? false,
 		// RLDX-1 reads its checkpoint from RLDX_MODEL_PATH, as robocasa/serve.sh does.
 		services: { models: [RLDX, SAM3, MOLMO], python: () => flag("robocasa-python", "python") },
@@ -411,6 +418,7 @@ export default function robocasa(pi: ExtensionAPI) {
 			return SYSTEM.replace(/\{\{(\w+)\}\}/g, (m, k: string) => vars[k] ?? m);
 		},
 		result: (ended) => ({
+			...skillsOff(skills),
 			task_name: cell().task,
 			split: cell().split,
 			seed: Number(cell().seed),
@@ -1112,7 +1120,12 @@ export default function robocasa(pi: ExtensionAPI) {
 						},
 						log: (port) => join(flag("log-dir", tmpdir()), `robocasa-env-${tag()}-${port}.log`),
 					}),
-			rldxClient.ready().then(() => rldxClient.call("session.register", {}, 30_000)),
+			// RLDX-1 is optional: without it the rldx tools stay inactive and the result notes it.
+			probeSkill(pi, "rldx", flag("rldx", ""), () =>
+				rldxClient.ready(3_000).then(() => rldxClient.call("session.register", {}, 30_000)),
+			).then((state) => {
+				skills.rldx = state;
+			}),
 		]);
 		const meta = await env.call<Record<string, unknown>>("env.get_env_meta", {}, 30_000);
 		const sceneOf = (m: Record<string, unknown>) =>

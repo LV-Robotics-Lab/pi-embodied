@@ -418,3 +418,26 @@ test("the motion tools are the env server's methods: manifest schemas, no env.st
 	const result = s.entries.find((e) => e.type === "robot_result")?.data;
 	assert.equal(result.env_steps, 11);
 });
+
+test("RLDX-1 is optional: without it the rldx tools stay inactive and the result notes it; --require-skills rldx refuses", async (t) => {
+	const env = await fakeEnv();
+	t.after(env.close);
+	const s = stubPi({ env: env.url, rldx: "off", services: SERVICES });
+	robocasa(s.pi);
+	await s.emit("session_start");
+	process.exitCode = undefined;
+	assert.ok(s.active().includes("move_to"), "the robot started");
+	assert.ok(!s.active().includes("rldx_skill") && !s.active().includes("rldx_arm"));
+	await s.emit("agent_start");
+	await s.run("finish", { status: "failure", summary: "x" });
+	await s.emit("agent_end", { messages: [] });
+	assert.deepEqual(s.entries.find((e) => e.type === "robot_result")?.data.skills_off, { rldx: "switched off" });
+	await s.emit("session_shutdown");
+
+	const r = stubPi({ env: env.url, rldx: "http://127.0.0.1:9", "require-skills": "rldx", services: SERVICES });
+	robocasa(r.pi);
+	await r.emit("session_start");
+	process.exitCode = undefined;
+	assert.deepEqual(r.active(), [], "a run that needs RLDX-1 does not start without it");
+	await r.emit("session_shutdown");
+});

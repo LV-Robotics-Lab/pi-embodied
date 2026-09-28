@@ -136,6 +136,8 @@ class RpcFacade:
         self._stop_lock = threading.Lock()
         self._stop_generation = 0
         self._active_generation: int | None = None
+        #: Set while motion must be refused regardless of any call (see :meth:`halt_motion`).
+        self._motion_halt: str | None = None
         self._rpc: dict[str, Callable] = {}
         self._readonly_methods: set[str] = set()
         self._rpc_token: str | None = (
@@ -191,12 +193,29 @@ class RpcFacade:
     def _on_stop(self, generation: int) -> None:
         """Hook: forward a stop to a backend that runs its own step loop."""
 
+    def halt_motion(self, reason: str) -> None:
+        """Refuse motion until :meth:`clear_motion_halt`: :meth:`stop_requested` stays true, in
+        and outside a call, so every loop and pre-command check that polls it refuses to move
+        (a thread that outlived its call, e.g. an abandoned ``run_code`` primitive)."""
+        self._motion_halt = reason
+
+    def clear_motion_halt(self) -> None:
+        self._motion_halt = None
+
+    @property
+    def motion_halt(self) -> str | None:
+        """Why motion is halted (:meth:`halt_motion`), else None."""
+        return self._motion_halt
+
     def stop_requested(self) -> bool:
-        """Whether ``stop`` arrived after the currently running call was received.
+        """Whether ``stop`` arrived after the currently running call was received, or motion
+        is halted (:meth:`halt_motion`).
 
         Long operations poll this between steps and return early when true.
-        Always false outside a call.
+        Outside a call it is true only while motion is halted.
         """
+        if self._motion_halt is not None:
+            return True
         active = self._active_generation
         return active is not None and self._stop_generation != active
 

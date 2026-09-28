@@ -1648,3 +1648,23 @@ def test_rtde_safety_limit_query_tells_a_failed_command_from_a_no():
     assert arm(False).joints_within_safety_limits(q) is False
     assert arm(False, running=False).joints_within_safety_limits(q) is None
     assert arm(False, stopped=True).joints_within_safety_limits(q) is None
+
+
+def test_motion_is_refused_before_commanding_while_motion_is_halted():
+    """An abandoned run_code primitive that wakes up must not move the arm."""
+    arm = MockUrArm((0.5, 0.0, 0.3, *DOWN))
+    f = facade(arm)
+    f.halt_motion("run_code primitive move_delta was abandoned")
+    for method, kwargs in (
+        ("env.move_delta", {"delta_xyz": [0.01, 0.0, 0.0]}),
+        ("env.move_pose", {"xyz": [0.5, 0.0, 0.31]}),
+        ("env.rotate_delta", {"delta_rpy": [0.0, 0.0, 0.1]}),
+        ("env.reset", {}),
+    ):
+        with pytest.raises(
+            RuntimeError, match="stop is in effect.*nothing was commanded"
+        ):
+            call(f, method, **kwargs)
+    assert arm.moves == [] and arm.joint_moves == []
+    f.clear_motion_halt()
+    assert call(f, "env.move_delta", [0.01, 0.0, 0.0])["ok"]

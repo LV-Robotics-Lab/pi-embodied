@@ -286,7 +286,11 @@ actions and `render_camera` at most 1024 px per side, so no primitive outlives t
 more than one env step or one render. A primitive that ignores stop anyway (an internal loop
 that never returns) is abandoned 10 s after the deadline: the program is killed and `code.run`
 returns `status: "timeout"`, `abandoned: <primitive>` and an error saying so. Python cannot
-interrupt a thread, so the primitive keeps running on its server thread; until it returns the
+interrupt a thread, so the primitive keeps running on its server thread. The moment it is
+abandoned the server stops the robot (its `stop`) and halts motion: `stop_requested` stays
+true in and outside any call, so a primitive that wakes up is refused before it commands
+hardware (UR5e refuses in its pre-motion check, Piper's streams stop at their next step);
+once its thread returns the server stops again and lifts the halt; until it returns the
 server refuses every business call (including `code.run`) with `refused: a run_code program is
 running on this server (or a primitive it left running)` -- restart the server. The program's
 stderr at the file-descriptor level (`os.write(2, ...)`, C extensions, a crash before its own

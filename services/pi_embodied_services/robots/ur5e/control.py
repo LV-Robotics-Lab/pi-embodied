@@ -439,7 +439,13 @@ class UR5eController:
         """Refuse ``what`` before anything is commanded while the robot is stopped by
         its safety system; the setpoint is cleared (the arm may have been moved).
         A control script that stopped (an unreachable target, a program stopped on
-        the pendant) is re-uploaded here, so no server restart is needed."""
+        the pendant) is re-uploaded here, so no server restart is needed. A stop in
+        effect (the facade's stop flag, e.g. motion halted for a thread that outlived its
+        call) refuses it too."""
+        if self._stop():
+            raise RuntimeError(
+                f"{what} refused: a stop is in effect; nothing was commanded"
+            )
         reason = self.safety_stopped()
         if reason is not None:
             self.target = None

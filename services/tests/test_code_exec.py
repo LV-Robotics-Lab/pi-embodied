@@ -811,3 +811,71 @@ def test_primitives_can_stay_on_the_calling_thread():
     )
     assert r.run("where()\n")["status"] == "ran"
     assert seen == [threading.get_ident()]
+
+
+def test_an_abandoned_primitive_is_stopped_and_refused_when_it_wakes_to_move(
+    monkeypatch,
+):
+    """Audit: an abandoned primitive kept running after the timeout with no stop, and on a
+    real arm woke up and drove it. Now the runner halts the facade the moment it abandons
+    the primitive, the late move is refused, and the halt lifts only after it returned."""
+    from pi_embodied_services.components.code_api import Primitive as Decl
+    from pi_embodied_services.components.code_api import register_code_api
+    from pi_embodied_services.utils.code_exec import CodeRunMixin
+    from pi_embodied_services.utils.rpc import RpcFacade
+
+    monkeypatch.setattr(code_exec, "ABANDON_GRACE_S", 0.3)
+    wake = threading.Event()
+
+    class FakeArm(CodeRunMixin, RpcFacade):
+        def __init__(self):
+            super().__init__()
+            self.stops: list[float] = []
+            self.moves: list[str] = []
+            self.refused: list[str] = []
+            self._rpc["env.slow_move"] = self.slow_move
+            api = register_code_api(
+                self,
+                [
+                    Decl(
+                        "slow_move",
+                        "env.slow_move",
+                        "sleeps, then moves",
+                        mutating=True,
+                    )
+                ],
+            )
+            self._install_code_run(api)
+
+        def _on_stop(self, generation):
+            self.stops.append(time.monotonic())
+            super()._on_stop(generation)
+
+        def slow_move(self):
+            wake.wait(30)  # stuck past the deadline, ignoring stop
+            # The motion primitive's pre-command check (what UR5e/Piper do before hardware).
+            if self.stop_requested():
+                self.refused.append("move")
+                return {"refused": True}
+            self.moves.append("move")
+            return {"moved": True}
+
+    f = FakeArm()
+    out = f._rpc["code.run"]("slow_move()\n", timeout_s=3)
+    assert out["status"] == "timeout" and out["abandoned"] == "slow_move", out
+    abandoned_at = time.monotonic()
+    assert f.stops, "stop was called"
+    assert f.motion_halt and f.stop_requested(), "halted outside any call"
+    n_stops = len(f.stops)
+    wake.set()  # the stuck primitive wakes up and tries to move
+    for _ in range(200):
+        if f.motion_halt is None:
+            break
+        time.sleep(0.02)
+    assert f.refused == ["move"] and f.moves == [], "the late move was refused"
+    assert f.motion_halt is None and not f.stop_requested(), (
+        "halt lifted after it returned"
+    )
+    assert len(f.stops) > n_stops and f.stops[-1] >= abandoned_at, (
+        "stopped again on return"
+    )

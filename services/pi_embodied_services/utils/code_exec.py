@@ -1072,12 +1072,19 @@ class CodeRunner:
         begin: Callable[[], None] | None = None,
         finish: Callable[[], dict] | None = None,
         primitive_thread: bool = True,
+        on_abandon: Callable[[str], None] | None = None,
+        on_released: Callable[[str], None] | None = None,
     ) -> None:
         self._primitives = {p.name: p for p in primitives}
         # Primitives run on a worker thread so the run's deadline can abandon one that never
         # returns. A server whose backend needs every call on one thread (MainThreadServeMixin)
         # passes False: its primitives run on the calling thread and cannot be abandoned.
         self._primitive_thread = primitive_thread
+        # An abandoned primitive keeps running: ``on_abandon(name)`` halts the robot the moment
+        # it is abandoned (the facade stops motion in flight and refuses any later motion),
+        # ``on_released(name)`` runs once its thread has returned (stop again, then lift).
+        self._on_abandon = on_abandon
+        self._on_released = on_released
         self._abandoned: list[threading.Thread] = []
         self._stop_requested = stop_requested
         self._on_timeout = on_timeout
@@ -1420,6 +1427,7 @@ class CodeRunner:
             ):
                 with self._lock:
                     self._abandoned.append(th)
+                self._halt_abandoned(prim.name, th)
                 raise _Abandoned(prim.name)
         if "exc" in box:
             exc = box["exc"]
@@ -1427,6 +1435,26 @@ class CodeRunner:
                 raise exc
             raise RuntimeError(f"{prim.name} ended with {type(exc).__name__}")
         return box.get("out")
+
+    def _halt_abandoned(self, name: str, th: threading.Thread) -> None:
+        """Halt the robot now, and lift the halt only after the abandoned thread returned."""
+        if self._on_abandon is not None:
+            try:
+                self._on_abandon(name)
+            except Exception:
+                traceback.print_exc()
+
+        def watch() -> None:
+            th.join()
+            if self._on_released is not None:
+                try:
+                    self._on_released(name)
+                except Exception:
+                    traceback.print_exc()
+
+        threading.Thread(
+            target=watch, daemon=True, name=f"run_code-watch:{name}"
+        ).start()
 
     def _call(
         self, by_name: dict[str, Primitive], name: str, args, kwargs, state: _Run
@@ -1580,11 +1608,26 @@ class CodeRunMixin:
             # A server that runs every call on its main thread (the simulators' GL / physics
             # contexts) runs the primitives there too: no worker thread, no abandonment.
             primitive_thread=not isinstance(self, MainThreadServeMixin),
+            on_abandon=self._halt_for_abandoned,
+            on_released=self._release_abandoned,
         )
         self._rpc["code.run"] = self._code.run
         self._rpc["code.helpers"] = describe_helpers
         self._readonly_methods.add("code.helpers")
         return self._code
+
+    def _halt_for_abandoned(self, name: str) -> None:
+        # The abandoned primitive keeps running and would otherwise see no stop once code.run
+        # returned (stop_requested is per call): halt motion for good, and stop what is in flight.
+        self.halt_motion(
+            f"run_code primitive {name} was abandoned and may still run; no motion until it returns"
+        )
+        self.request_stop()
+
+    def _release_abandoned(self, name: str) -> None:
+        # Its thread returned: stop anything it started on its way out, then lift the halt.
+        self.request_stop()
+        self.clear_motion_halt()
 
     def _on_stop(self, generation: int) -> None:
         super()._on_stop(generation)

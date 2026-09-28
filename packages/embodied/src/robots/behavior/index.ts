@@ -31,6 +31,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { MOLMO, SAM3 } from "../../infra/model-services.ts";
+import { trackFlags } from "../../infra/params.ts";
 import { encodePng } from "../../infra/png.ts";
 import type { NdArray, RpcClient } from "../../infra/rpc.ts";
 import type { Move, MoveUnit, Vec3 } from "../../modes/units/index.ts";
@@ -171,6 +172,8 @@ export const UNITS_VIEWS = `Each result shows the head camera, then the left wri
 - Wrist views: close range from each gripper; judge contact there, direction in the head camera.`;
 
 export default function behavior(pi: ExtensionAPI) {
+	// Every flag this robot registers is tracked: numbers fail closed, the result records them (../../infra/params.ts).
+	trackFlags(pi);
 	const flag = (name: string, fallback: string) => String(pi.getFlag(name) ?? fallback);
 	pi.registerFlag("task", {
 		type: "string",

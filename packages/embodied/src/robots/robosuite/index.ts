@@ -27,6 +27,7 @@ import { type Static, type TSchema, Type } from "typebox";
 import { simDistil } from "../../capabilities/explore.ts";
 import type { FlywheelObs, FlywheelSpec } from "../../capabilities/flywheel.ts";
 import { MOLMO, SAM3 } from "../../infra/model-services.ts";
+import { trackFlags } from "../../infra/params.ts";
 import { encodePng } from "../../infra/png.ts";
 import { NdArray, type RpcClient } from "../../infra/rpc.ts";
 import { finishMove, type Move, type MoveUnit, type Vec3 } from "../../modes/units/index.ts";
@@ -131,6 +132,8 @@ export function flyState(task: string, o: Obs): number[] {
 }
 
 export default function robosuite(pi: ExtensionAPI) {
+	// Every flag this robot registers is tracked: numbers fail closed, the result records them (../../infra/params.ts).
+	trackFlags(pi);
 	const flag = (name: string, fallback: string) => String(pi.getFlag(name) ?? fallback);
 	pi.registerFlag("task", {
 		type: "string",

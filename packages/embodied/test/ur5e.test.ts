@@ -340,7 +340,7 @@ test("ur5e refuses to start without --operator or --arm-id, before touching the 
 	const h = fakePi({ python: "/nonexistent/python", operator: true, "arm-id": ARM, "max-move": "abc" });
 	ur5e(h.pi);
 	await start(h);
-	assert.match(h.notes.join("\n"), /--max-move must be a positive number/);
+	assert.match(h.notes.join("\n"), /--max-move must be a number, got "abc"/);
 });
 
 test("--arm-id must be the arm the env server is bound to; nothing moves otherwise", async () => {

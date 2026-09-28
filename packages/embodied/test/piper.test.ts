@@ -722,7 +722,7 @@ test("a reset never opens a gripper that holds an object without the operator", 
 test("piper refuses a non-numeric --max-move or --max-yaw before touching the robot", async () => {
 	const { f, m } = await dualStarted({ "max-yaw": "abc" });
 	try {
-		assert.match(f.notes.join("\n"), /--max-yaw must be a positive number \(got 'abc'\)/);
+		assert.match(f.notes.join("\n"), /--max-yaw must be a number, got "abc"/);
 		assert.equal(m.calls.length, 0);
 	} finally {
 		m.close();

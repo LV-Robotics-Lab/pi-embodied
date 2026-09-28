@@ -22,6 +22,7 @@ import { probePerception, registerSkillFlags, type SkillState, withSkillsOff } f
 import { webTools } from "./capabilities/web.ts";
 import { robotCheck } from "./infra/check.ts";
 import { type ModelServicesSpec, modelServices } from "./infra/model-services.ts";
+import { params, paramsError, trackFlags } from "./infra/params.ts";
 import { forgetUnresponsive, NdArray, type RpcClient, RpcUnavailable } from "./infra/rpc.ts";
 import { type ServiceOptions, shutdown, startService } from "./infra/service-process.ts";
 import { type CodeSpec, code } from "./modes/code/index.ts";
@@ -286,6 +287,8 @@ export function leakedToolCall(content: readonly { type: string; text?: string }
 
 export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	const { name } = spec;
+	// Flags the base and its modules register from here on are tracked too (a robot starts it earlier).
+	trackFlags(pi);
 	const manifest: Manifest | undefined = spec.manifest ? loadManifest(spec.manifest) : undefined;
 	let task: Record<string, string> = {};
 	let ready = false;
@@ -326,6 +329,12 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		type: "string",
 		default: String(spec.keepImages),
 		description: "Camera frames kept in context",
+	});
+	// One owner for the flag units and code mode both read (PARAMS.md 2.5).
+	pi.registerFlag("stateless", {
+		type: "boolean",
+		default: false,
+		description: "Units / code mode: keep only the task and the latest observation turn in context",
 	});
 	pi.registerFlag("anchor-image", {
 		type: "boolean",
@@ -648,7 +657,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		try {
 			// A flag the robot cannot honour fails closed, before the robot boots.
 			const misconfigured =
-				un?.configError() ?? co?.configError() ?? ap.configError(ctx.hasUI) ?? extrasInPureMode(pi);
+				paramsError(pi) ?? un?.configError() ?? co?.configError() ?? ap.configError(ctx.hasUI) ?? extrasInPureMode(pi);
 			if (misconfigured) throw new Error(misconfigured);
 			api = undefined;
 			await models?.start();
@@ -974,6 +983,8 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 						planner_budget_exhausted: outOfBudget ?? null,
 						// Who planned: model, human (a person answered as the model), ensemble, fallback, finetuned, flash, replay.
 						planner: plannerOf(providers),
+						// Every experiment flag's effective value and default (./infra/params.ts): the eval scripts compare them.
+						...params(pi),
 						cost_usd: Number(cost.toFixed(6)),
 						// An operator verdict (/success /failure /abort) aborts the model mid-request; that ends the run, it is not a planner failure.
 						planner_error: (op.result() as Json).operator_finished === true ? null : (plannerError ?? null),

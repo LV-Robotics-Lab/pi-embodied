@@ -266,12 +266,7 @@ export function code(
 		default: false,
 		description: "Allow code mode on a real robot (with --operator; every program is confirmed first)",
 	});
-	// Units registers the same flag; both modules honour it (they are mutually exclusive).
-	pi.registerFlag("stateless", {
-		type: "boolean",
-		default: false,
-		description: "Units / code mode: keep only the task and the latest observation turn in context",
-	});
+	// --stateless is the robot base's flag (../../robot.ts): units and code mode both honour it.
 
 	/** "pure" (--code / --code=true), "both", or undefined (off). */
 	const mode = (): "pure" | "both" | undefined => {

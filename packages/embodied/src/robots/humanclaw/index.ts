@@ -33,6 +33,7 @@ import { join } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { trackFlags } from "../../infra/params.ts";
 import { encodePng } from "../../infra/png.ts";
 import type { NdArray, RpcClient } from "../../infra/rpc.ts";
 import { template } from "../../planner/context-version.ts";
@@ -73,6 +74,8 @@ type Summary = {
 };
 
 export default function humanclaw(pi: ExtensionAPI) {
+	// Every flag below is tracked: one owner each, numbers checked, recorded as params (../../infra/params.ts).
+	trackFlags(pi);
 	const flag = (name: string, fallback: string) => String(pi.getFlag(name) ?? fallback);
 	pi.registerFlag("episode", {
 		type: "string",

@@ -29,6 +29,7 @@ import { join, resolve } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
+import { trackFlags } from "../../infra/params.ts";
 import { encodePng } from "../../infra/png.ts";
 import { NdArray, type RpcClient } from "../../infra/rpc.ts";
 import type { Move, MoveUnit, Vec3 } from "../../modes/units/index.ts";
@@ -113,6 +114,8 @@ export const DUAL_FRANKA_UNITS = {
 };
 
 export default function dualFranka(pi: ExtensionAPI) {
+	// Every flag this robot registers is tracked: numbers fail closed, the result records them (../../infra/params.ts).
+	trackFlags(pi);
 	const flag = (name: string, fallback = "") => String(pi.getFlag(name) ?? fallback);
 	pi.registerFlag("task", { type: "string", default: "0", description: "Dual-Franka task id (0, 1, 3, 4, 5)" });
 	pi.registerFlag("robot-config", {

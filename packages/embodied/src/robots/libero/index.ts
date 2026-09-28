@@ -20,6 +20,7 @@ import { type Static, type TSchema, Type } from "typebox";
 import { type FlywheelObs, type FlywheelSpec, flywheelSuite } from "../../capabilities/flywheel.ts";
 import { probeSkill, type SkillState, skillsOff } from "../../capabilities/skills.ts";
 import { MOLMO, pi05, SAM3 } from "../../infra/model-services.ts";
+import { trackFlags } from "../../infra/params.ts";
 import { decodePng, decodePngChannel, encodePng } from "../../infra/png.ts";
 import { NdArray, RpcClient } from "../../infra/rpc.ts";
 import { finishMove, type Move, type UnitsSpec } from "../../modes/units/index.ts";
@@ -391,6 +392,8 @@ export function matrixToRotvec(r: Mat3): number[] {
 }
 
 export default function libero(pi: ExtensionAPI) {
+	// Every flag this robot registers is tracked: numbers fail closed, the result records them (../../infra/params.ts).
+	trackFlags(pi);
 	const flag = (name: string, fallback: string) => String(pi.getFlag(name) ?? fallback);
 	pi.registerFlag("suite", { type: "string", default: "libero_10", description: "LIBERO suite, e.g. libero_10" });
 	pi.registerFlag("task", { type: "string", default: "0", description: "Task index within the suite" });

@@ -165,6 +165,7 @@ except Exception as exc:
 print(json.dumps(out, default=lambda v: v.tolist() if hasattr(v, "tolist") else str(v)))
 `;
 
+import { trackFlags } from "../../infra/params.ts";
 import { template } from "../../planner/context-version.ts";
 
 const TOOLS = [
@@ -247,6 +248,8 @@ function cameraAlias(camera: string): "wrist" | "third_person" {
 }
 
 export default function franka(pi: ExtensionAPI) {
+	// Every flag this robot registers is tracked: numbers fail closed, the result records them (../../infra/params.ts).
+	trackFlags(pi);
 	const flag = (name: string, fallback = "") => String(pi.getFlag(name) ?? fallback);
 	pi.registerFlag("task", {
 		type: "string",

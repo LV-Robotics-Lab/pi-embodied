@@ -245,3 +245,38 @@ for (const [robot, positional, cell] of CELLS) {
 		assert.equal(run1(["--vdm-video=true", "--vdm-video-frames=4"]).result?.vdm_video, 4);
 	});
 }
+
+for (const [robot, positional] of [
+	["robosuite", ["Lift", "0"]],
+	["metaworld", ["reach-v3", "0"]],
+] as [string, string[]][])
+	test(`${robot}/eval.sh compares the recorded params generically: a flag's value, its default, and the extras`, () => {
+		// A result recorded with --waypoints (an OpenETA extra) and --keep-images 6 (default 4).
+		const recorded = {
+			extras: ["waypoints"],
+			params: { waypoints: true, "keep-images": "6", "max-turns": "0", task: "Lift" },
+			params_default: { waypoints: false, "keep-images": "4", "max-turns": "0", task: "Lift" },
+		};
+		const [same] = rerun(robot, positional, ["--waypoints", "--keep-images", "6"], [], recorded);
+		assert.equal(same.status, 0, same.stdout + same.stderr);
+		for (const second of [["--keep-images", "6"], ["--waypoints", "--keep-images", "4"], ["--waypoints"]]) {
+			const [a, b] = rerun(robot, positional, ["--waypoints", "--keep-images", "6"], second, recorded);
+			assert.equal(a.status, 0, a.stdout + a.stderr);
+			assert.equal(b.status, 1, `${second.join(" ")}: another configuration`);
+			// A dropped extra is refused by the script's own extras check (before params-match.mjs); a changed value by params-match.
+			assert.match(
+				b.stderr,
+				second.includes("--waypoints")
+					? /another configuration: --keep-images/
+					: /holds a result of another|another configuration: --waypoints/,
+			);
+		}
+		const [, again] = rerun(
+			robot,
+			positional,
+			["--waypoints", "--keep-images", "6"],
+			["--waypoints", "--keep-images=6"],
+			recorded,
+		);
+		assert.equal(again.status, 0, "the same values, spelled differently");
+	});

@@ -84,8 +84,13 @@ cells=()
 for key in $list; do
 	cells+=("$key")
 	dir="$out/$key"
+	# This episode's pi arguments (the ones below and the user's), for params-match.mjs.
+	export PI_ARGS_JSON=$(node -e 'console.log(JSON.stringify(process.argv.slice(1)))' -- --units=both --humanclaw-mode "$mode" \
+		--humanclaw-output "$dir/rollout" $($metrics && echo --humanclaw-metrics) $($video && echo --humanclaw-video) "${pass[@]}")
 	if [ -f "$dir/result.json" ]; then
 		st=$(node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));console.log(r.config===process.argv[2]?r.status:"other")' "$dir/result.json" "$config")
+		# Every experiment flag the robot recorded (params) against this run's (../../scripts/params-match.mjs).
+		case $st in success | failure) node "$here/../../scripts/params-match.mjs" "$dir/result.json" >/dev/null || st=other ;; esac
 		case $st in
 		success | failure) continue ;;
 		other) echo "$dir holds a result of another configuration; use another out dir" >&2 && exit 1 ;;

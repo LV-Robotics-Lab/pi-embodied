@@ -260,7 +260,7 @@ test("finish ends the episode, terminates its batch, and yields exactly one resu
 	// The context version (../src/context-version.ts) is checked in runtime-mech.test.ts.
 	assert.equal(typeof results[0]?.context_version?.git_commit, "string");
 	assert.deepEqual(
-		results.map(({ context_version: _, ...r }) => r),
+		results.map(({ context_version: _, params: _p, params_default: _d, ...r }) => r),
 		[
 			{
 				robot: "toy",

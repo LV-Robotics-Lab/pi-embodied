@@ -46,6 +46,7 @@ import { join, resolve } from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { trackFlags } from "../../infra/params.ts";
 import { encodePng } from "../../infra/png.ts";
 import { NdArray, type RpcClient, RpcUnavailable } from "../../infra/rpc.ts";
 import {
@@ -232,6 +233,8 @@ export default function piper(pi: ExtensionAPI) {
 
 /** The Piper robot on one arm, or on both arms of the dual rig (`dual`, ./dual.ts). */
 export function piperRobot(pi: ExtensionAPI, dual: boolean) {
+	// Every flag this robot registers is tracked: numbers fail closed, the result records them (../../infra/params.ts).
+	trackFlags(pi);
 	const arms: readonly string[] = dual ? PIPER_ARMS : [];
 	const flag = (name: string, fallback = "") => String(pi.getFlag(name) ?? fallback);
 	pi.registerFlag("task", {

@@ -268,11 +268,7 @@ export function units(
 		default: "false",
 		description: "Show-Harness action units: true = only act/finish (+ point/plan), both = next to the robot's tools",
 	});
-	pi.registerFlag("stateless", {
-		type: "boolean",
-		default: false,
-		description: "Units mode: keep only the task and the latest observation turn in context",
-	});
+	// --stateless is the robot base's flag (../../robot.ts): units and code mode both honour it.
 	pi.registerFlag("units-plugins", {
 		type: "string",
 		default: "auto",

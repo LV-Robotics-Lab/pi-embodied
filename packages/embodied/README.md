@@ -283,6 +283,15 @@ the planner did not fail, and rerun the others. LIBERO and RoboTwin episodes get
 `--time-limit ${TIME_LIMIT:-1800}` s (the episode ends as a failure) and a `timeout` backstop
 900 s later (the episode is invalid and rerun).
 
+Every result records `params` (the effective value of every experiment flag the robot registered)
+and `params_default` (their defaults), next to `extras`; deployment flags (where services, files
+and GPUs are) are left out (`src/infra/params.ts`). The eval scripts compare a recorded result
+with the run they are asked for through `src/scripts/params-match.mjs` (a flag given on the
+command line must have run with that value, every other one with its default) on top of their own
+checks, and refuse an out dir that would mix configurations. A numeric flag that does not parse
+or is out of range stops the robot at start instead of falling back to a default, and every flag
+has one owner (`test/params.test.ts`).
+
 `src/scripts/eval-parallel.sh` runs a robot's eval.sh matrix (LIBERO, ManiSkill, Metaworld, Robosuite, Genesis,
 BEHAVIOR, RoboLab, RoboTwin, RoboCasa) on N workers (`-j N --gpus 1`: several workers
 may share a GPU; each gets CUDA_VISIBLE_DEVICES and the EGL device on the same PCI bus), as an A/B

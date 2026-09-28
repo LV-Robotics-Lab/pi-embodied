@@ -49,6 +49,8 @@ backstop=()
 mkdir -p "$out"
 case $libero_prompt in rpent | compact) ;; *) echo "--libero-prompt must be rpent or compact, not '$libero_prompt'" >&2 && exit 2 ;; esac
 config=("$model" "$thinking" "$turns" "$limit" "$units" "$stateless" "$vdm" "$vdm_model" "$vdm_wrist" "$privileged" "$anchor" "$unit_tol" "$code" "$code_api" "$fallback_model" "$fallback_after" "$fallback_retry" "$approval" "$max_tool_calls" "$max_tokens" "$libero_prompt" "$code_oracle" "$vdm_video" "$extras")
+# The pi arguments of this run, for the generic comparison of recorded params (params-match.mjs).
+export PI_ARGS_JSON=$(node -e 'console.log(JSON.stringify(process.argv.slice(1)))' -- "$@")
 
 record() { # <dir> <exit code>: write result.json from the episode's session
 	node --input-type=module -e '
@@ -117,7 +119,9 @@ const same = r.model === (model || null) && r.thinking === (thinking || null) &&
 	// Results written before --libero-prompt existed ran the compact prompt.
 	&& (r.libero_prompt ?? "compact") === liberoPrompt;
 process.exit(same && [...(r.extras ?? [])].sort().join(",") === (extras ?? "") ? 0 : 2);
-' "$1/result.json" "${config[@]}" 2>/dev/null
+' "$1/result.json" "${config[@]}" 2>/dev/null || return $?
+	# Every experiment flag the robot recorded (params) against this run's (../../scripts/params-match.mjs).
+	node "$here/../../scripts/params-match.mjs" "$1/result.json"
 }
 
 cells=()

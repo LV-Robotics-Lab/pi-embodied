@@ -55,6 +55,8 @@ backstop=()
 [ "$limit" -gt 0 ] && command -v timeout >/dev/null && backstop=(timeout -k 30 $((limit + 900)))
 mkdir -p "$out"
 config=("$model" "$thinking" "$turns" "$limit" "$units" "$stateless" "$anchor" "$vdm" "$vdm_model" "$vdm_wrist" "$privileged" "$instruction" "$subtask" "$fallback_model" "$fallback_after" "$fallback_retry" "$approval" "$max_tool_calls" "$max_tokens" "$code" "$code_api" "$code_oracle" "$vdm_video" "$extras")
+# The pi arguments of this run, for the generic comparison of recorded params (params-match.mjs).
+export PI_ARGS_JSON=$(node -e 'console.log(JSON.stringify(process.argv.slice(1)))' -- "$@")
 
 record() { # <dir> <exit code>: write result.json from the episode's session
 	node --input-type=module -e '
@@ -121,7 +123,9 @@ const same = r.model === (model || null) && r.thinking === (thinking || null) &&
 	// Results written before the code budget was recorded ran the default one.
 	&& (codeMode === "false" || (r.code_budget_flags ?? "timeout=+max_calls=+max_move=+helpers=false") === process.env.CODE_BUDGET_FLAGS);
 process.exit(same && [...(r.extras ?? [])].sort().join(",") === (extras ?? "") ? 0 : 2);
-' "$1/result.json" "${config[@]}" 2>/dev/null
+' "$1/result.json" "${config[@]}" 2>/dev/null || return $?
+	# Every experiment flag the robot recorded (params) against this run's (../../scripts/params-match.mjs).
+	node "$here/../../scripts/params-match.mjs" "$1/result.json"
 }
 
 cells=()

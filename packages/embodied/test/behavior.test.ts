@@ -384,7 +384,7 @@ test("without a Molmo server point is not activated; an unreachable one is recor
 test("an unknown task or a non-integer seed fails closed before any server starts", async () => {
 	for (const [values, why] of [
 		[{ task: "make_coffee" }, /--task make_coffee is not a BEHAVIOR-1K challenge task/],
-		[{ seed: "x" }, /--seed must be a task instance id/],
+		[{ seed: "x" }, /--seed must be a number, got "x"/],
 	] as const) {
 		const s = stubPi({ ...values });
 		behavior(s.pi);

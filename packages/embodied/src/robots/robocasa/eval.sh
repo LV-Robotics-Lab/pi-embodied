@@ -93,6 +93,9 @@ if (found.size) {
 if [ "$mode" = robocasa365 ]; then
 	limit=${TIME_LIMIT:-1800}
 	config=("$model" "$thinking" "$turns" "$limit" "$units" "$stateless" "$privileged" "$fallback_model" "$fallback_after" "$fallback_retry" "$code" "$code_api" "$code_oracle" "$extras")
+	# The pi arguments of this run, for the generic comparison of recorded params (params-match.mjs):
+	# the user's and the ones this script adds.
+	export PI_ARGS_JSON=$(node -e 'console.log(JSON.stringify(process.argv.slice(1)))' -- --max-turns "$turns" --time-limit "$limit" "$@")
 	unset RLDX_RESET_SEED
 
 	record365() { # <dir> <exit code> <split> <task> <scene> <elapsed s>: write result.json (robocasa365 schema)
@@ -183,7 +186,9 @@ const same = r.protocol === "robocasa365" && r.model === (model || null) && r.th
 	// Results written before the code budget was recorded ran the default one.
 	&& (codeMode === "false" || (r.code_budget_flags ?? "timeout=+max_calls=+max_move=+helpers=false") === process.env.CODE_BUDGET_FLAGS);
 process.exit(same && [...(r.extras ?? [])].sort().join(",") === (extras ?? "") ? 0 : 2);
-' "$1/result.json" "${config[@]}" 2>/dev/null
+' "$1/result.json" "${config[@]}" 2>/dev/null || return $?
+	# Every experiment flag the robot recorded (params) against this run's (../../scripts/params-match.mjs).
+	node "$here/../../scripts/params-match.mjs" "$1/result.json"
 	}
 
 	cells=$(node -e '
@@ -405,6 +410,8 @@ for (const name of process.argv[2].split(",")) {
 
 while read -r split task seed limit; do
 	dir=$out/$split/${task}_s$seed
+	# The pi arguments of this cell (its own time limit), for params-match.mjs in valid().
+	export PI_ARGS_JSON=$(node -e 'console.log(JSON.stringify(process.argv.slice(1)))' -- --max-turns "$turns" --time-limit "$limit" "$@")
 	valid "$dir"
 	case $? in
 	0) continue ;;

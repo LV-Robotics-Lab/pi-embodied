@@ -35,6 +35,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { trackFlags } from "../../infra/params.ts";
 import { decodePngChannel, encodePng } from "../../infra/png.ts";
 import { NdArray, type RpcClient } from "../../infra/rpc.ts";
 import type { Move, MoveUnit, Vec3 } from "../../modes/units/index.ts";
@@ -155,6 +156,8 @@ const TOOLS = [
 const MOTION_TOOLS = ["move_delta", "move_pose", "rotate_delta", "open_gripper", "close_gripper"];
 
 export default function ur5e(pi: ExtensionAPI) {
+	// Every flag this robot registers is tracked: numbers fail closed, the result records them (../../infra/params.ts).
+	trackFlags(pi);
 	const flag = (name: string, fallback = "") => String(pi.getFlag(name) ?? fallback);
 	pi.registerFlag("task", {
 		type: "string",

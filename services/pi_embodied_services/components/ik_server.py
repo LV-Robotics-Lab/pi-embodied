@@ -118,9 +118,11 @@ class RobotModel:
     #: cuRobo's robot config file (``curobo/content/configs/robot``), if it ships one.
     curobo_config: str | None = None
     #: Links that stay put in the world whatever the joints (the base and the first link,
-    #: which only turns about the base axis): left out of world collision, because a robot
-    #: mounted at a table edge sits in the table's box (LIBERO: 126 mm into it) and every
-    #: plan would start in collision. Self-collision keeps them where the backend can.
+    #: which only turns about the base axis). A robot mounted at a table edge sits in the
+    #: table's box with them (LIBERO: 126 mm into it), so every plan would start in collision.
+    #: cuRobo keeps their spheres and leaves out of a plan or check the obstacles they already
+    #: penetrate at the start configuration (reported as ``excluded_by_base``); PyRoKi leaves
+    #: the links out of world collision instead.
     static_links: tuple[str, ...] = ()
     note: str = ""
 
@@ -966,20 +968,6 @@ class CuroboBackend:
         ]
         kin = data["kinematics"]
         kin["ee_link"] = model.ee_link
-        if model.static_links:
-            # No collision spheres on the static links: cuRobo checks the world and self
-            # collision on the same spheres, so they leave both (see RobotModel.static_links).
-            kin["collision_link_names"] = [
-                name
-                for name in kin.get("collision_link_names", [])
-                if name not in model.static_links
-            ]
-            ignore = kin.get("self_collision_ignore") or {}
-            for name in model.static_links:
-                ignore.pop(name, None)
-            buffer = kin.get("self_collision_buffer") or {}
-            for name in model.static_links:
-                buffer.pop(name, None)
         return RobotConfig.from_dict(data, tensor_args=tensor_args), tensor_args
 
     def _make_solver(self, model: RobotModel):
@@ -1134,6 +1122,37 @@ class CuroboBackend:
             [np.concatenate(link_to_tcp(model, p, q)) for p, q in zip(pos, quat)]
         )
 
+    def base_excluded(
+        self, robot: str, q: Any, obstacles: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        """``obstacles`` without those the static links' spheres (``RobotModel.static_links``)
+        already penetrate at ``q`` (the table box a mounted base sits in), and their names."""
+        model = self._model(robot)
+        if not model.static_links or not obstacles:
+            return obstacles, []
+        kin = self._solver(robot).kinematics
+        config = kin.kinematics_config
+        idx = np.concatenate(
+            [
+                self._to_numpy(config.get_sphere_index_from_link_name(name)).astype(int)
+                for name in model.static_links
+                if name in (config.link_name_to_idx_map or {})
+            ]
+            or [np.zeros(0, dtype=int)]
+        )
+        spheres = self._to_numpy(self._state(robot, [q]).link_spheres_tensor).reshape(
+            -1, 4
+        )
+        base = spheres[idx]
+        kept, excluded = [], []
+        for i, obs in enumerate(obstacles):
+            gap, _ = collision.sphere_clearance([obs], base)
+            if gap < 0.0:
+                excluded.append(obs["name"] or f"{obs['type']}_{i}")
+            else:
+                kept.append(obs)
+        return kept, excluded
+
     def check(
         self, robot: str, path: Any, obstacles: list[dict[str, Any]]
     ) -> tuple[np.ndarray, np.ndarray]:
@@ -1234,7 +1253,9 @@ class CuroboBackend:
         start = _q_vector(start_q, model, "start_q")
         if (goal_pose is None) == (goal_q is None):
             raise ValueError("plan takes exactly one of goal_pose or goal_q")
-        parsed = [parse_obstacle(o) for o in (obstacles or [])]
+        parsed, excluded = self.base_excluded(
+            robot, start, [parse_obstacle(o) for o in (obstacles or [])]
+        )
         planner = self._planner(robot)
         planner.world_coll_checker.clear_cache()
         planner.update_world(WorldConfig.from_dict(self._world_dict(parsed)))
@@ -1267,6 +1288,7 @@ class CuroboBackend:
                 collision_free=False,
                 status=status,
                 obstacles=len(parsed),
+                excluded_by_base=excluded,
             )
         traj = result.get_interpolated_plan()
         path = self._to_numpy(traj.position)
@@ -1287,6 +1309,7 @@ class CuroboBackend:
             dt=self.interpolation_dt,
             tcp_path=self.tcp_poses(robot, path).tolist(),
             obstacles=len(parsed),
+            excluded_by_base=excluded,
         )
 
 
@@ -1426,11 +1449,16 @@ class IkFacade(RpcFacade):
         if not rows:
             raise ValueError("path must list at least one configuration")
         parsed = [parse_obstacle(o) for o in self._obstacles(obstacles)]
+        excluded: list[str] = []
+        base_excluded = getattr(self.backend, "base_excluded", None)
+        if base_excluded is not None:
+            parsed, excluded = base_excluded(robot, rows[0], parsed)
         out: dict[str, Any] = {
             "robot": robot,
             "backend": self.backend.name,
             "checked": len(rows),
             "obstacles": len(parsed),
+            "excluded_by_base": excluded,
         }
         if not parsed:
             out.update(

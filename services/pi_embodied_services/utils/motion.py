@@ -287,6 +287,7 @@ class MotionPlanner:
             "waypoints": [],
             "q_path": [],
             "left_out": [],
+            "excluded_by_base": [],
             "obstacles": 0,
             "path_m": None,
             "backend": None,
@@ -324,6 +325,8 @@ class MotionPlanner:
             )
             return out
         out["backend"] = result.get("backend")
+        # Obstacles the robot's own base already sits in (the table under a mounted arm).
+        out["excluded_by_base"] = list(result.get("excluded_by_base") or [])
         if not result["ok"]:
             out.update(
                 status="blocked",

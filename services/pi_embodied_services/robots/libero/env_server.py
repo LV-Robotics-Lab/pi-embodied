@@ -1973,7 +1973,10 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
                 "backend",
                 "obstacles",
             )
-        } | {"left_out": len(plan["left_out"])}
+        } | {
+            "left_out": len(plan["left_out"]),
+            "excluded_by_base": plan.get("excluded_by_base", []),
+        }
 
     def check_motion(self, segment=None) -> dict:
         """Check the arm against the scene before a servo segment: the current joints, and

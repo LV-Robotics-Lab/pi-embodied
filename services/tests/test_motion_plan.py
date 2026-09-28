@@ -895,3 +895,86 @@ def test_the_dual_rig_refuses_to_start_with_ik_on_a_backend_without_arm_spheres(
         assert why in capsys.readouterr().err
     with pytest.raises(RuntimeError, match="started past the ik check"):
         run("curobo")
+
+
+def test_curobo_keeps_the_base_spheres_and_excludes_what_the_base_already_sits_in(
+    monkeypatch,
+):
+    import sys
+    import types
+
+    monkeypatch.setitem(sys.modules, "curobo", types.ModuleType("curobo"))
+
+    class Config:
+        """Sphere 0 on panda_link0 (the base, 5 cm), sphere 1 on the hand."""
+
+        link_name_to_idx_map = {"panda_link0": 0, "panda_hand": 1}
+
+        @staticmethod
+        def get_sphere_index_from_link_name(name):
+            return _T([0] if name == "panda_link0" else [1])
+
+    class Kin(_Kin):
+        kinematics_config = Config()
+
+        def get_state(self, rows):
+            rows = np.asarray(rows, dtype=float)
+
+            class S:
+                link_spheres_tensor = _T(
+                    np.stack([[[0, 0, 0.05, 0.05], [*r[:3], 0.04]] for r in rows])
+                )
+
+            return S()
+
+    class Solver:
+        kinematics = Kin()
+        tensor_args = _TA()
+
+    backend = CuroboBackend(
+        solver_factory=lambda m: Solver(), planner_factory=lambda m: None
+    )
+    table = {
+        "type": "box",
+        "name": "table/7",
+        "position": [0.3, 0, -0.1],
+        "extent": [
+            1.0,
+            1.0,
+            0.25,
+        ],  # top at z = 0.025: the base sphere sits 7.5 cm in it
+    }
+    shelf = {
+        "type": "box",
+        "name": "shelf",
+        "position": [0.4, 0, 0.3],
+        "extent": [0.2, 0.2, 0.02],
+    }
+    kept, excluded = backend.base_excluded(
+        "panda",
+        [0.4, 0, 0.3, 0, 0, 0, 0],
+        [collision.parse_obstacle(o) for o in (table, shelf)],
+    )
+    assert excluded == ["table/7"] and [o["name"] for o in kept] == ["shelf"]
+    out = IkFacade(backend).check(
+        "panda", q=[0.4, 0, 0.25, 0, 0, 0, 0], obstacles=[table, shelf]
+    )
+    assert out["excluded_by_base"] == ["table/7"]
+    assert (
+        out["collision_free"] is False and out["nearest"] == "shelf"
+    )  # the hand still counts
+    # Robots without static links (ur5e) exclude nothing.
+    assert backend.base_excluded("ur5e", [0] * 6, kept) == (kept, [])
+
+
+def test_the_plan_reports_what_the_base_excluded():
+    class Ik(PointIk):
+        def call(self, method, args=(), kwargs=None, *, timeout_s=None):
+            out = super().call(method, args, kwargs, timeout_s=timeout_s)
+            return (
+                {**out, "excluded_by_base": ["table/7"]} if method == "ik.plan" else out
+            )
+
+    planner = motion.MotionPlanner("http://ik", "panda_libero", client=Ik())
+    out = planner.plan([0.1, 0, 0.1, 0, 0, 0, 0], [0.1, 0, 0.1], [0.3, 0, 0.1], UP, [])
+    assert out["status"] == "planned" and out["excluded_by_base"] == ["table/7"]

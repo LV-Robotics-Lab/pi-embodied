@@ -769,9 +769,11 @@ Same method names; poses are reported in the `right_base` frame. `arm` is `"left
 `ik` (`components/ik_server.py`) is an internal dependency of the env servers (`env.preview_reach`,
 their motion primitives' reach check and collision-free moves, a Robosuite `move_to`), not an
 agent tool; `--backend curobo` is the switch for collision-avoiding plans (MotionGen) and the
-dual Franka's arm-arm check (other arms become collision spheres). The Panda's `panda_link0` /
-`panda_link1` stay out of world collision (they never leave the base's footprint, and a LIBERO
-Panda's base sits inside the table's box). Robot models:
+dual Franka's arm-arm check (other arms become collision spheres). The Panda's base links
+(`panda_link0` / `panda_link1`) keep their cuRobo collision spheres; an obstacle they already
+penetrate at the start configuration (a table a mounted arm stands in) is left out of that plan or
+check and named in its `excluded_by_base`. PyRoKi leaves those two links out of world collision
+(its capsules put a LIBERO Panda's base 126 mm into the table's box). Robot models:
 `panda` (TCP = libfranka's O_T_EE, flange + 0.1034 m; the Frankas' `tcp_pose`), `panda_libero`
 (robosuite's `robot0_eef_pos` grip site 0.097 m below `panda_hand`, `robot0_eef_quat`; poses in
 the `robot0_base` frame), `ur5e` (TCP = `tool0`), `piper` (TCP = `gripper_base`). Backends:

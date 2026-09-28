@@ -354,6 +354,9 @@ class FrankaEnvFacade(FrankaCodeMode, BaseEnvFacade):
             if followed["stopped"] == "contact":
                 out["stopped"] = "contact"
                 out["contact"] = followed["check"]["message"]
+            if followed["stopped"] == "stalled":
+                out["stopped"] = "stalled"
+                out["stalled"] = followed["stalled"]
             return out
 
         return call

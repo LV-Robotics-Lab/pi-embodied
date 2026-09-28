@@ -449,15 +449,25 @@ def follow_waypoints(
     check: Callable[[int], dict[str, Any]],
     pos_eps: float = 0.002,
     rot_eps: float = 0.02,
+    stall_m: float = 0.01,
+    stall_rad: float = 0.05,
 ) -> dict[str, Any]:
     """Servo through TCP waypoints (xyz + xyzw) with a translation primitive (``move``, a
     delta in the waypoints' frame) and a rotation primitive (``rotate``, extrinsic xyz
     Euler angles composed on the left, as the Franka servers' ``rotate_delta``), calling
     ``check(i)`` before segment ``i``: its ``contact`` stops the move.
 
+    A segment that fails (its result says ``ok: false`` or carries an ``error``, or it
+    ends more than ``stall_m`` / ``stall_rad`` short of its waypoint) stops the move: the
+    next waypoints were planned from this one, not from wherever the arm stopped.
+
     Returns ``{"segments": done, "results": [...], "stopped": None | "contact" |
-    "cancelled", "check": the stopping check}``.
+    "cancelled" | "stalled", "check": the stopping check, "stalled": {...} when stalled}``.
     """
+
+    def failed(r: dict[str, Any]) -> bool:
+        return r.get("ok") is False or bool(r.get("error"))
+
     results: list[dict[str, Any]] = []
     out: dict[str, Any] = {"segments": 0, "results": results, "stopped": None}
     for i, wp in enumerate(waypoints):
@@ -474,11 +484,40 @@ def follow_waypoints(
                 out.update(stopped="cancelled", segments=i)
                 return out
             cur = np.asarray(tcp_pose(), dtype=np.float64).reshape(-1)
+            short = float(np.linalg.norm(target[:3] - cur[:3]))
+            if failed(results[-1]) or short > stall_m:
+                out.update(
+                    stopped="stalled",
+                    segments=i,
+                    stalled={
+                        "waypoint": i,
+                        "move": "translate",
+                        "short_m": round(short, 4),
+                    },
+                )
+                return out
         turn = Rotation.from_quat(target[3:]) * Rotation.from_quat(cur[3:7]).inv()
         if turn.magnitude() > rot_eps:
             results.append(rotate([float(v) for v in turn.as_euler("xyz")]))
             if results[-1].get("cancelled"):
                 out.update(stopped="cancelled", segments=i)
+                return out
+            cur = np.asarray(tcp_pose(), dtype=np.float64).reshape(-1)
+            left = float(
+                (
+                    Rotation.from_quat(target[3:]) * Rotation.from_quat(cur[3:7]).inv()
+                ).magnitude()
+            )
+            if failed(results[-1]) or left > stall_rad:
+                out.update(
+                    stopped="stalled",
+                    segments=i,
+                    stalled={
+                        "waypoint": i,
+                        "move": "rotate",
+                        "short_rad": round(left, 4),
+                    },
+                )
                 return out
         out["segments"] = i + 1
     return out

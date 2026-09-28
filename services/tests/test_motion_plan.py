@@ -474,6 +474,44 @@ def test_follow_waypoints_checks_before_each_segment_and_stops_on_contact():
     assert Rotation.from_quat(pose[3:]).as_euler("xyz")[2] == pytest.approx(0.5)
 
 
+def test_follow_waypoints_stops_after_a_failed_leg():
+    """Audit a2c880c #3: a leg that failed (refused, or blocked short of its waypoint) was
+    followed by the rest of the path, planned from a pose the arm never reached."""
+    pose = np.array([0.0, 0.0, 0.0, 0, 0, 0, 1])
+    moves: list = []
+
+    def move(d):
+        moves.append(d)
+        if len(moves) == 2:  # blocked halfway along the second leg
+            pose[:3] += np.asarray(d) / 2
+            return {"ok": True}
+        pose[:3] += d
+        return {"ok": True}
+
+    def rotate(r):
+        return {"ok": True}
+
+    wps = [
+        [0.1, 0, 0, 0, 0, 0, 1],
+        [0.1, 0.1, 0, 0, 0, 0, 1],
+        [0.2, 0.1, 0, 0, 0, 0, 1],
+    ]
+    out = motion.follow_waypoints(
+        wps, tcp_pose=lambda: pose, move=move, rotate=rotate, check=lambda i: {}
+    )
+    assert out["stopped"] == "stalled" and out["segments"] == 1 and len(moves) == 2
+    assert out["stalled"] == {"waypoint": 1, "move": "translate", "short_m": 0.05}
+    pose[:] = [0.0, 0.0, 0.0, 0, 0, 0, 1]
+    refused = motion.follow_waypoints(
+        wps,
+        tcp_pose=lambda: pose,
+        move=lambda d: {"ok": False, "error": "limit"},
+        rotate=rotate,
+        check=lambda i: {},
+    )
+    assert refused["stopped"] == "stalled" and refused["segments"] == 0
+
+
 # ---------------------------------------------------------------------------
 # LIBERO: move_to plans through the scene and checks before each servo segment
 

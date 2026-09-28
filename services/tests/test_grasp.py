@@ -88,7 +88,12 @@ def test_anygrasp_is_already_the_graspnet_frame():
 
     [c] = G.anygrasp_candidates([Gr()])
     assert np.allclose(c["rotation_matrix"], _rot_z(30))
-    assert c["translation_xyz"] == [0.3, 0.0, 0.7] and c["depth"] == 0.02
+    # Audit a2c880c #4: the fingertips are depth along the approach (x) past translation.
+    approach = _rot_z(30)[:, 0]
+    assert np.allclose(
+        c["translation_xyz"], np.array([0.3, 0.0, 0.7]) + 0.02 * approach
+    )
+    assert c["graspnet_translation"] == [0.3, 0.0, 0.7] and c["graspnet_depth"] == 0.02
 
 
 def test_placement_composition_moves_the_pick_grasp_with_the_object():

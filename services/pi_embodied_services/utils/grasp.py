@@ -380,18 +380,26 @@ def anygrasp_candidates(
     grasps: Any, source_model: str = "anygrasp"
 ) -> list[dict[str, Any]]:
     """AnyGrasp or a GraspNet-1Billion model (graspnetAPI ``GraspGroup``: already the GraspNet
-    frame) -> normalized dicts."""
+    frame) -> normalized dicts. graspnetAPI puts the fingertips ``depth`` along the approach
+    past ``translation``; the candidate's center is there, where the finger pads close (the
+    EEF sits at the center), so the grasp is not 1-4 cm shallow."""
     out = []
     for g in grasps:
+        R = np.asarray(g.rotation_matrix, dtype=np.float64)
+        t = np.asarray(g.translation, dtype=np.float64).reshape(3)
         out.append(
             make_candidate(
                 score=float(g.score),
-                rotation=np.asarray(g.rotation_matrix, dtype=np.float64),
-                center=np.asarray(g.translation, dtype=np.float64),
+                rotation=R,
+                center=t + float(g.depth) * R[:, 0],
                 width=float(g.width),
-                depth=float(g.depth),
+                depth=0.0,
                 source_model=source_model,
-                extra={"height": float(g.height)},
+                extra={
+                    "height": float(g.height),
+                    "graspnet_translation": [float(v) for v in t],
+                    "graspnet_depth": float(g.depth),
+                },
             )
         )
     return out

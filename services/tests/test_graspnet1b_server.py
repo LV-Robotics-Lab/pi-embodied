@@ -48,7 +48,11 @@ def test_rows_become_graspnet_frame_candidates_of_the_graspnet1b_backend():
     )
     assert c["grasp_frame"] == "graspnet" and c["source_model"] == "graspnet1b"
     assert np.allclose(c["rotation_matrix"], R)
-    assert c["translation_xyz"] == [0.1, 0.2, 0.5] and c["width"] == 0.06
+    # The center is the fingertips: depth along the approach past graspnetAPI's translation.
+    assert np.allclose(
+        c["translation_xyz"], np.array([0.1, 0.2, 0.5]) + c["graspnet_depth"] * R[:, 0]
+    )
+    assert c["graspnet_translation"] == [0.1, 0.2, 0.5] and c["width"] == 0.06
     assert np.allclose(
         np.subtract(c["contact_points_xyz"][1], c["contact_points_xyz"][0]),
         0.06 * R[:, 1],

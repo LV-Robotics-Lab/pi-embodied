@@ -27,22 +27,26 @@ rollout name in each episode's metadata, so any rollout stays traceable.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import shutil
 from pathlib import Path
 
 
+def episode_digest(ep: Path) -> str:
+    return hashlib.sha256((Path(ep) / "actions.jsonl").read_bytes()).hexdigest()
+
+
 def merge(shards: list[Path], out: Path, move: bool = False) -> int:
     out.mkdir(parents=True, exist_ok=True)
-    # Idempotent: an episode already merged (same shard, same rollout) is not copied again,
-    # so re-running a merge -- or adding one more shard to it -- never duplicates data.
+    # Idempotent: an episode already in ``out`` (same actions.jsonl bytes -- its per-step
+    # timestamps make that unique to one recording) is not copied again, so re-running a
+    # merge, adding a shard, or two shards that share a directory name never duplicate or drop.
     done = set()
     n = 0
     for d in sorted(out.glob("rollout_*")):
-        meta = d / "metadata.json"
-        if d.is_dir() and meta.exists():
-            m = json.loads(meta.read_text())
-            done.add((m.get("shard"), m.get("shard_rollout")))
+        if d.is_dir() and (d / "actions.jsonl").exists():
+            done.add(episode_digest(d))
             n = max(n, int(d.name.split("_")[-1]) + 1)
     for sd in shards:
         eps = sorted(
@@ -50,7 +54,7 @@ def merge(shards: list[Path], out: Path, move: bool = False) -> int:
             for d in Path(sd).iterdir()
             if d.is_dir() and (d / "actions.jsonl").exists()
         )
-        eps = [ep for ep in eps if (Path(sd).name, ep.name) not in done]
+        eps = [ep for ep in eps if episode_digest(ep) not in done]
         for ep in eps:
             dst = out / f"rollout_{n:03d}"
             (shutil.move if move else shutil.copytree)(str(ep), str(dst))
@@ -58,6 +62,7 @@ def merge(shards: list[Path], out: Path, move: bool = False) -> int:
             meta = json.loads(meta_path.read_text())
             meta["shard"] = Path(sd).name
             meta["shard_rollout"] = ep.name
+            meta["shard_path"] = str(Path(sd).resolve())
             meta_path.write_text(json.dumps(meta, indent=2, sort_keys=True))
             n += 1
         print(f"[merge] {Path(sd).name}: {len(eps)} new episodes", flush=True)

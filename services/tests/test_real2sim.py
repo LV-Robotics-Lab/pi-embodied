@@ -260,6 +260,9 @@ def test_merge_shards_renumbers_and_traces(tmp_path):
     fake_rollout(tmp_path / "s2/rollout_000", GOOD)
     n = merge_shards.merge([tmp_path / "s0", tmp_path / "s2"], tmp_path / "all")
     assert n == 5 and len(list((tmp_path / "all").glob("rollout_*"))) == 5
+    # a shard from elsewhere with an already-merged directory name is still new data
+    fake_rollout(tmp_path / "elsewhere/s0/rollout_000", GOOD)
+    assert merge_shards.merge([tmp_path / "elsewhere/s0"], tmp_path / "all") == 6
 
 
 def test_make_dataset_runs_the_vendored_converter(tmp_path):

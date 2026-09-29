@@ -3,11 +3,13 @@ import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { RpcClient } from "../src/infra/rpc.ts";
+import { loadManifest } from "../src/primitives/manifest.ts";
 import {
 	CODE_API_ENTRY,
 	CODE_API_EVENT,
 	type CodeApi,
 	type CodeApiPrimitive,
+	codePrimitives,
 	fetchCodeApi,
 	renderCodeApi,
 } from "../src/primitives/registry.ts";
@@ -167,5 +169,24 @@ test("fetchCodeApi passes other errors on, and renderCodeApi lists one primitive
 	assert.equal(
 		renderCodeApi(PRIMS),
 		"- get_robot_state() — The state.\n- move_delta(delta_xyz: vec3, continuous?: boolean) — Translate the TCP. [moves the robot]",
+	);
+});
+
+test("every LIBERO low-tier code primitive has an example, so S3 (low) and S4 (low-noexamples) differ", () => {
+	const m = loadManifest("libero");
+	const s3 = codePrimitives(m, "low", () => true);
+	const s4 = codePrimitives(m, "low-noexamples", () => true);
+	const example = (p: CodeApiPrimitive) => /\n\s*Examples?:/i.test(p.doc);
+	assert.deepEqual(
+		s3.filter((p) => !example(p)).map((p) => p.name),
+		[],
+	);
+	assert.deepEqual(
+		s4.map((p) => p.name),
+		s3.map((p) => p.name),
+	);
+	assert.deepEqual(
+		s4.filter(example).map((p) => p.name),
+		[],
 	);
 });

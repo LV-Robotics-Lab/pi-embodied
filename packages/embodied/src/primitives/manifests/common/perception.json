@@ -60,7 +60,7 @@
 			},
 			"doc": {
 				"tool": "Choose one detect mask (by id) as the target of the current observation, after checking the overlay.",
-				"code": "Choose one detect mask (by id) as the target of the current observation."
+				"code": "Choose one detect mask (by id) as the target of the current observation.\n\nExample:\n    d = detect(\"black bowl\", all=True)\n    select_detection(d[\"detections\"][1][\"id\"])"
 			},
 			"result": "read"
 		},
@@ -81,7 +81,7 @@
 			},
 			"doc": {
 				"tool": "Rule out one detect mask (by id) of the current observation; it stays listed as rejected.",
-				"code": "Rule out one detect mask (by id) of the current observation."
+				"code": "Rule out one detect mask (by id) of the current observation.\n\nExample:\n    d = detect(\"black bowl\", all=True)\n    reject_detection(d[\"detections\"][0][\"id\"])"
 			},
 			"result": "read"
 		},
@@ -102,7 +102,7 @@
 			},
 			"doc": {
 				"tool": "Fill the holes of a camera's current depth with a UniDepth estimate scaled to the sensor, or supply depth where the camera has none. detect then measures through it until the next motion.",
-				"code": "Fill a camera's depth holes with a UniDepth estimate scaled to the sensor (or supply depth where it has none); returns the fused depth and a report."
+				"code": "Fill a camera's depth holes with a UniDepth estimate scaled to the sensor (or supply depth where it has none); returns the fused depth and a report.\n\nExample:\n    r = enhance_depth(\"wrist\")\n    print(r)"
 			},
 			"result": "read"
 		}

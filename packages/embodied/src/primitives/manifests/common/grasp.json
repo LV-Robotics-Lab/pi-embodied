@@ -156,7 +156,7 @@
 				}
 			},
 			"doc": {
-				"code": "Greedy candidate policy: reject a grasp id after a structured failure and activate the next rank of its plan."
+				"code": "Greedy candidate policy: reject a grasp id after a structured failure and activate the next rank of its plan.\n\nExample:\n    g = plan_grasp(\"red cube\")\n    n = next_grasp(g[\"active\"], reason=\"unreachable\")\n    print(n[\"active\"])"
 			},
 			"requires": [
 				"grasp"
@@ -179,7 +179,7 @@
 				}
 			},
 			"doc": {
-				"code": "The EEF pose to command for a grasp or place id; refused when the id is from an earlier observation."
+				"code": "The EEF pose to command for a grasp or place id; refused when the id is from an earlier observation.\n\nExample:\n    pose = resolve_grasp(\"g1\", standoff=0.10)\n    print(pose[\"eef_position\"])"
 			},
 			"requires": [
 				"grasp"
@@ -206,7 +206,7 @@
 				}
 			},
 			"doc": {
-				"code": "Claim one grasp or place id for execution: its whole path from that one candidate (pre_grasp, grasp, lift; or pre_place, place, retreat) as world positions with the orientation and the gripper per step. Motions after it may use these coordinates though they expire the id; a claimed grasp is remembered as held for plan_place."
+				"code": "Claim one grasp or place id for execution: its whole path from that one candidate (pre_grasp, grasp, lift; or pre_place, place, retreat) as world positions with the orientation and the gripper per step. Motions after it may use these coordinates though they expire the id; a claimed grasp is remembered as held for plan_place.\n\nExample:\n    c = claim_waypoints(\"g1\", standoff=0.10, lift=0.10)\n    for leg in c[\"steps\"]:\n        print(leg)"
 			},
 			"requires": [
 				"grasp"
@@ -233,7 +233,7 @@
 				}
 			},
 			"doc": {
-				"code": "Segment an object (SAM3 text) in the current observation and register its mask under a short id (d2)."
+				"code": "Segment an object (SAM3 text) in the current observation and register its mask under a short id (d2).\n\nExample:\n    d = segment_mask(\"green plate\")\n    p = plan_place(mask_id=d[\"id\"], grasp_id=\"g1\")"
 			},
 			"requires": [
 				"grasp"

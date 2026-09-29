@@ -556,3 +556,15 @@ def test_primitives_arm_is_settable_on_both_omnigibson_versions():
     p.arm = "right"
     assert p.arm == "right" and isinstance(p, Og39)
     assert sim.with_settable_arm(CapxFork) is CapxFork
+
+
+@pytest.mark.parametrize("major", [0, 5, 6])
+def test_set_render_gpu_leaves_kit_the_visible_gpu_on_isaac_sim_6(monkeypatch, major):
+    monkeypatch.setattr(sim, "isaacsim_major", lambda: major)
+    env = {"CUDA_VISIBLE_DEVICES": "1", "OMNIGIBSON_GPU_ID": "0"}
+    sim.set_render_gpu(env)
+    if major >= 6:
+        # An explicit active_gpu indexes RTX's Vulkan devices, the hidden GPU 0 among them.
+        assert env == {"CUDA_VISIBLE_DEVICES": "1"}
+    else:
+        assert env == {"CUDA_VISIBLE_DEVICES": "1", "OMNIGIBSON_GPU_ID": "0"}

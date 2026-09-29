@@ -88,6 +88,31 @@ def quat_mat(q_xyzw) -> np.ndarray:
     )
 
 
+def isaacsim_major() -> int:
+    """Isaac Sim's major version (the pip ``isaacsim`` package); 0 when it is not pip-installed."""
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return int(version("isaacsim").split(".")[0])
+    except PackageNotFoundError:
+        return 0
+
+
+def set_render_gpu(environ: dict | None = None) -> None:
+    """OmniGibson's GPU once ``utils/gpu.py``'s ``pin_isaac`` has left one GPU visible.
+
+    Isaac Sim 5.x and older: ``OMNIGIBSON_GPU_ID`` 0 (OmniGibson's ``active_gpu`` and
+    ``physics_gpu``, the visible GPU's index). Isaac Sim 6 (install_isaac61.sh): unset. RTX
+    there numbers the Vulkan devices, all of them, so ``active_gpu`` 0 names a GPU CUDA cannot
+    see and no render device gets created; left alone, Kit renders on the visible GPU and
+    physics runs on its ``cuda:0``."""
+    env = os.environ if environ is None else environ
+    if isaacsim_major() >= 6:
+        env.pop("OMNIGIBSON_GPU_ID", None)
+    else:
+        env["OMNIGIBSON_GPU_ID"] = "0"
+
+
 # ---------------------------------------------------------------------------
 # the task and its scene
 

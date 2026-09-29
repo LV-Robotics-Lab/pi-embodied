@@ -30,7 +30,7 @@ the pi robot shows it to the planner only under ``--privileged``.
 
 Isaac Sim starts in ``main`` (minutes: the scene is a whole house), before the server binds, so
 healthz answers only once the task is loaded. Every call runs on the main thread (Kit is not
-thread-safe). ``OMNIGIBSON_GPU_ID`` (``--gpu-id``) picks the simulator's GPU; the perception
+thread-safe). ``--gpu-id`` picks the simulator's physical GPU (``pin_isaac``); the perception
 servers should sit on another one.
 
 Code mode (``code.run``, utils/code_exec.py ``CodeRunMixin``): a program calls the primitives of
@@ -1145,12 +1145,13 @@ def main():
     args = p.parse_args()
 
     # OmniGibson's macros read these at import: set them before anything imports it.
-    # Only the chosen GPU is visible (utils/gpu.py pin_isaac), so OmniGibson runs on its index 0.
+    # Only the chosen GPU is visible (utils/gpu.py pin_isaac), so OmniGibson runs on its index 0;
+    # sim.set_render_gpu says so the way the installed Isaac Sim needs it.
     args.gpu_id = pin_isaac(args.gpu_id)
     if args.gpu_id is None:
         args.gpu_id = 0
         os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-    os.environ["OMNIGIBSON_GPU_ID"] = "0"
+    sim.set_render_gpu()
     os.environ["OMNIGIBSON_HEADLESS"] = "1"
     os.environ.setdefault("OMNI_KIT_ACCEPT_EULA", "YES")
     if args.data_path:

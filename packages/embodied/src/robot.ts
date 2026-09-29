@@ -9,7 +9,7 @@
 import type { ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import { validateToolArguments } from "@earendil-works/pi-ai";
+import { type ImageContent, validateToolArguments } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
 import { explore } from "./capabilities/explore.ts";
@@ -835,6 +835,14 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		moves,
 		observes: (t) => (OBSERVE as readonly string[]).includes(t),
 		real: () => spec.code?.real === true || spec.explore?.operatorJudged === true,
+		// No tool result carries a frame yet (units mode starts text-only): the reviewer gets a fresh
+		// observation from the robot's own look-only tool, called directly (the planner does not see it).
+		observe: async (sig, ctx) => {
+			const look = (OBSERVE as readonly string[]).map((t) => defs.get(t)).find((d) => d !== undefined);
+			if (!look || !ready || broken !== undefined) return [];
+			const r = await exclusive(sig, () => look.call({}, sig, ctx));
+			return r.content.filter((c): c is ImageContent => c.type === "image");
+		},
 		task: () =>
 			spec.status?.().language ||
 			Object.entries(task)

@@ -348,6 +348,27 @@ test("--approval off (the simulation default) reviews nothing and leaves the res
 	assert.equal(f.entries.filter((e) => e.type === APPROVAL_ENTRY).length, 0);
 });
 
+test("--approval reviewed before any tool result has a frame (units mode): the reviewer gets a fresh observation", async (t) => {
+	const f = fakePi({ approval: "reviewed" });
+	t.after(f.restore);
+	const robot = toy(f);
+	let looks = 0;
+	// The robot's look-only tool returns the current camera frame (called directly, not by the planner).
+	robot.tool("view_env_state", "look", Type.Object({}), async () => {
+		looks++;
+		return { content: [{ type: "image", data: "fresh", mimeType: "image/png" }], details: {} };
+	});
+	await f.emit("session_start");
+	assert.equal(f.branch.length, 0, "no tool result yet");
+	assert.equal(await call(f, "move"), undefined, "approved");
+	assert.equal(looks, 1);
+	assert.equal(f.asked[0].content[1].data, "fresh");
+	assert.match(f.asked[0].content[0].text, /The 1 image\(s\) are the robot's latest camera views/);
+	const entry = f.entries.find((e) => e.type === APPROVAL_ENTRY)?.data;
+	assert.equal(entry.images, 1);
+	assert.equal(entry.images_from, "observation");
+});
+
 test("--approval reviewed: a rejection blocks the motion with the reviewer's reason; looking is not reviewed", async (t) => {
 	const f = fakePi(
 		{ approval: "reviewed", "approval-model": "faux/reviewer" },

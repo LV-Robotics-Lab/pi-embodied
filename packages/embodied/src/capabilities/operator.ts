@@ -435,6 +435,11 @@ type ApprovalRobot = {
 	moves: (tool: string) => boolean;
 	/** Whether a tool fetches a fresh observation (../closed-loop.ts OBSERVE). */
 	observes: (tool: string) => boolean;
+	/**
+	 * A fresh observation's camera images, for a review before any tool result carried one (units
+	 * mode starts text-only): the robot's look-only tool, called directly. Empty when it has none.
+	 */
+	observe?: (signal: AbortSignal | undefined, ctx: ExtensionContext) => Promise<ImageContent[]>;
 	/** The task text the reviewer judges against. */
 	task: () => string;
 	/** A real robot (code mode's `real`, an operator-judged exploration): --approval defaults to human, and standard asks about every motion. */
@@ -555,14 +560,23 @@ export function approval(pi: ExtensionAPI, robot: ApprovalRobot) {
 			reason = allowed ? "approved by the operator" : "the operator declined this motion";
 			Object.assign(entry, { source: "human", decision: allowed ? "approve" : "reject" });
 		} else {
-			const images = latestImages(ctx);
+			let images = latestImages(ctx);
+			let source = "tool_result";
+			if (!images.length && robot.observe) {
+				try {
+					images = (await robot.observe(ctx.signal, ctx)).slice(0, 4);
+					source = "observation";
+				} catch (err) {
+					entry.observe_error = err instanceof Error ? err.message : String(err);
+				}
+			}
 			const seconds = Number(pi.getFlag("approval-timeout"));
 			// A plain (ref'd) timer, as ../vdm.ts: a hung call must time out, not end the process.
 			const timeout = new AbortController();
 			const timer = seconds > 0 ? setTimeout(() => timeout.abort(), seconds * 1000) : undefined;
 			const signal = AbortSignal.any([ctx.signal, timeout.signal].filter((s): s is AbortSignal => s !== undefined));
 			let slot: string | undefined;
-			Object.assign(entry, { source: "reviewer", images: images.length });
+			Object.assign(entry, { source: "reviewer", images: images.length, images_from: source });
 			try {
 				if (gate) slot = await acquire(gate.dir, gate.n, 250, signal);
 				const modelRef = String(pi.getFlag("approval-model") || pi.getFlag("units-vlm-model") || "");

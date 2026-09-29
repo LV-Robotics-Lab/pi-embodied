@@ -544,12 +544,19 @@ def test_the_runs_deadline_bounds_every_outbound_rpc_of_a_primitive():
 
 def test_the_servers_environment_is_never_modified_during_a_spawn(monkeypatch):
     monkeypatch.setenv("FAKE_API_KEY", "sk-1")
-    seen: list[str | None] = []
+    reads = [0]
+    wrong: list[str | None] = []
     stop = threading.Event()
 
     def watch():
+        # Bounded: counts reads and keeps only a wrong value (an unbounded append in a tight
+        # loop held the GIL and grew memory for the whole spawn, starving the run it watched).
         while not stop.is_set():
-            seen.append(os.environ.get("FAKE_API_KEY"))
+            v = os.environ.get("FAKE_API_KEY")
+            reads[0] += 1
+            if v != "sk-1":
+                wrong.append(v)
+            time.sleep(0)
 
     th = threading.Thread(target=watch)
     th.start()
@@ -558,8 +565,8 @@ def test_the_servers_environment_is_never_modified_during_a_spawn(monkeypatch):
     finally:
         stop.set()
         th.join()
-    assert out["status"] == "ran", out
-    assert seen and all(v == "sk-1" for v in seen)
+    assert out["status"] == "ran", (out["status"], out["error"])
+    assert reads[0] > 0 and wrong == [], wrong[:5]
     env = code_exec.child_env({"FAKE_API_KEY": "x", "PATH": "/bin"}, "/tmp/w")
     assert "FAKE_API_KEY" not in env and env["HOME"] == "/tmp/w"
     assert env["PYTHONPATH"].split(os.pathsep)[0].endswith("services")
@@ -902,3 +909,46 @@ def test_preflight_reports_the_refusal_up_front_and_a_remote_caller_waives_it(
     remote = r.preflight(remote=True)
     assert remote["error"] is None and remote["waived"] == "remote caller"
     assert r.run("RESULT = 1\n")["result"] == 1
+
+
+def test_a_done_message_written_just_before_the_child_exits_is_read_not_lost():
+    """Race in the runner's wait loop: the poll timed out empty, then the child wrote its done
+    message and exited before the liveness check. The run was declared "died" (the program's
+    RESULT, stdout and status lost) although the message sat in the pipe. Seen under load as a
+    successful run reported as an error with no traceback."""
+    import json
+
+    done = json.dumps(
+        ["done", {"stdout": "hi\n", "stderr": "", "traceback": None, "result": 7}]
+    ).encode()
+
+    class Conn:
+        """The pipe as the parent sees it: empty at the first poll, then the done message
+        (written by the child just before it exited), then EOF."""
+
+        def __init__(self):
+            self.polls = 0
+            self.data = [done]
+
+        def poll(self, timeout=0.0):
+            self.polls += 1
+            return (
+                self.polls > 1
+            )  # the first poll's window closed just before the write
+
+        def recv_bytes(self, maxlength=None):
+            if self.data:
+                return self.data.pop(0)
+            raise EOFError
+
+    class ExitedProc:
+        returncode = 0
+
+        def poll(self):
+            return 0  # by the liveness check, the child has already exited
+
+    r = CodeRunner([])
+    state = code_exec._Run(max_calls=5, max_move_m=None, deadline=time.monotonic() + 30)
+    outcome = r._serve(Conn(), ExitedProc(), [], state)
+    assert outcome.kind == "done", outcome
+    assert state.done["result"] == 7 and state.done["stdout"] == "hi\n"

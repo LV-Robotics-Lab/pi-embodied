@@ -1370,9 +1370,16 @@ class CodeRunner:
             except (EOFError, OSError):
                 return self._gone(proc)
             if not ready:
-                if proc.poll() is not None:
+                if proc.poll() is None:
+                    continue
+                # The child has exited. What it wrote just before (its done message) may have
+                # arrived after the poll above timed out: read the pipe before declaring the
+                # child gone (an exited child's pipe is readable: its data, then EOF).
+                try:
+                    if not conn.poll(0):
+                        return self._gone(proc)
+                except (EOFError, OSError):
                     return self._gone(proc)
-                continue
             try:
                 raw = conn.recv_bytes(MAX_MESSAGE)
             except (EOFError, OSError) as exc:

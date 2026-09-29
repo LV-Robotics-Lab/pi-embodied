@@ -200,11 +200,13 @@ export default function dualFranka(pi: ExtensionAPI) {
 				grasp: graspActive(pi).length > 0,
 				place: Boolean(flag("anyplace")),
 				vla: Boolean(flag("robot-vla")),
+				xpolicy: Boolean(flag("xpolicy").trim()),
 			})[c] ?? false,
 		task: ["task"],
 		keepImages: 4,
 		video: true,
-		// XPolicyLab policies (--xpolicy, env_cfg franka: two arms): ee targets run as bounded relative motions.
+		// XPolicyLab policies (--xpolicy, env_cfg franka: two arms): ee targets run as bounded relative motions;
+		// the manifest's xpolicy_act (requires xpolicy) activates the tool.
 		xpolicy: xpolicySpec(),
 		// Observations carry the policy's inline cameras (the D455 by default), wrist views among them.
 		vdm: () =>

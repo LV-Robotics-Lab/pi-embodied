@@ -385,6 +385,7 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 				dual,
 				sam3: pi.getFlag("detections") === true && Boolean(flag("sam3")),
 				unidepth: Boolean(flag("unidepth").trim()),
+				xpolicy: Boolean(flag("xpolicy").trim()),
 			})[c] ?? false,
 		task: ["task"],
 		// The env server's primitive registry (code.api), recorded per episode.
@@ -469,7 +470,8 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 			result: (params) => toolResult({ _finish: true, ...params }),
 		},
 		units,
-		// XPolicyLab policies (--xpolicy, the dual rig: env_cfg piper is two-armed): ee targets run as guarded steps.
+		// XPolicyLab policies (--xpolicy, the dual rig: env_cfg piper is two-armed): ee targets run as guarded steps;
+		// the manifest's xpolicy_act (requires dual, xpolicy) activates the tool.
 		...(dual ? { xpolicy: xpolicySpec() } : {}),
 	};
 	const robot = defineRobot(pi, spec);

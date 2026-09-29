@@ -561,6 +561,12 @@
 		},
 		{
 			"use": "modules/run_code"
+		},
+		{
+			"use": "modules/xpolicy_act",
+			"requires": [
+				"xpolicy"
+			]
 		}
 	]
 }

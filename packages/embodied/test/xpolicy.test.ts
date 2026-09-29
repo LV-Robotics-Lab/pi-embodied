@@ -6,6 +6,7 @@ import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { NdArray } from "../src/infra/rpc.ts";
+import { loadManifest } from "../src/primitives/manifest.ts";
 import {
 	gripperCommand,
 	parseAction,
@@ -228,7 +229,11 @@ const finish: RobotSpec["finish"] = {
 };
 
 /** A two-armed toy: `overAfter` actions end the episode; it logs every observation and action. */
-async function toy(flags: Record<string, unknown>, o: { overAfter?: number; actions?: XPolicySpec["actions"] } = {}) {
+async function toy(
+	flags: Record<string, unknown>,
+	o: { overAfter?: number; actions?: XPolicySpec["actions"] } = {},
+	extra: Partial<RobotSpec> = {},
+) {
 	const f = fakePi(flags);
 	const log: string[] = [];
 	const acted: XPolicyAction[] = [];
@@ -261,6 +266,7 @@ async function toy(flags: Record<string, unknown>, o: { overAfter?: number; acti
 		result: () => ({}),
 		finish,
 		xpolicy: spec,
+		...extra,
 	});
 	await f.emit("session_start");
 	await f.emit("agent_start");
@@ -411,4 +417,22 @@ test("--xpolicy-action the robot cannot execute fails the start closed", async (
 		bridge.calls.some((c) => c.method === "xpolicy.connect"),
 		false,
 	);
+});
+
+test("the manifests declare xpolicy_act on the dual rigs only, behind --xpolicy", () => {
+	const entry = (robot: string) => loadManifest(robot).primitives.find((e) => e.name === "xpolicy_act");
+	assert.deepEqual(entry("dual_franka")?.requires, ["xpolicy"]);
+	assert.deepEqual(entry("piper")?.requires, ["dual", "xpolicy"], "the single-arm Piper has no XPolicyLab env_cfg");
+	assert.equal(entry("franka"), undefined, "nor has the single-arm Franka");
+	assert.equal(entry("dual_franka")?.module, "xpolicy");
+});
+
+test("xpolicy_act is activated as far as the robot's manifest entry allows", async (t) => {
+	const bridge = await fakeBridge([]);
+	t.after(bridge.close);
+	const flags = { xpolicy: "ws://policy:19000", "xpolicy-bridge": bridge.url };
+	const on = await toy(flags, {}, { manifest: "dual_franka", capabilities: (c) => c === "xpolicy" });
+	assert.ok(on.active().includes("xpolicy_act"));
+	const off = await toy(flags, {}, { manifest: "dual_franka", capabilities: () => false });
+	assert.equal(off.active().includes("xpolicy_act"), false, "an unmet `requires` keeps it off");
 });

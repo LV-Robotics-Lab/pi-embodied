@@ -193,7 +193,8 @@ export type RobotSpec = {
 	viser?: ViserSpec;
 	/**
 	 * Mount the XPolicyLab client (../xpolicy.ts, `--xpolicy <ws url>`): how the robot builds XPolicyLab's
-	 * observation and executes one action of a chunk; it adds `xpolicy_act`.
+	 * observation and executes one action of a chunk; it adds `xpolicy_act`, which a robot with a
+	 * manifest declares there (`modules/xpolicy_act`, its `requires` gating the tool).
 	 */
 	xpolicy?: XPolicySpec | (() => XPolicySpec | undefined);
 	/**
@@ -631,8 +632,9 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 			pi.events.emit(CODE_API_EVENT, api);
 			// Code mode fetches its tier of the registry once the robot is up and registers run_code.
 			const coded = (await co?.start()) ?? [];
-			// --xpolicy connects the policy server for this episode (fails closed) and adds xpolicy_act.
-			const xpTools = (await xp?.start()) ?? [];
+			// --xpolicy connects the policy server for this episode (fails closed) and adds xpolicy_act,
+			// as far as the manifest's `requires` for it are met.
+			const xpTools = servable((await xp?.start()) ?? []);
 			// Pure units or code mode hides the robot's own tools and memory's (Show-Harness's pure mode).
 			const mode = un?.mode() ?? co?.mode();
 			// The units' tools only when units mode is on (a robot mounts units and code mode both).

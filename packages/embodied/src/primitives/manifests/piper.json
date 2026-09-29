@@ -326,7 +326,11 @@
 			"use": "modules/run_code"
 		},
 		{
-			"use": "modules/xpolicy_act"
+			"use": "modules/xpolicy_act",
+			"requires": [
+				"dual",
+				"xpolicy"
+			]
 		}
 	]
 }

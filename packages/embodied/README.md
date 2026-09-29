@@ -227,7 +227,9 @@ Shared modules:
   XPolicyLab's request and cold-start budgets. Dimensions come from the services' env_cfg
   (`components/xpolicy_env_cfg`: XPolicyLab's own robot table; `aloha_agilex`, `piper`, `franka`
   and `arx_x5` are all two-armed, keys prefixed `left_` / `right_`). A robot opts in with `xpolicy`
-  in its spec (env_cfg type, action types, how it builds the observation and executes one action).
+  in its spec (env_cfg type, action types, how it builds the observation and executes one action)
+  and declares `modules/xpolicy_act` in its manifest, whose `requires` gate the tool (the dual rigs:
+  `xpolicy`, i.e. `--xpolicy` set).
   RoboTwin runs joint (qpos14) and ee (ee16) actions natively; the dual Piper and dual Franka rigs
   run ee targets as their bounded relative moves (Piper: yaw only) and have no joint command.
   XPolicyLab publishes no weights for them (nor real-robot evaluation): a policy has to be

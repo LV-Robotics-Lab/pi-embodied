@@ -14,6 +14,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { branchProviders, plannerOf } from "../../planner/kind.ts";
 import { hasFiles, mergeMemory, rebuildIndex, str, validateMemory } from "./corpus.ts";
 import { syncMemory } from "./sync.ts";
 
@@ -331,12 +332,20 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 		if (commands) {
 			mkdirSync(outputDir, { recursive: true });
 			writeFileSync(path, commands.map((c) => `${JSON.stringify(c)}\n`).join(""));
+			// Who solved it (../planner.ts): a person's or a replayed solve is not a model's recipe.
+			writeFileSync(
+				join(outputDir, `${cell.tag}_recipe.meta.json`),
+				`${JSON.stringify({ planner: plannerOf(branchProviders(branch)) })}\n`,
+			);
 		}
 		say(ctx, commands ? `recipe: ${path}` : "recipe: not written (cell unsolved)");
 		let failed = false;
 		for (const e of branch)
 			if (e.type === "message" && e.message.role === "assistant") failed = e.message.stopReason === "error";
-		if (guard?.inbox && pi.getFlag("auto-merge-memory") === true && !failed)
+		// Exploration memory is the model's own: a run a person planned (human/operator) is not merged.
+		const human = plannerOf(branchProviders(branch)) === "human";
+		if (human && guard?.inbox) say(ctx, "memory not merged: a person planned this run (human/operator)");
+		if (guard?.inbox && pi.getFlag("auto-merge-memory") === true && !failed && !human)
 			say(ctx, `memory merged: ${JSON.stringify(await mergeMemory(root, cell.tag, outputDir, !!commands))}`);
 	});
 

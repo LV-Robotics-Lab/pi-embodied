@@ -614,3 +614,21 @@ test("an abort ends a pending human turn as aborted", async () => {
 	setTimeout(() => ac.abort(), 10);
 	assert.equal((await p).stopReason, "aborted");
 });
+
+test("plannerOf: any human turn makes the episode human-planned, else the last turn's planner provider", async () => {
+	const { plannerOf, branchProviders } = await import("../src/planner/kind.ts");
+	assert.equal(plannerOf([]), "model");
+	assert.equal(plannerOf(["openai", "selfhost"]), "model");
+	assert.equal(plannerOf(["fallback", "fallback"]), "fallback");
+	assert.equal(plannerOf(["ensemble"]), "ensemble");
+	assert.equal(plannerOf(["flash", "human", "flash"]), "human");
+	assert.equal(plannerOf(["replay"]), "replay");
+	assert.deepEqual(
+		branchProviders([
+			{ type: "message", message: { role: "user" } },
+			{ type: "message", message: { role: "assistant", provider: "finetuned" } },
+			{ type: "custom" },
+		]),
+		["finetuned"],
+	);
+});

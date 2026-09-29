@@ -226,6 +226,14 @@ test("LIBERO --waypoints --align-wrist --object-memory: the route servos through
 	);
 	assert.equal(a.content[1].type, "image");
 	await s.run("remember_object", { name: "bowl", position: [0.1, 0.05, 0.85] });
+	// A person answered as the model for a turn: the result says planner human.
+	await s.emit("agent_start");
+	await s.emit("message_end", {
+		message: { role: "assistant", provider: "human", content: [], usage: { cost: { total: 0 } }, stopReason: "stop" },
+	});
+	await s.run("finish", { status: "failure", summary: "stop" });
+	await s.emit("agent_end", { messages: [] });
+	assert.equal(s.entries.find((e) => e.type === "robot_result")?.data.planner, "human");
 	const rec = (await s.run("recall_objects", {})).details;
 	assert.equal(rec.objects[0].last_seen_step, steps.length);
 });

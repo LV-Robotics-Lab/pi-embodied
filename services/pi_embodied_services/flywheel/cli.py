@@ -128,7 +128,8 @@ def main(argv: list[str] | None = None) -> int:
         default=[],
         metavar="TYPE[,TYPE]",
         help="also export sessions planned by these planner types (flash, replay, human, scripted, "
-        "...; 'all' for every type); default only model-planned sessions",
+        "...; 'all' for every type); default only model-planned sessions (model, ensemble, "
+        "fallback, finetuned)",
     )
     planner.add_argument(
         "--include-explore-attempts",
@@ -154,7 +155,10 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     if args.command == "export-planner":
-        from pi_embodied_services.flywheel.planner_export import export_planner
+        from pi_embodied_services.flywheel.planner_export import (
+            MODEL_PLANNERS,
+            export_planner,
+        )
 
         result = export_planner(
             args.runs,
@@ -176,7 +180,7 @@ def main(argv: list[str] | None = None) -> int:
             image_stub=args.image_stub,
             merge_steering=args.merge_steering,
             planners=[
-                "model",
+                *MODEL_PLANNERS,
                 *(
                     t.strip()
                     for v in args.include_planner

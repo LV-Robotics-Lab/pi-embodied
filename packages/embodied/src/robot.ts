@@ -44,6 +44,7 @@ import {
 	toolSchema,
 	type Vars,
 } from "./primitives/manifest.ts";
+import { plannerOf } from "./planner/kind.ts";
 import { CODE_API_ENTRY, CODE_API_EVENT, type CodeApi, fetchCodeApi } from "./primitives/registry.ts";
 import { type XPolicySpec, xpolicy } from "./primitives/xpolicy.ts";
 
@@ -316,6 +317,8 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	let plannerError: string | undefined;
 	/** The --time-limit deadline aborted the run: the reply it cut off is not a planner failure. */
 	let timedOut = false;
+	/** The provider of each assistant message this episode (./planner.ts). */
+	let providers: string[] = [];
 	/** Ends the episode when the --time-limit wall-clock budget runs out, even mid-call. */
 	let deadline: ReturnType<typeof setTimeout> | undefined;
 	pi.registerFlag("keep-images", {
@@ -377,6 +380,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		// A service that stopped answering ended the last episode; this one may find it restarted.
 		forgetUnresponsive();
 		turns = cost = toolCalls = 0;
+		providers = [];
 		tokens = { input: 0, output: 0 };
 		prompts = [];
 		plannerModels.clear();
@@ -803,6 +807,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		// The model that actually answered (a fallback or a switch mid-episode shows here).
 		// responseModel: the concrete model the provider reports when it differs from the requested one.
 		if (m.provider && m.model) plannerModels.add(`${m.provider}/${m.responseModel ?? m.model}`);
+		providers.push(m.provider);
 		tokens.input += (m.usage?.input ?? 0) + (m.usage?.cacheRead ?? 0) + (m.usage?.cacheWrite ?? 0);
 		tokens.output += m.usage?.output ?? 0;
 		finishing = m.content.some((c) => c.type === "toolCall" && c.name === "finish");
@@ -967,6 +972,8 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 						turns,
 						// Which budget ended the episode: "turns", "time" (a planner timeout), "cost", "tool_calls", "tokens", or null.
 						planner_budget_exhausted: outOfBudget ?? null,
+						// Who planned: model, human (a person answered as the model), ensemble, fallback, finetuned, flash, replay.
+						planner: plannerOf(providers),
 						cost_usd: Number(cost.toFixed(6)),
 						// An operator verdict (/success /failure /abort) aborts the model mid-request; that ends the run, it is not a planner failure.
 						planner_error: (op.result() as Json).operator_finished === true ? null : (plannerError ?? null),

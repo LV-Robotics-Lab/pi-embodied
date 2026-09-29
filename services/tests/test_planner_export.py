@@ -342,6 +342,38 @@ def test_only_model_planned_sessions_unless_other_planners_are_asked_for(
     assert export_planner([runs], tmp_path / "all", planners=["all"])["episodes"] == 6
 
 
+def test_model_backed_planner_types_export_by_default_and_human_only_on_request(
+    tmp_path: Path,
+) -> None:
+    # The robot result's planner field (packages/embodied/src/planner/kind.ts): a fallback,
+    # ensemble or fine-tuned planner is a model; a person answering as the model is not.
+    runs = tmp_path / "runs"
+    for kind in ("model", "fallback", "ensemble", "finetuned", "human"):
+        write_session(runs / kind, outcome={"success": True, "planner": kind})
+    summary = export_planner([runs], tmp_path / "default")
+    assert summary["episodes"] == 4 and summary["skipped"] == {"planner_human": 1}
+    assert sorted(r["planner"] for r in rows(tmp_path / "default")) == [
+        "ensemble",
+        "fallback",
+        "finetuned",
+        "model",
+    ]
+    assert (
+        cli.main(
+            [
+                "export-planner",
+                str(runs),
+                "--output",
+                str(tmp_path / "cli"),
+                "--include-planner",
+                "human",
+            ]
+        )
+        == 0
+    )
+    assert len(rows(tmp_path / "cli")) == 5
+
+
 def test_privileged_and_operator_runs_only_on_request(tmp_path: Path) -> None:
     runs = tmp_path / "runs"
     write_session(runs / "plain", outcome={"success": True})

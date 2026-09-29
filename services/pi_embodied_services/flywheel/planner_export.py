@@ -24,8 +24,9 @@ else ``success`` (``terminated`` for LIBERO) decides. Invalid, timed-out or unfi
 are never exported. Left out unless ``include`` names them: ``privileged`` runs (simulator
 ground truth was on offer) and ``operator`` runs (a human judged or ended the episode). Only
 sessions a model planned are exported unless ``planners`` names other types: the result's
-``planner`` field, or the session's planner provider without it (flash and replay re-run a
-recording, human is a person in the model's place, scripted stand-ins answer from a script);
+``planner`` field (``model``, ``ensemble``, ``fallback`` and ``finetuned`` are a model planning), or
+the session's planner provider without it (flash and replay re-run a recording, human is a person
+in the model's place, scripted stand-ins answer from a script);
 every row records its ``planner`` (under ``extra_info.source`` for ``verl-rl``).
 
 The conversation is what the planner saw at the end of the session's branch (the path to its
@@ -119,6 +120,9 @@ INCLUDES = ("privileged", "operator", "explore_attempts")
 # Planner providers that are not a model planning (flash and replay re-run a recording, human is a
 # person answering in the model's place); their sessions are not the planner's own data.
 NON_MODEL_PROVIDERS = ("flash", "replay", "human")
+# Planner types a robot result records (packages/embodied/src/planner/kind.ts) that are a model
+# planning: a fallback, ensemble or fine-tuned planner is still a model; exported by default.
+MODEL_PLANNERS = ("model", "ensemble", "fallback", "finetuned")
 # pi's summary framing (coding-agent/src/core/messages.ts).
 COMPACTION_SUMMARY_PREFIX = "The conversation history before this point was compacted into the following summary:\n\n<summary>\n"
 COMPACTION_SUMMARY_SUFFIX = "\n</summary>"
@@ -682,13 +686,14 @@ def export_planner(
     anchor_image: bool | None = None,
     image_stub: str = IMAGE_STUB,
     merge_steering: bool = False,
-    planners: Iterable[str] = ("model",),
+    planners: Iterable[str] = MODEL_PLANNERS,
     name: str = "pi_embodied_planner",
 ) -> dict[str, Any]:
     """Export the sessions below ``roots`` to ``output/planner.jsonl``; returns counts and skip
     reasons. ``include`` opts into what is left out by default: ``privileged``, ``operator``,
     ``explore_attempts`` (the attempts before an explore ``reset``). ``planners``: the planner
-    types exported (``planner_type``; default only ``model``; ``all`` takes every type).
+    types exported (``planner_type``; default the model types, ``MODEL_PLANNERS``; ``all`` takes
+    every type).
     ``anchor_image`` defaults to the run's recorded ``--anchor-image``."""
     if fmt not in FORMATS:
         raise ValueError(f"format must be one of {FORMATS}")

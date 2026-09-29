@@ -342,7 +342,7 @@ test("--code=true: run_code runs on the env server and its result becomes the ob
 	await s.emit("session_start");
 	process.exitCode = undefined;
 	assert.deepEqual(s.errors, []);
-	assert.deepEqual(s.active(), ["run_code", "finish"]);
+	assert.deepEqual(s.active(), ["run_code", "read", "ls", "grep", "find", "write", "finish"]);
 	assert.deepEqual(
 		env.calls.filter((c) => c.method === "code.api").map((c) => c.kwargs.tier),
 		[undefined, "low"],

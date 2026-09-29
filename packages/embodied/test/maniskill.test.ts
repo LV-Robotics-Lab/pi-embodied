@@ -616,7 +616,7 @@ test("--units on --robot widowxai: no wrist view, so fine steps, no target_in_wr
 		return { schema, prompt, head: r.content[0].text as string, servos, result, active: s.active() };
 	};
 	const w = await run("widowxai", ROBOTS.widowxai.setup, false);
-	assert.deepEqual(w.active, ["act", "plan", "finish"]);
+	assert.deepEqual(w.active, ["act", "plan", "read", "ls", "grep", "find", "write", "finish"]);
 	assert.ok(!("target_in_wrist" in w.schema) && !("plan" in w.schema), "act at load already follows --robot");
 	assert.equal(w.servos, 1, "one 2 cm unit: the fine step");
 	assert.match(w.head, /target_in_wrist ignored: this robot has no wrist view/);
@@ -648,7 +648,7 @@ test("--code=true: run_code runs on the env server and its result becomes the ob
 	maniskill(s.pi);
 	await s.emit("session_start");
 	process.exitCode = undefined;
-	assert.deepEqual(s.active().slice(0, 2), ["run_code", "finish"]);
+	assert.deepEqual(s.active().slice(0, 7), ["run_code", "read", "ls", "grep", "find", "write", "finish"]);
 	assert.deepEqual(
 		env.calls.filter((c) => c.method === "code.api").map((c) => c.kwargs.tier),
 		[undefined, "low-noexamples"],

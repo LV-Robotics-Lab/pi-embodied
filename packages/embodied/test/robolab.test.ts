@@ -182,7 +182,7 @@ test("units: ROTATE_* run as env.rotate_delta with the grounded yaw, MV_* as env
 	const s = stubPi({ units: "true", "units-plugins": "", env: env.url });
 	robolab(s.pi);
 	await s.emit("session_start");
-	assert.deepEqual(s.active(), ["act", "finish"]);
+	assert.deepEqual(s.active(), ["act", "read", "ls", "grep", "find", "write", "finish"]);
 	assert.deepEqual(
 		env.calls.map((c) => c.method).filter((m) => m !== "code.api"),
 		["healthz", "env.get_env_meta", "env.reset"],
@@ -288,7 +288,7 @@ test("--code=true: run_code runs on the env server and its result becomes the ob
 	robolab(s.pi);
 	await s.emit("session_start");
 	process.exitCode = undefined;
-	assert.deepEqual(s.active(), ["run_code", "finish"]);
+	assert.deepEqual(s.active(), ["run_code", "read", "ls", "grep", "find", "write", "finish"]);
 	assert.deepEqual(
 		env.calls.filter((c) => c.method === "code.api").map((c) => c.kwargs.tier),
 		[undefined, "low"],

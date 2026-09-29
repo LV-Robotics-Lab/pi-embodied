@@ -17,6 +17,8 @@ import { hasFiles, mergeMemory, rebuildIndex, str, validateMemory } from "./corp
 import { syncMemory } from "./sync.ts";
 
 const READABLE = ["global", "suite", "task_only", "results"];
+/** The default memory section of a mode with its own prompt (see MemoryOptions.prompt). */
+const SECTION = readFileSync(new URL("./section.md", import.meta.url), "utf8").trim();
 const ACCESS: Record<string, Access> = {
 	read: "read",
 	ls: "read",
@@ -50,6 +52,11 @@ export type MemoryOptions = {
 	cell?: () => { tag: string; reference: string } | undefined;
 	/** State-advancing tools that belong in a recipe (plus successful `segment` calls). */
 	primitives?: readonly string[];
+	/**
+	 * The memory section a mode with its own prompt (--units=true, --code=true) appends, as a template
+	 * (`{{memory_dir}}` ...); default ./section.md: read the corpus, then the cell's reference and recipe.
+	 */
+	prompt?: (profile: "hf" | "local") => string;
 	/** Exploration run: local profile, the cell's inbox becomes writable. */
 	explore?: () => boolean;
 	/** Directories the agent may also read and search, e.g. the robot's saved state images. */
@@ -334,6 +341,14 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 		loaded: () => ({ ...loaded }),
 		get profile() {
 			return profile;
+		},
+		/**
+		 * The memory section for a mode that replaces the robot's prompt (pure units or code mode), rendered;
+		 * undefined without a cell (nothing to read).
+		 */
+		section(): string | undefined {
+			if (!cell) return undefined;
+			return this.render(opts.prompt?.(profile) ?? SECTION, { task: "" });
 		},
 		/** Fill {{memory_dir}}, {{memory_inbox}}, {{memory_profile}}, {{output_dir}}, {{recipe_tag}}, {{reference_tag}} and `extra`. */
 		render(text: string, extra: Record<string, string | number> = {}): string {

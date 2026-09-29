@@ -196,6 +196,41 @@ test("memory's session_start sees the resolved task", async (t) => {
 	assert.ok((await f.emit("tool_call", { toolName: "read", input: { path: "/etc/passwd" } }))?.block);
 });
 
+test("pure units mode keeps memory: the file tools stay and memory's section follows the units prompt", async (t) => {
+	const f = fakePi({ "memory-profile": "local", units: "true", "units-plugins": "" });
+	t.after(f.restore);
+	const memoryDir = join(f.dir, "memory", "toy");
+	mkdirSync(memoryDir, { recursive: true });
+	writeFileSync(join(memoryDir, "MEMORY.md"), "# memory\n");
+	const robot = toy(f.pi, async () => ["move", "finish"], {
+		memory: {
+			home: () => join(f.dir, "memory"),
+			cell: () => ({ tag: `cell_${robot.task.suite}`, reference: "cell_ref" }),
+			primitives: ["move"],
+		},
+		units: {
+			vectors: {
+				MV_FWD: [1, 0, 0],
+				MV_BACK: [-1, 0, 0],
+				MV_LEFT: [0, -1, 0],
+				MV_RIGHT: [0, 1, 0],
+				MV_UP: [0, 0, 1],
+				MV_DOWN: [0, 0, -1],
+			},
+			stepM: 0.02,
+			apply: async () => ({ content: [], details: {} }),
+		},
+	});
+	await f.emit("session_start");
+	assert.deepEqual(f.active(), ["act", "read", "ls", "grep", "find", "write", "finish"]);
+	const prompt = (await f.emit("before_agent_start", { systemPrompt: "" }))?.systemPrompt as string;
+	assert.match(prompt, /ACTION UNITS/);
+	assert.match(prompt, /# Memory\nCell `cell_flag-suite`/);
+	assert.ok(prompt.includes(`${memoryDir}/MEMORY.md`));
+	assert.match(prompt, /task_only\/cell_ref_recipe\.jsonl/);
+	assert.match(prompt, /recorded with the robot's own tools, not action units/);
+});
+
 test("finish ends the episode, terminates its batch, and yields exactly one result", async (t) => {
 	const f = fakePi();
 	t.after(f.restore);

@@ -369,7 +369,7 @@ test("--code=true: run_code runs on the env server; the run becomes a state, its
 	robocasa(s.pi);
 	await s.emit("session_start");
 	process.exitCode = undefined;
-	assert.deepEqual(s.active(), ["run_code", "finish"]);
+	assert.deepEqual(s.active(), ["run_code", "read", "ls", "grep", "find", "write", "finish"]);
 	await s.emit("agent_start");
 	const r = await s.run("run_code", { code: "step([0, 0, 1, 0, 0, 0, -1, 0, 0, 0, 0, -1])" });
 	const run = env.calls.find((c) => c.method === "code.run")!;

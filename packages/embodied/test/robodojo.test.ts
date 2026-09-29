@@ -289,7 +289,7 @@ test("units: a unit moves the arm it names, its gripper first", async (t) => {
 	const env = await fakeEnv();
 	t.after(env.close);
 	const s = await start({ units: "true", "units-plugins": "" }, env);
-	assert.deepEqual(s.active(), ["act", "finish"]);
+	assert.deepEqual(s.active(), ["act", "read", "ls", "grep", "find", "write", "finish"]);
 	await s.run("act", { unit: "MV_FWD", arm: "left" });
 	assert.deepEqual(env.motion().at(-1)?.kwargs, {
 		arm: "left",
@@ -391,7 +391,7 @@ test("--code=true: run_code runs on the env server; its observation and success 
 	t.after(env.close);
 	const s = await start({ code: "true", "code-api": "low" }, env);
 	assert.deepEqual(s.errors, []);
-	assert.deepEqual(s.active(), ["run_code", "finish"]);
+	assert.deepEqual(s.active(), ["run_code", "read", "ls", "grep", "find", "write", "finish"]);
 	assert.deepEqual(
 		env.calls.filter((c) => c.method === "code.api").map((c) => c.kwargs.tier),
 		[undefined, "low"],

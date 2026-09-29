@@ -627,9 +627,12 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 			const mode = un?.mode() ?? co?.mode();
 			// The units' tools only when units mode is on (a robot mounts units and code mode both).
 			const unitTools = un?.mode() ? un.tools() : [];
+			// A mode with its own prompt keeps memory: its section is appended (before_agent_start) and the
+			// file tools stay, so --units=true / --code=true still read the corpus.
+			const memTools = mode === "pure" && mem?.section() !== undefined ? mem.tools : [];
 			const own =
 				mode === "pure"
-					? [...unitTools, ...coded, "finish"]
+					? [...unitTools, ...coded, ...memTools, "finish"]
 					: [...tools, ...(mem?.tools ?? []), ...(mode === "both" ? [...unitTools, ...coded] : [])];
 			pi.setActiveTools([
 				...new Set([...own, ...xpTools, ...op.tools(), ...groundTruth(), ...web.tools(), ...objs.tools()]),
@@ -721,8 +724,14 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		const mode = mod?.mode();
 		// The prompt (the robot's and the mode's) describes only the tools left active by --tools/--exclude-tools and --units/--code.
 		const own = spec.prompt?.();
+		// Pure mode replaces the robot's prompt, and with it the robot's memory section: memory's own section follows.
+		const memorySection = mode === "pure" && !exploring() ? mem?.section() : undefined;
 		const systemPrompt =
-			mode === "pure" ? mod?.prompt() : mode === "both" ? `${own ?? ""}\n\n${mod?.prompt()}`.trim() : own;
+			mode === "pure"
+				? [mod?.prompt(), memorySection].filter(Boolean).join("\n\n")
+				: mode === "both"
+					? `${own ?? ""}\n\n${mod?.prompt()}`.trim()
+					: own;
 		forcing = systemPrompt !== undefined;
 		if (!forcing) return undefined;
 		// OpenETA's closed-loop rules (./closed-loop.md) close every robot's prompt, in every mode.

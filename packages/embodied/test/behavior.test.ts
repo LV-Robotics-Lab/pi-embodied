@@ -447,7 +447,7 @@ test("units: act runs one env.move_hand_delta with the arm, the base-frame step,
 	behavior(s.pi);
 	await s.emit("session_start");
 	process.exitCode = undefined;
-	assert.deepEqual(s.active(), ["act", "finish"]);
+	assert.deepEqual(s.active(), ["act", "read", "ls", "grep", "find", "write", "finish"]);
 	await s.run("act", { unit: "MV_FWD", arm: "left" });
 	assert.deepEqual(env.calls.at(-1), {
 		method: "env.move_hand_delta",
@@ -470,7 +470,7 @@ test("--code=true: run_code runs on the env server; BDDL success, q_score and th
 	behavior(s.pi);
 	await s.emit("session_start");
 	process.exitCode = undefined;
-	assert.deepEqual(s.active(), ["run_code", "finish"]);
+	assert.deepEqual(s.active(), ["run_code", "read", "ls", "grep", "find", "write", "finish"]);
 	assert.equal(s.flags["code-max-move"], "", "not given: the robot's house-scale cap applies (below)");
 	await s.emit("agent_start");
 	const r = await s.run("run_code", { code: "navigate_to_pose(1.0, 0.5, 0.0)" });

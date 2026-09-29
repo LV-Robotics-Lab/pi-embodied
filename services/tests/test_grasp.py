@@ -1175,3 +1175,22 @@ def test_a_place_on_the_regions_edge_is_refused_and_centred_ones_come_first():
         offsets[0] + 0.06, abs=0.02
     )
     assert all(c["footprint_on_region"] >= 0.8 for c in place["candidates"])
+
+
+def test_a_places_object_position_is_where_the_object_lands_not_the_grasp_point():
+    """Acceptance run (CGN + AnyPlace, LIBERO spatial t0): the reported object_position was the
+    grasp point (equal to eef_position), 4.4 cm from the plate's centre, while the rim-grasped
+    bowl came to rest 8.3 cm off: its centre lies a rim's width from the fingers. The place
+    now reports the object's landing centroid."""
+    region = np.ones((H, W), bool)
+    planner, _ = _planner(
+        sam3=FakeSam3(_block_mask()), anyplace=FakeAnyPlace([np.eye(4)])
+    )
+    obj = planner.segment_mask("block")["id"]
+    planner._sam3 = FakeSam3(region)
+    reg = planner.segment_mask("table")["id"]
+    gid = planner.plan_grasp(mask_id=obj)["active"]
+    p = planner.plan_place(reg, gid)["candidates"][0]
+    # The grasp is at the block's (0, 0); the block mask's centroid sits at world (0.02, 0.02).
+    assert p["eef_position"][:2] == pytest.approx([0.0, 0.0], abs=1e-6)
+    assert p["object_position"][:2] == pytest.approx([0.02, 0.02], abs=1e-3)

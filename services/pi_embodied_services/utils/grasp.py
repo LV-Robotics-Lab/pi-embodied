@@ -1723,7 +1723,9 @@ class GraspPlanner:
             if why:
                 refused.append({"rank": i, "reason": why})
                 continue
-            footprint, offset = self._landing(T_place, T_cw, obj_cam, region_xy, centre)
+            footprint, offset, landed_at = self._landing(
+                T_place, T_cw, obj_cam, region_xy, centre
+            )
             if footprint is not None and footprint < PLACE_MIN_FOOTPRINT:
                 refused.append(
                     {
@@ -1765,7 +1767,15 @@ class GraspPlanner:
                 "region_mask_id": region_mask_id,
                 "mask_id": object_mask_id,
                 "position": [round(float(v), 5) for v in t],
-                "object_position": [round(float(v), 5) for v in t],
+                # Where the object's (visible points') centroid lands, not the grasp point: a
+                # bowl grasped at its rim lands its centre a rim's width from the fingers.
+                "object_position": [round(float(v), 5) for v in t]
+                if landed_at is None
+                else [
+                    round(float(landed_at[0]), 5),
+                    round(float(landed_at[1]), 5),
+                    round(float(landed_at[2] + (settled or 0.0)), 5),
+                ],
                 "approach": [round(float(v), 5) for v in R[:, 0]],
                 "closing": [round(float(v), 5) for v in R[:, 1]],
                 "rotation_matrix": [[round(float(v), 6) for v in row] for row in R],
@@ -1813,11 +1823,12 @@ class GraspPlanner:
         object_camera: np.ndarray,
         region_xy: np.ndarray,
         centre: np.ndarray | None,
-    ) -> tuple[float | None, float | None]:
+    ) -> tuple[float | None, float | None, np.ndarray | None]:
         """(fraction of the placed object's points over the region in xy, the xy distance of
-        its centroid from the region's centre), or None for what cannot be measured."""
+        its centroid from the region's centre, that centroid in the world), or None for what
+        cannot be measured."""
         if len(object_camera) == 0 or len(region_xy) == 0 or centre is None:
-            return None, None
+            return None, None, None
         T = np.asarray(T_place_camera, dtype=np.float64)
         obj = np.asarray(object_camera, dtype=np.float64)[
             :: max(1, len(object_camera) // 800)
@@ -1835,7 +1846,7 @@ class GraspPlanner:
         spacing = float(np.median(nearest)) if len(nearest) else 0.0
         footprint = float(np.mean(d <= max(PLACE_FOOTPRINT_TOL_M, 1.5 * spacing)))
         offset = float(np.linalg.norm(placed[:, :2].mean(axis=0) - centre))
-        return footprint, offset
+        return footprint, offset, placed.mean(axis=0)
 
     @staticmethod
     def _place_refusal(

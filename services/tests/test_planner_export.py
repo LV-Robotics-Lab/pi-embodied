@@ -299,6 +299,49 @@ def test_a_claimed_success_the_environment_denies_earns_nothing(tmp_path: Path) 
     assert rows(tmp_path / "all")[0]["reward"] == 0.0
 
 
+def test_only_model_planned_sessions_unless_other_planners_are_asked_for(
+    tmp_path: Path,
+) -> None:
+    runs = tmp_path / "runs"
+    write_session(runs / "model", outcome={"success": True})
+    # The recorded field wins: a scripted OpenAI-compatible stand-in looks like a model otherwise.
+    write_session(runs / "scripted", outcome={"success": True, "planner": "scripted"})
+    write_session(runs / "flashfield", outcome={"success": True, "planner": "flash"})
+    # Runs recorded before the field: the planner provider tells flash, replay and human apart.
+    for provider in ("flash", "replay", "human"):
+        s = Session()
+        s.add({"type": "model_change", "provider": provider, "modelId": "x"})
+        s.finish()
+        s.write(runs / f"{provider}_provider", {"success": True})
+    for fmt in FORMATS:
+        summary = export_planner([runs], tmp_path / f"{fmt}-default", fmt=fmt)
+        assert summary["episodes"] == 1, fmt
+        assert summary["skipped"] == {
+            "planner_flash": 2,
+            "planner_human": 1,
+            "planner_replay": 1,
+            "planner_scripted": 1,
+        }, fmt
+    [row] = rows(tmp_path / "sharegpt-default")
+    assert row["planner"] == "model"
+    [rl] = rows(tmp_path / "verl-rl-default")
+    assert rl["extra_info"]["source"]["planner"] == "model"
+    summary = export_planner(
+        [runs], tmp_path / "some", planners=["model", "flash", "scripted"]
+    )
+    assert summary["episodes"] == 4 and summary["skipped"] == {
+        "planner_human": 1,
+        "planner_replay": 1,
+    }
+    assert sorted(r["planner"] for r in rows(tmp_path / "some")) == [
+        "flash",
+        "flash",
+        "model",
+        "scripted",
+    ]
+    assert export_planner([runs], tmp_path / "all", planners=["all"])["episodes"] == 6
+
+
 def test_privileged_and_operator_runs_only_on_request(tmp_path: Path) -> None:
     runs = tmp_path / "runs"
     write_session(runs / "plain", outcome={"success": True})
@@ -596,4 +639,8 @@ def test_cli_export_planner(tmp_path: Path, capsys) -> None:
     assert summary["episodes"] == 1 and summary["format"] == "sharegpt"
     argv = ["export-planner", str(runs), "--output", str(tmp_path / "rl")]
     assert cli.main([*argv, "--format", "verl-rl", "--include-privileged"]) == 0
+    assert json.loads(capsys.readouterr().out)["episodes"] == 2
+    write_session(runs / "flash", outcome={"success": True, "planner": "flash"})
+    argv = ["export-planner", str(runs), "--output", str(tmp_path / "fl")]
+    assert cli.main([*argv, "--include-planner", "flash,replay"]) == 0
     assert json.loads(capsys.readouterr().out)["episodes"] == 2

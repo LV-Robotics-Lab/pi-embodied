@@ -22,7 +22,11 @@ it. Its outcome is ``result.json``'s ``status`` (eval.sh's rule), or, without on
 ``robot_result`` entry judged by the same rule: ``env_error`` / ``planner_error`` are invalid,
 else ``success`` (``terminated`` for LIBERO) decides. Invalid, timed-out or unfinished episodes
 are never exported. Left out unless ``include`` names them: ``privileged`` runs (simulator
-ground truth was on offer) and ``operator`` runs (a human judged or ended the episode).
+ground truth was on offer) and ``operator`` runs (a human judged or ended the episode). Only
+sessions a model planned are exported unless ``planners`` names other types: the result's
+``planner`` field, or the session's planner provider without it (flash and replay re-run a
+recording, human is a person in the model's place, scripted stand-ins answer from a script);
+every row records its ``planner`` (under ``extra_info.source`` for ``verl-rl``).
 
 The conversation is what the planner saw at the end of the session's branch (the path to its
 last entry), projected as pi projects it (coding-agent session-manager.ts): after a compaction,
@@ -112,6 +116,9 @@ TASK_ENTRY = "robot_task"
 RESULT_ENTRY = "robot_result"
 # What is left out unless asked for (export_planner's ``include``).
 INCLUDES = ("privileged", "operator", "explore_attempts")
+# Planner providers that are not a model planning (flash and replay re-run a recording, human is a
+# person answering in the model's place); their sessions are not the planner's own data.
+NON_MODEL_PROVIDERS = ("flash", "replay", "human")
 # pi's summary framing (coding-agent/src/core/messages.ts).
 COMPACTION_SUMMARY_PREFIX = "The conversation history before this point was compacted into the following summary:\n\n<summary>\n"
 COMPACTION_SUMMARY_SUFFIX = "\n</summary>"
@@ -618,6 +625,35 @@ def dataset_info(name: str, file_name: str) -> dict[str, Any]:
     }
 
 
+def planner_type(result: dict[str, Any], entries: list[dict[str, Any]]) -> str:
+    """Who planned the episode: the result's ``planner`` field (``model``, ``flash``, ``replay``,
+    ``human``, ``scripted``, ...) when the run recorded one; otherwise inferred from the session's
+    planner provider: ``flash/...`` is flash, ``replay/...`` replay, ``human/...`` a human, and
+    anything else a model (a scripted stand-in behind an OpenAI-compatible endpoint is only
+    recognized through the field)."""
+    recorded = result.get("planner")
+    if isinstance(recorded, dict):
+        recorded = recorded.get("type") or recorded.get("kind")
+    if isinstance(recorded, str) and recorded:
+        return recorded
+    provider = next(
+        (
+            e.get("provider")
+            for e in reversed(entries)
+            if e.get("type") == "model_change"
+        ),
+        None,
+    ) or next(
+        (
+            e["message"].get("provider")
+            for e in reversed(entries)
+            if e.get("type") == "message" and e["message"].get("role") == "assistant"
+        ),
+        None,
+    )
+    return provider if provider in NON_MODEL_PROVIDERS else "model"
+
+
 def excluded(
     result: dict[str, Any], conv: dict[str, Any], include: set[str]
 ) -> str | None:
@@ -646,15 +682,18 @@ def export_planner(
     anchor_image: bool | None = None,
     image_stub: str = IMAGE_STUB,
     merge_steering: bool = False,
+    planners: Iterable[str] = ("model",),
     name: str = "pi_embodied_planner",
 ) -> dict[str, Any]:
     """Export the sessions below ``roots`` to ``output/planner.jsonl``; returns counts and skip
     reasons. ``include`` opts into what is left out by default: ``privileged``, ``operator``,
-    ``explore_attempts`` (the attempts before an explore ``reset``). ``anchor_image`` defaults to
-    the run's recorded ``--anchor-image``."""
+    ``explore_attempts`` (the attempts before an explore ``reset``). ``planners``: the planner
+    types exported (``planner_type``; default only ``model``; ``all`` takes every type).
+    ``anchor_image`` defaults to the run's recorded ``--anchor-image``."""
     if fmt not in FORMATS:
         raise ValueError(f"format must be one of {FORMATS}")
     include = set(include)
+    planners = set(planners)
     unknown = include - set(INCLUDES)
     if unknown:
         raise ValueError(f"include takes {INCLUDES}, not {sorted(unknown)}")
@@ -676,7 +715,12 @@ def export_planner(
             skipped.setdefault(status, []).append(str(session))
             continue
         conv = conversation(entries)
-        why = excluded(result, conv, include)
+        planner = planner_type(result, entries)
+        why = (
+            f"planner_{planner}"
+            if "all" not in planners and planner not in planners
+            else excluded(result, conv, include)
+        )
         if why:
             skipped.setdefault(why, []).append(str(session))
             continue
@@ -716,6 +760,7 @@ def export_planner(
             "system_prompt_source": conv["system_prompt_source"],
             "compacted": conv["compacted"],
             "explore_attempts_dropped": dropped,
+            "planner": planner,
         }
         rel = f"images/{episode_id}"
         if fmt == "verl-rl":

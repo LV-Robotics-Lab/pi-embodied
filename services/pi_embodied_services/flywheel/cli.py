@@ -123,6 +123,14 @@ def main(argv: list[str] | None = None) -> int:
         help="also export runs a human operator judged or ended",
     )
     planner.add_argument(
+        "--include-planner",
+        action="append",
+        default=[],
+        metavar="TYPE[,TYPE]",
+        help="also export sessions planned by these planner types (flash, replay, human, scripted, "
+        "...; 'all' for every type); default only model-planned sessions",
+    )
+    planner.add_argument(
         "--include-explore-attempts",
         action="store_true",
         help="SFT: keep the explore attempts before the last reset (default: only the last attempt)",
@@ -167,6 +175,15 @@ def main(argv: list[str] | None = None) -> int:
             anchor_image=args.anchor_image,
             image_stub=args.image_stub,
             merge_steering=args.merge_steering,
+            planners=[
+                "model",
+                *(
+                    t.strip()
+                    for v in args.include_planner
+                    for t in v.split(",")
+                    if t.strip()
+                ),
+            ],
         )
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0

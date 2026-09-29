@@ -23,7 +23,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
 import { recipeFlash } from "../../capabilities/flash/recipe.ts";
 import type { FlywheelObs, FlywheelSpec } from "../../capabilities/flywheel.ts";
-import { probeSkill, registerSkillFlags, type SkillState, skillsOff } from "../../capabilities/skills.ts";
+import { probeSkill, type SkillState, skillsOff } from "../../capabilities/skills.ts";
 import { MOLMO, SAM3 } from "../../infra/model-services.ts";
 import { encodePng } from "../../infra/png.ts";
 import { NdArray, type RpcClient } from "../../infra/rpc.ts";
@@ -408,8 +408,6 @@ export default function robotwin(pi: ExtensionAPI) {
 	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
 	// --detections / --unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
 	registerDetectionFlags(pi, { sam3: true });
-	// --require-skills: LingBot is optional unless named (../../capabilities/skills.ts).
-	registerSkillFlags(pi);
 	// --point: Molmo's point over --molmo (../primitives/pointing.ts).
 	registerPointFlags(pi);
 	const seeds = vlaSeeds(pi, () => ["robotwin", robot.task]);

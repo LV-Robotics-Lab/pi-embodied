@@ -303,7 +303,10 @@ async function started(
 	confirms = [true],
 ) {
 	const m = await mockServer(server);
-	const f = fakePi({ operator: true, "arm-id": ARM, task: "block_bowl", "robot-env": m.url, ...flags });
+	// Each start its own step dir: the default is stamped to the second, so two starts in one second
+	// would record into the same steps.
+	const out = mkdtempSync(join(tmpdir(), "ur5e-out-"));
+	const f = fakePi({ operator: true, "arm-id": ARM, task: "block_bowl", "robot-env": m.url, out, ...flags });
 	ur5e(f.pi);
 	f.confirms.push(...confirms);
 	const s = await start(f);
@@ -604,7 +607,7 @@ test("--unidepth: enhance_depth stores the estimate in the latest step, so an RG
 	const wrist = { name: "wrist", has_depth: true, intrinsic_K: front.intrinsic_K, extrinsic: null };
 	const m0 = await mockServer({ perception: true });
 	const { f, m } = await started(
-		{ detections: true, unidepth: "http://127.0.0.1:1", point: true, molmo: m0.url },
+		{ detections: true, "robot-sam3": m0.url, unidepth: m0.url, point: true, molmo: m0.url },
 		{ perception: true, cameraMeta: { wrist, front } },
 	);
 	try {

@@ -240,7 +240,8 @@ test("the task list is the env server's (services/.../behavior/tasks.py), CaP-X'
 test("the tools are CaP-X's primitive set plus perception; motions carry the three camera images", async (t) => {
 	const env = await fakeEnv();
 	t.after(env.close);
-	const s = stubPi({ env: env.url });
+	// The fake env server answers healthz: it stands in for the SAM3 and Molmo servers the start probes.
+	const s = stubPi({ env: env.url, sam3: env.url, molmo: env.url });
 	behavior(s.pi);
 	assert.equal(s.flags.task, "turning_on_radio");
 	assert.equal(s.flags.privileged, false, "a simulated robot: --privileged exists, off by default");
@@ -265,8 +266,11 @@ test("the tools are CaP-X's primitive set plus perception; motions carry the thr
 		"write",
 	]);
 	assert.deepEqual(
-		env.calls.map((c) => c.method).filter((m) => m !== "code.api"),
-		["healthz", "env.get_env_meta", "env.reset"],
+		// The later healthz calls are the start's SAM3 and Molmo probes (the fake server stands in for both).
+		env.calls
+			.map((c) => c.method)
+			.filter((m) => m !== "code.api"),
+		["healthz", "env.get_env_meta", "env.reset", "healthz", "healthz"],
 	);
 	const r = await s.run("navigate_to_pose", { x: 1, y: 0.5, yaw: 1.57 });
 	assert.deepEqual(env.calls.at(-1)?.kwargs, { x: 1, y: 0.5, yaw: 1.57 });
@@ -358,13 +362,22 @@ test("perception runs on the env server: the tool passes its parameters and show
 	assert.equal(bp.content.filter((c: any) => c.type === "image").length, 0);
 });
 
-test("without a Molmo server point is not activated", async (t) => {
+test("without a Molmo server point is not activated; an unreachable one is recorded in skills_off", async (t) => {
 	const env = await fakeEnv();
 	t.after(env.close);
-	const s = stubPi({ env: env.url, molmo: "" });
+	const s = stubPi({ env: env.url, sam3: env.url, molmo: "" });
 	behavior(s.pi);
 	await s.emit("session_start");
 	assert.ok(!s.active().includes("point") && s.active().includes("segment"));
+	await s.emit("session_shutdown");
+
+	const u = stubPi({ env: env.url, sam3: env.url, molmo: "http://127.0.0.1:9" });
+	behavior(u.pi);
+	await u.emit("session_start");
+	assert.ok(!u.active().includes("point") && u.active().includes("segment"));
+	await u.emit("agent_start");
+	await u.emit("session_shutdown");
+	assert.match(u.entries.find((e) => e.type === RESULT_ENTRY)?.data.skills_off.molmo, /^unreachable: /);
 });
 
 test("an unknown task or a non-integer seed fails closed before any server starts", async () => {

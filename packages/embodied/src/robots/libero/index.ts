@@ -18,7 +18,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
 import { type FlywheelObs, type FlywheelSpec, flywheelSuite } from "../../capabilities/flywheel.ts";
-import { probeSkill, registerSkillFlags, type SkillState, skillsOff } from "../../capabilities/skills.ts";
+import { probeSkill, type SkillState, skillsOff } from "../../capabilities/skills.ts";
 import { MOLMO, pi05, SAM3 } from "../../infra/model-services.ts";
 import { decodePng, decodePngChannel, encodePng } from "../../infra/png.ts";
 import { NdArray, RpcClient } from "../../infra/rpc.ts";
@@ -438,8 +438,6 @@ export default function libero(pi: ExtensionAPI) {
 	registerGraspFlags(pi);
 	// --point: Molmo's point as molmo_point (the units' point plugin owns `point`); LIBERO's Flash registers --molmo.
 	registerPointFlags(pi);
-	// --require-skills: Pi0.5 is optional unless named (../../capabilities/skills.ts).
-	registerSkillFlags(pi);
 	// --detections / --unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
 	registerDetectionFlags(pi);
 

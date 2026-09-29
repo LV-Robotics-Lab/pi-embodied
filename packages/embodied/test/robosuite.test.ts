@@ -405,7 +405,8 @@ test("--detections activates detect / select_detection / reject_detection over e
 	process.exitCode = undefined;
 	assert.ok(!off.active().includes("detect") && !off.active().includes("enhance_depth"), "off by default");
 
-	const s = simPi({ env: env.url, task: "Lift", detections: true, unidepth: "http://127.0.0.1:1" });
+	// The fake env server answers healthz: it stands in for the SAM3 and UniDepth servers the start probes.
+	const s = simPi({ env: env.url, task: "Lift", detections: true, sam3: env.url, unidepth: env.url });
 	robosuite(s.pi);
 	await s.emit("session_start");
 	process.exitCode = undefined;

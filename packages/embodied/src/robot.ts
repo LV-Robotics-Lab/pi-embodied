@@ -20,6 +20,7 @@ import { type FlywheelSpec, flywheel } from "./capabilities/flywheel.ts";
 import { type MemoryOptions, memory } from "./capabilities/memory/index.ts";
 import { objectMemory } from "./capabilities/objects.ts";
 import { approval, operator } from "./capabilities/operator.ts";
+import { probePerception, registerSkillFlags, type SkillState, withSkillsOff } from "./capabilities/skills.ts";
 import { webTools } from "./capabilities/web.ts";
 import { robotCheck } from "./infra/check.ts";
 import { type ModelServicesSpec, modelServices } from "./infra/model-services.ts";
@@ -264,6 +265,8 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	let task: Record<string, string> = {};
 	let ready = false;
 	let failed: string | undefined;
+	/** The perception servers that were off at this session's start (capabilities/skills.ts). */
+	let perceptionOff: Record<string, SkillState> = {};
 	/** The episode's primitive registry, when the robot declares `codeApi` and its server serves one. */
 	let api: CodeApi | undefined;
 	/** The robot broke during the episode: its env server exited, or a service stopped answering. */
@@ -337,7 +340,10 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	const privileged = () => spec.groundTruth !== undefined && pi.getFlag("privileged") === true;
 
 	// Registered before the modules, so the task is resolved before memory's session_start reads it.
+	// --require-skills: the optional skill and perception servers a run insists on (capabilities/skills.ts).
+	registerSkillFlags(pi);
 	pi.on("session_start", (_event, ctx) => {
+		perceptionOff = {};
 		ready = ran = ended = reported = finishing = false;
 		failed = broken = claimed = started = plannerError = outOfBudget = undefined;
 		timedOut = false;
@@ -609,7 +615,10 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 			if (misconfigured) throw new Error(misconfigured);
 			api = undefined;
 			await models?.start();
-			const tools = servable(await spec.start(ctx));
+			// A perception tool whose server does not answer stays inactive (capabilities/skills.ts).
+			const probed = await probePerception(pi, servable(await spec.start(ctx)));
+			const tools = probed.keep;
+			perceptionOff = probed.off;
 			refreshPrimitives();
 			// The robot's configuration (its cameras) is known now: the units read its wrist view again.
 			un?.started(ctx);
@@ -879,7 +888,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 				? { robot: name, ...task, ...mark, env_error: true, error: failed }
 				: {
 						robot: name,
-						...spec.result(when),
+						...withSkillsOff(spec.result(when), perceptionOff),
 						...mark,
 						// The units verifier: whether the success finish was checked, and the call's error.
 						...un?.result(),

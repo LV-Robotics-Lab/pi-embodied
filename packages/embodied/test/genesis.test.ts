@@ -116,11 +116,12 @@ test("each MV_* unit is one 2 cm decision along the base-frame vector; MV_LEFT i
 test("segment and back_project run the env server's methods with the manifest's parameters", async (t) => {
 	const env = await fakeGenesis();
 	t.after(env.close);
-	const s = simPi({ env: env.url });
+	// The fake env server answers healthz: it stands in for the SAM3 server the start probes.
+	const s = simPi({ env: env.url, sam3: env.url });
 	genesis(s.pi);
 	await s.emit("session_start");
 	process.exitCode = undefined;
-	assert.ok(s.active().includes("segment"), "--sam3 has a default URL");
+	assert.ok(s.active().includes("segment"), "a SAM3 server answers");
 	const r = await s.run("segment", { prompt: "red cube", camera: "wrist" });
 	assert.deepEqual(env.calls.find((c) => c.method === "env.segment")!.kwargs, { prompt: "red cube", camera: "wrist" });
 	assert.deepEqual(r.details.world_xyz, [0.4, 0, 0.02]);

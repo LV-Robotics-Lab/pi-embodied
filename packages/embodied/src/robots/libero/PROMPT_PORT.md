@@ -49,7 +49,7 @@ With every tool active, the rendered text is RPent's. `[tool:!x]` fallbacks only
 | `STEP_PRIMITIVES` :452 | `#. ALLOWED PRIMITIVES` | "`reset` is FORBIDDEN" → "Resetting is FORBIDDEN"; INFRA NOTE verbatim in a `pi0_doubled` block; SAM3 `segment` aid in `[part:aids]` (it runs on the image of `step`, returns `segment_artifact`/`overlay_artifact` as in RPent) |
 | — | `[part:aids]`: `preview_reach`, planned grasps, geometry (`view_points`, `mark_point`, `move_grip`) | pi additions (`--ik`, `--graspnet` …, `--geometry`), only when their tools are active; the grasp text is the compact prompt's, the geometry text summarizes OpenETA's openeta-for-codex tools |
 | `STEP_RECOVERY` :489 | `#. RECOVERY` | none |
-| `STEP_FINISH` :496 | `#. WHEN top-level terminated …` | "write audit" names the `write` tool and the memory files read (compact memory text) |
+| `STEP_FINISH` :496 | `#. WHEN top-level terminated …` | "write audit" is a `write_audit` call (../../capabilities/memory): the model gives terminated, strategy_notes, memory_files_read and pick_result; the runtime adds suite, task_id, seed, regime and final_state |
 | `KEY_HYPERPARAMETERS` :507 | `# KEY HYPERPARAMETERS` | none |
 | `OUTPUT_DISCIPLINE` :514 | `# OUTPUT DISCIPLINE` | none |
 | `user.py` CELL, MODE, BEGIN | `# CELL` and the two closing paragraphs | pi's user message is eval.sh's "Solve the task.", so the cell block lives in the system prompt; the recipe is exported by the runtime after `finish` |

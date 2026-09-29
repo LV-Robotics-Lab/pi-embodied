@@ -5,16 +5,20 @@
  *   node src/robots/libero/flash-generate.ts --audit <mem>/task_only/goal_swap_t3_s7.json \
  *     --recipe <mem>/task_only/goal_swap_t3_s7_recipe.jsonl --destination memory/libero/flash
  *
- * Inputs are the episode audit (JSON) and its primitive recipe (JSONL); `segment_*.json` readings
+ * Inputs are the episode audit (written by the `write_audit` tool, ../../capabilities/memory; an older
+ * session's hand-written one is read leniently, and with --reask-model an unparseable one is restated
+ * by the model, see readAudit) and its primitive recipe (JSONL); `segment_*.json` readings
  * are optional (default: the run's `<cell>_steps/segments/` the LIBERO robot writes, else `segments/`). Writes `<family>_<suite>_t<task>_{plan,anchors}.json` and `_trace.md`. Waypoints
  * are stored as XY offsets from the nearest anchor; anchors come from saved segment readings, else
  * from the task's goal relations and the recipe's pick/release (or articulation) transactions.
  */
 
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { parseLenientJson } from "../../infra/lenient-json.ts";
 
 type Json = Record<string, unknown>;
 type XY = [number, number];
@@ -157,12 +161,110 @@ export function extractRelations(family: string, language: string): TaskGraph {
 
 // ---------------------------------------------------------------- anchors (generate.py)
 
-function readJson(path: string, what: string): unknown {
+/** The fields of an audit plan generation reads; a re-ask asks for exactly these. */
+export const AUDIT_FIELDS = {
+	terminated: "boolean: true when the episode was solved (libero_terminated in an explore audit)",
+	task_language: "string: the task instruction as the audit states it (perturbed_task_language if it has one)",
+	suite: "string or null: the LIBERO suite, e.g. libero_goal or libero_goal_swap",
+	task_id: "integer or null: the task index",
+	seed: "integer or null: the episode seed",
+} as const;
+
+/** The structured re-ask for an audit that does not parse: only AUDIT_FIELDS, as one JSON object. */
+export function reaskPrompt(text: string, error: string): string {
+	const fields = Object.entries(AUDIT_FIELDS)
+		.map(([k, v]) => `- ${k}: ${v}`)
+		.join("\n");
+	return (
+		"The text below was written as a LIBERO episode audit in JSON, but it does not parse " +
+		`(${error}). Reply with exactly one JSON object and nothing else: double-quoted keys and strings, ` +
+		`no comments, no trailing commas, no code fence. It has these keys, values read off the text (null ` +
+		`when the text does not say; never invent one):\n${fields}\n\nThe text:\n<<<\n${text}\n>>>`
+	);
+}
+
+/**
+ * An audit: strict JSON (what `write_audit` writes). A hand-written one from an older session is read
+ * leniently: strict JSON, else repaired (../../infra/lenient-json.ts: comments, single
+ * quotes, escaped quotes, trailing commas, Python literals), else — with `reask` (the CLI's
+ * --reask-model) — the model's structured restatement of AUDIT_FIELDS. `note` hears which path won.
+ */
+export function readAudit(
+	path: string,
+	reask?: (prompt: string) => string,
+	note: (line: string) => void = () => {},
+): Json {
+	let text: string;
 	try {
-		return JSON.parse(readFileSync(path, "utf8"));
+		text = readFileSync(path, "utf8");
 	} catch (err) {
-		throw new Error(`cannot read ${what} ${path}: ${err}`);
+		throw new Error(`cannot read audit JSON ${path}: ${err}`);
 	}
+	const object = (v: unknown) => (v && typeof v === "object" && !Array.isArray(v) ? (v as Json) : undefined);
+	let failure: string;
+	try {
+		const { value, repaired } = parseLenientJson(text);
+		const doc = object(value);
+		if (!doc) throw new Error("it holds no JSON object");
+		if (repaired) note(`audit ${path} is not strict JSON; read it after repairing its syntax`);
+		return doc;
+	} catch (err) {
+		failure = err instanceof Error ? err.message : String(err);
+	}
+	if (!reask) throw new Error(`cannot read audit JSON ${path}: ${failure} (pass --reask-model to have it restated)`);
+	const reply = reask(reaskPrompt(text, failure));
+	let doc: Json | undefined;
+	try {
+		doc = object(parseLenientJson(reply).value);
+	} catch {}
+	const bad = doc
+		? Object.keys(AUDIT_FIELDS).filter((k) =>
+				k === "terminated"
+					? typeof doc[k] !== "boolean"
+					: k === "task_language"
+						? typeof doc[k] !== "string"
+						: doc[k] !== null && doc[k] !== undefined && typeof doc[k] !== (k === "suite" ? "string" : "number"),
+			)
+		: [];
+	if (!doc || bad.length)
+		throw new Error(
+			`cannot read audit JSON ${path}: ${failure}; the re-ask ${doc ? `gave bad ${bad.join(", ")}` : "gave no JSON object"}: ${reply.slice(0, 200)}`,
+		);
+	note(
+		`audit ${path} does not parse (${failure}); used the model's restatement of ${Object.keys(AUDIT_FIELDS).join(", ")}`,
+	);
+	return Object.fromEntries(Object.entries(doc).filter(([, v]) => v !== null && v !== undefined));
+}
+
+/**
+ * The re-ask through pi itself (print mode, no tools, extensions, skills or session): `model` is a pi
+ * model id (e.g. selfhost/muse-glimmer-30b); `pi` the command that runs pi (default: this checkout's
+ * packages/coding-agent/dist/cli.js under node).
+ */
+export function piReask(model: string, pi?: string): (prompt: string) => string {
+	const command = pi
+		? pi.split(/\s+/).filter(Boolean)
+		: [process.execPath, fileURLToPath(new URL("../../../../coding-agent/dist/cli.js", import.meta.url))];
+	return (prompt) => {
+		const r = spawnSync(
+			command[0],
+			[
+				...command.slice(1),
+				"-p",
+				"--no-session",
+				"--no-tools",
+				"--no-extensions",
+				"--no-skills",
+				"--no-context-files",
+				"--model",
+				model,
+				prompt,
+			],
+			{ encoding: "utf8", timeout: 180_000, maxBuffer: 16 * 1024 * 1024 },
+		);
+		if (r.status !== 0) throw new Error(`the re-ask (${model}) failed: ${r.error?.message ?? r.stderr.slice(-500)}`);
+		return r.stdout;
+	};
 }
 
 function readRecipe(path: string): Json[] {
@@ -346,6 +448,10 @@ export function generateFlashPlan(options: {
 	segments?: string;
 	/** Task text when the audit does not carry it (pi-embodied audits may omit task_language). */
 	language?: string;
+	/** Restate an unparseable audit (readAudit); the CLI's --reask-model. */
+	reask?: (prompt: string) => string;
+	/** Where readAudit reports a repaired or restated audit (the CLI: stderr). */
+	note?: (line: string) => void;
 }) {
 	const tag = basename(options.audit).replace(/\.json$/, "");
 	const cell = CELL_TAG.exec(tag);
@@ -358,7 +464,7 @@ export function generateFlashPlan(options: {
 	if (basename(options.recipe) !== `${tag}_recipe.jsonl`)
 		throw new Error(`recipe filename ${basename(options.recipe)} does not match audit; expected ${tag}_recipe.jsonl`);
 
-	const audit = readJson(options.audit, "audit JSON") as Json;
+	const audit = readAudit(options.audit, options.reask, options.note);
 	if (!audit || typeof audit !== "object" || Array.isArray(audit))
 		throw new Error("audit JSON must contain one object");
 	// Explore audits write libero_terminated; evaluate audits write terminated. Either must be true.
@@ -423,11 +529,13 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
 			destination: { type: "string" },
 			segments: { type: "string" },
 			language: { type: "string" },
+			"reask-model": { type: "string" },
+			pi: { type: "string" },
 		},
 	});
 	if (!values.audit || !values.recipe || !values.destination) {
 		console.error(
-			"usage: flash-generate.ts --audit <cell>.json --recipe <cell>_recipe.jsonl --destination <dir> [--segments <dir>] [--language <text>]",
+			"usage: flash-generate.ts --audit <cell>.json --recipe <cell>_recipe.jsonl --destination <dir> [--segments <dir>] [--language <text>] [--reask-model <pi model id> [--pi <command>]]",
 		);
 		process.exit(2);
 	}
@@ -437,6 +545,8 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
 		destination: values.destination,
 		segments: values.segments,
 		language: values.language,
+		reask: values["reask-model"] ? piReask(values["reask-model"], values.pi) : undefined,
+		note: (line) => console.error(line),
 	});
 	console.log(JSON.stringify(row, null, 2));
 }

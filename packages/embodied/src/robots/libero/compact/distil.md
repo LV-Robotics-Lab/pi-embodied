@@ -6,10 +6,10 @@ Naming: a draft's `id` is the BARE slug, the filename without the `new_`/`suite_
 
 First re-read `{{memory_inbox}}/wip/notes.md` and every `{{output_dir}}/attempts/{{recipe_tag}}/*.json`. Each wall noted along the way is now decidable: say which ones the winning run went THROUGH (artefacts of the method) and which it went AROUND (real).
 
-a. TASK LAYER. Write `{{output_dir}}/{{recipe_tag}}.json`, the audit of the winning episode. After `finish`, the recipe `{{output_dir}}/{{recipe_tag}}_recipe.jsonl` is exported from your tool calls after the LAST reset; the audit must describe that same trajectory.
+a. TASK LAYER. Call `write_audit` for the winning episode (it writes `{{output_dir}}/{{recipe_tag}}.json`). After `finish`, the recipe `{{output_dir}}/{{recipe_tag}}_recipe.jsonl` is exported from your tool calls after the LAST reset; the audit must describe that same trajectory.
    - `strategy_notes`: the winning sequence step by step, in trace order, with the parameters actually used; one opening sentence on how you localized. Failure history belongs in the suite write-up.
    - `pick_result` keys name the recipe steps they came from (e.g. `bowl_pi0_pick_step3`), not bare object names.
-   - suite, task_id, seed, `regime: "strict_perception"`, final_state, `libero_terminated: true`, attempts it took, memory files read.
+   - `attempts` it took and `memory_files_read`; the runtime adds suite, task_id, seed, regime, final_state and `libero_terminated`.
    - Self-check: every manipulation command since the last reset is accounted for, and no step is invented.
 
 b. SUITE LAYER: `{{memory_inbox}}/suite_{{recipe_tag}}_draft.md`, one file for this task. Frontmatter exactly in this shape (`regime` is the perturbation axis task|swap|lan|object, not the perception regime; `cells` is a list):

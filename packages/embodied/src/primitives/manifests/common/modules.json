@@ -56,6 +56,15 @@
 			}
 		},
 		{
+			"name": "write_audit",
+			"side": "ts",
+			"tier": "low",
+			"module": "memory",
+			"doc": {
+				"tool": "Write the cell's audit, the task_only record paired with the recipe (capabilities/memory, a robot's `memory.audit`)."
+			}
+		},
+		{
 			"name": "request_operator_verdict",
 			"side": "ts",
 			"tier": "low",

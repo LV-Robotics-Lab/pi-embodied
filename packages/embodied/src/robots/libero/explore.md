@@ -224,13 +224,13 @@ Rule 4 — 🔁 MULTI-ATTEMPT. Prefer in-place recovery first (re-localize,
 #. WHEN top-level `terminated == true` — or your attempt budget is spent (Rule 4).
    If neither holds and the episode is stuck, do NOT come here: close out the
    attempt and `reset` instead.
-   a. If SOLVED: write the audit so it MATCHES the exported recipe — see the
+   a. If SOLVED: write the audit (`write_audit`) so it MATCHES the exported recipe — see the
       DISTIL instructions, step (a), for the correspondence rules and the
       self-check.
-      If UNSOLVED: write `{{output_dir}}/{{recipe_tag}}.json` recording suite,
-      task_id, seed, regime, `libero_terminated:false`, total attempts,
-      final_state, that the attempt budget is spent, where each attempt stalled,
-      and the classes tried and untried. Claim NO trajectory — there is no recipe
+      If UNSOLVED: call `write_audit` with terminated:false, `attempts` (the total),
+      and strategy_notes saying that the attempt budget is spent, where each attempt
+      stalled, and the classes tried and untried (the runtime adds suite, task_id,
+      seed, regime, final_state and `libero_terminated`). Claim NO trajectory — there is no recipe
       to match.
    b. If SOLVED, run the DISTIL pass: its instructions arrive as soon as the
       runtime reports `terminated` (about 25 tool calls; they run only when the

@@ -32,8 +32,8 @@ run went THROUGH (they were artefacts of the method) and which it went AROUND
 (they were real).
 
 a. TASK LAYER. The audit JSON and the recipe JSONL must be a MATCHED PAIR
-   describing the SAME trajectory. Write the audit `{{output_dir}}/{{recipe_tag}}.json`
-   from the successful portion of the episode. After you call `finish`, the
+   describing the SAME trajectory. Write the audit with `write_audit` (it writes
+   `{{output_dir}}/{{recipe_tag}}.json`) from the successful portion of the episode. After you call `finish`, the
    runtime exports the recipe `{{output_dir}}/{{recipe_tag}}_recipe.jsonl` from
    your tool calls; after a reset it keeps only commands issued after the LAST
    reset — exactly the sequence that worked. The pair is published to memory only
@@ -44,9 +44,8 @@ a. TASK LAYER. The audit JSON and the recipe JSONL must be a MATCHED PAIR
        the suite write-up and the attempt archives, not here.
      - `pick_result` keys name the RECIPE STEPS they came from (e.g.
        `bowl_pi0_pick_step3`), not bare object names.
-     - Record suite, task_id, seed, regime:"strict_perception", final_state,
-       `libero_terminated:true`, how many attempts it took, and the memory files
-       you read.
+     - Give `attempts` (how many it took) and `memory_files_read`; the runtime
+       adds suite, task_id, seed, regime, final_state and `libero_terminated`.
      - SELF-CHECK: re-read the successful trace and your notes side by side.
        Every manipulation command since the last reset must be accounted for,
        and the notes must not invent a step absent from the trace.

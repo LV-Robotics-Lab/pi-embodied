@@ -172,7 +172,15 @@ test("recipe keeps successful primitives and segments after the last reset", () 
 });
 
 /** memory() wired to a stub pi: returns the tool_call hook after session_start (unless `start` is false). */
-async function guarded(opts: { cell?: string; output?: string; start?: boolean; explore?: boolean } = {}) {
+async function guarded(
+	opts: {
+		cell?: string;
+		output?: string;
+		start?: boolean;
+		explore?: boolean;
+		audit?: { facts: () => Record<string, unknown> };
+	} = {},
+) {
 	const base = realpathSync(mkdtempSync(join(tmpdir(), "guard-")));
 	const home = join(base, "memory");
 	const run = join(base, "run");
@@ -183,17 +191,20 @@ async function guarded(opts: { cell?: string; output?: string; start?: boolean; 
 	writeFileSync(join(base, "secret.txt"), "secret\n");
 	const hooks = new Map<string, (event: unknown, ctx: unknown) => unknown>();
 	const flags: Record<string, unknown> = { "output-dir": opts.output ?? run };
+	const tools = new Map<string, any>();
 	const pi = {
 		on: (name: string, fn: (event: unknown, ctx: unknown) => unknown) => hooks.set(name, fn),
 		registerFlag: () => {},
 		registerCommand: () => {},
+		registerTool: (t: any) => tools.set(t.name, t),
 		getFlag: (name: string) => flags[name],
 	} as unknown as ExtensionAPI;
 	const cell = opts.cell;
-	memory(pi, {
+	const mem = memory(pi, {
 		home: () => home,
 		cell: () => (cell === undefined ? undefined : { tag: cell, reference: cell }),
 		explore: () => opts.explore ?? true,
+		...(opts.audit ? { audit: opts.audit } : {}),
 	});
 	const ctx = { cwd: run, hasUI: false, sessionManager: { getSessionDir: () => "", getBranch: () => [] } };
 	if (opts.start !== false) await hooks.get("session_start")?.({}, ctx);
@@ -201,7 +212,7 @@ async function guarded(opts: { cell?: string; output?: string; start?: boolean; 
 		hooks.get("tool_call")?.({ type: "tool_call", toolName, toolCallId: "t", input: { path } }, ctx) as
 			| { block: true; reason: string }
 			| undefined;
-	return { base, home, run, call };
+	return { base, home, run, call, tools, mem };
 }
 
 test("guard denies file tools outside memory and the cell's output files", async () => {
@@ -241,6 +252,40 @@ test("guard allows the memory, the exploration inbox and the audit write", async
 	assert.ok(call("write", join(home, "libero", "_internal", "inbox", "10_t2_s1", "x.md"))?.block);
 	assert.ok(call("write", join(home, "libero", "global", "x.md"))?.block);
 	assert.equal(call("bash"), undefined, "tools other than the file tools are not the guard's business");
+});
+
+test("the audit is a write_audit call: the model's fields plus the runtime's facts, as JSON in <output>/<cell>.json", async () => {
+	const facts = { suite: "libero_goal", task_id: 3, seed: 7, regime: "strict_perception", libero_terminated: true };
+	const { run, tools, mem } = await guarded({ cell: "goal_t3_s7", audit: { facts: () => facts } });
+	assert.ok(mem.tools.includes("write_audit"));
+	const tool = tools.get("write_audit");
+	// The schema is what the model fills; the runtime's facts are not in it.
+	assert.deepEqual(Object.keys(tool.parameters.properties).sort(), [
+		"attempts",
+		"memory_files_read",
+		"pick_result",
+		"strategy_notes",
+		"terminated",
+	]);
+	assert.deepEqual(tool.parameters.required.sort(), ["memory_files_read", "strategy_notes", "terminated"]);
+	const params = {
+		terminated: true,
+		strategy_notes: "segmented the bowl, picked it, placed it on the plate",
+		memory_files_read: ["global/bowl.md"],
+		pick_result: { bowl_pi0_pick_step3: { success: true } },
+		// A runtime fact the model restates wrongly is overridden.
+		seed: 0,
+	};
+	const r = await tool.execute("a", params);
+	const path = join(run, "goal_t3_s7.json");
+	assert.equal(r.details.path, path);
+	const written = JSON.parse(readFileSync(path, "utf8"));
+	assert.deepEqual(written, { ...params, ...facts });
+	assert.equal(written.seed, 7);
+	// Without the audit option nothing is registered and the tool list is the file tools.
+	const plain = await guarded({ cell: "goal_t3_s7" });
+	assert.equal(plain.tools.size, 0);
+	assert.deepEqual(plain.mem.tools, ["read", "ls", "grep", "find", "write"]);
 });
 
 test("guard fails closed without a cell, output dir or session_start", async () => {

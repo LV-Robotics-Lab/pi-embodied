@@ -401,6 +401,36 @@ test("without an output dir the history is a temp dir, removed at the session's 
 	assert.equal(existsSync(dir), false);
 });
 
+test("LIBERO's audit is a write_audit call with the cell and the latest state filled in, and Flash plans read it", async (t) => {
+	const s = await session(t);
+	assert.ok(s.active().includes("write_audit"));
+	await s.run("view_env_state", {});
+	await s.run("write_audit", {
+		terminated: false,
+		strategy_notes: "looked, did not move",
+		memory_files_read: [],
+	});
+	const audit = JSON.parse(readFileSync(join(s.out, "10_task_t2_s0.json"), "utf8"));
+	assert.deepEqual(
+		[audit.suite, audit.task_id, audit.seed, audit.regime, audit.libero_terminated, audit.terminated],
+		["libero_10_task", 2, 0, "strict_perception", false, false],
+	);
+	assert.ok(Array.isArray(audit.final_state.robot0_eef_pos), "final_state is the latest state");
+	// Flash plan generation reads it as written (strict JSON, the suite matching the file name).
+	await s.run("write_audit", { terminated: true, strategy_notes: "solved", memory_files_read: [] });
+	writeFileSync(
+		join(s.out, "10_task_t2_s0_recipe.jsonl"),
+		`${JSON.stringify({ action: "move_to", xyz: [0, 0, 1.1] })}\n`,
+	);
+	const plan = generateFlashPlan({
+		audit: join(s.out, "10_task_t2_s0.json"),
+		recipe: join(s.out, "10_task_t2_s0_recipe.jsonl"),
+		destination: join(s.out, "flash"),
+		language: "put the black bowl on the stove",
+	});
+	assert.equal(`${plan.family}_${plan.key}`, "10_task_t2");
+});
+
 test("persisted depth round-trips within 0.1 mm; missing depth stays missing", () => {
 	const depth = Float32Array.from([0.5, 1.23456, 3, Number.NaN, -1]);
 	const back = unpackDepth(packDepth(depth));

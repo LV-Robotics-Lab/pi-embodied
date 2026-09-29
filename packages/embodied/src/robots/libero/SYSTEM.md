@@ -612,12 +612,12 @@ consistent with the agentview anchor, or for basket/cavity geometry.)
    unrecoverable within this one episode, do NOT reset — write an honest
    stuck-audit (`terminated:false`) and call `finish`. Never warp.
 #. WHEN top-level `terminated == true` in the latest tool result:
-   a. Write audit `{{output_dir}}/{{recipe_tag}}.json` (with `write`) with:
-      suite, task_id, seed, regime:"strict_perception", strategy_notes (incl. how
-      you localized and the exact memory files you read), pick_result, final_state
-      (latest state's `state`), terminated:true.
+   a. Call `write_audit` (it writes `{{output_dir}}/{{recipe_tag}}.json` and adds
+      suite, task_id, seed, regime and final_state itself) with: terminated:true,
+      strategy_notes (incl. how you localized), memory_files_read (the exact memory
+      files you read), pick_result.
    b. Call `finish`.
-   If your single attempt does not solve it, write `{{output_dir}}/{{recipe_tag}}.json` with
+   If your single attempt does not solve it, call `write_audit` with
    terminated:false + strategy_notes describing what you tried in this one
    episode and where it stalled. Then call `finish`. (NO reset, NO second attempt.)
 

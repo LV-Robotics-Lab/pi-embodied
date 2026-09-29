@@ -98,8 +98,9 @@ const ROBOTS: {
 		flags: Object.fromEntries(VLA_ADAPTERS.map((a) => [a.flag, "http://127.0.0.1:1"])),
 		// Mounted at session start with --geometry.
 		mounted: GEOMETRY_TOOLS,
-		// The exploration prompts (explore.md) are rendered only while exploring, when `reset` is always active.
-		core: ["view_env_state", "move_to", "release", "finish", "reset"],
+		// The exploration prompts (explore.md) are rendered only while exploring, when `reset` is always active;
+		// memory's `write_audit` is mounted with LIBERO's memory, which LIBERO always has.
+		core: ["view_env_state", "move_to", "release", "finish", "reset", "write_audit"],
 	},
 	{
 		robot: "robocasa",

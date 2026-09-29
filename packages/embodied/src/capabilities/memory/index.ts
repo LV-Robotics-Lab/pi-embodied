@@ -13,6 +13,7 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import { hasFiles, mergeMemory, rebuildIndex, str, validateMemory } from "./corpus.ts";
 import { syncMemory } from "./sync.ts";
 
@@ -66,7 +67,33 @@ export type MemoryOptions = {
 	 * default to the local profile, and a local corpus exploration has not written yet is empty, not an error.
 	 */
 	published?: boolean;
+	/**
+	 * The cell's audit (`<output>/<tag>.json`, the task_only pair with the recipe) is written through the
+	 * `write_audit` tool, never free-written JSON: the model fills AUDIT_PARAMETERS, `facts` adds what the
+	 * runtime knows (the cell's identity, the final state, the environment's own solved flag).
+	 */
+	audit?: { facts: () => Record<string, unknown> };
 };
+
+/** What the model states in an audit; everything else in it is the robot's `audit.facts`. */
+export const AUDIT_PARAMETERS = Type.Object({
+	terminated: Type.Boolean({
+		description: "true only when the latest tool result reports terminated: true (the task is solved)",
+	}),
+	strategy_notes: Type.String({
+		description:
+			"How you localized, then what you did step by step in trace order with the parameters used; when unsolved, what you tried and where it stalled",
+	}),
+	memory_files_read: Type.Array(Type.String(), {
+		description: "The exact memory file names you read; empty when no matching task memory was found",
+	}),
+	pick_result: Type.Optional(
+		Type.Record(Type.String(), Type.Unknown(), {
+			description: "Per pick: keys name the recipe step it came from (e.g. bowl_pi0_pick_step3)",
+		}),
+	),
+	attempts: Type.Optional(Type.Integer({ minimum: 1, description: "Exploration: the attempts this cell took" })),
+});
 
 const defaultHome = () => process.env.PI_EMBODIED_MEMORY || join(homedir(), ".pi", "embodied", "memory");
 
@@ -302,6 +329,27 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 			say(ctx, `memory merged: ${JSON.stringify(await mergeMemory(root, cell.tag, outputDir, !!commands))}`);
 	});
 
+	if (opts.audit) {
+		const audit = opts.audit;
+		pi.registerTool({
+			name: "write_audit",
+			label: "write_audit",
+			description:
+				"Write this cell's audit (the task_only record paired with the exported recipe). The runtime adds the suite, task, seed, final state and its own solved flag; call it again to replace the audit. Call it before `finish`.",
+			parameters: AUDIT_PARAMETERS,
+			async execute(_id, params) {
+				if (!cell || !outputDir) throw new Error("write_audit: no cell or output dir this session");
+				const path = join(outputDir, `${cell.tag}.json`);
+				// The runtime's facts win over anything the model states under the same key.
+				const facts = audit.facts();
+				const doc = { ...facts, ...params, ...facts };
+				mkdirSync(outputDir, { recursive: true });
+				writeFileSync(path, `${JSON.stringify(doc, null, 2)}\n`);
+				return { content: [{ type: "text", text: `audit written: ${path}` }], details: { path, audit: doc } };
+			},
+		});
+	}
+
 	const usage = "usage: /memory sync | validate | index | merge <cell> [output-dir] [--solved]";
 	pi.registerCommand("memory", {
 		description: "Memory corpus maintenance: sync | validate | index | merge <cell> [output-dir] [--solved]",
@@ -336,7 +384,7 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 
 	return {
 		/** Built-in tools the agent uses on memory; add them to setActiveTools. */
-		tools: ["read", "ls", "grep", "find", "write"],
+		tools: ["read", "ls", "grep", "find", "write", ...(opts.audit ? ["write_audit"] : [])],
 		/** The memory files the agent read this episode, with their SHA-256 at the time. */
 		loaded: () => ({ ...loaded }),
 		get profile() {

@@ -1062,6 +1062,9 @@
 			"use": "modules/reset"
 		},
 		{
+			"use": "modules/write_audit"
+		},
+		{
 			"use": "modules/run_code"
 		},
 		{

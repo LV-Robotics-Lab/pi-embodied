@@ -448,6 +448,8 @@ export default function libero(pi: ExtensionAPI) {
 	let sam3: RpcClient;
 	let obs: Obs;
 	let terminated = false;
+	/** The latest `state` a tool result showed (an audit's final_state). */
+	let lastState: Record<string, unknown> | undefined;
 	/** The env step of the first success: the outcome, whatever happens after it (a release, a knock-over). */
 	let successStep: number | undefined;
 	let truncated = false;
@@ -515,6 +517,17 @@ export default function libero(pi: ExtensionAPI) {
 			cell: () => ({ tag: tag(), reference: tag().replace(/_s\d+$/, "_s0") }),
 			primitives: RECIPE_PRIMITIVES,
 			readable: () => (variant() === "rpent" ? [GUIDES] : []),
+			// The audit is a write_audit call: the cell and what LIBERO itself reports are filled in here.
+			audit: {
+				facts: () => ({
+					suite: robot.task.suite,
+					task_id: Number(robot.task.task),
+					seed: Number(robot.task.seed),
+					regime: "strict_perception",
+					final_state: lastState ?? null,
+					libero_terminated: terminated,
+				}),
+			},
 		},
 		video: true,
 		flywheel: {
@@ -761,6 +774,7 @@ export default function libero(pi: ExtensionAPI) {
 		worldMaps.clear();
 		startHistory();
 		terminated = truncated = false;
+		lastState = undefined;
 		successStep = undefined;
 		grip = -1;
 		envStep = 0;
@@ -879,6 +893,7 @@ export default function libero(pi: ExtensionAPI) {
 				.map((k) => k.slice(0, -4))
 				.sort(),
 		};
+		lastState = state;
 		const fresh = records.at(-1)?.envStep !== envStep;
 		const index = fresh ? records.length : records.length - 1;
 		const body = {

@@ -2309,6 +2309,47 @@
 		],
 		"libero": [
 			{
+				"name": "write_audit",
+				"description": "Write this cell's audit (the task_only record paired with the exported recipe). The runtime adds the suite, task, seed, final state and its own solved flag; call it again to replace the audit. Call it before `finish`.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"terminated",
+						"strategy_notes",
+						"memory_files_read"
+					],
+					"properties": {
+						"terminated": {
+							"type": "boolean",
+							"description": "true only when the latest tool result reports terminated: true (the task is solved)"
+						},
+						"strategy_notes": {
+							"type": "string",
+							"description": "How you localized, then what you did step by step in trace order with the parameters used; when unsolved, what you tried and where it stalled"
+						},
+						"memory_files_read": {
+							"type": "array",
+							"items": {
+								"type": "string"
+							},
+							"description": "The exact memory file names you read; empty when no matching task memory was found"
+						},
+						"pick_result": {
+							"type": "object",
+							"patternProperties": {
+								"^.*$": {}
+							},
+							"description": "Per pick: keys name the recipe step it came from (e.g. bowl_pi0_pick_step3)"
+						},
+						"attempts": {
+							"type": "integer",
+							"minimum": 1,
+							"description": "Exploration: the attempts this cell took"
+						}
+					}
+				}
+			},
+			{
 				"name": "request_operator_verdict",
 				"description": "Human feedback gate. Ask the operator to mark the current task state as success, failure, or continue before you finish or start another attempt.",
 				"parameters": {

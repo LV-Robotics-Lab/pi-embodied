@@ -10,7 +10,7 @@ import { Type } from "typebox";
 import { type FlashCall, type FlashHook, type FlashProgram, flash } from "../src/capabilities/flash/index.ts";
 import { defineRobot, type RobotSpec } from "../src/robot.ts";
 import { liberoFlash } from "../src/robots/libero/flash.ts";
-import { generateFlashPlan } from "../src/robots/libero/flash-generate.ts";
+import { AUDIT_FIELDS, generateFlashPlan, readAudit } from "../src/robots/libero/flash-generate.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 type Result = { json?: unknown; text?: string; isError?: boolean };
@@ -585,4 +585,47 @@ test("LIBERO Flash plans are generated from standard-suite traces as well as LIB
 			}),
 		/must be <10\|goal\|object\|spatial>\[_<task\|swap>\]/,
 	);
+});
+
+test("a malformed model audit is read leniently, else restated by a structured re-ask, else refused with why", () => {
+	const dir = mkdtempSync(join(tmpdir(), "flash-audit-"));
+	const recipe = join(dir, "goal_t3_s7_recipe.jsonl");
+	writeFileSync(recipe, `${JSON.stringify({ action: "move_to", xyz: [0.1, 0.2, 1.0] })}\n`);
+	const audit = join(dir, "goal_t3_s7.json");
+	// Muse's usual slips: a leading comment, single quotes, a trailing comma.
+	writeFileSync(
+		audit,
+		"// solved on the first try\n{'terminated': true, 'task_language': 'put the bowl on the plate', 'seed': 7,}",
+	);
+	const notes: string[] = [];
+	const out = generateFlashPlan({ audit, recipe, destination: join(dir, "flash"), note: (l) => notes.push(l) });
+	assert.equal(out.language, "put the bowl on the plate");
+	assert.match(notes.join("\n"), /is not strict JSON; read it after repairing its syntax/);
+	// Beyond repair: the re-ask gets the text, the error and exactly the fields, and its reply is used.
+	writeFileSync(audit, "Audit: terminated = yes. Task: put the bowl on the plate. {oops");
+	const prompts: string[] = [];
+	const reask = (prompt: string) => {
+		prompts.push(prompt);
+		return '```json\n{"terminated": true, "task_language": "put the bowl on the plate", "suite": "libero_goal", "task_id": 3, "seed": null}\n```';
+	};
+	const doc = readAudit(audit, reask, (l) => notes.push(l));
+	assert.deepEqual(doc, {
+		terminated: true,
+		task_language: "put the bowl on the plate",
+		suite: "libero_goal",
+		task_id: 3,
+	});
+	assert.equal(prompts.length, 1);
+	assert.match(prompts[0], /does not parse \(not JSON even leniently: /);
+	assert.match(prompts[0], /terminated = yes\. Task: put the bowl on the plate/);
+	for (const k of Object.keys(AUDIT_FIELDS)) assert.match(prompts[0], new RegExp(`- ${k}: `));
+	assert.match(notes.at(-1) ?? "", /used the model's restatement of terminated, task_language, suite, task_id, seed/);
+	assert.equal(generateFlashPlan({ audit, recipe, destination: join(dir, "flash"), reask }).key, "t3");
+	// A restatement that misses a field, or no re-ask at all, refuses the audit and says why.
+	assert.throws(
+		() => readAudit(audit, () => '{"terminated": "yes", "task_language": "x"}'),
+		/the re-ask gave bad terminated/,
+	);
+	assert.throws(() => readAudit(audit, () => "I cannot tell."), /the re-ask gave no JSON object/);
+	assert.throws(() => readAudit(audit), /not JSON even leniently.*pass --reask-model/);
 });

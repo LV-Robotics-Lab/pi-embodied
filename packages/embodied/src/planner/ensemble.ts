@@ -64,9 +64,9 @@ import { API_GATE_EVENT, acquire, release } from "./api-gate.ts";
 export const ENSEMBLE_ENTRY = "planner_ensemble";
 export const DEFAULT_TEMPS = [0.3, 0.7, 1.0];
 
-/** `--model ensemble/<base>` from `argv` (`--model value` or `--model=value`). */
+/** `--model ensemble/<base>` from `argv` (`--model value` or `--model=value`; the last one, which pi uses). */
 export function ensembleArgs(argv: readonly string[]): { base?: string } {
-	const i = argv.findIndex((a) => a === "--model" || a.startsWith("--model="));
+	const i = argv.map((a) => a === "--model" || a.startsWith("--model=")).lastIndexOf(true);
 	const model = i < 0 ? undefined : argv[i] === "--model" ? argv[i + 1] : argv[i].slice("--model=".length);
 	return { base: model?.startsWith("ensemble/") ? model.slice("ensemble/".length) : undefined };
 }

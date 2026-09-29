@@ -65,10 +65,13 @@ export const RELAY_ERRORS =
 
 export type FallbackArgs = { primary?: string; fallback?: string };
 
-/** `--model fallback/<primary>` and `--fallback-model <backup>` from `argv` (`--flag value` or `--flag=value`). */
+/**
+ * `--model fallback/<primary>` and `--fallback-model <backup>` from `argv` (`--flag value` or `--flag=value`);
+ * a repeated flag's last value, the one pi uses.
+ */
 export function fallbackArgs(argv: readonly string[]): FallbackArgs {
 	const value = (flag: string) => {
-		const i = argv.findIndex((a) => a === flag || a.startsWith(`${flag}=`));
+		const i = argv.map((a) => a === flag || a.startsWith(`${flag}=`)).lastIndexOf(true);
 		return i < 0 ? undefined : argv[i] === flag ? argv[i + 1] : argv[i].slice(flag.length + 1);
 	};
 	// `ensemble/fallback/<primary>` (./ensemble.ts) plans each candidate through this provider.

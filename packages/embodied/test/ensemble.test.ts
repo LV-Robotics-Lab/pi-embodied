@@ -186,6 +186,9 @@ test("ensembleArgs and candidates: temperatures, models, both", () => {
 	assert.deepEqual(ensembleArgs(ARGV), { base: BASE });
 	assert.deepEqual(ensembleArgs([`--model=ensemble/${OTHER}`]), { base: OTHER });
 	assert.deepEqual(ensembleArgs(["--model", BASE]), { base: undefined });
+	// pi takes the last --model (e.g. eval scripts that append one to a default)
+	assert.deepEqual(ensembleArgs(["--model", OTHER, "--model", `ensemble/${BASE}`]), { base: BASE });
+	assert.deepEqual(ensembleArgs([`--model=ensemble/${BASE}`, "--model", OTHER]), { base: undefined });
 	assert.deepEqual(candidates(BASE), [
 		{ model: BASE, temperature: 0.3 },
 		{ model: BASE, temperature: 0.7 },

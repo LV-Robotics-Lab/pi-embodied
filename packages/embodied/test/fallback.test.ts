@@ -162,6 +162,11 @@ function fakePi(flagValues: Record<string, unknown> = {}) {
 
 test("fallbackArgs reads --model fallback/<primary> and --fallback-model in both flag forms", () => {
 	assert.deepEqual(fallbackArgs(ARGV), { primary: PRIMARY, fallback: BACKUP });
+	// pi takes the last --model (e.g. eval scripts that append one to a default)
+	assert.deepEqual(fallbackArgs(["--model", BACKUP, "--model", `fallback/${PRIMARY}`, "--fallback-model", BACKUP]), {
+		primary: PRIMARY,
+		fallback: BACKUP,
+	});
 	assert.deepEqual(fallbackArgs(["--model=fallback/a/b", `--fallback-model=${BACKUP}`]), {
 		primary: "a/b",
 		fallback: BACKUP,

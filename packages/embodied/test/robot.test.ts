@@ -15,6 +15,7 @@ import {
 	type RobotSpec,
 	STATUS_EVENT,
 	SYSTEM_PROMPT_ENTRY,
+	serverError,
 	TASK_ENTRY,
 	toolSections,
 } from "../src/robot.ts";
@@ -617,4 +618,26 @@ test("memory's section is left out while exploring, without memory's read tool, 
 	});
 	assert.equal(sections(pure.text), 1);
 	assert.doesNotMatch(pure.text, /Read MEMORY\.md first/);
+});
+
+test("a server error reaches the model as one line with the server's message, never a traceback", async (t) => {
+	const f = fakePi();
+	t.after(f.restore);
+	const robot = toy(f.pi, async () => ["move", "finish", "step"]);
+	robot.tool("step", "step", Type.Object({}), async () => {
+		throw new Error(
+			'env.move_delta: Traceback (most recent call last):\n  File "env_server.py", line 176, in move_delta\n    raise ValueError(\nValueError: delta moves 0.300 m; the limit is 0.2 m per call. Split the motion.\n',
+		);
+	});
+	await f.emit("session_start");
+	await assert.rejects(f.tools.get("step").execute("1", {}, undefined, undefined, {}), (err: Error) => {
+		assert.equal(
+			err.message,
+			"env.move_delta: the server refused the call: ValueError: delta moves 0.300 m; the limit is 0.2 m per call. Split the motion.",
+		);
+		return true;
+	});
+	// An error without a traceback is the server's message already: unchanged.
+	assert.equal(serverError(new Error("env.move_delta: delta moves 0.300 m")), undefined);
+	assert.equal(serverError(new RpcUnavailable(`x: ${"Traceback (most recent call last):"}`)), undefined);
 });

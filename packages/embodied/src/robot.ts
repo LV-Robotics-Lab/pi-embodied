@@ -65,6 +65,28 @@ export const median = (v: number[]) => {
 };
 export const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
+const TRACEBACK = "Traceback (most recent call last):";
+
+/**
+ * A tool error whose message carries a Python traceback (a service that sent the formatted stack
+ * as its error), as one line: what came before the traceback (the RPC method) and the exception's
+ * last line (`ValueError: delta moves 0.300 m; ...`). Undefined when there is no traceback (the
+ * error is already the server's message).
+ */
+export function serverError(err: unknown): Error | undefined {
+	if (err instanceof RpcUnavailable) return undefined;
+	const text = message(err);
+	const at = text.indexOf(TRACEBACK);
+	if (at < 0) return undefined;
+	const lines = text
+		.slice(at + TRACEBACK.length)
+		.split("\n")
+		.filter((l) => l.trim() && !/^\s/.test(l));
+	const last = lines.at(-1)?.trim() ?? "the server raised an error";
+	const before = text.slice(0, at).trim();
+	return new Error(`${before ? `${before.replace(/:$/, "")}: ` : ""}the server refused the call: ${last}`);
+}
+
 /**
  * Keep every `[tool:name]...[/tool:name]` block of a robot's system prompt when that tool is
  * active, drop it otherwise, so an excluded tool is not described. `[tool:a|b]` is kept when any of
@@ -499,6 +521,9 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 				return { ...(await run(params as Static<P>, sig, ctx)), terminate: finishing };
 			} catch (err) {
 				if (err instanceof RpcUnavailable) fail(err.message);
+				// A server error reaches the model as one line with the server's message, never a traceback.
+				const clean = serverError(err);
+				if (clean !== undefined) throw clean;
 				throw err;
 			} finally {
 				signal = undefined;

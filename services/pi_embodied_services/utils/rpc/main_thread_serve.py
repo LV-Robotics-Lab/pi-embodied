@@ -33,7 +33,6 @@ from __future__ import annotations
 
 import queue
 import threading
-import traceback
 from typing import Any, Literal
 
 from pi_embodied_services.utils.daemon import watch_parent_death
@@ -90,8 +89,10 @@ class MainThreadServeMixin:
         }
         self._main_thread_queue.put((event, req))
         event.wait()
-        if req["error"]:
-            raise RuntimeError(req["error"])
+        if req["error"] is not None:
+            # The call's own exception, type and message intact: the facade reports its
+            # message as the error and the formatted stack separately as the traceback.
+            raise req["error"]
         return req["result"]
 
     def serve(
@@ -159,8 +160,8 @@ class MainThreadServeMixin:
                         session_id=req["session_id"],
                         arrival_generation=req["arrival_generation"],
                     )
-                except Exception:
-                    req["error"] = traceback.format_exc()
+                except Exception as exc:
+                    req["error"] = exc
                 event.set()
         finally:
             server.shutdown()

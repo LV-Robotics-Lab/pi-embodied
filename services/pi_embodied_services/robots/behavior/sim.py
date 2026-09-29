@@ -45,6 +45,12 @@ ARMS = ("left", "right")
 DEPTH_MODALITY = "depth_linear"
 #: The challenge's demonstrations metadata, under ``gm.DATA_PATH``.
 CHALLENGE_DIR = "2025-challenge-task-instances"
+#: OmniGibson 3.9's task instances, under ``gm.DATA_PATH`` (its ``get_task_instance_path`` reads only
+#: this set): per split, one full template for instance 0 and, per instance, an overlay of the
+#: task-relevant objects and the robot pose (``..._instances/<template>-tro_state.json``).
+CHALLENGE_INSTANCES = "2026-challenge-task-instances"
+#: The splits of :data:`CHALLENGE_INSTANCES` (OmniGibson's modes and their directories).
+INSTANCE_SPLITS = {"train": "scenes", "public_test": "scene_test/public"}
 
 
 def to_np(x: Any) -> np.ndarray:
@@ -121,13 +127,43 @@ def find_task_scene(
     data_path: str | os.PathLike, activity: str, definition_id: int = 0
 ) -> tuple[str, list[int]]:
     """The scene model that holds ``activity``'s pre-sampled instances in OmniGibson's dataset,
-    and the instance ids it has, found by the instance files' names
+    and the instance ids it has, found by the instance files' names: full templates
     (``og_dataset/scenes/<scene>/json/<scene>_task_<activity>_instances/
-    <scene>_task_<activity>_<definition>_<instance>_template.json``). The challenge samples every
-    task in one scene; several scenes are an error, none means the dataset is missing."""
-    root = Path(data_path) / "og_dataset" / "scenes"
+    <scene>_task_<activity>_<definition>_<instance>_template.json``, CaP-X's OmniGibson 3.7), else
+    OmniGibson 3.9's overlays in :data:`CHALLENGE_INSTANCES` (every split, see
+    :func:`instance_split`). The challenge samples every task in one scene; several scenes are an
+    error, none means the dataset is missing."""
+    found = _instance_files(
+        Path(data_path) / "og_dataset" / "scenes", activity, definition_id, ""
+    )
+    if not found:
+        for split in INSTANCE_SPLITS.values():
+            for scene, ids in _instance_files(
+                Path(data_path) / CHALLENGE_INSTANCES / split,
+                activity,
+                definition_id,
+                "-tro_state",
+            ).items():
+                found.setdefault(scene, set()).update(ids)
+    if not found:
+        raise FileNotFoundError(
+            f"no pre-sampled instances of {activity!r} (definition {definition_id}) under "
+            f"{Path(data_path) / 'og_dataset'} or {Path(data_path) / CHALLENGE_INSTANCES}; "
+            "download the BEHAVIOR-1K dataset (install.sh) or set OMNIGIBSON_DATA_PATH"
+        )
+    if len(found) > 1:
+        raise ValueError(f"{activity!r} is sampled in several scenes: {sorted(found)}")
+    ((scene, ids),) = found.items()
+    return scene, sorted(ids)
+
+
+def _instance_files(
+    root: Path, activity: str, definition_id: int, suffix: str
+) -> dict[str, set[int]]:
+    """Per scene under ``root``, the instance ids of ``activity``'s files
+    ``<scene>/json/<scene>_task_<activity>_instances/<scene>_task_<activity>_<def>_<id>_template<suffix>.json``."""
     pattern = re.compile(
-        rf"^(?P<scene>.+)_task_{re.escape(activity)}_{definition_id}_(?P<inst>\d+)_template\.json$"
+        rf"^(?P<scene>.+)_task_{re.escape(activity)}_{definition_id}_(?P<inst>\d+)_template{re.escape(suffix)}\.json$"
     )
     found: dict[str, set[int]] = {}
     for scene_dir in sorted(root.glob("*")):
@@ -138,15 +174,42 @@ def find_task_scene(
             m = pattern.match(f.name)
             if m and m.group("scene") == scene_dir.name:
                 found.setdefault(scene_dir.name, set()).add(int(m.group("inst")))
-    if not found:
-        raise FileNotFoundError(
-            f"no pre-sampled instances of {activity!r} (definition {definition_id}) under {root}; "
-            "download the BEHAVIOR-1K dataset (install.sh) or set OMNIGIBSON_DATA_PATH"
+    return found
+
+
+def instance_split(
+    data_path: str | os.PathLike,
+    scene: str,
+    activity: str,
+    instance_id: int,
+    definition_id: int = 0,
+) -> str | None:
+    """The :data:`INSTANCE_SPLITS` mode whose overlay holds OmniGibson 3.9's instance
+    ``instance_id``, or None when the dataset has a full template per instance (CaP-X's
+    ``og_dataset``: the env loads that instance directly)."""
+    name = f"{scene}_task_{activity}_{definition_id}_{instance_id}_template"
+    if (
+        Path(data_path)
+        / "og_dataset"
+        / "scenes"
+        / scene
+        / "json"
+        / f"{scene}_task_{activity}_instances"
+        / f"{name}.json"
+    ).is_file():
+        return None
+    for mode, split in INSTANCE_SPLITS.items():
+        inst_dir = (
+            Path(data_path)
+            / CHALLENGE_INSTANCES
+            / split
+            / scene
+            / "json"
+            / f"{scene}_task_{activity}_instances"
         )
-    if len(found) > 1:
-        raise ValueError(f"{activity!r} is sampled in several scenes: {sorted(found)}")
-    ((scene, ids),) = found.items()
-    return scene, sorted(ids)
+        if (inst_dir / f"{name}-tro_state.json").is_file():
+            return mode
+    raise FileNotFoundError(f"no instance {instance_id} of {activity!r} in {scene}")
 
 
 def task_config(
@@ -293,6 +356,57 @@ def launch(config: dict) -> Handle:
         env, env.robots[0], enable_head_tracking=False
     )
     return Handle(og=og, env=env, controller=controller, error=ActionPrimitiveError)
+
+
+def load_task_instance(handle: Handle, mode: str, instance_id: int) -> None:
+    """Put OmniGibson 3.9's instance ``instance_id`` of the loaded task in place and make it the
+    scene's initial state (every later ``env.reset()`` returns to it), as its challenge evaluator
+    does (``omnigibson.eval.evaluator.Evaluator.load_task_instance``): the env was built on
+    instance 0's template, the overlay sets the task-relevant objects' states and the robot's
+    pre-sampled pose, and 25 physics steps with those objects held still settle it. ``mode`` is
+    the :data:`INSTANCE_SPLITS` split that holds it (:func:`instance_split`). The evaluator's light
+    synchronisation (a teleoperation aid) is not reproduced."""
+    import json
+
+    from omnigibson.utils.asset_utils import get_task_instance_path
+    from omnigibson.utils.bddl_utils import is_system_bddl_inst
+    from omnigibson.utils.python_utils import recursively_convert_to_torch
+
+    og, env, task, robot = handle.og, handle.env, handle.task, handle.robot
+    scene_model = task.scene_name
+    name = task.get_cached_activity_scene_filename(
+        scene_model=scene_model,
+        activity_name=task.activity_name,
+        activity_definition_id=task.activity_definition_id,
+        activity_instance_id=instance_id,
+    )
+    path = get_task_instance_path(
+        scene_model,
+        f"{scene_model}_task_{task.activity_name}_instances/{name}-tro_state",
+        mode=mode,
+    )
+    if path is None:
+        raise FileNotFoundError(
+            f"no {mode} instance {instance_id} of {task.activity_name} in {scene_model}"
+        )
+    with open(path) as f:
+        overlay = recursively_convert_to_torch(json.load(f))
+    for key, state in overlay.items():
+        if key == "robot_poses":
+            poses = {k.lower(): v for k, v in state.items()}
+            pose = (poses["robot"] if "robot" in poses else poses[robot.model])[0]
+            robot.set_position_orientation(pose["position"], pose["orientation"])
+            env.scene.write_task_metadata(key=key, data=state)
+        else:
+            task.object_scope[key].load_state(state, serialized=False)
+    og.sim.update_handles()
+    for _ in range(25):
+        og.sim.step_physics()
+        for inst, entity in task.object_scope.items():
+            if not is_system_bddl_inst(inst) and entity is not None:
+                entity.keep_still()
+    env.scene.update_initial_file()
+    env.scene.reset()
 
 
 def with_settable_arm(primitives_cls: type) -> type:

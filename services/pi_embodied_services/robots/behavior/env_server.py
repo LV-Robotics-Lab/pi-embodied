@@ -1165,10 +1165,13 @@ def main():
         raise SystemExit(
             f"{args.task} has instances {instances}; --seed {args.seed} is not one"
         )
+    # OmniGibson 3.9's instances are overlays on instance 0's template (sim.instance_split);
+    # CaP-X's 3.7 dataset has a full template per instance.
+    split = sim.instance_split(args.data_path, scene, args.task, args.seed)
     config = sim.task_config(
         activity=args.task,
         scene_model=scene,
-        instance_id=args.seed,
+        instance_id=args.seed if split is None else 0,
         image_size=args.image_size,
         grasping_mode=args.grasping_mode,
         max_steps=args.max_steps,
@@ -1178,6 +1181,9 @@ def main():
     # A failure after Kit is up must not reach its shutdown, which can swallow the traceback and
     # exit 0: print it and leave hard.
     try:
+        if split is not None:
+            handle.env.reset()
+            sim.load_task_instance(handle, split, args.seed)
         facade = BehaviorEnvFacade(
             handle=handle,
             meta={
@@ -1187,6 +1193,7 @@ def main():
                 "instruction": LANGUAGE[args.task],
                 "scene_model": scene,
                 "instances": instances,
+                "instance_split": split,
                 "robot": "R1Pro",
                 "cameras": sorted(sim.CAMERAS),
                 "image_size": args.image_size,

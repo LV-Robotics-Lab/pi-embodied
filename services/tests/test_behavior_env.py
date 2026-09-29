@@ -521,12 +521,15 @@ def test_move_hand_delta_is_a_bounded_base_frame_step_with_the_gripper_first():
 
 
 @pytest.mark.parametrize("fork", [False, True])
-def test_joint_target_action_converts_the_base_as_each_omnigibson_does(monkeypatch, fork):
+def test_joint_target_action_converts_the_base_as_each_omnigibson_does(
+    monkeypatch, fork
+):
     import sys
     import types
 
     curobo = types.ModuleType("omnigibson.action_primitives.curobo")
-    if fork:  # CaP-X's 3.7 fork: the base joints go through its world-frame helper first
+    # CaP-X's 3.7 fork: the base joints go through its world-frame helper first.
+    if fork:
         curobo.holonomic_base_command_in_world_frame = lambda robot, q: ("world", q)
     pkg = types.ModuleType("omnigibson.action_primitives")
     pkg.curobo = curobo
@@ -537,7 +540,9 @@ def test_joint_target_action_converts_the_base_as_each_omnigibson_does(monkeypat
     robot = SimpleNamespace(q_to_action=lambda q: ("action", q))
     got = sim.joint_target_action(robot, [0.1, 0.2])
     # OmniGibson 3.9 has no such helper: q_to_action takes the joint positions as they are.
-    assert got == (("action", ("world", (0.1, 0.2))) if fork else ("action", (0.1, 0.2)))
+    assert got == (
+        ("action", ("world", (0.1, 0.2))) if fork else ("action", (0.1, 0.2))
+    )
 
 
 def test_primitives_arm_is_settable_on_both_omnigibson_versions():
@@ -568,3 +573,35 @@ def test_set_render_gpu_leaves_kit_the_visible_gpu_on_isaac_sim_6(monkeypatch, m
         assert env == {"CUDA_VISIBLE_DEVICES": "1"}
     else:
         assert env == {"CUDA_VISIBLE_DEVICES": "1", "OMNIGIBSON_GPU_ID": "0"}
+
+
+def test_omnigibson_39_instances_are_overlays_found_in_every_split(tmp_path):
+    root = tmp_path / sim.CHALLENGE_INSTANCES
+    scene, act = "house_double_floor_lower", "turning_on_radio"
+    for split, ids in (("scenes", [0, 1]), ("scene_test/public", [301])):
+        inst = root / split / scene / "json" / f"{scene}_task_{act}_instances"
+        inst.mkdir(parents=True)
+        for i in ids:
+            (inst / f"{scene}_task_{act}_0_{i}_template-tro_state.json").write_text(
+                "{}"
+            )
+        # the full template of instance 0 and another task's overlay are not instances of it
+        (inst.parent / f"{scene}_task_{act}_0_0_template.json").write_text("{}")
+    assert sim.find_task_scene(tmp_path, act) == (scene, [0, 1, 301])
+    assert sim.instance_split(tmp_path, scene, act, 1) == "train"
+    assert sim.instance_split(tmp_path, scene, act, 301) == "public_test"
+    with pytest.raises(FileNotFoundError):
+        sim.instance_split(tmp_path, scene, act, 7)
+    # CaP-X's og_dataset has a full template per instance: loaded directly, no overlay.
+    full = (
+        tmp_path
+        / "og_dataset"
+        / "scenes"
+        / scene
+        / "json"
+        / f"{scene}_task_{act}_instances"
+    )
+    full.mkdir(parents=True)
+    (full / f"{scene}_task_{act}_0_5_template.json").write_text("{}")
+    assert sim.find_task_scene(tmp_path, act) == (scene, [5])
+    assert sim.instance_split(tmp_path, scene, act, 5) is None

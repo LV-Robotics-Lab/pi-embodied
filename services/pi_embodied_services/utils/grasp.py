@@ -91,6 +91,10 @@ PLACE_Z_MARGIN_M = 0.05
 PLACE_MAX_CLEARANCE_M = 0.25
 #: A held object is set down this far above the region's top surface, then released.
 PLACE_SETTLE_CLEARANCE_M = 0.01
+#: A placed object's footprint must lie over the region: at least this fraction of its points
+#: within PLACE_FOOTPRINT_TOL_M (in xy) of a region point (a bowl on a plate's rim tips off).
+PLACE_MIN_FOOTPRINT = 0.8
+PLACE_FOOTPRINT_TOL_M = 0.015
 #: The longest standoff or lift a claim accepts.
 MAX_WAYPOINT_OFFSET_M = 0.30
 
@@ -1690,9 +1694,12 @@ class GraspPlanner:
             view["depth"], view["intrinsic_K"], region_mask, depth_max=self._depth_max
         )
         region_w = reg_cam.astype(np.float64) @ T_cw[:3, :3].T + T_cw[:3, 3]
+        region_xy = region_w[:: max(1, len(region_w) // 3000), :2]
+        centre = np.median(region_w[:, :2], axis=0) if len(region_w) else None
         ids: list[str] = []
         cands: list[dict[str, Any]] = []
         refused: list[dict[str, Any]] = []
+        accepted: list[tuple[float, dict[str, Any]]] = []
         for i, pl in enumerate(list(res["placements"])[:n]):
             T_model = np.asarray(pl["transform_matrix"], dtype=np.float64)
             if keep_tilt:
@@ -1716,6 +1723,16 @@ class GraspPlanner:
             if why:
                 refused.append({"rank": i, "reason": why})
                 continue
+            footprint, offset = self._landing(T_place, T_cw, obj_cam, region_xy, centre)
+            if footprint is not None and footprint < PLACE_MIN_FOOTPRINT:
+                refused.append(
+                    {
+                        "rank": i,
+                        "reason": f"only {footprint:.0%} of the object's footprint would be "
+                        "over the region (its edge)",
+                    }
+                )
+                continue
             settled = None
             if eef_above_support is not None and len(obj_cam) and len(region_w):
                 landed = T_place[:3, :3] @ obj_cam.astype(np.float64).mean(axis=0)
@@ -1738,6 +1755,10 @@ class GraspPlanner:
                 else round(float(pl["score"]), 4),
                 "backend": "anyplace",
                 "model_tilt_deg": round(math.degrees(tilt), 1),
+                "footprint_on_region": None
+                if footprint is None
+                else round(footprint, 3),
+                "landing_offset_m": None if offset is None else round(offset, 4),
                 "settled_m": None if settled is None else round(settled, 4),
                 "source_grasp_id": grasp_id,
                 "object_mask_id": object_mask_id,
@@ -1756,6 +1777,9 @@ class GraspPlanner:
                 "_camera_R": R_c,
                 "_camera_t": t_c,
             }
+            accepted.append((offset if offset is not None else 0.0, item))
+        # Nearest the region's centre first (stable: the model's order among equals).
+        for _offset, item in sorted(accepted, key=lambda a: a[0]):
             id = self._book.add(item, "p")
             ids.append(id)
             cands.append(self._public(self._book.get(id)))
@@ -1781,6 +1805,37 @@ class GraspPlanner:
             "server": {k: v for k, v in res.items() if k != "placements"},
             "expired_ids": self._expired(),
         }
+
+    @staticmethod
+    def _landing(
+        T_place_camera: np.ndarray,
+        cam2world: np.ndarray,
+        object_camera: np.ndarray,
+        region_xy: np.ndarray,
+        centre: np.ndarray | None,
+    ) -> tuple[float | None, float | None]:
+        """(fraction of the placed object's points over the region in xy, the xy distance of
+        its centroid from the region's centre), or None for what cannot be measured."""
+        if len(object_camera) == 0 or len(region_xy) == 0 or centre is None:
+            return None, None
+        T = np.asarray(T_place_camera, dtype=np.float64)
+        obj = np.asarray(object_camera, dtype=np.float64)[
+            :: max(1, len(object_camera) // 800)
+        ]
+        placed = (obj @ T[:3, :3].T + T[:3, 3]) @ cam2world[:3, :3].T + cam2world[:3, 3]
+        d = np.linalg.norm(placed[:, None, :2] - region_xy[None, :, :], axis=2).min(
+            axis=1
+        )
+        # A coarse depth image spaces the region's points further apart than the tolerance.
+        probe = region_xy[:: max(1, len(region_xy) // 300)]
+        gaps = np.linalg.norm(probe[:, None] - region_xy[None], axis=2)
+        gaps[gaps == 0] = np.inf
+        nearest = gaps.min(axis=1)
+        nearest = nearest[np.isfinite(nearest)]
+        spacing = float(np.median(nearest)) if len(nearest) else 0.0
+        footprint = float(np.mean(d <= max(PLACE_FOOTPRINT_TOL_M, 1.5 * spacing)))
+        offset = float(np.linalg.norm(placed[:, :2].mean(axis=0) - centre))
+        return footprint, offset
 
     @staticmethod
     def _place_refusal(

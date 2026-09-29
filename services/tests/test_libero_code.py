@@ -538,7 +538,15 @@ def grasp_facade():
         meta={},
         grasp={"contact_graspnet": server, "anyplace": FakeAnyPlace([T])},
     )
-    f._grasp._sam3 = FakeSam3(mask)
+    plate = np.zeros((CODE_RES, CODE_RES), bool)
+    plate[150:350, 150:360] = True  # wider than the bowl, around where it lands
+
+    class PerPrompt(FakeSam3):
+        def call(self, method, args=(), kwargs=None, *, timeout_s=None):
+            self.mask = plate if "plate" in str(kwargs.get("text_prompt")) else mask
+            return super().call(method, args, kwargs, timeout_s=timeout_s)
+
+    f._grasp._sam3 = PerPrompt(mask)
     f.reset()
     return f, G
 

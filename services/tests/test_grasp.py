@@ -1145,3 +1145,33 @@ def test_the_grasp_arguments_carry_the_tilt_limit():
     assert "max_approach_tilt_deg" not in G.urls_from_args(p.parse_args([]))
     args = p.parse_args(["--max-approach-tilt-deg", "20"])
     assert G.urls_from_args(args)["max_approach_tilt_deg"] == 20.0
+
+
+def test_a_place_on_the_regions_edge_is_refused_and_centred_ones_come_first():
+    """Acceptance run: a Contact-GraspNet + AnyPlace place landed on the plate's rim, 8.3 cm
+    off-centre. A place whose object footprint is not mostly over the region is refused, and
+    the rest are ordered by how close they land to the region's centre."""
+    region = np.zeros((H, W), bool)
+    region[2:14, 2:14] = True  # the plate, around the block
+
+    def shift(x):
+        T = np.eye(4)
+        T[0, 3] = x  # along camera x (world -y)
+        return T
+
+    anyplace = FakeAnyPlace([shift(0.25), shift(0.06), shift(0.0)])
+    planner, _ = _planner(sam3=FakeSam3(_block_mask()), anyplace=anyplace)
+    obj = planner.segment_mask("block")["id"]
+    planner._sam3 = FakeSam3(region)
+    reg = planner.segment_mask("plate")["id"]
+    gid = planner.plan_grasp(mask_id=obj)["active"]
+    place = planner.plan_place(reg, gid)
+    assert [r["rank"] for r in place["refused"]] == [0]
+    assert "footprint" in place["refused"][0]["reason"]
+    ranks = [c["rank"] for c in place["candidates"]]
+    assert ranks == [2, 1], "the centred place first, whatever the model's order"
+    offsets = [c["landing_offset_m"] for c in place["candidates"]]
+    assert offsets[0] < offsets[1] and offsets[1] == pytest.approx(
+        offsets[0] + 0.06, abs=0.02
+    )
+    assert all(c["footprint_on_region"] >= 0.8 for c in place["candidates"])

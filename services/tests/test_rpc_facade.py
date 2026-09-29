@@ -103,7 +103,7 @@ class MainThreadDummy(MainThreadServeMixin, Dummy):
         return super()._dispatch_main_thread(method, *args, **kwargs)
 
     def _signal_queued(self) -> None:
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + 300
         while self._main_thread_queue.qsize() < 1 and time.monotonic() < deadline:
             time.sleep(0.001)
         self.slow_arrived.set()
@@ -126,7 +126,7 @@ def _serve(facade: RpcFacade):
         daemon=True,
     )
     thread.start()
-    deadline = time.time() + 5
+    deadline = time.time() + 60
     while "port" not in bound:
         assert time.time() < deadline, "server did not bind"
         time.sleep(0.01)
@@ -139,12 +139,19 @@ def _serve(facade: RpcFacade):
     return client, stop
 
 
+#: A client wait no loaded machine exhausts: a timed-out client thread once passed for a finished
+#: server call (is_alive() on the client thread measured the HTTP timeout, not the lock).
+CLIENT_TIMEOUT_S = 300.0
+
+
 def _call_async(client: HttpRpcClient, method: str, *args, **kwargs):
     box: dict = {}
 
     def run() -> None:
         try:
-            box["result"] = client.call(method, args, kwargs, timeout_s=30)
+            box["result"] = client.call(
+                method, args, kwargs, timeout_s=CLIENT_TIMEOUT_S
+            )
         except Exception as exc:  # collected for assertions
             box["error"] = exc
 
@@ -174,11 +181,15 @@ def test_calls_never_overlap(served):
 
 def test_healthz_reports_version_and_bypasses_lock(served):
     facade, client = served
-    thread, _ = _call_async(client, "loop", 6000)
-    assert facade.started.wait(30)
-    health = client.call("healthz", timeout_s=30)
-    assert thread.is_alive(), "healthz was answered while the call held the lock"
-    client.call("stop", timeout_s=30)
+    thread, box = _call_async(client, "loop", 10**9)  # ends only through the stop below
+    assert facade.started.wait(CLIENT_TIMEOUT_S)
+    health = client.call("healthz", timeout_s=CLIENT_TIMEOUT_S)
+    # Server-side, not the client thread: the loop still holds the lock (only a stop ends it).
+    assert facade.active == 1, (
+        "healthz was answered while the call held the lock",
+        box,
+    )
+    client.call("stop", timeout_s=CLIENT_TIMEOUT_S)
     # The pid names the answering process (a client that started it checks it is its own).
     assert health == {
         "status": "ok",
@@ -186,32 +197,35 @@ def test_healthz_reports_version_and_bypasses_lock(served):
         "service": "dummy",
         "pid": os.getpid(),
     }
-    thread.join(timeout=10)
+    thread.join(timeout=CLIENT_TIMEOUT_S)
 
 
 def test_stop_interrupts_running_loop_and_drops_queued_calls(served):
     facade, client = served
-    running, running_box = _call_async(client, "loop", 6000)
-    assert facade.started.wait(5)
+    running, running_box = _call_async(
+        client, "loop", 10**9
+    )  # ends only through the stop
+    assert facade.started.wait(CLIENT_TIMEOUT_S)
     queued, queued_box = _call_async(client, "slow", 0.01)
     # The queued call has reached the server and waits for the lock (not a sleep: under load
     # a sleep let the stop overtake it, and it then ran as a call received after the stop).
-    assert facade.slow_arrived.wait(30)
-    reply = client.call("stop", timeout_s=30)
-    # Answered while the loop (6000 x 10 ms, ended only by the stop) still runs: stop bypasses the lock. No wall-clock
-    # bound, which a loaded machine breaks.
-    assert running.is_alive(), "the stop was answered before the running call ended"
+    assert facade.slow_arrived.wait(CLIENT_TIMEOUT_S)
+    reply = client.call("stop", timeout_s=CLIENT_TIMEOUT_S)
+    # The lock bypass, judged server-side: the server answered the stop while the loop (which
+    # only a stop ends) held the lock. No wall-clock bound and no client-thread liveness, both of
+    # which a loaded machine breaks.
     assert reply["ok"] is True and reply["call_in_progress"] is True
-    running.join(timeout=30)
-    queued.join(timeout=30)
-    assert running_box["result"]["cancelled"] is True
-    assert running_box["result"]["steps"] < 6000
+    running.join(timeout=CLIENT_TIMEOUT_S)
+    queued.join(timeout=CLIENT_TIMEOUT_S)
+    assert running_box["result"]["cancelled"] is True, running_box
     assert isinstance(queued_box.get("error"), RpcError)
     assert "cancelled by stop" in str(queued_box["error"])
     assert "slow" not in facade.ran
     # Calls received after the stop run normally.
-    assert client.call("loop", (3,), timeout_s=5) == {"steps": 3}
-    assert client.call("cancel", timeout_s=5)["call_in_progress"] is False
+    assert client.call("loop", (3,), timeout_s=CLIENT_TIMEOUT_S) == {"steps": 3}
+    assert (
+        client.call("cancel", timeout_s=CLIENT_TIMEOUT_S)["call_in_progress"] is False
+    )
 
 
 def test_socket_transport_is_gone():

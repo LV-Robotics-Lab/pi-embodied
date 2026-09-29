@@ -278,6 +278,20 @@ class ScriptedModel:
 
 
 def generate() -> dict:
+    """The golden fixture's content. The planner's retry back-off is disabled while it runs
+    and restored after: the patch replaces ``sleep`` on the global ``time`` module, which once
+    made every later test in the process sleep for zero seconds (the stop-timing tests in
+    test_rpc_facade and test_ur5e then failed in full-suite runs only)."""
+    import time
+
+    real_sleep = time.sleep
+    try:
+        return _generate()
+    finally:
+        time.sleep = real_sleep
+
+
+def _generate() -> dict:
     if not importable():
         raise RuntimeError("humanclaw_bench is not importable (set HUMANCLAW_SRC)")
     from types import SimpleNamespace
@@ -288,7 +302,9 @@ def generate() -> dict:
     from humanclaw_bench.evaluation.evaluator import _history_item
     from PIL import Image
 
-    planner_module.time.sleep = lambda _s: None  # retries back off; not in a test
+    planner_module.time.sleep = lambda _s: (
+        None
+    )  # retries back off; generate() restores it
     chooser = []
     for case in CHOOSER_CASES:
         call = P._chooser_action(P, case)

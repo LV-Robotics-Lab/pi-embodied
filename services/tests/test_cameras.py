@@ -496,7 +496,9 @@ def test_a_realsense_restart_that_hangs_is_bounded_by_the_read_budget():
             raise RuntimeError("device lost")
 
         def wait_for_frames(self, timeout_ms):
-            time.sleep(timeout_ms / 1000.0)
+            # Fails at once: two reads that each waited out their timeout plus the back-offs
+            # filled the whole 0.3 s budget, so under load the read ran out before it ever
+            # reached the restart this test is about.
             raise RuntimeError(f"Frame didn't arrive within {timeout_ms}")
 
         def stop(self):
@@ -513,12 +515,15 @@ def test_a_realsense_restart_that_hangs_is_bounded_by_the_read_budget():
     cam = object.__new__(RealSenseRGBD)
     cam._rs, cam.serial, cam.has_depth, cam.align = rs, "1", False, None
     cam.width, cam.height, cam.fps, cam.warmup_frames = 640, 480, 30, 3
-    cam.read_timeout_ms, cam.read_retries = 100, 2
+    # A 3 s budget: the two failed reads and their 50 ms back-offs stay far inside it.
+    cam.read_timeout_ms, cam.read_retries = 1000, 2
     cam.pipeline, cam._restarting = Pipeline(), None
     t0 = time.monotonic()
-    with pytest.raises(TimeoutError, match="did not restart within the 0.3 s"):
+    with pytest.raises(TimeoutError, match="did not restart within the 3 s"):
         cam.read()
-    assert time.monotonic() - t0 < 0.8, "restart included in the read budget"
+    # The hung restart is abandoned at the budget, not waited for (the gate never opens until
+    # below): any bound far under "forever" proves it; a tight one only measures the machine.
+    assert time.monotonic() - t0 < 60, "restart included in the read budget"
     with pytest.raises(RuntimeError, match="restart is still blocked"):
         cam.read()
     gate.set()

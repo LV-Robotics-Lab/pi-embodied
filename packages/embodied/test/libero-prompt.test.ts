@@ -70,6 +70,9 @@ const stop = (server: Server) => () => {
 };
 
 async function listen(server: Server) {
+	// The client keeps connections alive; a server closing an idle one (Node's 5 s default) while the
+	// next call reuses it is an ECONNRESET, and 1024 renders under a loaded test run leave such gaps.
+	server.keepAliveTimeout = 120_000;
 	await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
 	return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 }

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -10,6 +10,7 @@ import { Type } from "typebox";
 import { type FlashCall, type FlashHook, type FlashProgram, flash } from "../src/capabilities/flash/index.ts";
 import { defineRobot, type RobotSpec } from "../src/robot.ts";
 import { liberoFlash } from "../src/robots/libero/flash.ts";
+import { generateFlashPlan } from "../src/robots/libero/flash-generate.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 type Result = { json?: unknown; text?: string; isError?: boolean };
@@ -517,4 +518,71 @@ test("LIBERO Flash refuses a LIBERO-plus episode: plan task indices are pro ones
 		}));
 	assert.throws(() => hook("plus").load("/"), /not LIBERO-plus/);
 	assert.equal((hook("pro").load("/") as FlashProgram).name, "goal_swap_t3");
+});
+
+test("LIBERO Flash replays a standard suite's plan (libero_goal task 3 is goal_t3) and refuses an unknown suite", () => {
+	const plans = liberoPlans();
+	for (const suffix of ["plan", "anchors"])
+		writeFileSync(join(plans, `goal_t3_${suffix}.json`), readFileSync(join(plans, `goal_swap_t3_${suffix}.json`)));
+	const hook = (suite: string) =>
+		liberoFlash(fakePi({ molmo: "off", "flash-plans": plans }).pi, () => ({ suite, task: "3", liberoType: "pro" }));
+	assert.equal((hook("libero_goal").load("/") as FlashProgram).name, "goal_t3");
+	assert.equal((hook("libero_goal_swap").load("/") as FlashProgram).name, "goal_swap_t3");
+	assert.throws(() => hook("libero_90").load("/"), /cover libero_\{10,goal,object,spatial\}/);
+});
+
+test("LIBERO Flash plans are generated from standard-suite traces as well as LIBERO-Pro ones", () => {
+	const dir = mkdtempSync(join(tmpdir(), "flash-gen-"));
+	const recipe = `${JSON.stringify({ action: "move_to", xyz: [0.1, 0.2, 1.0] })}\n`;
+	for (const [tag, suite, key] of [
+		["goal_t3_s7", "libero_goal", "goal_t3"],
+		["goal_swap_t3_s7", "libero_goal_swap", "goal_swap_t3"],
+		["10_t2_s0", "libero_10", "10_t2"],
+	]) {
+		writeFileSync(
+			join(dir, `${tag}.json`),
+			JSON.stringify({
+				terminated: true,
+				suite,
+				task_language: tag.startsWith("10") ? "put the black bowl on the stove" : "put the bowl on the plate",
+			}),
+		);
+		writeFileSync(join(dir, `${tag}_recipe.jsonl`), recipe);
+		const out = generateFlashPlan({
+			audit: join(dir, `${tag}.json`),
+			recipe: join(dir, `${tag}_recipe.jsonl`),
+			destination: join(dir, "flash"),
+		});
+		assert.equal(`${out.family}_${out.key}`, key);
+		assert.ok(existsSync(join(dir, "flash", `${key}_plan.json`)), key);
+	}
+	// The audit's suite must still agree with its file name.
+	writeFileSync(
+		join(dir, "object_t1_s0.json"),
+		JSON.stringify({
+			terminated: true,
+			suite: "libero_object_swap",
+			task_language: "pick up the ketchup and place it in the basket",
+		}),
+	);
+	writeFileSync(join(dir, "object_t1_s0_recipe.jsonl"), recipe);
+	assert.throws(
+		() =>
+			generateFlashPlan({
+				audit: join(dir, "object_t1_s0.json"),
+				recipe: join(dir, "object_t1_s0_recipe.jsonl"),
+				destination: dir,
+			}),
+		/suite="libero_object_swap" does not match filename \(libero_object\)/,
+	);
+	writeFileSync(join(dir, "90_t1_s0.json"), "{}");
+	assert.throws(
+		() =>
+			generateFlashPlan({
+				audit: join(dir, "90_t1_s0.json"),
+				recipe: join(dir, "90_t1_s0_recipe.jsonl"),
+				destination: dir,
+			}),
+		/must be <10\|goal\|object\|spatial>\[_<task\|swap>\]/,
+	);
 });

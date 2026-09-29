@@ -1,5 +1,6 @@
 /**
- * Generate one LIBERO Flash plan from one successful trace.
+ * Generate one LIBERO Flash plan from one successful trace, on a standard suite (libero_goal, ...) or a
+ * LIBERO-Pro one (libero_goal_swap, ...).
  *
  *   node src/robots/libero/flash-generate.ts --audit <mem>/task_only/goal_swap_t3_s7.json \
  *     --recipe <mem>/task_only/goal_swap_t3_s7_recipe.jsonl --destination memory/libero/flash
@@ -36,7 +37,8 @@ export type PlanEntry = {
 	anchor_distance?: number;
 };
 
-const CELL_TAG = /^(10|goal|object|spatial)_(task|swap)_t([0-9])_s(\d+)$/;
+/** A cell tag (../index.ts memoryTag): a standard suite (`goal_t3_s7`) or a LIBERO-Pro one (`goal_swap_t3_s7`). */
+const CELL_TAG = /^(10|goal|object|spatial)(?:_(task|swap))?_t([0-9])_s(\d+)$/;
 const MOVE_ACTIONS = new Set(["move_to", "move_pose"]);
 const ARTICULATION_VERBS = /^\s*(?:turn|switch|open|close)\b/i;
 const MAX_ATTACH = 0.2;
@@ -349,7 +351,7 @@ export function generateFlashPlan(options: {
 	const cell = CELL_TAG.exec(tag);
 	if (!cell)
 		throw new Error(
-			`audit filename ${basename(options.audit)} must be <10|goal|object|spatial>_<task|swap>_t<0-9>_s<seed>.json`,
+			`audit filename ${basename(options.audit)} must be <10|goal|object|spatial>[_<task|swap>]_t<0-9>_s<seed>.json`,
 		);
 	const [, family, suite, taskText, seedText] = cell;
 	const [task, seed] = [Number(taskText), Number(seedText)];
@@ -363,7 +365,7 @@ export function generateFlashPlan(options: {
 	if (audit.libero_terminated !== true && audit.terminated !== true)
 		throw new Error("Flash plans can only be generated from libero_terminated=true traces");
 	for (const [field, expected] of [
-		["suite", `libero_${family}_${suite}`],
+		["suite", `libero_${family}${suite ? `_${suite}` : ""}`],
 		["task_id", task],
 		["seed", seed],
 	] as const) {
@@ -383,7 +385,8 @@ export function generateFlashPlan(options: {
 		fallbackAnchors(g, raw),
 	);
 	const plan = attachMoves(raw, anchors);
-	const key = `${suite}_t${task}`;
+	// LIBERO-Pro plans are keyed <family>_<task|swap>_t<task>, the standard suites' <family>_t<task>.
+	const key = `${suite ? `${suite}_` : ""}t${task}`;
 	const taskName = `${family}/${key}`;
 	const source = { cell: tag, audit: options.audit, recipe: options.recipe };
 	const attached = plan.filter((e) => e.anchor !== undefined).length;
@@ -400,7 +403,16 @@ export function generateFlashPlan(options: {
 	write("plan.json", { task: taskName, language, source, goal_graph: g, plan });
 	write("anchors.json", { task: taskName, language, source, anchors, prompts_without_readings: [] });
 	writeFileSync(join(options.destination, `${name}_trace.md`), trace);
-	return { family, suite, task, key, source: tag, language, anchors: anchors.length, actions: plan.length };
+	return {
+		family,
+		suite: suite ?? null,
+		task,
+		key,
+		source: tag,
+		language,
+		anchors: anchors.length,
+		actions: plan.length,
+	};
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {

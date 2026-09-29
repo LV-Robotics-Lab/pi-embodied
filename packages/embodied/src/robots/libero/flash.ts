@@ -75,7 +75,8 @@ const PROMPTS = {
 	held: (o: string) => `the body of the ${bare(o)} held in the gripper`,
 };
 const IMAGE = 1024;
-const SUITE = /^libero_(10|goal|object|spatial)_(task|swap)$/;
+/** A standard suite (libero_goal) or a LIBERO-Pro one (libero_goal_swap). */
+const SUITE = /^libero_(10|goal|object|spatial)(?:_(task|swap))?$/;
 
 const median = (v: number[]) => {
 	const s = [...v].sort((a, b) => a - b);
@@ -337,11 +338,15 @@ export function liberoFlash(pi: ExtensionAPI, cell: Cell): FlashHook<Program> {
 	return {
 		load(cwd) {
 			const { suite, task, liberoType } = cell();
-			// Plans are keyed by pro suite and task index; a LIBERO-plus task index names another task.
-			if (liberoType === "plus") throw new Error("Flash plans are recorded on LIBERO-pro tasks, not LIBERO-plus");
+			// Plans are keyed by suite and task index; a LIBERO-plus task index names another task.
+			if (liberoType === "plus")
+				throw new Error("Flash plans are recorded on LIBERO and LIBERO-pro tasks, not LIBERO-plus");
 			const match = SUITE.exec(suite);
-			if (!match) throw new Error(`Flash plans cover libero_{10,goal,object,spatial}_{task,swap}, not ${suite}`);
-			const program = `${match[1]}_${match[2]}_t${task}`;
+			if (!match)
+				throw new Error(
+					`Flash plans cover libero_{10,goal,object,spatial} and their _{task,swap} variants, not ${suite}`,
+				);
+			const program = `${match[1]}${match[2] ? `_${match[2]}` : ""}_t${task}`;
 			const flag = pi.getFlag("flash-plans");
 			const memory =
 				(pi.getFlag("memory-dir") as string | undefined) ||

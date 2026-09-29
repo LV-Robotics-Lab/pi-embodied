@@ -210,8 +210,23 @@ test("without an active observation tool the re-observe gate stays open", async 
 	assert.equal(await call(f, "move"), undefined);
 });
 
+test("HumanCLAW's look re-observes after a motion of unknown outcome", async (t) => {
+	const f = fakePi();
+	t.after(f.restore);
+	const robot = toy(f, ["move", "look"]);
+	robot.tool("look", "look", Type.Object({}), async () => ({ content: [], details: {} }));
+	await f.emit("session_start");
+	const out = (await f.emit("before_agent_start")) as { systemPrompt: string };
+	assert.match(out.systemPrompt, /until you do, the next motion is refused/);
+	await f.emit("tool_result", { toolName: "move", isError: false, content: [], details: { status: "timeout" } });
+	assert.match((await call(f, "move"))?.reason ?? "", /Re-observe with look/);
+	assert.equal(await call(f, "look"), undefined);
+	await f.emit("tool_result", { toolName: "look", isError: false, content: [] });
+	assert.equal(await call(f, "move"), undefined);
+});
+
 test("advice and look-up tools are not motion", () => {
-	for (const tool of ["suggest_grasp", "back_project", "view_env_state", "plan_grasp"])
+	for (const tool of ["suggest_grasp", "back_project", "view_env_state", "plan_grasp", "look"])
 		assert.ok(NON_MOTION.has(tool), tool);
 });
 

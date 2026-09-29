@@ -7,7 +7,7 @@
  *   environment before retrying or issuing another mutation."
  *
  * When a motion tool times out or returns an ambiguous result (`unknownOutcome`), the next motion
- * call is refused until an observation tool (`OBSERVE`: view_env_state, RoboTwin's render) has run
+ * call is refused until an observation tool (`OBSERVE`: view_env_state, RoboTwin's render, HumanCLAW's look) has run
  * successfully. Without an active observation tool (pure units or code mode) there is nothing to
  * re-observe with: the gate stays open, and its hooks are only registered at the first session start
  * that has one. Each unknown outcome, refusal and re-observation is a
@@ -30,7 +30,7 @@ export const CLOSED_LOOP = template(new URL("./closed-loop.md", import.meta.url)
 export const CLOSED_LOOP_ENTRY = "closed_loop";
 
 /** Tools that fetch a fresh observation of the scene without moving anything. */
-export const OBSERVE = ["view_env_state", "render"] as const;
+export const OBSERVE = ["view_env_state", "render", "look"] as const;
 
 /** Robot tools that never move the robot: observation, perception, planning, checks, metadata, and halting an arm. */
 export const NON_MOTION: ReadonlySet<string> = new Set([

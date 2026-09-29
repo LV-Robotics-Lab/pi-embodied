@@ -120,7 +120,9 @@ uv pip install -e "services[franka,sam3]"
 uv pip install -e "services[molmo]"
 
 # Flywheel LeRobot export: its own venv, Python >= 3.10 (lerobot 0.4 pins numpy 2 /
-# huggingface-hub); pass its python to pi as --flywheel-python
+# huggingface-hub). `services/setup.sh flywheel` builds it, checks that its lerobot writes
+# LeRobot v3.0 (lerobot 0.3 writes v2.1) and exports PI_EMBODIED_FLYWHEEL_PYTHON, the default of
+# pi's --flywheel-python; by hand:
 uv pip install -e "services[flywheel]"
 
 # IK / reach preview (components/ik_server.py, PyRoKi on the CPU): its own venv; the env

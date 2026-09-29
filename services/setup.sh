@@ -30,6 +30,8 @@
 #   piper           [piper] system python with --system-site-packages (source ROS Noetic first)
 #   finetuned       Show-Harness adapter + base model (finetuned/download.py; FT_ADAPTER, default qwen3_5_2b_sim)
 #   llamafactory    LLaMA-Factory training venv (finetuned/setup_llamafactory.sh)
+#   flywheel        [flywheel] py3.11, lerobot 0.4 (LeRobot v3.0) for /flywheel-export; its own venv: pass
+#                   pi --flywheel-python <venv>/bin/python (lerobot 0.3 writes v2.1, which the export refuses)
 #   graspnet1b      [graspnet1b] py3.11, graspnet-baseline + GSNet with their CUDA ops and MinkowskiEngine
 #                   (components/graspnet1b_install.sh; needs nvcc and libopenblas-dev; on sm_120 install a
 #                   cu128 torch into the venv first)   --weights: GSNet and graspnet-baseline checkpoints
@@ -80,6 +82,7 @@ metaworld) extra=metaworld py=3.11 ;;
 genesis) extra=genesis py=3.11 ;;
 robosuite) extra=robosuite py=3.11 ;;
 graspnet1b) extra=graspnet1b py=3.11 ;;
+flywheel) extra=flywheel py=3.11 ;;
 franka | dual-franka) extra=franka,sam3 py=3.11 ;;
 franka-polymetis) extra=franka-polymetis py=3.10 ;;
 piper) extra=piper py=system ;;
@@ -292,6 +295,14 @@ llamafactory)
 		export_env GRASPNESS_ROOT "$wdir/graspnet1b/src/graspness_implementation"
 		export_env GRASPNET1B_PYTHON "$PY"
 		;;
+	flywheel)
+		# The export writes LeRobot v3.0: a lerobot that writes another codebase version is refused here.
+		$dry || "$PY" -c 'from lerobot.datasets.lerobot_dataset import CODEBASE_VERSION as v
+assert v == "v3.0", f"lerobot writes {v}, the Flywheel export needs v3.0 (lerobot 0.4)"' ||
+			die "the flywheel venv's lerobot does not write LeRobot v3.0"
+		export_env PI_EMBODIED_FLYWHEEL_PYTHON "$PY"
+		note "export with: pi ... --flywheel-python $PY"
+		;;
 	maniskill)
 		if $assets; then
 			run env PYTHON="$PY" bash "$SERVICES/pi_embodied_services/robots/maniskill/fetch_real2sim.sh" "$wdir/RLinf-real2sim"
@@ -302,7 +313,7 @@ llamafactory)
 	;;
 esac
 
-case $target in finetuned | llamafactory | graspnet1b) ;; *) export_env PI_EMBODIED_PYTHON "$PY" ;; esac
+case $target in finetuned | llamafactory | graspnet1b | flywheel) ;; *) export_env PI_EMBODIED_PYTHON "$PY" ;; esac
 export_env PI_EMBODIED_SERVICES "$SERVICES"
 note "environment for pi, serve.sh and eval.sh:"
 printf '%s\n' "${ENV_LINES[@]}"
@@ -314,7 +325,7 @@ case $target in
 franka-polymetis) robot=franka ;;
 dual-franka) robot=dual_franka ;;
 libero-pro | libero-plus) robot=libero ;;
-finetuned | llamafactory | graspnet1b) robot="" ;;
+finetuned | llamafactory | graspnet1b | flywheel) robot="" ;;
 *) robot=$target ;;
 esac
 if [ -n "$robot" ] && [ -n "$PKG" ]; then

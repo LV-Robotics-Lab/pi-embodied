@@ -217,3 +217,17 @@ test("setup.sh parses and its dry run prints the plan without running it", async
 	assert.throws(() => readFileSync(join(home, "venv/pi-embodied.env")));
 	assert.throws(() => execFileSync("bash", [script, "nope", "--dry-run"], { stdio: "pipe" }));
 });
+
+test("setup.sh flywheel installs the LeRobot v3.0 export venv and names it for --flywheel-python", () => {
+	const script = join(PKG, "../../services/setup.sh");
+	const home = mkdtempSync(join(tmpdir(), "pi-embodied-home-"));
+	const out = execFileSync("bash", [script, "flywheel", "--dry-run", "--venv", join(home, "fly")], {
+		env: { ...process.env, HOME: home, PI_EMBODIED_WEIGHTS: join(home, "w") },
+		encoding: "utf8",
+	});
+	assert.match(out, /pip install .*services\\\[flywheel\\\]/);
+	assert.match(out, /export PI_EMBODIED_FLYWHEEL_PYTHON=/);
+	// Not a robot venv: no PI_EMBODIED_PYTHON and no robot preflight.
+	assert.doesNotMatch(out, /export PI_EMBODIED_PYTHON=/);
+	assert.doesNotMatch(out, /preflight:/);
+});

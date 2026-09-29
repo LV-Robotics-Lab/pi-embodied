@@ -218,7 +218,8 @@ export function flywheel(pi: ExtensionAPI, spec: FlywheelSpec, select: () => str
 	});
 	pi.registerFlag("flywheel-python", {
 		type: "string",
-		description: "Python with lerobot for /flywheel-export (default --python)",
+		description:
+			"Python with lerobot 0.4 (LeRobot v3.0) for /flywheel-export (default $PI_EMBODIED_FLYWHEEL_PYTHON, from services/setup.sh flywheel, else --python)",
 	});
 
 	const root = () =>
@@ -267,7 +268,11 @@ export function flywheel(pi: ExtensionAPI, spec: FlywheelSpec, select: () => str
 			if (spec.space) cli.push("--space", spec.space);
 			// LeRobot's pins (numpy 2, huggingface-hub) conflict with the env servers', hence its own Python.
 			const python = String(
-				pi.getFlag("flywheel-python") || pi.getFlag("python") || process.env.PI_EMBODIED_PYTHON || "python",
+				pi.getFlag("flywheel-python") ||
+					process.env.PI_EMBODIED_FLYWHEEL_PYTHON ||
+					pi.getFlag("python") ||
+					process.env.PI_EMBODIED_PYTHON ||
+					"python",
 			);
 			const services = String(pi.getFlag("services") || process.env.PI_EMBODIED_SERVICES || SERVICES);
 			const res = await pi.exec("env", [`PYTHONPATH=${services}`, python, ...cli], { cwd: services });

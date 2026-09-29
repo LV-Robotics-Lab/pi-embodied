@@ -27,7 +27,7 @@ expand() { for part in ${1//,/ }; do seq "${part%-*}" "${part#*-}"; done; }
 model="" thinking="" turns=0 limit=${TIME_LIMIT:-1800} limited="" units=false stateless=false
 anchor=false
 approval=standard max_tool_calls=0 max_tokens=0
-code=false code_api=high code_oracle="" success_rule=grasp code_timeout="" code_max_calls="" code_max_move="" code_helpers=false
+code=false code_api="" code_oracle="" success_rule=grasp code_timeout="" code_max_calls="" code_max_move="" code_helpers=false
 vdm=false vdm_model="" vdm_wrist=false vdm_video=false vdm_video_frames=8
 privileged=false
 fallback_model="" fallback_after=2 fallback_retry=0
@@ -168,7 +168,7 @@ const result = { ...(last ?? {}), status, exit_code: Number(code), model: model 
 	vdm: vdm === "true", vdm_model: vdmModel || null, vdm_wrist: vdmWrist === "true", vdm_video: vdmVideo ? Number(vdmVideo) : null, stateless: stateless === "true",
 	privileged: privileged === "true",
 	fallback_model: fallbackModel || null, fallback_after: fallbackModel ? Number(fallbackAfter) : null, fallback_retry_primary: fallbackModel ? Number(fallbackRetry) : null,
-	code: codeMode, code_api: codeMode === "false" ? null : codeApi, code_oracle: codeMode === "false" ? null : codeOracle || null,
+	code: codeMode, code_api: codeMode === "false" ? null : codeApi || last?.code_api || null, code_api_auto: codeMode === "false" ? null : !codeApi, code_oracle: codeMode === "false" ? null : codeOracle || null,
 	success_rule: last?.success_rule ?? successRule };
 writeFileSync(`${dir}/result.json`, `${JSON.stringify(result, null, 2)}\n`);
 console.log(JSON.stringify({ status, success: result.success, claimed: result.claimed, env_steps: result.env_steps }));
@@ -196,7 +196,7 @@ const same = r.model === (model || null) && r.thinking === (thinking || null) &&
 	&& (r.fallback_model ?? null) === (fallbackModel || null) && (r.fallback_after ?? null) === (fallbackModel ? Number(fallbackAfter) : null)
 	&& (r.fallback_retry_primary ?? null) === (fallbackModel ? Number(fallbackRetry) : null)
 	// Results written before code mode existed here ran without it.
-	&& (r.code ?? "false") === codeMode && (r.code_api ?? null) === (codeMode === "false" ? null : codeApi)
+	&& (r.code ?? "false") === codeMode && (codeMode === "false" ? (r.code_api ?? null) === null : codeApi ? r.code_api === codeApi : r.code_api_auto === true || (r.code_api_auto === undefined && r.code_api === "high"))
 	&& (r.code_oracle ?? null) === (codeMode === "false" ? null : codeOracle || null)
 	// Results written before --success-rule existed were scored by the lift rule.
 	&& (r.success_rule ?? "lift") === successRule

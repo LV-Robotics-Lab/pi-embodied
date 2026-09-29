@@ -159,6 +159,8 @@ async function toyRobot(
 		codeApi?: () => unknown;
 		/** What the env's `code.preflight` answers. */
 		preflight?: Record<string, unknown>;
+		/** The fixture manifest (default toy: high and low tiers). */
+		manifest?: string;
 	} = {},
 ) {
 	const f = fakePi(flags, o.hasUI ?? true, o.confirm);
@@ -167,7 +169,7 @@ async function toyRobot(
 	const observed: RunResult[] = [];
 	defineRobot(f.pi, {
 		name: "toy",
-		manifest: "toy",
+		manifest: o.manifest ?? "toy",
 		task: [],
 		keepImages: 2,
 		start: async () => ["move_to", "segment"],
@@ -634,4 +636,24 @@ test("code mode's preflight refuses a server that cannot isolate a program, befo
 	assert.equal(f.env.calls.filter((c) => c.method === "code.run").length, 0);
 	assert.equal(isLocalEndpoint("http://127.0.0.1:8080/call"), true);
 	assert.equal(isLocalEndpoint("http://robot-pc.tailnet:9000/call"), false);
+});
+
+test("--code-api defaults to the robot's highest tier; an explicit tier it lacks is refused naming its tiers", async () => {
+	const toy = await toyRobot({ code: true });
+	assert.deepEqual(toy.env.calls.find((c) => c.method === "code.api")?.kwargs, { tier: "high" });
+	const t = await result(toy);
+	assert.equal(t.code_api, "high");
+	assert.equal(t.code_api_auto, true);
+	const low = await toyRobot({ code: true }, { manifest: "toylow", codeApi: () => codeApiReply("toylow", "low") });
+	assert.deepEqual(low.env.calls.find((c) => c.method === "code.api")?.kwargs, { tier: "low" }, "no high tier: low");
+	const l = await result(low);
+	assert.equal(l.code_api, "low");
+	assert.equal(l.code_api_auto, true);
+	const explicit = await result(await toyRobot({ code: true, "code-api": "low" }));
+	assert.equal(explicit.code_api, "low");
+	assert.equal(explicit.code_api_auto, false);
+	const bad = await toyRobot({ code: true, "code-api": "high" }, { manifest: "toylow", hasUI: false });
+	assert.ok(!bad.active().includes("run_code"));
+	const r = bad.entries.find((e) => e.type === RESULT_ENTRY)?.data ?? (await result(bad));
+	assert.match(String(r.error), /--code-api=high: this robot has no high-tier code primitives; its tiers are low/);
 });

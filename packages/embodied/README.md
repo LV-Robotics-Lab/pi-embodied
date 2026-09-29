@@ -196,8 +196,8 @@ Shared modules:
   writes Python programs that `run_code` executes on the env server against the robot's primitive
   manifest (`src/primitives/manifests/<robot>.json`; `--code-api=high|low|low-noexamples|raw`:
   CaP-X's semantic functions (S2), the perception / IK / motion parts (S3), the same without
-  examples (S4), the raw step; `--privileged` adds ground truth: the privileged tier (S1), or
-  `low+privileged`),
+  examples (S4), the raw step; default: the robot's highest tier, e.g. low on Metaworld;
+  `--privileged` adds ground truth: the privileged tier (S1), or `low+privileged`),
   in a spawned subprocess with no env object whose calls the server resolves through the registry
   (JSON over the pipe, never pickle; the child starts without the server's secret-looking
   environment variables, in its own process group, with no new processes or threads allowed;

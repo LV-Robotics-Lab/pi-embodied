@@ -30,7 +30,7 @@ vdm=false vdm_model="" vdm_wrist=false vdm_video=false vdm_video_frames=8
 unit_tol=0.004
 privileged=false
 fallback_model="" fallback_after=2 fallback_retry=0
-code=false code_api=high code_oracle="" code_timeout="" code_max_calls="" code_max_move="" code_helpers=false
+code=false code_api="" code_oracle="" code_timeout="" code_max_calls="" code_max_move="" code_helpers=false
 libero_prompt=rpent
 args=("$@")
 for ((i = 0; i < ${#args[@]}; i++)); do
@@ -172,7 +172,7 @@ const result = { ...(last ?? {}), status, exit_code: Number(code), model: model 
 	max_turns: Number(turns), time_limit: Number(limit), units, anchor_image: anchor === "true", approval, max_tool_calls: Number(maxToolCalls), max_tokens: Number(maxTokens), stateless: stateless === "true",
 	vdm: vdm === "true", vdm_model: vdmModel || null, vdm_wrist: vdmWrist === "true", vdm_video: vdmVideo ? Number(vdmVideo) : null,
 	privileged: privileged === "true", unit_tol: Number(unitTol),
-	code: codeMode, code_api: codeMode === "false" ? null : codeApi, code_oracle: codeMode === "false" ? null : codeOracle || null,
+	code: codeMode, code_api: codeMode === "false" ? null : codeApi || last?.code_api || null, code_api_auto: codeMode === "false" ? null : !codeApi, code_oracle: codeMode === "false" ? null : codeOracle || null,
 	fallback_model: fallbackModel || null, fallback_after: fallbackModel ? Number(fallbackAfter) : null, fallback_retry_primary: fallbackModel ? Number(fallbackRetry) : null,
 	libero_prompt: liberoPrompt };
 writeFileSync(`${dir}/result.json`, `${JSON.stringify(result, null, 2)}\n`);
@@ -198,7 +198,7 @@ const same = r.model === (model || null) && r.thinking === (thinking || null) &&
 	// Results written before --unit-tol was recorded ran with the default tolerance.
 	&& (r.unit_tol ?? 0.004) === Number(unitTol)
 	// Results written before --code existed ran without it.
-	&& (r.code ?? "false") === codeMode && (r.code_api ?? null) === (codeMode === "false" ? null : codeApi)
+	&& (r.code ?? "false") === codeMode && (codeMode === "false" ? (r.code_api ?? null) === null : codeApi ? r.code_api === codeApi : r.code_api_auto === true || (r.code_api_auto === undefined && r.code_api === "high"))
 	// Results written before --code-oracle existed ran the model.
 	&& (r.code_oracle ?? null) === (codeMode === "false" ? null : codeOracle || null)
 	// Results written before the code budget was recorded ran the default one.

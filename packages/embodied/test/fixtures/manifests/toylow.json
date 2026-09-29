@@ -1,0 +1,43 @@
+{
+	"robot": "toylow",
+	"internal": [],
+	"primitives": [
+		{
+			"name": "move_delta",
+			"side": "code",
+			"method": "env.move_delta",
+			"tier": "low",
+			"mutating": true,
+			"params": {
+				"dxyz": {
+					"type": "vec3",
+					"required": true,
+					"description": "[dx, dy, dz]"
+				}
+			},
+			"doc": {
+				"code": "Move by dxyz.\n\nExample:\n    move_delta([0, 0, 0.05])"
+			}
+		},
+		{
+			"use": "sim/ground_truth_poses"
+		},
+		{
+			"name": "segment",
+			"side": "ts",
+			"tier": "low",
+			"doc": {
+				"tool": "Segment."
+			}
+		},
+		{
+			"use": "modules/run_code"
+		},
+		{
+			"use": "modules/act"
+		},
+		{
+			"use": "modules/plan"
+		}
+	]
+}

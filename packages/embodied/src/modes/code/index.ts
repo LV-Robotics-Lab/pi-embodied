@@ -12,7 +12,9 @@
  * tools: only `run_code` and `finish` remain and the system prompt is ./SYSTEM.md, rendered with the
  * registry's declaration of the episode's tier (`--code-api`: high = CaP-X's S2, perception plus
  * pose-level motion; low = S3, relative moves, with the primitives' usage examples;
- * low-noexamples = S4, the same primitives without them; `--privileged` runs the registry's
+ * low-noexamples = S4, the same primitives without them; without `--code-api` the robot's highest
+ * tier in its manifest (high, else low, else raw; recorded as `code_api` with `code_api_auto`), and an
+ * explicit tier the robot lacks refuses to start, naming its tiers; `--privileged` runs the registry's
  * privileged tier, high plus the simulator's ground truth = S1). `--code=both` adds `run_code` to the robot's tools
  * and appends the code section to its prompt. `--units` and `--code` are mutually exclusive.
  *
@@ -219,8 +221,8 @@ export function code(
 	});
 	pi.registerFlag("code-api", {
 		type: "string",
-		default: "high",
-		description: `Code mode primitive tier: ${TIERS.join(", ")} (CaP-X's S2, S3, S4; --privileged runs the privileged tier, S1)`,
+		default: "",
+		description: `Code mode primitive tier: ${TIERS.join(", ")} (CaP-X's S2, S3, S4; --privileged runs the privileged tier, S1). Default: the robot's highest tier (high, else low, else raw)`,
 	});
 	pi.registerFlag("code-oracle", {
 		type: "string",
@@ -266,13 +268,21 @@ export function code(
 		if (v === true || v === "true" || v === "pure") return "pure";
 		return v === "both" ? "both" : undefined;
 	};
+	/** --code-api as given (empty: not given). */
+	const explicitApi = () => String(pi.getFlag("code-api") ?? "").trim();
+	/** The base tiers the robot's manifest declares code primitives in, highest first. */
+	const manifestTiers = (): string[] => {
+		const m = base.manifest;
+		if (!m) return [];
+		return ["high", "low", "raw"].filter((t) =>
+			m.primitives.some((e) => e.side !== "ts" && e.doc.code && e.tier === t),
+		);
+	};
+	/** The --code-api tier this episode runs: the flag, else the robot's highest tier. */
+	const apiTier = (): string => explicitApi() || manifestTiers()[0] || "high";
 	/** The registry tier this episode runs: --privileged wins over --code-api. */
 	const tier = (): CodeApiTier | string =>
-		base.privileged()
-			? String(pi.getFlag("code-api") ?? "high") === "high"
-				? "privileged"
-				: `${String(pi.getFlag("code-api"))}+privileged`
-			: String(pi.getFlag("code-api") ?? "high");
+		base.privileged() ? (apiTier() === "high" ? "privileged" : `${apiTier()}+privileged`) : apiTier();
 	const defaultTimeout = spec.timeoutS ?? DEFAULT_TIMEOUT_S;
 	/** A budget flag as given (empty when not): eval.sh keys its configuration on these. */
 	const rawFlag = (name: string) => String(pi.getFlag(name) ?? "").trim();
@@ -480,9 +490,13 @@ export function code(
 			if (!mode())
 				return oracleRef() ? "--code-oracle runs a program instead of the model: it needs --code=true" : undefined;
 			if (base.unitsOn()) return "--code and --units are mutually exclusive: pick one mode";
-			const t = String(pi.getFlag("code-api") ?? "high");
-			if (!(TIERS as readonly string[]).includes(t))
+			const t = explicitApi();
+			if (t && !(TIERS as readonly string[]).includes(t))
 				return `--code-api must be one of ${TIERS.join(", ")}, got "${t}"`;
+			const have = manifestTiers();
+			const baseTier = t === "low-noexamples" ? "low" : t;
+			if (t && base.manifest && !have.includes(baseTier))
+				return `--code-api=${t}: this robot has no ${baseTier}-tier code primitives; its tiers are ${have.join(", ") || "none"} (omit --code-api for ${have[0] ?? "none"})`;
 			if (spec.real && !(pi.getFlag("code-real") === true && pi.getFlag("operator") === true))
 				return "code mode on a real robot needs both --code-real and --operator (every program is then confirmed by the operator)";
 			return oracleError();
@@ -507,7 +521,9 @@ export function code(
 					`pi and the env server disagree on the ${tier()} primitives: pi has ${mine.join(", ") || "none"}, the server ${theirs.join(", ") || "none"}`,
 				);
 			if (!primitives.length)
-				throw new Error(`this robot has no ${tier()}-tier code primitives; pick another --code-api`);
+				throw new Error(
+					`this robot has no ${tier()}-tier code primitives this run; its tiers are ${manifestTiers().join(", ") || "none"}`,
+				);
 			// Preflight before the episode starts (no reset, no operator confirmation wasted): a server
 			// that cannot isolate a program from this host's processes refuses code mode here. A
 			// server on another host (URL#token) cannot expose this process: its refusal is waived.
@@ -549,6 +565,8 @@ export function code(
 				? {
 						code: mode() === "pure" ? "true" : "both",
 						code_api: tier(),
+						// Chosen by default (the robot's highest tier), not by --code-api.
+						code_api_auto: !explicitApi(),
 						// The budget the programs ran under (effective) and as flagged (eval.sh's configuration key).
 						code_budget: {
 							timeout_s: timeoutCap(),

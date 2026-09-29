@@ -202,7 +202,7 @@ for (const [robot, positional, cell] of [
 		const plain = run1([]).result;
 		assert.deepEqual([plain?.code, plain?.code_api, plain?.code_oracle], ["false", null, null]);
 		for (const [args, code, api] of [
-			[["--code"], "true", "high"],
+			[["--code"], "true", null], // the robot's highest tier: named by pi's result (none here)
 			[["--code=pure", "--code-api", "low"], "true", "low"],
 			[["--code", "both", "--code-api=low-noexamples"], "both", "low-noexamples"],
 			[["--code=false", "--code-api", "low"], "false", null],
@@ -214,9 +214,11 @@ for (const [robot, positional, cell] of [
 		assert.equal(a.status, 0, a.stdout + a.stderr);
 		assert.equal(b.status, 1);
 		assert.match(b.stderr, /code mode/);
-		const [, same] = rerun(robot, positional, ["--code=true"], ["--code", "true"]);
+		// Without --code-api pi runs the robot's highest tier and records it (a robot without a high
+		// tier runs low): the result and the summary carry the effective tier.
+		const [, same] = rerun(robot, positional, ["--code=true"], ["--code", "true"], { code_api: "low" });
 		assert.equal(same.status, 0, same.stdout + same.stderr);
-		assert.match(same.stdout, /\/code=true:high/);
+		assert.match(same.stdout, /\/code=true:low/);
 		// An oracle run asks no model and writes no session file: the robot's stderr line is the result.
 		const dir = mkdtempSync(join(tmpdir(), "eval-"));
 		const pi = join(dir, "pi");

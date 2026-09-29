@@ -33,7 +33,7 @@ approval=standard max_tool_calls=0 max_tokens=0
 vdm=false vdm_model="" vdm_wrist=false vdm_video=false vdm_video_frames=8
 privileged=false
 fallback_model="" fallback_after=2 fallback_retry=0
-code=false code_api=high code_oracle="" code_timeout="" code_max_calls="" code_max_move="" code_helpers=false
+code=false code_api="" code_oracle="" code_timeout="" code_max_calls="" code_max_move="" code_helpers=false
 planner=curobo_lbfgs=torch,deterministic=true # = contract.py ROBOTWIN_PLANNER (test/eval-scripts.test.ts)
 args=("$@")
 for ((i = 0; i < ${#args[@]}; i++)); do
@@ -169,7 +169,7 @@ const result = { ...(last ?? {}), status, exit_code: Number(code), model: model 
 	vdm: vdm === "true", vdm_model: vdmModel || null, vdm_wrist: vdmWrist === "true", vdm_video: vdmVideo ? Number(vdmVideo) : null, privileged: privileged === "true",
 	stateless: stateless === "true", planner,
 	fallback_model: fallbackModel || null, fallback_after: fallbackModel ? Number(fallbackAfter) : null, fallback_retry_primary: fallbackModel ? Number(fallbackRetry) : null,
-	code: codeMode, code_api: codeMode === "false" ? null : codeApi, code_oracle: codeMode === "false" ? null : codeOracle || null };
+	code: codeMode, code_api: codeMode === "false" ? null : codeApi || last?.code_api || null, code_api_auto: codeMode === "false" ? null : !codeApi, code_oracle: codeMode === "false" ? null : codeOracle || null };
 writeFileSync(`${dir}/result.json`, `${JSON.stringify(result, null, 2)}\n`);
 console.log(JSON.stringify({ status, success: result.success, claimed: result.claimed, native_actions: result.native_actions }));
 ' "$1" "$2" "${config[@]}"
@@ -198,7 +198,7 @@ const same = r.model === (model || null) && r.thinking === (thinking || null) &&
 	&& (r.fallback_model ?? null) === (fallbackModel || null) && (r.fallback_after ?? null) === (fallbackModel ? Number(fallbackAfter) : null)
 	&& (r.fallback_retry_primary ?? null) === (fallbackModel ? Number(fallbackRetry) : null)
 	// Results written before code mode existed here ran without it.
-	&& (r.code ?? "false") === codeMode && (r.code_api ?? null) === (codeMode === "false" ? null : codeApi)
+	&& (r.code ?? "false") === codeMode && (codeMode === "false" ? (r.code_api ?? null) === null : codeApi ? r.code_api === codeApi : r.code_api_auto === true || (r.code_api_auto === undefined && r.code_api === "high"))
 	&& (r.code_oracle ?? null) === (codeMode === "false" ? null : codeOracle || null)
 	// Results written before the code budget was recorded ran the default one.
 	&& (codeMode === "false" || (r.code_budget_flags ?? "timeout=+max_calls=+max_move=+helpers=false") === process.env.CODE_BUDGET_FLAGS);

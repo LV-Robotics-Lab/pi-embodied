@@ -175,16 +175,23 @@ test("libero/eval.sh records --code and --code-api as pi runs them and never mix
 	const plain = run1([]).result;
 	assert.deepEqual([plain?.code, plain?.code_api], ["false", null]);
 	for (const [args, code, api] of [
-		[["--code"], "true", "high"],
-		[["--code=true"], "true", "high"],
-		[["--code", "both"], "both", "high"],
-		[["--code=pure"], "true", "high"],
+		// No --code-api: pi runs the robot's highest tier and its result names it (this fake pi
+		// records none, so the tier is unknown here); code_api_auto says it was the default.
+		[["--code"], "true", null],
+		[["--code=true"], "true", null],
+		[["--code", "both"], "both", null],
+		[["--code=pure"], "true", null],
 		[["--code", "--code-api", "low"], "true", "low"],
 		[["--code=both", "--code-api=low"], "both", "low"],
 		[["--code=false", "--code-api", "low"], "false", null],
 	] as const) {
 		const r = run1([...args]);
 		assert.deepEqual([r.result?.code, r.result?.code_api], [code, api], args.join(" "));
+		assert.equal(
+			r.result?.code_api_auto,
+			code === "false" ? null : !args.some((a) => a.startsWith("--code-api")),
+			args.join(" "),
+		);
 		// The prompt precedes the user's args, so a trailing bare --code cannot swallow it.
 		const prompt = r.argv?.findIndex((a) => a.startsWith("Solve the task.")) ?? -1;
 		assert.ok(prompt >= 0 && prompt < (r.argv?.indexOf(args[0]) ?? -1), String(r.argv));
@@ -203,6 +210,11 @@ test("libero/eval.sh records --code and --code-api as pi runs them and never mix
 		assert.equal(b.status, 1, `${first} then ${second}`);
 		assert.match(b.stderr, /code mode/);
 	}
+	// A default-tier run keeps its default-tier results, and an explicit tier never mixes with them.
+	const [, auto] = rerun("libero", positional, {}, ["--code"], ["--code"]);
+	assert.equal(auto.status, 0, auto.stderr);
+	const [, explicit] = rerun("libero", positional, {}, ["--code"], ["--code", "--code-api", "low"]);
+	assert.equal(explicit.status, 1, explicit.stderr);
 	const [, same] = rerun("libero", positional, {}, ["--code", "--code-api", "low"], ["--code", "--code-api", "low"]);
 	assert.equal(same.status, 0, same.stderr);
 	assert.match(same.stdout, /\/code=true:low/);

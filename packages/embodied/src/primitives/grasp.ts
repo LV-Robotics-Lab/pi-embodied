@@ -82,6 +82,12 @@ export function registerGraspFlags(pi: ExtensionAPI) {
 		default: "",
 		description: "GraspNet-1Billion server (graspnet-baseline or GSNet) for plan_grasp",
 	});
+	pi.registerFlag("grasp-max-tilt", {
+		type: "string",
+		default: "",
+		description:
+			"Drop grasp / place candidates approaching more than this many degrees from straight down (default: the env server's; LIBERO 30)",
+	});
 	pi.registerFlag("attach-vlm-model", {
 		type: "string",
 		default: "",
@@ -93,7 +99,9 @@ const url = (pi: ExtensionAPI, name: string) => String(pi.getFlag(name) ?? "").t
 
 /** The env server arguments for the configured grasp services (`--contact-graspnet URL ...`). */
 export function graspArgs(pi: ExtensionAPI): string[] {
-	return SERVICES.flatMap((name) => (url(pi, name) ? [`--${name}`, url(pi, name)] : []));
+	const services = SERVICES.flatMap((name) => (url(pi, name) ? [`--${name}`, url(pi, name)] : []));
+	const tilt = url(pi, "grasp-max-tilt");
+	return services.length && tilt ? [...services, "--max-approach-tilt-deg", tilt] : services;
 }
 
 /** The grasp tools to activate: all three once any grasp service is configured, else none. */

@@ -622,6 +622,7 @@ class GraspPlanner:
         wrist_camera: str | None = None,
         state_digest: Callable[[], Any] | None = None,
         holding: Callable[[str | None], bool | None] | None = None,
+        max_approach_tilt_deg: float | None = None,
     ) -> None:
         if not cameras:
             raise ValueError("GraspPlanner needs at least one camera")
@@ -638,6 +639,13 @@ class GraspPlanner:
         self._calibration = grasp_to_eef if grasp_to_eef is not None else GraspToEef()
         self._eef_pose = eef_pose
         self._external = masks
+        #: A hand that can only approach from above: grasp and place candidates approaching
+        #: more than this from straight down are dropped before ranking (None keeps them all).
+        self._max_tilt = (
+            None
+            if max_approach_tilt_deg is None
+            else math.radians(float(max_approach_tilt_deg))
+        )
         self._epoch = masks.epoch if masks is not None else Epoch()
         if state_digest is not None:
             self._epoch.set_digest(state_digest)
@@ -1131,7 +1139,8 @@ class GraspPlanner:
                 "intrinsic_K": np.asarray(view["intrinsic_K"], dtype=np.float64),
                 "mask": np.ascontiguousarray(mask, dtype=np.uint8),
                 "rgb": np.ascontiguousarray(view["rgb"], dtype=np.uint8),
-                "max_candidates": n,
+                # With the approach filter the ranking is cut after it: ask for more.
+                "max_candidates": n if self._max_tilt is None else min(4 * n, 64),
                 "up_direction_camera": [float(v) for v in up],
             },
             timeout_s=600.0,
@@ -1143,10 +1152,11 @@ class GraspPlanner:
             raise GraspError(
                 f"{name} server answered in frame {res.get('grasp_frame')!r}, not {GRASP_FRAME!r}"
             )
-        ranked = rank(list(res["candidates"]), n)
+        T_cw = np.asarray(view["extrinsic_cam2world"], dtype=np.float64)
+        candidates, too_steep = self._from_above(list(res["candidates"]), T_cw)
+        ranked = rank(candidates, n)
         # Where the object rests (the support under it), so a place can set it down at the
         # same height above its new support (claim_waypoints / plan_place).
-        T_cw = np.asarray(view["extrinsic_cam2world"], dtype=np.float64)
         support_z = support_height(obj_pts, _scene, T_cw)
         ids: list[str] = []
         out_cands: list[dict[str, Any]] = []
@@ -1174,10 +1184,43 @@ class GraspPlanner:
             "candidate_count": len(out_cands),
             "candidates": out_cands,
             "active": ids[0] if ids else None,
+            **(
+                {}
+                if self._max_tilt is None
+                else {
+                    "max_approach_tilt_deg": round(math.degrees(self._max_tilt), 1),
+                    "dropped_too_steep": too_steep,
+                }
+            ),
             "latency_s": round(latency, 3),
             "server": {k: v for k, v in res.items() if k not in ("candidates",)},
             "expired_ids": self._expired(),
         }
+
+    def _from_above(
+        self, candidates: list[dict[str, Any]], cam2world: np.ndarray
+    ) -> tuple[list[dict[str, Any]], int]:
+        """The camera-frame candidates whose approach is within the planner's tilt limit of
+        straight down (all without one), and how many were dropped. Refuses, with the angles,
+        when none remains: the hand could not execute any of them."""
+        if self._max_tilt is None or not candidates:
+            return candidates, 0
+        R_cw = np.asarray(cam2world, dtype=np.float64)[:3, :3]
+        tilts = []
+        for c in candidates:
+            a = R_cw @ np.asarray(c["rotation_matrix"], dtype=np.float64)[:, 0]
+            tilts.append(
+                math.acos(float(np.clip(-a[2] / max(np.linalg.norm(a), 1e-12), -1, 1)))
+            )
+        keep = [c for c, t in zip(candidates, tilts) if t <= self._max_tilt]
+        if not keep:
+            raise GraspError(
+                f"all {len(candidates)} grasp candidates approach more than "
+                f"{math.degrees(self._max_tilt):.0f} deg from straight down (the least "
+                f"{math.degrees(min(tilts)):.0f} deg), which this hand cannot execute; "
+                "plan from another camera or segment the object again"
+            )
+        return keep, len(candidates) - len(keep)
 
     def _grasp_item(self, grasp_id: str) -> dict[str, Any]:
         try:
@@ -1660,7 +1703,15 @@ class GraspPlanner:
             R = T_cw[:3, :3] @ R_c
             t = T_cw[:3, :3] @ t_c + T_cw[:3, 3]
             why = self._place_refusal(
-                R, T_place, T_cw, obj_cam, region_w, check_approach=not keep_tilt
+                R,
+                T_place,
+                T_cw,
+                obj_cam,
+                region_w,
+                check_approach=not keep_tilt,
+                max_tilt=MAX_PLACE_TILT_RAD
+                if self._max_tilt is None
+                else min(self._max_tilt, MAX_PLACE_TILT_RAD),
             )
             if why:
                 refused.append({"rank": i, "reason": why})
@@ -1739,13 +1790,14 @@ class GraspPlanner:
         object_camera: np.ndarray,
         region_world: np.ndarray,
         check_approach: bool = True,
+        max_tilt: float = MAX_PLACE_TILT_RAD,
     ) -> str | None:
         """Why a composed place pose cannot be executed, or None: the gripper must approach
         from above (within ``MAX_PLACE_TILT_RAD`` of straight down), and the placed object's
         centroid must land over the region, not beside it or high above it."""
         approach = np.asarray(R_world, dtype=np.float64)[:, 0]
         tilt = math.acos(float(np.clip(-approach[2], -1.0, 1.0)))
-        if check_approach and tilt > MAX_PLACE_TILT_RAD:
+        if check_approach and tilt > max_tilt:
             return (
                 f"approach {[round(float(v), 2) for v in approach]} is "
                 f"{math.degrees(tilt):.0f} deg from straight down"
@@ -1871,6 +1923,13 @@ def add_grasp_arguments(parser: Any) -> None:
         help='grasp-to-EEF calibration JSON {"rotation": 3x3, "translation": [3]} (or one per arm '
         '{"left": {...}, "right": {...}}); default: the Panda hand (see utils/grasp.GraspToEef)',
     )
+    parser.add_argument(
+        "--max-approach-tilt-deg",
+        type=float,
+        default=None,
+        help="drop grasp and place candidates approaching more than this from straight down "
+        "(default: the robot's; LIBERO 30, others keep every candidate)",
+    )
 
 
 def install_grasp_planner(
@@ -1922,4 +1981,9 @@ def urls_from_args(args: Any) -> dict[str, Any]:
         "graspnet1b": getattr(args, "graspnet1b", None),
         "anyplace": getattr(args, "anyplace", None),
         "grasp_to_eef": cal,
+        **(
+            {"max_approach_tilt_deg": float(args.max_approach_tilt_deg)}
+            if getattr(args, "max_approach_tilt_deg", None) is not None
+            else {}
+        ),
     }

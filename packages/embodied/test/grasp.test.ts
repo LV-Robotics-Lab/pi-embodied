@@ -113,10 +113,14 @@ test("the grasp flags are off by default: no env args and no active tool", () =>
 		"anyplace",
 		"attach-vlm-model",
 		"contact-graspnet",
+		"grasp-max-tilt",
 		"graspgenx",
 		"graspnet1b",
 	]);
 	assert.deepEqual(graspArgs(f.pi), []);
+	const t = fakePi({ graspgenx: "http://127.0.0.1:8121", "grasp-max-tilt": "20" });
+	registerGraspFlags(t.pi);
+	assert.deepEqual(graspArgs(t.pi), ["--graspgenx", "http://127.0.0.1:8121", "--max-approach-tilt-deg", "20"]);
 	assert.deepEqual(graspActive(f.pi), []);
 	const g = fakePi({ "contact-graspnet": "http://127.0.0.1:8120", anyplace: "http://127.0.0.1:8123" });
 	registerGraspFlags(g.pi);

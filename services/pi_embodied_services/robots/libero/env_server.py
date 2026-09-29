@@ -84,6 +84,10 @@ CODE_MAX_FRAMES = 32
 #: The longest horizontal move one move_to (or an executor's first leg) makes: a longer one
 #: sweeps low over the scene; split it into waypoints at carry height.
 MAX_XY_MOVE_M = 0.30
+#: The grasp planner keeps grasp and place candidates approaching at most this far from straight
+#: down (--max-approach-tilt-deg): GraspGenX, GSNet and AnyPlace often rank side-on candidates
+#: first, which the executors' top-down servo stalls short of.
+MAX_APPROACH_TILT_DEG = 30.0
 #: A program's raw ``chunk_step`` runs at most this many actions in one call (a chunk is one
 #: worker call that no stop interrupts; the run's wall clock must bound it).
 CODE_MAX_CHUNK = 64
@@ -407,7 +411,7 @@ class LiberoEnvFacade(CodeRunMixin, BaseEnvFacade):
             wrist_camera="wrist",
             state_digest=self._state_digest,
             holding=lambda arm: self._holding(),
-            **(grasp or {}),
+            **{"max_approach_tilt_deg": MAX_APPROACH_TILT_DEG, **(grasp or {})},
         )
         # --geometry: point-cloud views, marked points and grip-site targets (utils/geometry.py)
         # over the same 512x512 agentview / wrist frames; None without it.

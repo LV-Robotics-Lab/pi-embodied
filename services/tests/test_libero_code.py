@@ -1059,3 +1059,22 @@ def test_a_high_tier_program_runs_capx_calls_on_the_server():
     assert out["steps"] > 100
     out = f._rpc["code.run"]("move_to([0, 0, 0.3])\n", timeout_s=30, tier="high")
     assert "NameError" in out["error"], "the high tier has only CaP-X's functions"
+
+
+def test_libero_plans_only_top_down_candidates_by_default():
+    import math
+
+    from pi_embodied_services.robots.libero.env_server import MAX_APPROACH_TILT_DEG
+
+    f, _ = grasp_facade()
+    assert f._grasp._max_tilt == pytest.approx(math.radians(MAX_APPROACH_TILT_DEG))
+    from test_grasp import FakeServer
+
+    loose = LiberoEnvFacade(
+        ArmSim(),
+        meta={},
+        grasp={"contact_graspnet": FakeServer([]), "max_approach_tilt_deg": 60.0},
+    )
+    assert loose._grasp._max_tilt == pytest.approx(math.radians(60)), (
+        "the flag overrides"
+    )

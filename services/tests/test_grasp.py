@@ -1094,3 +1094,54 @@ def test_keep_tilt_keeps_anyplaces_full_rotation():
     tilted = planner.plan_place(reg, gid, keep_tilt=True)["candidates"][0]
     assert upright["approach"] == pytest.approx([0, 0, -1], abs=1e-6)
     assert np.degrees(np.arccos(-tilted["approach"][2])) == pytest.approx(30, abs=0.5)
+
+
+def test_a_top_down_hand_drops_steep_candidates_before_ranking():
+    """Acceptance run (LIBERO): GraspGenX, GSNet and AnyPlace ranked side-on candidates
+    first (GSNet's best 76 deg from vertical, stalled 4.4 cm short). With a tilt limit the
+    planner drops them before ranking, and refuses with the angle when none remains."""
+
+    def tilted(score, deg):
+        b = np.deg2rad(deg)
+        about_y = np.array(
+            [[np.cos(b), 0, np.sin(b)], [0, 1, 0], [-np.sin(b), 0, np.cos(b)]]
+        )
+        return G.make_candidate(
+            score=score,
+            rotation=about_y @ G.ZX_NATIVE_TO_GRASPNET,
+            center=[0.0, 0.0, 0.8],
+            width=0.04,
+            depth=0.0,
+            source_model="fake",
+        )
+
+    server = FakeServer([tilted(0.95, 76), tilted(0.9, 50), tilted(0.6, 10)])
+    planner = G.GraspPlanner(
+        _view,
+        cameras=["agentview"],
+        backends={"contact_graspnet": server},
+        sam3=FakeSam3(_block_mask()),
+        max_approach_tilt_deg=30,
+    )
+    out = planner.plan_grasp(object="block", max_candidates=2)
+    assert out["candidate_count"] == 1 and out["dropped_too_steep"] == 2
+    assert out["candidates"][0]["score"] == 0.6, (
+        "the steep, higher-scored ones are gone"
+    )
+    assert server.calls[-1][1]["max_candidates"] == 8, "asked for more to filter"
+    server.candidates = [tilted(0.95, 76), tilted(0.9, 50)]
+    with pytest.raises(G.GraspError, match="more than 30 deg.*the least 50 deg"):
+        planner.plan_grasp(object="block")
+    # Without a limit every candidate stays (the other robots).
+    plain, _ = _planner(sam3=FakeSam3(_block_mask()))
+    assert "dropped_too_steep" not in plain.plan_grasp(object="block")
+
+
+def test_the_grasp_arguments_carry_the_tilt_limit():
+    import argparse
+
+    p = argparse.ArgumentParser()
+    G.add_grasp_arguments(p)
+    assert "max_approach_tilt_deg" not in G.urls_from_args(p.parse_args([]))
+    args = p.parse_args(["--max-approach-tilt-deg", "20"])
+    assert G.urls_from_args(args)["max_approach_tilt_deg"] == 20.0

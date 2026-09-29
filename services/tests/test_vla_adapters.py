@@ -346,3 +346,16 @@ def test_oft_loading_keeps_the_json_module_that_openvla_utils_patches(
     )
     assert key == "libero_spatial_no_noops"
     assert (json.dumps, json.loads, json.dump, json.load) == before
+
+
+def test_an_explicit_suite_is_reported_for_a_local_checkpoint():
+    from pi_embodied_services.components.vla_adapter_base import reported_suite
+
+    repo = "moojink/openvla-7b-oft-finetuned-libero-spatial-object-goal-10"
+    # A local copy of the libero_all fine-tune, started with --suite libero_all: reported as such.
+    assert reported_suite("libero_all", "/ckpt/oft-all", repo) == "libero_all"
+    # The published fine-tune reports its own suite, the default one without --suite.
+    assert reported_suite("libero_goal", repo, repo) == "libero_goal"
+    assert reported_suite(None, repo, repo) == "libero_spatial"
+    # A custom checkpoint without --suite stays unknown.
+    assert reported_suite(None, "/ckpt/custom", repo) is None

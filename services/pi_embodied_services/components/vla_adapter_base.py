@@ -123,6 +123,19 @@ def libero_gripper(actions: np.ndarray) -> np.ndarray:
     return out
 
 
+#: The published fine-tune a server fetches when neither --suite nor --model-path names one.
+DEFAULT_SUITE = "libero_spatial"
+
+
+def reported_suite(suite_flag: str | None, model: str, repo: str) -> str | None:
+    """The LIBERO suite ``vla.info`` reports: an explicit ``--suite`` (also for a local copy of a
+    published checkpoint, as GR00T does), else the published fine-tune's own, else None (a custom
+    ``--model-path`` without ``--suite`` is unknown and trusted by the robot)."""
+    if suite_flag:
+        return suite_flag
+    return DEFAULT_SUITE if model == repo else None
+
+
 def snapshot(repo_or_path: str, revision: str | None) -> str:
     """A local checkpoint directory: ``repo_or_path`` itself when it exists, else the Hugging Face
     snapshot of that repo at ``revision`` (the pinned commit hash), fetched through the mirror in

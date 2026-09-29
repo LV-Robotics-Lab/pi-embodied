@@ -39,11 +39,13 @@ from types import SimpleNamespace
 import numpy as np
 
 from pi_embodied_services.components.vla_adapter_base import (
+    DEFAULT_SUITE,
     ChunkVLAFacade,
     Frame,
     add_server_args,
     apply_cuda_device,
     libero_gripper,
+    reported_suite,
     snapshot,
 )
 from pi_embodied_services.utils.logging import get_logger
@@ -237,8 +239,10 @@ def main() -> None:
     p.add_argument(
         "--suite",
         choices=sorted(OPENVLA_OFT_CHECKPOINTS),
-        default="libero_spatial",
-        help="which published LIBERO fine-tune to fetch when --model-path is unset",
+        default=None,
+        help="the published LIBERO fine-tune to fetch when --model-path is unset (default "
+        "libero_spatial); with --model-path, the suite that checkpoint was fine-tuned on, reported "
+        "by vla.info so the robot refuses another suite's episode",
     )
     p.add_argument(
         "--revision", default=None, help="commit hash (default: the pin for --suite)"
@@ -261,11 +265,10 @@ def main() -> None:
     args = p.parse_args()
     apply_cuda_device(args.cuda_device)
 
-    repo, pin = OPENVLA_OFT_CHECKPOINTS[args.suite]
+    repo, pin = OPENVLA_OFT_CHECKPOINTS[args.suite or DEFAULT_SUITE]
     model = args.model_path or repo
     revision = args.revision or (pin if model == repo else None)
-    # A custom checkpoint's suite is unknown: only the published fine-tunes report theirs.
-    suite = args.suite if model == repo else None
+    suite = reported_suite(args.suite, model, repo)
     t0 = time.time()
     path = snapshot(model, revision)
     logger.info("loading OpenVLA-OFT from %s (revision=%s) ...", path, revision)

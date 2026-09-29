@@ -40,7 +40,6 @@ import { attach, defineRobot, type Json, plain, rgbOf, SERVICES, toolResult } fr
 
 const SYSTEM = template(new URL("./SYSTEM.md", import.meta.url));
 const EXPLORE = template(new URL("./explore.md", import.meta.url));
-const MEMORY = template(new URL("./memory.md", import.meta.url));
 
 /** The seven tasks (services/.../robots/robosuite/tasks.py TASKS), the `--task` values. */
 export const TASKS = ["Lift", "Stack", "Restack", "Wipe", "NutAssemblySquare", "TwoArmLift", "TwoArmHandover"] as const;
@@ -268,7 +267,6 @@ export default function robosuite(pi: ExtensionAPI) {
 		start: startEpisode,
 		prompt: () =>
 			SYSTEM.replaceAll("{{task_language}}", language)
-				.replaceAll("{{memory}}", pi.getFlag("explore") === true ? "" : robot.mem!.render(MEMORY).trim())
 				.replaceAll("{{table_z}}", String(round(meta?.table_z ?? 0.8, 3)))
 				.replaceAll(
 					"{{arms}}",

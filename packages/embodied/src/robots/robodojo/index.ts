@@ -50,7 +50,6 @@ import { attach, defineRobot, type Json, rgbOf, SERVICES, u8 } from "../../robot
 
 const read = (name: string) => template(new URL(name, import.meta.url));
 const SYSTEM = read("./SYSTEM.md");
-const MEMORY = read("./memory.md");
 const EXPLORE = read("./explore.md");
 
 export const ARMS = ["left", "right"] as const;
@@ -313,8 +312,7 @@ export default function robodojo(pi: ExtensionAPI) {
 			SYSTEM.replaceAll("{{task_language}}", meta.instruction)
 				.replaceAll("{{task}}", robot.task.task)
 				.replaceAll("{{seed}}", robot.task.seed)
-				.replaceAll("{{step_lim}}", String(meta.step_lim))
-				.replaceAll("{{memory}}", pi.getFlag("explore") === true ? "" : robot.mem!.render(MEMORY).trim()),
+				.replaceAll("{{step_lim}}", String(meta.step_lim)),
 		result: () => ({
 			task: robot.task.task,
 			seed: Number(robot.task.seed),

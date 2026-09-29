@@ -569,6 +569,7 @@ export default function robotwin(pi: ExtensionAPI) {
 		memory: {
 			cell: () => ({ tag: tag(cell().seed), reference: local() ? tag("0") : `${cell().task}_s0` }),
 			primitives: ["lingbot_act", "move_to", "rotate_wrist", "set_gripper", "release"],
+			prompt: () => MEMORY,
 		},
 		video: true,
 		groundTruth: (names) => env.call("env.ground_truth_poses", { names: names ?? null }, READ_MS, [], robot.signal),
@@ -601,13 +602,13 @@ export default function robotwin(pi: ExtensionAPI) {
 			lingbot = undefined;
 		},
 		prompt: () => {
-			const mem = robot.mem!;
 			const vars: Record<string, string> = {
 				task_language: language,
 				task_name: cell().task,
 				task_config: cell().config,
 				seed: cell().seed,
-				memory: pi.getFlag("explore") === true ? "" : mem.render(MEMORY).trim(),
+				// Filled by the robot base with memory's section (MEMORY, memory.prompt).
+				memory: "{{memory}}",
 			};
 			return SYSTEM.replace(/\{\{(\w+)\}\}/g, (_, k: string) => vars[k] ?? "");
 		},

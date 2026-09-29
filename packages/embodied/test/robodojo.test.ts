@@ -536,3 +536,14 @@ test("eval.sh follows RoboDojo's SeedManager: an unstable layout is not scored a
 	assert.match(short.r.stderr, /no layout after 3 to replace an unstable one/);
 	assert.match(short.r.stdout, /success 3\/3 .*unstable 1 \(replaced\), invalid 0/);
 });
+
+test("the evaluation prompt carries memory's mandatory reading step once, at SYSTEM.md's {{memory}}", async (t) => {
+	const env = await fakeEnv();
+	t.after(env.close);
+	const s = await start({}, env);
+	const prompt = (await s.emit("before_agent_start", { systemPrompt: "" }))?.systemPrompt as string;
+	assert.match(prompt, /# Memory\nCell `\w+`/);
+	assert.match(prompt, /Before your first motion, read `[^`]+\/MEMORY\.md`/);
+	assert.equal(prompt.split("Reading memory is a required step before your first robot action").length, 2);
+	assert.doesNotMatch(prompt, /\{\{\w+\}\}/);
+});

@@ -370,7 +370,7 @@ export default function franka(pi: ExtensionAPI) {
 		xpolicy: xpolicySpec(),
 		// --viser: wrist and third-person RGB-D placed by the hand-eye calibration, and the TCP.
 		viser: { source: "franka", env: () => env },
-		// The evaluation prompt names no memory; exploration writes it. The guard also opens the step artifacts.
+		// Exploration writes the memory; the robot base ends the evaluation prompt with its section. The guard also opens the step artifacts.
 		memory: {
 			cell: () => ({ tag: `franka_t${task()}`, reference: "" }),
 			primitives: MOTION,

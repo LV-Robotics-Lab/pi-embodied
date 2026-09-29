@@ -130,7 +130,9 @@ export async function checkSimExplore(o: {
 	assert.ok(e.active().includes("read"), `memory's read tool is active: ${e.active()}`);
 	assert.ok(!e.active().includes("reset"));
 	const evaluated = (await e.emit("before_agent_start", { systemPrompt: "base" })).systemPrompt as string;
-	assert.match(evaluated, /# Memory\nNotes from earlier explored episodes/);
+	// One memory-reading instruction: memory's section at SYSTEM.md's {{memory}}.
+	assert.match(evaluated, new RegExp(`# Memory\\nCell \`${o.tag}\``));
+	assert.equal(evaluated.split("Reading memory is a required step").length, 2);
 	assert.doesNotMatch(evaluated, /MULTI-ATTEMPT|\{\{\w+\}\}/);
 }
 

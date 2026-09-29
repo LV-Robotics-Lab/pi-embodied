@@ -275,6 +275,9 @@ test("--libero-prompt defaults to rpent: the session's system prompt is the fill
 	assert.equal(s.flags["libero-prompt"], "rpent");
 	const { systemPrompt } = await s.emit("before_agent_start", { systemPrompt: "base" });
 	assertPhrases(systemPrompt, FIXTURE.evaluate, FIXTURE.evaluate_local);
+	// Its WORKFLOW step is the only memory-reading instruction: memory's generic section is not added.
+	assert.doesNotMatch(systemPrompt, /Reading memory is a required step|# Memory\nCell/);
+	assert.equal(systemPrompt.split("READ EACH AVAILABLE LOCAL MEMORY LAYER FIRST").length, 2);
 	assert.doesNotMatch(systemPrompt, /\{\{\w+\}\}/);
 	assert.ok(systemPrompt.includes(`${GUIDES}/strict_hybrid_guide.md`));
 	assert.ok(systemPrompt.includes(`${s.memoryDir}/suite/suite_libero10_<regime>_t2.md`));

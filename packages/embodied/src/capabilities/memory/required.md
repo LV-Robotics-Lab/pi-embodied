@@ -1,0 +1,1 @@
+Reading memory is a required step before your first robot action, not an option: if a file or layer is absent, say so and continue. Do not re-read a file you already read in this session. In your `finish` summary, name the memory files you read, or say that none matched.

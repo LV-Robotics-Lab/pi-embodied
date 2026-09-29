@@ -43,7 +43,6 @@ import { attach, defineRobot, rgbOf, SERVICES } from "../../robot.ts";
 
 const read = (name: string) => template(new URL(name, import.meta.url));
 const SYSTEM = read("./SYSTEM.md");
-const MEMORY = read("./memory.md");
 const EXPLORE = read("./explore.md");
 
 /** configs/robot_robolab.yaml `move_vectors`: +x away from the base, -y = MV_LEFT, +z up. */
@@ -259,11 +258,7 @@ export default function robolab(pi: ExtensionAPI) {
 			],
 		},
 		start: startEpisode,
-		prompt: () =>
-			SYSTEM.replaceAll("{{task_language}}", meta.instruction).replaceAll(
-				"{{memory}}",
-				pi.getFlag("explore") === true ? "" : robot.mem!.render(MEMORY).trim(),
-			),
+		prompt: () => SYSTEM.replaceAll("{{task_language}}", meta.instruction),
 		result: () => ({
 			task: robot.task.task,
 			seed: Number(robot.task.seed),

@@ -43,7 +43,6 @@ import { attach, defineRobot, type Json, rgbOf, SERVICES } from "../../robot.ts"
 
 const SYSTEM = template(new URL("./SYSTEM.md", import.meta.url));
 const EXPLORE = template(new URL("./explore.md", import.meta.url));
-const MEMORY = template(new URL("./memory.md", import.meta.url));
 
 /** The success rules (env_server SUCCESS_RULES): OpenETA's grasp rule (default) or the 8 cm lift. */
 export const SUCCESS_RULES = ["grasp", "lift"] as const;
@@ -235,11 +234,7 @@ export default function genesis(pi: ExtensionAPI) {
 			},
 		},
 		start: startEpisode,
-		prompt: () =>
-			SYSTEM.replaceAll("{{task_language}}", meta.instruction).replaceAll(
-				"{{memory}}",
-				pi.getFlag("explore") === true ? "" : robot.mem!.render(MEMORY).trim(),
-			),
+		prompt: () => SYSTEM.replaceAll("{{task_language}}", meta.instruction),
 		result: () => ({
 			task: robot.task.task,
 			seed: Number(robot.task.seed),

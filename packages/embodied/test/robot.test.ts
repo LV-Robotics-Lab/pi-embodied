@@ -231,7 +231,8 @@ test("pure units mode keeps memory: the file tools stay and memory's section fol
 	assert.match(prompt, /# Memory\nCell `cell_flag-suite`/);
 	assert.ok(prompt.includes(`${memoryDir}/MEMORY.md`));
 	assert.match(prompt, /task_only\/cell_ref_recipe\.jsonl/);
-	assert.match(prompt, /recorded with the robot's own tools, not action units/);
+	assert.match(prompt, /when your tools are not the ones it names \(action units, code\), carry its stages over/);
+	assert.equal(prompt.split("Reading memory is a required step").length, 2, "one memory section");
 });
 
 test("finish ends the episode, terminates its batch, and yields exactly one result", async (t) => {
@@ -524,4 +525,96 @@ test("a reply whose text holds an unparsed tool call is a planner error", async 
 	assert.equal(result.planner_error, "unparsed tool call in the reply text");
 	assert.equal(leakedToolCall([{ type: "text", text: "The cube is left of the gripper." }]), undefined);
 	assert.equal(leakedToolCall([{ type: "text", text: "<invoke>" }, { type: "toolCall" }]), undefined);
+});
+
+const UNITS: RobotSpec["units"] = {
+	vectors: {
+		MV_FWD: [1, 0, 0],
+		MV_BACK: [-1, 0, 0],
+		MV_LEFT: [0, -1, 0],
+		MV_RIGHT: [0, 1, 0],
+		MV_UP: [0, 0, 1],
+		MV_DOWN: [0, 0, -1],
+	},
+	stepM: 0.02,
+	apply: async () => ({ content: [], details: {} }),
+};
+
+/** A toy robot with memory on a local corpus and the given prompt; returns the forced system prompt. */
+async function memoryPrompt(
+	t: { after: (fn: () => void) => void },
+	prompt: string,
+	o: {
+		memory?: { inPrompt?: boolean; prompt?: () => string };
+		values?: Record<string, unknown>;
+		extra?: Partial<RobotSpec>;
+		active?: (names: string[]) => string[];
+	} = {},
+) {
+	const f = fakePi({ "memory-profile": "local", ...o.values });
+	t.after(f.restore);
+	const memoryDir = join(f.dir, "memory", "toy");
+	mkdirSync(memoryDir, { recursive: true });
+	writeFileSync(join(memoryDir, "MEMORY.md"), "# memory\n");
+	const robot = toy(f.pi, async () => ["move", "finish"], {
+		prompt: () => prompt,
+		memory: {
+			home: () => join(f.dir, "memory"),
+			cell: () => ({ tag: `cell_${robot.task.suite}`, reference: "cell_ref" }),
+			primitives: ["move"],
+			...o.memory,
+		},
+		...o.extra,
+	});
+	await f.emit("session_start");
+	if (o.active) f.pi.setActiveTools(o.active(f.active()));
+	return { text: (await f.emit("before_agent_start", { systemPrompt: "" }))?.systemPrompt as string, memoryDir };
+}
+
+const sections = (text: string) => text.split("Reading memory is a required step").length - 1;
+
+test("the evaluation prompt reads memory once: memory's section at the robot's {{memory}}, else at its end", async (t) => {
+	const slot = await memoryPrompt(t, "# Robot\nintro\n\n{{memory}}\n\n# Task\nMove.");
+	assert.match(
+		slot.text,
+		/^# Robot\nintro\n\n# Memory\nCell `cell_flag-suite`[\s\S]*Reading memory is a required step[^\n]*\n\n# Task\nMove\./,
+	);
+	assert.ok(slot.text.includes(`${slot.memoryDir}/task_only/cell_ref_recipe.jsonl`));
+	assert.doesNotMatch(slot.text, /\{\{\w+\}\}|\[\/?tool:/);
+	assert.equal(sections(slot.text), 1);
+	const end = await memoryPrompt(t, "# Task\nMove.");
+	assert.match(end.text, /^# Task\nMove\.\n\n# Memory\nCell `cell_flag-suite`/);
+	assert.equal(sections(end.text), 1);
+	// A robot's own section (memory.prompt) takes the default's place and is closed the same way.
+	const own = await memoryPrompt(t, "{{memory}}\n# Task", {
+		memory: { prompt: () => "# Memory\nRead {{memory_dir}}/notes.md." },
+	});
+	assert.match(own.text, /^# Memory\nRead \S+\/notes\.md\.\n\nReading memory is a required step/);
+	assert.doesNotMatch(own.text, /Cell `cell_flag-suite`/);
+});
+
+test("memory's section is left out while exploring, without memory's read tool, and for a robot whose prompt has its own", async (t) => {
+	const own = await memoryPrompt(t, "# Task\nRead MEMORY.md first.", { memory: { inPrompt: true } });
+	assert.equal(sections(own.text), 0);
+	assert.doesNotMatch(own.text, /# Memory/);
+	const noRead = await memoryPrompt(t, "{{memory}}\n# Task", { active: (names) => names.filter((n) => n !== "read") });
+	assert.equal(sections(noRead.text), 0);
+	assert.doesNotMatch(noRead.text, /# Memory|\{\{memory\}\}/);
+	const exploring = await memoryPrompt(t, "{{memory}}\n# Task", {
+		values: { explore: true },
+		extra: {
+			explore: { reset: async () => ({ content: [], details: {} }), prompt: () => "# Explore\nRead the inbox." },
+		},
+	});
+	assert.equal(sections(exploring.text), 0);
+	assert.match(exploring.text, /# Explore\nRead the inbox\./);
+	assert.doesNotMatch(exploring.text, /\{\{memory\}\}/);
+	// A mode that replaces the robot's prompt adds the section, even for a robot whose own prompt carried one.
+	const pure = await memoryPrompt(t, "# Task\nRead MEMORY.md first.", {
+		memory: { inPrompt: true },
+		values: { units: "true", "units-plugins": "" },
+		extra: { units: UNITS },
+	});
+	assert.equal(sections(pure.text), 1);
+	assert.doesNotMatch(pure.text, /Read MEMORY\.md first/);
 });

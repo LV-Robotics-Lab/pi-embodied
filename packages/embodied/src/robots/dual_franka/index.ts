@@ -208,7 +208,7 @@ export default function dualFranka(pi: ExtensionAPI) {
 			shown.length
 				? { views: shown.length, wrist: shown.flatMap((v, i) => (v.includes("wrist") ? [i] : [])) }
 				: undefined,
-		// The evaluation prompt names no memory; the guard also opens the step artifacts.
+		// The robot base ends the evaluation prompt with memory's section; the guard also opens the step artifacts.
 		memory: {
 			cell: () => ({ tag: `dual_franka_t${task()}`, reference: "" }),
 			primitives: MOTION,

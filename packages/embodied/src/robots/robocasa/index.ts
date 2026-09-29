@@ -378,6 +378,9 @@ export default function robocasa(pi: ExtensionAPI) {
 				reference: local() ? `${cell().task}_${cell().split}_s0` : `${cell().task}_s0`,
 			}),
 			primitives: PRIMITIVES,
+			// The robot base puts it at SYSTEM.md's {{memory}}; {{memory_files}} lists the task's published files.
+			prompt: (profile) =>
+				MEMORY[profile].replaceAll("{{task_name}}", cell().task).replaceAll("{{memory_files}}", hfMemoryFiles()),
 		},
 		video: true,
 		groundTruth: (names) => env.call("env.ground_truth_poses", { names: names ?? null }, 60_000, [], robot.signal),
@@ -398,16 +401,12 @@ export default function robocasa(pi: ExtensionAPI) {
 		start: startEpisode,
 		stop: disconnect,
 		prompt: () => {
-			const mem = robot.mem!;
 			const explore = pi.getFlag("explore") === true;
 			const vars: Record<string, string> = {
 				task_language: language,
 				task_name: cell().task,
 				split: cell().split,
 				seed: cell().scene === "" ? cell().seed : `${cell().seed} (manifest scene ${cell().scene})`,
-				memory: explore
-					? ""
-					: mem.render(MEMORY[mem.profile], { task_name: cell().task, memory_files: hfMemoryFiles() }).trim(),
 				success_criteria: criteria,
 				reset_mode: explore
 					? "`reset` restarts the episode with a freshly sampled scene; re-run perception after it."

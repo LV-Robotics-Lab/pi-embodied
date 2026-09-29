@@ -38,7 +38,6 @@ import { sideBySide } from "../maniskill/index.ts";
 
 const SYSTEM = template(new URL("./SYSTEM.md", import.meta.url));
 const EXPLORE = template(new URL("./explore.md", import.meta.url));
-const MEMORY = template(new URL("./memory.md", import.meta.url));
 
 /** Metaworld's MT50 task names (`metaworld.env_dict.ALL_V3_ENVIRONMENTS`), the server's table. */
 export const TASKS = [
@@ -270,10 +269,7 @@ export default function metaworld(pi: ExtensionAPI) {
 			],
 		},
 		start: startEpisode,
-		prompt: () =>
-			SYSTEM.replaceAll("{{task_language}}", language)
-				.replaceAll("{{table_z}}", String(TABLE_Z))
-				.replaceAll("{{memory}}", pi.getFlag("explore") === true ? "" : robot.mem!.render(MEMORY).trim()),
+		prompt: () => SYSTEM.replaceAll("{{task_language}}", language).replaceAll("{{table_z}}", String(TABLE_Z)),
 		result: () => ({
 			task: robot.task.task,
 			seed: Number(robot.task.seed),

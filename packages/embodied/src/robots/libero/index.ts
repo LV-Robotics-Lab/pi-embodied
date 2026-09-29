@@ -533,6 +533,8 @@ export default function libero(pi: ExtensionAPI) {
 					libero_terminated: terminated,
 				}),
 			},
+			// Both prompts carry their own memory reading (RPent's WORKFLOW step, the compact memory text).
+			inPrompt: true,
 		},
 		video: true,
 		flywheel: {

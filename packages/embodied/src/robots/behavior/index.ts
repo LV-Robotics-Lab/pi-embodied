@@ -41,7 +41,6 @@ import { attach, defineRobot, type Json, round, SERVICES, toolResult } from "../
 
 const SYSTEM = template(new URL("./SYSTEM.md", import.meta.url));
 const EXPLORE = template(new URL("./explore.md", import.meta.url));
-const MEMORY = template(new URL("./memory.md", import.meta.url));
 
 /** The 2025 challenge tasks, in the env server's order (services/.../robots/behavior/tasks.py): CaP-X's two first. */
 export const TASKS = [
@@ -307,11 +306,7 @@ export default function behavior(pi: ExtensionAPI) {
 			budget: { sessions: 2, attempts: 3 },
 		},
 		start: startEpisode,
-		prompt: () =>
-			SYSTEM.replaceAll("{{task_language}}", meta.instruction).replaceAll(
-				"{{memory}}",
-				pi.getFlag("explore") === true ? "" : robot.mem!.render(MEMORY).trim(),
-			),
+		prompt: () => SYSTEM.replaceAll("{{task_language}}", meta.instruction),
 		result: () => ({
 			task: robot.task.task,
 			seed: Number(robot.task.seed),

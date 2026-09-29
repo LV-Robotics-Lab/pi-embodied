@@ -733,12 +733,20 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		const mod = un?.mode() ? un : co?.mode() ? co : undefined;
 		const mode = mod?.mode();
 		// The prompt (the robot's and the mode's) describes only the tools left active by --tools/--exclude-tools and --units/--code.
-		const own = spec.prompt?.();
-		// Pure mode replaces the robot's prompt, and with it the robot's memory section: memory's own section follows.
-		const memorySection = mode === "pure" && !exploring() ? mem?.section() : undefined;
+		// Every evaluation prompt reads memory once, in memory's section (./capabilities/memory): at the robot
+		// prompt's `{{memory}}`, else at its end (not when the robot's prompt has its own, memory.inPrompt),
+		// and after the mode's prompt when the mode replaces the robot's. Exploration's prompt has its own.
+		const section = exploring() ? undefined : mem?.section();
+		const memoryBlock = section ? `[tool:read]\n${section}\n[/tool:read]` : "";
+		const robotPrompt = spec.prompt?.();
+		const own = robotPrompt?.includes("{{memory}}")
+			? robotPrompt.replaceAll("{{memory}}", memoryBlock)
+			: robotPrompt !== undefined && memoryBlock && !spec.memory?.inPrompt
+				? `${robotPrompt}\n\n${memoryBlock}`
+				: robotPrompt;
 		const systemPrompt =
 			mode === "pure"
-				? [mod?.prompt(), memorySection].filter(Boolean).join("\n\n")
+				? [mod?.prompt(), memoryBlock].filter(Boolean).join("\n\n")
 				: mode === "both"
 					? `${own ?? ""}\n\n${mod?.prompt()}`.trim()
 					: own;

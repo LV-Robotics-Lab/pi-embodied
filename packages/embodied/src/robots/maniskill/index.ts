@@ -52,7 +52,6 @@ import { attach, defineRobot, type Json, rgbOf, SERVICES, toolResult } from "../
 
 const read = (name: string) => template(new URL(name, import.meta.url));
 const SYSTEM = read("./SYSTEM.md");
-const MEMORY = read("./memory.md");
 const EXPLORE = read("./explore.md");
 /** Keep (`on`) or drop a `[name]...[/name]` block of SYSTEM.md; the markers themselves always go. */
 const section = (text: string, name: string, on: boolean) =>
@@ -750,8 +749,7 @@ export default function maniskill(pi: ExtensionAPI) {
 				.replaceAll("{{grasp_view}}", (wrist() ? TWO_VIEWS : ONE_VIEW).grasp_view)
 				.replaceAll("{{table}}", text().table)
 				.replaceAll("{{object}}", text().object)
-				.replaceAll("{{views}}", text().views)
-				.replaceAll("{{memory}}", pi.getFlag("explore") === true ? "" : robot.mem!.render(MEMORY).trim()),
+				.replaceAll("{{views}}", text().views),
 		result: () => ({
 			env_id: robot.task["env-id"],
 			seed: Number(robot.task.seed),

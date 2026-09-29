@@ -30,6 +30,7 @@ function fakePi(flagValues: Record<string, unknown> = {}, branch: unknown[] = []
 	const entries: { type: string; data: any }[] = [];
 	const events: { channel: string; data: any }[] = [];
 	const stderr: string[] = [];
+	const providers: any[] = [];
 	let active: string[] = ["everything"];
 	let shutdown = false;
 	const pi = {
@@ -40,6 +41,7 @@ function fakePi(flagValues: Record<string, unknown> = {}, branch: unknown[] = []
 		getFlag: (name: string) => flags[name],
 		registerTool: (t: any) => tools.set(t.name, t),
 		registerCommand: (name: string, c: any) => commands.set(name, c),
+		registerProvider: (p: any) => providers.push(p),
 		setActiveTools: (names: string[]) => {
 			active = names;
 		},
@@ -86,6 +88,7 @@ function fakePi(flagValues: Record<string, unknown> = {}, branch: unknown[] = []
 		entries,
 		events,
 		stderr,
+		providers,
 		dir,
 		restore,
 		active: () => active,
@@ -328,6 +331,33 @@ test("a spent turn budget ends the episode; an unended episode reports at shutdo
 	assert.equal(g.entries.filter((e) => e.type === RESULT_ENTRY).length, 0, "not ended: no result yet");
 	await g.emit("session_shutdown");
 	assert.equal(g.entries.filter((e) => e.type === RESULT_ENTRY).length, 1);
+});
+
+test("a Flash replay with no program to load ends as an env_error, not a failed episode", async (t) => {
+	const f = fakePi();
+	t.after(f.restore);
+	toy(f.pi, async () => ["move"], {
+		flash: {
+			load: () => {
+				throw new Error("no Flash program for this episode; looked for /plans/cell_plan.json");
+			},
+			start: async () => ({ localized: 0, rewrite: () => "stop" as const }),
+			over: () => false,
+			solved: () => false,
+		},
+	});
+	await f.emit("session_start");
+	await f.emit("agent_start");
+	const provider = f.providers.find((p) => p.id === "flash");
+	const turn = await provider.streamSimple(provider.getModels()[0], { messages: [] }, {}).result();
+	const call = turn.content.find((c: any) => c.type === "toolCall");
+	assert.equal(call.name, "finish");
+	await f.emit("agent_end");
+	await f.emit("session_shutdown");
+	const results = f.entries.filter((e) => e.type === RESULT_ENTRY).map((e) => e.data);
+	assert.equal(results.length, 1);
+	assert.equal(results[0].env_error, true);
+	assert.match(results[0].error, /^flash error: no program to replay: no Flash program for this episode/);
 });
 
 test("a service that stops answering mid-episode ends it as an env_error", async (t) => {

@@ -367,7 +367,8 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		: undefined;
 	const video = spec.video ? episodeVideo(pi) : { frame: (_image: NdArray) => {} };
 	const fly = spec.flywheel ? flywheel(pi, spec.flywheel.spec, spec.flywheel.select) : undefined;
-	if (spec.flash) flash(pi, spec.flash);
+	// A replay with no program is a configuration error: the episode is invalid, like a failed start.
+	if (spec.flash) flash(pi, spec.flash, { invalid: (why) => fail(why) });
 	// The `fallback/<primary>` planner (../fallback.ts), only when `--fallback-model` is on the command line.
 	const fb = fallback(pi);
 	// The `ensemble/<base>` planner (../ensemble.ts), only with `--model ensemble/...` on the command line.

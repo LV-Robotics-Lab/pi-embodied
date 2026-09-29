@@ -287,6 +287,30 @@ test("defineRobot mounts Flash for a spec with a flash hook", () => {
 	assert.equal(without.providers.length, 0);
 });
 
+test("a replay with no program to load marks the episode invalid; a failed replay does not", async () => {
+	const invalid: string[] = [];
+	const none = fakePi();
+	const missing: FlashHook<FlashProgram<ToyEntry>> = {
+		...toyHook([]).hook,
+		load: () => {
+			throw new Error("no Flash program for this episode; looked for /plans/cell_plan.json");
+		},
+	};
+	flash(none.pi, missing, { invalid: (why) => invalid.push(why) });
+	const out = await drive(none, () => ({ json: {} }));
+	assert.equal(out.finish.status, "failure");
+	assert.match(out.finish.summary, /^flash error: no program to replay: no Flash program for this episode/);
+	assert.deepEqual(invalid, [out.finish.summary]);
+	// A program that loads and then fails mid-replay is a failed episode, not an invalid one.
+	const bad = fakePi();
+	flash(bad.pi, toyHook([{ action: "go", arguments: {} }]).hook, { invalid: (why) => invalid.push(why) });
+	const failed = await drive(bad, (name) =>
+		name === "go" ? { text: "boom", isError: true } : { json: { anchor: 1 } },
+	);
+	assert.match(failed.finish.summary, /^flash error: go failed/);
+	assert.equal(invalid.length, 1);
+});
+
 // ---------------------------------------------------------------- LIBERO's hook
 
 /** A goal_swap t3 plan: a Molmo anchor (the bowl) and a SAM3 anchor (the plate). */

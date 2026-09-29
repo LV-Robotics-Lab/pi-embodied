@@ -184,8 +184,16 @@ const MODEL: Model<"flash"> = {
 	maxTokens: 16_384,
 };
 
-/** Register the `flash/replay` model, replaying the programs of the robot's `hook`. */
-export function flash<P extends FlashProgram>(pi: ExtensionAPI, hook: FlashHook<P>) {
+/**
+ * Register the `flash/replay` model, replaying the programs of the robot's `hook`. `invalid` marks the
+ * episode invalid (../../robot.ts: an env_error): a replay with no program to load is a configuration
+ * error, not a failed episode, so evaluations must not count it.
+ */
+export function flash<P extends FlashProgram>(
+	pi: ExtensionAPI,
+	hook: FlashHook<P>,
+	o: { invalid?: (why: string) => void } = {},
+) {
 	type Turn = { text: string; calls: ToolCall[] };
 	let toModel: { resolve: (turn: Turn) => void; reject: (err: Error) => void } | undefined;
 	let toReplay: { resolve: (messages: Message[]) => void; reject: (err: Error) => void } | undefined;
@@ -251,8 +259,18 @@ export function flash<P extends FlashProgram>(pi: ExtensionAPI, hook: FlashHook<
 		const t0 = Date.now();
 		let status: "success" | "failure" = "failure";
 		let summary: string;
+		let program: P;
 		try {
-			const program = await hook.load(cwd);
+			program = await hook.load(cwd);
+		} catch (err) {
+			if (stopped) return;
+			summary = `flash error: no program to replay: ${err instanceof Error ? err.message : String(err)}`;
+			o.invalid?.(summary);
+			over = true;
+			say({ text: flush(), calls: [toolCall({ name: "finish", arguments: { status, summary } })] });
+			return;
+		}
+		try {
 			notes.push(`replaying the ${program.name} program`);
 			const out = await runFlash(hook, program, robot);
 			status = out.done ? "success" : "failure";

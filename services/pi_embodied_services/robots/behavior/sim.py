@@ -264,10 +264,36 @@ def launch(config: dict) -> Handle:
     gm.ENABLE_TRANSITION_RULES = True
     gm.USE_GPU_DYNAMICS = False
     env = og.Environment(configs=config)
-    controller = StarterSemanticActionPrimitives(
+    controller = with_settable_arm(StarterSemanticActionPrimitives)(
         env, env.robots[0], enable_head_tracking=False
     )
     return Handle(og=og, env=env, controller=controller, error=ActionPrimitiveError)
+
+
+def with_settable_arm(primitives_cls: type) -> type:
+    """``primitives_cls`` with an ``arm`` the server can set (``env_server._hand``, per call).
+
+    CaP-X's OmniGibson 3.7 fork keeps a plain ``arm`` attribute. OmniGibson 3.9 made it a
+    read-only property, the robot's first arm, though its primitives read ``self.arm``
+    everywhere (end-effector link, arm joints, cuRobo's joint set) for either arm. A class
+    that already has a settable ``arm`` is returned as it is."""
+    prop = getattr(primitives_cls, "arm", None)
+    if not isinstance(prop, property) or prop.fset is not None:
+        return primitives_cls
+
+    class Primitives(primitives_cls):
+        _arm_choice: str | None = None
+
+        @property
+        def arm(self) -> str:
+            return self._arm_choice or prop.fget(self)
+
+        @arm.setter
+        def arm(self, value: str) -> None:
+            self._arm_choice = value
+
+    Primitives.__name__ = Primitives.__qualname__ = primitives_cls.__name__
+    return Primitives
 
 
 # ---------------------------------------------------------------------------
@@ -384,13 +410,17 @@ def joint_limits(robot: Any) -> tuple[np.ndarray, np.ndarray]:
 
 def joint_target_action(robot: Any, q: np.ndarray) -> Any:
     """The action that holds every joint at the full-body position target ``q``: the R1Pro's
-    controllers are absolute position JointControllers (``task_config``), the base's command in
-    its own frame (OmniGibson's ``holonomic_base_command_in_world_frame``, as CaP-X's
-    ``_move_to_joint_positions`` builds it)."""
-    from omnigibson.action_primitives.curobo import (
-        holonomic_base_command_in_world_frame,
-    )
-
+    controllers are absolute position JointControllers (``task_config``). The holonomic base's
+    command is converted as each OmniGibson's own primitives do it: OmniGibson 3.9's
+    ``q_to_action`` takes the joint positions as they are (its StarterSemanticActionPrimitives
+    call it on them); CaP-X's 3.7 fork first maps the base joints with
+    ``holonomic_base_command_in_world_frame``, as its ``_move_to_joint_positions`` does."""
+    try:
+        from omnigibson.action_primitives.curobo import (
+            holonomic_base_command_in_world_frame,
+        )
+    except ImportError:  # OmniGibson 3.9 (install.sh / install_isaac61.sh)
+        return robot.q_to_action(tensor(q))
     return robot.q_to_action(holonomic_base_command_in_world_frame(robot, tensor(q)))
 
 

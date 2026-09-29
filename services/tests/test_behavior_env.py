@@ -518,3 +518,41 @@ def test_move_hand_delta_is_a_bounded_base_frame_step_with_the_gripper_first():
         f.move_hand_delta("left", [0, 0, 0], yaw=0.5)
     with pytest.raises(ValueError, match="gripper must be"):
         f.move_hand_delta("left", [0, 0, 0.01], gripper="half")
+
+
+@pytest.mark.parametrize("fork", [False, True])
+def test_joint_target_action_converts_the_base_as_each_omnigibson_does(monkeypatch, fork):
+    import sys
+    import types
+
+    curobo = types.ModuleType("omnigibson.action_primitives.curobo")
+    if fork:  # CaP-X's 3.7 fork: the base joints go through its world-frame helper first
+        curobo.holonomic_base_command_in_world_frame = lambda robot, q: ("world", q)
+    pkg = types.ModuleType("omnigibson.action_primitives")
+    pkg.curobo = curobo
+    monkeypatch.setitem(sys.modules, "omnigibson", types.ModuleType("omnigibson"))
+    monkeypatch.setitem(sys.modules, "omnigibson.action_primitives", pkg)
+    monkeypatch.setitem(sys.modules, "omnigibson.action_primitives.curobo", curobo)
+    monkeypatch.setattr(sim, "tensor", lambda q: tuple(q))
+    robot = SimpleNamespace(q_to_action=lambda q: ("action", q))
+    got = sim.joint_target_action(robot, [0.1, 0.2])
+    # OmniGibson 3.9 has no such helper: q_to_action takes the joint positions as they are.
+    assert got == (("action", ("world", (0.1, 0.2))) if fork else ("action", (0.1, 0.2)))
+
+
+def test_primitives_arm_is_settable_on_both_omnigibson_versions():
+    class Og39:  # OmniGibson 3.9: a read-only property, the robot's first arm
+        robot = SimpleNamespace(default_arm="left")
+
+        @property
+        def arm(self):
+            return self.robot.default_arm
+
+    class CapxFork:  # CaP-X's 3.7 fork: a plain attribute
+        arm = "left"
+
+    p = sim.with_settable_arm(Og39)()
+    assert p.arm == "left"
+    p.arm = "right"
+    assert p.arm == "right" and isinstance(p, Og39)
+    assert sim.with_settable_arm(CapxFork) is CapxFork

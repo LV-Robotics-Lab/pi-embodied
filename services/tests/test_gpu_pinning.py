@@ -91,3 +91,6 @@ def test_every_simulator_env_server_pins_its_gpu():
         text = (robots / robot / "env_server.py").read_text()
         assert f"{pin}(" in text, robot
         assert 'os.environ.pop("CUDA_VISIBLE_DEVICES"' not in text, robot
+    # RoboLab's real2sim generator starts the same Isaac app.
+    real2sim = (robots / "robolab" / "real2sim.py").read_text()
+    assert "pin_isaac(" in real2sim and '"CUDA_VISIBLE_DEVICES", None' not in real2sim

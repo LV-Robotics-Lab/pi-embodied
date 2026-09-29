@@ -740,12 +740,16 @@ def build(args):
         fresh_dir,
     )
 
-    os.environ.pop(
-        "CUDA_VISIBLE_DEVICES", None
-    )  # Vulkan ignores it; --cuda-device pins
-    os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+    # Only the chosen GPU is visible (utils/gpu.py pin_isaac), as in env_server.main: CUDA, PhysX
+    # and Kit's renderer run on its index 0 instead of leaving a context on GPU 0.
+    from pi_embodied_services.utils.gpu import pin_isaac
+
     os.environ.setdefault("OMNI_KIT_ACCEPT_EULA", "YES")
-    device = f"cuda:{args.cuda_device}"
+    args.cuda_device = pin_isaac(args.cuda_device)
+    if args.cuda_device is None:
+        args.cuda_device = 0
+        os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+    device = "cuda:0"
     logs = Path(
         os.environ.get("PI_EMBODIED_LOGS", Path.home() / ".cache" / "pi-embodied")
     )
@@ -815,7 +819,13 @@ def main(argv: list[str] | None = None) -> int:
             default=None if name == "follow" else RANDOMIZE_XY_M,
             help="layout jitter, m (0 = authored layout); follow: the tracks' own value",
         )
-        p.add_argument("--cuda-device", type=int, default=0)
+        p.add_argument(
+            "--cuda-device",
+            type=int,
+            default=None,
+            help="physical GPU (default: PI_EMBODIED_CUDA_DEVICE, else the first "
+            "CUDA_VISIBLE_DEVICES entry, else 0)",
+        )
         p.add_argument("--isaac-assets", default=os.environ.get("ROBOLAB_ISAAC_ASSETS"))
         p.add_argument(
             "--node", default=shutil.which("node") or "node", help="for transform.ts"

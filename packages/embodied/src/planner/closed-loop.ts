@@ -65,7 +65,6 @@ export const NON_MOTION: ReadonlySet<string> = new Set([
 	"ground_truth_poses",
 	"halt_arm",
 	"suggest_grasp",
-	"locate",
 ]);
 
 /** Tools that restore the scene; ../robot.ts counts them as moving the robot next to its own. */

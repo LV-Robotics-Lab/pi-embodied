@@ -338,6 +338,8 @@ export const RESET_TOOLS: ReadonlySet<string> = new Set(["reset", "request_scene
 const ABSOLUTE_MOVES: ReadonlySet<string> = new Set([
 	"move_to",
 	"move_pose",
+	// The geometry toolset's move-then-grip (an absolute target, a mark, or a delta; then open/close).
+	"move_grip",
 	"move_hand",
 	"navigate_to",
 	"navigate_to_pose",

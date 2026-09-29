@@ -211,7 +211,7 @@ test("without an active observation tool the re-observe gate stays open", async 
 });
 
 test("advice and look-up tools are not motion", () => {
-	for (const tool of ["suggest_grasp", "locate", "view_env_state", "plan_grasp"])
+	for (const tool of ["suggest_grasp", "back_project", "view_env_state", "plan_grasp"])
 		assert.ok(NON_MOTION.has(tool), tool);
 });
 
@@ -300,6 +300,10 @@ test("--approval standard asks only about high-risk motions in simulation", asyn
 	assert.equal(highRisk("move_delta", { delta_xyz: [0.05, 0, 0] }, false, 0.1), false);
 	assert.equal(highRisk("move_delta", { delta_xyz: [0.05, 0, 0] }, true, 0.1), true, "real: every motion");
 	assert.equal(highRisk("run_code", { code: "" }, false, 0.1), true);
+	// Stage B's names: move_grip is a move to a target, the renamed gripper tools are not high risk in simulation.
+	assert.equal(highRisk("move_grip", { xyz: [0.1, 0, 0.3] }, false, 0.1), true);
+	for (const tool of ["set_gripper", "open_gripper", "close_gripper"])
+		assert.equal(highRisk(tool, {}, false, 0.1), false, tool);
 });
 
 test("a real robot defaults to --approval human; one prompt covers a real-robot program", async (t) => {

@@ -405,8 +405,6 @@ CaP-X (53e9966):
   RPC method of the matching `components/*_server.py`.
 - In-process `exec` with the env in the program's globals: `run_code` runs in a sandboxed
   subprocess that holds no env object and reaches the robot only through the primitive registry.
-- The joint-position controller and joint-space IK primitives (`solve_ik`, `move_to_joints`):
-  Robosuite runs OSC_POSE, so a Cartesian target is the primitive.
 - Ground truth in ordinary observations (`cube_poses` / `nut_poses`, TwoArmHandover's instance
   segmentation): object poses leave the server only through `ground_truth_poses` under
   `--privileged`, which the result marks, so a score without it is a clean non-privileged score.
@@ -418,9 +416,6 @@ Show-Harness (137d571):
 - Its runners and VLM client (`core/runners`, `core/vlm`): the planner is the model; MvTokenRunner
   is the `finetuned/<adapter>` provider, and the verifier and video_ref calls go through pi's model
   registry.
-
-Pending, not dropped: `prompt_v5.txt` of the v5 LIBERO adapters sits in a gated HF dataset whose
-access is being requested; until then pass it with `--ft-prompt-file`.
 
 OpenETA (7d4a0a1):
 
@@ -438,4 +433,3 @@ OpenETA (7d4a0a1):
   a rotation vector): replaced by the Franka / Piper standard (operator gate, workspace box, Z floor,
   refuse-not-clamp limits, `stopL` on stop). Its hand-eye calibration writing back unreviewed:
   the solver writes an arm-bound `.new.yaml` that a human applies in a separate step.
-- Genesis's grasp-and-distance hold counter: `cube_pick` succeeds on an 8 cm lift held 5 steps.

@@ -95,9 +95,11 @@ Source layout (`src/`, one directory per layer; `src/robot.ts`, the `defineRobot
 
 Every robot but the Frankas (whose `segment` does this with `--robot-sam3` / `--robot-unidepth`) takes
 `--detections` (SAM3 masks with ids on the env server: `detect`, `select_detection`,
-`reject_detection`, through its `--sam3`) and `--unidepth <url>` (`enhance_depth`: UniDepth depth,
-the only depth ManiSkill, RoboLab and the Piper / UR5e webcams have; UR5e's `back_project` then reads
-it); `src/primitives/detections.ts`, the env servers' `env.detect` & co.
+`reject_detection`, through its `--sam3`) and `--unidepth <url>` (`enhance_depth`: UniDepth depth
+fused with the sensor's, or the only depth the Piper / UR5e webcams have; UR5e's `back_project` then
+reads it); `src/primitives/detections.ts`, the env servers' `env.detect` & co. The simulators render
+metric sensor depth (ManiSkill and RoboLab included); ManiSkill hands UniDepth the intrinsics of its
+oriented, letterboxed views (`view_intrinsics`).
 Metaworld and Genesis take the grasp flags too (`--contact-graspnet` & co): `plan_grasp`, `plan_place`,
 `check_attached` over their env server's planner, and `execute_grasp` / `execute_place`, which run a
 planned id's claimed path as bounded `move_delta` legs on the env server (`services/.../utils/grasp_chain.py`; a candidate

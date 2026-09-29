@@ -342,6 +342,61 @@ def _orient(image: np.ndarray, degrees: int, flip: str) -> np.ndarray:
     return np.ascontiguousarray(image)
 
 
+def view_pixel_map(
+    h: int,
+    w: int,
+    *,
+    rotation: int = 0,
+    flip: str = "none",
+    crop: float | None = None,
+    size: int = 0,
+    exact_scale: bool = False,
+) -> np.ndarray:
+    """The 3x3 map from a raw sensor pixel ``[col, row, 1]`` (``h`` x ``w``) to the pixel of the view
+    the model sees, following the same steps as the images: rotate CCW (``np.rot90``), flip, centre
+    crop to aspect ``crop``, letterbox into a ``size`` square (``exact_scale``: the rigs'
+    ``int(w * scale)``, else the stock ``round``). ``map @ K`` is the view's intrinsics."""
+    A = np.eye(3)
+    for _ in range((int(rotation) % 360) // 90):
+        # np.rot90 (CCW): new[i, j] = old[j, w - 1 - i]: col' = row, row' = w - 1 - col.
+        A = np.array([[0.0, 1.0, 0.0], [-1.0, 0.0, w - 1.0], [0.0, 0.0, 1.0]]) @ A
+        h, w = w, h
+    if flip in ("vertical", "both"):
+        A = np.array([[1.0, 0, 0], [0, -1.0, h - 1.0], [0, 0, 1.0]]) @ A
+    if flip in ("horizontal", "both"):
+        A = np.array([[-1.0, 0, w - 1.0], [0, 1.0, 0], [0, 0, 1.0]]) @ A
+    if crop and abs(w / h - crop) >= 1e-6:
+        if w / h > crop:
+            nw = int(round(h * crop))
+            A = np.array([[1.0, 0, -((w - nw) // 2)], [0, 1.0, 0], [0, 0, 1.0]]) @ A
+            w = nw
+        else:
+            nh = int(round(w / crop))
+            A = np.array([[1.0, 0, 0], [0, 1.0, -((h - nh) // 2)], [0, 0, 1.0]]) @ A
+            h = nh
+    if size:
+        if exact_scale:
+            scale = min(size / w, size / h)
+            nw, nh = int(w * scale), int(h * scale)
+        else:
+            scale = size / max(h, w)
+            nh, nw = max(1, round(h * scale)), max(1, round(w * scale))
+        sx, sy = nw / w, nh / h
+        x0, y0 = (size - nw) // 2, (size - nh) // 2
+        # Pixel centres: u -> (u + 0.5) * s - 0.5, then the bar offset.
+        A = (
+            np.array(
+                [
+                    [sx, 0, 0.5 * sx - 0.5 + x0],
+                    [0, sy, 0.5 * sy - 0.5 + y0],
+                    [0, 0, 1.0],
+                ]
+            )
+            @ A
+        )
+    return A
+
+
 #: Show-Harness core/sim/maniskill_scenes.py WRIST_MOUNTS["centered"]: the D415 orientation
 #: on ``panda_hand`` without the stock rig's 2 cm lateral ``camera_link`` hop, so the finger
 #: pair is centred (on their rig ``wrist_flip: both`` then puts the fingertips at the top;
@@ -1544,6 +1599,38 @@ class ManiskillEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
             "extrinsic_cam2world": np.linalg.inv(w2c),
         }
 
+    def view_intrinsics(self, camera_name: str = "agentview") -> np.ndarray:
+        """The 3x3 intrinsics of the view ``render_camera`` returns (the sensor's K through the
+        view's orientation, crop and letterbox): pixel (row, col) of that image and of its depth
+        back-projects with it."""
+        name = self._camera(camera_name)
+        K = _np(self._obs["sensor_param"][name]["intrinsic_cv"])[0].astype(np.float64)
+        h, w = _np(self._obs["sensor_data"][name]["rgb"])[0].shape[:2]
+        if self._rig:
+            from pi_embodied_services.robots.maniskill import scenes
+
+            v = scenes.VIEWS[camera_name]
+            A = view_pixel_map(
+                h,
+                w,
+                rotation=v["rotation"],
+                flip=v["flip"],
+                crop=v["crop"],
+                size=self._view_size,
+                exact_scale=True,
+            )
+        elif camera_name == "wrist":
+            A = view_pixel_map(
+                h,
+                w,
+                rotation=self._wrist_rotation,
+                flip=self._wrist_flip,
+                size=self._view_size,
+            )
+        else:
+            A = view_pixel_map(h, w, size=self._view_size)
+        return A @ K
+
     def get_task_language(self) -> str:
         if self._rig:
             return self._rig.instruction
@@ -1557,6 +1644,18 @@ class ManiskillEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
             return
         self._closed = True
         self._env.close()
+
+
+def _view_with_intrinsics(facade: ManiskillEnvFacade):
+    """The perception view: render_view's rgb and depth with the view's own intrinsics."""
+    base = render_view(facade, intrinsics=False)
+
+    def view(camera: str) -> dict:
+        out = base(camera)
+        out["intrinsic_K"] = facade.view_intrinsics(camera)
+        return out
+
+    return view
 
 
 def main():
@@ -1664,7 +1763,9 @@ def main():
         facade,
         args,
         cameras=["agentview", "wrist"],
-        view=render_view(facade, intrinsics=False),
+        # The views are oriented and letterboxed: their intrinsics are the sensor's K through the
+        # same steps (view_intrinsics), so UniDepth and the camera points see the true focal length.
+        view=_view_with_intrinsics(facade),
         mutating=("env.servo",),
     )
     try:

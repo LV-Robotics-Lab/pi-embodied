@@ -639,3 +639,39 @@ def test_raw_actions_are_clipped_to_the_normalised_bound_before_scaling():
     )
     panda = _facade("panda")
     assert np.allclose(panda._split([2.0, 0, 0, 1.0]), [1.0, 0, 0, 1.0])
+
+
+def test_the_view_pixel_map_follows_the_images_orientation_crop_and_letterbox():
+    """view_pixel_map (view_intrinsics): a raw pixel lands where the rendered view puts it, for
+    the stock agentview (letterbox), the rotated wrist and a rig view (rotation, flip, crop)."""
+    import itertools
+
+    h, w = 24, 32
+    for rotation, flip in itertools.product((0, 90, 270), ("none", "vertical", "both")):
+        for size in (32, 64):
+            raw = np.zeros((h, w), np.float32)
+            r, c = 5, 21
+            # A 2x2 block so the (nearest) resampling keeps it at any scale here.
+            raw[r : r + 2, c : c + 2] = 1.0
+            view = ms._orient(raw, rotation, flip)
+            vh, vw = view.shape
+            scale = size / max(vh, vw)
+            nh, nw = max(1, round(vh * scale)), max(1, round(vw * scale))
+            view = ms._place_depth(view, nh, nw, size)
+            A = ms.view_pixel_map(h, w, rotation=rotation, flip=flip, size=size)
+            u, v, _ = A @ np.array([c + 0.5, r + 0.5, 1.0])  # the block's centre
+            rows, cols = np.nonzero(view)
+            assert abs(cols.mean() - u) < 0.6 and abs(rows.mean() - v) < 0.6, (
+                rotation,
+                flip,
+                size,
+                (cols.mean(), rows.mean()),
+                (u, v),
+            )
+    # The crop step (rig views): a centre crop to 1:1 moves columns by the cut.
+    A = ms.view_pixel_map(24, 32, crop=1.0)
+    assert np.allclose(A @ [10, 3, 1], [6, 3, 1])
+    # K through the map: a 2x downscale halves the focal length.
+    K = np.array([[100.0, 0, 16], [0, 100.0, 12], [0, 0, 1]])
+    K2 = ms.view_pixel_map(24, 32, size=16) @ K
+    assert np.isclose(K2[0, 0], 50.0) and np.isclose(K2[1, 1], 50.0)

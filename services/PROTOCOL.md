@@ -695,8 +695,10 @@ Every other env server (the simulators, Piper, UR5e) serves the same primitives 
 camera (`camera` = the model's view names, e.g. `agentview` / `wrist`, `head` / `left_wrist` /
 `right_wrist`) when a primitive first needs it and keep that frame until the next motion, which
 also expires the ids; Piper and UR5e read `env.get_observation`'s `images[name]` / `depths[name]`
-as the Frankas do. `enhance_depth` gives a camera without depth (ManiSkill, RoboLab, the Piper and
-UR5e webcams) the UniDepth estimate.
+as the Frankas do. `enhance_depth` fills a camera's sensor depth with the UniDepth estimate scaled
+to it, or gives a camera without depth (the Piper and UR5e webcams) the estimate as-is; every
+simulator renders sensor depth. ManiSkill's views are oriented and letterboxed: its perception
+passes the views' own intrinsics (`view_intrinsics`: the sensor K through the same steps).
 
 ### ur5e-env (`robots/ur5e/env_server.py`)
 

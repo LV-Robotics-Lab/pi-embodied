@@ -75,23 +75,23 @@ Source layout (`src/`, one directory per layer; `src/robot.ts`, the `defineRobot
 | `infra/` | RPC client, encoders, model-service auto-start, `/robot-check`, onboarding (`setup/`) |
 | `scripts/` | `eval-parallel.sh` |
 
-| Robot | Extension | Success signal | Shared modules |
+| Robot | Extension | Success signal | Shared modules; notes |
 | --- | --- | --- | --- |
-| LIBERO / LIBERO-PRO | `src/robots/libero` | LIBERO `terminated` | all below, plus flywheel, operator, Flash (Molmo re-anchoring) |
-| RoboCasa | `src/robots/robocasa` | `env._check_success()` | all below, plus flywheel, recipe Flash (Molmo re-anchoring) |
-| RoboTwin | `src/robots/robotwin` | `eval_success` | all below, plus flywheel, recipe Flash (Molmo re-anchoring), XPolicyLab (`aloha_agilex`, joint and ee) |
-| ManiSkill (`--robot`, below) | `src/robots/maniskill` | ManiSkill `success` | all below, plus flywheel, recipe Flash (Molmo + ray-plane re-anchoring of delta waypoints) |
-| RoboLab | `src/robots/robolab` | RoboLab's task predicate | all below, plus recipe Flash (Molmo + ray-plane re-anchoring of delta waypoints) |
-| RoboDojo (two ARX X5) | `src/robots/robodojo` | RoboDojo's `is_episode_end` (`score` = partial credit) | all below, plus flywheel (joint space), recipe Flash (Molmo + depth back-projection), XPolicyLab (`arx_x5`, joint and ee) |
-| Robosuite | `src/robots/robosuite` | robosuite `_check_success` (Restack adds CaP-X's off-table rule), latched | memory, explore, video, units, VDM, code.api, `--privileged`, flywheel |
-| Metaworld | `src/robots/metaworld` | Metaworld `info["success"]`, latched | memory, explore, video, units, VDM, code.api, `--privileged`, flywheel |
-| Genesis | `src/robots/genesis` | the task predicate (cube_pick: an 8 cm lift) | memory, explore, video, units, VDM, code.api, `--privileged`, flywheel |
-| HumanCLAW (SMPL-X humanoid, HSSD homes) | `src/robots/humanclaw` | HumanClawBench's paper metrics (FindSR, NavSR@20cm/@1m, InteractSR; `success` = NavSR@20cm) | units (own vocabulary: WALK, TURN_*, SIDE_*, STEP_BACK, CLIMB_UP, WALK_DOWN, SIT, STOP; `--units=both` with `look`), GUMI keys, video (ego; exo on the server), code.api, `--privileged`; `--humanclaw-mode paper` (default) plans with `humanclaw-psv/<base>` (HumanCLAW's prompt v4 + verifier v3 verbatim, no SYSTEM.md/VDM/memory), `pi` with our SYSTEM.md, `act`'s `target_visible`, and optional `--units-verify` / VDM. Later: `--api low` (segment, point, navmesh `navigate_to`). |
-| BEHAVIOR-1K / R1Pro | `src/robots/behavior` | the BDDL activity's `success`, latched (`q_score` = partial credit) | memory, explore, video, units (on `env.move_hand_delta`), VDM, code.api, `--privileged` |
-| Franka (real) | `src/robots/franka` | operator verdict (`--operator`) | all below but `--privileged`; explore resets through the operator; XPolicyLab (`franka`, ee) |
-| Dual Franka (real) | `src/robots/dual_franka` | operator verdict (required) | all below but `--privileged`; explore resets through the operator |
-| Piper / dual Piper (real) | `src/robots/piper` | operator verdict (required) | all below but `--privileged`; explore resets through the operator; XPolicyLab on one arm (`piper`, ee) |
-| UR5e (real) | `src/robots/ur5e` | operator verdict (required) | all below but `--privileged`; explore resets through the operator; bound to one arm (`--arm-id`) |
+| LIBERO / LIBERO-PRO | `src/robots/libero` | LIBERO `terminated` | memory, explore, video, units, VDM, code, `--privileged`, flywheel, operator, Flash; Flash re-anchors with Molmo |
+| RoboCasa | `src/robots/robocasa` | `env._check_success()` | memory, explore, video, units, VDM, code, `--privileged`, flywheel, Flash; recipe Flash (Molmo re-anchoring) |
+| RoboTwin | `src/robots/robotwin` | `eval_success` | memory, explore, video, units, VDM, code, `--privileged`, flywheel, Flash, XPolicyLab; recipe Flash (Molmo re-anchoring), XPolicyLab (`aloha_agilex`, joint and ee) |
+| ManiSkill (`--robot`, below) | `src/robots/maniskill` | ManiSkill `success` | memory, explore, video, units, VDM, code, `--privileged`, flywheel, Flash; recipe Flash (Molmo + ray-plane re-anchoring of delta waypoints) |
+| RoboLab | `src/robots/robolab` | RoboLab's task predicate | memory, explore, video, units, VDM, code, `--privileged`, Flash; recipe Flash (Molmo + ray-plane re-anchoring of delta waypoints) |
+| RoboDojo (two ARX X5) | `src/robots/robodojo` | RoboDojo's `is_episode_end` (`score` = partial credit) | memory, explore, video, units, VDM, code, `--privileged`, flywheel, Flash, XPolicyLab; flywheel in joint space, recipe Flash (Molmo + depth back-projection), XPolicyLab (`arx_x5`, joint and ee) |
+| Robosuite | `src/robots/robosuite` | robosuite `_check_success` (Restack adds CaP-X's off-table rule), latched | memory, explore, video, units, VDM, code, `--privileged`, flywheel |
+| Metaworld | `src/robots/metaworld` | Metaworld `info["success"]`, latched | memory, explore, video, units, VDM, code, `--privileged`, flywheel |
+| Genesis | `src/robots/genesis` | the task predicate (cube_pick: an 8 cm lift) | memory, explore, video, units, VDM, code, `--privileged`, flywheel |
+| HumanCLAW (SMPL-X humanoid, HSSD homes) | `src/robots/humanclaw` | HumanClawBench's paper metrics (FindSR, NavSR@20cm/@1m, InteractSR; `success` = NavSR@20cm) | video, units, VDM, `--privileged`; units in its own vocabulary (WALK, TURN_*, SIDE_*, STEP_BACK, CLIMB_UP, WALK_DOWN, SIT, STOP; `--units=both` with `look`), GUMI keys, video ego (exo on the server), `code.api` recorded; `--humanclaw-mode paper` (default) plans with `humanclaw-psv/<base>` (HumanCLAW's prompt v4 + verifier v3 verbatim, no SYSTEM.md/VDM/memory), `pi` with our SYSTEM.md, `act`'s `target_visible`, and optional `--units-verify` / VDM. Later: `--api low` (segment, point, navmesh `navigate_to`). |
+| BEHAVIOR-1K / R1Pro | `src/robots/behavior` | the BDDL activity's `success`, latched (`q_score` = partial credit) | memory, explore, video, units, VDM, code, `--privileged`; units on `env.move_hand_delta` |
+| Franka (real) | `src/robots/franka` | operator verdict (`--operator`) | memory, explore, video, units, VDM, code, operator, XPolicyLab; explore resets through the operator; XPolicyLab (`franka`, ee) |
+| Dual Franka (real) | `src/robots/dual_franka` | operator verdict (required) | memory, explore, video, units, VDM, code, operator; explore resets through the operator |
+| Piper / dual Piper (real) | `src/robots/piper` | operator verdict (required) | memory, explore, video, units, VDM, code, operator, XPolicyLab; explore resets through the operator; XPolicyLab on one arm (`piper`, ee) |
+| UR5e (real) | `src/robots/ur5e` | operator verdict (required) | memory, explore, video, units, VDM, code, operator; explore resets through the operator; bound to one arm (`--arm-id`) |
 
 Every robot but the Frankas (whose `segment` does this with `--robot-sam3` / `--robot-unidepth`) takes
 `--detections` (SAM3 masks with ids on the env server: `detect`, `select_detection`,
@@ -143,12 +143,13 @@ reports success), TableTopFreeDraw (no success condition), RollBall (its robot f
 out of the shared camera's view), the SO100 scenes (joint control only, no TCP link), and the scene,
 locomotion, humanoid and dexterous-hand envs.
 
-"All below" is memory, explore, video, units (so GUMI and the fine-tuned provider), VDM (`--vdm`),
-the primitive registry (`code.api`) and, in simulation, `--privileged`. ManiSkill, RoboLab, RoboDojo and the
-Piper publish no memory corpus: they default to the local one exploration writes. Robosuite,
-Metaworld, Genesis and BEHAVIOR mount only what their rows list: none of them has memory or
-explore, Genesis has no VDM, and BEHAVIOR has no units (its motions are cuRobo-planned primitives
-of a mobile two-arm robot, not fixed-frame 2 cm steps).
+The module list (before the first `;`) is what each robot mounts: memory, explore, video, units
+(so GUMI and the fine-tuned provider), VDM (`--vdm`), code (`--code` over the primitive registry,
+`code.api`), `--privileged` (simulation only), flywheel (`--collect-flywheel-data`), operator,
+Flash (`--model flash/replay`) and XPolicyLab (`--xpolicy`). `test/readme-modules.test.ts` checks it
+against the flags each robot registers. ManiSkill, RoboLab, RoboDojo and the Piper publish no memory
+corpus: they default to the local one exploration writes. BEHAVIOR's units run as small end-effector
+steps (`env.move_hand_delta`) of its mobile two-arm robot.
 
 Shared modules:
 

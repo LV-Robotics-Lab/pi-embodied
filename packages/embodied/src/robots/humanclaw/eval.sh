@@ -8,7 +8,7 @@
 # release's dispatcher runs one process per episode) per episode, in <out>/<scene>_ep<id>_<category>/,
 # ending with a result.json from the session's `robot_result` plus the configuration: mode, preset
 # (`humanclaw`, `humanclaw+privileged`), model, --units-verify / --vdm / --stateless, --metrics,
-# --video. An episode is valid when the environment produced a result and the planner did not fail.
+# --video, and --approval / --max-tool-calls / --max-tokens when set. An episode is valid when the environment produced a result and the planner did not fail.
 # Rerunning retries only invalid episodes and refuses an out dir holding another configuration.
 # With --metrics the summary is HumanCLAW's own aggregate_metric_files() over every metrics.json
 # (summary.json, and metrics_summary.json beside it), run with $HUMANCLAW_PYTHON (the humanclaw venv).
@@ -22,6 +22,7 @@ PI=${PI:-pi}
 PY=${HUMANCLAW_PYTHON:-${PI_EMBODIED_PYTHON:-python}}
 episodes=one mode=paper metrics=false video=false
 model="" privileged=false verify=false vdm=false stateless=false reasoning="" proprioception=false
+approval=off max_tool_calls=0 max_tokens=0
 pass=()
 while [ $# -gt 0 ]; do
 	case $1 in
@@ -40,6 +41,13 @@ while [ $# -gt 0 ]; do
 	--units-verify) verify=true; pass+=("$1") ;;
 	--vdm) vdm=true; pass+=("$1") ;;
 	--stateless) stateless=true; pass+=("$1") ;;
+	# --approval (src/capabilities/operator.ts) and the --max-tool-calls / --max-tokens budgets (src/robot.ts).
+	--approval) approval=${2:-off}; pass+=("$1" "${2:-}"); shift ;;
+	--approval=*) approval=${1#*=}; pass+=("$1") ;;
+	--max-tool-calls) max_tool_calls=${2:-0}; pass+=("$1" "${2:-}"); shift ;;
+	--max-tool-calls=*) max_tool_calls=${1#*=}; pass+=("$1") ;;
+	--max-tokens) max_tokens=${2:-0}; pass+=("$1" "${2:-}"); shift ;;
+	--max-tokens=*) max_tokens=${1#*=}; pass+=("$1") ;;
 	*) pass+=("$1") ;;
 	esac
 	shift
@@ -55,7 +63,12 @@ if [ "$mode" = paper ] && { $verify || $vdm || $stateless || $proprioception; };
 fi
 preset=humanclaw
 $privileged && preset=humanclaw+privileged
-config="mode=$mode/preset=$preset/model=$model/metrics=$metrics/video=$video/verify=$verify/vdm=$vdm/stateless=$stateless/proprioception=$proprioception${reasoning:+/reasoning=$reasoning}"
+# Named only when set, so an out dir written before these were keyed keeps its configuration.
+extra=""
+[ "$approval" != off ] && extra+="/approval=$approval"
+[ "$max_tool_calls" != 0 ] && extra+="/tool_calls=$max_tool_calls"
+[ "$max_tokens" != 0 ] && extra+="/tokens=$max_tokens"
+config="mode=$mode/preset=$preset/model=$model/metrics=$metrics/video=$video/verify=$verify/vdm=$vdm/stateless=$stateless/proprioception=$proprioception${reasoning:+/reasoning=$reasoning}$extra"
 mkdir -p "$out"
 if [[ $episodes == *_ep*_* ]]; then list=$episodes; else list=$(cd "$out" && "$PY" -c '
 import sys

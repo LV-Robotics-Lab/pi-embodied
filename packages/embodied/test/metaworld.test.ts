@@ -206,6 +206,7 @@ test("memory and exploration: reset restarts the seeded layout, the cell is meta
 		tag: "metaworld_reach-v3_s0",
 		resets: () => env.calls.filter((c) => c.method === "env.reset").length,
 		observe: "view_env_state",
+		distil: true,
 	});
 });
 

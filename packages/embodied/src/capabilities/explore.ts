@@ -12,7 +12,7 @@
  * arrive once the env reports `terminated`. The memory guard, recipe and merge are memory.ts's.
  */
 
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type {
 	ExtensionAPI,
@@ -24,6 +24,19 @@ import { Type } from "typebox";
 import { toolSections } from "../robot.ts";
 
 const SESSION = "explore_session";
+
+const DISTIL = readFileSync(new URL("./distil.md", import.meta.url), "utf8");
+
+/**
+ * The simulators' DISTIL pass (./distil.md; LIBERO has its own): the audit, the suite draft that
+ * `finish` waits for, global lessons. `auditFields` names the robot's cell fields for the audit.
+ */
+export function simDistil(o: { suite: string; task: string; seed: string; auditFields: string }): string {
+	return DISTIL.replaceAll("{{suite}}", o.suite)
+		.replaceAll("{{task}}", o.task)
+		.replaceAll("{{seed}}", o.seed)
+		.replaceAll("{{audit_fields}}", o.auditFields);
+}
 
 type Robot = {
 	/** Restore the initial scene; return the new state as a tool result that embeds `result`. Throwing fails the reset. */

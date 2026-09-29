@@ -79,6 +79,8 @@ export async function checkSimExplore(o: {
 	tag: string;
 	resets: () => number;
 	observe: string;
+	/** The robot has the simulators' DISTIL pass (capabilities/distil.md). */
+	distil?: boolean;
 }) {
 	const s = stubPi({ ...o.values, explore: true, "output-dir": "run", "memory-dir": "memory" });
 	o.load(s.pi);
@@ -100,10 +102,29 @@ export async function checkSimExplore(o: {
 	assert.ok(s.active().includes("reset"));
 	assert.match(explored, new RegExp(`MULTI-ATTEMPT EXPLORE mode[\\s\\S]*cell \`${o.tag}\``));
 	assert.doesNotMatch(explored, /\{\{\w+\}\}/);
+	if (o.distil) {
+		// A solved attempt starts the DISTIL pass; finish waits for it.
+		s.record("move_delta", { terminated: true });
+		const turn = await s.emit("turn_end", { entries: [] });
+		const note = turn?.entries?.find((x: any) => x.customType === "explore_distil");
+		assert.ok(note, "the solved turn gets the DISTIL pass");
+		assert.match(note.content, /suite_.*_draft\.md/);
+		assert.doesNotMatch(note.content, /\{\{\w+\}\}/);
+		const refused = await s.emit("tool_call", { toolName: "finish", input: {} });
+		assert.match(String(refused?.reason), /DISTIL/);
+	}
+
+	// A memory run (--memory-dir) without a corpus refuses to start instead of skipping memory silently.
+	const bare = stubPi({ ...o.values, "memory-dir": "memory" });
+	o.load(bare.pi);
+	mkdirSync(join(bare.dir, "memory"));
+	await assert.rejects(bare.emit("session_start"), /local memory corpus not found/, "no corpus: the run refuses");
+	process.exitCode = undefined;
 
 	const e = stubPi({ ...o.values, "memory-dir": "memory" });
 	o.load(e.pi);
 	mkdirSync(join(e.dir, "memory"));
+	writeFileSync(join(e.dir, "memory", "MEMORY.md"), "# index\n");
 	await e.emit("session_start");
 	process.exitCode = undefined;
 	assert.ok(e.active().includes("read"), `memory's read tool is active: ${e.active()}`);

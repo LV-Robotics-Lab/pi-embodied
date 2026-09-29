@@ -273,8 +273,10 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 		};
 		if (explore) return;
 		if (profile === "hf") await syncMemory(root, (m) => say(ctx, m, "warning"));
+		// A run that asks for memory (a published corpus, --memory-profile, or --memory-dir) refuses to start
+		// without one: the prompt would send the agent to files that do not exist.
 		else if (
-			(explicit || opts.published !== false) &&
+			(explicit || opts.published !== false || str(pi.getFlag("memory-dir"))) &&
 			!existsSync(join(root, "MEMORY.md")) &&
 			!["global", "suite", "task_only"].some((s) => hasFiles(join(root, s)))
 		)

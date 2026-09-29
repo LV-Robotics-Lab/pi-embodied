@@ -192,6 +192,7 @@ test("memory and exploration: reset restarts the seeded scene, the cell is genes
 		tag: "genesis_cube_pick_s0",
 		resets: () => env.calls.filter((c) => c.method === "env.reset").length,
 		observe: "view_env_state",
+		distil: true,
 	});
 });
 

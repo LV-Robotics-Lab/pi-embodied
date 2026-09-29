@@ -28,6 +28,7 @@ import { join } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { simDistil } from "../../capabilities/explore.ts";
 import type { FlywheelObs, FlywheelSpec } from "../../capabilities/flywheel.ts";
 import { MOLMO, SAM3 } from "../../infra/model-services.ts";
 import { encodePng } from "../../infra/png.ts";
@@ -206,6 +207,14 @@ export default function genesis(pi: ExtensionAPI) {
 				return observe({ ...result, reset: true });
 			},
 			prompt: () => EXPLORE.replaceAll("{{task}}", robot.task.task).replaceAll("{{seed}}", robot.task.seed),
+			// The DISTIL pass once the cell is solved: the suite draft and lessons the memory corpus is merged from.
+			distil: () =>
+				simDistil({
+					suite: "genesis",
+					task: robot.task.task,
+					seed: robot.task.seed,
+					auditFields: "task, seed, success",
+				}),
 			rewrite: [
 				[
 					/This is a single episode\. You may recover within it \(re-position, re-grasp\), but you cannot restart it\./,

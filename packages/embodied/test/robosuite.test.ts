@@ -340,6 +340,7 @@ test("memory and exploration: reset restarts the seeded scene, the cell is robos
 		tag: "robosuite_Stack_s0",
 		resets: () => env.calls.filter((c) => c.method === "env.reset").length,
 		observe: "view_env_state",
+		distil: true,
 	});
 });
 

@@ -554,6 +554,8 @@ export function code(
 			p = section(p, "both", m === "both");
 			p = section(p, "helpers", helpersOn());
 			p = section(p, "privileged", base.privileged());
+			// The perception-isolation rule holds only without --privileged (its ground truth gives the poses).
+			p = section(p, "isolated", !base.privileged());
 			p = section(p, "stateless", pi.getFlag("stateless") === true);
 			p = section(p, "real", spec.real === true);
 			const vars: Record<string, string> = {

@@ -4,7 +4,10 @@ Code mode's prompt (CaP-X's "generate Python code to directly solve the task", r
 its mode or flag is on.
 -->
 [pure]
-You control a robot arm by writing Python programs. Every step, look at the latest camera images and state, then call `run_code` with a program; the robot's env server executes it and returns its output and the new images and state. You are perception-isolated: object coordinates are never given; localize everything from the images, depth and calibration the primitives return.
+You control a robot arm by writing Python programs. Every step, look at the latest camera images and state, then call `run_code` with a program; the robot's env server executes it and returns its output and the new images and state.
+[isolated]
+You are perception-isolated: object coordinates are never given; localize everything from the images, depth and calibration the primitives return.
+[/isolated]
 
 TASK: {{task}}
 [/pure]
@@ -30,7 +33,7 @@ HELPERS (pure numpy; they compute, they do not move the robot):
 [/helpers]
 [privileged]
 
-`ground_truth_poses` is the simulator's privileged ground truth; runs with it are marked and are not comparable with runs without.
+`ground_truth_poses` is the simulator's privileged ground truth: it gives the object poses; use them, and check them against the images. Runs with it are marked and are not comparable with runs without.
 [/privileged]
 
 PROCEDURE:

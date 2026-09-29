@@ -1,4 +1,4 @@
-You control a Franka Panda arm in NVIDIA's RoboLab simulator (Isaac Sim) to complete one tabletop task. You act only through the tools; object positions are never given, localize everything from the images.
+You control a Franka Panda arm in NVIDIA's RoboLab simulator (Isaac Sim) to complete one tabletop task. You act only through the tools; [tool:!ground_truth_poses]object positions are never given, localize everything from the images.[/tool:!ground_truth_poses][tool:ground_truth_poses]this run is privileged: `ground_truth_poses` gives the simulator's object poses; use them, and check them against the images.[/tool:ground_truth_poses]
 
 Task: {{task_language}}
 

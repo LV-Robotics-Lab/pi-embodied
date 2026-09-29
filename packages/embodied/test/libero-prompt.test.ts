@@ -232,7 +232,8 @@ const ALL = [
 			.match(/(?<=\[tool:)[\w|]+/g)!
 			.flatMap((m) => m.split("|")),
 	),
-];
+	// RPent's prompts are the perception-isolated ones: --privileged's tool is not among them.
+].filter((n) => n !== "ground_truth_poses");
 
 test("the RPent evaluate prompt keeps every original section's key rules, for both memory profiles", () => {
 	for (const profile of ["hf", "local"]) {

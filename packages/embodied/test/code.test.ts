@@ -220,6 +220,7 @@ test("--code=true leaves only run_code and finish, fetches the tier's API and re
 	const prompt = (await f.emit("before_agent_start")).systemPrompt as string;
 	assert.match(prompt, /^You control a robot arm by writing Python programs/);
 	assert.match(prompt, /TASK: put the cube in the bowl/);
+	assert.match(prompt, /You are perception-isolated: object coordinates are never given/, "without --privileged");
 	assert.match(
 		prompt,
 		/PRIMITIVES \(high tier\):\ndef move_to\(xyz: vec3, gripper: number = None\):\n {4}Servo to xyz\.\n\n {4}Args:\n {8}xyz \(vec3\): target/,
@@ -384,6 +385,7 @@ test("--privileged asks for the ground-truth primitive and the prompt says so", 
 	assert.match(prompt, /def ground_truth_poses\(names: array = None\)/);
 	assert.match(prompt, /def move_to\(/);
 	assert.match(prompt, /privileged ground truth/);
+	assert.doesNotMatch(prompt, /perception-isolated|never given/, "the prompt does not forbid the poses it offers");
 	assert.match(f.tools.get("run_code").description, /ground_truth_poses/);
 	const tool = f.tools.get("run_code");
 	const calls: Record<string, unknown>[] = [];

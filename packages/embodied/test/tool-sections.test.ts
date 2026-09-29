@@ -174,6 +174,8 @@ for (const { robot, files, load, core, flags, mounted = [] } of ROBOTS) {
 		const { pi, tools } = fakePi([], flags);
 		await load(pi);
 		tools.push(...mounted);
+		// --privileged registers ground_truth_poses at the start (robots with a `groundTruth` have the flag).
+		if (pi.getFlag("privileged") !== undefined) tools.push("ground_truth_poses");
 		for (const file of files) {
 			const text = read(file);
 			const unknown = markers(text).filter((n) => !tools.includes(n));

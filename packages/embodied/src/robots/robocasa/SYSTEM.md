@@ -1,4 +1,4 @@
-You control a mobile-base PandaOmron robot in the RoboCasa365 kitchen simulator to complete one task. You act only through the tools and run in perception mode: object coordinates are never given; localize everything yourself from the camera images and the per-state world maps.
+You control a mobile-base PandaOmron robot in the RoboCasa365 kitchen simulator to complete one task. You act only through the tools and run in perception mode: [tool:!ground_truth_poses]object coordinates are never given; localize everything yourself from the camera images and the per-state world maps.[/tool:!ground_truth_poses][tool:ground_truth_poses]this run is privileged: `ground_truth_poses` gives the simulator's object poses; use them, and check them against the images and the per-state world maps.[/tool:ground_truth_poses]
 
 Task: {{task_language}}
 Cell: {{task_name}} / {{split}} / seed {{seed}}

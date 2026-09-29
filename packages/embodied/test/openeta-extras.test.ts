@@ -532,7 +532,7 @@ async function turn(provider: any, signal?: AbortSignal) {
 
 test("human/operator is registered only when a human/... model is on the command line", () => {
 	assert.equal(humanRequested(["pi", "--model", "human/operator"]), true);
-	assert.equal(humanRequested(["pi", "--attach-vlm-model=human/operator"]), true);
+	assert.equal(humanRequested(["pi", "--aux-model=human/operator"]), true);
 	assert.equal(humanRequested(["pi", "--model", "selfhost/muse"]), false);
 	const f = fakePi();
 	human(f.pi, ["pi", "--model", "selfhost/muse"]);

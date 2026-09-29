@@ -140,7 +140,7 @@ test("pi mode: act records target_visible and runs the unit's SkillCall; STOP en
 			};
 		return undefined;
 	});
-	const s = stubPi({ env: env.url, units: "both", "humanclaw-mode": "pi" });
+	const s = stubPi({ "env-url": env.url, units: "both", "humanclaw-mode": "pi" });
 	t.after(() => env.close());
 	humanclaw(s.pi);
 	await s.emit("session_start");
@@ -162,12 +162,12 @@ test("pi mode: act records target_visible and runs the unit's SkillCall; STOP en
 });
 
 test("paper mode needs humanclaw-psv and --units=both; pi-mode modules are refused", async () => {
-	const s = stubPi({ units: "true", "humanclaw-mode": "pi", env: "http://127.0.0.1:1" });
+	const s = stubPi({ units: "true", "humanclaw-mode": "pi", "env-url": "http://127.0.0.1:1" });
 	humanclaw(s.pi);
 	await s.emit("session_start");
 	process.exitCode = undefined;
 	assert.deepEqual(s.active(), []);
-	const p = stubPi({ units: "both", "humanclaw-mode": "paper", env: "http://127.0.0.1:1" });
+	const p = stubPi({ units: "both", "humanclaw-mode": "paper", "env-url": "http://127.0.0.1:1" });
 	humanclaw(p.pi);
 	await p.emit("session_start");
 	process.exitCode = undefined;

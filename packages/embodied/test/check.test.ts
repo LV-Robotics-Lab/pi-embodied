@@ -167,7 +167,7 @@ test("the env check asks an env server by its served method name, env.get_env_me
 	const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 	try {
 		for (const robot of ["franka", "dual_franka", "piper"])
-			assert.deepEqual(SPECS[robot].endpoints?.find((e) => e.flag === "robot-env")?.calls, ENV_CALLS);
+			assert.deepEqual(SPECS[robot].endpoints?.find((e) => e.flag === "env-url")?.calls, ENV_CALLS);
 		const ok = await probeEndpoint(url, 3000, ENV_CALLS);
 		assert.equal(ok.ok, true, ok.detail);
 		assert.match(ok.detail, /env\.get_env_meta ok/);
@@ -324,19 +324,19 @@ test("/robot-check sends a URL#token=HEX endpoint's token, as attach() does, and
 		assert.equal(ok.ok, true, ok.detail);
 		const rows = await runChecks(
 			"x",
-			{ "robot-env": `${url}#token=abc123` },
+			{ "env-url": `${url}#token=abc123` },
 			{
 				spec: {
 					python: { venv: "x", env: [] },
 					imports: [],
 					gpu: false,
-					endpoints: [{ flag: "robot-env", why: "env", calls: ENV_CALLS }],
+					endpoints: [{ flag: "env-url", why: "env", calls: ENV_CALLS }],
 				},
 				dashboard: "skip",
 				timeoutMs: 1,
 			},
 		);
-		const env = rows.find((r) => r.check === "--robot-env");
+		const env = rows.find((r) => r.check === "--env-url");
 		assert.equal(env?.status, "PASS", env?.detail);
 		assert.ok(!rows.some((r) => r.detail.includes("abc123")));
 	} finally {

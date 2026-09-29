@@ -46,12 +46,12 @@
  *   base-frame axis terms, from the robot's unit vectors), mcq (`act`'s `unit` is an option letter),
  *   action_ablation with --units-ablation bare|letters|letters_blind (the action-representation
  *   ablation). mcq and a letters ablation both own the answer alphabet and refuse to run together.
- * A robot configuration without a wrist view (the spec's `wrist`, e.g. ManiSkill's --robot widowxai)
+ * A robot configuration without a wrist view (the spec's `wrist`, e.g. ManiSkill's --arm widowxai)
  * runs `auto` without variable_step and action_chunk and refuses to start when --units-plugins names
  * them (as --units-rt without an axis), and rotation keeps only its realign: those key on the wrist view. `act` then takes no `target_in_wrist` (one sent anyway is
  * ignored, and the result says so), the prompt drops its wrist-view text, a notice names the plugins
  * turned off, and the effective plugins are in every `units_state` entry and the robot result.
- * A robot without a gripper (the spec's `gripper`, e.g. ManiSkill's --robot panda_stick) has no GRASP /
+ * A robot without a gripper (the spec's `gripper`, e.g. ManiSkill's --arm panda_stick) has no GRASP /
  * RELEASE units and runs without recovery and auto_release; the prompt drops its gripper text.
  *
  * A robot's own vocabulary (UnitsSpec.vocabulary, ./custom.ts; a humanoid's WALK / TURN / SIT / STOP):
@@ -68,7 +68,7 @@
  * dual runners' (left, right) token pair; STILL = that arm holds). A robot with `applyPair` runs the pair
  * as one command (both arms at once); without it the arms run one after the other, and the result says so.
  *
- * Side VLM calls (./vlm.ts, `--units-vlm-model`, default the session's model):
+ * Side VLM calls (./vlm.ts, `--aux-model`, default the session's model):
  * - `--units-verify=true|false|auto` (auto: on for dual-arm robots, as Show-Harness's dual runner): a `finish`
  *   claiming success first lifts every open gripper 10 cm (MV_UP through `act`, `Move.retreat`), then
  *   is checked once against the task on the retreated camera images; a NOT complete
@@ -188,7 +188,7 @@ export {
 	type Vec3,
 } from "./vocabulary.ts";
 
-import { ffmpeg as cfgFfmpeg } from "../../infra/config.ts";
+import { auxModel, ffmpeg as cfgFfmpeg } from "../../infra/config.ts";
 
 /** A MV_* that travelled less than this fraction of the command did not move freely (proprioception). */
 const STALL_RATIO = 0.7;
@@ -309,11 +309,6 @@ export function units(
 		default: "auto",
 		description:
 			"Units mode: check a success `finish` with one VLM call on the latest images, NOT complete refuses it once (true, false, auto = dual-arm robots)",
-	});
-	pi.registerFlag("units-vlm-model", {
-		type: "string",
-		default: "",
-		description: "Model (provider/id) of the verifier and video_ref calls (default: the session's model)",
 	});
 	pi.registerFlag("units-video-ref", {
 		type: "string",
@@ -1197,7 +1192,7 @@ export function units(
 						try {
 							const reply = await askVlm(
 								ctx,
-								String(pi.getFlag("units-vlm-model") ?? ""),
+								auxModel(pi, "verify"),
 								pi.getThinkingLevel(),
 								pointVerifyPrompt(instruction(), q.label, camera),
 								[{ type: "image", data: one.image.toString("base64"), mimeType: "image/png" }],
@@ -1370,14 +1365,7 @@ export function units(
 			const errors: string[] = [];
 			// A reply that is not a usable brief is asked once more (their guided-JSON try, then free JSON).
 			for (let i = 0; i < 2 && demo?.key !== key; i++) {
-				const reply = await askVlm(
-					ctx,
-					String(pi.getFlag("units-vlm-model") ?? ""),
-					pi.getThinkingLevel(),
-					prompt,
-					shown,
-					ctx.signal,
-				);
+				const reply = await askVlm(ctx, auxModel(pi, "verify"), pi.getThinkingLevel(), prompt, shown, ctx.signal);
 				pi.events.emit(VLM_COST_EVENT, reply.cost);
 				try {
 					demo = { key, brief: validateBrief(parseJson(reply.text), armNames), indices, model: reply.model };

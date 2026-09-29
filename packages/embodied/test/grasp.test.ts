@@ -26,7 +26,7 @@ import libero, {
 	runClaim,
 	xyRefusal,
 } from "../src/robots/libero/index.ts";
-import { deployFlags } from "./helpers/deployment.ts";
+import { deployFlags, useDeployment } from "./helpers/deployment.ts";
 
 type Json = Record<string, any>;
 
@@ -110,7 +110,7 @@ const PNG = Buffer.from(
 test("the grasp switches are off by default: no env args and no active tool", () => {
 	const f = fakePi();
 	registerGraspFlags(f.pi);
-	assert.deepEqual(Object.keys(f.flags).sort(), ["attach-vlm-model", "grasp", "grasp-max-tilt", "place"]);
+	assert.deepEqual(Object.keys(f.flags).sort(), ["grasp", "grasp-max-tilt", "place"]);
 	assert.deepEqual(graspArgs(f.pi), []);
 	const t = fakePi({ graspgenx: "http://127.0.0.1:8121", "grasp-max-tilt": "20" });
 	registerGraspFlags(t.pi);
@@ -365,13 +365,15 @@ test("check_attached asks the VLM with the env's frames, parses the verdict and 
 	assert.equal(entry?.data.attached, true);
 	assert.equal(entry?.data.observation, 5);
 	assert.equal(entry?.data.cost_usd, 0.002);
-	// The model picks --attach-vlm-model, else --units-vlm-model.
-	const g = fakePi({ "attach-vlm-model": "vision/eyes" }, [{ text: '{"attached": false}' }]);
+	// The model is aux.attach of the deployment, else --aux-model (robot.ts registers it), else the session's.
+	const g = fakePi({}, [{ text: '{"attached": false}' }]);
+	useDeployment({ aux: { attach: "vision/eyes" } });
 	registerGraspFlags(g.pi);
 	const [, , check2] = graspTools(g.pi, { call: env.call, cameras: ["agentview", "wrist"], task: () => "" });
 	const r = await check2.run({ object: "bowl" } as any, undefined, g.ctx as any);
 	assert.equal(r.attached, false);
 	assert.equal(g.asked[0].model, "vision/eyes");
+	useDeployment({});
 });
 
 test("the attachment verdict is parsed leniently and never throws", () => {

@@ -243,7 +243,7 @@ test("the tools are CaP-X's primitive set plus perception; motions carry the thr
 	const env = await fakeEnv();
 	t.after(env.close);
 	// The fake env server answers healthz: it stands in for the SAM3 and Molmo servers the start probes.
-	const s = stubPi({ env: env.url, sam3: env.url, molmo: env.url });
+	const s = stubPi({ "env-url": env.url, sam3: env.url, molmo: env.url });
 	behavior(s.pi);
 	assert.equal(s.flags.task, "turning_on_radio");
 	assert.equal(s.flags.privileged, false, "a simulated robot: --privileged exists, off by default");
@@ -300,7 +300,7 @@ test("the tools are CaP-X's primitive set plus perception; motions carry the thr
 test("success is BDDL's; q_score and the reference `picked` go to the result, in_hand only under --privileged", async (t) => {
 	const env = await fakeEnv();
 	t.after(env.close);
-	const s = stubPi({ env: env.url });
+	const s = stubPi({ "env-url": env.url });
 	behavior(s.pi);
 	await s.emit("session_start");
 	assert.equal(s.tools.has("ground_truth_poses"), false);
@@ -322,7 +322,7 @@ test("success is BDDL's; q_score and the reference `picked` go to the result, in
 	assert.equal("privileged" in result, false);
 
 	// A later BDDL success ends the episode: success true, q_score 1, and the motion tools refuse.
-	const p = stubPi({ env: env.url, privileged: true });
+	const p = stubPi({ "env-url": env.url, privileged: true });
 	behavior(p.pi);
 	await p.emit("session_start");
 	assert.ok(p.active().includes("ground_truth_poses"));
@@ -346,7 +346,7 @@ test("success is BDDL's; q_score and the reference `picked` go to the result, in
 test("perception runs on the env server: the tool passes its parameters and shows the server's picture", async (t) => {
 	const env = await fakeEnv();
 	t.after(env.close);
-	const s = stubPi({ env: env.url });
+	const s = stubPi({ "env-url": env.url });
 	behavior(s.pi);
 	await s.emit("session_start");
 	// The schemas are the manifest's (manifests/behavior.json).
@@ -371,13 +371,13 @@ test("perception runs on the env server: the tool passes its parameters and show
 test("without a Molmo server point is not activated; an unreachable one is recorded in skills_off", async (t) => {
 	const env = await fakeEnv();
 	t.after(env.close);
-	const s = stubPi({ env: env.url, sam3: env.url, molmo: "" });
+	const s = stubPi({ "env-url": env.url, sam3: env.url, molmo: "" });
 	behavior(s.pi);
 	await s.emit("session_start");
 	assert.ok(!s.active().includes("point") && s.active().includes("segment"));
 	await s.emit("session_shutdown");
 
-	const u = stubPi({ env: env.url, sam3: env.url, molmo: "http://127.0.0.1:9" });
+	const u = stubPi({ "env-url": env.url, sam3: env.url, molmo: "http://127.0.0.1:9" });
 	behavior(u.pi);
 	await u.emit("session_start");
 	assert.ok(!u.active().includes("point") && u.active().includes("segment"));
@@ -410,7 +410,7 @@ test("an unknown task or a non-integer seed fails closed before any server start
 test("attaching to a server with another task or instance fails closed", async (t) => {
 	const env = await fakeEnv();
 	t.after(env.close);
-	const s = stubPi({ env: env.url, seed: "3" });
+	const s = stubPi({ "env-url": env.url, seed: "3" });
 	behavior(s.pi);
 	const errors: string[] = [];
 	const stderr = console.error;
@@ -452,7 +452,7 @@ test("memory and exploration: reset loads the task instance again, the cell is b
 	t.after(env.close);
 	await checkSimExplore({
 		load: behavior,
-		values: { env: env.url, task: "turning_on_radio", seed: "0" },
+		values: { "env-url": env.url, task: "turning_on_radio", seed: "0" },
 		tag: "behavior_turning_on_radio_s0",
 		resets: () => env.calls.filter((c) => c.method === "env.reset").length,
 		observe: "view_env_state",
@@ -462,7 +462,7 @@ test("memory and exploration: reset loads the task instance again, the cell is b
 test("units: act runs one env.move_hand_delta with the arm, the base-frame step, the yaw and the gripper", async (t) => {
 	const env = await fakeEnv();
 	t.after(env.close);
-	const s = stubPi({ env: env.url, units: "true", "units-plugins": "" });
+	const s = stubPi({ "env-url": env.url, units: "true", "units-plugins": "" });
 	behavior(s.pi);
 	await s.emit("session_start");
 	process.exitCode = undefined;
@@ -485,7 +485,7 @@ test("units: act runs one env.move_hand_delta with the arm, the base-frame step,
 test("--code=true: run_code runs on the env server; BDDL success, q_score and the head frames come back", async (t) => {
 	const env = await fakeEnv();
 	t.after(env.close);
-	const s = stubPi({ env: env.url, code: "true", "code-api": "low" });
+	const s = stubPi({ "env-url": env.url, code: "true", "code-api": "low" });
 	behavior(s.pi);
 	await s.emit("session_start");
 	process.exitCode = undefined;

@@ -119,7 +119,7 @@ test("segment and back_project run the env server's methods with the manifest's 
 	const env = await fakeGenesis();
 	t.after(env.close);
 	// The fake env server answers healthz: it stands in for the SAM3 server the start probes.
-	const s = simPi({ env: env.url, sam3: env.url });
+	const s = simPi({ "env-url": env.url, sam3: env.url });
 	genesis(s.pi);
 	await s.emit("session_start");
 	process.exitCode = undefined;
@@ -190,7 +190,7 @@ test("memory and exploration: reset restarts the seeded scene, the cell is genes
 	t.after(env.close);
 	await checkSimExplore({
 		load: genesis,
-		values: { env: env.url, task: "cube_pick", seed: "0" },
+		values: { "env-url": env.url, task: "cube_pick", seed: "0" },
 		tag: "genesis_cube_pick_s0",
 		resets: () => env.calls.filter((c) => c.method === "env.reset").length,
 		observe: "view_env_state",
@@ -201,10 +201,10 @@ test("memory and exploration: reset restarts the seeded scene, the cell is genes
 test("VDM is mounted over the two images every observation carries (front, then wrist)", async (t) => {
 	const f = stubPi();
 	genesis(f.pi);
-	for (const name of ["vdm", "vdm-model", "vdm-wrist"]) assert.ok(name in f.flags, name);
+	for (const name of ["vdm", "aux-model", "vdm-wrist"]) assert.ok(name in f.flags, name);
 	const env = await fakeGenesis();
 	t.after(env.close);
-	const s = simPi({ env: env.url });
+	const s = simPi({ "env-url": env.url });
 	genesis(s.pi);
 	await s.emit("session_start");
 	process.exitCode = undefined;
@@ -219,7 +219,12 @@ test("VDM is mounted over the two images every observation carries (front, then 
 test("--detections / --unidepth: the env server's perception primitives; detect locates the centroid through the depth", async (t) => {
 	const env = await fakeGenesis(true);
 	t.after(env.close);
-	const s = await checkDetections({ load: genesis, values: { env: env.url }, calls: env.calls, camera: "wrist" });
+	const s = await checkDetections({
+		load: genesis,
+		values: { "env-url": env.url },
+		calls: env.calls,
+		camera: "wrist",
+	});
 	const r = await s.run("detect", { prompt: "cube" });
 	assert.deepEqual(r.details.detections[0].centroid_world_xyz, [0.4, 0, 0.02]);
 	assert.deepEqual(env.calls.filter((c) => c.method === "env.back_project").at(-1)?.kwargs, {
@@ -233,7 +238,7 @@ test("--point: Molmo on the current images; the pixel's world xyz where the robo
 	t.after(env.close);
 	const { one } = await checkPoint({
 		load: genesis,
-		values: { env: env.url },
+		values: { "env-url": env.url },
 		url: env.url,
 		calls: env.calls,
 		cameras: ["agentview", "wrist"],
@@ -281,7 +286,7 @@ test("--contact-graspnet: plan_grasp, and execute_grasp runs env.execute_grasp (
 		return undefined;
 	});
 	t.after(env.close);
-	const s = simPi({ env: env.url, "contact-graspnet": "http://127.0.0.1:1" });
+	const s = simPi({ "env-url": env.url, "contact-graspnet": "http://127.0.0.1:1" });
 	genesis(s.pi);
 	await s.emit("session_start");
 	process.exitCode = undefined;
@@ -300,7 +305,7 @@ test("--contact-graspnet: plan_grasp, and execute_grasp runs env.execute_grasp (
 	assert.ok(!env.calls.some((c) => c.method === "env.move_delta"), "no legs from pi");
 	assert.match((await s.emit("before_agent_start")).systemPrompt as string, /`execute_grasp`/);
 
-	const off = simPi({ env: env.url });
+	const off = simPi({ "env-url": env.url });
 	genesis(off.pi);
 	await off.emit("session_start");
 	process.exitCode = undefined;
@@ -310,7 +315,7 @@ test("--contact-graspnet: plan_grasp, and execute_grasp runs env.execute_grasp (
 test("--ik: preview_reach asks env.preview_reach and nothing moves; without --ik it is inactive", async (t) => {
 	const env = await fakeGenesis();
 	t.after(env.close);
-	const s = simPi({ env: env.url, ik: "http://127.0.0.1:1" });
+	const s = simPi({ "env-url": env.url, ik: "http://127.0.0.1:1" });
 	genesis(s.pi);
 	await s.emit("session_start");
 	process.exitCode = undefined;
@@ -318,7 +323,7 @@ test("--ik: preview_reach asks env.preview_reach and nothing moves; without --ik
 	await s.run("preview_reach", { pos: [0.5, 0, 0.1] });
 	assert.deepEqual(env.calls.find((c) => c.method === "env.preview_reach")?.kwargs, { pos: [0.5, 0, 0.1] });
 	assert.ok(!env.calls.some((c) => c.method === "env.move_delta"));
-	const off = simPi({ env: env.url });
+	const off = simPi({ "env-url": env.url });
 	genesis(off.pi);
 	await off.emit("session_start");
 	process.exitCode = undefined;
@@ -386,7 +391,7 @@ async function fakeCodeEnv() {
 test("--code=true: run_code runs on the env server; its obs is absorbed into the state and robot_result", async (t) => {
 	const env = await fakeCodeEnv();
 	t.after(env.close);
-	const s = stubPi({ env: env.url, code: "true", "code-api": "low" });
+	const s = stubPi({ "env-url": env.url, code: "true", "code-api": "low" });
 	genesis(s.pi);
 	await s.emit("session_start");
 	process.exitCode = undefined;

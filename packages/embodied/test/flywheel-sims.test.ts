@@ -171,7 +171,7 @@ test("Metaworld: every control step of a motion is one transition, with the env 
 	});
 	t.after(env.close);
 	const s = stubPi({
-		env: env.url,
+		"env-url": env.url,
 		task: "reach-v3",
 		seed: "3",
 		"collect-flywheel-data": true,
@@ -229,7 +229,7 @@ test("Genesis: a motion returns its control steps only while recording, one tran
 	});
 	t.after(env.close);
 	for (const collect of [false, true]) {
-		const s = stubPi({ env: env.url, "collect-flywheel-data": collect, "flywheel-root": root });
+		const s = stubPi({ "env-url": env.url, "collect-flywheel-data": collect, "flywheel-root": root });
 		genesis(s.pi);
 		await s.emit("session_start");
 		process.exitCode = undefined;
@@ -289,7 +289,7 @@ test("Robosuite: the task's arms set the widths and the export space; the reset 
 	});
 	t.after(env.close);
 	const s = stubPi({
-		env: env.url,
+		"env-url": env.url,
 		task: "TwoArmLift",
 		seed: "1",
 		"collect-flywheel-data": true,
@@ -371,10 +371,10 @@ test("ManiSkill: each control step env.move_delta returns is a transition; the a
 		});
 		t.after(env.close);
 		const s = stubPi({
-			env: env.url,
-			"env-id": "PickCube-v1",
+			"env-url": env.url,
+			task: "PickCube-v1",
 			seed: "2",
-			robot: arm,
+			arm: arm,
 			"collect-flywheel-data": true,
 			"flywheel-root": root,
 		});

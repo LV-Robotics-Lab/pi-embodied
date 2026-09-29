@@ -1,7 +1,7 @@
 /**
  * Visual differencing (VDM): a second vision model describes what each robot action changed.
  *
- *   pi -e packages/embodied/src/robots/libero --vdm [--vdm-model provider/id] [--vdm-wrist] [--vdm-timeout 60] ...
+ *   pi -e packages/embodied/src/robots/libero --vdm [--aux-model provider/id] [--vdm-wrist] [--vdm-timeout 60] ...
  *
  * A robot opts in with `vdm` in its defineRobot spec (how many camera images its observation results
  * carry, which are wrist views, and which tools only look; a function when that depends on the
@@ -40,6 +40,7 @@
 
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { auxModel } from "../infra/config.ts";
 import { encodePng } from "../infra/png.ts";
 import type { NdArray } from "../infra/rpc.ts";
 import { askVlm, VLM_COST_EVENT, type VlmPrompt } from "../modes/units/vlm.ts";
@@ -163,11 +164,6 @@ export function vdm(
 		default: false,
 		description: "Visual differencing: a VLM describes the initial scene, then what each robot action changed",
 	});
-	pi.registerFlag("vdm-model", {
-		type: "string",
-		default: "",
-		description: "Model (provider/id) of the VDM calls (default: --units-vlm-model, else the session's model)",
-	});
 	pi.registerFlag("vdm-wrist", {
 		type: "boolean",
 		default: false,
@@ -238,7 +234,7 @@ export function vdm(
 		if (before && s.observe?.includes(event.toolName)) return undefined;
 		const strip = before && video() && steps.length > 0 ? steps : undefined;
 		const kind = !before ? "initial" : strip ? "video" : "diff";
-		const modelRef = String(pi.getFlag("vdm-model") || pi.getFlag("units-vlm-model") || "");
+		const modelRef = auxModel(pi, "vdm");
 		const entry: Record<string, unknown> = { kind, tool: event.toolName, wrist: wrists.length > 0 };
 		let prompt: VlmPrompt;
 		if (strip) {

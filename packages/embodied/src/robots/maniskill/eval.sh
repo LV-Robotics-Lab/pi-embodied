@@ -4,14 +4,14 @@
 #   eval.sh runs/ms - 0-9 --model <provider/model> --thinking low --scene table_tex=white
 #   eval.sh runs/ms PickCube-v1,StackCube-v1 0-9 --model <provider/model> --thinking low
 #   eval.sh runs/ms-units PickCube-v1 0-4,10-14 --units=true --model <provider/model> --thinking low
-#   eval.sh runs/ms-xarm PickCube-v1,StackCube-v1 0-9 --robot xarm6_robotiq --model <provider/model>
+#   eval.sh runs/ms-xarm PickCube-v1,StackCube-v1 0-9 --arm xarm6_robotiq --model <provider/model>
 #
 # Each episode runs in <out>/<env-id>_s<seed>/ and ends with a result.json taken from the session's
 # `robot_result` entry. An episode is valid when the environment produced a result and the planner
 # did not fail (`env_error`, `planner_error` and a missing result are invalid), whatever the
 # outcome. Rerunning retries exactly the invalid episodes; valid ones are kept. Each result records
 # the model, thinking level, --max-turns, --time-limit, the units mode (--units, --units-plugins, --stateless) and
-# visual differencing (--vdm, --vdm-model, --vdm-wrist, --vdm-video, --vdm-video-frames) and the arm (--robot, default panda; recorded as
+# visual differencing (--vdm, --aux-model, --vdm-wrist, --vdm-video, --vdm-video-frames) and the arm (--arm, default panda; recorded as
 # `maniskill_robot`, since `robot` names the pi robot), and the summary covers only the requested cells and
 # refuses to mix configurations.
 # A --privileged run (simulator ground truth) is recorded as such and never shares an out dir with one without.
@@ -24,6 +24,9 @@ out=$1 envs=$2 seeds=$3
 [ "$envs" = - ] && envs=BlockPAP-v1
 shift 3
 here=$(cd "$(dirname "$0")" && pwd)
+# Renamed flags and the ones the deployment config replaced stop here, before any cell runs.
+. "$here/../../scripts/old-flags.sh"
+old_flags "$@" || exit 2
 PI=${PI:-pi}
 expand() { for part in ${1//,/ }; do seq "${part%-*}" "${part#*-}"; done; }
 # Common flags have one implementation; only robot-specific options live here.
@@ -32,16 +35,16 @@ eval_options_defaults
 robot=panda
 eval_robot_option() {
 	case $1 in
-	--robot) robot=${2:-panda} ;;
-	--robot=*) robot=${1#*=} ;;
+	--arm) robot=${2:-panda} ;;
+	--arm=*) robot=${1#*=} ;;
 	esac
 }
 eval_parse_options "$@"
 eval_normalize_options
 
-# The RLinf rigs ("-" = BlockPAP-v1) run their own Panda: another --robot would fail every cell.
+# The RLinf rigs ("-" = BlockPAP-v1) run their own Panda: another --arm would fail every cell.
 case ",$envs," in *,BlockPAP-v1,* | *,BlockStack-v1,*)
-	[ "$robot" = panda ] || { echo "BlockPAP-v1 / BlockStack-v1 (and \"-\") are real2sim rigs with their own Panda; --robot $robot takes stock env ids" >&2 && exit 2; } ;;
+	[ "$robot" = panda ] || { echo "BlockPAP-v1 / BlockStack-v1 (and \"-\") are real2sim rigs with their own Panda; --arm $robot takes stock env ids" >&2 && exit 2; } ;;
 esac
 # --time-limit (default $TIME_LIMIT, 1800 s; 0 = none) ends the planner gracefully, as a failure;
 # `timeout` is only the backstop for a hung process, and a killed episode is invalid.
@@ -95,7 +98,7 @@ if (r.status !== "success" && r.status !== "failure") process.exit(1);
 const same = r.model === (model || null) && r.thinking === (thinking || null) && r.max_turns === Number(turns)
 	&& r.time_limit === Number(limit) && r.units === units && r.stateless === (stateless === "true")
 	&& (r.privileged ?? false) === (privileged === "true")
-	// Results written before --robot existed ran the Panda.
+	// Results written before --robot (now --arm) existed ran the Panda.
 	&& (r.maniskill_robot ?? "panda") === robot
 	// Results written before --anchor-image existed ran without it.
 	&& (r.anchor_image ?? false) === (anchor === "true")
@@ -131,12 +134,12 @@ for env in ${envs//,/ }; do
 		valid "$dir"
 		case $? in
 		0) continue ;;
-		2) echo "$dir holds a result of another model, thinking level, --max-turns, --time-limit, units mode, code mode, vdm, fallback, --robot, --ft-* flags, --privileged, --anchor-image, --approval, --max-tool-calls or --max-tokens; use another out dir" >&2 && exit 1 ;;
+		2) echo "$dir holds a result of another model, thinking level, --max-turns, --time-limit, units mode, code mode, vdm, fallback, --arm, --ft-* flags, --privileged, --anchor-image, --approval, --max-tool-calls or --max-tokens; use another out dir" >&2 && exit 1 ;;
 		esac
 		rm -rf "$dir" && mkdir -p "$dir"
 		echo "== $env seed $seed"
 		# The prompt precedes the user's args: a bare boolean flag at their end would take it as its value.
-		${backstop[@]+"${backstop[@]}"} $PI -p --session-dir "$dir" -e "$here" --env-id "$env" --seed "$seed" "Solve the task." "$@" \
+		${backstop[@]+"${backstop[@]}"} $PI -p --session-dir "$dir" -e "$here" --task "$env" --seed "$seed" "Solve the task." "$@" \
 			</dev/null >"$dir/stdout.log" 2>"$dir/stderr.log"
 		record "$dir" "$?"
 	done

@@ -216,7 +216,7 @@ async function fakeEnv(
 }
 
 async function start(values: Record<string, unknown>, env: Awaited<ReturnType<typeof fakeEnv>>) {
-	const s = stubPi({ env: env.url, ...values });
+	const s = stubPi({ "env-url": env.url, ...values });
 	robodojo(s.pi);
 	const errors: string[] = [];
 	const stderr = console.error;
@@ -359,7 +359,7 @@ test("flags default to the benchmark's first layout set", () => {
 	robodojo(s.pi);
 	assert.equal(s.flags.task, "stack_bowls");
 	assert.equal(s.flags.seed, "0");
-	assert.equal(s.flags["eval-seed"], "0");
+	assert.equal(s.flags["layout-set"], "0");
 	assert.equal(s.flags.privileged, false, "a simulator: --privileged is registered");
 	const schema = JSON.stringify(s.tools.get("move_to").parameters);
 	assert.doesNotMatch(schema, /anyOf/);
@@ -371,7 +371,7 @@ test("--detections / --unidepth / --point: the env server's perception and Molmo
 	t.after(env.close);
 	const s = await checkDetections({
 		load: robodojo,
-		values: { env: env.url },
+		values: { "env-url": env.url },
 		calls: env.calls as never,
 		camera: "head",
 	});
@@ -379,7 +379,7 @@ test("--detections / --unidepth / --point: the env server's perception and Molmo
 	assert.deepEqual(d.details.detections[0].centroid_xyz, [0.01, 0.01, 0.75]);
 	const { one } = await checkPoint({
 		load: robodojo,
-		values: { env: env.url },
+		values: { "env-url": env.url },
 		url: env.url,
 		calls: env.calls as never,
 		cameras: ["head", "left_wrist"],

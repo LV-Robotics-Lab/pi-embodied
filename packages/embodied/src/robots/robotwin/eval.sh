@@ -11,7 +11,7 @@
 # planner did not fail (`env_error`, `planner_error` and a missing result are invalid), whatever
 # the outcome. Rerunning retries exactly the invalid episodes; valid ones are kept. Each result
 # records the model, thinking level, --max-turns, --time-limit, the units mode (--units,
-# --stateless), visual differencing (--vdm, --vdm-model, --vdm-wrist, --vdm-video, --vdm-video-frames) and the env server's planner
+# --stateless), visual differencing (--vdm, --aux-model, --vdm-wrist, --vdm-video, --vdm-video-frames) and the env server's planner
 # (contract.py ROBOTWIN_PLANNER: cuRobo with the torch L-BFGS step, deterministic; results of the
 # earlier nondeterministic planner are not comparable), and the summary covers only the requested
 # cells and refuses to mix configurations.
@@ -25,6 +25,9 @@ set -uo pipefail
 out=$1 tasks=$2
 shift 2
 here=$(cd "$(dirname "$0")" && pwd)
+# Renamed flags and the ones the deployment config replaced stop here, before any cell runs.
+. "$here/../../scripts/old-flags.sh"
+old_flags "$@" || exit 2
 SERVICES=${PI_EMBODIED_SERVICES:-$(cd "$here/../../../../../services" && pwd)}
 PI=${PI:-pi}
 # Common flags have one implementation; only robot-specific options live here.
@@ -130,7 +133,7 @@ for cell in $cells; do
 	rm -rf "$dir" && mkdir -p "$dir"
 	echo "== $task seed $seed"
 	# The prompt precedes the user's args: a bare boolean flag at their end would take it as its value.
-	${backstop[@]+"${backstop[@]}"} $PI -p --session-dir "$dir" -e "$here" --task-name "$task" --task-config demo_randomized --seed "$seed" \
+	${backstop[@]+"${backstop[@]}"} $PI -p --session-dir "$dir" -e "$here" --task "$task" --task-config demo_randomized --seed "$seed" \
 		"Solve the task. Bind targets and relations from fresh observation, verify each gate, and keep lingbot_act on the native task language." "$@" \
 		</dev/null >"$dir/stdout.log" 2>"$dir/stderr.log"
 	record "$dir" "$?"

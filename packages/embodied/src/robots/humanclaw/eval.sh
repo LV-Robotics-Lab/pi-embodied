@@ -18,6 +18,9 @@ set -uo pipefail
 out=${1:?usage: eval.sh <out-dir> [--episodes ...] [--mode paper|pi] [--metrics] [--video] [pi args...]}
 shift
 here=$(cd "$(dirname "$0")" && pwd)
+# Renamed flags and the ones the deployment config replaced stop here, before any cell runs.
+. "$here/../../scripts/old-flags.sh"
+old_flags "$@" || exit 2
 PI=${PI:-pi}
 PY=${HUMANCLAW_PYTHON:-${PI_EMBODIED_PYTHON:-python}}
 episodes=one mode=paper metrics=false video=false

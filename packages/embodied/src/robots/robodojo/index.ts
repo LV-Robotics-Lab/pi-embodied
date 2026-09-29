@@ -184,12 +184,16 @@ export default function robodojo(pi: ExtensionAPI) {
 		description: "RoboDojo task (task/RoboDojo/tasks)",
 	});
 	pi.registerFlag("seed", { type: "string", default: "0", description: "RoboDojo eval layout id" });
-	pi.registerFlag("eval-seed", {
+	pi.registerFlag("layout-set", {
 		type: "string",
 		default: "0",
-		description: "RoboDojo layout set (Assets/Eval_Layout/RoboDojo/arx_x5/<eval-seed>)",
+		description:
+			"RoboDojo layout set (Assets/Eval_Layout/RoboDojo/arx_x5/<layout-set>; the env server's --eval-seed)",
 	});
-	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
+	pi.registerFlag("env-url", {
+		type: "string",
+		description: "Attach to a running env server instead of starting one",
+	});
 	// --detections / --depth unidepth: SAM3 masks with ids and UniDepth on the env server; --point:
 	// Molmo's point over services.molmo (../primitives/detections.ts, ../primitives/pointing.ts).
 	registerDetectionFlags(pi);
@@ -305,7 +309,7 @@ export default function robodojo(pi: ExtensionAPI) {
 		result: () => ({
 			task: robot.task.task,
 			seed: Number(robot.task.seed),
-			eval_seed: Number(flag("eval-seed", "0")),
+			eval_seed: Number(flag("layout-set", "0")),
 			dimension: meta?.dimension ?? null,
 			instruction: meta?.instruction ?? null,
 			success: obs?.success ?? false,
@@ -609,7 +613,7 @@ export default function robodojo(pi: ExtensionAPI) {
 
 	async function startEpisode() {
 		const { task, seed } = robot.task;
-		const endpoint = pi.getFlag("env") as string | undefined;
+		const endpoint = pi.getFlag("env-url") as string | undefined;
 		if (endpoint) env = await attach(endpoint, 1_200_000);
 		else {
 			const services = servicesDir(pi);
@@ -617,7 +621,7 @@ export default function robodojo(pi: ExtensionAPI) {
 				python: python(pi, "robodojo"),
 				args: [
 					...["-m", "pi_embodied_services.robots.robodojo.env_server"],
-					...["--task", task, "--seed", seed, "--eval-seed", flag("eval-seed", "0")],
+					...["--task", task, "--seed", seed, "--eval-seed", flag("layout-set", "0")],
 					...["--cuda-device", cudaDevice(pi) || "0"],
 					...detectionArgs(pi, { sam3: true }),
 				],
@@ -629,7 +633,7 @@ export default function robodojo(pi: ExtensionAPI) {
 			});
 		}
 		meta = await env.call<Meta>("env.get_env_meta");
-		const evalSeed = Number(flag("eval-seed", "0"));
+		const evalSeed = Number(flag("layout-set", "0"));
 		if (meta.task !== task || meta.eval_seed !== evalSeed)
 			throw new Error(
 				`env server runs ${meta.task} (eval seed ${meta.eval_seed}), not ${task} (eval seed ${evalSeed})`,

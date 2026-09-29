@@ -204,7 +204,7 @@ test("memory and exploration: reset restarts the seeded layout, the cell is meta
 	t.after(env.close);
 	await checkSimExplore({
 		load: metaworld,
-		values: { env: env.url, task: "reach-v3", seed: "0" },
+		values: { "env-url": env.url, task: "reach-v3", seed: "0" },
 		tag: "metaworld_reach-v3_s0",
 		resets: () => env.calls.filter((c) => c.method === "env.reset").length,
 		observe: "view_env_state",
@@ -215,7 +215,7 @@ test("memory and exploration: reset restarts the seeded layout, the cell is meta
 test("segment, back_project and set_gripper run the env server's methods with the manifest's parameters", async (t) => {
 	const env = await fakeMetaworld();
 	t.after(env.close);
-	const s = stubPi({ env: env.url, task: "reach-v3" });
+	const s = stubPi({ "env-url": env.url, task: "reach-v3" });
 	metaworld(s.pi);
 	await s.emit("session_start");
 	process.exitCode = undefined;
@@ -244,7 +244,7 @@ test("--detections / --unidepth: the env server's perception primitives; detect 
 	t.after(env.close);
 	const s = await checkDetections({
 		load: metaworld,
-		values: { env: env.url, task: "reach-v3" },
+		values: { "env-url": env.url, task: "reach-v3" },
 		calls: env.calls,
 		camera: "wrist",
 	});
@@ -257,7 +257,7 @@ test("--point: Molmo on the current images; the pixel's world xyz where the robo
 	t.after(env.close);
 	const { one } = await checkPoint({
 		load: metaworld,
-		values: { env: env.url, task: "reach-v3" },
+		values: { "env-url": env.url, task: "reach-v3" },
 		url: env.url,
 		calls: env.calls,
 		cameras: ["agentview", "wrist"],
@@ -340,7 +340,7 @@ async function fakeCodeEnv(run: Record<string, unknown>) {
 test("--code=true: run_code runs on the env server and its result becomes the observation and the success", async (t) => {
 	const env = await fakeCodeEnv({});
 	t.after(env.close);
-	const s = stubPi({ env: env.url, task: "reach-v3", code: "true", "code-api": "low" });
+	const s = stubPi({ "env-url": env.url, task: "reach-v3", code: "true", "code-api": "low" });
 	metaworld(s.pi);
 	await s.emit("session_start");
 	process.exitCode = undefined;

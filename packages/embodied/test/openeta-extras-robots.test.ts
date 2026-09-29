@@ -178,7 +178,7 @@ async function fakeLibero() {
 }
 
 const liberoFlags = (url: string, extra: Record<string, unknown> = {}) => ({
-	env: url,
+	"env-url": url,
 	"memory-profile": "local",
 	"memory-dir": corpus(),
 	...extra,
@@ -370,7 +370,7 @@ test("Franka --waypoints sends each segment as one bounded move_delta; --align-w
 	t.after(env.close);
 	const s = stubPi(
 		{
-			"robot-env": env.url,
+			"env-url": env.url,
 			python: setupStub(),
 			services: tmpdir(),
 			out: mkdtempSync(join(tmpdir(), "franka-out-")),
@@ -431,7 +431,7 @@ test("Franka waypoints: each leg starts from the measured TCP and reports whethe
 	t.after(env.close);
 	const s = stubPi(
 		{
-			"robot-env": env.url,
+			"env-url": env.url,
 			python: setupStub(),
 			services: tmpdir(),
 			out: mkdtempSync(join(tmpdir(), "franka-out-")),

@@ -1,8 +1,8 @@
 /**
  * RoboCasa365 robot for pi.
  *
- *   pi -e packages/embodied/src/robots/robocasa --task-name OpenDrawer --split target --seed 1
- *   pi -e packages/embodied/src/robots/robocasa --task-name OpenDrawer --split target --seed 1 --code=true --code-api=low
+ *   pi -e packages/embodied/src/robots/robocasa --task OpenDrawer --split target --seed 1
+ *   pi -e packages/embodied/src/robots/robocasa --task OpenDrawer --split target --seed 1 --code=true --code-api=low
  *      (run_code over the env server's registry; its low tier drives the 12-D `step`)
  *
  * Starts one RoboCasa env server per session (PandaOmron mobile manipulator) and attaches
@@ -150,7 +150,7 @@ export default function robocasa(pi: ExtensionAPI) {
 	// Every flag this robot registers is tracked: numbers fail closed, the result records them (../../infra/params.ts).
 	trackFlags(pi);
 	const flag = (name: string, fallback: string) => String(pi.getFlag(name) ?? fallback);
-	pi.registerFlag("task-name", {
+	pi.registerFlag("task", {
 		type: "string",
 		default: "OpenDrawer",
 		description: "RoboCasa task, e.g. OpenDrawer",
@@ -167,7 +167,10 @@ export default function robocasa(pi: ExtensionAPI) {
 		description: "RoboCasa365 manifest scene index 0-49 (its seed comes from the task table; empty = --seed)",
 	});
 	pi.registerFlag("hi-res", { type: "string", default: "0", description: "Hi-res agentview resolution (0 = off)" });
-	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
+	pi.registerFlag("env-url", {
+		type: "string",
+		description: "Attach to a running env server instead of starting one",
+	});
 	// --detections / --depth unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
 	registerDetectionFlags(pi);
 	// --point: Molmo's point over services.molmo (../primitives/pointing.ts).
@@ -200,10 +203,10 @@ export default function robocasa(pi: ExtensionAPI) {
 	let hist: Frame[] = [];
 	let lastPrompt: string | undefined;
 	let attempt = 1;
-	/** The resolved --task-name / --split / --scene of this episode, once `startEpisode` checked them against the table. */
+	/** The resolved --task / --split / --scene of this episode, once `startEpisode` checked them against the table. */
 	let picked: Cell | undefined;
 	const cell = () => ({
-		task: robot.task["task-name"],
+		task: robot.task.task,
 		split: robot.task.split,
 		// A manifest scene's seed comes from the table; --seed is ignored with --scene.
 		seed: picked?.seed !== undefined ? String(picked.seed) : robot.task.seed,
@@ -275,7 +278,7 @@ export default function robocasa(pi: ExtensionAPI) {
 			})[c] ?? false,
 		// RLDX-1 reads its checkpoint from RLDX_MODEL_PATH, as robocasa/serve.sh does.
 		services: { models: [RLDX, SAM3, MOLMO], python: () => python(pi, "robocasa", ["ROBOCASA_PYTHON"]) },
-		task: ["task-name", "split", "seed", "scene"],
+		task: ["task", "split", "seed", "scene"],
 		// The env server's code.api (the manifest's digest and what this run has), recorded per episode.
 		codeApi: () => env,
 		// Code mode (../../modes/code): the env server runs the program over the manifest's primitives; the result
@@ -385,7 +388,7 @@ export default function robocasa(pi: ExtensionAPI) {
 				return view(await capture({ action: "reset" }, out, elapsed), { agent_elapsed_s: elapsed });
 			},
 			prompt: () =>
-				EXPLORE.replaceAll("{{task_name}}", robot.task["task-name"])
+				EXPLORE.replaceAll("{{task_name}}", robot.task.task)
 					.replaceAll("{{split}}", robot.task.split)
 					.replaceAll("{{seed}}", robot.task.seed),
 		},
@@ -1083,7 +1086,7 @@ export default function robocasa(pi: ExtensionAPI) {
 		const { task, split, seed, scene } = cell();
 		const rldxClient = sessionRpc(service(pi, "rldx"));
 		vla = rldxClient;
-		const endpoint = pi.getFlag("env") as string | undefined;
+		const endpoint = pi.getFlag("env-url") as string | undefined;
 		const cuda = cudaDevice(pi) || undefined;
 		[env] = await Promise.all([
 			endpoint

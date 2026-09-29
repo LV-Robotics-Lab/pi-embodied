@@ -59,7 +59,7 @@ workstation install the services' ``ur5e`` extra (``ur-rtde``, cameras; add
 ``realsense-l515`` for an L515), copy ``config/example.yaml``, fill in the IP, the
 cameras, then ``--print-identity`` (arm_id), ``--read-pose`` (floor, begin joints),
 calibrate the cameras with ``robots/ur5e/calibrate.py`` and start pi with
-``pi -e packages/embodied/src/robots/ur5e --operator --arm-id <id> --robot-config <yaml>``.
+``pi -e packages/embodied/src/robots/ur5e --operator --arm <id> --robot-config <yaml>``.
 """
 
 from __future__ import annotations

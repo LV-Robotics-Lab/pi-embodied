@@ -195,7 +195,7 @@ test("an attached server must enforce pi's limits or tighter ones", async (t) =>
 	] as const) {
 		const m = await mockServer({ dual: false, limits });
 		t.after(m.close);
-		const f = fakePi({ operator: true, task: "banana_handover", "robot-env": m.url });
+		const f = fakePi({ operator: true, task: "banana_handover", "env-url": m.url });
 		piper(f.pi);
 		f.confirms.push(true);
 		await start(f);
@@ -205,7 +205,7 @@ test("an attached server must enforce pi's limits or tighter ones", async (t) =>
 	// Tighter is fine; the prompt names the limit in force.
 	const m = await mockServer({ dual: false, limits: { max_move_m: 0.02, max_yaw_rad: 0.1 } });
 	t.after(m.close);
-	const f = fakePi({ operator: true, task: "banana_handover", "robot-env": m.url });
+	const f = fakePi({ operator: true, task: "banana_handover", "env-url": m.url });
 	piper(f.pi);
 	f.confirms.push(true);
 	await start(f);
@@ -434,7 +434,7 @@ async function dualStarted(
 	const move =
 		flags["max-move"] === undefined ? {} : { limits: { max_move_m: Number(flags["max-move"]), max_yaw_rad: 0.2 } };
 	const m = await mockServer({ ...move, ...server });
-	const f = fakePi({ operator: true, task: "banana_handover", "robot-env": m.url, ...flags }, true, o);
+	const f = fakePi({ operator: true, task: "banana_handover", "env-url": m.url, ...flags }, true, o);
 	piperDual(f.pi);
 	f.confirms.push(...(o.confirms ?? [true]));
 	const started = await start(f);
@@ -546,7 +546,7 @@ test("the entry and the server config must agree on one or two arms", async () =
 	}
 	const m2 = await mockServer({ dual: true });
 	try {
-		const g = fakePi({ operator: true, task: "banana_handover", "robot-env": m2.url });
+		const g = fakePi({ operator: true, task: "banana_handover", "env-url": m2.url });
 		piper(g.pi);
 		await start(g);
 		assert.match(
@@ -733,7 +733,7 @@ test("piper refuses a non-numeric --max-move or --max-yaw before touching the ro
 
 test("the Piper records its front camera for the episode video and the live view", async () => {
 	const m = await mockServer({});
-	const f = fakePi({ operator: true, task: "banana_handover", "robot-env": m.url, units: "both" }, true, {});
+	const f = fakePi({ operator: true, task: "banana_handover", "env-url": m.url, units: "both" }, true, {});
 	piperDual(f.pi);
 	const frames: NdArray[] = [];
 	f.pi.events.on(FRAME_EVENT, (data) => frames.push(data as NdArray));
@@ -802,7 +802,7 @@ const PIPER_CODE = { code: "true", "code-real": true };
 test("piper --code: the server enforces pi's limits, every program is confirmed and the run is a state step", async (t) => {
 	const m = await mockServer({ dual: false, limits: { max_move_m: 0.03, max_yaw_rad: 0.2 } });
 	t.after(m.close);
-	const f = fakePi({ operator: true, task: "banana_handover", "robot-env": m.url, "max-move": "0.03", ...PIPER_CODE });
+	const f = fakePi({ operator: true, task: "banana_handover", "env-url": m.url, "max-move": "0.03", ...PIPER_CODE });
 	piper(f.pi);
 	f.confirms.push(true, true, false);
 	const { errors } = await start(f);
@@ -823,7 +823,7 @@ test("piper --code: the server enforces pi's limits, every program is confirmed 
 test("piper --code needs --code-real and --operator before anything moves", async (t) => {
 	const m = await mockServer({ dual: false });
 	t.after(m.close);
-	const f = fakePi({ operator: true, task: "banana_handover", "robot-env": m.url, code: "true" });
+	const f = fakePi({ operator: true, task: "banana_handover", "env-url": m.url, code: "true" });
 	piper(f.pi);
 	f.confirms.push(true);
 	await start(f);

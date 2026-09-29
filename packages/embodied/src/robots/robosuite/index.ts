@@ -162,7 +162,10 @@ export default function robosuite(pi: ExtensionAPI) {
 		default: String(MAX_MOVE_M),
 		description: "Largest translation one move_to / move_delta may command, m",
 	});
-	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
+	pi.registerFlag("env-url", {
+		type: "string",
+		description: "Attach to a running env server instead of starting one",
+	});
 
 	let env: RpcClient;
 	let obs: Obs;
@@ -753,7 +756,7 @@ export default function robosuite(pi: ExtensionAPI) {
 		if (!TASKS.includes(task as Task)) throw new Error(`unknown --task ${task}: ${TASKS.join(", ")}`);
 		if (TWO_ARM.includes(task as Task) && pi.getFlag("geometry") === true)
 			throw new Error(`--geometry needs a one-arm task; ${task} has two arms`);
-		const endpoint = pi.getFlag("env") as string | undefined;
+		const endpoint = pi.getFlag("env-url") as string | undefined;
 		if (endpoint) env = await attach(endpoint);
 		else {
 			const services = servicesDir(pi);

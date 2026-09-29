@@ -138,7 +138,7 @@ function serverRobots(): Record<string, string> {
 	return Object.fromEntries(rows.map((m, i) => [m[1], table.slice(m.index, rows[i + 1]?.index ?? table.length)]));
 }
 
-test("--robot: the same arms as the env server's ROBOTS, each with the env ids, wrist camera and view transform it measured", () => {
+test("--arm: the same arms as the env server's ROBOTS, each with the env ids, wrist camera and view transform it measured", () => {
 	const rows = serverRobots();
 	assert.deepEqual(Object.keys(rows), ROBOT_IDS);
 	assert.deepEqual(ROBOT_IDS, ["panda", "xarm6_robotiq", "widowxai", "panda_stick", "panda_pair", "widowx250s"]);
@@ -172,7 +172,7 @@ test("--robot: the same arms as the env server's ROBOTS, each with the env ids, 
 		// The scene's own camera (agentview="...") or the shared oblique one.
 		assert.equal(r.setup.agentview, /agentview="([a-z0-9_]+)"/.exec(row)?.[1] ?? "oblique", id);
 	}
-	// The default keeps every Panda constant the robot had before --robot.
+	// The default keeps every Panda constant the robot had before --arm.
 	const panda = ROBOTS.panda;
 	assert.equal(panda.vectors, VECTORS);
 	assert.equal(panda.stepM, STEP_M);
@@ -184,11 +184,11 @@ test("--robot: the same arms as the env server's ROBOTS, each with the env ids, 
 	assert.equal(panda.arm, "Franka Panda arm");
 });
 
-test("--robot is checked against the env id: a rig runs its own Panda, a stock scene must be one the arm was measured on", () => {
+test("--arm is checked against the env id: a rig runs its own Panda, a stock scene must be one the arm was measured on", () => {
 	for (const envId of ENV_IDS) if (!OTHER_ROBOT_ENVS[envId]) assert.equal(robotFor("panda", envId), ROBOTS.panda);
 	// A task built for another robot names it; that robot runs it.
 	for (const [envId, owner] of Object.entries(OTHER_ROBOT_ENVS)) {
-		assert.throws(() => robotFor("panda", envId), new RegExp(`${envId} runs on --robot ${owner}`));
+		assert.throws(() => robotFor("panda", envId), new RegExp(`${envId} runs on --arm ${owner}`));
 		assert.equal(robotFor(owner!, envId), ROBOTS[owner as keyof typeof ROBOTS]);
 	}
 	// The server's own table of them is the same.
@@ -198,8 +198,8 @@ test("--robot is checked against the env id: a rig runs its own Panda, a stock s
 		OTHER_ROBOT_ENVS,
 	);
 	assert.equal(robotFor("xarm6_robotiq", "StackCube-v1"), ROBOTS.xarm6_robotiq);
-	assert.throws(() => robotFor("xarm6_robotiq", "BlockPAP-v1"), /real2sim rig .*--robot panda only/);
-	assert.throws(() => robotFor("widowxai", "BlockStack-v1"), /--robot panda only/);
+	assert.throws(() => robotFor("xarm6_robotiq", "BlockPAP-v1"), /real2sim rig .*--arm panda only/);
+	assert.throws(() => robotFor("widowxai", "BlockStack-v1"), /--arm panda only/);
 	// The goal beyond the xArm6's reach; the WidowX AI's reach ends before the stock scenes' objects.
 	assert.throws(() => robotFor("xarm6_robotiq", "PushCube-v1"), /runs PickCube-v1, .*not PushCube-v1/);
 	// PullCubeTool's "within 0.6 m of the base" holds at reset on ~8 % of seeds with the nearer xArm6 base.
@@ -207,12 +207,12 @@ test("--robot is checked against the env id: a rig runs its own Panda, a stock s
 	assert.throws(() => robotFor("widowxai", "StackCube-v1"), /runs PickCube-v1, PickCubeWidowXAI-v1, not StackCube-v1/);
 	assert.throws(
 		() => robotFor("ur5", "PickCube-v1"),
-		/unknown --robot ur5; one of panda, xarm6_robotiq, widowxai, panda_stick, panda_pair, widowx250s/,
+		/unknown --arm ur5; one of panda, xarm6_robotiq, widowxai, panda_stick, panda_pair, widowx250s/,
 	);
-	assert.throws(() => robotFor("toString", "PickCube-v1"), /unknown --robot/);
+	assert.throws(() => robotFor("toString", "PickCube-v1"), /unknown --arm/);
 });
 
-test("--robot units: every arm's MV_* is one ~2 cm decision along its measured base-frame axis", () => {
+test("--arm units: every arm's MV_* is one ~2 cm decision along its measured base-frame axis", () => {
 	for (const id of ROBOT_IDS) {
 		const r = ROBOTS[id];
 		for (const unit of MOVE_UNITS) {
@@ -406,10 +406,10 @@ async function fakeEnv(
 	return { url, calls, close };
 }
 
-test("--robot widowxai: a wrist-less arm starts on its own server, observes the agentview alone and says so in the prompt", async (t) => {
+test("--arm widowxai: a wrist-less arm starts on its own server, observes the agentview alone and says so in the prompt", async (t) => {
 	const env = await fakeEnv("widowxai", ROBOTS.widowxai.setup, false);
 	t.after(env.close);
-	const s = stubPi({ env: env.url, "env-id": "PickCube-v1", robot: "widowxai" });
+	const s = stubPi({ "env-url": env.url, task: "PickCube-v1", arm: "widowxai" });
 	maniskill(s.pi);
 	await s.emit("session_start");
 	process.exitCode = undefined;
@@ -447,10 +447,10 @@ test("--robot widowxai: a wrist-less arm starts on its own server, observes the 
 	assert.equal(result?.maniskill_robot, "widowxai");
 });
 
-test("--robot panda_stick: no gripper, so move_delta refuses `gripper`, the state has no gripper fields, the prompt says stick", async (t) => {
+test("--arm panda_stick: no gripper, so move_delta refuses `gripper`, the state has no gripper fields, the prompt says stick", async (t) => {
 	const env = await fakeEnv("panda_stick", ROBOTS.panda_stick.setup, false, "PushT-v1");
 	t.after(env.close);
-	const s = stubPi({ env: env.url, "env-id": "PushT-v1", robot: "panda_stick" });
+	const s = stubPi({ "env-url": env.url, task: "PushT-v1", arm: "panda_stick" });
 	maniskill(s.pi);
 	await s.emit("session_start");
 	process.exitCode = undefined;
@@ -467,13 +467,13 @@ test("--robot panda_stick: no gripper, so move_delta refuses `gripper`, the stat
 		[{ delta_xyz: [0, 0, -0.02], gripper: "close" }, { delta_xyz: [0, 0, -0.04] }],
 	);
 	// The Panda cannot run it.
-	assert.throws(() => robotFor("panda", "DrawTriangle-v1"), /runs on --robot panda_stick/);
+	assert.throws(() => robotFor("panda", "DrawTriangle-v1"), /runs on --arm panda_stick/);
 });
 
-test("--units on --robot panda_stick: act has no GRASP / RELEASE and the units state no gripper", async (t) => {
+test("--units on --arm panda_stick: act has no GRASP / RELEASE and the units state no gripper", async (t) => {
 	const env = await fakeEnv("panda_stick", ROBOTS.panda_stick.setup, false, "DrawTriangle-v1");
 	t.after(env.close);
-	const s = stubPi({ env: env.url, "env-id": "DrawTriangle-v1", robot: "panda_stick", units: "true" });
+	const s = stubPi({ "env-url": env.url, task: "DrawTriangle-v1", arm: "panda_stick", units: "true" });
 	maniskill(s.pi);
 	const units = s.tools.get("act").parameters.properties.unit.enum as string[];
 	assert.ok(!units.includes("GRASP") && !units.includes("RELEASE") && units.includes("MV_DOWN"));
@@ -486,10 +486,10 @@ test("--units on --robot panda_stick: act has no GRASP / RELEASE and the units s
 	assert.doesNotMatch(r.content[0].text as string, /gripper_width|is_grasped/);
 });
 
-test("--robot panda_pair: move_delta takes `arm`, moves that arm alone in the world frame, and the state is per arm", async (t) => {
+test("--arm panda_pair: move_delta takes `arm`, moves that arm alone in the world frame, and the state is per arm", async (t) => {
 	const env = await fakeEnv("panda_pair", ROBOTS.panda_pair.setup, false, "TwoRobotStackCube-v1", ["left", "right"]);
 	t.after(env.close);
-	const s = stubPi({ env: env.url, "env-id": "TwoRobotStackCube-v1", robot: "panda_pair" });
+	const s = stubPi({ "env-url": env.url, task: "TwoRobotStackCube-v1", arm: "panda_pair" });
 	maniskill(s.pi);
 	const tool = s.tools.get("move_delta");
 	assert.deepEqual(tool.parameters.properties.arm.enum, ["left", "right"]);
@@ -513,10 +513,10 @@ test("--robot panda_pair: move_delta takes `arm`, moves that arm alone in the wo
 	assert.equal((ROBOTS.panda as ManiskillRobot).arms, undefined);
 });
 
-test("--units on --robot panda_pair: act takes `arm` and drives that arm", async (t) => {
+test("--units on --arm panda_pair: act takes `arm` and drives that arm", async (t) => {
 	const env = await fakeEnv("panda_pair", ROBOTS.panda_pair.setup, false, "TwoRobotPickCube-v1", ["left", "right"]);
 	t.after(env.close);
-	const s = stubPi({ env: env.url, "env-id": "TwoRobotPickCube-v1", robot: "panda_pair", units: "true" });
+	const s = stubPi({ "env-url": env.url, task: "TwoRobotPickCube-v1", arm: "panda_pair", units: "true" });
 	maniskill(s.pi);
 	assert.ok("arm" in s.tools.get("act").parameters.properties);
 	await s.emit("session_start");
@@ -530,10 +530,10 @@ test("--units on --robot panda_pair: act takes `arm` and drives that arm", async
 	);
 });
 
-test("--robot widowx250s: the bridge twin's own camera and a world-frame move, stated in the prompt and move_delta", async (t) => {
+test("--arm widowx250s: the bridge twin's own camera and a world-frame move, stated in the prompt and move_delta", async (t) => {
 	const env = await fakeEnv("widowx250s", ROBOTS.widowx250s.setup, false, "PutCarrotOnPlateInScene-v1");
 	t.after(env.close);
-	const s = stubPi({ env: env.url, "env-id": "PutCarrotOnPlateInScene-v1", robot: "widowx250s" });
+	const s = stubPi({ "env-url": env.url, task: "PutCarrotOnPlateInScene-v1", arm: "widowx250s" });
 	maniskill(s.pi);
 	assert.match(s.tools.get("move_delta").description, /world-frame \[dx, dy, dz\] in metres: \+x toward the camera/);
 	await s.emit("session_start");
@@ -543,15 +543,15 @@ test("--robot widowx250s: the bridge twin's own camera and a world-frame move, s
 	assert.match(prompt, /`move_delta` takes a world-frame `\[dx, dy, dz\]` in metres: \+x toward the camera/);
 	assert.match(prompt, /The table top is at about z = 0\.87/);
 	assert.doesNotMatch(prompt, /\{\{|away from the robot base/);
-	assert.throws(() => robotFor("panda", "PutSpoonOnTableClothInScene-v1"), /runs on --robot widowx250s/);
+	assert.throws(() => robotFor("panda", "PutSpoonOnTableClothInScene-v1"), /runs on --arm widowx250s/);
 });
 
-test("the Panda's prompt is unchanged by --robot, and a server running another arm than --robot is refused", async (t) => {
+test("the Panda's prompt is unchanged by --arm, and a server running another arm than --arm is refused", async (t) => {
 	const panda = await fakeEnv(undefined, VIEW_SETUP, true);
 	t.after(panda.close);
-	const s = stubPi({ env: panda.url, "env-id": "PickCube-v1" });
+	const s = stubPi({ "env-url": panda.url, task: "PickCube-v1" });
 	maniskill(s.pi);
-	assert.equal(s.flags.robot, "panda");
+	assert.equal(s.flags.arm, "panda");
 	await s.emit("session_start");
 	process.exitCode = undefined;
 	// The robot's tools, then memory's read-only file tools.
@@ -581,7 +581,7 @@ test("the Panda's prompt is unchanged by --robot, and a server running another a
 
 	const xarm = await fakeEnv("widowxai", ROBOTS.xarm6_robotiq.setup, true);
 	t.after(xarm.close);
-	const x = stubPi({ env: xarm.url, "env-id": "PickCube-v1", robot: "xarm6_robotiq" });
+	const x = stubPi({ "env-url": xarm.url, task: "PickCube-v1", arm: "xarm6_robotiq" });
 	maniskill(x.pi);
 	await x.emit("session_start");
 	process.exitCode = undefined;
@@ -589,15 +589,15 @@ test("the Panda's prompt is unchanged by --robot, and a server running another a
 	assert.ok(!xarm.calls.some((c) => c.method === "env.reset"), "the robot never reset");
 });
 
-test("--units on --robot widowxai: no wrist view, so fine steps, no target_in_wrist and no wrist rules; the Panda keeps them", async (t) => {
+test("--units on --arm widowxai: no wrist view, so fine steps, no target_in_wrist and no wrist rules; the Panda keeps them", async (t) => {
 	const plugins = "recovery,auto_release,proprioception,variable_step,action_chunk,rotation,plan,mem_text";
 	const run = async (robot: string | undefined, setup: Record<string, unknown>, wrist: boolean) => {
 		const env = await fakeEnv(robot, setup, wrist);
 		t.after(env.close);
 		const s = stubPi({
-			env: env.url,
-			"env-id": "PickCube-v1",
-			...(robot ? { robot } : {}),
+			"env-url": env.url,
+			task: "PickCube-v1",
+			...(robot ? { arm: robot } : {}),
 			units: "true",
 			// The robot's default (auto) on the WidowX AI: naming a wrist-view plugin there refuses to start.
 			"units-plugins": wrist ? plugins : "auto",
@@ -619,7 +619,7 @@ test("--units on --robot widowxai: no wrist view, so fine steps, no target_in_wr
 	};
 	const w = await run("widowxai", ROBOTS.widowxai.setup, false);
 	assert.deepEqual(w.active, ["act", "plan", "read", "ls", "grep", "find", "write", "finish"]);
-	assert.ok(!("target_in_wrist" in w.schema) && !("plan" in w.schema), "act at load already follows --robot");
+	assert.ok(!("target_in_wrist" in w.schema) && !("plan" in w.schema), "act at load already follows --arm");
 	assert.equal(w.servos, 1, "one 2 cm unit: the fine step");
 	assert.match(w.head, /target_in_wrist ignored: this robot has no wrist view/);
 	assert.doesNotMatch(w.prompt, /WRIST CHECK|target_in_wrist|ACTION PLAN|coarse/);
@@ -646,7 +646,7 @@ test("--units on --robot widowxai: no wrist view, so fine steps, no target_in_wr
 test("--code=true: run_code runs on the env server and its result becomes the observation, the grasp and the success", async (t) => {
 	const env = await fakeEnv(undefined, VIEW_SETUP, true);
 	t.after(env.close);
-	const s = stubPi({ env: env.url, "env-id": "PickCube-v1", code: "true", "code-api": "low-noexamples" });
+	const s = stubPi({ "env-url": env.url, task: "PickCube-v1", code: "true", "code-api": "low-noexamples" });
 	maniskill(s.pi);
 	await s.emit("session_start");
 	process.exitCode = undefined;
@@ -679,7 +679,7 @@ test("--code=true: run_code runs on the env server and its result becomes the ob
 test("--ik: preview_reach passes the manifest's xyz / quat_xyzw straight to the env server (Panda and xArm6 only)", async (t) => {
 	const env = await fakeEnv(undefined, VIEW_SETUP, true);
 	t.after(env.close);
-	const s = stubPi({ env: env.url, "env-id": "PickCube-v1", ik: "http://127.0.0.1:1" });
+	const s = stubPi({ "env-url": env.url, task: "PickCube-v1", ik: "http://127.0.0.1:1" });
 	maniskill(s.pi);
 	await s.emit("session_start");
 	process.exitCode = undefined;
@@ -692,7 +692,7 @@ test("--ik: preview_reach passes the manifest's xyz / quat_xyzw straight to the 
 test("a drawing scene's spent step budget ends a move and says to finish", async (t) => {
 	const env = await fakeEnv("panda_stick", ROBOTS.panda_stick.setup, false, "DrawTriangle-v1");
 	t.after(env.close);
-	const s = stubPi({ env: env.url, "env-id": "DrawTriangle-v1", robot: "panda_stick" });
+	const s = stubPi({ "env-url": env.url, task: "DrawTriangle-v1", arm: "panda_stick" });
 	maniskill(s.pi);
 	await s.emit("session_start");
 	process.exitCode = undefined;

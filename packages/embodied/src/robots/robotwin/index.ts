@@ -1,8 +1,8 @@
 /**
  * RoboTwin robot for pi.
  *
- *   pi -e packages/embodied/src/robots/robotwin --task-name beat_block_hammer --seed 100000
- *   pi -e packages/embodied/src/robots/robotwin --task-name beat_block_hammer --seed 100000 --code=true --code-api=low   (run_code)
+ *   pi -e packages/embodied/src/robots/robotwin --task beat_block_hammer --seed 100000
+ *   pi -e packages/embodied/src/robots/robotwin --task beat_block_hammer --seed 100000 --code=true --code-api=low   (run_code)
  *
  * Starts one RoboTwin env server per session (the RLinf RoboTwin facade) and
  * attaches to a running LingBot-VLA WebSocket server (see serve.sh). Tools follow
@@ -395,7 +395,7 @@ export default function robotwin(pi: ExtensionAPI) {
 	// Every flag this robot registers is tracked: numbers fail closed, the result records them (../../infra/params.ts).
 	trackFlags(pi);
 	const flag = (name: string, fallback: string) => String(pi.getFlag(name) ?? fallback);
-	pi.registerFlag("task-name", { type: "string", default: "beat_block_hammer", description: "RoboTwin task" });
+	pi.registerFlag("task", { type: "string", default: "beat_block_hammer", description: "RoboTwin task" });
 	pi.registerFlag("task-config", {
 		type: "string",
 		default: "demo_randomized",
@@ -408,7 +408,10 @@ export default function robotwin(pi: ExtensionAPI) {
 		default: process.env.ROBOTWIN_ASSETS_PATH ?? "",
 		description: "RoboTwin asset snapshot",
 	});
-	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
+	pi.registerFlag("env-url", {
+		type: "string",
+		description: "Attach to a running env server instead of starting one",
+	});
 	// --detections / --depth unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
 	registerDetectionFlags(pi);
 	// --point: Molmo's point over services.molmo (../primitives/pointing.ts).
@@ -422,7 +425,7 @@ export default function robotwin(pi: ExtensionAPI) {
 	let snapshots: Snapshot[] = [];
 	let policyActions = 0;
 	let nativeActions = 0;
-	const cell = () => ({ task: robot.task["task-name"], config: robot.task["task-config"], seed: robot.task.seed });
+	const cell = () => ({ task: robot.task.task, config: robot.task["task-config"], seed: robot.task.seed });
 	const tag = (seed: string) => `robotwin_${cell().task}_${cell().config}_s${seed}`;
 	/** Local corpora (and exploration) key the seed-0 reference like the cell; the published HF corpus by task. */
 	const local = () => pi.getFlag("memory-profile") === "local" || pi.getFlag("explore") === true;
@@ -469,7 +472,7 @@ export default function robotwin(pi: ExtensionAPI) {
 				lingbot: skills.lingbot?.on === true,
 			})[c] ?? false,
 		services: { models: [SAM3, MOLMO] },
-		task: ["task-name", "task-config", "seed"],
+		task: ["task", "task-config", "seed"],
 		// The env server's code.api (the manifest's digest and what this run has), recorded per episode.
 		codeApi: () => env,
 		// Code mode (../../modes/code): the env server runs the program over the manifest's primitives; the result carries the
@@ -1167,7 +1170,7 @@ export default function robotwin(pi: ExtensionAPI) {
 		policyActions = nativeActions = 0;
 		seeds.reset();
 		const { task, config, seed } = cell();
-		const endpoint = pi.getFlag("env") as string | undefined;
+		const endpoint = pi.getFlag("env-url") as string | undefined;
 		if (endpoint) env = await attach(endpoint, 900_000);
 		else {
 			const services = servicesDir(pi);

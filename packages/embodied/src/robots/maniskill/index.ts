@@ -3,10 +3,10 @@
  *
  *   pi -e packages/embodied/src/robots/maniskill --seed 0                    (BlockPAP-v1, Show-Harness's default scene)
  *   pi -e packages/embodied/src/robots/maniskill --units --scene table_tex=white,cam_t=0302 --seed 3
- *   pi -e packages/embodied/src/robots/maniskill --env-id StackCube-v1 --seed 0   (a stock ManiSkill scene)
- *   pi -e packages/embodied/src/robots/maniskill --env-id PlaceSphere-v1 --seed 0  (one of OpenETA's tasks, ENV_IDS)
- *   pi -e packages/embodied/src/robots/maniskill --robot xarm6_robotiq --env-id PickCube-v1 --seed 0  (another arm, ROBOTS)
- *   pi -e packages/embodied/src/robots/maniskill --env-id PickCube-v1 --seed 0 --code=true   (run_code over the env server's registry)
+ *   pi -e packages/embodied/src/robots/maniskill --task StackCube-v1 --seed 0   (a stock ManiSkill scene)
+ *   pi -e packages/embodied/src/robots/maniskill --task PlaceSphere-v1 --seed 0  (one of OpenETA's tasks, ENV_IDS)
+ *   pi -e packages/embodied/src/robots/maniskill --arm xarm6_robotiq --task PickCube-v1 --seed 0  (another arm, ROBOTS)
+ *   pi -e packages/embodied/src/robots/maniskill --task PickCube-v1 --seed 0 --code=true   (run_code over the env server's registry)
  *
  * BlockPAP-v1 / BlockStack-v1 are RLinf's real2sim replicas of the real Franka rig (services/.../
  * robots/maniskill/scenes.py; fetch_real2sim.sh installs them): their calibrated front RealSense
@@ -15,7 +15,7 @@
  * traj_id, layout wide|none).
  *
  * Starts one ManiSkill env server per session (services/.../robots/maniskill/env_server.py, the
- * `maniskill` venv; rendering needs a GPU). `--robot` picks the arm (ROBOTS: the Panda by default, an xArm6
+ * `maniskill` venv; rendering needs a GPU). `--arm` picks the arm (ROBOTS: the Panda by default, an xArm6
  * with a Robotiq gripper, a WidowX AI without a wrist camera); the rigs run their own Panda. `move_delta`, the units hook `apply`
  * and code mode's `move_delta` run one server method (env.move_delta): a base-frame delta in metres becomes ~2 cm
  * decisions, each a closed-loop servo of 2-8 control steps to its waypoint (Show-Harness's step calibration and
@@ -62,10 +62,10 @@ const section = (text: string, name: string, on: boolean) =>
 const tagPart = (s: string) => s.replace(/[^\w.-]+/g, "-");
 
 /**
- * `--env-id` takes one of these: the RLinf rigs (BlockPAP-v1 default, BlockStack-v1) and the stock
+ * `--task` takes one of these: the RLinf rigs (BlockPAP-v1 default, BlockStack-v1) and the stock
  * ManiSkill tabletop tasks the env server has a task text and a visibility list for (its INSTRUCTIONS
  * / TASK_ACTORS; from PlaceSphere-v1 on, OpenETA's ManiSkill table, sim/envs/maniskill at 7d4a0a1: the
- * Panda's, then those another `--robot` owns, OTHER_ROBOT_ENVS). The same list, in the same order.
+ * Panda's, then those another `--arm` owns, OTHER_ROBOT_ENVS). The same list, in the same order.
  */
 export const ENV_IDS = [
 	"BlockPAP-v1",
@@ -97,7 +97,7 @@ export const ENV_IDS = [
 export type EnvId = (typeof ENV_IDS)[number];
 /** The RLinf rigs among ENV_IDS: they fix their own robot (a Panda). */
 const RIGS: readonly string[] = ENV_IDS.slice(0, 2);
-/** Stock tasks built for another robot than the Panda (env server _OTHER_ROBOT): only that `--robot` runs them. */
+/** Stock tasks built for another robot than the Panda (env server _OTHER_ROBOT): only that `--arm` runs them. */
 export const OTHER_ROBOT_ENVS: Partial<Record<EnvId, string>> = {
 	"PickCubeWidowXAI-v1": "widowxai",
 	"PushT-v1": "panda_stick",
@@ -350,7 +350,7 @@ const WIDOWX250S: ManiskillRobot = {
 	},
 };
 
-/** One `--robot`: the env server's ROBOTS row (services/.../maniskill/env_server.py) and what pi needs of it. */
+/** One `--arm`: the env server's ROBOTS row (services/.../maniskill/env_server.py) and what pi needs of it. */
 export type ManiskillRobot = {
 	/** How SYSTEM.md names it: "You control a <arm> in the ManiSkill simulator". */
 	arm: string;
@@ -379,7 +379,7 @@ const ONE_VIEW = { images: "the image", grasp_view: "image" };
 const TWO_VIEWS = { images: "both images", grasp_view: "wrist image" };
 
 /**
- * `--robot`: the arms the env server's ROBOTS table drives in pd_ee_delta_pos (ManiSkill 3.0.1 agents with a
+ * `--arm`: the arms the env server's ROBOTS table drives in pd_ee_delta_pos (ManiSkill 3.0.1 agents with a
  * parallel gripper that the stock table scene places), measured on the box with the pi motion path (4 units
  * of each MV_* from the PickCube / StackCube seed 0 reset, a closed-loop servo per 2 cm waypoint). The same
  * ids in the same order as the server's table; panda is the default and keeps every existing constant.
@@ -409,29 +409,29 @@ export const hasWrist = (r: ManiskillRobot) => r.setup.wrist_mount !== "none";
 export const hasGripper = (r: ManiskillRobot) => r.gripper !== false;
 
 /**
- * The robot an episode runs: `--robot` checked against ROBOTS and the env id (a rig runs its own Panda; a stock
+ * The robot an episode runs: `--arm` checked against ROBOTS and the env id (a rig runs its own Panda; a stock
  * scene must be one the robot was measured on). Throws with the choices otherwise.
  */
 export function robotFor(robot: string, envId: string): ManiskillRobot {
-	if (!Object.hasOwn(ROBOTS, robot)) throw new Error(`unknown --robot ${robot}; one of ${ROBOT_IDS.join(", ")}`);
+	if (!Object.hasOwn(ROBOTS, robot)) throw new Error(`unknown --arm ${robot}; one of ${ROBOT_IDS.join(", ")}`);
 	const spec: ManiskillRobot = ROBOTS[robot as RobotId];
 	if (RIGS.includes(envId)) {
-		if (robot !== "panda") throw new Error(`${envId} is a real2sim rig with its own Panda; --robot panda only`);
+		if (robot !== "panda") throw new Error(`${envId} is a real2sim rig with its own Panda; --arm panda only`);
 	} else if (!spec.envs.includes(envId as EnvId)) {
 		const owner = OTHER_ROBOT_ENVS[envId as EnvId];
 		throw new Error(
-			`--robot ${robot} runs ${spec.envs.join(", ")}, not ${envId}${owner ? ` (${envId} runs on --robot ${owner})` : ""}`,
+			`--arm ${robot} runs ${spec.envs.join(", ")}, not ${envId}${owner ? ` (${envId} runs on --arm ${owner})` : ""}`,
 		);
 	}
 	return spec;
 }
 
 const round = (v: number, d = 4) => Number(v.toFixed(d));
-/** The --robot values whose env server serves env.preview_reach from an IK model (env server IK_MODELS). */
+/** The --arm values whose env server serves env.preview_reach from an IK model (env server IK_MODELS). */
 export const IK_ROBOTS: readonly string[] = ["panda", "xarm6_robotiq"];
 
 /**
- * The env action width of each `--robot` (services robots/maniskill/flywheel.py SPACES): pd_ee_delta_pos and
+ * The env action width of each `--arm` (services robots/maniskill/flywheel.py SPACES): pd_ee_delta_pos and
  * the gripper, the stick's translation alone, the WidowX 250 S's pose action, the pair's two arms.
  */
 export const FLYWHEEL_ACTION: Record<RobotId, number> = {
@@ -514,7 +514,7 @@ export default function maniskill(pi: ExtensionAPI) {
 	// Every flag this robot registers is tracked: numbers fail closed, the result records them (../../infra/params.ts).
 	trackFlags(pi);
 	const flag = (name: string, fallback: string) => String(pi.getFlag(name) ?? fallback);
-	pi.registerFlag("env-id", {
+	pi.registerFlag("task", {
 		type: "string",
 		default: "BlockPAP-v1",
 		description: `ManiSkill env id: ${ENV_IDS.join(", ")} (BlockPAP-v1 / BlockStack-v1 are the RLinf rigs)`,
@@ -525,13 +525,16 @@ export default function maniskill(pi: ExtensionAPI) {
 		description:
 			"RLinf rig options key=value,...: table_tex (006 wood | white | black | 001-021), cam_t (og | 0302 | 0303), traj_id (random | 0 | 15 | 25 | 40 | 45), layout (wide | none)",
 	});
-	pi.registerFlag("robot", {
+	pi.registerFlag("arm", {
 		type: "string",
 		default: "panda",
 		description: `The arm: ${ROBOT_IDS.join(", ")} (the RLinf rigs run their own Panda)`,
 	});
 	pi.registerFlag("seed", { type: "string", default: "0", description: "Reset seed (the object layout)" });
-	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
+	pi.registerFlag("env-url", {
+		type: "string",
+		description: "Attach to a running env server instead of starting one",
+	});
 	// --detections / --depth unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
 	// --ik: preview_reach over the env server's IK check (../ik.ts; the Panda and the xArm6).
 	registerIkFlag(pi);
@@ -560,14 +563,14 @@ export default function maniskill(pi: ExtensionAPI) {
 	let tableZ = 0;
 	/** The views' letterbox square (meta.view_size), for Flash's pixel -> raw pixel mapping. */
 	let viewSize = 256;
-	/** The --robot of this episode (ROBOTS), fixed at start. */
+	/** The --arm of this episode (ROBOTS), fixed at start. */
 	let robotId: RobotId = "panda";
 	const arm = (): ManiskillRobot => ROBOTS[robotId];
 	const text = () => (rig ? SCENE_TEXT.rig : arm().scene);
 	const wrist = () => rig || hasWrist(arm());
 	const gripping = () => rig || hasGripper(arm());
-	/** The --robot flag's arm, read at load (the `move_delta` schema, units' arms) before the robot starts. */
-	const flagRobot = (): ManiskillRobot | undefined => ROBOTS[String(pi.getFlag("robot") ?? "panda") as RobotId];
+	/** The --arm flag's arm, read at load (the `move_delta` schema, units' arms) before the robot starts. */
+	const flagRobot = (): ManiskillRobot | undefined => ROBOTS[String(pi.getFlag("arm") ?? "panda") as RobotId];
 	/** A two-arm robot's arm names (undefined: one arm). */
 	const arms = () => (rig ? undefined : arm().arms);
 	/** One arm's proprioception (`a` undefined: the one arm). */
@@ -593,10 +596,10 @@ export default function maniskill(pi: ExtensionAPI) {
 	};
 	/** raw/maniskill/<robot>/<env-id>/<scene>/seed_NNN (services robots/maniskill/flywheel.py). */
 	const flyMeta = () => ({
-		path: [robotId, robot.task["env-id"], sceneTag(), `seed_${robot.task.seed.padStart(3, "0")}`],
+		path: [robotId, robot.task.task, sceneTag(), `seed_${robot.task.seed.padStart(3, "0")}`],
 		metadata: {
 			maniskill_robot: robotId,
-			env_id: robot.task["env-id"],
+			env_id: robot.task.task,
 			scene: robot.task.scene ?? "",
 			seed: Number(robot.task.seed),
 			task_language: language,
@@ -608,12 +611,12 @@ export default function maniskill(pi: ExtensionAPI) {
 
 	// Another arm's memory is its own cell: `maniskill_<robot>_<env-id>...` (the Panda keeps `maniskill_<env-id>...`).
 	const tag = (seed: string) =>
-		`maniskill_${robotId === "panda" ? "" : `${robotId}_`}${tagPart(robot.task["env-id"])}${robot.task.scene ? `_${tagPart(robot.task.scene)}` : ""}_s${seed}`;
+		`maniskill_${robotId === "panda" ? "" : `${robotId}_`}${tagPart(robot.task.task)}${robot.task.scene ? `_${tagPart(robot.task.scene)}` : ""}_s${seed}`;
 	const robot = defineRobot(pi, {
 		name: "maniskill",
 		// Tools and code primitives: ../../primitives/manifests/maniskill.json (the env server reads it too).
 		manifest: "maniskill",
-		// Read at load and at session start (from --robot, like the move frame the description states).
+		// Read at load and at session start (from --arm, like the move frame the description states).
 		vars: () => {
 			const r = flagRobot();
 			return {
@@ -637,10 +640,10 @@ export default function maniskill(pi: ExtensionAPI) {
 				sam3: pi.getFlag("detections") === true && Boolean(service(pi, "sam3")),
 				unidepth: Boolean(String(pi.getFlag("depth") ?? "").trim()),
 				// env.preview_reach answers from an IK model the Panda and the xArm6 have (env server IK_MODELS).
-				ik: pi.getFlag("ik") === true && IK_ROBOTS.includes(flag("robot", "panda")),
+				ik: pi.getFlag("ik") === true && IK_ROBOTS.includes(flag("arm", "panda")),
 			})[c] ?? false,
 		services: { models: [SAM3, MOLMO] },
-		task: ["env-id", "seed", "scene"],
+		task: ["task", "seed", "scene"],
 		// The env server's primitive registry (code.api), recorded per episode.
 		codeApi: () => env,
 		// Code mode (../code): the env server runs the program against that registry; the result
@@ -661,10 +664,10 @@ export default function maniskill(pi: ExtensionAPI) {
 		},
 		keepImages: 4,
 		video: true,
-		flywheel: { spec: FLYWHEEL, select: () => `${robotId}/${robot.task["env-id"]}/${sceneTag()}` },
+		flywheel: { spec: FLYWHEEL, select: () => `${robotId}/${robot.task.task}/${sceneTag()}` },
 		// Observations carry the agentview then the wrist image (the agentview alone on a robot without one).
 		vdm: () => {
-			const r = ROBOTS[String(pi.getFlag("robot") ?? "panda") as RobotId];
+			const r = ROBOTS[String(pi.getFlag("arm") ?? "panda") as RobotId];
 			return r && !hasWrist(r) ? { views: 1 } : { views: 2, wrist: 1 };
 		},
 		groundTruth: (names) => call("env.ground_truth_poses", { names: names ?? null }),
@@ -715,7 +718,7 @@ export default function maniskill(pi: ExtensionAPI) {
 			},
 			prompt: () =>
 				EXPLORE.replaceAll("study both images", wrist() ? "study both images" : "study the image")
-					.replaceAll("{{env_id}}", robot.task["env-id"])
+					.replaceAll("{{env_id}}", robot.task.task)
 					.replaceAll("{{seed}}", robot.task.seed)
 					.replaceAll("{{scene}}", robot.task.scene || "stock"),
 			rewrite: [
@@ -745,10 +748,10 @@ export default function maniskill(pi: ExtensionAPI) {
 				.replaceAll("{{object}}", text().object)
 				.replaceAll("{{views}}", text().views),
 		result: () => ({
-			env_id: robot.task["env-id"],
+			env_id: robot.task.task,
 			seed: Number(robot.task.seed),
 			...(robot.task.scene ? { scene: robot.task.scene } : {}),
-			// Another arm than the Panda (--robot); `robot` itself names this pi robot, "maniskill".
+			// Another arm than the Panda (--arm); `robot` itself names this pi robot, "maniskill".
 			...(robotId !== "panda" ? { maniskill_robot: robotId } : {}),
 			...(calibration ? { calibration } : {}),
 			success,
@@ -782,9 +785,9 @@ export default function maniskill(pi: ExtensionAPI) {
 			get emptyWidthM() {
 				return arm().emptyWidthM;
 			},
-			// From --robot (as `vdm`), so it holds before the robot starts: the WidowX AI has no wrist camera.
+			// From --arm (as `vdm`), so it holds before the robot starts: the WidowX AI has no wrist camera.
 			wrist: () => {
-				const r = ROBOTS[String(pi.getFlag("robot") ?? "panda") as RobotId];
+				const r = ROBOTS[String(pi.getFlag("arm") ?? "panda") as RobotId];
 				return !r || hasWrist(r);
 			},
 			// The same for the gripper: the stick has none (no GRASP / RELEASE units).
@@ -916,7 +919,7 @@ export default function maniskill(pi: ExtensionAPI) {
 	async function probeAxes(ctx: ExtensionContext) {
 		const probes: Probe[] = [];
 		const r = arm();
-		if (arms()) throw new Error("--probe-axes measures one arm; not on a two-arm --robot");
+		if (arms()) throw new Error("--probe-axes measures one arm; not on a two-arm --arm");
 		for (const unit of MOVE_UNITS) {
 			const [o] = await env.call<[Obs, Info]>("env.reset", {}, 300_000);
 			const start = o.tcp_pos!.toArray();
@@ -929,7 +932,7 @@ export default function maniskill(pi: ExtensionAPI) {
 		const c = calibrate(r.vectors, r.stepM, probes);
 		vectors = c.vectors;
 		calibration = {
-			env_id: robot.task["env-id"],
+			env_id: robot.task.task,
 			seed: Number(robot.task.seed),
 			...(robotId !== "panda" ? { robot: robotId } : {}),
 			step_m: r.stepM,
@@ -967,15 +970,15 @@ export default function maniskill(pi: ExtensionAPI) {
 		mountGraspTool(robot.tool, d);
 
 	async function startEpisode(ctx: ExtensionContext) {
-		const envId = robot.task["env-id"];
+		const envId = robot.task.task;
 		if (!(ENV_IDS as readonly string[]).includes(envId))
-			throw new Error(`unknown --env-id ${envId}; one of ${ENV_IDS.join(", ")}`);
+			throw new Error(`unknown --task ${envId}; one of ${ENV_IDS.join(", ")}`);
 		const seed = robot.task.seed;
 		const scene = robot.task.scene ?? "";
-		const wanted = flag("robot", "panda");
+		const wanted = flag("arm", "panda");
 		robotFor(wanted, envId);
 		robotId = wanted as RobotId;
-		const endpoint = pi.getFlag("env") as string | undefined;
+		const endpoint = pi.getFlag("env-url") as string | undefined;
 		if (endpoint) env = await attach(endpoint);
 		else {
 			const services = servicesDir(pi);

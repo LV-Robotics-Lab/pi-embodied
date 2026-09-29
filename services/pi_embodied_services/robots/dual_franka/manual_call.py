@@ -22,7 +22,7 @@
 """Call one dual-Franka env-server facade method by hand, for hardware bring-up.
 
 Connects to a running dual-Franka env server (``env_server.py``, e.g. the one pi's
-``--robot-env`` points at) and calls one of its facade methods, bypassing the planner::
+``--env-url`` points at) and calls one of its facade methods, bypassing the planner::
 
     python -m pi_embodied_services.robots.dual_franka.manual_call --env http://127.0.0.1:18100 \\
         --z-floor 0.14 move_delta --arm right --delta 0 0 0.02            # dry run: prints the checked call

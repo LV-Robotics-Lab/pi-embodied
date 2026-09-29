@@ -3,7 +3,7 @@
  *
  *   pi -p -e packages/embodied/src/robots/maniskill -e packages/embodied/src/modes/finetuned --units \
  *     --model finetuned/qwen3_5_2b_showharness_sim \
- *     --env-id PickCube-v1 --seed 0 "Solve the task."
+ *     --task PickCube-v1 --seed 0 "Solve the task."
  *
  * The policy is the planner, and in pi the planner is the model: this extension registers the
  * `finetuned/<adapter>` models (the released adapter names, or `finetuned/local` with --ft-model),
@@ -731,7 +731,8 @@ export default function finetuned(pi: ExtensionAPI) {
 			.pop();
 		const data = task?.type === "custom" ? ((task.data as Json) ?? {}) : {};
 		robot = String(data.robot || "");
-		envId = String(data["env-id"] || "");
+		// ManiSkill names its env id `task` (`env-id` in sessions recorded before the flag was renamed).
+		envId = String(data.task || data["env-id"] || "");
 		const warn = (s: string) => (ctx.hasUI ? ctx.ui.notify(s, "warning") : console.error(`[finetuned] ${s}`));
 		if (!pi.getActiveTools().includes("act")) warn("the `act` tool is not active: run the robot with --units");
 		if (!robotViews() && !flag("ft-agentview") && !flag("ft-wrist"))

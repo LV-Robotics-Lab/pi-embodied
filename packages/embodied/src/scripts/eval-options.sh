@@ -71,8 +71,8 @@ eval_parse_options() {
 			echo "${args[i]}: pi ignores a boolean flag's value and would turn it on; omit it to leave it off" >&2
 			exit 2
 			;;
-		--vdm-model) vdm_model=${args[i + 1]:-} ;;
-		--vdm-model=*) vdm_model=${args[i]#*=} ;;
+		--aux-model) vdm_model=${args[i + 1]:-} ;;
+		--aux-model=*) vdm_model=${args[i]#*=} ;;
 		--fallback-model) fallback_model=${args[i + 1]:-} ;;
 		--fallback-model=*) fallback_model=${args[i]#*=} ;;
 		--fallback-after) fallback_after=${args[i + 1]:-2} ;;
@@ -121,8 +121,8 @@ eval_parse_options() {
 			exit 2
 			;;
 		# The fine-tuned policy's flags (src/modes/finetuned) are its configuration, recorded as result.json's
-		# ft_flags in the order given; --ft-endpoint and --ft-api-key only say where the adapter is served.
-		--ft-endpoint | --ft-api-key | --ft-endpoint=* | --ft-api-key=*) ;;
+		# ft_flags in the order given; --ft-api-key is a credential, not a parameter (services.finetuned says where it is served).
+		--ft-api-key | --ft-api-key=*) ;;
 		--ft-*=*) ft_opts+="+${args[i]#--ft-}" ;;
 		--ft-*) ft_opts+="+${args[i]#--ft-}=${args[i + 1]-}" ;;
 		*) if declare -F eval_robot_option >/dev/null; then eval_robot_option "${args[i]}" "${args[i + 1]-}"; fi ;;

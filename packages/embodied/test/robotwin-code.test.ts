@@ -195,7 +195,7 @@ test("--code=true: run_code runs on the env server and its result becomes a reco
 	mkdirSync(memory);
 	writeFileSync(join(memory, "MEMORY.md"), "# RoboTwin\n");
 	const s = stubPi({
-		env: env.url,
+		"env-url": env.url,
 		lingbot: env.ws,
 		code: "true",
 		"code-api": "low",
@@ -246,7 +246,7 @@ test("the motion tools are the env server's methods: manifest schemas, params pa
 	const memory = join(base, "robotwin");
 	mkdirSync(memory);
 	writeFileSync(join(memory, "MEMORY.md"), "# RoboTwin\n");
-	const s = stubPi({ env: env.url, lingbot: env.ws, "memory-profile": "local", "memory-dir": memory });
+	const s = stubPi({ "env-url": env.url, lingbot: env.ws, "memory-profile": "local", "memory-dir": memory });
 	robotwin(s.pi);
 	const props = (name: string) => s.tools.get(name).parameters.properties;
 	assert.deepEqual(props("move_to").arm.enum, ["left", "right"]);
@@ -284,7 +284,7 @@ test("LingBot is optional: without it lingbot_act stays inactive and the result 
 	const memory = join(base, "robotwin");
 	mkdirSync(memory);
 	writeFileSync(join(memory, "MEMORY.md"), "# RoboTwin\n");
-	const values = { env: env.url, "memory-profile": "local", "memory-dir": memory };
+	const values = { "env-url": env.url, "memory-profile": "local", "memory-dir": memory };
 	const s = stubPi({ ...values, lingbot: "off" });
 	robotwin(s.pi);
 	await s.emit("session_start");

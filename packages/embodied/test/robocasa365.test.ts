@@ -104,7 +104,7 @@ test("robocasa/eval.sh manifest mode runs task x scene cells with --scene and wr
 	const r = evalSh(dir, ["pretrain"], ["--units", "--model", "m/x"], { TASKS: "OpenDrawer", SCENES: "7" });
 	assert.ok(r.argv, r.stderr);
 	const at = (flag: string) => r.argv?.[r.argv.indexOf(flag) + 1];
-	assert.equal(at("--task-name"), "OpenDrawer");
+	assert.equal(at("--task"), "OpenDrawer");
 	assert.equal(at("--split"), "pretrain");
 	assert.equal(at("--scene"), "7");
 	assert.ok(!r.argv?.includes("--seed"), "the scene's seed comes from the table");
@@ -367,7 +367,7 @@ async function fakeEnv() {
 test("--code=true: run_code runs on the env server; the run becomes a state, its steps and success the result's", async (t) => {
 	const env = await fakeEnv();
 	t.after(env.close);
-	const s = stubPi({ env: env.url, rldx: env.url, code: "true", "code-api": "low", services: SERVICES });
+	const s = stubPi({ "env-url": env.url, rldx: env.url, code: "true", "code-api": "low", services: SERVICES });
 	robocasa(s.pi);
 	await s.emit("session_start");
 	process.exitCode = undefined;
@@ -394,7 +394,7 @@ test("--code=true: run_code runs on the env server; the run becomes a state, its
 test("the motion tools are the env server's methods: manifest schemas, no env.step from pi, obs and steps absorbed", async (t) => {
 	const env = await fakeEnv();
 	t.after(env.close);
-	const s = stubPi({ env: env.url, rldx: env.url, services: SERVICES });
+	const s = stubPi({ "env-url": env.url, rldx: env.url, services: SERVICES });
 	robocasa(s.pi);
 	const props = (name: string) => s.tools.get(name)!.parameters.properties;
 	assert.deepEqual(props("move_to").gripper.enum, ["close", "open", "hold"]);
@@ -424,7 +424,7 @@ test("the motion tools are the env server's methods: manifest schemas, no env.st
 test("RLDX-1 is optional: without it the rldx tools stay inactive and the result notes it; --require-skills rldx refuses", async (t) => {
 	const env = await fakeEnv();
 	t.after(env.close);
-	const s = stubPi({ env: env.url, rldx: "off", services: SERVICES });
+	const s = stubPi({ "env-url": env.url, rldx: "off", services: SERVICES });
 	robocasa(s.pi);
 	await s.emit("session_start");
 	process.exitCode = undefined;
@@ -436,7 +436,7 @@ test("RLDX-1 is optional: without it the rldx tools stay inactive and the result
 	assert.deepEqual(s.entries.find((e) => e.type === "robot_result")?.data.skills_off, { rldx: "switched off" });
 	await s.emit("session_shutdown");
 
-	const r = stubPi({ env: env.url, rldx: "http://127.0.0.1:9", "require-skills": "rldx", services: SERVICES });
+	const r = stubPi({ "env-url": env.url, rldx: "http://127.0.0.1:9", "require-skills": "rldx", services: SERVICES });
 	robocasa(r.pi);
 	await r.emit("session_start");
 	process.exitCode = undefined;

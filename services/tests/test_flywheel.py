@@ -433,3 +433,23 @@ def test_joint_state_does_not_change_the_eef16_export(tmp_path, capsys):
             assert ta.to_pylist() == tb.to_pylist(), rel
         else:
             assert a.read_bytes() == b.read_bytes(), rel
+
+
+def test_gumi_env_id_reads_maniskill_task_and_the_older_env_id_key():
+    """pi records ManiSkill's env id as robot_task.task (``--task``); sessions from before the rename
+    carry ``env-id``. Other robots' ``task`` is not an env id."""
+    from pi_embodied_services.flywheel.gumi import _env_id
+
+    assert (
+        _env_id({"robot": "maniskill", "robot_task": {"task": "BlockPAP-v1"}})
+        == "BlockPAP-v1"
+    )
+    assert (
+        _env_id({"robot": "maniskill", "robot_task": {"env-id": "BlockStack-v1"}})
+        == "BlockStack-v1"
+    )
+    assert (
+        _env_id({"robot": "libero", "robot_task": {"task": "2", "suite": "libero_10"}})
+        == ""
+    )
+    assert _env_id({"robot": "maniskill"}) == ""

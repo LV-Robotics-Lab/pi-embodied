@@ -27,7 +27,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { python as cfgPython, type ServiceKey, service, servicesDir } from "./config.ts";
+import { auxModels, python as cfgPython, type ServiceKey, service, servicesDir } from "./config.ts";
 import { parseEndpoint } from "./rpc.ts";
 
 /** The config readers take a pi; /robot-check has only the argv, so its `--deployment` is read from there. */
@@ -53,7 +53,7 @@ type PathSpec = {
  * methods sent after healthz, each a real request the robot makes too (an env server's `env.get_env_meta`).
  */
 type EndpointSpec = {
-	/** An attach flag naming the endpoint (`robot-env`), or `service`: the deployment config's services.<key>. */
+	/** An attach flag naming the endpoint (`env-url`), or `service`: the deployment config's services.<key>. */
 	flag?: string;
 	service?: ServiceKey;
 	why: string;
@@ -173,7 +173,7 @@ export const SPECS: Record<string, RobotCheckSpec> = {
 		python: PY("franka"),
 		imports: [ENV_SERVER("franka")],
 		endpoints: [
-			{ flag: "robot-env", why: "running env server", calls: ENV_CALLS },
+			{ flag: "env-url", why: "running env server", calls: ENV_CALLS },
 			{ service: "vla", why: "Pi0.5 VLA", toolsOnly: true },
 		],
 		gpu: false,
@@ -182,7 +182,7 @@ export const SPECS: Record<string, RobotCheckSpec> = {
 		python: PY("dual_franka"),
 		imports: [ENV_SERVER("dual_franka")],
 		endpoints: [
-			{ flag: "robot-env", why: "running env server", calls: ENV_CALLS },
+			{ flag: "env-url", why: "running env server", calls: ENV_CALLS },
 			{ service: "vla", why: "Pi0.5 VLA", toolsOnly: true },
 			{ service: "sam3", why: "SAM3", toolsOnly: true },
 		],
@@ -191,7 +191,7 @@ export const SPECS: Record<string, RobotCheckSpec> = {
 	piper: {
 		python: PY("piper"),
 		imports: [ENV_SERVER("piper")],
-		endpoints: [{ flag: "robot-env", why: "running env server", calls: ENV_CALLS }],
+		endpoints: [{ flag: "env-url", why: "running env server", calls: ENV_CALLS }],
 		gpu: false,
 	},
 };
@@ -440,8 +440,16 @@ async function endpointRows(spec: RobotCheckSpec, flags: Flags): Promise<Row[]> 
 			flag: e.flag ?? `services.${e.service}`,
 			url: e.flag ? str(flags[e.flag]) : e.service ? service(configPi(flags), e.service) || undefined : undefined,
 		})),
-		...(str(flags.env)
-			? [{ flag: "env", why: "running env server", url: str(flags.env), toolsOnly: false, calls: ENV_CALLS }]
+		...(str(flags["env-url"])
+			? [
+					{
+						flag: "env-url",
+						why: "running env server",
+						url: str(flags["env-url"]),
+						toolsOnly: false,
+						calls: ENV_CALLS,
+					},
+				]
 			: []),
 		...named.map((s) => ({
 			flag: s.slice(0, s.indexOf("=")),
@@ -618,14 +626,21 @@ export async function runChecks(
 			},
 		];
 	const port = Number(str(flags["dashboard-port"]) ?? 0);
-	const [py, gpu, endpoints, planner, dash] = await Promise.all([
+	// The auxiliary VLMs (--aux-model, the deployment's aux.<role>) that are not the planner get a probe each.
+	const plannerModel = o.planner?.model ?? str(flags.model);
+	const auxRefs = [
+		...new Set(Object.values(auxModels(configPi(flags))).filter((m): m is string => !!m && m !== plannerModel)),
+	];
+	const aux = Promise.all(auxRefs.map((m) => plannerRow(m).then((r): Row => ({ ...r, check: `aux model ${m}` }))));
+	const [py, gpu, endpoints, planner, dash, auxRows] = await Promise.all([
 		pythonRows(spec, flags, o.timeoutMs ?? Number(str(flags.timeout) ?? 300) * 1000),
 		gpuRows(spec.gpu),
 		endpointRows(spec, flags),
-		plannerRow(o.planner?.model ?? str(flags.model), o.planner?.baseUrl, undefined, o.planner?.complete),
+		plannerRow(plannerModel, o.planner?.baseUrl, undefined, o.planner?.complete),
 		o.dashboard === "skip"
 			? Promise.resolve<Row>({ status: "SKIP", check: "dashboard port", detail: "served by this pi" })
 			: portRow(port, str(flags["dashboard-host"]) === "0.0.0.0" ? "0.0.0.0" : "127.0.0.1"),
+		aux,
 	]);
 	return [
 		{ status: "PASS", check: "robot", detail: robot },
@@ -634,6 +649,7 @@ export async function runChecks(
 		...gpu,
 		...endpoints,
 		planner,
+		...auxRows,
 		dash,
 	];
 }

@@ -51,7 +51,7 @@ methods in `services/PROTOCOL.md` under "Env servers".
 
 `src/<robot>/index.ts` exports `default function <robot>(pi: ExtensionAPI)`:
 
-1. Register the task flags (`--task`, `--seed`, ...) and `--env` (attach to a running server).
+1. Register the task flags (`--task`, `--seed`, ...) and `--env-url` (attach to a running server).
    Where things live is deployment config, not flags (`src/infra/config.ts`): the services dir is
    `servicesDir(pi)`, the env server's Python `python(pi, "<robot>")`, a model server's endpoint
    `service(pi, "sam3")`, an output directory `dir(pi, "logs")`. A service that changes results
@@ -62,7 +62,7 @@ methods in `services/PROTOCOL.md` under "Env servers".
    `result` (the outcome fields of `robot_result`), `status` (the dashboard's step and success),
    `finish`, and `prompt` (the robot's `SYSTEM.md`, `[tool:name]` blocks follow the active tools).
 3. In `start`, launch the env server with `robot.serve({python, args, cwd, env, log})` (or
-   `attach(--env)`), check `env.get_env_meta` against the task flags, reset, and return the tools.
+   `attach(--env-url)`), check `env.get_env_meta` against the task flags, reset, and return the tools.
 4. Name the manifest in the spec (`manifest: "<robot>"`) with its `vars` (the cameras, arms and
    limits its descriptions and enums refer to) and `capabilities` (which `requires` this run
    meets; they must agree with the server's `_has`). Register tools with

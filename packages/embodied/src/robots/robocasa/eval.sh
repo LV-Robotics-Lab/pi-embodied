@@ -12,7 +12,7 @@
 # termination_reason, planner, runtime), built from the session's `robot_result` entry. The planner
 # is recorded as it ran: backend "pi", the model without its provider prefix, --thinking as
 # reasoning_effort, --max-turns; the units mode (--units, --units-plugins, --stateless) and visual differencing
-# (--vdm, --vdm-model, --vdm-wrist, --vdm-video, --vdm-video-frames) are recorded next to it.
+# (--vdm, --aux-model, --vdm-wrist, --vdm-video, --vdm-video-frames) are recorded next to it.
 #
 # An episode is valid when the environment produced a result and the planner did not fail
 # (`env_error`, `planner_error`, a missing or duplicate result and a killed process are invalid,
@@ -46,6 +46,9 @@ set -uo pipefail
 out=$1 splits=$2
 shift 2
 here=$(cd "$(dirname "$0")" && pwd)
+# Renamed flags and the ones the deployment config replaced stop here, before any cell runs.
+. "$here/../../scripts/old-flags.sh"
+old_flags "$@" || exit 2
 SERVICES=${PI_EMBODIED_SERVICES:-$(cd "$here/../../../../../services" && pwd)}
 manifest=${TARGET50:-$SERVICES/pi_embodied_services/robots/robocasa/eval/target50.json}
 table=$SERVICES/pi_embodied_services/robots/robocasa/eval/robocasa365.json
@@ -220,7 +223,7 @@ for (const split of splits.split(",")) {
 		start=$SECONDS
 		backstop=()
 		[ "$limit" -gt 0 ] && command -v timeout >/dev/null && backstop=(timeout -k 30 $((limit + 900)))
-		PI_EMBODIED_DIRS_LOGS=$dir ${backstop[@]+"${backstop[@]}"} $PI -p --session-dir "$dir" -e "$here" --task-name "$task" --split "$split" \
+		PI_EMBODIED_DIRS_LOGS=$dir ${backstop[@]+"${backstop[@]}"} $PI -p --session-dir "$dir" -e "$here" --task "$task" --split "$split" \
 			--scene "$scene" --max-turns "$turns" --time-limit "$limit" "Solve the task." "$@" \
 			</dev/null >"$dir/stdout.log" 2>"$dir/stderr.log"
 		code=$?
@@ -425,7 +428,7 @@ while read -r split task seed limit; do
 	# args: a bare boolean flag at their end would take it as its value.
 	backstop=()
 	command -v timeout >/dev/null && backstop=(timeout -k 30 $((limit + 900)))
-	PI_EMBODIED_DIRS_LOGS=$dir ${backstop[@]+"${backstop[@]}"} $PI -p --session-dir "$dir" -e "$here" --task-name "$task" --split target \
+	PI_EMBODIED_DIRS_LOGS=$dir ${backstop[@]+"${backstop[@]}"} $PI -p --session-dir "$dir" -e "$here" --task "$task" --split target \
 		--seed "$seed" --max-turns "$turns" --time-limit "$limit" "Solve the task." "$@" \
 		</dev/null >"$dir/stdout.log" 2>"$dir/stderr.log"
 	code=$?

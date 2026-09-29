@@ -461,7 +461,7 @@ type ApprovalRobot = {
  *   real-robot program confirmation is skipped when the operator approved that program here (`consumeApproved`), and the prompt
  *   shows the program itself
  *   reviewed  every motion call first goes to a reviewer model (`--approval-model`, default
- *             --units-vlm-model, else the session's model) with the task, the call and the latest
+ *             --aux-model, else the session's model) with the task, the call and the latest
  *             camera images (../units/vlm.ts askVlm); anything but an approval (a rejection, an
  *             abstention, an unparseable reply, a failed or timed-out call) blocks it with the
  *             reviewer's reason. Its cost counts toward --max-cost and it takes an
@@ -487,7 +487,7 @@ export function approval(pi: ExtensionAPI, robot: ApprovalRobot) {
 		type: "string",
 		default: "",
 		description:
-			"Reviewer model for --approval reviewed, provider/id (default: --units-vlm-model, else the session's model)",
+			"Reviewer model for --approval reviewed, provider/id (default: --aux-model, else the session's model)",
 	});
 	pi.registerFlag("approval-timeout", {
 		type: "string",
@@ -579,7 +579,7 @@ export function approval(pi: ExtensionAPI, robot: ApprovalRobot) {
 			Object.assign(entry, { source: "reviewer", images: images.length, images_from: source });
 			try {
 				if (gate) slot = await acquire(gate.dir, gate.n, 250, signal);
-				const modelRef = String(pi.getFlag("approval-model") || pi.getFlag("units-vlm-model") || "");
+				const modelRef = String(pi.getFlag("approval-model") || pi.getFlag("aux-model") || "");
 				const reply = await askVlm(
 					ctx,
 					modelRef,

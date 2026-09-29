@@ -212,7 +212,7 @@ test("the frame text matches robosuite's cameras and the opposed two-arm layout"
 test("grasp tools: plan_grasp, plan_place and check_attached are registered over the env server's planner", () => {
 	const f = stubPi();
 	robosuite(f.pi);
-	for (const name of ["grasp", "place", "attach-vlm-model"]) assert.ok(name in f.flags, name);
+	for (const name of ["grasp", "place", "aux-model"]) assert.ok(name in f.flags, name);
 	for (const name of ["plan_grasp", "plan_place", "check_attached"]) assert.ok(f.tools.has(name), name);
 	const props = (name: string) => f.tools.get(name)!.parameters.properties;
 	assert.deepEqual(props("plan_grasp").camera.enum, ["agentview", "wrist"]);
@@ -271,7 +271,7 @@ test("--contact-graspnet activates plan_grasp / plan_place / check_attached; pla
 		c.method === "env.plan_grasp" ? { active: "g1", candidates: [{ id: "g1" }], expired_ids: [] } : undefined,
 	);
 	t.after(env.close);
-	const s = simPi({ env: env.url, task: "Lift", "contact-graspnet": "http://127.0.0.1:1" });
+	const s = simPi({ "env-url": env.url, task: "Lift", "contact-graspnet": "http://127.0.0.1:1" });
 	robosuite(s.pi);
 	await s.emit("session_start");
 	process.exitCode = undefined;
@@ -285,7 +285,7 @@ test("--contact-graspnet activates plan_grasp / plan_place / check_attached; pla
 	assert.match(prompt, /# Planned grasps/);
 
 	// Without a grasp backend nothing is active and the prompt does not describe it.
-	const off = simPi({ env: env.url, task: "Lift" });
+	const off = simPi({ "env-url": env.url, task: "Lift" });
 	robosuite(off.pi);
 	await off.emit("session_start");
 	process.exitCode = undefined;
@@ -297,7 +297,7 @@ test("--contact-graspnet activates plan_grasp / plan_place / check_attached; pla
 test("Wipe's sponge has no fingers: no grasp tools even with a backend", async (t) => {
 	const env = await fakeRobosuite("Wipe");
 	t.after(env.close);
-	const s = simPi({ env: env.url, task: "Wipe", "contact-graspnet": "http://127.0.0.1:1" });
+	const s = simPi({ "env-url": env.url, task: "Wipe", "contact-graspnet": "http://127.0.0.1:1" });
 	robosuite(s.pi);
 	await s.emit("session_start");
 	process.exitCode = undefined;
@@ -310,7 +310,7 @@ test("--ik activates preview_reach, which asks env.preview_reach for the named a
 		c.method === "env.preview_reach" ? { status: "unreachable", reachable: false, message: "far" } : undefined,
 	);
 	t.after(env.close);
-	const s = simPi({ env: env.url, task: "TwoArmLift", ik: "http://127.0.0.1:1" });
+	const s = simPi({ "env-url": env.url, task: "TwoArmLift", ik: "http://127.0.0.1:1" });
 	robosuite(s.pi);
 	await s.emit("session_start");
 	process.exitCode = undefined;
@@ -324,7 +324,7 @@ test("--ik activates preview_reach, which asks env.preview_reach for the named a
 	// Two arms: the arm is required.
 	await assert.rejects(() => s.run("preview_reach", { xyz: [0, 0, 1] }), /pass arm/);
 
-	const off = simPi({ env: env.url, task: "TwoArmLift" });
+	const off = simPi({ "env-url": env.url, task: "TwoArmLift" });
 	robosuite(off.pi);
 	await off.emit("session_start");
 	process.exitCode = undefined;
@@ -337,7 +337,7 @@ test("memory and exploration: reset restarts the seeded scene, the cell is robos
 	t.after(env.close);
 	await checkSimExplore({
 		load: robosuite,
-		values: { env: env.url, task: "Stack", seed: "0" },
+		values: { "env-url": env.url, task: "Stack", seed: "0" },
 		tag: "robosuite_Stack_s0",
 		resets: () => env.calls.filter((c) => c.method === "env.reset").length,
 		observe: "view_env_state",
@@ -401,14 +401,14 @@ test("--detections activates detect / select_detection / reject_detection over e
 		return undefined;
 	});
 	t.after(env.close);
-	const off = simPi({ env: env.url, task: "Lift" });
+	const off = simPi({ "env-url": env.url, task: "Lift" });
 	robosuite(off.pi);
 	await off.emit("session_start");
 	process.exitCode = undefined;
 	assert.ok(!off.active().includes("detect") && !off.active().includes("enhance_depth"), "off by default");
 
 	// The fake env server answers healthz: it stands in for the SAM3 and UniDepth servers the start probes.
-	const s = simPi({ env: env.url, task: "Lift", detections: true, sam3: env.url, unidepth: env.url });
+	const s = simPi({ "env-url": env.url, task: "Lift", detections: true, sam3: env.url, unidepth: env.url });
 	robosuite(s.pi);
 	await s.emit("session_start");
 	process.exitCode = undefined;
@@ -461,7 +461,7 @@ test("--point: Molmo on the current images; the pixel's world xyz through the wo
 	t.after(env.close);
 	const { one } = await checkPoint({
 		load: robosuite,
-		values: { env: env.url, task: "Lift" },
+		values: { "env-url": env.url, task: "Lift" },
 		url: env.url,
 		calls: env.calls,
 		cameras: ["agentview", "wrist"],
@@ -538,7 +538,7 @@ async function fakeCodeEnv(run: Record<string, unknown>, task = "Lift") {
 test("--code=true: run_code runs on the env server and its result becomes the observation and the success", async (t) => {
 	const env = await fakeCodeEnv({});
 	t.after(env.close);
-	const s = stubPi({ env: env.url, task: "Lift", code: "true", "code-api": "low-noexamples" });
+	const s = stubPi({ "env-url": env.url, task: "Lift", code: "true", "code-api": "low-noexamples" });
 	robosuite(s.pi);
 	await s.emit("session_start");
 	process.exitCode = undefined;
@@ -571,7 +571,13 @@ test("--code=true: run_code runs on the env server and its result becomes the ob
 test("--code-oracle runs the ported CaP-X program once, without the model, and records it", async (t) => {
 	const env = await fakeCodeEnv({});
 	t.after(env.close);
-	const s = stubPi({ env: env.url, task: "Lift", code: "true", privileged: true, "code-oracle": "lift_privileged" });
+	const s = stubPi({
+		"env-url": env.url,
+		task: "Lift",
+		code: "true",
+		privileged: true,
+		"code-oracle": "lift_privileged",
+	});
 	robosuite(s.pi);
 	await s.emit("session_start");
 	process.exitCode = undefined;
@@ -604,7 +610,7 @@ test("--code-oracle refuses a tier or task the program was not written for", asy
 		[{ task: "Stack", privileged: true, "code-oracle": "lift_privileged" }, /written for task Lift/],
 		[{ task: "Lift", privileged: true, "code-oracle": "no_such_oracle" }, /no oracle no_such_oracle/],
 	] as const) {
-		const s = stubPi({ env: env.url, code: "true", ...flags });
+		const s = stubPi({ "env-url": env.url, code: "true", ...flags });
 		robosuite(s.pi);
 		const errors: string[] = [];
 		const log = console.error;
@@ -627,7 +633,7 @@ test("a two-arm task starts: --task is read at session start, after pi has set t
 	const late: Record<string, unknown> = {};
 	const s = stubPi(late);
 	robosuite(s.pi);
-	Object.assign(late, { env: env.url, task: "TwoArmLift", units: "true" });
+	Object.assign(late, { "env-url": env.url, task: "TwoArmLift", units: "true" });
 	const errors: string[] = [];
 	const log = console.error;
 	console.error = (m: string) => errors.push(m);
@@ -643,7 +649,7 @@ test("a two-arm task starts: --task is read at session start, after pi has set t
 	// A one-arm task on the same load keeps `act` without `arm`.
 	const one = await fakeCodeEnv({}, "Lift");
 	t.after(one.close);
-	Object.assign(late, { env: one.url, task: "Lift" });
+	Object.assign(late, { "env-url": one.url, task: "Lift" });
 	await s.emit("session_start");
 	process.exitCode = undefined;
 	assert.equal(s.tools.get("act")!.parameters.properties.arm, undefined);

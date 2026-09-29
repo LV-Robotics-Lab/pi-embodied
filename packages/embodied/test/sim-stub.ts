@@ -242,7 +242,7 @@ export async function checkDetections(o: {
 	assert.ok(off.active().includes("finish"), "the robot started");
 	assert.ok(!off.active().some((t) => ["detect", "select_detection", "enhance_depth"].includes(t)), "off by default");
 	// The fake env server answers healthz: it stands in for the SAM3 and UniDepth servers the start probes.
-	const s = stubPi({ ...o.values, detections: true, sam3: o.values.env, unidepth: o.values.env });
+	const s = stubPi({ ...o.values, detections: true, sam3: o.values["env-url"], unidepth: o.values["env-url"] });
 	o.load(s.pi);
 	await s.emit("session_start");
 	process.exitCode = undefined;

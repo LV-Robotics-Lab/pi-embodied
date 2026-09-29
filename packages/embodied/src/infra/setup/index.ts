@@ -78,7 +78,7 @@ export const ROBOTS: Robot[] = [
 		extension: "src/robots/maniskill/index.ts",
 		needs: "NVIDIA GPU (Vulkan)",
 		modes: ["tools", "units", "finetuned"],
-		task: "--env-id PickCube-v1 --seed 0",
+		task: "--task PickCube-v1 --seed 0",
 		finetuned: SIM_FT,
 		adapter: "qwen3_5_2b_sim",
 	},
@@ -104,7 +104,7 @@ export const ROBOTS: Robot[] = [
 		extension: "src/robots/robocasa/index.ts",
 		needs: "NVIDIA GPU, ~10 GB kitchen assets",
 		modes: ["tools"],
-		task: "--task-name OpenDrawer --split target --seed 0",
+		task: "--task OpenDrawer --split target --seed 0",
 		weights: "RLDX-1-FT-RC365 VLA",
 	},
 	{
@@ -113,7 +113,7 @@ export const ROBOTS: Robot[] = [
 		extension: "src/robots/robotwin/index.ts",
 		needs: "NVIDIA GPU (SAPIEN/Vulkan), cuRobo build",
 		modes: ["tools"],
-		task: "--task-name beat_block_hammer --task-config demo_randomized --seed 0",
+		task: "--task beat_block_hammer --task-config demo_randomized --seed 0",
 		weights: "LingBot-VLA RoboTwin EEF",
 	},
 	{
@@ -148,7 +148,7 @@ export const ROBOTS: Robot[] = [
 		extension: "src/robots/franka/index.ts",
 		needs: "real Franka on a Polymetis NUC, an operator at the e-stop",
 		modes: ["tools", "units"],
-		task: "--robot-backend polymetis --robot-config <yaml> --operator=true",
+		task: "--backend polymetis --robot-config <yaml> --operator=true",
 	},
 	{
 		id: "dual-franka",

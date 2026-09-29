@@ -308,7 +308,7 @@ async function started(
 	// Each start its own step dir: the default is stamped to the second, so two starts in one second
 	// would record into the same steps.
 	const out = mkdtempSync(join(tmpdir(), "ur5e-out-"));
-	const f = fakePi({ operator: true, "arm-id": ARM, task: "block_bowl", "robot-env": m.url, out, ...flags });
+	const f = fakePi({ operator: true, arm: ARM, task: "block_bowl", "env-url": m.url, out, ...flags });
 	ur5e(f.pi);
 	f.confirms.push(...confirms);
 	const s = await start(f);
@@ -316,7 +316,7 @@ async function started(
 }
 
 test("ur5e refuses to start without an operator UI and stays tool-less", async () => {
-	const f = fakePi({ operator: true, "arm-id": ARM }, false);
+	const f = fakePi({ operator: true, arm: ARM }, false);
 	ur5e(f.pi);
 	const { errors, code } = await start(f);
 	assert.equal(code, 1);
@@ -328,8 +328,8 @@ test("ur5e refuses to start without an operator UI and stays tool-less", async (
 	assert.match(blocked.reason, /ur5e is not available/);
 });
 
-test("ur5e refuses to start without --operator or --arm-id, before touching the robot", async () => {
-	const f = fakePi({ python: "/nonexistent/python", "arm-id": ARM });
+test("ur5e refuses to start without --operator or --arm, before touching the robot", async () => {
+	const f = fakePi({ python: "/nonexistent/python", arm: ARM });
 	ur5e(f.pi);
 	await start(f);
 	assert.match(f.notes.join("\n"), /ur5e unavailable: .*start pi with --operator/);
@@ -337,20 +337,20 @@ test("ur5e refuses to start without --operator or --arm-id, before touching the 
 	const g = fakePi({ python: "/nonexistent/python", operator: true });
 	ur5e(g.pi);
 	await start(g);
-	assert.match(g.notes.join("\n"), /ur5e unavailable: ur5e is bound to one arm: start pi with --arm-id/);
+	assert.match(g.notes.join("\n"), /ur5e unavailable: ur5e is bound to one arm: start pi with --arm /);
 	assert.deepEqual(g.active(), []);
-	const h = fakePi({ python: "/nonexistent/python", operator: true, "arm-id": ARM, "max-move": "abc" });
+	const h = fakePi({ python: "/nonexistent/python", operator: true, arm: ARM, "max-move": "abc" });
 	ur5e(h.pi);
 	await start(h);
 	assert.match(h.notes.join("\n"), /--max-move must be a number, got "abc"/);
 });
 
-test("--arm-id must be the arm the env server is bound to; nothing moves otherwise", async () => {
-	const other = await started({ "arm-id": "1999" });
+test("--arm must be the arm the env server is bound to; nothing moves otherwise", async () => {
+	const other = await started({ arm: "1999" });
 	try {
 		assert.match(
 			other.f.notes.join("\n"),
-			/--arm-id 1999 is not the arm the env server drives \(its config is bound to 2023300001\)/,
+			/--arm 1999 is not the arm the env server drives \(its config is bound to 2023300001\)/,
 		);
 		assert.deepEqual(other.f.active(), []);
 		assert.ok(!other.m.methods().includes("env.reset"), "nothing moved");
@@ -359,7 +359,7 @@ test("--arm-id must be the arm the env server is bound to; nothing moves otherwi
 	}
 	const unbound = await started({}, { armId: null });
 	try {
-		assert.match(unbound.f.notes.join("\n"), /bound its config to no arm .*--arm-id cannot be verified/);
+		assert.match(unbound.f.notes.join("\n"), /bound its config to no arm .*--arm cannot be verified/);
 		assert.ok(!unbound.m.methods().includes("env.reset"));
 	} finally {
 		unbound.m.close();
@@ -393,7 +393,7 @@ test("--arm-id must be the arm the env server is bound to; nothing moves otherwi
 });
 
 test("pi checks no single-call limit itself: a motion goes to the server, which enforces them", async () => {
-	const f = fakePi({ operator: true, "arm-id": ARM });
+	const f = fakePi({ operator: true, arm: ARM });
 	ur5e(f.pi);
 	// Beyond --max-move: pi passes it on (the server refuses it); without a robot the call fails there.
 	const far = await f.run("move_delta", { delta_xyz: [0.06, 0.06, 0] });
@@ -405,7 +405,7 @@ test("pi checks no single-call limit itself: a motion goes to the server, which 
 });
 
 test("with --units an act unit is refused whole before its first call when its move exceeds the limit", async () => {
-	const f = fakePi({ operator: true, "arm-id": ARM, units: true, "units-plugins": "", "max-move": "0.01" });
+	const f = fakePi({ operator: true, arm: ARM, units: true, "units-plugins": "", "max-move": "0.01" });
 	ur5e(f.pi);
 	assert.ok(f.tools.has("act"));
 	const far = await f.run("act", { unit: "MV_FWD" });
@@ -435,7 +435,7 @@ test("an attached server must enforce pi's limits or tighter ones", async (t) =>
 });
 
 test("tool schemas come from the manifest: open/close gripper, move_pose rotvec or rpy, camera flags", () => {
-	const f = fakePi({ operator: true, "arm-id": ARM });
+	const f = fakePi({ operator: true, arm: ARM });
 	ur5e(f.pi);
 	assert.ok(!f.tools.has("gripper"));
 	assert.deepEqual(Object.keys(f.tools.get("open_gripper").parameters.properties), []);

@@ -10,7 +10,7 @@
  */
 import { readFileSync } from "node:fs";
 
-const CELL = new Set(["task", "seed", "suite", "task-name", "env-id", "task-config", "split", "scene", "eval-seed", "episode"]);
+const CELL = new Set(["task", "seed", "suite", "task-config", "split", "scene", "layout-set", "episode"]);
 
 const r = JSON.parse(readFileSync(process.argv[2], "utf8"));
 if (!r.params || !r.params_default) process.exit(0);

@@ -151,7 +151,10 @@ export default function genesis(pi: ExtensionAPI) {
 		default: "grasp",
 		description: `Success rule: grasp (OpenETA cube_pick: both fingers on the cube within 8 cm for 3 steps, default) or lift (the cube 8 cm up for 5 steps)`,
 	});
-	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
+	pi.registerFlag("env-url", {
+		type: "string",
+		description: "Attach to a running env server instead of starting one",
+	});
 	// --detections / --depth unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
 	// --ik: preview_reach over the env server's IK check (../ik.ts).
 	registerIkFlag(pi);
@@ -470,7 +473,7 @@ export default function genesis(pi: ExtensionAPI) {
 		const { task, seed } = robot.task;
 		if (!(TASKS as readonly string[]).includes(task))
 			throw new Error(`unknown --task ${task}; one of ${TASKS.join(", ")}`);
-		const endpoint = pi.getFlag("env") as string | undefined;
+		const endpoint = pi.getFlag("env-url") as string | undefined;
 		if (endpoint) env = await attach(endpoint);
 		else {
 			const services = servicesDir(pi);

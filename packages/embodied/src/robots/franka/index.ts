@@ -2,13 +2,13 @@
  * One physical Franka arm for pi.
  *
  *   pi -e packages/embodied/src/robots/franka --task 1 --robot-config my_franka.yaml --vla http://VLA_HOST:PORT
- *   pi -e packages/embodied/src/robots/franka --robot-backend polymetis --robot-config my_polymetis.yaml
+ *   pi -e packages/embodied/src/robots/franka --backend polymetis --robot-config my_polymetis.yaml
  *   pi -e packages/embodied/src/robots/franka --task 1 --z-floor 0.14 --operator --code=true --code-real
  *      (run_code: the env server runs with --code; every program is confirmed by the operator)
  *
- * Starts an env server for --robot-backend: rlinf (default; pi_embodied_services.robots.franka.env_server,
+ * Starts an env server for --backend: rlinf (default; pi_embodied_services.robots.franka.env_server,
  * Ray must already run on the controller node) or polymetis (robots.franka_polymetis.env_server,
- * Show-Harness's Polymetis NUC stack), or attaches to a running one with --robot-env. Both serve the
+ * Show-Harness's Polymetis NUC stack), or attaches to a running one with --env-url. Both serve the
  * same env.* RPC; the server's env.get_env_meta capabilities hide what it cannot serve (vla_grasp
  * needs has_vla). Only one backend may drive the arm at a time. The VLA is attach-only. The
  * server enforces pi's per-call limits (--max-move, --max-rotate, --workspace-xy, --z-floor: passed
@@ -262,13 +262,13 @@ export default function franka(pi: ExtensionAPI) {
 		description:
 			"Robot YAML (default: the backend's config/example.yaml under services/pi_embodied_services/robots/franka[_polymetis]/)",
 	});
-	pi.registerFlag("robot-backend", {
+	pi.registerFlag("backend", {
 		type: "string",
 		default: "",
 		description:
-			"Env server to start: rlinf (default) or polymetis; with --robot-env, the attached server's backend must match if set",
+			"Env server to start: rlinf (default) or polymetis; with --env-url, the attached server's backend must match if set",
 	});
-	pi.registerFlag("robot-env", {
+	pi.registerFlag("env-url", {
 		type: "string",
 		description: "Attach to a running Franka env server instead of starting one",
 	});
@@ -1400,10 +1400,10 @@ export default function franka(pi: ExtensionAPI) {
 		const stamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15);
 		out = resolve(ctx.cwd, dir(pi, "artifacts") || join(tmpdir(), "pi-embodied", `franka_t${task()}_${stamp}`));
 		mkdirSync(out, { recursive: true });
-		const endpoint = flag("robot-env");
-		const backend = flag("robot-backend").trim().toLowerCase();
+		const endpoint = flag("env-url");
+		const backend = flag("backend").trim().toLowerCase();
 		if (backend && !BACKENDS[backend])
-			throw new Error(`--robot-backend must be one of ${Object.keys(BACKENDS).join(", ")}, got "${backend}"`);
+			throw new Error(`--backend must be one of ${Object.keys(BACKENDS).join(", ")}, got "${backend}"`);
 		const [envRpc, vlaRpc] = await Promise.all([
 			endpoint
 				? attach(endpoint)
@@ -1434,7 +1434,7 @@ export default function franka(pi: ExtensionAPI) {
 		served = servedLimits(meta.motion_limits, wanted(setup.task.constraints));
 		chaining = meta.smooth?.chaining === true;
 		if (backend && caps.backend !== backend)
-			throw new Error(`--robot-env serves the ${caps.backend} backend, not --robot-backend ${backend}`);
+			throw new Error(`--env-url serves the ${caps.backend} backend, not --backend ${backend}`);
 		if (!caps.has_vla && (vlaRpc || setup.task.name === "vla_grasp"))
 			throw new Error(
 				`the ${caps.backend} backend has no VLA action space: drop --vla and use a task without vla_grasp`,

@@ -188,7 +188,10 @@ export default function behavior(pi: ExtensionAPI) {
 		default: "sticky",
 		description: "OmniGibson grasping: sticky (CaP-X) or assisted",
 	});
-	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
+	pi.registerFlag("env-url", {
+		type: "string",
+		description: "Attach to a running env server instead of starting one",
+	});
 	// --detections / --depth unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
 	registerDetectionFlags(pi);
 
@@ -461,7 +464,7 @@ export default function behavior(pi: ExtensionAPI) {
 			throw new Error(`--task ${task} is not a BEHAVIOR-1K challenge task; one of: ${TASKS.join(", ")}`);
 		if (!/^\d+$/.test(seed))
 			throw new Error(`--seed must be a task instance id (a non-negative integer), got ${seed}`);
-		const endpoint = pi.getFlag("env") as string | undefined;
+		const endpoint = pi.getFlag("env-url") as string | undefined;
 		if (endpoint) env = await attach(endpoint);
 		else {
 			const services = servicesDir(pi);

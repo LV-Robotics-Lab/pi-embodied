@@ -10,7 +10,7 @@
 # Each result records the model, thinking level, --max-turns, --time-limit, the units mode
 # (--units, --stateless, --unit-tol), code mode (--code, --code-api: high, low or low-noexamples = CaP-X's S2-S4,
 # --code-oracle: a reference program run instead of the model, ./oracle) and visual differencing (--vdm,
-# --vdm-model, --vdm-wrist, --vdm-video and its --vdm-video-frames; the model only with --vdm or --vdm-video), and the summary covers only the requested
+# --aux-model, --vdm-wrist, --vdm-video and its --vdm-video-frames; the model only with --vdm or --vdm-video), and the summary covers only the requested
 # cells and refuses to mix configurations.
 # A --privileged run (simulator ground truth) is recorded as such and never shares an out dir with one without.
 # The fallback planner (--fallback-model, --fallback-after, --fallback-retry-primary; src/planner/fallback.ts) is part of the
@@ -20,6 +20,9 @@ set -uo pipefail
 out=$1 suite=$2 tasks=$3 seeds=$4
 shift 4
 here=$(cd "$(dirname "$0")" && pwd)
+# Renamed flags and the ones the deployment config replaced stop here, before any cell runs.
+. "$here/../../scripts/old-flags.sh"
+old_flags "$@" || exit 2
 PI=${PI:-pi}
 expand() { for part in ${1//,/ }; do seq "${part%-*}" "${part#*-}"; done; }
 # Common flags have one implementation; only robot-specific options live here.

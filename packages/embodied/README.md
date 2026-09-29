@@ -60,7 +60,7 @@ Torch/Transformers stacks. LIBERO / LIBERO-PRO / ManiSkill / RoboTwin on
 the devel image), RoboCasa on the same base with Python 3.10, RoboLab on NVIDIA's Isaac Sim 6.1
 container, Piper on `ros:noetic` with the `[piper]` extra. Each image runs `services/setup.sh
 <robot> --weights` at build time with weights in a mounted volume; pi runs outside and attaches
-with `--env` and the deployment's `services.*`. Real-arm robots (Franka, dual Franka) stay on the controller host.
+with `--env-url` and the deployment's `services.*`. Real-arm robots (Franka, dual Franka) stay on the controller host.
 
 Source layout (`src/`, one directory per layer; `src/robot.ts`, the `defineRobot` base, stays at the top):
 
@@ -80,7 +80,7 @@ Source layout (`src/`, one directory per layer; `src/robot.ts`, the `defineRobot
 | LIBERO / LIBERO-PRO | `src/robots/libero` | LIBERO `terminated` | memory, explore, video, units, VDM, code, `--privileged`, flywheel, operator, Flash; Flash re-anchors with Molmo |
 | RoboCasa | `src/robots/robocasa` | `env._check_success()` | memory, explore, video, units, VDM, code, `--privileged`, flywheel, Flash; recipe Flash (Molmo re-anchoring) |
 | RoboTwin | `src/robots/robotwin` | `eval_success` | memory, explore, video, units, VDM, code, `--privileged`, flywheel, Flash, XPolicyLab; recipe Flash (Molmo re-anchoring), XPolicyLab (`aloha_agilex`, joint and ee) |
-| ManiSkill (`--robot`, below) | `src/robots/maniskill` | ManiSkill `success` | memory, explore, video, units, VDM, code, `--privileged`, flywheel, Flash; recipe Flash (Molmo + ray-plane re-anchoring of delta waypoints) |
+| ManiSkill (`--arm`, below) | `src/robots/maniskill` | ManiSkill `success` | memory, explore, video, units, VDM, code, `--privileged`, flywheel, Flash; recipe Flash (Molmo + ray-plane re-anchoring of delta waypoints) |
 | RoboLab | `src/robots/robolab` | RoboLab's task predicate | memory, explore, video, units, VDM, code, `--privileged`, Flash; recipe Flash (Molmo + ray-plane re-anchoring of delta waypoints) |
 | RoboDojo (two ARX X5) | `src/robots/robodojo` | RoboDojo's `is_episode_end` (`score` = partial credit) | memory, explore, video, units, VDM, code, `--privileged`, flywheel, Flash, XPolicyLab; flywheel in joint space, recipe Flash (Molmo + depth back-projection), XPolicyLab (`arx_x5`, joint and ee) |
 | Robosuite | `src/robots/robosuite` | robosuite `_check_success` (Restack adds CaP-X's off-table rule), latched | memory, explore, video, units, VDM, code, `--privileged`, flywheel |
@@ -91,7 +91,7 @@ Source layout (`src/`, one directory per layer; `src/robot.ts`, the `defineRobot
 | Franka (real) | `src/robots/franka` | operator verdict (`--operator`) | memory, explore, video, units, VDM, code, operator; explore resets through the operator |
 | Dual Franka (real) | `src/robots/dual_franka` | operator verdict (required) | memory, explore, video, units, VDM, code, operator, XPolicyLab; explore resets through the operator; XPolicyLab (`franka`, ee; fine-tuning required) |
 | Piper / dual Piper (real) | `src/robots/piper` | operator verdict (required) | memory, explore, video, units, VDM, code, operator; explore resets through the operator; XPolicyLab on the dual rig only (`piper/dual.ts`: `piper`, ee; fine-tuning required) |
-| UR5e (real) | `src/robots/ur5e` | operator verdict (required) | memory, explore, video, units, VDM, code, operator; explore resets through the operator; bound to one arm (`--arm-id`) |
+| UR5e (real) | `src/robots/ur5e` | operator verdict (required) | memory, explore, video, units, VDM, code, operator; explore resets through the operator; bound to one arm (`--arm`) |
 
 Every robot but the Frankas (whose `segment` does this with `--segment` / `--depth unidepth`) takes
 `--detections` (SAM3 masks with ids on the env server: `detect`, `select_detection`,
@@ -118,14 +118,14 @@ pointing off, and a set of cameras needs one started with `--model molmopoint`):
 `molmo.ground`, several at once through MolmoPoint's `molmo.ground_set`, each point with its camera and,
 where the robot has depth, its world point (the Franka: the pixel's base-frame point; `src/primitives/pointing.ts`).
 
-ManiSkill's `--robot` picks the arm (ManiSkill 3.0.1 agents the stock table scene places, and the
+ManiSkill's `--arm` picks the arm (ManiSkill 3.0.1 agents the stock table scene places, and the
 robots the other scenes of OpenETA's ManiSkill table are built for), all translation-only with the same
 MV_* vectors, 2 cm step and servo (each measured at 19.5-20.3 mm per unit along its axis). The RLinf
 rigs (BlockPAP-v1 / BlockStack-v1) run their own Panda; a task built for another robot runs only on it.
 Results record a non-Panda arm as `maniskill_robot`, and `maniskill/eval.sh` keeps each arm in its own
 out dir.
 
-| `--robot` | ManiSkill uid | Env ids | Gripper | Wrist view |
+| `--arm` | ManiSkill uid | Env ids | Gripper | Wrist view |
 | --- | --- | --- | --- | --- |
 | `panda` (default) | `panda_wristcam` | the rigs, the 12 stock tabletop ids and FMBAssembly1Easy | mimic, +1 open / -1 close | Show-Harness's centred D415, turned 270 deg |
 | `xarm6_robotiq` | `xarm6_robotiq` | PickCube, StackCube, PullCube, LiftPegUpright, PlaceSphere, StackPyramid, PlugCharger | Robotiq 2F-85 in delta mode, +1 close / -1 open | the wristcam variant's camera on `camera_link`, turned 90 deg |
@@ -173,7 +173,7 @@ Shared modules:
   default root `~/.pi/embodied/datacollection`): every env step with what the robot's VLA reads and
   emits, on LIBERO, RoboCasa and RoboTwin (the robots whose VLA runs agent-side), and every control
   step of a motion with the env action it applied on Metaworld, Genesis, Robosuite and ManiSkill
-  (their env servers return the steps; one dataset per Robosuite arm layout and ManiSkill `--robot`,
+  (their env servers return the steps; one dataset per Robosuite arm layout and ManiSkill `--arm`,
   its `--space`). The UR5e's session data has export rules but no converter. `/flywheel-export
   [selection]` writes a LeRobot v3.0 dataset with the shared feature names (`python.flywheel` of the deployment
   config, default `python.default`; LeRobot needs its own venv, see services/README.md, which also covers GUMI runs).
@@ -185,7 +185,7 @@ Shared modules:
   observation turn (the paper's no-history setting). `--units-plugins` (default `auto`: the robot's
   set, else Show-Harness's zero-shot Franka set
   `recovery,auto_release,proprioception,variable_step,action_chunk,rotation,plan,mem_text`; `point` is
-  opt-in) picks the plugins. A configuration without a wrist camera (ManiSkill `--robot widowxai`,
+  opt-in) picks the plugins. A configuration without a wrist camera (ManiSkill `--arm widowxai`,
   dual Franka without an inline wrist camera, a UR5e or Piper streaming none) runs `auto` without
   variable_step and action_chunk and refuses to start when they are named; `--units-coarse-step` is variable_step's coarse step. A robot
   opts in with `units` in its spec (base-frame unit vectors, step, optional yaw step, `apply`,
@@ -300,7 +300,8 @@ the only one). A deployment names model-server endpoints (`services.sam3`, `.mol
 `.openvla_oft`, `.gr00t`, `.rldx`, `.lingbot`, `.finetuned`), Pythons (`python.default`,
 `python.<robot>`, `python.flywheel`, `python.viser`, `python.xpolicy`, `python.<model service>`),
 `services_dir`, `dirs` (`artifacts`, `memory`, `memory_out`, `logs`, `video`, `flywheel`,
-`flash_plans`, `api_slots`), `ffmpeg` and `cuda_device`; an unknown key or deployment stops the robot
+`flash_plans`, `api_slots`), `ffmpeg`, `cuda_device`, `ros_setup` (Piper) and `aux.<role>` (a model for
+one auxiliary VLM role: `vdm`, `verify`, `attach`, over `--aux-model`); an unknown key or deployment stops the robot
 at start, and `/embodied-config` prints what is in effect. Below it sit the built-in ports (SAM3
 18300, Molmo 18400, Pi0.5 18200, ...) and `PI_EMBODIED_SERVICES` / `PI_EMBODIED_PYTHON`; the eval
 scripts' per-worker `PI_EMBODIED_CUDA_DEVICE` and `PI_EMBODIED_DIRS_<KIND>` win over it. A service
@@ -326,7 +327,7 @@ over `--variant NAME=ARGS` (same cells, one subdirectory each), and reports succ
 invalid cells per variant; `--min-success N` fails a regression run, `--max-api-concurrency M` caps
 model calls across workers. Every cell is its own eval.sh call, so validity and reruns are eval.sh's.
 
-Developer guides: [adding a robot](docs/adding-a-robot.md) and [adding a primitive](docs/adding-a-primitive.md); [flags moved to the deployment config](docs/flags-migration.md).
+Developer guides: [adding a robot](docs/adding-a-robot.md) and [adding a primitive](docs/adding-a-primitive.md); [renamed flags and flags moved to the deployment config](docs/flags-migration.md).
 `test/gpu-e2e.test.ts` is the GPU end-to-end suite (real simulators and model servers, no model API;
 skipped unless `PI_EMBODIED_E2E` names a robot and a GPU answers); `test/gpu-e2e.sh` runs it robot by
 robot on a GPU box (docs/adding-a-robot.md, "Testing on a GPU").
@@ -369,7 +370,7 @@ in a new session. Boolean flags take the next word as their value; write them as
   The seed is an eval layout (pre-generated, 25 or 50 per task). Per-arm `move_to` / `move_delta` /
   `rotate_delta` / `set_gripper`, `go_home` (most tasks need both arms back home), `locate` (depth
   back-projection of head pixels), units per arm; `src/robots/robodojo/eval.sh` records
-  `--eval-seed` and averages RoboDojo's score. One env per process: RoboDojo's heterogeneous parallel
+  `--layout-set` and averages RoboDojo's score. One env per process: RoboDojo's heterogeneous parallel
   simulation (several envs and tasks in one Kit process, up to 10 per GPU in its config) is not used,
   so every episode pays its own Kit start (about 10 s warm, minutes cold) and cuRobo warmup (20-50 s),
   and holds its own Kit, renderer and cuRobo memory (8.6 GB of GPU memory measured on stack_bowls
@@ -394,12 +395,12 @@ in a new session. Boolean flags take the next word as their value; write them as
   grippers), `segment` / `point` / `back_project` on three cameras, `--grasping-mode` and
   `--privileged`; `src/robots/behavior/eval.sh`.
 - Franka / dual Franka: the services' `[franka]` extra, a Ray cluster on the controller nodes,
-  hand-eye calibration, and an operator at the emergency stop. Flags use a `--robot-`
-  prefix (`--robot-env`, `--robot-config`); `--vla` / `--segment` attach the deployment's
+  hand-eye calibration, and an operator at the emergency stop. `--env-url` attaches the
+  env server, `--robot-config` names the robot YAML; `--vla` / `--segment` attach the deployment's
   `services.vla` / `services.sam3`.
 - UR5e: the services' `[ur5e]` extra (ur_rtde, the shared `components/cameras` layer: RealSense
-  D400 / L515 with `[realsense-l515]`, webcams, RTSP; `--robot-cameras name=type:source,...`), a
-  Robotiq gripper over the URCap socket, `--operator` and `--arm-id <controller serial>` (the config,
+  D400 / L515 with `[realsense-l515]`, webcams, RTSP; `--cameras name=type:source,...`), a
+  Robotiq gripper over the URCap socket, `--operator` and `--arm <controller serial>` (the config,
   its limits and its camera calibrations are bound to that arm; `env_server --print-identity`), and
   the hand-eye tool `robots/ur5e/calibrate.py` (`capture`, `solve` -> `<calibration>.new.yaml`,
   `apply --yes` after a human reviewed the residuals).
@@ -416,7 +417,7 @@ Features ported from OpenETA beyond the core harness; each is off by default and
 
 | Feature | Enable | pi mechanism | Robots |
 |---|---|---|---|
-| Human as the model (OpenETA's manual VLM console) | `--model human/operator` (or any VLM flag set to it, e.g. `--attach-vlm-model human/operator`) | a provider (`src/planner/human.ts`) asking through `ctx.ui` select/input (TUI dialogs, RPC `extension_ui_request`) and the dashboard's composer | any |
+| Human as the model (OpenETA's manual VLM console) | `--model human/operator` (or `--aux-model human/operator` for the side VLMs, `aux.attach` in the deployment for one role) | a provider (`src/planner/human.ts`) asking through `ctx.ui` select/input (TUI dialogs, RPC `extension_ui_request`) and the dashboard's composer | any |
 | Web search / page fetch | `pi install npm:pi-web-search@1.6.0 npm:@zeldrisho/pi-web-fetch@0.9.2`, then `--web-tools` | pi packages; `src/capabilities/web.ts` keeps their tools active next to the robot's | any |
 | Object memory | `--object-memory` [`--object-memory-dir <dir>`, `--asset-references-dir <dir>`] | tools + `object_record` session entries (`src/capabilities/objects.ts`); `retrieve_asset_reference` reads reference assets (`manifest.json` + front/side/top PNGs) from `<memory home>/assets/<robot>/<asset>/` (`src/capabilities/assets.ts`) | any |
 | Multi-waypoint route | `--waypoints` | `follow_waypoints` (`src/primitives/waypoints.ts`) | LIBERO, Franka |

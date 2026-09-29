@@ -4,7 +4,7 @@
  * provider: `human/operator` is a model whose every reply the operator writes.
  *
  *   pi -e packages/embodied/src/robots/libero -e packages/embodied/src/capabilities/dashboard --dashboard --model human/operator
- *   pi ... --model selfhost/muse-glimmer-30b --attach-vlm-model human/operator   # only check_attached asks a person
+ *   pi ... --model selfhost/muse-glimmer-30b --aux-model human/operator   # check_attached, VDM and the verifier ask a person (aux.<role> for one)
  *
  * Each request is shown to the operator through pi's extension UI (`ctx.ui`): a widget with the
  * request (the latest prompt or tool results, the images it carries, the tools on offer), then

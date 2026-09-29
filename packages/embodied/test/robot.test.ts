@@ -263,7 +263,15 @@ test("finish ends the episode, terminates its batch, and yields exactly one resu
 	assert.equal(typeof results[0]?.context_version?.git_commit, "string");
 	assert.deepEqual(
 		results.map(
-			({ context_version: _, params: _p, params_default: _d, deployment: _e, deployment_sha: _s, ...r }) => r,
+			({
+				context_version: _,
+				params: _p,
+				params_default: _d,
+				deployment: _e,
+				deployment_sha: _s,
+				aux_models: _a,
+				...r
+			}) => r,
 		),
 		[
 			{

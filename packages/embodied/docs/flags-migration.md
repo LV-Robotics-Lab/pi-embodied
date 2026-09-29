@@ -1,4 +1,4 @@
-# Flags moved to the deployment config
+# Flags renamed or moved to the deployment config
 
 Where a service listens, which Python runs an env server and where outputs go are no longer flags
 (no aliases: an old flag fails with "unknown flag"). They live in the deployment config,
@@ -38,6 +38,27 @@ results keeps a flag, which now says what to use rather than where it listens.
 | `--api-slots DIR` | `dirs.api_slots` (eval-parallel.sh sets `PI_EMBODIED_DIRS_API_SLOTS`) |
 | `--ffmpeg BIN` | `ffmpeg` |
 | `--cuda-device N`, `--gpu-id N` | `cuda_device` (or `PI_EMBODIED_CUDA_DEVICE`, which eval-parallel.sh sets per worker) |
+| `--robot-ros-setup FILES` (Piper) | `ros_setup` |
+
+## Renamed flags (one concept, one name)
+
+| Old | New |
+|---|---|
+| `--env URL` (simulators), `--robot-env URL` (real arms) | `--env-url URL` |
+| `--task-name` (RoboCasa, RoboTwin), `--env-id` (ManiSkill) | `--task` |
+| `--robot` (ManiSkill's arm), `--arm-id` (UR5e) | `--arm` |
+| `--robot-backend` (Franka) | `--backend` |
+| `--eval-seed` (RoboDojo's layout set) | `--layout-set` |
+| `--robot-cameras` (UR5e) | `--cameras` |
+| `--units-vlm-model`, `--vdm-model`, `--attach-vlm-model` | `--aux-model` (one model for VDM, the units verifier and video_ref, check_attached); a role that needs another names it in the deployment's `aux.vdm` / `aux.verify` / `aux.attach`. A result records each role's model as `aux_models`. |
+
+A result's `robot_task` carries the new names (`task`, not `task-name` / `env-id`). The eval scripts
+refuse every old flag above before any cell runs (`src/scripts/old-flags.sh`).
+
+The OpenETA extras keep their switches (`--waypoints`, `--align-wrist`, `--grasp-advisor`, `--object-memory`, `--web-tools`;
+the result records them as `extras`) and `--grasp-advisor-model` stays suggest_grasp's own override of `--aux-model`.
+`--object-memory-dir` changes what the robot remembers and is a parameter; `--asset-references-dir` is a location and,
+like the removed directory flags, is left out of `params`.
 
 Precedence: built-in ports and paths < environment (`PI_EMBODIED_SERVICES`, `PI_EMBODIED_PYTHON`, ...)
 < deployment file, except `PI_EMBODIED_CUDA_DEVICE` and `PI_EMBODIED_DIRS_<KIND>`, which win over the

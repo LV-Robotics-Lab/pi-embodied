@@ -1,13 +1,13 @@
 /**
  * One physical Universal Robots UR5e arm for pi.
  *
- *   pi -e packages/embodied/src/robots/ur5e --operator --arm-id 2023300001 --task block_bowl --robot-config my_ur5e.yaml
- *   pi -e packages/embodied/src/robots/ur5e --operator --arm-id 2023300001 --task block_bowl --code=true --code-real
+ *   pi -e packages/embodied/src/robots/ur5e --operator --arm 2023300001 --task block_bowl --robot-config my_ur5e.yaml
+ *   pi -e packages/embodied/src/robots/ur5e --operator --arm 2023300001 --task block_bowl --code=true --code-real
  *      (run_code: the env server runs with --code; a program meets the tools' server-side limits; every program is confirmed)
  *
  * Starts the env server (pi_embodied_services.robots.ur5e.env_server: ur_rtde to the controller, a
  * Robotiq gripper over the URCap socket, RealSense / webcam / RTSP cameras through the services'
- * shared camera layer) or attaches to one with --robot-env. The server owns the safety limits: pi's
+ * shared camera layer) or attaches to one with --env-url. The server owns the safety limits: pi's
  * --max-move / --max-rotate (passed at spawn; an attached server must enforce them or tighter ones,
  * ../../primitives/motion.ts servedLimits) and the robot YAML's per-call translation and rotation
  * refusal, the workspace box and Z floor, the tool tilt limit, `stop` that really stops the running
@@ -18,7 +18,7 @@
  *
  * A real robot needs an operator: pi must have a UI, --operator must be on (the base then asks for a
  * verdict before `finish`), and the operator confirms the reset before any motion. The robot is bound
- * to one arm: --arm-id names the arm the operator intends to drive and must equal the identity the
+ * to one arm: --arm names the arm the operator intends to drive and must equal the identity the
  * server bound its config (limits, begin pose, camera calibrations) to; a mismatch refuses to start.
  * Motion tools record a state step (robot state, every camera's RGB and, where the camera has it,
  * depth, camera metadata) under --out and return it with the images. back_project reads a pixel's
@@ -27,7 +27,7 @@
  *
  * --explore (../explore.ts, `/explore`) runs operator-judged attempts: `reset` is the operator's scene
  * reset followed by the arm's, a success verdict is the solve, and the motion commands after the last
- * reset are exported as the cell's recipe (../memory, cell `ur5e_<arm-id>_<task>`).
+ * reset are exported as the cell's recipe (../memory, cell `ur5e_<arm>_<task>`).
  */
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -164,7 +164,7 @@ export default function ur5e(pi: ExtensionAPI) {
 		default: "smoke",
 		description: "Task name from the robot YAML's `tasks:`",
 	});
-	pi.registerFlag("arm-id", {
+	pi.registerFlag("arm", {
 		type: "string",
 		default: "",
 		description:
@@ -174,11 +174,11 @@ export default function ur5e(pi: ExtensionAPI) {
 		type: "string",
 		description: "Robot YAML (default: services/pi_embodied_services/robots/ur5e/config/example.yaml)",
 	});
-	pi.registerFlag("robot-env", {
+	pi.registerFlag("env-url", {
 		type: "string",
 		description: "Attach to a running UR5e env server instead of starting one",
 	});
-	pi.registerFlag("robot-cameras", {
+	pi.registerFlag("cameras", {
 		type: "string",
 		default: "",
 		description:
@@ -228,7 +228,7 @@ export default function ur5e(pi: ExtensionAPI) {
 	 */
 	const mountOf = (name: string) => cameraMount(steps[steps.length - 1]?.meta?.cameras?.[name]);
 	const taskName = () => robot.task.task;
-	const armId = () => flag("arm-id").trim();
+	const armId = () => flag("arm").trim();
 
 	const robot = defineRobot(pi, {
 		name: "ur5e",
@@ -788,7 +788,7 @@ export default function ur5e(pi: ExtensionAPI) {
 			throw new Error("ur5e drives a real robot: start pi with --operator so an operator judges every episode");
 		if (!armId())
 			throw new Error(
-				"ur5e is bound to one arm: start pi with --arm-id <controller serial> (env_server --print-identity), the arm whose config (limits, begin pose, camera calibrations) this session drives",
+				"ur5e is bound to one arm: start pi with --arm <controller serial> (env_server --print-identity), the arm whose config (limits, begin pose, camera calibrations) this session drives",
 			);
 		for (const name of ["max-move", "max-rotate"])
 			if (!(Number(flag(name)) > 0)) throw new Error(`--${name} must be a positive number (got '${flag(name)}')`);
@@ -800,8 +800,8 @@ export default function ur5e(pi: ExtensionAPI) {
 		out = resolve(ctx.cwd, dir(pi, "artifacts") || join(tmpdir(), "pi-embodied", `ur5e_${taskName()}_${stamp}`));
 		mkdirSync(out, { recursive: true });
 		steps.length = 0;
-		const endpoint = flag("robot-env");
-		const camerasFlag = flag("robot-cameras").trim();
+		const endpoint = flag("env-url");
+		const camerasFlag = flag("cameras").trim();
 		const [rpc, sam] = await Promise.all([
 			endpoint
 				? attach(endpoint)
@@ -826,16 +826,16 @@ export default function ur5e(pi: ExtensionAPI) {
 		]);
 		const m = await rpc.call<Meta>("env.get_env_meta", {}, 30_000);
 		if (m.robot !== "ur5e")
-			throw new Error(`--robot-env serves ${m.robot ?? "an unknown robot"}, not a ur5e env server`);
+			throw new Error(`--env-url serves ${m.robot ?? "an unknown robot"}, not a ur5e env server`);
 		// An attached server must enforce pi's limits (or tighter ones); throws otherwise.
 		const served = servedLimits(m.motion_limits, limits);
 		if (m.arm_id === null || m.arm_id === undefined)
 			throw new Error(
-				"the env server bound its config to no arm (robot.identity: none), so --arm-id cannot be verified; set robot.identity: serial and calibration.arm_id",
+				"the env server bound its config to no arm (robot.identity: none), so --arm cannot be verified; set robot.identity: serial and calibration.arm_id",
 			);
 		if (String(m.arm_id) !== armId())
 			throw new Error(
-				`--arm-id ${armId()} is not the arm the env server drives (its config is bound to ${m.arm_id}); nothing moved`,
+				`--arm ${armId()} is not the arm the env server drives (its config is bound to ${m.arm_id}); nothing moved`,
 			);
 		const t = m.tasks?.[taskName()];
 		if (!t?.instruction)

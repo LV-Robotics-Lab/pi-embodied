@@ -2,7 +2,7 @@
  * The RoboCasa365 task table (services/.../robocasa/eval/robocasa365.json, generated from the
  * installed robocasa package by `python -m pi_embodied_services.robots.robocasa.tasks --write`):
  * 317 tasks in two splits (634 env ids) with a manifest of 50 scene seeds each. `resolveCell`
- * checks the --task-name / --split / --scene flags against it before the env server starts,
+ * checks the --task / --split / --scene flags against it before the env server starts,
  * so a mistyped task fails with its near matches instead of a robosuite traceback.
  */
 
@@ -69,7 +69,7 @@ export function resolveCell(table: Table, flags: { task: string; split: string; 
 			table.tasks.map((t) => t.name),
 		);
 		throw new Error(
-			`--task-name ${flags.task} is not one of the ${table.tasks.length} RoboCasa365 tasks; near matches: ${near.join(", ")}`,
+			`--task ${flags.task} is not one of the ${table.tasks.length} RoboCasa365 tasks; near matches: ${near.join(", ")}`,
 		);
 	}
 	if (flags.scene === "") {

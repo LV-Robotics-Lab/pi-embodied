@@ -5,7 +5,7 @@
 #   eval.sh runs/rd stack_bowls,push_T 0-4 --model <provider/model> --thinking low
 #   eval.sh runs/rd-units stack_bowls 0-2 --units=true --model <provider/model> --thinking low
 #
-# <seeds> are RoboDojo eval layout ids (Assets/Eval_Layout/RoboDojo/arx_x5/<eval-seed>/<task>_<n>.json).
+# <seeds> are RoboDojo eval layout ids (Assets/Eval_Layout/RoboDojo/arx_x5/<layout-set>/<task>_<n>.json).
 # RoboDojo's own sweep (SeedManager) walks a task's layouts in order and evaluates eval_nums episodes (25
 # or 50, _task.yml), skipping a layout that proves unstable and drawing the next one: 0-24 is the
 # benchmark's selection for a 25-episode task only when none of those layouts is unstable. Likewise here
@@ -20,7 +20,7 @@
 # did not fail (`env_error`, `planner_error` and a missing result are invalid), whatever the
 # outcome. Rerunning retries exactly the invalid episodes; valid ones are kept. Each result records
 # the model, thinking level, --max-turns, --time-limit, the units mode (--units, --units-plugins, --stateless), visual
-# differencing (--vdm, --vdm-model, --vdm-wrist, --vdm-video, --vdm-video-frames) and the layout set (--eval-seed), and the summary covers
+# differencing (--vdm, --aux-model, --vdm-wrist, --vdm-video, --vdm-video-frames) and the layout set (--layout-set), and the summary covers
 # only the requested cells and refuses to mix configurations.
 # A --privileged run (simulator ground truth) is recorded as such and never shares an out dir with one without.
 # The fallback planner (--fallback-model, --fallback-after, --fallback-retry-primary; src/planner/fallback.ts) is part of the
@@ -32,6 +32,9 @@ set -uo pipefail
 out=$1 tasks=$2 seeds=$3
 shift 3
 here=$(cd "$(dirname "$0")" && pwd)
+# Renamed flags and the ones the deployment config replaced stop here, before any cell runs.
+. "$here/../../scripts/old-flags.sh"
+old_flags "$@" || exit 2
 PI=${PI:-pi}
 expand() { for part in ${1//,/ }; do seq "${part%-*}" "${part#*-}"; done; }
 # Common flags have one implementation; only robot-specific options live here.
@@ -40,8 +43,8 @@ eval_options_defaults
 eval_seed=0
 eval_robot_option() {
 	case $1 in
-	--eval-seed) eval_seed=${2:-0} ;;
-	--eval-seed=*) eval_seed=${1#*=} ;;
+	--layout-set) eval_seed=${2:-0} ;;
+	--layout-set=*) eval_seed=${1#*=} ;;
 	esac
 }
 eval_parse_options "$@"
@@ -138,7 +141,7 @@ run_cell() {
 	valid "$dir"
 	case $? in
 	0) node -p 'require(process.argv[1]).status' "$dir/result.json" && return ;;
-	2) echo "$dir holds a result of another model, thinking level, --max-turns, --time-limit, units mode, code mode, vdm, --eval-seed (or an older result without them), fallback, --privileged, --anchor-image, --approval, --max-tool-calls or --max-tokens; use another out dir" >&2 && exit 1 ;;
+	2) echo "$dir holds a result of another model, thinking level, --max-turns, --time-limit, units mode, code mode, vdm, --layout-set (or an older result without them), fallback, --privileged, --anchor-image, --approval, --max-tool-calls or --max-tokens; use another out dir" >&2 && exit 1 ;;
 	esac
 	rm -rf "$dir" && mkdir -p "$dir"
 	echo "== $task seed $seed" >&2

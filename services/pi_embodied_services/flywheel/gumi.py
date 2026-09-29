@@ -70,9 +70,14 @@ def _task(meta: dict[str, Any]) -> str:
 
 
 def _env_id(meta: dict[str, Any]) -> str:
-    """The robot's task env id (ManiSkill's real2sim rigs pick another camera transform)."""
+    """The robot's task env id (ManiSkill's real2sim rigs pick another camera transform): ManiSkill's
+    ``task``, recorded as ``env-id`` before pi renamed the flag."""
     task = meta.get("robot_task")
-    return str(task.get("env-id") or "") if isinstance(task, dict) else ""
+    if not isinstance(task, dict):
+        return ""
+    if "env-id" in task:
+        return str(task.get("env-id") or "")
+    return str(task.get("task") or "") if meta.get("robot") == "maniskill" else ""
 
 
 def _image(path: Path) -> np.ndarray:

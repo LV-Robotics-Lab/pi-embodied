@@ -655,7 +655,7 @@ test("mem_text: recent moves newest first, the history rules, and resets on empt
 
 test("verifier: a success finish is checked once on the latest images; NOT complete refuses it once", async () => {
 	const no = '```json\n{"complete": false, "reason": "the soup can is beside the basket"}\n```';
-	const f = await toyRobot({ "units-verify": "true", "units-vlm-model": "selfhost/muse" }, { vlm: [no, no] });
+	const f = await toyRobot({ "units-verify": "true", "aux-model": "selfhost/muse" }, { vlm: [no, no] });
 	await f.run("plan", { stages: [{ motion: "GRASP", target: "soup", completion: "held" }] });
 	const obs = await f.run("act", { unit: "MV_LEFT" });
 	await f.emit("tool_result", { toolName: "act", content: obs.content });

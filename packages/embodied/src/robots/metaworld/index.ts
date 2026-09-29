@@ -196,7 +196,10 @@ export default function metaworld(pi: ExtensionAPI) {
 		description: `Metaworld MT50 task (${TASKS.join(", ")})`,
 	});
 	pi.registerFlag("seed", { type: "string", default: "0", description: "Reset seed (the object layout)" });
-	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
+	pi.registerFlag("env-url", {
+		type: "string",
+		description: "Attach to a running env server instead of starting one",
+	});
 	// --detections / --depth unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
 	registerDetectionFlags(pi);
 	// --grasp: plan_grasp and friends, and execute_grasp / execute_place (services/.../utils/grasp_chain.py on the env server).
@@ -512,7 +515,7 @@ export default function metaworld(pi: ExtensionAPI) {
 		const { task, seed } = robot.task;
 		if (!(TASKS as readonly string[]).includes(task))
 			throw new Error(`unknown Metaworld task "${task}"; the ${TASKS.length} tasks are ${TASKS.join(", ")}`);
-		const endpoint = pi.getFlag("env") as string | undefined;
+		const endpoint = pi.getFlag("env-url") as string | undefined;
 		if (endpoint) env = await attach(endpoint);
 		else {
 			const services = servicesDir(pi);

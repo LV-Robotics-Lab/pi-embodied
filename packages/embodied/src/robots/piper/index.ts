@@ -6,7 +6,7 @@
  *   pi -e packages/embodied/src/robots/piper/dual.ts --operator --task banana_handover --robot-config my_dual.yaml
  *
  * Starts the env server (pi_embodied_services.robots.piper.env_server, ROS topics to the AgileX
- * arm node and the Orbbec cameras) or attaches to one with --robot-env. The server owns the
+ * arm node and the Orbbec cameras) or attaches to one with --env-url. The server owns the
  * safety limits: pi's --max-move / --max-yaw (passed at spawn; an attached server must enforce
  * them or tighter ones, ../../primitives/motion.ts servedLimits) and the robot YAML's per-call
  * step and yaw refusal, the Z floor, the optional workspace box, the joint-stream speed, and the
@@ -46,7 +46,7 @@ import { join, resolve } from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { dir, python, service, servicesDir } from "../../infra/config.ts";
+import { dir, python, rosSetup, service, servicesDir } from "../../infra/config.ts";
 import { trackFlags } from "../../infra/params.ts";
 import { encodePng } from "../../infra/png.ts";
 import { NdArray, type RpcClient, RpcUnavailable } from "../../infra/rpc.ts";
@@ -246,15 +246,9 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 		type: "string",
 		description: "Robot YAML (default: services/pi_embodied_services/robots/piper/config/example.yaml)",
 	});
-	pi.registerFlag("robot-env", {
+	pi.registerFlag("env-url", {
 		type: "string",
 		description: "Attach to a running Piper env server instead of starting one",
-	});
-	pi.registerFlag("robot-ros-setup", {
-		type: "string",
-		default: "",
-		description:
-			"Colon-separated setup.bash files sourced before the env server starts (e.g. /opt/ros/noetic/setup.bash:~/cobot_magic/Piper_ros_private-ros-noetic/devel/setup.bash); empty = inherit pi's environment",
 	});
 	// --detections / --depth unidepth: the env server's SAM3 masks with ids and UniDepth depth for the webcams (../primitives/detections.ts).
 	registerDetectionFlags(pi);
@@ -775,8 +769,8 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 		out = resolve(ctx.cwd, dir(pi, "artifacts") || join(tmpdir(), "pi-embodied", `piper_${taskName()}_${stamp}`));
 		mkdirSync(out, { recursive: true });
 		steps.length = 0;
-		const endpoint = flag("robot-env");
-		const setups = flag("robot-ros-setup").split(":").filter(Boolean);
+		const endpoint = flag("env-url");
+		const setups = rosSetup(pi);
 		const server = [
 			"-m",
 			"pi_embodied_services.robots.piper.env_server",

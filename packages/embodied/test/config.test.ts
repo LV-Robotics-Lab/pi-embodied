@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
+	auxModel,
+	auxModels,
 	configProblem,
 	cudaDevice,
 	deploymentRecord,
@@ -105,4 +109,58 @@ test("the eval scripts' per-worker environment wins over the deployment; the onl
 		if (saved.PI_EMBODIED_CUDA_DEVICE === undefined) delete process.env.PI_EMBODIED_CUDA_DEVICE;
 		if (saved.PI_EMBODIED_DIRS_LOGS === undefined) delete process.env.PI_EMBODIED_DIRS_LOGS;
 	}
+});
+
+test("--aux-model is every auxiliary role's model; aux.<role> overrides one; an unknown role is refused", () => {
+	useDeployment({ aux: { attach: "human/operator" } });
+	const p = pi({ "aux-model": "selfhost/muse" });
+	assert.equal(auxModel(p, "vdm"), "selfhost/muse");
+	assert.equal(auxModel(p, "verify"), "selfhost/muse");
+	assert.equal(auxModel(p, "attach"), "human/operator");
+	assert.deepEqual(auxModels(pi()), { vdm: null, verify: null, attach: "human/operator" });
+	useDeployment({ aux: { verifier: "x" } as never });
+	assert.match(configProblem(pi()) ?? "", /unknown aux\.verifier/);
+	useDeployment({});
+});
+
+test("a venv's own variable beats python.default; python.<venv> beats both", () => {
+	const saved = process.env.PI_EMBODIED_FLYWHEEL_PYTHON;
+	process.env.PI_EMBODIED_FLYWHEEL_PYTHON = "/env/flywheel";
+	try {
+		useDeployment({ python: { default: "/cfg/default" } });
+		assert.equal(python(pi(), "flywheel", ["PI_EMBODIED_FLYWHEEL_PYTHON"]), "/env/flywheel");
+		assert.equal(python(pi(), "libero"), "/cfg/default");
+		useDeployment({ python: { default: "/cfg/default", flywheel: "/cfg/flywheel" } });
+		assert.equal(python(pi(), "flywheel", ["PI_EMBODIED_FLYWHEEL_PYTHON"]), "/cfg/flywheel");
+	} finally {
+		if (saved === undefined) delete process.env.PI_EMBODIED_FLYWHEEL_PYTHON;
+		else process.env.PI_EMBODIED_FLYWHEEL_PYTHON = saved;
+		useDeployment({});
+	}
+});
+
+test("the eval scripts refuse a renamed or moved flag before any cell runs, naming its replacement", () => {
+	const sh = fileURLToPath(new URL("../src/scripts/old-flags.sh", import.meta.url));
+	const run = (...args: string[]) =>
+		spawnSync("bash", ["-c", `. "${sh}"; old_flags "$@"`, "_", ...args], { encoding: "utf8" });
+	for (const [old, now] of [
+		["--env", /--env-url/],
+		["--robot-env=http://x", /--env-url/],
+		["--env-id", /--task/],
+		["--task-name", /--task/],
+		["--robot", /--arm/],
+		["--arm-id", /--arm/],
+		["--eval-seed", /--layout-set/],
+		["--vdm-model", /--aux-model/],
+		["--sam3", /services\.<name>/],
+		["--openvla", /--vla-adapter openvla/],
+		["--contact-graspnet", /--grasp/],
+		["--cuda-device", /cuda_device/],
+		["--memory-dir", /dirs\.<kind>/],
+	] as const) {
+		const r = run("runs/x", "0-1", old, "v");
+		assert.equal(r.status, 2, old);
+		assert.match(r.stderr, now, old);
+	}
+	assert.equal(run("runs/x", "--env-url", "u", "--task", "t", "--arm", "a", "--aux-model", "m").status, 0);
 });

@@ -45,7 +45,7 @@ Deploying (the NUC side is not part of Show-Harness either):
    NUC IP, camera serials (``rs-enumerate-devices | grep Serial``), the Z floor, the
    workspace box, the begin joints (``--read-pose`` prints the live values without
    moving the arm) and the easy_handeye calibration paths, then
-   ``pi -e packages/embodied/src/robots/franka --robot-backend polymetis --robot-config <yaml>``.
+   ``pi -e packages/embodied/src/robots/franka --backend polymetis --robot-config <yaml>``.
 
 Only one backend may drive the arm at a time: stop the RLinf/franky stack (it talks
 to the FCI directly) before starting Polymetis on the NUC, and vice versa.

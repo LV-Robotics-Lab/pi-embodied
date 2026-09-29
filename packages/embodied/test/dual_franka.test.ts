@@ -255,7 +255,7 @@ test("dual Franka has a wrist view only when an inline camera is a wrist camera 
 	assert.equal(inlineWrist({ agent_observation: { inline_cameras: [] } }), false);
 });
 
-/** A fake dual-Franka env server (`--robot-env`) whose `code.run` made one motion. */
+/** A fake dual-Franka env server (`--env-url`) whose `code.run` made one motion. */
 async function fakeDualEnv() {
 	const calls: { method: string; kwargs: Record<string, any> }[] = [];
 	const nd = (shape: number[]) => ({
@@ -344,7 +344,7 @@ test("dual_franka --code: the server enforces pi's limits, the program is confir
 		"code-real": true,
 		task: "3",
 		"z-floor": "0.02",
-		"robot-env": env.url,
+		"env-url": env.url,
 		python: py,
 		out: dir,
 	});

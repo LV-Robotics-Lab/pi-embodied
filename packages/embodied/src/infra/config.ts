@@ -29,6 +29,10 @@ export type Deployment = {
 	dirs?: Record<string, string>;
 	ffmpeg?: string;
 	cuda_device?: string;
+	/** Colon-separated setup.bash files sourced before a ROS env server starts (Piper); empty: pi's environment. */
+	ros_setup?: string;
+	/** Per-role auxiliary VLMs (provider/id) over --aux-model: the rare role that needs another model. */
+	aux?: Partial<Record<AuxRole, string>>;
 };
 export type ConfigFile = { deployments?: Record<string, Deployment>; presets?: Record<string, Record<string, string>> };
 
@@ -62,6 +66,10 @@ export const SERVICE_KEYS = [
 	"finetuned",
 ] as const;
 export type ServiceKey = (typeof SERVICE_KEYS)[number];
+
+/** The auxiliary VLM roles: VDM, the units verifier and video_ref, check_attached (and suggest_grasp). */
+export const AUX_ROLES = ["vdm", "verify", "attach"] as const;
+export type AuxRole = (typeof AUX_ROLES)[number];
 
 export const DIR_KINDS = [
 	"artifacts",
@@ -150,8 +158,23 @@ export function configProblem(pi: ExtensionAPI): string | undefined {
 	const badDir = Object.keys(s.deployment.dirs ?? {}).filter((k) => !(DIR_KINDS as readonly string[]).includes(k));
 	if (badDir.length)
 		return `deployment ${s.name}: unknown dirs.${badDir.join(", dirs.")} (known: ${DIR_KINDS.join(", ")})`;
+	const badAux = Object.keys(s.deployment.aux ?? {}).filter((k) => !(AUX_ROLES as readonly string[]).includes(k));
+	if (badAux.length)
+		return `deployment ${s.name}: unknown aux.${badAux.join(", aux.")} (known: ${AUX_ROLES.join(", ")})`;
 	return undefined;
 }
+
+/**
+ * The model (provider/id) of an auxiliary VLM role: the deployment's `aux.<role>`, else `--aux-model`,
+ * else "" (the session's model). A result records every role's (`auxModels`).
+ */
+export function auxModel(pi: ExtensionAPI, role: AuxRole): string {
+	return deployment(pi).aux?.[role]?.trim() || String(pi.getFlag("aux-model") ?? "").trim();
+}
+
+/** For result.json: each role's model, null for the session's. */
+export const auxModels = (pi: ExtensionAPI) =>
+	Object.fromEntries(AUX_ROLES.map((r) => [r, auxModel(pi, r) || null])) as Record<AuxRole, string | null>;
 
 /**
  * A service's endpoint: the deployment's, else the built-in port, else "" (not configured). A
@@ -193,6 +216,13 @@ export const dir = (pi: ExtensionAPI, kind: DirKind, fallback = "") =>
 	process.env[`PI_EMBODIED_DIRS_${kind.toUpperCase()}`]?.trim() || deployment(pi).dirs?.[kind]?.trim() || fallback;
 
 export const ffmpeg = (pi: ExtensionAPI) => deployment(pi).ffmpeg?.trim() || "";
+
+/** The ROS setup files a ROS env server sources first (`ros_setup`, colon-separated). */
+export const rosSetup = (pi: ExtensionAPI) =>
+	(deployment(pi).ros_setup ?? "")
+		.split(":")
+		.map((s) => s.trim())
+		.filter(Boolean);
 
 /** The GPU ordinal an env server renders on: the environment (eval-parallel.sh's per-worker GPU) over the deployment. */
 export const cudaDevice = (pi: ExtensionAPI) =>

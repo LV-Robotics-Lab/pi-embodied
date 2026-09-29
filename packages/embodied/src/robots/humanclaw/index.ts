@@ -131,7 +131,10 @@ export default function humanclaw(pi: ExtensionAPI) {
 		description: "Paper mode: request a JSON object (response_format)",
 	});
 	pi.registerFlag("scene-dataset-config", { type: "string", default: "", description: "Prepared HSSD scene config" });
-	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
+	pi.registerFlag("env-url", {
+		type: "string",
+		description: "Attach to a running env server instead of starting one",
+	});
 
 	const base = psvBase();
 	if (base) mountPsv(pi, base);
@@ -316,7 +319,7 @@ export default function humanclaw(pi: ExtensionAPI) {
 			for (const f of ["vdm", "units-verify", "explore"])
 				if (on(f)) throw new Error(`--${f} is a pi-mode module; paper mode runs HumanCLAW's planner as published`);
 		} else if (base) throw new Error("--humanclaw-mode pi plans with the model's own tools, not humanclaw-psv");
-		const endpoint = pi.getFlag("env") as string | undefined;
+		const endpoint = pi.getFlag("env-url") as string | undefined;
 		if (endpoint) env = await attach(endpoint);
 		else {
 			const services = servicesDir(pi);

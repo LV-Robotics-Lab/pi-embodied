@@ -310,7 +310,7 @@ another way (a container or VM). Off Linux there is no `/proc` and a same-uid pr
 another's environment or memory, so nothing is refused. The refusal is known before the episode: pi's
 code mode calls `code.preflight` (kw `remote`, bool) when it starts, before any reset or operator
 confirmation, and does not start when it answers `{"error": "run_code refused: ..."}`. A caller on
-another host (pi attached with `--robot-env URL#token` to a non-loopback address) holds nothing this
+another host (pi attached with `--env-url URL#token` to a non-loopback address) holds nothing this
 host's `/proc` exposes: with `remote=true` the refusal is waived for the server's lifetime
 (`{"error": null, "waived": "remote caller"}`). Real robots: run the env server as root (programs
 then run under the dedicated uid), or on the robot's own computer attached from pi's by

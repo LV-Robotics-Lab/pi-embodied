@@ -10,6 +10,7 @@
 
 import type { ImageContent } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { auxModel } from "../../infra/config.ts";
 import { type Result, VERIFY_ENTRY } from "./types.ts";
 import { askVlm, parseVerdict, VLM_COST_EVENT, verifyPrompt } from "./vlm.ts";
 import { MAX_REPEAT } from "./vocabulary.ts";
@@ -172,7 +173,7 @@ export function registerVerifier(d: VerifierDeps) {
 			const ask = () =>
 				askVlm(
 					ctx,
-					String(pi.getFlag("units-vlm-model") ?? ""),
+					auxModel(pi, "verify"),
 					pi.getThinkingLevel(),
 					verifyPrompt(d.instruction(), armNames, check.images.length, d.wrist()),
 					check.images,

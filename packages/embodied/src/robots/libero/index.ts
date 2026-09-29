@@ -427,7 +427,10 @@ export default function libero(pi: ExtensionAPI) {
 			.filter(Boolean);
 	const seeds = vlaSeeds(pi, () => ["libero", robot.task]);
 	registerIkFlag(pi);
-	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
+	pi.registerFlag("env-url", {
+		type: "string",
+		description: "Attach to a running env server instead of starting one",
+	});
 	// 4 mm stops a 2 cm unit about 3.6 mm short (measured: 16.4 mm in 5 steps); the aaroncaozj adapters
 	// were labelled with full 2 cm steps.
 	pi.registerFlag("unit-tol", {
@@ -1767,7 +1770,7 @@ export default function libero(pi: ExtensionAPI) {
 		}
 		for (const k of Object.keys(vlaUsed)) delete vlaUsed[k];
 		sam3 = new RpcClient(service(pi, "sam3"));
-		const endpoint = pi.getFlag("env") as string | undefined;
+		const endpoint = pi.getFlag("env-url") as string | undefined;
 		if (endpoint) {
 			// `URL#token=HEX` for a server that requires its RPC token, as every robot attaches.
 			env = await attach(endpoint);

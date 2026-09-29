@@ -221,8 +221,8 @@ test("--vdm describes the first observation, then appends each diff and writes a
 	assert.equal(r.cost_usd, 0.03, "VDM calls count toward the episode's cost");
 });
 
-test("--vdm-wrist adds the wrist pair and --vdm-model picks the model", async () => {
-	const f = await toy({ vdm: true, "vdm-wrist": true, "vdm-model": "selfhost/muse" }, [
+test("--vdm-wrist adds the wrist pair and --aux-model picks the model", async () => {
+	const f = await toy({ vdm: true, "vdm-wrist": true, "aux-model": "selfhost/muse" }, [
 		{ text: "scene" },
 		{ text: "diff" },
 	]);

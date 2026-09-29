@@ -9,7 +9,7 @@
  *   (its registered default), so a result names its configuration and the eval scripts compare
  *   runs generically (../scripts/params-match.mjs) instead of by hand-kept lists.
  * Where services and files live is deployment config (./config.ts), not flags; the few flags
- * that remain about where things run (`--deployment`, `--env`, ...) are left out of `params`.
+ * that remain about where things run (`--deployment`, `--env-url`, ...) are left out of `params`.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -20,7 +20,7 @@ export type Tracked = { names: Map<string, FlagSpec>; duplicates: string[] };
 /** Numeric flags: the range a value must fall in (inclusive), and whether it must be an integer. */
 export const NUMERIC: Record<string, { min?: number; max?: number; integer?: boolean }> = {
 	seed: { min: 0, integer: true },
-	"eval-seed": { min: 0, integer: true },
+	"layout-set": { min: 0, integer: true },
 	"max-turns": { min: 0, integer: true },
 	"time-limit": { min: 0 },
 	"max-cost": { min: 0 },
@@ -39,6 +39,7 @@ export const NUMERIC: Record<string, { min?: number; max?: number; integer?: boo
 	"code-max-calls": { min: 1, integer: true },
 	"code-max-move": { min: 0 },
 	"approval-timeout": { min: 0 },
+	"approval-large-move": { min: 0 },
 	"ensemble-timeout": { min: 0 },
 	"explore-sessions": { min: 1, integer: true },
 	"explore-attempts-per-session": { min: 0, integer: true },
@@ -68,8 +69,7 @@ export const NUMERIC: Record<string, { min?: number; max?: number; integer?: boo
  */
 export const DEPLOYMENT: ReadonlySet<string> = new Set([
 	"deployment",
-	"env",
-	"robot-env",
+	"env-url",
 	"serve-lock",
 	"dashboard",
 	"dashboard-port",

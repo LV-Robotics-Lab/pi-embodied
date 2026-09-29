@@ -32,7 +32,7 @@ import type { ImageContent } from "@earendil-works/pi-ai";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
-import { requireService, type ServiceKey } from "../infra/config.ts";
+import { auxModel, requireService, type ServiceKey } from "../infra/config.ts";
 import { askVlm, parseJson, VLM_COST_EVENT } from "../modes/units/vlm.ts";
 import { type Json, message, toolResult } from "../robot.ts";
 
@@ -85,11 +85,6 @@ export function registerGraspFlags(pi: ExtensionAPI) {
 		default: "",
 		description:
 			"Drop grasp / place candidates approaching more than this many degrees from straight down (default: the env server's; LIBERO 30)",
-	});
-	pi.registerFlag("attach-vlm-model", {
-		type: "string",
-		default: "",
-		description: "Model (provider/id) of check_attached (default: --units-vlm-model, else the session's model)",
 	});
 }
 
@@ -311,7 +306,7 @@ export function graspTools(pi: ExtensionAPI, rig: GraspRig): GraspToolDef[] {
 			}));
 			if (!shots.length) return { error: "the env server returned no frames" };
 			const images: ImageContent[] = shots.map((s) => ({ type: "image", data: s.png, mimeType: "image/png" }));
-			const modelRef = String(pi.getFlag("attach-vlm-model") || pi.getFlag("units-vlm-model") || "");
+			const modelRef = auxModel(pi, "attach");
 			const entry: Json = { object, arm: (armOf(params) as Json).arm ?? null };
 			let out: Json;
 			try {

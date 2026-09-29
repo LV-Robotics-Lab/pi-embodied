@@ -1,7 +1,7 @@
 /**
  * The units module's side VLM calls: the end-of-episode task verifier and the reference-video
  * demo brief (video_ref). Each is one request to a vision model through pi's model registry
- * (`--units-vlm-model`, default the session's model), outside the agent's context.
+ * (`--aux-model`, default the session's model), outside the agent's context.
  *
  * Copyright 2026 The Show-Harness Authors (github.com/showlab/Show-Harness @137d571).
  * Licensed under the Apache License, Version 2.0.

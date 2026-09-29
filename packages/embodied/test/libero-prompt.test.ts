@@ -202,7 +202,7 @@ async function session(t: { after: (fn: () => void) => void }, values: Record<st
 	writeFileSync(join(memoryDir, "MEMORY.md"), "# index\n");
 	const s = stubPi(
 		{
-			env: env.url,
+			"env-url": env.url,
 			sam3: sam3.url,
 			// Any server that answers healthz stands in for Pi0.5: the RPent prompt describes the pi0 tools.
 			vla: sam3.url,

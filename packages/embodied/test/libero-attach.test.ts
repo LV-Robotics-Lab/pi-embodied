@@ -5,7 +5,7 @@ import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import libero from "../src/robots/libero/index.ts";
 
-test("LIBERO --env URL#token=HEX attaches with the token, like every robot's attach()", async () => {
+test("LIBERO --env-url URL#token=HEX attaches with the token, like every robot's attach()", async () => {
 	const seen: { method: string; token?: string }[] = [];
 	const server = createServer((req, res) => {
 		let body = "";
@@ -43,7 +43,7 @@ test("LIBERO --env URL#token=HEX attaches with the token, like every robot's att
 		events: { emit: () => {}, on: () => () => {} },
 	} as unknown as ExtensionAPI;
 	libero(pi);
-	flags.env = `${url}#token=beef`;
+	flags["env-url"] = `${url}#token=beef`;
 	const ctx = {
 		hasUI: true,
 		cwd: "/tmp",

@@ -5,7 +5,7 @@
  * Limits (PARAMS.md §6.3): the env server enforces pi's --max-move / --max-rotate / --max-yaw /
  * --workspace-xy / --z-floor in its motion methods, for pi's tools and a program's calls alike. pi
  * passes them at spawn (`limitArgs`) and reads back what the server enforces
- * (`env.get_env_meta().motion_limits`); an attached server (--robot-env) whose limits are looser
+ * (`env.get_env_meta().motion_limits`); an attached server (--env-url) whose limits are looser
  * than pi's flags is refused (`servedLimits`). pi checks nothing itself, except a route of several
  * calls (follow_waypoints, a geometry plan) that must be refused whole before its first call.
  *

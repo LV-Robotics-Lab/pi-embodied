@@ -11,13 +11,14 @@
  * The plan comes from plan_grasp's own tool results (a `tool_result` hook), so ./grasp.ts is
  * unchanged; a plan from an earlier robot state (`stamp` changed) is refused. The VLM call is
  * ../units/vlm.ts askVlm (cost on VLM_COST_EVENT) with --grasp-advisor-model, else
- * --attach-vlm-model / --units-vlm-model, else the session's model; each advice is a
+ * --aux-model (aux.attach), else the session's model; each advice is a
  * `grasp_suggestion` session entry.
  */
 
 import type { ImageContent } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { auxModel } from "../infra/config.ts";
 import { encodePng } from "../infra/png.ts";
 import { askVlm, parseJson, VLM_COST_EVENT } from "../modes/units/vlm.ts";
 import { type Json, mark, message, type Rgb, round } from "../robot.ts";
@@ -217,9 +218,7 @@ export function suggestGrasp(pi: ExtensionAPI, rig: AdvisorRig, plans: ReturnTyp
 					centre_z_m: Array.isArray(c.position) ? round(Number(c.position[2]), 3) : null,
 					approach: c.approach,
 				}));
-			const modelRef = String(
-				pi.getFlag("grasp-advisor-model") || pi.getFlag("attach-vlm-model") || pi.getFlag("units-vlm-model") || "",
-			);
+			const modelRef = String(pi.getFlag("grasp-advisor-model") || auxModel(pi, "attach"));
 			const images: ImageContent[] = [{ type: "image", data: png.toString("base64"), mimeType: "image/png" }];
 			let out: Json;
 			try {
@@ -330,9 +329,7 @@ export function suggestGraspPoint(pi: ExtensionAPI, rig: PointRig): GraspToolDef
 					mimeType: "image/png",
 				},
 			];
-			const modelRef = String(
-				pi.getFlag("grasp-advisor-model") || pi.getFlag("attach-vlm-model") || pi.getFlag("units-vlm-model") || "",
-			);
+			const modelRef = String(pi.getFlag("grasp-advisor-model") || auxModel(pi, "attach"));
 			let proposal: PointProposal;
 			let model = "";
 			let cost = 0;
@@ -436,8 +433,7 @@ export function graspAdvisorTool(pi: ExtensionAPI, rig: AdvisorRig, mount: (d: G
 	pi.registerFlag("grasp-advisor-model", {
 		type: "string",
 		default: "",
-		description:
-			"Model (provider/id) of suggest_grasp (default: --attach-vlm-model, --units-vlm-model, else the session's model)",
+		description: "Model (provider/id) of suggest_grasp (default: --aux-model, else the session's model)",
 	});
 	let names: string[] | undefined;
 	const plans = trackPlans(pi, rig.stamp);

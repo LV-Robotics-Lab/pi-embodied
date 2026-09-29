@@ -125,7 +125,7 @@ function operatorPi(values: Record<string, unknown>, confirms: boolean[]) {
 /** pi's limits under CODE_FLAGS (the task documents 0.04 m per call), as the server enforces them. */
 const LIMITS = { max_move_m: 0.04, max_rotate_rad: 0.5, z_floor_m: 0.14, workspace_xy: [0.159, 1.159, -0.456, 0.544] };
 
-/** A fake franka env server (`--robot-env`, RLinf capabilities) whose `code.run` made two motions. */
+/** A fake franka env server (`--env-url`, RLinf capabilities) whose `code.run` made two motions. */
 async function fakeFranka(limits: Record<string, unknown> = LIMITS) {
 	const calls: { method: string; kwargs: Record<string, any> }[] = [];
 	const nd = (shape: number[]) => ({
@@ -205,11 +205,7 @@ test("franka --code: the server enforces pi's limits, every program is confirmed
 	const env = await fakeFranka();
 	t.after(env.close);
 	const dir = mkdtempSync(join(tmpdir(), "franka-py-"));
-	const f = operatorPi({ ...CODE_FLAGS, "robot-env": env.url, python: fakePython(dir), out: dir }, [
-		true,
-		true,
-		false,
-	]);
+	const f = operatorPi({ ...CODE_FLAGS, "env-url": env.url, python: fakePython(dir), out: dir }, [true, true, false]);
 	franka(f.pi);
 	await f.emit("session_start");
 	process.exitCode = undefined;
@@ -237,7 +233,7 @@ test("franka --code without --code-real or --operator refuses before touching th
 	t.after(env.close);
 	const dir = mkdtempSync(join(tmpdir(), "franka-py-"));
 	for (const drop of ["code-real", "operator"]) {
-		const flags: Record<string, unknown> = { ...CODE_FLAGS, "robot-env": env.url, python: fakePython(dir), out: dir };
+		const flags: Record<string, unknown> = { ...CODE_FLAGS, "env-url": env.url, python: fakePython(dir), out: dir };
 		delete flags[drop];
 		const f = operatorPi(flags, [true]);
 		franka(f.pi);
@@ -257,7 +253,7 @@ test("franka refuses an attached env server whose limits are looser than pi's, b
 	]) {
 		const env = await fakeFranka(limits);
 		t.after(env.close);
-		const f = operatorPi({ ...CODE_FLAGS, "robot-env": env.url, python: fakePython(dir), out: dir }, [true]);
+		const f = operatorPi({ ...CODE_FLAGS, "env-url": env.url, python: fakePython(dir), out: dir }, [true]);
 		franka(f.pi);
 		await f.emit("session_start");
 		process.exitCode = undefined;
@@ -271,7 +267,7 @@ test("franka's tools take their schemas from the manifest; the motion tools call
 	const env = await fakeFranka();
 	t.after(env.close);
 	const dir = mkdtempSync(join(tmpdir(), "franka-py-"));
-	const f = operatorPi({ task: "1", "z-floor": "0.14", "robot-env": env.url, python: fakePython(dir), out: dir }, [
+	const f = operatorPi({ task: "1", "z-floor": "0.14", "env-url": env.url, python: fakePython(dir), out: dir }, [
 		true,
 	]);
 	franka(f.pi);

@@ -132,7 +132,10 @@ export default function robolab(pi: ExtensionAPI) {
 		default: false,
 		description: "Track RoboLab's subtask progress (partial-credit score in results; extra physics queries)",
 	});
-	pi.registerFlag("env", { type: "string", description: "Attach to a running env server instead of starting one" });
+	pi.registerFlag("env-url", {
+		type: "string",
+		description: "Attach to a running env server instead of starting one",
+	});
 	// --detections / --depth unidepth: detect, select_detection, reject_detection, enhance_depth (../primitives/detections.ts).
 	registerDetectionFlags(pi);
 	// --point: Molmo's point over services.molmo (../primitives/pointing.ts).
@@ -430,7 +433,7 @@ export default function robolab(pi: ExtensionAPI) {
 
 	async function startEpisode() {
 		const { task, seed } = robot.task;
-		const endpoint = pi.getFlag("env") as string | undefined;
+		const endpoint = pi.getFlag("env-url") as string | undefined;
 		if (endpoint) env = await attach(endpoint);
 		else {
 			const services = servicesDir(pi);

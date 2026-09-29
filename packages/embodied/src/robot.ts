@@ -21,7 +21,7 @@ import { approval, operator } from "./capabilities/operator.ts";
 import { probePerception, registerSkillFlags, type SkillState, withSkillsOff } from "./capabilities/skills.ts";
 import { webTools } from "./capabilities/web.ts";
 import { robotCheck } from "./infra/check.ts";
-import { configProblem, deploymentRecord, registerConfig, servicesDir } from "./infra/config.ts";
+import { auxModels, configProblem, deploymentRecord, registerConfig, servicesDir } from "./infra/config.ts";
 import { type ModelServicesSpec, modelServices } from "./infra/model-services.ts";
 import { params, paramsError, trackFlags } from "./infra/params.ts";
 import { forgetUnresponsive, NdArray, type RpcClient, RpcUnavailable } from "./infra/rpc.ts";
@@ -331,6 +331,14 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		type: "string",
 		default: String(spec.keepImages),
 		description: "Camera frames kept in context",
+	});
+	// One auxiliary VLM for VDM, the units verifier and check_attached (PARAMS.md 2.4); a role that needs
+	// another model names it in the deployment's aux.<role> (./infra/config.ts).
+	pi.registerFlag("aux-model", {
+		type: "string",
+		default: "",
+		description:
+			"Model (provider/id) of the auxiliary VLM calls: VDM, the units verifier and video_ref, check_attached (default: the session's model)",
 	});
 	// One owner for the flag units and code mode both read (PARAMS.md 2.5).
 	pi.registerFlag("stateless", {
@@ -659,7 +667,12 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		try {
 			// A flag the robot cannot honour fails closed, before the robot boots.
 			const misconfigured =
-				configProblem(pi) ?? paramsError(pi) ?? un?.configError() ?? co?.configError() ?? ap.configError(ctx.hasUI) ?? extrasInPureMode(pi);
+				configProblem(pi) ??
+				paramsError(pi) ??
+				un?.configError() ??
+				co?.configError() ??
+				ap.configError(ctx.hasUI) ??
+				extrasInPureMode(pi);
 			if (misconfigured) throw new Error(misconfigured);
 			api = undefined;
 			await models?.start();
@@ -988,6 +1001,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 						// Every experiment flag's effective value and default (./infra/params.ts): the eval scripts compare them.
 						...params(pi),
 						...deploymentRecord(pi),
+						aux_models: auxModels(pi),
 						cost_usd: Number(cost.toFixed(6)),
 						// An operator verdict (/success /failure /abort) aborts the model mid-request; that ends the run, it is not a planner failure.
 						planner_error: (op.result() as Json).operator_finished === true ? null : (plannerError ?? null),

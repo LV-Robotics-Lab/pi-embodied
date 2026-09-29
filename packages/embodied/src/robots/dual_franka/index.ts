@@ -8,7 +8,7 @@
  *     (run_code: the env server runs with --code; every program is confirmed by the operator)
  *
  * Starts the RLinf-backed env server (pi_embodied_services.robots.dual_franka.env_server; the
- * two-node Ray cluster must already run) or attaches to one with --robot-env. The server
+ * two-node Ray cluster must already run) or attaches to one with --env-url. The server
  * enforces pi's per-call limits (--max-move, --max-rotate, --workspace-xy, --z-floor: passed at
  * spawn, checked on an attached server) for every caller, and the workspace limits, per-step
  * clips, servo tolerances and joint-health thresholds from its runtime config. Tools and code
@@ -122,7 +122,7 @@ export default function dualFranka(pi: ExtensionAPI) {
 		type: "string",
 		description: "Robot YAML (default: services/pi_embodied_services/robots/dual_franka/config/example.yaml)",
 	});
-	pi.registerFlag("robot-env", {
+	pi.registerFlag("env-url", {
 		type: "string",
 		description: "Attach to a running dual-Franka env server instead of starting one",
 	});
@@ -776,7 +776,7 @@ export default function dualFranka(pi: ExtensionAPI) {
 		const stamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15);
 		out = resolve(ctx.cwd, dir(pi, "artifacts") || join(tmpdir(), "pi-embodied", `dual_franka_t${task()}_${stamp}`));
 		mkdirSync(out, { recursive: true });
-		const envEndpoint = flag("robot-env");
+		const envEndpoint = flag("env-url");
 		const [envRpc, vlaRpc, sam3Rpc] = await Promise.all([
 			envEndpoint
 				? attach(envEndpoint)

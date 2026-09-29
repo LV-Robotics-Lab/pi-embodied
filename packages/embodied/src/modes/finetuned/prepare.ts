@@ -182,7 +182,7 @@ function main() {
 		const task = values.task ?? meta.task_text ?? meta.task;
 		if (typeof task !== "string" || !task) throw new Error(`${run}: no task in metadata.json; pass --task`);
 		const robot = values.robot ?? meta.robot ?? "";
-		const d = viewsFor(robot, String(meta.robot_task?.["env-id"] ?? ""));
+		const d = viewsFor(robot, String(meta.robot_task?.task ?? meta.robot_task?.["env-id"] ?? ""));
 		if (!d && !(values.agentview && values.wrist))
 			throw new Error(`${run}: no camera transform for robot "${robot}"; pass --agentview and --wrist`);
 		const views = {

@@ -213,12 +213,12 @@ test("variants run the same seeds into their own dirs; success, Pass@k and --min
 	assert.match(k2.stdout, /pass@2 83\.3% \(2\/2 tasks\)/);
 });
 
-test("the summary label names a ManiSkill --robot other than the Panda, and variants of two arms stay apart", () => {
+test("the summary label names a ManiSkill --arm other than the Panda, and variants of two arms stay apart", () => {
 	const s = sandbox();
 	const out = join(s.dir, "out");
 	const r = s.run([
 		"--variant",
-		"xarm=--robot xarm6_robotiq",
+		"xarm=--arm xarm6_robotiq",
 		"--variant",
 		"panda=",
 		"maniskill",

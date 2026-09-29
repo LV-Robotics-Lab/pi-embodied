@@ -181,7 +181,7 @@ test("ROTATE_CW grounds to +yaw about base +z (counter-clockwise seen from above
 test("units: ROTATE_* run as env.rotate_delta with the grounded yaw, MV_* as env.move_delta; the 150 deg cap holds", async (t) => {
 	const env = await fakeEnv();
 	t.after(env.close);
-	const s = stubPi({ units: "true", "units-plugins": "", env: env.url });
+	const s = stubPi({ units: "true", "units-plugins": "", "env-url": env.url });
 	robolab(s.pi);
 	await s.emit("session_start");
 	assert.deepEqual(s.active(), ["act", "read", "ls", "grep", "find", "write", "finish"]);
@@ -225,7 +225,7 @@ test("units: ROTATE_* run as env.rotate_delta with the grounded yaw, MV_* as env
 test("tool results carry `terminated` (the solved signal of exploration and the memory recipe) beside `success`", async (t) => {
 	const env = await fakeEnv(2);
 	t.after(env.close);
-	const s = stubPi({ env: env.url });
+	const s = stubPi({ "env-url": env.url });
 	robolab(s.pi);
 	await s.emit("session_start");
 	const details = (r: any) => r.details as { success: boolean; terminated: boolean; state: { yaw_deg: number } };
@@ -245,7 +245,7 @@ test("attaching to a server with another task, phrasing or subtask setting fails
 		[{ "instruction-type": "vague" }, /\(default, subtask false\), not BananaInBowlTask seed 0 \(vague/],
 		[{ seed: "3" }, /not BananaInBowlTask seed 3/],
 	] as const) {
-		const s = stubPi({ env: env.url, ...values });
+		const s = stubPi({ "env-url": env.url, ...values });
 		robolab(s.pi);
 		const errors: string[] = [];
 		const stderr = console.error;
@@ -286,7 +286,7 @@ test("string choices in tool schemas are plain string enums (no anyOf of literal
 test("--code=true: run_code runs on the env server and its result becomes the observation and the success", async (t) => {
 	const env = await fakeEnv(1);
 	t.after(env.close);
-	const s = stubPi({ env: env.url, code: "true", "code-api": "low" });
+	const s = stubPi({ "env-url": env.url, code: "true", "code-api": "low" });
 	robolab(s.pi);
 	await s.emit("session_start");
 	process.exitCode = undefined;
@@ -324,7 +324,7 @@ test("--code=true: run_code runs on the env server and its result becomes the ob
 test("the evaluation prompt carries memory's mandatory reading step once, at SYSTEM.md's {{memory}}", async (t) => {
 	const env = await fakeEnv();
 	t.after(env.close);
-	const s = stubPi({ env: env.url });
+	const s = stubPi({ "env-url": env.url });
 	robolab(s.pi);
 	await s.emit("session_start");
 	const prompt = (await s.emit("before_agent_start", { systemPrompt: "" }))?.systemPrompt as string;

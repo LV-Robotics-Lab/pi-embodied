@@ -187,7 +187,7 @@ test("genesis: cube_pick starts, steps a unit and reports", { skip: skip("genesi
 });
 
 test("maniskill: PickCube-v1 starts, steps a unit and reports", { skip: skip("maniskill") }, async () => {
-	await episode(maniskill, "maniskill", { "env-id": "PickCube-v1", seed: "0" });
+	await episode(maniskill, "maniskill", { task: "PickCube-v1", seed: "0" });
 });
 
 test("libero: libero_10 task 0 starts, steps a unit and reports", { skip: skip("libero") }, async () => {
@@ -196,8 +196,8 @@ test("libero: libero_10 task 0 starts, steps a unit and reports", { skip: skip("
 
 /** Fixed integration cases; these check execution, not model task success. */
 const INTEGRATION_CASES = [
-	[robocasa, "robocasa", { "task-name": "OpenDrawer", split: "target", seed: "1" }],
-	[robotwin, "robotwin", { "task-name": "beat_block_hammer", "task-config": "demo_randomized", seed: "100000" }],
+	[robocasa, "robocasa", { task: "OpenDrawer", split: "target", seed: "1" }],
+	[robotwin, "robotwin", { task: "beat_block_hammer", "task-config": "demo_randomized", seed: "100000" }],
 	[robolab, "robolab", { task: "BananaInBowlTask", seed: "0" }],
 	[robodojo, "robodojo", { task: "stack_bowls", seed: "0" }],
 	[behavior, "behavior", { task: "turning_on_radio", seed: "0" }],
@@ -270,15 +270,15 @@ const FLYWHEEL_ROBOTS = [
 
 for (const c of FLYWHEEL_ROBOTS)
 	test(
-		`maniskill --robot ${c.robot}: a Flywheel episode records every control step and validates in its space`,
+		`maniskill --arm ${c.robot}: a Flywheel episode records every control step and validates in its space`,
 		{ skip: skip("maniskill-flywheel") },
 		async () => {
 			const root = mkdtempSync(join(tmpdir(), "gpu-e2e-fly-"));
 			const r = load(
 				maniskill,
 				flags({
-					robot: c.robot,
-					"env-id": c.envId,
+					arm: c.robot,
+					task: c.envId,
 					seed: "0",
 					"collect-flywheel-data": true,
 					"flywheel-root": root,

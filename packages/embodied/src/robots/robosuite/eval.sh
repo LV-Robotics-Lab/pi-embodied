@@ -10,7 +10,7 @@
 # did not fail (`env_error`, `planner_error` and a missing result are invalid), whatever the
 # outcome. Rerunning retries exactly the invalid episodes; valid ones are kept. Each result records
 # the model, thinking level, --max-turns, --time-limit, the units mode (--units, --units-plugins, --stateless) and
-# visual differencing (--vdm, --vdm-model, --vdm-wrist, --vdm-video, --vdm-video-frames), and the summary covers only the requested
+# visual differencing (--vdm, --aux-model, --vdm-wrist, --vdm-video, --vdm-video-frames), and the summary covers only the requested
 # cells and refuses to mix configurations.
 # A --privileged run (simulator ground truth) is recorded as such and never shares an out dir with one without.
 # The fallback planner (--fallback-model, --fallback-after, --fallback-retry-primary; src/planner/fallback.ts) is part of the
@@ -24,6 +24,9 @@ out=$1 tasks=$2 seeds=$3
 [ "$tasks" = - ] && tasks=Lift,Stack,Restack,Wipe,NutAssemblySquare,TwoArmLift,TwoArmHandover
 shift 3
 here=$(cd "$(dirname "$0")" && pwd)
+# Renamed flags and the ones the deployment config replaced stop here, before any cell runs.
+. "$here/../../scripts/old-flags.sh"
+old_flags "$@" || exit 2
 PI=${PI:-pi}
 expand() { for part in ${1//,/ }; do seq "${part%-*}" "${part#*-}"; done; }
 # Common flags have one implementation; only robot-specific options live here.

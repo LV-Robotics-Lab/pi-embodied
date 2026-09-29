@@ -100,7 +100,7 @@ for (const [robot, positional, cell, env] of CELLS) {
 }
 
 for (const [robot, positional, cell, env] of CELLS) {
-	test(`${robot}/eval.sh records --vdm, --vdm-model and --vdm-wrist and refuses a value pi would ignore`, () => {
+	test(`${robot}/eval.sh records --vdm, --aux-model and --vdm-wrist and refuses a value pi would ignore`, () => {
 		const run1 = (args: string[]) => run(robot, positional, cell, args, env);
 		for (const args of [["--vdm=false"], ["--vdm", "false"], ["--vdm-wrist=0"]]) {
 			const r = run1(args);
@@ -110,15 +110,15 @@ for (const [robot, positional, cell, env] of CELLS) {
 		}
 		const plain = run1([]).result;
 		assert.deepEqual([plain?.vdm, plain?.vdm_model, plain?.vdm_wrist], [false, null, false]);
-		const on = run1(["--vdm", "--vdm-model", "selfhost/muse", "--vdm-wrist"]).result;
+		const on = run1(["--vdm", "--aux-model", "selfhost/muse", "--vdm-wrist"]).result;
 		assert.deepEqual([on?.vdm, on?.vdm_model, on?.vdm_wrist], [true, "selfhost/muse", true]);
 	});
 }
 
-test("libero/eval.sh records --unit-tol and drops --vdm-model when --vdm is off", () => {
+test("libero/eval.sh records --unit-tol and drops --aux-model when --vdm is off", () => {
 	const run1 = (args: string[]) => run("libero", ["libero_10_task", "0", "0"], "libero_10_task_t0_s0", args);
 	// Without --vdm no VDM call runs: the model is not part of the configuration.
-	assert.equal(run1(["--vdm-model", "selfhost/muse"]).result?.vdm_model, null);
+	assert.equal(run1(["--aux-model", "selfhost/muse"]).result?.vdm_model, null);
 	// --unit-tol is recorded (the robot's default without it).
 	assert.equal(run1([]).result?.unit_tol, 0.004);
 	assert.equal(run1(["--unit-tol", "0.002"]).result?.unit_tol, 0.002);
@@ -130,7 +130,7 @@ test("libero/eval.sh records --vdm-video as its frame count, with the model, and
 	assert.equal(run1(["--vdm-video=false"]).status, 2);
 	assert.equal(run1([]).result?.vdm_video, null);
 	assert.equal(run1(["--vdm-video"]).result?.vdm_video, 8);
-	const on = run1(["--vdm-video", "--vdm-video-frames", "4", "--vdm-model", "selfhost/muse"]).result;
+	const on = run1(["--vdm-video", "--vdm-video-frames", "4", "--aux-model", "selfhost/muse"]).result;
 	assert.deepEqual([on?.vdm, on?.vdm_video, on?.vdm_model], [false, 4, "selfhost/muse"]);
 });
 
@@ -259,17 +259,17 @@ test("robolab/eval.sh records --instruction-type and --subtask and never mixes t
 	assert.match(same.stdout, /\/vague\/subtask: success 1\/1/);
 });
 
-test("robodojo/eval.sh records --eval-seed, never mixes layout sets in one out dir, and averages RoboDojo's score", () => {
+test("robodojo/eval.sh records --layout-set, never mixes layout sets in one out dir, and averages RoboDojo's score", () => {
 	const positional = ["stack_bowls", "0"];
 	const run1 = (args: string[]) => run("robodojo", positional, "stack_bowls_s0", args);
 	assert.equal(run1([]).result?.eval_seed, 0);
-	assert.equal(run1(["--eval-seed", "1"]).result?.eval_seed, 1);
-	assert.equal(run1(["--eval-seed=2"]).result?.eval_seed, 2);
-	const [a, b] = rerun("robodojo", positional, {}, [], ["--eval-seed", "1"]);
+	assert.equal(run1(["--layout-set", "1"]).result?.eval_seed, 1);
+	assert.equal(run1(["--layout-set=2"]).result?.eval_seed, 2);
+	const [a, b] = rerun("robodojo", positional, {}, [], ["--layout-set", "1"]);
 	assert.equal(a.status, 0, a.stdout + a.stderr);
 	assert.equal(b.status, 1);
-	assert.match(b.stderr, /--eval-seed \(or an older result without them\)/);
-	const [, same] = rerun("robodojo", positional, {}, ["--eval-seed", "1"], ["--eval-seed=1"], { score: 1 });
+	assert.match(b.stderr, /--layout-set \(or an older result without them\)/);
+	const [, same] = rerun("robodojo", positional, {}, ["--layout-set", "1"], ["--layout-set=1"], { score: 1 });
 	assert.equal(same.status, 0, same.stdout + same.stderr);
 	assert.match(same.stdout, /\/eval_seed=1: success 1\/1 \(100.0%\), mean score 1.000/);
 });
@@ -418,40 +418,40 @@ for (const [robot, positional, cell, env] of CELLS.filter(([r]) => FALLBACK_ROBO
 	});
 }
 
-test("maniskill/eval.sh records --robot as maniskill_robot and never mixes arms in one out dir", () => {
+test("maniskill/eval.sh records --arm as maniskill_robot and never mixes arms in one out dir", () => {
 	const positional = ["PickCube-v1", "0"];
 	const run1 = (args: string[]) => run("maniskill", positional, "PickCube-v1_s0", args);
 	// `robot` names the pi robot ("maniskill"); the arm is its own key, the Panda by default.
 	assert.equal(run1([]).result?.maniskill_robot, "panda");
-	const on = run1(["--robot", "xarm6_robotiq"]);
+	const on = run1(["--arm", "xarm6_robotiq"]);
 	assert.equal(on.result?.maniskill_robot, "xarm6_robotiq");
-	assert.ok(on.argv?.includes("--robot") && on.argv?.includes("xarm6_robotiq"), String(on.argv));
-	assert.equal(run1(["--robot=widowxai"]).result?.maniskill_robot, "widowxai");
+	assert.ok(on.argv?.includes("--arm") && on.argv?.includes("xarm6_robotiq"), String(on.argv));
+	assert.equal(run1(["--arm=widowxai"]).result?.maniskill_robot, "widowxai");
 	for (const [first, second] of [
-		[["--robot", "xarm6_robotiq"], []],
-		[[], ["--robot=widowxai"]],
+		[["--arm", "xarm6_robotiq"], []],
+		[[], ["--arm=widowxai"]],
 		[
-			["--robot", "xarm6_robotiq"],
-			["--robot", "widowxai"],
+			["--arm", "xarm6_robotiq"],
+			["--arm", "widowxai"],
 		],
 	]) {
 		const [a, b] = rerun("maniskill", positional, {}, first, second);
 		assert.equal(a.status, 0, a.stdout + a.stderr);
 		assert.equal(b.status, 1, `${first} then ${second}`);
-		assert.match(b.stderr, /--robot/);
+		assert.match(b.stderr, /--arm/);
 	}
-	const [, same] = rerun("maniskill", positional, {}, ["--robot", "xarm6_robotiq"], ["--robot=xarm6_robotiq"]);
+	const [, same] = rerun("maniskill", positional, {}, ["--arm", "xarm6_robotiq"], ["--arm=xarm6_robotiq"]);
 	assert.equal(same.status, 0, same.stdout + same.stderr);
 	assert.match(same.stdout, /\/robot=xarm6_robotiq: success 1\/1/);
 	// "-" (BlockPAP-v1) and the rigs run their own Panda: another arm is refused up front, not per cell.
 	for (const envs of ["-", "PickCube-v1,BlockStack-v1"]) {
-		const rig = run("maniskill", [envs, "0"], "BlockPAP-v1_s0", ["--robot", "xarm6_robotiq"]);
+		const rig = run("maniskill", [envs, "0"], "BlockPAP-v1_s0", ["--arm", "xarm6_robotiq"]);
 		assert.equal(rig.status, 2, envs);
-		assert.match(rig.stderr, /real2sim rigs with their own Panda; --robot xarm6_robotiq takes stock env ids/);
+		assert.match(rig.stderr, /real2sim rigs with their own Panda; --arm xarm6_robotiq takes stock env ids/);
 		assert.equal(rig.argv, undefined, "pi never started");
 	}
-	// The Panda keeps its summary key; `--robot panda` is the default run.
-	const [, panda] = rerun("maniskill", positional, {}, [], ["--robot", "panda"]);
+	// The Panda keeps its summary key; `--arm panda` is the default run.
+	const [, panda] = rerun("maniskill", positional, {}, [], ["--arm", "panda"]);
 	assert.equal(panda.status, 0, panda.stdout + panda.stderr);
 	assert.doesNotMatch(panda.stdout, /robot=/);
 });
@@ -518,20 +518,18 @@ test("libero/eval.sh records a finetuned/* model's --ft-* flags as ft_flags and 
 	// Another model never reads the fine-tuned flags: they are not part of its configuration.
 	assert.equal(run1(["--ft-prompt", "v5-libero"]).result?.ft_flags, null);
 	assert.equal(run1(["--model", "finetuned/x"]).result?.ft_flags, "default");
-	// The flags as given, without where the adapter is served or its key; pi gets them all.
+	// The flags as given, without the adapter's key (where it is served is services.finetuned); pi gets them all.
 	const ft = run1([
 		"--model=finetuned/local",
 		"--ft-model",
 		"a",
 		"--ft-prompt=v5-libero",
-		"--ft-endpoint",
-		"http://h:1/v1",
 		"--ft-api-key=k",
 		"--ft-wrist",
 		"flip=none",
 	]);
 	assert.equal(ft.result?.ft_flags, "model=a+prompt=v5-libero+wrist=flip=none");
-	assert.ok(ft.argv?.includes("--ft-endpoint") && ft.argv?.includes("--ft-api-key=k"), String(ft.argv));
+	assert.ok(ft.argv?.includes("--ft-api-key=k"), String(ft.argv));
 	for (const [first, second] of [
 		[
 			["--model", "finetuned/x", "--ft-prompt", "v5-libero"],

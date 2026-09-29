@@ -33,7 +33,7 @@ for (const enabled of [false, true]) {
 			return undefined;
 		});
 		t.after(() => env.close());
-		const s = stubPi({ env: env.url, units: "both", "humanclaw-mode": "pi", "humanclaw-proprioception": enabled });
+		const s = stubPi({ "env-url": env.url, units: "both", "humanclaw-mode": "pi", "humanclaw-proprioception": enabled });
 		humanclaw(s.pi);
 		await s.emit("session_start");
 		process.exitCode = undefined;
@@ -52,7 +52,7 @@ for (const enabled of [false, true]) {
 
 test("HumanCLAW paper mode refuses extra self-motion feedback before connecting", async () => {
 	const s = stubPi({
-		env: "http://127.0.0.1:1",
+		"env-url": "http://127.0.0.1:1",
 		units: "both",
 		"humanclaw-mode": "paper",
 		"humanclaw-proprioception": true,

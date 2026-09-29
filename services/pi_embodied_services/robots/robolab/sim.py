@@ -550,6 +550,73 @@ def rl_extent(env: Any, name: str) -> tuple[float, float]:
     return float(c[2] - half), float(c[2] + half)
 
 
+_LOCAL_POINTS: dict = {}
+
+
+def rl_mesh_points(env: Any, name: str) -> np.ndarray:
+    """An object's mesh vertices (N, 3) at its LIVE pose, env-local.
+
+    The USD stage keeps the authored pose (physics runs in fabric), so the vertices are read
+    once in the object's own frame and mapped by the rigid transform that takes WorldState's
+    cached local OBB corners onto the live ones (``get_bbox``, the same source as
+    :func:`rl_centroid`)."""
+    from pxr import Usd, UsdGeom
+    from robolab.core.world.world_state import get_world
+
+    world = get_world(env)
+    if name not in _LOCAL_POINTS:
+        prim = world._get_prim(name, env_id=0)
+        cache = UsdGeom.XformCache()
+        root_inv = np.linalg.inv(np.array(cache.GetLocalToWorldTransform(prim)).T)
+        pts = []
+        for p in Usd.PrimRange(prim):
+            if p.IsA(UsdGeom.Mesh):
+                m = cache.GetLocalToWorldTransform(p)
+                for v in UsdGeom.Mesh(p).GetPointsAttr().Get() or []:
+                    q = m.Transform(v)
+                    pts.append([q[0], q[1], q[2], 1.0])
+        if not pts:
+            raise ValueError(f"{name}: no mesh under its prim")
+        _LOCAL_POINTS[name] = (root_inv @ np.asarray(pts).T).T[:, :3]
+    a = to_np(world._get_local_geometry(name)["corners"]).astype(np.float64)
+    b = np.array([[c[0], c[1], c[2]] for c in world.get_bbox(name, env_id=0)[0]])
+    ca, cb = a.mean(0), b.mean(0)
+    u, _, vt = np.linalg.svd((a - ca).T @ (b - cb))
+    rot = vt.T @ np.diag([1.0, 1.0, np.sign(np.linalg.det(vt.T @ u.T))]) @ u.T
+    return (rot @ (_LOCAL_POINTS[name] - ca).T).T + cb
+
+
+def rl_turn_object(env: Any, name: str, pivot: np.ndarray, yaw: float) -> None:
+    """Turn a rigid object by ``yaw`` (rad, about +z) around the env-local point ``pivot``,
+    at rest (a generation-time layout change, like the reset events')."""
+    import torch
+
+    obj = env.scene[name]
+    origin = to_np(env.scene.env_origins)[0, 0:3].astype(np.float64)
+    pos = to_np(obj.data.root_pos_w)[0].astype(np.float64)
+    q = to_np(obj.data.root_quat_w)[0].astype(np.float64)
+    w, x, y, z = q[[3, 0, 1, 2]] if isaaclab_xyzw() else q
+    c, s = float(np.cos(yaw)), float(np.sin(yaw))
+    piv = np.asarray(pivot, dtype=np.float64) + origin
+    rel = pos - piv
+    new_pos = piv + np.array([c * rel[0] - s * rel[1], s * rel[0] + c * rel[1], rel[2]])
+    hc, hs = float(np.cos(yaw / 2)), float(np.sin(yaw / 2))  # Rz(yaw) * q
+    new_q = lab_quat(
+        [hc * w - hs * z, hc * x - hs * y, hc * y + hs * x, hc * z + hs * w]
+    )
+    pose = torch.tensor([[*new_pos, *new_q]], dtype=torch.float32, device=env.device)
+    write = (
+        getattr(obj, "write_root_pose_to_sim", None) or obj.write_root_link_pose_to_sim
+    )
+    write(pose)
+    zero = torch.zeros((1, 6), dtype=torch.float32, device=env.device)
+    vel = (
+        getattr(obj, "write_root_velocity_to_sim", None)
+        or obj.write_root_com_velocity_to_sim
+    )
+    vel(zero)
+
+
 def ee_tilt_deg(quat_wxyz: np.ndarray) -> float:
     """Angle between the hand's approach axis (local +Z) and straight down."""
     w, x, y, z = (float(v) for v in quat_wxyz)

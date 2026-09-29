@@ -104,6 +104,78 @@ LAYOUT_TOL_M = 0.02
 MIN_TOKEN_TRAVEL_M = 0.006
 
 
+#: Panda hand: finger stroke, and half the width of the pads' sweep either side of the grasp line.
+GRIPPER_OPENING_M = 0.08
+FINGER_BAND_M = 0.01
+#: What an object may span along the closing axis, under the pads, and still fit between them.
+GRASP_SPAN_MAX_M = GRIPPER_OPENING_M - 0.01
+#: A re-oriented object's long axis lands within this of square to the closing axis.
+ORIENT_JITTER_RAD = float(np.radians(20.0))
+
+
+def grasp_geometry(points: np.ndarray, closing_xy) -> dict:
+    """Where to close on an object's mesh, and whether the open fingers fit around it there.
+
+    ``point``: the middle of the object along its long (principal) axis, centred across the
+    body at that cross-section -- on the object even when its OBB centre is not (a curved
+    banana's is 1.4 cm off its body). ``span``: how far the object reaches along the closing
+    axis inside the pads' band through ``point``; more than :data:`GRASP_SPAN_MAX_M` and the
+    fingers come down on the object instead of either side of it.
+    """
+    xy = points[:, :2]
+    _, evec = np.linalg.eigh(np.cov((xy - xy.mean(0)).T))
+    long_ax, short_ax = evec[:, 1], evec[:, 0]
+    s, t = xy @ long_ax, xy @ short_ax
+    s_mid = (s.min() + s.max()) / 2
+    mid = np.abs(s - s_mid) < 0.01
+    t_mid = (t[mid].min() + t[mid].max()) / 2
+    zc = (points[:, 2].min() + points[:, 2].max()) / 2
+    point = np.array([*(s_mid * long_ax + t_mid * short_ax), zc])
+    c = np.asarray(closing_xy, dtype=np.float64)[:2]
+    c = c / np.linalg.norm(c)
+    rel = xy - point[:2]
+    band = np.abs(rel @ np.array([-c[1], c[0]])) < FINGER_BAND_M
+    span = float(np.ptp(rel[band] @ c)) if band.any() else 0.0
+    return {"point": point, "long_axis": long_ax, "span": span}
+
+
+def orient_for_grasp(backend, obj: str, rng) -> float:
+    """Turn ``obj`` about its grasp point so the fingers fit around it; the turn (rad, 0 if none).
+
+    The action units hold the hand's yaw (the fine-tuned vocabulary has no rotation), so an
+    elongated object lying along the closing axis cannot be grasped at all: measured on
+    BananaInBowlTask, the authored banana lies 19.7 deg off the closing axis, the fingers land on
+    it (descent blocked 17 mm high, width 0.000) in every episode, while with its long axis
+    square to the closing axis every grasp held (width 32-49 mm, lifted 53 mm). So generation
+    lays such an object square to the closing axis +-``ORIENT_JITTER_RAD`` (from ``rng``) before
+    the episode, as part of the layout -- the scene the policy is trained on is one it can solve
+    without turning the hand. Objects the fingers already fit around are left as they are.
+    """
+    closing = backend.closing_axis()
+    geo = grasp_geometry(backend.object_points(obj), closing)
+    if geo["span"] <= GRASP_SPAN_MAX_M:
+        return 0.0
+    square = np.arctan2(
+        closing[0], -closing[1]
+    )  # the direction square to the closing axis
+    want = square + float(rng.uniform(-ORIENT_JITTER_RAD, ORIENT_JITTER_RAD))
+    have = float(np.arctan2(geo["long_axis"][1], geo["long_axis"][0]))
+    yaw = (want - have + np.pi / 2) % np.pi - np.pi / 2  # an axis: modulo pi
+    backend.turn_object(obj, geo["point"], yaw)
+    return float(yaw)
+
+
+def reset_episode(backend, seed: int) -> tuple[dict, float]:
+    """Reset to ``seed``, then lay the object where the fingers fit (:func:`orient_for_grasp`,
+    its own rng from the seed, so a follower's reset reproduces it)."""
+    backend.reset(seed)
+    plan = resolve_plan(backend.targets)
+    turn = orient_for_grasp(
+        backend, plan["object"], np.random.default_rng([int(seed), 1])
+    )
+    return plan, turn
+
+
 class UnsupportedTask(RuntimeError):
     """The task's subtask spec is not a single-object pick-and-place."""
 
@@ -131,8 +203,12 @@ def _extent(backend, name: str) -> Optional[tuple[float, float]]:
 
 
 def grasp_tcp(backend, obj: str, z_jitter: float = 0.0, rng=None) -> np.ndarray:
-    """Flange pose putting the fingertips around the object's centre."""
-    c = backend.object_centroid(obj)
+    """Flange pose putting the fingertips around the object's grasp point
+    (:func:`grasp_geometry`; the OBB centre when the mesh cannot be read)."""
+    try:
+        c = grasp_geometry(backend.object_points(obj), backend.closing_axis())["point"]
+    except Exception:  # noqa: BLE001 -- prims without a readable mesh
+        c = backend.object_centroid(obj)
     z = float(c[2]) + FLANGE_TO_FINGERTIP_M
     if z_jitter and rng is not None:
         z += float(rng.uniform(-z_jitter, z_jitter))
@@ -235,6 +311,26 @@ class FacadeBackend:
         from pi_embodied_services.robots.robolab import sim
 
         return sim.rl_centroid(self.env, name)
+
+    def object_points(self, name: str) -> np.ndarray:
+        from pi_embodied_services.robots.robolab import sim
+
+        return sim.rl_mesh_points(self.env, name)
+
+    def closing_axis(self) -> np.ndarray:
+        """The direction the fingers close along (the hand's local y), base frame."""
+        from pi_embodied_services.robots.robolab import sim
+
+        w, x, y, z = sim.rl_ee_quat(self.env)
+        return np.array(
+            [2 * (x * y - w * z), 1 - 2 * (x * x + z * z), 2 * (y * z + w * x)]
+        )
+
+    def turn_object(self, name: str, pivot, yaw: float) -> None:
+        from pi_embodied_services.robots.robolab import sim
+
+        sim.rl_turn_object(self.env, name, pivot, yaw)
+        self.f._control(np.zeros(3), 6)  # let it settle
 
     def object_extent(self, name: str) -> tuple[float, float]:
         from pi_embodied_services.robots.robolab import sim
@@ -359,8 +455,7 @@ def oracle(args, backend) -> tuple[int, int]:
         seed = args.seed0 + tried
         tried += 1
         rng = np.random.default_rng(seed)
-        backend.reset(seed)
-        plan = resolve_plan(backend.targets)
+        plan, turn = reset_episode(backend, seed)
         rollout = out / f"rollout_{kept:03d}"
         writer = RolloutWriter(rollout)
         ep = OracleEpisode(backend, writer, rng, plan, args.step_m, args.max_tokens)
@@ -385,6 +480,7 @@ def oracle(args, backend) -> tuple[int, int]:
             "stalled_tokens": stalled,
             "plan": plan,
             "seed": seed,
+            "object_turn_rad": round(turn, 4),
             "success": ok,
             "reason": result.get("reason", ""),
         }
@@ -438,8 +534,7 @@ def record(args, backend) -> tuple[int, int]:
         seed = args.seed0 + tried
         tried += 1
         rng = np.random.default_rng(seed)
-        backend.reset(seed)
-        plan = resolve_plan(backend.targets)
+        plan, turn = reset_episode(backend, seed)
         layout = layout_of(backend, plan)
         rec = DemoRecorder(backend)
         rec.capture()
@@ -454,6 +549,7 @@ def record(args, backend) -> tuple[int, int]:
             "task_key": args.task,
             "plan": plan,
             "layout": layout,
+            "object_turn_rad": round(turn, 4),
             "randomize_xy_m": float(args.randomize_xy or 0.0),
             **rec.track(),
         }
@@ -564,7 +660,7 @@ def follow(args, backend) -> tuple[int, int]:
     kept = 0
     for tf in files:
         track = json.loads(tf.read_text())
-        backend.reset(int(track["seed"]))
+        _plan, turn = reset_episode(backend, int(track["seed"]))
         drift = [
             float(np.linalg.norm(backend.object_centroid(n) - np.asarray(xyz)))
             for n, xyz in (track.get("layout") or {}).items()
@@ -584,6 +680,7 @@ def follow(args, backend) -> tuple[int, int]:
             "source": f"follow_{args.task}",
             "method": "closed_loop_follower",
             "track": tf.name,
+            "object_turn_rad": round(turn, 4),
             "plan": track["plan"],
             "seed": track["seed"],
             "last_token": writer.tokens[-1] if writer.tokens else None,

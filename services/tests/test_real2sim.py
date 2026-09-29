@@ -454,3 +454,71 @@ def test_robolab_follow_takes_the_tracks_randomize_xy(tmp_path, monkeypatch):
     with pytest.raises(SystemExit, match="does not record"):
         rl.main(base)
     assert rl.main([*base, "--randomize-xy", "0"]) == 2 and seen["xy"] == 0.0
+
+
+def _banana(angle_deg: float, center=(0.45, -0.05)) -> np.ndarray:
+    """A curved 19 cm x 3.8 cm body (an arc of discs), long axis at ``angle_deg`` in the xy plane."""
+    t = np.linspace(-0.6, 0.6, 60)
+    r = 0.18  # radius of the bend
+    spine = np.c_[r * np.sin(t), r * (1 - np.cos(t))]
+    rng = np.random.default_rng(0)
+    pts = []
+    for p in spine:
+        for _ in range(30):
+            d = rng.uniform(-0.019, 0.019, 2)
+            pts.append([p[0] + d[0], p[1] + d[1], 0.02 + rng.uniform(-0.018, 0.018)])
+    pts = np.asarray(pts)
+    a = np.radians(angle_deg)
+    rot = np.array([[np.cos(a), -np.sin(a)], [np.sin(a), np.cos(a)]])
+    pts[:, :2] = pts[:, :2] @ rot.T + np.asarray(center)
+    return pts
+
+
+def test_grasp_geometry_finds_the_body_and_the_span_under_the_fingers():
+    pts = _banana(70.3)  # 19.7 deg off a closing axis along -y, as measured on the box
+    geo = rl.grasp_geometry(pts, [0.0, -1.0, 0.0])
+    # the middle of the body (the spine's midpoint is ``center``), not the bend's hollow where
+    # the mean of the points sits
+    assert np.linalg.norm(geo["point"][:2] - [0.45, -0.05]) < 0.005
+    assert np.linalg.norm(pts[:, :2].mean(0) - [0.45, -0.05]) > 0.01
+    assert geo["span"] > rl.GRASP_SPAN_MAX_M
+    square = rl.grasp_geometry(_banana(0.0), [0.0, -1.0, 0.0])
+    assert square["span"] < 0.05
+
+
+class _TurnBackend:
+    def __init__(self, pts):
+        self.pts = pts
+        self.turns = []
+
+    def closing_axis(self):
+        return np.array([0.0, -1.0, 0.0])
+
+    def object_points(self, _name):
+        return self.pts
+
+    def turn_object(self, _name, pivot, yaw):
+        self.turns.append(yaw)
+        c, s = np.cos(yaw), np.sin(yaw)
+        rel = self.pts[:, :2] - pivot[:2]
+        self.pts = self.pts.copy()
+        self.pts[:, :2] = rel @ np.array([[c, -s], [s, c]]).T + pivot[:2]
+
+
+def test_orient_for_grasp_squares_an_elongated_object_and_leaves_a_cube():
+    b = _TurnBackend(_banana(70.3))
+    for seed in range(5):
+        b.pts = _banana(70.3)
+        yaw = rl.orient_for_grasp(b, "banana", np.random.default_rng(seed))
+        assert abs(yaw) <= np.pi / 2
+        assert rl.grasp_geometry(b.pts, b.closing_axis())["span"] <= rl.GRASP_SPAN_MAX_M
+    g = np.random.default_rng(1)
+    cube = np.c_[
+        g.uniform(-0.029, 0.029, (500, 2)) + [0.5, 0.0], g.uniform(0, 0.058, 500)
+    ]
+    c = _TurnBackend(cube)
+    assert rl.orient_for_grasp(c, "rubiks_cube", np.random.default_rng(0)) == 0.0
+    assert c.turns == []
+    assert np.allclose(
+        rl.grasp_geometry(cube, [0, -1, 0])["point"][:2], [0.5, 0.0], atol=0.002
+    )

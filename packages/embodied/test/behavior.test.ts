@@ -245,6 +245,7 @@ test("the tools are CaP-X's primitive set plus perception; motions carry the thr
 	behavior(s.pi);
 	assert.equal(s.flags.task, "turning_on_radio");
 	assert.equal(s.flags.privileged, false, "a simulated robot: --privileged exists, off by default");
+	assert.equal(s.flags["gpu-id"], "", "no GPU by default: the env server resolves it (utils/gpu.py)");
 	await s.emit("session_start");
 	// The robot's tools, then memory's file tools.
 	assert.deepEqual(s.active(), [

@@ -179,7 +179,12 @@ export default function behavior(pi: ExtensionAPI) {
 		description: `BEHAVIOR-1K challenge activity: ${TASKS.slice(0, 3).join(", ")}, ... (50)`,
 	});
 	pi.registerFlag("seed", { type: "string", default: "0", description: "The task's pre-sampled instance id" });
-	pi.registerFlag("gpu-id", { type: "string", default: "0", description: "GPU for Isaac Sim (OMNIGIBSON_GPU_ID)" });
+	pi.registerFlag("gpu-id", {
+		type: "string",
+		default: "",
+		description:
+			"Physical GPU for Isaac Sim (default: the env server's PI_EMBODIED_CUDA_DEVICE, else the first CUDA_VISIBLE_DEVICES entry, else 0)",
+	});
 	pi.registerFlag("image-size", { type: "string", default: "480", description: "Camera frames, px (square)" });
 	pi.registerFlag("grasping-mode", {
 		type: "string",
@@ -483,7 +488,9 @@ export default function behavior(pi: ExtensionAPI) {
 				python: flag("python", "python"),
 				args: [
 					...["-m", "pi_embodied_services.robots.behavior.env_server"],
-					...["--task", task, "--seed", seed, "--gpu-id", flag("gpu-id", "0")],
+					...["--task", task, "--seed", seed],
+					// Unset: the server resolves the GPU as every env server does (utils/gpu.py).
+					...(flag("gpu-id", "").trim() ? ["--gpu-id", flag("gpu-id", "").trim()] : []),
 					...["--image-size", flag("image-size", "480"), "--grasping-mode", flag("grasping-mode", "sticky")],
 					// The server runs segment (--sam3) and point (--molmo) itself.
 					...["--sam3", flag("sam3", ""), "--molmo", flag("molmo", "")],

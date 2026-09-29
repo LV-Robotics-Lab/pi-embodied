@@ -51,8 +51,8 @@
 # Heavy: robolab, robodojo and behavior (Isaac Sim), robotwin (cuRobo) and humanclaw (Habitat + a motion model). Light: libero, maniskill, metaworld,
 # robosuite, genesis and robocasa (an EGL, SAPIEN or Genesis renderer per episode, the planner off the
 # GPU); they share the GPU with whatever else runs and never take LOCK (it is noted and ignored), so a
-# lock queue of light jobs cannot form. Genesis and BEHAVIOR pick their GPU themselves (--backend /
-# --gpu-id among the pi args), so --gpus only sets the workers' CUDA environment for them.
+# lock queue of light jobs cannot form. Genesis and BEHAVIOR take their GPU from the workers' CUDA
+# environment (their env servers pin it, services utils/gpu.py) unless --gpu-id is among the pi args.
 # Check the GPU's free memory before starting a light run on a shared GPU.
 #
 # The summary gives, per variant, the success rate over valid cells, Pass@k (the unbiased estimator

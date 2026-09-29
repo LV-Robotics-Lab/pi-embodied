@@ -67,6 +67,7 @@ from pi_embodied_services.utils.geometry import (
     mujoco_grip_state,
     quat_to_matrix,
 )
+from pi_embodied_services.utils.gpu import pin_egl
 from pi_embodied_services.utils.grasp import (
     GraspPlanner,
     add_grasp_arguments,
@@ -1730,13 +1731,17 @@ def main():
     add_perception_arguments(p)
     args = p.parse_args()
 
-    if args.cuda_device is not None:
-        # robosuite asserts MUJOCO_EGL_DEVICE_ID in CUDA_VISIBLE_DEVICES when the latter is
-        # set, assuming the EGL order is the CUDA order; pin the EGL device directly instead.
-        os.environ.pop("CUDA_VISIBLE_DEVICES", None)
-        from pi_embodied_services.utils.egl import configure_egl_device
+    # --cuda-device (else the deployment's, else the first CUDA_VISIBLE_DEVICES entry) pins CUDA
+    # and the EGL renderer to one GPU (utils/gpu.py; EGL ignores CUDA_VISIBLE_DEVICES).
+    cuda_ordinal = pin_egl(args.cuda_device)
+    if cuda_ordinal is not None:
+        # The EGL order differs from the CUDA order: all GPUs stay visible to CUDA; select ours.
+        try:
+            import torch
 
-        configure_egl_device(args.cuda_device)
+            torch.cuda.set_device(cuda_ordinal)
+        except ImportError:  # a venv without torch has no CUDA work to place
+            pass
 
     facade = RobosuiteEnvFacade(
         task=args.task,

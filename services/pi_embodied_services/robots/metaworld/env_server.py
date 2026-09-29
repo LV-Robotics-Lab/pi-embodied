@@ -61,6 +61,7 @@ from pi_embodied_services.components.env_facade_base import BaseEnvFacade
 from pi_embodied_services.utils import grasp_chain as chain
 from pi_embodied_services.utils import ground_truth, sam3_segment
 from pi_embodied_services.utils.code_exec import CodeRunMixin
+from pi_embodied_services.utils.gpu import add_cuda_argument, pin_egl
 from pi_embodied_services.utils.grasp import (
     GraspPlanner,
     add_grasp_arguments,
@@ -971,7 +972,11 @@ def main():
     )
     add_perception_arguments(p, sam3=True)
     add_grasp_arguments(p)
+    add_cuda_argument(p)
     args = p.parse_args()
+    # CUDA and the EGL renderer on one GPU (utils/gpu.py): --cuda-device, the deployment's, or
+    # the first CUDA_VISIBLE_DEVICES entry.
+    pin_egl(args.cuda_device)
 
     facade = MetaworldEnvFacade(
         task=args.task, seed=args.seed, view_size=args.view_size

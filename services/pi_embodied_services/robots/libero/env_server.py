@@ -46,6 +46,7 @@ from pi_embodied_services.utils.geometry import (
     quat_to_matrix,
     rotvec_of,
 )
+from pi_embodied_services.utils.gpu import pin_egl
 from pi_embodied_services.utils.grasp import (
     GraspPlanner,
     add_grasp_arguments,
@@ -2048,34 +2049,17 @@ def main():
     add_perception_arguments(p)
     args = p.parse_args()
 
-    if args.cuda_device is not None:
-        # Deliberately do NOT set CUDA_VISIBLE_DEVICES. robosuite (imported
-        # transitively via libero) asserts at import time that
-        # ``MUJOCO_EGL_DEVICE_ID in CUDA_VISIBLE_DEVICES`` (substring check),
-        # which assumes the EGL index equals the CUDA ordinal and crashes on
-        # multi-GPU boxes where the EGL order differs. That assertion is gated
-        # on ``CUDA_VISIBLE_DEVICES != ""``, so leaving it unset skips it in
-        # both this process and the multiprocessing-spawned render workers
-        # (which inherit the env). Pin the two backends directly instead:
-        #   - MuJoCo render device <- MUJOCO_EGL_DEVICE_ID (configure_egl_device)
-        #   - torch default device  <- torch.cuda.set_device(N)
-        prev = os.environ.get("CUDA_VISIBLE_DEVICES")
-        if prev is not None:
-            logger.warning(
-                "CUDA_VISIBLE_DEVICES=%s is set; clearing it and pinning via "
-                "MUJOCO_EGL_DEVICE_ID + torch.cuda.set_device(--cuda-device=%s) "
-                "instead (robosuite's CVD assertion is incompatible with EGL<->CUDA mapping)",
-                prev,
-                args.cuda_device,
-            )
-            os.environ.pop("CUDA_VISIBLE_DEVICES", None)
-        from pi_embodied_services.utils.egl import configure_egl_device
+    # --cuda-device (else the deployment's, else the first CUDA_VISIBLE_DEVICES entry) pins CUDA
+    # and the EGL renderer to one GPU (utils/gpu.py; EGL ignores CUDA_VISIBLE_DEVICES).
+    cuda_ordinal = pin_egl(args.cuda_device)
+    if cuda_ordinal is not None:
+        # The EGL order differs from the CUDA order: all GPUs stay visible to CUDA; select ours.
+        try:
+            import torch
 
-        configure_egl_device(args.cuda_device)
-        import torch
-
-        torch.cuda.set_device(args.cuda_device)
-
+            torch.cuda.set_device(cuda_ordinal)
+        except ImportError:  # a venv without torch has no CUDA work to place
+            pass
     raw_env = make_env(
         args.task,
         args.seed,

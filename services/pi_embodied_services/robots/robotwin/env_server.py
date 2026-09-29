@@ -196,6 +196,7 @@ from pi_embodied_services.robots.robotwin.reward_compat import (
 from pi_embodied_services.robots.robotwin.rlinf_env import (
     RoboTwinAgentEnv,
 )
+from pi_embodied_services.utils.gpu import add_cuda_argument, pin_cuda
 from pi_embodied_services.utils.perception import (
     add_perception_arguments,
     install_perception,
@@ -1026,7 +1027,11 @@ def main() -> None:
     parser.add_argument("--assets-path", required=True)
     parser.add_argument("--parent-watch", action="store_true")
     add_perception_arguments(parser, sam3=True)
+    add_cuda_argument(parser)
     args = parser.parse_args()
+    # SAPIEN renders on the visible GPU (utils/gpu.py); its Vulkan still opens a ~6 MiB context on
+    # every GPU while enumerating them.
+    pin_cuda(args.cuda_device)
 
     env = make_env(
         args.task_name,

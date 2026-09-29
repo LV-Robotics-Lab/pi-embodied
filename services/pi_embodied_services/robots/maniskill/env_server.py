@@ -54,6 +54,7 @@ import numpy as np
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
 from pi_embodied_services.utils import ground_truth, reach
 from pi_embodied_services.utils.code_exec import CodeRunMixin
+from pi_embodied_services.utils.gpu import add_cuda_argument, pin_cuda
 from pi_embodied_services.utils.logging import get_logger
 from pi_embodied_services.utils.perception import (
     add_perception_arguments,
@@ -1713,7 +1714,11 @@ def main():
     )
     add_perception_arguments(p, sam3=True)
     reach.add_ik_argument(p)
+    add_cuda_argument(p)
     args = p.parse_args()
+    # SAPIEN renders on the visible GPU (utils/gpu.py); its Vulkan still opens a ~6 MiB context on
+    # every GPU while enumerating them.
+    pin_cuda(args.cuda_device)
 
     facade = ManiskillEnvFacade(
         env_id=args.env_id,

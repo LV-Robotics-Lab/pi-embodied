@@ -62,6 +62,7 @@ from pi_embodied_services.components.env_facade_base import BaseEnvFacade
 from pi_embodied_services.robots.robodojo import sim
 from pi_embodied_services.utils import ground_truth
 from pi_embodied_services.utils.code_exec import CodeRunMixin
+from pi_embodied_services.utils.gpu import pin_isaac
 from pi_embodied_services.utils.perception import (
     add_perception_arguments,
     install_perception,
@@ -1161,8 +1162,9 @@ def main():
     p.add_argument(
         "--cuda-device",
         type=int,
-        default=0,
-        help="physical GPU (CUDA_VISIBLE_DEVICES, as RoboDojo)",
+        default=None,
+        help="physical GPU (CUDA_VISIBLE_DEVICES, as RoboDojo; default: PI_EMBODIED_CUDA_DEVICE, "
+        "else the first CUDA_VISIBLE_DEVICES entry, else 0)",
     )
     p.add_argument(
         "--no-depth",
@@ -1178,8 +1180,10 @@ def main():
     args = p.parse_args()
 
     # RoboDojo hard-codes cuda:0 (cuRobo, warp buffers): expose only the chosen GPU, before any CUDA init.
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(args.cuda_device)
-    os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+    args.cuda_device = pin_isaac(args.cuda_device)
+    if args.cuda_device is None:
+        args.cuda_device = 0
+        os.environ["CUDA_VISIBLE_DEVICES"] = "0"
     os.environ.setdefault("OMNI_KIT_ACCEPT_EULA", "YES")
     # ROBODOJO_CACHE moves Kit's, the GL shader and warp's kernel caches (under ~ by default) to a
     # data disk; each is a few hundred MB and grows with new shaders and kernels.

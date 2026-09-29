@@ -58,6 +58,7 @@ from pi_embodied_services.components.env_facade_base import BaseEnvFacade
 from pi_embodied_services.robots.robolab import sim
 from pi_embodied_services.utils import ground_truth
 from pi_embodied_services.utils.code_exec import CodeRunMixin
+from pi_embodied_services.utils.gpu import pin_isaac
 from pi_embodied_services.utils.perception import (
     add_perception_arguments,
     install_perception,
@@ -568,8 +569,9 @@ def main():
     p.add_argument(
         "--cuda-device",
         type=int,
-        default=0,
-        help="physical GPU for physics, rendering and torch",
+        default=None,
+        help="physical GPU for physics, rendering and torch (default: PI_EMBODIED_CUDA_DEVICE, else "
+        "the first CUDA_VISIBLE_DEVICES entry, else 0)",
     )
     p.add_argument(
         "--renderer", default="realtime", choices=["realtime", "pathtracing"]
@@ -610,16 +612,15 @@ def main():
     add_perception_arguments(p, sam3=True)
     args = p.parse_args()
 
-    # Vulkan ignores CUDA_VISIBLE_DEVICES, so the renderer is pinned by index (sim.launch_isaac);
-    # CUDA must see the same numbering.
-    if os.environ.pop("CUDA_VISIBLE_DEVICES", None) is not None:
-        print(
-            "[robolab-env] ignoring CUDA_VISIBLE_DEVICES; using --cuda-device",
-            flush=True,
-        )
-    os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+    # Only the chosen GPU is visible (utils/gpu.py pin_isaac): CUDA, PhysX and Kit's renderer all
+    # run on its index 0. Passing a physical index to Kit with every GPU visible left a ~294 MiB
+    # context on GPU 0.
     os.environ.setdefault("OMNI_KIT_ACCEPT_EULA", "YES")
-    device = f"cuda:{args.cuda_device}"
+    args.cuda_device = pin_isaac(args.cuda_device)
+    if args.cuda_device is None:
+        args.cuda_device = 0
+        os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+    device = "cuda:0"
     # robolab-isaac61.patch ports only the realtime renderer to Isaac Lab 3 (SimulationCfg.render
     # is gone); create_env would raise after the minute-long Kit start.
     if sim.isaaclab_major() >= 3 and (

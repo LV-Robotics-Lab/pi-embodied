@@ -70,6 +70,7 @@ from pi_embodied_services.robots.behavior import sim
 from pi_embodied_services.robots.behavior.tasks import LANGUAGE, TASK_INDEX, TASK_NAMES
 from pi_embodied_services.utils import ground_truth
 from pi_embodied_services.utils.code_exec import CodeRunMixin
+from pi_embodied_services.utils.gpu import pin_isaac
 from pi_embodied_services.utils.perception import (
     add_perception_arguments,
     install_perception,
@@ -1102,7 +1103,11 @@ def main():
         help="the task's pre-sampled instance id (the challenge's instances)",
     )
     p.add_argument(
-        "--gpu-id", type=int, default=0, help="GPU for Isaac Sim (OMNIGIBSON_GPU_ID)"
+        "--gpu-id",
+        type=int,
+        default=None,
+        help="physical GPU for Isaac Sim (default: PI_EMBODIED_CUDA_DEVICE, else the first "
+        "CUDA_VISIBLE_DEVICES entry, else 0)",
     )
     p.add_argument(
         "--image-size",
@@ -1140,7 +1145,12 @@ def main():
     args = p.parse_args()
 
     # OmniGibson's macros read these at import: set them before anything imports it.
-    os.environ["OMNIGIBSON_GPU_ID"] = str(args.gpu_id)
+    # Only the chosen GPU is visible (utils/gpu.py pin_isaac), so OmniGibson runs on its index 0.
+    args.gpu_id = pin_isaac(args.gpu_id)
+    if args.gpu_id is None:
+        args.gpu_id = 0
+        os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+    os.environ["OMNIGIBSON_GPU_ID"] = "0"
     os.environ["OMNIGIBSON_HEADLESS"] = "1"
     os.environ.setdefault("OMNI_KIT_ACCEPT_EULA", "YES")
     if args.data_path:

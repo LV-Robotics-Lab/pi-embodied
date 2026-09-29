@@ -138,7 +138,7 @@
 			},
 			"doc": {
 				"tool": "Choose one segment mask (by id) as the target of the current observation, after checking the overlay.",
-				"code": "Make one detection id the selected mask of the current observation."
+				"code": "Make one detection id the selected mask of the current observation.\n\nExample:\n    s = segment(\"red block\", all=True)\n    select_detection(s[\"ids\"][1])"
 			},
 			"result": "read"
 		},
@@ -159,7 +159,7 @@
 			},
 			"doc": {
 				"tool": "Rule out one segment mask (by id) of the current observation; it stays listed as rejected.",
-				"code": "Rule one detection id out; it stays listed as rejected."
+				"code": "Rule one detection id out; it stays listed as rejected.\n\nExample:\n    s = segment(\"red block\", all=True)\n    reject_detection(s[\"ids\"][0])"
 			},
 			"result": "read"
 		},
@@ -183,7 +183,7 @@
 			},
 			"doc": {
 				"tool": "Fill the holes of a camera's depth on the latest step with a UniDepth estimate scaled to the sensor (or supply depth where the camera has none). back_project and segment on this step then use the filled depth; the sensor depth is kept as <camera>_depth_sensor.f32.",
-				"code": "Fill the holes of a camera's depth with a UniDepth estimate scaled to the sensor (or supply depth where the camera has none); later segments use the filled depth."
+				"code": "Fill the holes of a camera's depth with a UniDepth estimate scaled to the sensor (or supply depth where the camera has none); later segments use the filled depth.\n\nExample:\n    r = enhance_depth(\"wrist\")\n    print(r)"
 			},
 			"result": "read"
 		},

@@ -156,7 +156,7 @@
 			},
 			"doc": {
 				"tool": "Whether move_to could reach a world xyz from the arm's current joints (IK only; nothing moves). status unreachable means move_to would refuse it; unknown means the check could not run.",
-				"code": "Whether the TCP can reach a world position (IK by the ik service; unknown without --ik)."
+				"code": "Whether the TCP can reach a world position (IK by the ik service; unknown without --ik).\n\nExample:\n    r = preview_reach([0.05, 0.02, 0.95])\n    if r[\"status\"] == \"unreachable\":\n        print(r[\"message\"])"
 			},
 			"result": "read"
 		},

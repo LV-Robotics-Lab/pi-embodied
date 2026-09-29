@@ -7,7 +7,7 @@
 			"method": "env.get_task_language",
 			"tier": "low",
 			"doc": {
-				"code": "The task instruction."
+				"code": "The task instruction.\n\nExample:\n    task = get_task_language()\n    print(task)"
 			}
 		},
 		{

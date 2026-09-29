@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readdirSync } from "node:fs";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -172,21 +173,34 @@ test("fetchCodeApi passes other errors on, and renderCodeApi lists one primitive
 	);
 });
 
-test("every LIBERO low-tier code primitive has an example, so S3 (low) and S4 (low-noexamples) differ", () => {
-	const m = loadManifest("libero");
-	const s3 = codePrimitives(m, "low", () => true);
-	const s4 = codePrimitives(m, "low-noexamples", () => true);
+const ROBOTS = readdirSync(new URL("../src/primitives/manifests/", import.meta.url))
+	.filter((f) => f.endsWith(".json"))
+	.map((f) => f.slice(0, -".json".length));
+
+test("every robot's low- and high-tier code primitives have an example, so S3 (low) and S4 (low-noexamples) differ", () => {
+	assert.ok(ROBOTS.includes("libero") && ROBOTS.length > 10, ROBOTS.join(","));
 	const example = (p: CodeApiPrimitive) => /\n\s*Examples?:/i.test(p.doc);
-	assert.deepEqual(
-		s3.filter((p) => !example(p)).map((p) => p.name),
-		[],
-	);
-	assert.deepEqual(
-		s4.map((p) => p.name),
-		s3.map((p) => p.name),
-	);
-	assert.deepEqual(
-		s4.filter(example).map((p) => p.name),
-		[],
-	);
+	for (const robot of ROBOTS) {
+		const m = loadManifest(robot);
+		for (const tier of ["high", "low"] as const)
+			assert.deepEqual(
+				codePrimitives(m, tier, () => true)
+					.filter((p) => !example(p))
+					.map((p) => p.name),
+				[],
+				`${robot} ${tier}`,
+			);
+		const s3 = codePrimitives(m, "low", () => true);
+		const s4 = codePrimitives(m, "low-noexamples", () => true);
+		assert.deepEqual(
+			s4.map((p) => p.name),
+			s3.map((p) => p.name),
+			robot,
+		);
+		assert.deepEqual(
+			s4.filter(example).map((p) => p.name),
+			[],
+			robot,
+		);
+	}
 });

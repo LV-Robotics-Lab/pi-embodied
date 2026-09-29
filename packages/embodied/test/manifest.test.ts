@@ -4,6 +4,7 @@ import { readdirSync } from "node:fs";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { loadManifest, toolSchema, tools } from "../src/primitives/manifest.ts";
+import { codePrimitives } from "../src/primitives/registry.ts";
 import { SERVICES } from "../src/robot.ts";
 
 /**
@@ -94,3 +95,18 @@ for (const [robot, load] of Object.entries(LOADERS))
 		}
 		for (const e of declared.values()) assert.ok(toolSchema(e, { cameras: ["a"], arms: [] }));
 	});
+
+test("pi-side tools (side ts: the VLA and skill loops) are tool-mode only: never a code primitive", () => {
+	for (const robot of ROBOTS) {
+		const m = loadManifest(robot);
+		const pi = m.primitives.filter((e) => e.side === "ts");
+		for (const e of pi) assert.equal(e.doc.code, undefined, `${robot}.${e.name}: a ts tool has no code doc`);
+		const names = new Set(pi.map((e) => e.name));
+		const leaked = (["high", "low", "raw", "privileged", "low+privileged"] as const).flatMap((tier) =>
+			codePrimitives(m, tier, () => true)
+				.filter((p) => names.has(p.name) && !m.primitives.some((e) => e.name === p.name && e.side !== "ts"))
+				.map((p) => `${tier}:${p.name}`),
+		);
+		assert.deepEqual(leaked, [], `${robot}: pi-side tools in code.api`);
+	}
+});

@@ -17,7 +17,7 @@ Besides your other tools, `run_code` executes a Python program on the robot's en
 PROGRAM:
 - Plain Python 3. `np` (numpy) and `math` are imported; you may import the standard library and numpy. Assign what you want to report to `RESULT` (it is returned JSON-encoded); `print` output is returned too (8 KB).
 - The primitives below are ordinary functions in the program's namespace. Each one runs on the robot as it is called (closed loop): call one, read its return value, decide the next.
-- A program runs in its own process with no simulator or env object; only the primitives reach the robot.
+- A program runs in its own process with no simulator or env object; only the primitives below reach the robot. Tools outside that list (the VLA and skill tools) are not callable from a program.
 - Limits per call: a wall-clock timeout of {{timeout}} s (the program is killed and the robot stopped), at most {{max_calls}} primitive calls, at most {{max_move}} m of commanded translation; a refused call raises `CodeLimitError`. A primitive's failure raises `RuntimeError` in the program.
 - Units are metres and radians in the world frame. Keep programs short and check the result of each motion primitive before the next.
 

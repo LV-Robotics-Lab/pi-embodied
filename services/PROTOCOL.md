@@ -148,7 +148,12 @@ what is available agrees, renders the prompt from its manifest and records `dige
 a declared, available primitive without its method, or a business method neither declared nor
 internal, stops it. A program's calls go through the server's `CodeApi.resolve`, the whitelist
 built from the manifest: only the tier's declared names, parameters, enum values and ranges;
-`env.reset`, `stop` and `code.*` are never primitives. A server without a manifest answers
+`env.reset`, `stop` and `code.*` are never primitives. The VLA and skill tools (`side: ts`: LIBERO's
+`pi0_pick` / `openvla_act` / `openvla_oft_act` / `gr00t_act`, RoboCasa's `rldx_skill` / `rldx_arm`,
+RoboTwin's `lingbot_act`, the Franka `vla_*` grasps) are tool-mode only, by design: their closed
+loops run in pi (the policy server, frame history, seeds, the Flywheel), not on the env server, and
+no source spec (CaP-X's API, RPent's skills) puts them in a program's namespace; they are never in
+`code.api` (a manifest test holds the boundary). A server without a manifest answers
 `unknown RPC method: 'code.api'`.
 
 `--geometry` (libero-env, robosuite-env on one-arm tasks, franka-env, franka-polymetis-env;

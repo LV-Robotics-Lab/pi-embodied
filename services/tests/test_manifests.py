@@ -133,3 +133,23 @@ def test_a_name_may_repeat_only_as_its_privileged_variant(tmp_path):
         },
     )
     assert len(M.load_manifest("r", root2)["primitives"]) == 2
+
+
+@pytest.mark.parametrize("robot", ROBOTS)
+def test_pi_side_tools_are_tool_mode_only_and_never_reach_code_api(robot):
+    """The VLA / skill loops (pi0_pick, rldx_skill, lingbot_act, the Franka VLA grasps, ...) are
+    ``side: ts``: pi runs them as tools; no source spec (CaP-X's API, RPent's skills) puts them in a
+    program's namespace. Guard the boundary: no code doc, never in the whitelist."""
+    m = M.load_manifest(robot)
+    pi_side = {e["name"] for e in m["primitives"] if e["side"] == "ts"}
+    for e in m["primitives"]:
+        if e["side"] == "ts":
+            assert "code" not in e["doc"], (
+                f"{robot}.{e['name']}: a ts tool has no code doc"
+            )
+            assert "method" not in e, (
+                f"{robot}.{e['name']}: a ts tool has no RPC method"
+            )
+    served = {p.name for p in M.code_primitives(m, lambda _c: True)}
+    other = {e["name"] for e in m["primitives"] if e["side"] != "ts"}
+    assert not (pi_side - other) & served, f"{robot}: pi-side tools in code.api"

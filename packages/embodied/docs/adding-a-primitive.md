@@ -37,7 +37,7 @@ In `services/pi_embodied_services/robots/<robot>/env_server.py`:
 ```jsonc
 {
 	"name": "push",                  // the tool's and the program's name; a Python identifier
-	"side": "env",                   // env: this RPC method runs it for both; ts: a pi-side tool; code: no tool
+	"side": "env",                   // env: this RPC method runs it for both; ts: a pi-side tool (never in code mode); code: no tool
 	"method": "env.push",
 	"tier": "low",                   // exactly one of high | low | raw | privileged (CaP-X's levels)
 	"mutating": true,
@@ -93,6 +93,13 @@ In `src/robots/<robot>/index.ts`, register the execution only:
 name the manifest does not declare throws. Describe it in the robot's `SYSTEM.md` inside
 `[tool:push]...[/tool:push]`, and add it to the list `start` returns; a tool whose `requires` the
 run cannot meet is not activated.
+
+A `ts` entry is a tool only: pi executes it (its schema comes from the manifest) and it never
+reaches a program: no `code` doc, no RPC method, never in `code.api`
+(`test_pi_side_tools_are_tool_mode_only_and_never_reach_code_api`). That is where the VLA and skill
+loops belong (`pi0_pick`, `rldx_skill`, `lingbot_act`, ...): they run in pi against a policy
+server and are tool-mode only, by design. A behaviour a program should reach is an `env` entry
+with a server method.
 
 ## 5. Tests and docs
 

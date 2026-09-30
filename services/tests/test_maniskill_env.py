@@ -52,13 +52,13 @@ def test_pickcube_goal_is_shown_to_the_cameras_and_required_in_view():
     assert facade._meta["visible_px"] == {"cube": 100, "goal_site": 25}
 
 
-#: The task table before OpenETA's tasks were added: these rows must stay byte-identical
-#: (the eight ids pi's --env-id accepted, and their texts, actors and shown goals).
+#: The original eight task ids, actors and shown goals; PickCube text now explicitly
+#: describes the non-solid position marker and the robot-static goal requirement.
 _FROZEN = {
     "BlockPAP-v1": None,
     "BlockStack-v1": None,
     "PickCube-v1": (
-        "pick up the red cube and move it into the green goal sphere",
+        "pick up the red cube, align its center with the center of the green goal sphere, and hold the robot still there; the green sphere is a non-solid 3D position marker, so keep holding the cube at that height",
         ["cube", "goal_site"],
         ["goal_site"],
     ),

@@ -72,7 +72,7 @@ logger = get_logger("env_server")
 INSTRUCTIONS = {
     # PickCube's success is the cube inside a goal sphere (goal_thresh 2.5 cm, up to 0.3 m above
     # the table), not the lift alone: the text names it, and SHOW_GOALS renders the sphere.
-    "PickCube-v1": "pick up the red cube and move it into the green goal sphere",
+    "PickCube-v1": "pick up the red cube, align its center with the center of the green goal sphere, and hold the robot still there; the green sphere is a non-solid 3D position marker, so keep holding the cube at that height",
     "StackCube-v1": "stack the red cube on top of the green cube",
     "PushCube-v1": "push the cube to the goal marker",
     "PullCube-v1": "pull the cube to the goal marker",
@@ -94,7 +94,7 @@ INSTRUCTIONS = {
     # (position only); it starts lying on its side next to the reorienting fixture.
     "FMBAssembly1Easy-v1": "pick up the green bridge piece and assemble it onto the board so it straddles the yellow peg between the purple and blue pieces; the grey fixture can help stand it upright",
     # PickCubeWidowXAI registers PickCube with the WidowX AI fixed (--robot widowxai only).
-    "PickCubeWidowXAI-v1": "pick up the red cube and move it into the green goal sphere",
+    "PickCubeWidowXAI-v1": "pick up the red cube, align its center with the center of the green goal sphere, and hold the robot still there; the green sphere is a non-solid 3D position marker, so keep holding the cube at that height",
     # The panda_stick tasks (--robot panda_stick: a stick instead of a gripper). PushT
     # succeeds when the T covers >= 90 % of the goal outline (position and turn).
     "PushT-v1": "push the red T-shaped block with the stick so it lies exactly on the grey T-shaped outline",

@@ -239,6 +239,30 @@ def test_step_limit_ends_and_privileged_pose(server):
     assert out["done"] and not out["stopped"]
 
 
+def test_proprioception_is_opt_in_and_resets_between_episodes(server, monkeypatch):
+    f, _ = server
+    assert "proprioception" not in f.reset(episode="one")
+    assert "proprioception" not in f.skill_turn("left", 30)
+    assert f.reset(episode="one", proprioception=True)["proprioception"] == {}
+    old_step = f._ev.env.step
+
+    def moved(action, reasoning=None):
+        f._ev.env.agent.translation = np.array([0.3, -0.2, 0.4])
+        f._ev.env.agent.rotation = SimpleNamespace(
+            vector=SimpleNamespace(x=0.0, y=np.sin(np.pi / 8), z=0.0),
+            scalar=np.cos(np.pi / 8),
+        )
+        return old_step(action, reasoning)
+
+    monkeypatch.setattr(f._ev.env, "step", moved)
+    out = f.skill_turn("left", 120)
+    assert out["proprioception"]["turned_left_deg"] == 45.0
+    assert out["proprioception"]["horizontal_displacement_m"] == 0.5
+    assert out["proprioception"]["height_from_start_m"] == -0.2
+    assert "targets" not in out and "body_state" not in out
+    assert "proprioception" not in f.reset(episode="one")
+
+
 def test_code_api_skills_use_humanclaws_parser(server):
     f, _ = server
     f.reset(episode="val100:0")

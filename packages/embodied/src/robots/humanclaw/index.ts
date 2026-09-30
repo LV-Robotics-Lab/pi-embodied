@@ -62,6 +62,7 @@ type Obs = {
 	};
 	action_text?: string;
 	collision?: Record<string, unknown>;
+	proprioception?: Record<string, number>;
 };
 type Summary = {
 	metrics: Record<string, unknown> | null;
@@ -83,6 +84,12 @@ export default function humanclaw(pi: ExtensionAPI) {
 		type: "string",
 		default: "paper",
 		description: "paper: HumanCLAW's planner + verifier (--model humanclaw-psv/<base>); pi: pi's own tool loop",
+	});
+	pi.registerFlag("humanclaw-proprioception", {
+		type: "boolean",
+		default: false,
+		description:
+			"pi mode experiment: report actual relative body motion (different observation setting from paper mode)",
 	});
 	pi.registerFlag("humanclaw-metrics", {
 		type: "boolean",
@@ -140,6 +147,7 @@ export default function humanclaw(pi: ExtensionAPI) {
 	const base = psvBase();
 	if (base) mountPsv(pi, base);
 	const mode = () => flag("humanclaw-mode", "paper");
+	const proprioception = () => pi.getFlag("humanclaw-proprioception") === true;
 
 	let env: RpcClient;
 	let obs: Obs;
@@ -169,10 +177,14 @@ export default function humanclaw(pi: ExtensionAPI) {
 		start: startEpisode,
 		prompt: () =>
 			mode() === "pi"
-				? SYSTEM.replaceAll("{{task}}", obs?.instruction ?? "")
+				? SYSTEM.replaceAll("{{task}}", obs?.instruction ?? "") +
+					(proprioception()
+						? "\nSelf-motion feedback reports measured movement, not the requested motion. turned_left_deg is positive for left turns and negative for right turns. Use measured turns to keep the seat behind you; a requested 120 degree turn may execute only partially. height_from_start_m is relative to the initial root, not seat height. Small displacement after a walking action signals a blocked approach; choose a different route. A lower root alone does not prove that you are sitting on the target. Track the measured turning and sitting phase with plan."
+						: "")
 				: "The HumanCLAW planner (humanclaw-psv) drives this episode.",
 		result: () => ({
 			mode: mode(),
+			humanclaw_proprioception: proprioception(),
 			preset: pi.getFlag("privileged") === true ? "humanclaw+privileged" : "humanclaw",
 			episode: obs?.episode ?? null,
 			rollout: Number(flag("rollout", "0")),
@@ -252,7 +264,13 @@ export default function humanclaw(pi: ExtensionAPI) {
 		);
 		robot.video.frame(obs.ego);
 		if (obs.done) await close();
-		return { unit, param, action: call.action_name, collision: obs.collision ?? {} };
+		return {
+			unit,
+			param,
+			action: call.action_name,
+			collision: obs.collision ?? {},
+			...(proprioception() ? { proprioception: obs.proprioception ?? {} } : {}),
+		};
 	}
 
 	/** env.finish once: metrics, trajectories, videos; Habitat closes. */
@@ -269,6 +287,7 @@ export default function humanclaw(pi: ExtensionAPI) {
 	function observe(result: Record<string, unknown>) {
 		const png = encodePng(obs.ego.data, obs.ego.shape[1], obs.ego.shape[0]);
 		const details = {
+			...(proprioception() ? { proprioception: obs.proprioception ?? {} } : {}),
 			result,
 			step: obs.step,
 			max_steps: obs.max_steps,
@@ -295,6 +314,10 @@ export default function humanclaw(pi: ExtensionAPI) {
 		usage = [];
 		const m = mode();
 		if (m !== "paper" && m !== "pi") throw new Error(`--humanclaw-mode ${m}: paper or pi`);
+		if (m === "paper" && proprioception())
+			throw new Error(
+				"--humanclaw-proprioception is a pi-mode experiment; paper mode keeps the published observations",
+			);
 		if (String(pi.getFlag("units") ?? "") !== "both")
 			throw new Error("HumanCLAW runs with --units=both (the units' act plus the robot's look)");
 		if (m === "paper") {
@@ -328,7 +351,7 @@ export default function humanclaw(pi: ExtensionAPI) {
 		}
 		obs = await env.call<Obs>(
 			"env.reset",
-			{ episode: robot.task.episode, rollout: Number(robot.task.rollout) },
+			{ episode: robot.task.episode, rollout: Number(robot.task.rollout), proprioception: proprioception() },
 			900_000,
 		);
 		return ["look", "finish"];

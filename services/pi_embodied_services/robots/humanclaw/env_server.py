@@ -189,6 +189,9 @@ class HumanclawEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         self._stopped = False
         self._decided = False
         self._summary: dict | None = None
+        self._proprioception = False
+        self._initial_pose: tuple[np.ndarray, float] | None = None
+        self._motion_feedback: dict = {}
 
     def _register_rpc(self) -> None:
         super()._register_rpc()
@@ -301,7 +304,13 @@ class HumanclawEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         """The episode identities of a subset (``one``, ``val100``, ``fullval``, a JSON list)."""
         return episode_specs(self._bench, self._profile, subset)
 
-    def reset(self, episode: Any = "one", rollout: int = 0, **_: Any) -> dict:
+    def reset(
+        self,
+        episode: Any = "one",
+        rollout: int = 0,
+        proprioception: bool = False,
+        **_: Any,
+    ) -> dict:
         """Start ``episode`` (see :func:`parse_selector`) as rollout ``rollout``; an unfinished
         earlier rollout is closed first (its replay is written, no metrics: it did not end)."""
         from humanclaw_bench.evaluation.evaluator import (
@@ -333,6 +342,9 @@ class HumanclawEnvFacade(MainThreadServeMixin, BaseEnvFacade):
             self._video = RolloutVideoWriter(self._dir, float(ev.env.fps))
             ev.env.set_video_frame_sink(self._video.append)
         self._obs = ev._reset_env_for_rollout(self._episode)
+        self._proprioception = bool(proprioception)
+        self._initial_pose = self._body_pose() if self._proprioception else None
+        self._motion_feedback = {}
         if self._video is not None:
             ev.env.emit_initial_video_frame()
         self._traj = ev._new_trajectory_recorder(self._episode, self._rollout)
@@ -342,6 +354,11 @@ class HumanclawEnvFacade(MainThreadServeMixin, BaseEnvFacade):
     def _observation(self) -> dict:
         ep = self._episode
         return {
+            **(
+                {"proprioception": self._motion_feedback}
+                if self._proprioception
+                else {}
+            ),
             "ego": np.asarray(self._obs.head_rgb, dtype=np.uint8),
             "instruction": ep.instruction,
             "step": self._step,
@@ -357,6 +374,16 @@ class HumanclawEnvFacade(MainThreadServeMixin, BaseEnvFacade):
                 "output_dir": str(self._dir),
             },
         }
+
+    def _body_pose(self) -> tuple[np.ndarray, float]:
+        """Own root position and heading in Habitat's y-up frame; never exposed as world poses."""
+        agent = self._ev.env.agent
+        q = agent.rotation
+        x, y, z, w = q.vector.x, q.vector.y, q.vector.z, q.scalar
+        heading = float(
+            np.degrees(np.arctan2(2 * (x * z + w * y), 1 - 2 * (x * x + y * y)))
+        )
+        return np.asarray(agent.translation, dtype=float).reshape(3).copy(), heading
 
     def _require(self) -> None:
         if self._episode is None or self._summary is not None:
@@ -418,6 +445,7 @@ class HumanclawEnvFacade(MainThreadServeMixin, BaseEnvFacade):
             # A decision nobody recorded (an operator's key) still counts as a decision step.
             self.record_decision({"action": action.to_json()})
         ev, step = self._ev, self._step
+        before_pose = self._body_pose() if self._proprioception else None
         if skill == "stand":
             env_action: Any = {
                 "stop": True,
@@ -436,6 +464,10 @@ class HumanclawEnvFacade(MainThreadServeMixin, BaseEnvFacade):
         self._obs, _reward, done, info = ev.env.step(
             env_action, reasoning=reasoning or {}
         )
+        if before_pose is not None and self._initial_pose is not None:
+            self._motion_feedback = motion_feedback(
+                before_pose, self._body_pose(), self._initial_pose
+            )
         body_state = info.get("body_state") if isinstance(info, dict) else None
         if isinstance(body_state, dict):
             self._traj.record_after(
@@ -659,6 +691,24 @@ def metric_summary(metrics: dict) -> dict:
             "motion_jerk_m_s3"
         ),
         "cost": dict(metrics.get("cost") or {}),
+    }
+
+
+def motion_feedback(
+    before: tuple[np.ndarray, float],
+    after: tuple[np.ndarray, float],
+    initial: tuple[np.ndarray, float],
+) -> dict:
+    """Relative self-motion only: no object locations, target contact labels or success reward."""
+    delta = after[0] - before[0]
+    return {
+        "horizontal_displacement_m": round(float(np.linalg.norm(delta[[0, 2]])), 4),
+        "height_change_m": round(float(delta[1]), 4),
+        "turned_left_deg": round(float((after[1] - before[1] + 180) % 360 - 180), 2),
+        "heading_from_start_left_deg": round(
+            float((after[1] - initial[1] + 180) % 360 - 180), 2
+        ),
+        "height_from_start_m": round(float(after[0][1] - initial[0][1]), 4),
     }
 
 

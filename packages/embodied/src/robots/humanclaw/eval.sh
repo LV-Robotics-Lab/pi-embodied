@@ -21,7 +21,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 PI=${PI:-pi}
 PY=${HUMANCLAW_PYTHON:-${PI_EMBODIED_PYTHON:-python}}
 episodes=one mode=paper metrics=false video=false
-model="" privileged=false verify=false vdm=false stateless=false reasoning=""
+model="" privileged=false verify=false vdm=false stateless=false reasoning="" proprioception=false
 pass=()
 while [ $# -gt 0 ]; do
 	case $1 in
@@ -34,6 +34,8 @@ while [ $# -gt 0 ]; do
 	--model) model=${2:-}; pass+=("$1" "${2:-}"); shift ;;
 	--model=*) model=${1#*=}; pass+=("$1") ;;
 	--privileged) privileged=true; pass+=("$1") ;;
+	--humanclaw-proprioception | --humanclaw-proprioception=true) proprioception=true; pass+=("$1") ;;
+	--humanclaw-proprioception=*) echo "omit --humanclaw-proprioception to disable it" >&2; exit 2 ;;
 	--humanclaw-reasoning) reasoning=${2:-}; pass+=("$1" "${2:-}"); shift ;;
 	--units-verify) verify=true; pass+=("$1") ;;
 	--vdm) vdm=true; pass+=("$1") ;;
@@ -47,13 +49,13 @@ if [ "$mode" = paper ] && [[ $model != humanclaw-psv/* ]]; then
 	echo "--mode paper runs HumanCLAW's planner: --model humanclaw-psv/<base>" >&2
 	exit 2
 fi
-if [ "$mode" = paper ] && { $verify || $vdm || $stateless; }; then
-	echo "--mode paper runs HumanCLAW's planner as published: no --units-verify, --vdm or --stateless" >&2
+if [ "$mode" = paper ] && { $verify || $vdm || $stateless || $proprioception; }; then
+	echo "--mode paper runs HumanCLAW's planner as published: no --units-verify, --vdm, --stateless or --humanclaw-proprioception" >&2
 	exit 2
 fi
 preset=humanclaw
 $privileged && preset=humanclaw+privileged
-config="mode=$mode/preset=$preset/model=$model/metrics=$metrics/video=$video/verify=$verify/vdm=$vdm/stateless=$stateless${reasoning:+/reasoning=$reasoning}"
+config="mode=$mode/preset=$preset/model=$model/metrics=$metrics/video=$video/verify=$verify/vdm=$vdm/stateless=$stateless/proprioception=$proprioception${reasoning:+/reasoning=$reasoning}"
 mkdir -p "$out"
 if [[ $episodes == *_ep*_* ]]; then list=$episodes; else list=$(cd "$out" && "$PY" -c '
 import sys

@@ -6,6 +6,15 @@
 
 - Added `Agent.removeQueuedMessage(match)`, which removes the first queued steering (else follow-up) message that matches before the loop takes it, and returns `false` when none matches.
 
+## [0.99.1] - 2026-09-29
+
+## [0.99.0] - 2026-09-29
+
+### Added
+
+- Added the `onProviderStreamEvent` agent option, which is passed to provider streams to observe parsed provider events before normalization ([#9784](https://github.com/earendil-works/pi/issues/9784), [#9901](https://github.com/earendil-works/pi/pull/9901) by [@davidbrai](https://github.com/davidbrai)).
+- The agent loop now records the requested thinking level as `thinkingLevel` on each assistant message.
+
 ## [0.87.1] - 2026-09-22
 
 ## [0.87.0] - 2026-09-21

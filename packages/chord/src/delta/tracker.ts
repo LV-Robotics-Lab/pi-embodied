@@ -1,8 +1,8 @@
+import { copyJson } from "../json.ts";
 import type { JsonValue } from "../types.ts";
-import { applyImmutable } from "./apply-immutable-batch.ts";
 import { applyImmutableTrusted } from "./apply-immutable-trusted.ts";
 import type { Draft } from "./draft.ts";
-import { type NonEmptyPath, type Op, overlap, type Path, RESERVED_SEGMENTS } from "./index.ts";
+import { applyImmutable, type NonEmptyPath, type Op, overlap, type Path, RESERVED_SEGMENTS } from "./index.ts";
 
 export type { Draft, JsonValue, Op };
 
@@ -388,6 +388,10 @@ const sharedObjectHandler: ProxyHandler<object> = {
 		throw new TypeError("Defining overlay properties is not supported");
 	},
 	get(target, property) {
+		if (property === "then") {
+			const node = (target as Record<PropertyKey, unknown>)[NODE] as OverlayNode | undefined;
+			if (node === undefined || isSettledContext(node.context)) return undefined;
+		}
 		const node = nodeForTarget(target);
 		if (property === NODE) return node;
 		return getProperty(node, property);
@@ -499,15 +503,17 @@ function nodeForTarget(target: object): OverlayNode {
 	return node;
 }
 
-function assertReadable(context: OverlayContext): void {
-	if (
+function isSettledContext(context: OverlayContext): boolean {
+	return (
 		context.overlayReleased ||
 		context.status.value === "consumed" ||
 		context.status.value === "aborted" ||
 		context.status.value === "stale"
-	) {
-		throw new TypeError("Cannot use a settled overlay");
-	}
+	);
+}
+
+function assertReadable(context: OverlayContext): void {
+	if (isSettledContext(context)) throw new TypeError("Cannot use a settled overlay");
 }
 
 function assertWritable(context: OverlayContext): void {
@@ -1534,52 +1540,7 @@ function singletonPiece(piece: Piece, sourceIndex: number): Piece {
 
 function clonePlacement(value: unknown): Stored {
 	const proxyNode = isContainer(value) ? (Reflect.get(value, NODE) as OverlayNode | undefined) : undefined;
-	return proxyNode === undefined ? cloneJson(value) : clonePlacementNode(proxyNode);
-}
-
-function cloneJson(value: unknown, ancestors?: Set<object>): Stored {
-	if (!isContainer(value)) return strictPrimitive(value);
-	const active = ancestors ?? new Set<object>();
-	if (active.has(value)) throw new TypeError("Draft placements cannot contain cycles");
-	active.add(value);
-	try {
-		if (Array.isArray(value)) {
-			if (Object.getPrototypeOf(value) !== Array.prototype || Reflect.ownKeys(value).length !== value.length + 1) {
-				throw new TypeError("Draft placements must contain dense plain arrays");
-			}
-			const result = new Array<JsonValue>(value.length);
-			for (let index = 0; index < value.length; index++) {
-				const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
-				if (descriptor === undefined || !descriptor.enumerable || !("value" in descriptor)) {
-					throw new TypeError("Draft placements must contain enumerable indexed data properties");
-				}
-				defineData(result, String(index), cloneJson(descriptor.value, active));
-			}
-			return result;
-		}
-		const prototype = Object.getPrototypeOf(value);
-		if (prototype !== Object.prototype && prototype !== null) {
-			throw new TypeError("Draft placements must contain plain objects or arrays");
-		}
-		const result = Object.create(prototype) as Record<string, JsonValue>;
-		for (const key of Reflect.ownKeys(value)) {
-			if (typeof key === "symbol") throw new TypeError("Draft placements cannot contain symbol properties");
-			const descriptor = Object.getOwnPropertyDescriptor(value, key);
-			if (descriptor === undefined || !descriptor.enumerable || !("value" in descriptor)) {
-				throw new TypeError("Draft placements must contain enumerable data properties");
-			}
-			defineData(result, key, cloneJson(descriptor.value, active));
-		}
-		return result;
-	} finally {
-		active.delete(value);
-	}
-}
-
-function strictPrimitive(value: unknown): Primitive {
-	if (value === null || typeof value === "string" || typeof value === "boolean") return value;
-	if (typeof value === "number" && Number.isFinite(value)) return value;
-	throw new TypeError("Draft placements must contain strict JSON values");
+	return proxyNode === undefined ? copyJson(value) : clonePlacementNode(proxyNode);
 }
 
 function cloneNode(node: OverlayNode): Container {
@@ -1627,9 +1588,9 @@ function clonePlacementNode(node: OverlayNode): Container {
 }
 
 function clonePlacementStored(value: Stored, context: OverlayContext): Stored {
-	if (!isContainer(value)) return strictPrimitive(value);
+	if (!isContainer(value)) return copyJson(value);
 	const node = context.rawNodes!.get(value);
-	return node === undefined ? cloneJson(value) : clonePlacementNode(node);
+	return node === undefined ? copyJson(value) : clonePlacementNode(node);
 }
 
 function defineData(target: object, key: PropertyKey, value: JsonValue): void {

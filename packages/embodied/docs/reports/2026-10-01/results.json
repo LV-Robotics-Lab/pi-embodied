@@ -1,0 +1,1968 @@
+{
+  "runs": {
+    "qwen-clean-memory-20261001": [
+      {
+        "path": "/root/autodl-tmp/runs/qwen-clean-memory-20261001/libero/libero_spatial_t0_s0/result.json",
+        "robot": "libero",
+        "skills_off": {
+          "pi0": "unreachable: http://127.0.0.1:18200/call not ready: Error: http://127.0.0.1:18200/call: connect ECONNREFUSED 127.0.0.1:18200",
+          "sam3": "unreachable: http://127.0.0.1:18300/call not ready: Error: http://127.0.0.1:18300/call: connect ECONNREFUSED 127.0.0.1:18300"
+        },
+        "suite": "libero_spatial",
+        "task": 0,
+        "seed": 0,
+        "terminated": false,
+        "success_step": null,
+        "truncated": false,
+        "env_steps": 0,
+        "vla": {},
+        "libero_prompt": "rpent",
+        "units_plugins": [
+          "recovery",
+          "auto_release",
+          "proprioception",
+          "variable_step",
+          "action_chunk",
+          "rotation",
+          "plan",
+          "mem_text"
+        ],
+        "units_wrist_view": true,
+        "code_api_digest": "8ada7a3979a7920b4ba2a54195e605283c905319cbbfb4d116a6c9438184f162",
+        "code_api_tier": null,
+        "tool_calls": 0,
+        "planner_tokens": {
+          "input": 4419,
+          "output": 106
+        },
+        "max_tool_calls": 0,
+        "max_tokens": 0,
+        "context_version": {
+          "system_prompt_sha256": "2ec6253fc2677f1d1fab8e089d64d5e03a5bcea18e82b7ad9c8e3f700c178112",
+          "templates": {
+            "modes/units/SYSTEM.md": "987a98656daae202916a4c10efd65e15e145a63d01905b9b489af2b9d123830a",
+            "planner/closed-loop.md": "17c9cd1a9773f14392adc50632b65a800434ab51af6b74b3d3d67b5ad33b7e5c",
+            "robots/libero/compact/memory-local.md": "9c539fdb4c4be1f51e0212f263553a5711980d29ea6b1f8b078c10781e4617a3",
+            "robots/libero/compact/SYSTEM.md": "91dd5626bc29bc1917c77930c056e31f9ba90586c8b09d526d9078fed4bafa64",
+            "robots/libero/SYSTEM.md": "a8f6909b38e0b3a5801df8cc4edc887b5fcd7121c5888a10c65e2f1d4b9b6b0b"
+          },
+          "memory_files": {},
+          "code_api_digest": "8ada7a3979a7920b4ba2a54195e605283c905319cbbfb4d116a6c9438184f162",
+          "git_commit": "4b70d988b094c1498301393362484a3d5836012c"
+        },
+        "claimed": null,
+        "summary": null,
+        "turns": 1,
+        "planner_budget_exhausted": null,
+        "cost_usd": 0,
+        "planner_error": "unparsed tool call in the reply text",
+        "env_error": false,
+        "status": "planner_error",
+        "exit_code": 0,
+        "model": "selfhost/qwen3.8-27b",
+        "thinking": "low",
+        "max_turns": 40,
+        "time_limit": 300,
+        "units": "true",
+        "anchor_image": false,
+        "approval": "standard",
+        "stateless": false,
+        "vdm": false,
+        "vdm_model": null,
+        "vdm_wrist": false,
+        "vdm_video": null,
+        "privileged": false,
+        "unit_tol": 0.004,
+        "code": "false",
+        "code_api": null,
+        "code_api_auto": null,
+        "code_oracle": null,
+        "fallback_model": null,
+        "fallback_after": null,
+        "fallback_retry_primary": null
+      },
+      {
+        "path": "/root/autodl-tmp/runs/qwen-clean-memory-20261001/libero/libero_spatial_t0_s1/result.json",
+        "robot": "libero",
+        "skills_off": {
+          "pi0": "unreachable: http://127.0.0.1:18200/call not ready: Error: http://127.0.0.1:18200/call: connect ECONNREFUSED 127.0.0.1:18200",
+          "sam3": "unreachable: http://127.0.0.1:18300/call not ready: Error: http://127.0.0.1:18300/call: connect ECONNREFUSED 127.0.0.1:18300"
+        },
+        "suite": "libero_spatial",
+        "task": 0,
+        "seed": 1,
+        "terminated": false,
+        "success_step": null,
+        "truncated": false,
+        "env_steps": 283,
+        "vla": {},
+        "libero_prompt": "rpent",
+        "units_plugins": [
+          "recovery",
+          "auto_release",
+          "proprioception",
+          "variable_step",
+          "action_chunk",
+          "rotation",
+          "plan",
+          "mem_text"
+        ],
+        "units_wrist_view": true,
+        "code_api_digest": "8ada7a3979a7920b4ba2a54195e605283c905319cbbfb4d116a6c9438184f162",
+        "code_api_tier": null,
+        "tool_calls": 26,
+        "planner_tokens": {
+          "input": 570638,
+          "output": 26369
+        },
+        "max_tool_calls": 0,
+        "max_tokens": 0,
+        "context_version": {
+          "system_prompt_sha256": "dce4f6b0e05828d25eedd309185cce445d092a36046f3b9ffc0a2bfd5e8d308b",
+          "templates": {
+            "modes/units/SYSTEM.md": "987a98656daae202916a4c10efd65e15e145a63d01905b9b489af2b9d123830a",
+            "planner/closed-loop.md": "17c9cd1a9773f14392adc50632b65a800434ab51af6b74b3d3d67b5ad33b7e5c",
+            "robots/libero/compact/memory-local.md": "9c539fdb4c4be1f51e0212f263553a5711980d29ea6b1f8b078c10781e4617a3",
+            "robots/libero/compact/SYSTEM.md": "91dd5626bc29bc1917c77930c056e31f9ba90586c8b09d526d9078fed4bafa64",
+            "robots/libero/SYSTEM.md": "a8f6909b38e0b3a5801df8cc4edc887b5fcd7121c5888a10c65e2f1d4b9b6b0b"
+          },
+          "memory_files": {
+            "MEMORY.md": "e1fd2400d8bfe6adb6051996ba0f88bb39fc4c38eb804724edbb50bc741f6186"
+          },
+          "code_api_digest": "8ada7a3979a7920b4ba2a54195e605283c905319cbbfb4d116a6c9438184f162",
+          "git_commit": "4b70d988b094c1498301393362484a3d5836012c"
+        },
+        "claimed": null,
+        "summary": null,
+        "turns": 27,
+        "planner_budget_exhausted": "time",
+        "cost_usd": 0,
+        "planner_error": null,
+        "env_error": false,
+        "status": "failure",
+        "exit_code": 1,
+        "model": "selfhost/qwen3.8-27b",
+        "thinking": "low",
+        "max_turns": 40,
+        "time_limit": 300,
+        "units": "true",
+        "anchor_image": false,
+        "approval": "standard",
+        "stateless": false,
+        "vdm": false,
+        "vdm_model": null,
+        "vdm_wrist": false,
+        "vdm_video": null,
+        "privileged": false,
+        "unit_tol": 0.004,
+        "code": "false",
+        "code_api": null,
+        "code_api_auto": null,
+        "code_oracle": null,
+        "fallback_model": null,
+        "fallback_after": null,
+        "fallback_retry_primary": null
+      },
+      {
+        "path": "/root/autodl-tmp/runs/qwen-clean-memory-20261001/maniskill/PickCube-v1_s0/result.json",
+        "robot": "maniskill",
+        "env_id": "PickCube-v1",
+        "seed": 0,
+        "success": false,
+        "ever_grasped": true,
+        "env_steps": 282,
+        "units_plugins": [
+          "recovery",
+          "auto_release",
+          "proprioception",
+          "variable_step",
+          "action_chunk",
+          "plan",
+          "mem_text"
+        ],
+        "units_wrist_view": true,
+        "code_api_digest": "cb5d359605b4df154d82c9e3c35da378e5d7bc058410e90d9c57f131c4e0044f",
+        "code_api_tier": null,
+        "tool_calls": 41,
+        "planner_tokens": {
+          "input": 781831,
+          "output": 19256
+        },
+        "max_tool_calls": 0,
+        "max_tokens": 0,
+        "context_version": {
+          "system_prompt_sha256": "99f9fed92f793a15b8302d49633ed7ba91aaee2ac6855f7cd199444212d0f255",
+          "templates": {
+            "modes/units/SYSTEM.md": "987a98656daae202916a4c10efd65e15e145a63d01905b9b489af2b9d123830a",
+            "planner/closed-loop.md": "17c9cd1a9773f14392adc50632b65a800434ab51af6b74b3d3d67b5ad33b7e5c",
+            "robots/maniskill/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+            "robots/maniskill/SYSTEM.md": "9020635a2a64548164eeff7b6790b391c1abdfc027952d20cb594f572d839842"
+          },
+          "memory_files": {
+            "MEMORY.md": "e1fd2400d8bfe6adb6051996ba0f88bb39fc4c38eb804724edbb50bc741f6186"
+          },
+          "code_api_digest": "cb5d359605b4df154d82c9e3c35da378e5d7bc058410e90d9c57f131c4e0044f",
+          "git_commit": "4b70d988b094c1498301393362484a3d5836012c"
+        },
+        "claimed": null,
+        "summary": null,
+        "turns": 41,
+        "planner_budget_exhausted": "turns",
+        "cost_usd": 0,
+        "planner_error": null,
+        "env_error": false,
+        "status": "failure",
+        "exit_code": 0,
+        "model": "selfhost/qwen3.8-27b",
+        "thinking": "low",
+        "max_turns": 40,
+        "time_limit": 300,
+        "units": "true",
+        "anchor_image": false,
+        "approval": "standard",
+        "vdm": false,
+        "vdm_model": null,
+        "vdm_wrist": false,
+        "vdm_video": null,
+        "stateless": false,
+        "privileged": false,
+        "maniskill_robot": "panda",
+        "fallback_model": null,
+        "fallback_after": null,
+        "fallback_retry_primary": null,
+        "code": "false",
+        "code_api": null,
+        "code_api_auto": null,
+        "code_oracle": null
+      },
+      {
+        "path": "/root/autodl-tmp/runs/qwen-clean-memory-20261001/maniskill/PickCube-v1_s1/result.json",
+        "robot": "maniskill",
+        "env_id": "PickCube-v1",
+        "seed": 1,
+        "success": false,
+        "ever_grasped": true,
+        "env_steps": 331,
+        "units_plugins": [
+          "recovery",
+          "auto_release",
+          "proprioception",
+          "variable_step",
+          "action_chunk",
+          "plan",
+          "mem_text"
+        ],
+        "units_wrist_view": true,
+        "code_api_digest": "cb5d359605b4df154d82c9e3c35da378e5d7bc058410e90d9c57f131c4e0044f",
+        "code_api_tier": null,
+        "tool_calls": 40,
+        "planner_tokens": {
+          "input": 781766,
+          "output": 20024
+        },
+        "max_tool_calls": 0,
+        "max_tokens": 0,
+        "context_version": {
+          "system_prompt_sha256": "6b925c22ed5c1953753e2657dbe62a0ac9e20cb0abd25de355f00ec6b95d0c44",
+          "templates": {
+            "modes/units/SYSTEM.md": "987a98656daae202916a4c10efd65e15e145a63d01905b9b489af2b9d123830a",
+            "planner/closed-loop.md": "17c9cd1a9773f14392adc50632b65a800434ab51af6b74b3d3d67b5ad33b7e5c",
+            "robots/maniskill/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+            "robots/maniskill/SYSTEM.md": "9020635a2a64548164eeff7b6790b391c1abdfc027952d20cb594f572d839842"
+          },
+          "memory_files": {
+            "MEMORY.md": "e1fd2400d8bfe6adb6051996ba0f88bb39fc4c38eb804724edbb50bc741f6186"
+          },
+          "code_api_digest": "cb5d359605b4df154d82c9e3c35da378e5d7bc058410e90d9c57f131c4e0044f",
+          "git_commit": "4b70d988b094c1498301393362484a3d5836012c"
+        },
+        "claimed": null,
+        "summary": null,
+        "turns": 41,
+        "planner_budget_exhausted": "turns",
+        "cost_usd": 0,
+        "planner_error": null,
+        "env_error": false,
+        "status": "failure",
+        "exit_code": 0,
+        "model": "selfhost/qwen3.8-27b",
+        "thinking": "low",
+        "max_turns": 40,
+        "time_limit": 300,
+        "units": "true",
+        "anchor_image": false,
+        "approval": "standard",
+        "vdm": false,
+        "vdm_model": null,
+        "vdm_wrist": false,
+        "vdm_video": null,
+        "stateless": false,
+        "privileged": false,
+        "maniskill_robot": "panda",
+        "fallback_model": null,
+        "fallback_after": null,
+        "fallback_retry_primary": null,
+        "code": "false",
+        "code_api": null,
+        "code_api_auto": null,
+        "code_oracle": null
+      },
+      {
+        "path": "/root/autodl-tmp/runs/qwen-clean-memory-20261001/metaworld/reach-v3_s0/result.json",
+        "robot": "metaworld",
+        "task": "reach-v3",
+        "seed": 0,
+        "success": true,
+        "env_steps": 168,
+        "skills_off": {
+          "sam3": "unreachable: http://127.0.0.1:18300/call not ready: Error: http://127.0.0.1:18300/call: connect ECONNREFUSED 127.0.0.1:18300"
+        },
+        "units_plugins": [
+          "recovery",
+          "auto_release",
+          "proprioception",
+          "variable_step",
+          "action_chunk",
+          "plan",
+          "mem_text"
+        ],
+        "units_wrist_view": true,
+        "code_api_digest": "c688726dd07bb9b35a7c219393d09691a03cfcace46e4ce95a1a12491c848b88",
+        "code_api_tier": null,
+        "tool_calls": 12,
+        "planner_tokens": {
+          "input": 102850,
+          "output": 5639
+        },
+        "max_tool_calls": 0,
+        "max_tokens": 0,
+        "context_version": {
+          "system_prompt_sha256": "16fb2ab90075fbef388d095b1ac878e58194342ce438381f956a7e6d85812da2",
+          "templates": {
+            "modes/units/SYSTEM.md": "987a98656daae202916a4c10efd65e15e145a63d01905b9b489af2b9d123830a",
+            "planner/closed-loop.md": "17c9cd1a9773f14392adc50632b65a800434ab51af6b74b3d3d67b5ad33b7e5c",
+            "robots/maniskill/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+            "robots/maniskill/SYSTEM.md": "9020635a2a64548164eeff7b6790b391c1abdfc027952d20cb594f572d839842",
+            "robots/metaworld/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+            "robots/metaworld/SYSTEM.md": "f8dcbd9e5b4e7e749457f8ed8831e5cdff1a3a81a4caee53ec4ac0f72cac953a"
+          },
+          "memory_files": {
+            "MEMORY.md": "e1fd2400d8bfe6adb6051996ba0f88bb39fc4c38eb804724edbb50bc741f6186"
+          },
+          "code_api_digest": "c688726dd07bb9b35a7c219393d09691a03cfcace46e4ce95a1a12491c848b88",
+          "git_commit": "4b70d988b094c1498301393362484a3d5836012c"
+        },
+        "claimed": "success",
+        "summary": "Successfully moved the gripper to the red target ball floating above the table. I moved forward (FWD) to approach the ball horizontally, then descended (DOWN) from 15 cm to 6 cm height, and fine-tuned with RIGHT movements to align with the ball's position.",
+        "turns": 12,
+        "planner_budget_exhausted": null,
+        "cost_usd": 0,
+        "planner_error": null,
+        "env_error": false,
+        "status": "success",
+        "exit_code": 0,
+        "model": "selfhost/qwen3.8-27b",
+        "thinking": "low",
+        "max_turns": 40,
+        "time_limit": 300,
+        "units": "true",
+        "anchor_image": false,
+        "approval": "standard",
+        "vdm": false,
+        "vdm_model": null,
+        "vdm_wrist": false,
+        "vdm_video": null,
+        "stateless": false,
+        "privileged": false,
+        "fallback_model": null,
+        "fallback_after": null,
+        "fallback_retry_primary": null,
+        "code": "false",
+        "code_api": null,
+        "code_api_auto": null,
+        "code_oracle": null
+      },
+      {
+        "path": "/root/autodl-tmp/runs/qwen-clean-memory-20261001/metaworld/reach-v3_s1/result.json",
+        "robot": "metaworld",
+        "task": "reach-v3",
+        "seed": 1,
+        "success": false,
+        "env_steps": 266,
+        "skills_off": {
+          "sam3": "unreachable: http://127.0.0.1:18300/call not ready: Error: http://127.0.0.1:18300/call: connect ECONNREFUSED 127.0.0.1:18300"
+        },
+        "units_plugins": [
+          "recovery",
+          "auto_release",
+          "proprioception",
+          "variable_step",
+          "action_chunk",
+          "plan",
+          "mem_text"
+        ],
+        "units_wrist_view": true,
+        "code_api_digest": "c688726dd07bb9b35a7c219393d09691a03cfcace46e4ce95a1a12491c848b88",
+        "code_api_tier": null,
+        "tool_calls": 26,
+        "planner_tokens": {
+          "input": 556705,
+          "output": 28688
+        },
+        "max_tool_calls": 0,
+        "max_tokens": 0,
+        "context_version": {
+          "system_prompt_sha256": "eaecd5853b6a687801f16c68823020b715509eed1c3f4595dd7f0b084f8c414d",
+          "templates": {
+            "modes/units/SYSTEM.md": "987a98656daae202916a4c10efd65e15e145a63d01905b9b489af2b9d123830a",
+            "planner/closed-loop.md": "17c9cd1a9773f14392adc50632b65a800434ab51af6b74b3d3d67b5ad33b7e5c",
+            "robots/maniskill/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+            "robots/maniskill/SYSTEM.md": "9020635a2a64548164eeff7b6790b391c1abdfc027952d20cb594f572d839842",
+            "robots/metaworld/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+            "robots/metaworld/SYSTEM.md": "f8dcbd9e5b4e7e749457f8ed8831e5cdff1a3a81a4caee53ec4ac0f72cac953a"
+          },
+          "memory_files": {
+            "MEMORY.md": "e1fd2400d8bfe6adb6051996ba0f88bb39fc4c38eb804724edbb50bc741f6186"
+          },
+          "code_api_digest": "c688726dd07bb9b35a7c219393d09691a03cfcace46e4ce95a1a12491c848b88",
+          "git_commit": "4b70d988b094c1498301393362484a3d5836012c"
+        },
+        "claimed": null,
+        "summary": null,
+        "turns": 28,
+        "planner_budget_exhausted": "time",
+        "cost_usd": 0,
+        "planner_error": null,
+        "env_error": false,
+        "status": "failure",
+        "exit_code": 1,
+        "model": "selfhost/qwen3.8-27b",
+        "thinking": "low",
+        "max_turns": 40,
+        "time_limit": 300,
+        "units": "true",
+        "anchor_image": false,
+        "approval": "standard",
+        "vdm": false,
+        "vdm_model": null,
+        "vdm_wrist": false,
+        "vdm_video": null,
+        "stateless": false,
+        "privileged": false,
+        "fallback_model": null,
+        "fallback_after": null,
+        "fallback_retry_primary": null,
+        "code": "false",
+        "code_api": null,
+        "code_api_auto": null,
+        "code_oracle": null
+      }
+    ],
+    "qwen-marker-20261001": [
+      {
+        "path": "/root/autodl-tmp/runs/qwen-marker-20261001/maniskill/PickCube-v1_s0/result.json",
+        "robot": "maniskill",
+        "env_id": "PickCube-v1",
+        "seed": 0,
+        "success": false,
+        "ever_grasped": true,
+        "env_steps": 255,
+        "units_plugins": [
+          "recovery",
+          "auto_release",
+          "proprioception",
+          "variable_step",
+          "action_chunk",
+          "plan",
+          "mem_text"
+        ],
+        "units_wrist_view": true,
+        "code_api_digest": "cb5d359605b4df154d82c9e3c35da378e5d7bc058410e90d9c57f131c4e0044f",
+        "code_api_tier": null,
+        "tool_calls": 33,
+        "planner_tokens": {
+          "input": 592420,
+          "output": 21110
+        },
+        "max_tool_calls": 0,
+        "max_tokens": 0,
+        "context_version": {
+          "system_prompt_sha256": "b851c604147f00bf36b14e68fa657afc5d96925f4f732a16b4381bbf3d4a2315",
+          "templates": {
+            "modes/units/SYSTEM.md": "987a98656daae202916a4c10efd65e15e145a63d01905b9b489af2b9d123830a",
+            "planner/closed-loop.md": "17c9cd1a9773f14392adc50632b65a800434ab51af6b74b3d3d67b5ad33b7e5c",
+            "robots/maniskill/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+            "robots/maniskill/SYSTEM.md": "9020635a2a64548164eeff7b6790b391c1abdfc027952d20cb594f572d839842"
+          },
+          "memory_files": {
+            "MEMORY.md": "e1fd2400d8bfe6adb6051996ba0f88bb39fc4c38eb804724edbb50bc741f6186"
+          },
+          "code_api_digest": "cb5d359605b4df154d82c9e3c35da378e5d7bc058410e90d9c57f131c4e0044f",
+          "git_commit": "4c9982020d1fcabcfcb6e19d866cf3899b34daba"
+        },
+        "claimed": null,
+        "summary": null,
+        "turns": 37,
+        "planner_budget_exhausted": "time",
+        "cost_usd": 0,
+        "planner_error": null,
+        "env_error": false,
+        "status": "failure",
+        "exit_code": 1,
+        "model": "selfhost/qwen3.8-27b",
+        "thinking": "low",
+        "max_turns": 40,
+        "time_limit": 300,
+        "units": "true",
+        "anchor_image": false,
+        "approval": "standard",
+        "vdm": false,
+        "vdm_model": null,
+        "vdm_wrist": false,
+        "vdm_video": null,
+        "stateless": false,
+        "privileged": false,
+        "maniskill_robot": "panda",
+        "fallback_model": null,
+        "fallback_after": null,
+        "fallback_retry_primary": null,
+        "code": "false",
+        "code_api": null,
+        "code_api_auto": null,
+        "code_oracle": null
+      },
+      {
+        "path": "/root/autodl-tmp/runs/qwen-marker-20261001/maniskill/PickCube-v1_s1/result.json",
+        "robot": "maniskill",
+        "env_id": "PickCube-v1",
+        "seed": 1,
+        "success": false,
+        "ever_grasped": true,
+        "env_steps": 261,
+        "units_plugins": [
+          "recovery",
+          "auto_release",
+          "proprioception",
+          "variable_step",
+          "action_chunk",
+          "plan",
+          "mem_text"
+        ],
+        "units_wrist_view": true,
+        "code_api_digest": "cb5d359605b4df154d82c9e3c35da378e5d7bc058410e90d9c57f131c4e0044f",
+        "code_api_tier": null,
+        "tool_calls": 37,
+        "planner_tokens": {
+          "input": 731754,
+          "output": 21673
+        },
+        "max_tool_calls": 0,
+        "max_tokens": 0,
+        "context_version": {
+          "system_prompt_sha256": "0f50d3752b98f845a6ba0f51916961992787da77949f495cba871ef5fb614333",
+          "templates": {
+            "modes/units/SYSTEM.md": "987a98656daae202916a4c10efd65e15e145a63d01905b9b489af2b9d123830a",
+            "planner/closed-loop.md": "17c9cd1a9773f14392adc50632b65a800434ab51af6b74b3d3d67b5ad33b7e5c",
+            "robots/maniskill/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+            "robots/maniskill/SYSTEM.md": "9020635a2a64548164eeff7b6790b391c1abdfc027952d20cb594f572d839842"
+          },
+          "memory_files": {
+            "MEMORY.md": "e1fd2400d8bfe6adb6051996ba0f88bb39fc4c38eb804724edbb50bc741f6186"
+          },
+          "code_api_digest": "cb5d359605b4df154d82c9e3c35da378e5d7bc058410e90d9c57f131c4e0044f",
+          "git_commit": "4c9982020d1fcabcfcb6e19d866cf3899b34daba"
+        },
+        "claimed": null,
+        "summary": null,
+        "turns": 40,
+        "planner_budget_exhausted": "time",
+        "cost_usd": 0,
+        "planner_error": null,
+        "env_error": false,
+        "status": "failure",
+        "exit_code": 1,
+        "model": "selfhost/qwen3.8-27b",
+        "thinking": "low",
+        "max_turns": 40,
+        "time_limit": 300,
+        "units": "true",
+        "anchor_image": false,
+        "approval": "standard",
+        "vdm": false,
+        "vdm_model": null,
+        "vdm_wrist": false,
+        "vdm_video": null,
+        "stateless": false,
+        "privileged": false,
+        "maniskill_robot": "panda",
+        "fallback_model": null,
+        "fallback_after": null,
+        "fallback_retry_primary": null,
+        "code": "false",
+        "code_api": null,
+        "code_api_auto": null,
+        "code_oracle": null
+      }
+    ],
+    "humanclaw/qwen-proprioception-20261001": [
+      {
+        "path": "/root/autodl-tmp/runs/humanclaw/qwen-proprioception-20261001/104348028_171512877_ep1_couch/result.json",
+        "robot": "humanclaw",
+        "mode": "pi",
+        "humanclaw_proprioception": true,
+        "preset": "humanclaw",
+        "episode": {
+          "scene_id": "104348028_171512877",
+          "episode_id": "1",
+          "object_category": "couch",
+          "rollout": 0,
+          "key": "104348028_171512877_ep1_couch",
+          "output_dir": "/root/autodl-tmp/runs/humanclaw/qwen-proprioception-20261001/104348028_171512877_ep1_couch/rollout/104348028_171512877_ep1_couch/rollout_00"
+        },
+        "rollout": 0,
+        "instruction": "Find the couch and move until your body is touching the target, with zero distance to the target object. Finally, sit on the couch.",
+        "steps": 29,
+        "active_stop": true,
+        "success": true,
+        "metrics": {
+          "find_sr": true,
+          "geo_find_sr": true,
+          "max_target_pixel_count": 57187,
+          "find_pixel_threshold": 100,
+          "nav_sr_20cm": true,
+          "geo_nav_sr_20cm": true,
+          "nav_sr_1m": true,
+          "final_body_target_aabb_distance_m": 0.08605146408081055,
+          "active_stop": true,
+          "is_interact_episode": true,
+          "interact_sr": true,
+          "geo_interact_sr": true,
+          "n_sit": 3,
+          "collision_step_fraction": 0.6785714285714286,
+          "collision_steps": 19,
+          "motion_steps": 28,
+          "by_body_group_step_fraction": {
+            "hand_arm": 0.14285714285714285,
+            "torso": 0.14285714285714285,
+            "leg": 0.6785714285714286,
+            "head": 0
+          },
+          "initial_penetration_detected": false,
+          "affected_dynamic_object_count": 1,
+          "affected_object_path_length_sum_m": 0.22582632073112,
+          "motion_jerk_m_s3": 7.243350068570178,
+          "cost": {
+            "decision_steps": 29,
+            "vlm_calls": 26,
+            "token_source": "provider_exact",
+            "input_tokens": 215313,
+            "visible_output_tokens": 8062,
+            "reasoning_tokens": 0,
+            "input_tokens_per_step": 7424.586206896552,
+            "visible_output_tokens_per_step": 278
+          }
+        },
+        "metrics_path": "/root/autodl-tmp/runs/humanclaw/qwen-proprioception-20261001/104348028_171512877_ep1_couch/rollout/104348028_171512877_ep1_couch/rollout_00/metrics.json",
+        "videos": [],
+        "units_plugins": [
+          "proprioception",
+          "plan"
+        ],
+        "units_wrist_view": false,
+        "code_api_digest": "d284185ac379d249c592a6dbbf479b1a7ca6137bf37370f82a41592926b28fbe",
+        "code_api_tier": null,
+        "tool_calls": 26,
+        "planner_tokens": {
+          "input": 285129,
+          "output": 8216
+        },
+        "max_tool_calls": 0,
+        "max_tokens": 0,
+        "context_version": {
+          "system_prompt_sha256": "077743dd42f5e9c09878a6755cda9e051e27ca8356043c77b7fe0bd3cb9c5cb8",
+          "templates": {
+            "modes/units/SYSTEM.md": "987a98656daae202916a4c10efd65e15e145a63d01905b9b489af2b9d123830a",
+            "planner/closed-loop.md": "17c9cd1a9773f14392adc50632b65a800434ab51af6b74b3d3d67b5ad33b7e5c",
+            "robots/humanclaw/SYSTEM.md": "1aab4e0580ac6c843f26f8346c98f0a334684ee2d5d01c24cf1021e927fbbca6"
+          },
+          "memory_files": {},
+          "code_api_digest": "d284185ac379d249c592a6dbbf479b1a7ca6137bf37370f82a41592926b28fbe",
+          "git_commit": "3a4baf4c43aad21d7f36e643a8e2a6adf311cc40"
+        },
+        "claimed": "success",
+        "summary": "Found the couch, navigated around the small side table to approach it, made contact with the couch, turned 180\u00b0 to face away from it, and sat down on the couch. Final height from start is -0.51m, consistent with sitting on a couch seat.",
+        "turns": 27,
+        "planner_budget_exhausted": null,
+        "cost_usd": 0,
+        "planner_error": null,
+        "env_error": false,
+        "status": "success",
+        "exit_code": 0,
+        "config": "mode=pi/preset=humanclaw/model=selfhost/qwen3.8-27b/metrics=true/video=false/verify=false/vdm=false/stateless=false/proprioception=true",
+        "model": "selfhost/qwen3.8-27b"
+      }
+    ],
+    "humanclaw/qwen-proprioception-repeat-20261001": [
+      {
+        "path": "/root/autodl-tmp/runs/humanclaw/qwen-proprioception-repeat-20261001/104348028_171512877_ep1_couch/result.json",
+        "robot": "humanclaw",
+        "mode": "pi",
+        "humanclaw_proprioception": true,
+        "preset": "humanclaw",
+        "episode": {
+          "scene_id": "104348028_171512877",
+          "episode_id": "1",
+          "object_category": "couch",
+          "rollout": 0,
+          "key": "104348028_171512877_ep1_couch",
+          "output_dir": "/root/autodl-tmp/runs/humanclaw/qwen-proprioception-repeat-20261001/104348028_171512877_ep1_couch/rollout/104348028_171512877_ep1_couch/rollout_00"
+        },
+        "rollout": 0,
+        "instruction": "Find the couch and move until your body is touching the target, with zero distance to the target object. Finally, sit on the couch.",
+        "steps": 38,
+        "active_stop": true,
+        "success": true,
+        "metrics": {
+          "find_sr": true,
+          "geo_find_sr": true,
+          "max_target_pixel_count": 65384,
+          "find_pixel_threshold": 100,
+          "nav_sr_20cm": true,
+          "geo_nav_sr_20cm": true,
+          "nav_sr_1m": true,
+          "final_body_target_aabb_distance_m": 0,
+          "active_stop": true,
+          "is_interact_episode": true,
+          "interact_sr": true,
+          "geo_interact_sr": true,
+          "n_sit": 3,
+          "collision_step_fraction": 0.4594594594594595,
+          "collision_steps": 17,
+          "motion_steps": 37,
+          "by_body_group_step_fraction": {
+            "hand_arm": 0.13513513513513514,
+            "torso": 0.05405405405405406,
+            "leg": 0.4594594594594595,
+            "head": 0
+          },
+          "initial_penetration_detected": false,
+          "affected_dynamic_object_count": 1,
+          "affected_object_path_length_sum_m": 0.04197712368344686,
+          "motion_jerk_m_s3": 6.312114360725878,
+          "cost": {
+            "decision_steps": 38,
+            "vlm_calls": 42,
+            "token_source": "provider_exact",
+            "input_tokens": 568552,
+            "visible_output_tokens": 12439,
+            "reasoning_tokens": 0,
+            "input_tokens_per_step": 14961.894736842105,
+            "visible_output_tokens_per_step": 327.3421052631579
+          }
+        },
+        "metrics_path": "/root/autodl-tmp/runs/humanclaw/qwen-proprioception-repeat-20261001/104348028_171512877_ep1_couch/rollout/104348028_171512877_ep1_couch/rollout_00/metrics.json",
+        "videos": [],
+        "units_plugins": [
+          "proprioception",
+          "plan"
+        ],
+        "units_wrist_view": false,
+        "code_api_digest": "d284185ac379d249c592a6dbbf479b1a7ca6137bf37370f82a41592926b28fbe",
+        "code_api_tier": null,
+        "tool_calls": 42,
+        "planner_tokens": {
+          "input": 671855,
+          "output": 12625
+        },
+        "max_tool_calls": 0,
+        "max_tokens": 0,
+        "context_version": {
+          "system_prompt_sha256": "077743dd42f5e9c09878a6755cda9e051e27ca8356043c77b7fe0bd3cb9c5cb8",
+          "templates": {
+            "modes/units/SYSTEM.md": "987a98656daae202916a4c10efd65e15e145a63d01905b9b489af2b9d123830a",
+            "planner/closed-loop.md": "17c9cd1a9773f14392adc50632b65a800434ab51af6b74b3d3d67b5ad33b7e5c",
+            "robots/humanclaw/SYSTEM.md": "1aab4e0580ac6c843f26f8346c98f0a334684ee2d5d01c24cf1021e927fbbca6"
+          },
+          "memory_files": {},
+          "code_api_digest": "d284185ac379d249c592a6dbbf479b1a7ca6137bf37370f82a41592926b28fbe",
+          "git_commit": "4c9982020d1fcabcfcb6e19d866cf3899b34daba"
+        },
+        "claimed": "success",
+        "summary": "Successfully found the couch, navigated around the small round table that was blocking the path, made contact with the couch, turned 180 degrees to face away from it, and sat down on the couch.",
+        "turns": 43,
+        "planner_budget_exhausted": null,
+        "cost_usd": 0,
+        "planner_error": null,
+        "env_error": false,
+        "status": "success",
+        "exit_code": 0,
+        "config": "mode=pi/preset=humanclaw/model=selfhost/qwen3.8-27b/metrics=true/video=false/verify=false/vdm=false/stateless=false/proprioception=true",
+        "model": "selfhost/qwen3.8-27b"
+      }
+    ]
+  },
+  "smoke": {
+    "same-version-20261001": {
+      "commit-after.txt": "4b70d988b094c1498301393362484a3d5836012c\n",
+      "commit.txt": "4b70d988b094c1498301393362484a3d5836012c\n",
+      "diagnostic-stop.txt": "Diagnostic runners stopped after current child; final frozen-commit runner covers all 11 environments.\n",
+      "e2e-completed.txt": "2026-10-01T01:25:09+08:00\n",
+      "e2e-status.txt": "metaworld 0\nrobosuite 1\ngenesis 0\nmaniskill 0\nlibero 0\n",
+      "extended-status.txt": "robosuite 0\nrobocasa 1\nrobotwin 1\nrobolab 0\n",
+      "retry-status.txt": "robocasa 1\n",
+      "robocasa-asset-links.txt": "/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel008\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel023\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel006\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel045\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel016\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel041\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel048\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel022\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel003\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel014\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel039\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel030\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel050\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel011\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel029\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel025\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel036\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel028\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel024\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel017\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel046\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel049\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel044\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel012\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel009\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel040\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel026\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel031\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel042\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel038\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel027\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel001\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel020\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel047\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel034\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel043\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel019\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel013\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel010\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel021\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel002\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel007\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel032\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel005\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel004\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel051\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel033\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel037\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel018\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel035\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/cabinets/cabinet_panels/CabinetDoorPanel015\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle041\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle049\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle034\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle026\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle037\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle022\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle048\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle044\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle021\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle050\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle012\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle042\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle016\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle003\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle031\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle008\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle036\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle045\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle039\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle007\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle018\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle011\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle051\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle023\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle047\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle035\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle015\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle033\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle027\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle040\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle010\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle025\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle017\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle029\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle013\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle004\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle020\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle006\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle032\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle009\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle046\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle019\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle038\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle043\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle028\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle024\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle002\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle030\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle005\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle001\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/handles/CabinetHandle014\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/stand_mixers\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/ovens\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/toasters\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/microwaves\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/windows\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/stovetops\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/coffee_machines\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/sinks\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/hoods\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/dishwashers\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/electric_kettles\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/stoves\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/fridges\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/toaster_ovens\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/blenders\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/.robocasa-download.json\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/textures\n/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/generative_textures\n",
+      "genesis-e2e.log": {
+        "records": [],
+        "tail": "\ufe63 metaworld: reach-v3 starts, steps a unit and reports (0.958426ms) # PI_EMBODIED_E2E does not name metaworld\n\ufe63 robosuite: Lift starts, steps a unit and reports (0.138117ms) # PI_EMBODIED_E2E does not name robosuite\n\u2714 genesis: cube_pick starts, steps a unit and reports (20852.432097ms)\n\ufe63 maniskill: PickCube-v1 starts, steps a unit and reports (0.661413ms) # PI_EMBODIED_E2E does not name maniskill\n\ufe63 libero: libero_10 task 0 starts, steps a unit and reports (0.270329ms) # PI_EMBODIED_E2E does not name libero\n\ufe63 libero --serve-models sam3: pi starts SAM3 under the GPU lock, segments with it, and stops it (0.232204ms) # PI_EMBODIED_E2E does not name libero\n\ufe63 maniskill --robot panda_stick: a Flywheel episode records every control step and validates in its space (0.188896ms) # PI_EMBODIED_E2E does not name maniskill-flywheel\n\ufe63 maniskill --robot panda_pair: a Flywheel episode records every control step and validates in its space (0.243284ms) # PI_EMBODIED_E2E does not name maniskill-flywheel\n\ufe63 maniskill --robot widowx250s: a Flywheel episode records every control step and validates in its space (0.491168ms) # PI_EMBODIED_E2E does not name maniskill-flywheel\n\u2139 tests 9\n\u2139 suites 0\n\u2139 pass 1\n\u2139 fail 0\n\u2139 cancelled 0\n\u2139 skipped 8\n\u2139 todo 0\n\u2139 duration_ms 21651.696448\n"
+      },
+      "libero-e2e.log": {
+        "records": [],
+        "tail": "\ufe63 metaworld: reach-v3 starts, steps a unit and reports (0.785441ms) # PI_EMBODIED_E2E does not name metaworld\n\ufe63 robosuite: Lift starts, steps a unit and reports (0.114869ms) # PI_EMBODIED_E2E does not name robosuite\n\ufe63 genesis: cube_pick starts, steps a unit and reports (0.087028ms) # PI_EMBODIED_E2E does not name genesis\n\ufe63 maniskill: PickCube-v1 starts, steps a unit and reports (0.078756ms) # PI_EMBODIED_E2E does not name maniskill\n\u2714 libero: libero_10 task 0 starts, steps a unit and reports (22985.984841ms)\n\ufe63 libero --serve-models sam3: pi starts SAM3 under the GPU lock, segments with it, and stops it (0.27ms) # SAM3_CHECKPOINT_PATH is unset\n\ufe63 maniskill --robot panda_stick: a Flywheel episode records every control step and validates in its space (0.072986ms) # PI_EMBODIED_E2E does not name maniskill-flywheel\n\ufe63 maniskill --robot panda_pair: a Flywheel episode records every control step and validates in its space (0.077557ms) # PI_EMBODIED_E2E does not name maniskill-flywheel\n\ufe63 maniskill --robot widowx250s: a Flywheel episode records every control step and validates in its space (0.075543ms) # PI_EMBODIED_E2E does not name maniskill-flywheel\n\u2139 tests 9\n\u2139 suites 0\n\u2139 pass 1\n\u2139 fail 0\n\u2139 cancelled 0\n\u2139 skipped 8\n\u2139 todo 0\n\u2139 duration_ms 23792.523771\n"
+      },
+      "maniskill-e2e.log": {
+        "records": [],
+        "tail": "\ufe63 metaworld: reach-v3 starts, steps a unit and reports (0.866544ms) # PI_EMBODIED_E2E does not name metaworld\n\ufe63 robosuite: Lift starts, steps a unit and reports (0.123251ms) # PI_EMBODIED_E2E does not name robosuite\n\ufe63 genesis: cube_pick starts, steps a unit and reports (0.08491ms) # PI_EMBODIED_E2E does not name genesis\n\u2714 maniskill: PickCube-v1 starts, steps a unit and reports (8875.370405ms)\n\ufe63 libero: libero_10 task 0 starts, steps a unit and reports (0.362769ms) # PI_EMBODIED_E2E does not name libero\n\ufe63 libero --serve-models sam3: pi starts SAM3 under the GPU lock, segments with it, and stops it (0.095618ms) # PI_EMBODIED_E2E does not name libero\n\ufe63 maniskill --robot panda_stick: a Flywheel episode records every control step and validates in its space (0.062427ms) # PI_EMBODIED_E2E does not name maniskill-flywheel\n\ufe63 maniskill --robot panda_pair: a Flywheel episode records every control step and validates in its space (0.077444ms) # PI_EMBODIED_E2E does not name maniskill-flywheel\n\ufe63 maniskill --robot widowx250s: a Flywheel episode records every control step and validates in its space (0.079071ms) # PI_EMBODIED_E2E does not name maniskill-flywheel\n\u2139 tests 9\n\u2139 suites 0\n\u2139 pass 1\n\u2139 fail 0\n\u2139 cancelled 0\n\u2139 skipped 8\n\u2139 todo 0\n\u2139 duration_ms 9716.136105\n"
+      },
+      "metaworld-e2e.log": {
+        "records": [],
+        "tail": "\u2714 metaworld: reach-v3 starts, steps a unit and reports (9551.905288ms)\n\ufe63 robosuite: Lift starts, steps a unit and reports (0.257043ms) # PI_EMBODIED_E2E does not name robosuite\n\ufe63 genesis: cube_pick starts, steps a unit and reports (0.074495ms) # PI_EMBODIED_E2E does not name genesis\n\ufe63 maniskill: PickCube-v1 starts, steps a unit and reports (0.060841ms) # PI_EMBODIED_E2E does not name maniskill\n\ufe63 libero: libero_10 task 0 starts, steps a unit and reports (0.154685ms) # PI_EMBODIED_E2E does not name libero\n\ufe63 libero --serve-models sam3: pi starts SAM3 under the GPU lock, segments with it, and stops it (0.05348ms) # PI_EMBODIED_E2E does not name libero\n\ufe63 maniskill --robot panda_stick: a Flywheel episode records every control step and validates in its space (0.056062ms) # PI_EMBODIED_E2E does not name maniskill-flywheel\n\ufe63 maniskill --robot panda_pair: a Flywheel episode records every control step and validates in its space (0.058586ms) # PI_EMBODIED_E2E does not name maniskill-flywheel\n\ufe63 maniskill --robot widowx250s: a Flywheel episode records every control step and validates in its space (0.065075ms) # PI_EMBODIED_E2E does not name maniskill-flywheel\n\u2139 tests 9\n\u2139 suites 0\n\u2139 pass 1\n\u2139 fail 0\n\u2139 cancelled 0\n\u2139 skipped 8\n\u2139 todo 0\n\u2139 duration_ms 10550.719424\n"
+      },
+      "robocasa-extended.log": {
+        "records": [],
+        "tail": " self._load_model()\\n  File \"/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/environments/kitchen/atomic/kitchen_drawer.py\", line 35, in _load_model\\n    super()._load_model(*args, **kwargs)\\n  File \"/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/environments/kitchen/kitchen.py\", line 654, in _load_model\\n    self._setup_model()\\n  File \"/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/environments/kitchen/kitchen.py\", line 611, in _setup_model\\n    self.mujoco_arena = KitchenArena(\\n  File \"/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/scenes/kitchen_arena.py\", line 138, in __init__\\n    self.fixtures = create_fixtures(\\n  File \"/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/scenes/scene_builder.py\", line 295, in create_fixtures\\n    fixture = initialize_fixture(fixture_config, fixtures, rng=rng)\\n  File \"/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/scenes/scene_utils.py\", line 76, in initialize_fixture\\n    fixture = class_type(name=name, **config)\\n  File \"/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/fixtures/accessories.py\", line 67, in __init__\\n    super().__init__(\\n  File \"/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/fixtures/fixture.py\", line 111, in __init__\\n    super().__init__(\\n  File \"/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/objects/objects.py\", line 32, in __init__\\n    super().__init__(*args, **kwargs)\\n  File \"/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robosuite/models/objects/objects.py\", line 360, in __init__\\n    MujocoXML.__init__(self, fname)\\n  File \"/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robosuite/models/base.py\", line 34, in __init__\\n    self.tree = ET.parse(fname)\\n  File \"/root/autodl-tmp/.cache/py310-standalone/python/lib/python3.10/xml/etree/ElementTree.py\", line 1222, in parse\\n    tree.parse(source, parser)\\n  File \"/root/autodl-tmp/.cache/py310-standalone/python/lib/python3.10/xml/etree/ElementTree.py\", line 569, in parse\\n    source = open(source, \"rb\")\\nFileNotFoundError: [Errno 2] No such file or directory: '/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/objects/lightwheel/utensil_rack/UtensilRack007/model.xml'\\n` ],\n    expected: [],\n    operator: 'deepStrictEqual',\n    diff: 'simple'\n  }\n"
+      },
+      "robocasa-retry.log": {
+        "records": [],
+        "tail": "n_drawer.py\", line 35, in _load_model\\n    super()._load_model(*args, **kwargs)\\n  File \"/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/environments/kitchen/kitchen.py\", line 654, in _load_model\\n    self._setup_model()\\n  File \"/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/environments/kitchen/kitchen.py\", line 611, in _setup_model\\n    self.mujoco_arena = KitchenArena(\\n  File \"/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/scenes/kitchen_arena.py\", line 138, in __init__\\n    self.fixtures = create_fixtures(\\n  File \"/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/scenes/scene_builder.py\", line 295, in create_fixtures\\n    fixture = initialize_fixture(fixture_config, fixtures, rng=rng)\\n  File \"/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/scenes/scene_utils.py\", line 76, in initialize_fixture\\n    fixture = class_type(name=name, **config)\\n  File \"/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/fixtures/windows.py\", line 355, in __init__\\n    super().__init__(\\n  File \"/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/fixtures/accessories.py\", line 67, in __init__\\n    super().__init__(\\n  File \"/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/fixtures/fixture.py\", line 111, in __init__\\n    super().__init__(\\n  File \"/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/objects/objects.py\", line 32, in __init__\\n    super().__init__(*args, **kwargs)\\n  File \"/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robosuite/models/objects/objects.py\", line 360, in __init__\\n    MujocoXML.__init__(self, fname)\\n  File \"/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robosuite/models/base.py\", line 34, in __init__\\n    self.tree = ET.parse(fname)\\n  File \"/root/autodl-tmp/.cache/py310-standalone/python/lib/python3.10/xml/etree/ElementTree.py\", line 1222, in parse\\n    tree.parse(source, parser)\\n  File \"/root/autodl-tmp/.cache/py310-standalone/python/lib/python3.10/xml/etree/ElementTree.py\", line 569, in parse\\n    source = open(source, \"rb\")\\nFileNotFoundError: [Errno 2] No such file or directory: '/root/autodl-tmp/venvs/robocasa/lib/python3.10/site-packages/robocasa/models/assets/fixtures/windows/Window044/model.xml'\\n` ],\n    expected: [],\n    operator: 'deepStrictEqual',\n    diff: 'simple'\n  }\n"
+      },
+      "robodojo-extended.log": {
+        "records": [
+          {
+            "robot": "robodojo",
+            "task": "stack_bowls",
+            "seed": 0,
+            "eval_seed": 0,
+            "dimension": "generalization",
+            "instruction": "Stack the three bowls together.",
+            "success": false,
+            "score": 0,
+            "truncated": false,
+            "unstable": false,
+            "env_steps": 4,
+            "step_lim": 800,
+            "units_plugins": [
+              "proprioception",
+              "variable_step",
+              "action_chunk",
+              "rotation",
+              "plan",
+              "mem_text"
+            ],
+            "units_wrist_view": true,
+            "code_api_digest": "7c6260f95e5d29939711f3c038e0d000b5646fbe6229fdde55b79b786c4c2d7b",
+            "code_api_tier": null,
+            "tool_calls": 0,
+            "planner_tokens": {
+              "input": 0,
+              "output": 0
+            },
+            "max_tool_calls": 0,
+            "max_tokens": 0,
+            "context_version": {
+              "system_prompt_sha256": null,
+              "templates": {
+                "modes/units/SYSTEM.md": "987a98656daae202916a4c10efd65e15e145a63d01905b9b489af2b9d123830a",
+                "planner/closed-loop.md": "17c9cd1a9773f14392adc50632b65a800434ab51af6b74b3d3d67b5ad33b7e5c",
+                "robots/behavior/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/behavior/SYSTEM.md": "d17e2073ba6cb30098bc15fe86ce44151300e783911e6b177b96573a09606202",
+                "robots/genesis/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/genesis/SYSTEM.md": "3bd4c630ced3d066502c9a0225de0bcc0e34664767340dba3041c1031c362e8f",
+                "robots/humanclaw/SYSTEM.md": "1aab4e0580ac6c843f26f8346c98f0a334684ee2d5d01c24cf1021e927fbbca6",
+                "robots/libero/compact/memory-local.md": "9c539fdb4c4be1f51e0212f263553a5711980d29ea6b1f8b078c10781e4617a3",
+                "robots/libero/compact/SYSTEM.md": "91dd5626bc29bc1917c77930c056e31f9ba90586c8b09d526d9078fed4bafa64",
+                "robots/libero/SYSTEM.md": "a8f6909b38e0b3a5801df8cc4edc887b5fcd7121c5888a10c65e2f1d4b9b6b0b",
+                "robots/maniskill/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/maniskill/SYSTEM.md": "9020635a2a64548164eeff7b6790b391c1abdfc027952d20cb594f572d839842",
+                "robots/metaworld/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/metaworld/SYSTEM.md": "f8dcbd9e5b4e7e749457f8ed8831e5cdff1a3a81a4caee53ec4ac0f72cac953a",
+                "robots/robocasa/memory-local.md": "e3812f977c3e4401f2d25111b576a356b48e98ae781faa4d3a7886877d72b1e2",
+                "robots/robocasa/SYSTEM.md": "df085a2802efec6081da71edd1e07f6ee6b9c169696a30391c991594b02a262f",
+                "robots/robodojo/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/robodojo/SYSTEM.md": "5caf2571237196eda6331d2a157878b10c0c4089404397f81ed5f09faa5be1d9",
+                "robots/robolab/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/robolab/SYSTEM.md": "06abfe9196074f8ff8cdad84260a29580b577247e99627a399f5501d63e10d14",
+                "robots/robosuite/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/robosuite/SYSTEM.md": "6bf699520c0aa893dff165b5ca98e5381bdb433a1a0199e065692ee594337965",
+                "robots/robotwin/memory.md": "75b037f04474b978e3c6c29eccab4eaf6107bd07f061bba4fb999070ccf07f21",
+                "robots/robotwin/SYSTEM.md": "232c3d49496e320e36f211c837de00736a611e6d96c933b84b5c404561fee6c3"
+              },
+              "memory_files": {},
+              "code_api_digest": "7c6260f95e5d29939711f3c038e0d000b5646fbe6229fdde55b79b786c4c2d7b",
+              "git_commit": "4b70d988b094c1498301393362484a3d5836012c"
+            },
+            "claimed": "failure",
+            "summary": "e2e: one unit",
+            "turns": 0,
+            "planner_budget_exhausted": null,
+            "cost_usd": 0,
+            "planner_error": null,
+            "env_error": false
+          }
+        ],
+        "tail": "robots/genesis/SYSTEM.md\":\"3bd4c630ced3d066502c9a0225de0bcc0e34664767340dba3041c1031c362e8f\",\"robots/humanclaw/SYSTEM.md\":\"1aab4e0580ac6c843f26f8346c98f0a334684ee2d5d01c24cf1021e927fbbca6\",\"robots/libero/compact/memory-local.md\":\"9c539fdb4c4be1f51e0212f263553a5711980d29ea6b1f8b078c10781e4617a3\",\"robots/libero/compact/SYSTEM.md\":\"91dd5626bc29bc1917c77930c056e31f9ba90586c8b09d526d9078fed4bafa64\",\"robots/libero/SYSTEM.md\":\"a8f6909b38e0b3a5801df8cc4edc887b5fcd7121c5888a10c65e2f1d4b9b6b0b\",\"robots/maniskill/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/maniskill/SYSTEM.md\":\"9020635a2a64548164eeff7b6790b391c1abdfc027952d20cb594f572d839842\",\"robots/metaworld/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/metaworld/SYSTEM.md\":\"f8dcbd9e5b4e7e749457f8ed8831e5cdff1a3a81a4caee53ec4ac0f72cac953a\",\"robots/robocasa/memory-local.md\":\"e3812f977c3e4401f2d25111b576a356b48e98ae781faa4d3a7886877d72b1e2\",\"robots/robocasa/SYSTEM.md\":\"df085a2802efec6081da71edd1e07f6ee6b9c169696a30391c991594b02a262f\",\"robots/robodojo/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/robodojo/SYSTEM.md\":\"5caf2571237196eda6331d2a157878b10c0c4089404397f81ed5f09faa5be1d9\",\"robots/robolab/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/robolab/SYSTEM.md\":\"06abfe9196074f8ff8cdad84260a29580b577247e99627a399f5501d63e10d14\",\"robots/robosuite/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/robosuite/SYSTEM.md\":\"6bf699520c0aa893dff165b5ca98e5381bdb433a1a0199e065692ee594337965\",\"robots/robotwin/memory.md\":\"75b037f04474b978e3c6c29eccab4eaf6107bd07f061bba4fb999070ccf07f21\",\"robots/robotwin/SYSTEM.md\":\"232c3d49496e320e36f211c837de00736a611e6d96c933b84b5c404561fee6c3\"},\"memory_files\":{},\"code_api_digest\":\"7c6260f95e5d29939711f3c038e0d000b5646fbe6229fdde55b79b786c4c2d7b\",\"git_commit\":\"4b70d988b094c1498301393362484a3d5836012c\"},\"claimed\":\"failure\",\"summary\":\"e2e: one unit\",\"turns\":0,\"planner_budget_exhausted\":null,\"cost_usd\":0,\"planner_error\":null,\"env_error\":false}\n\u2714 robodojo: reset, observation, action, result (67475.505104ms)\n\ufe63 behavior: reset, observation, action, result (0.771676ms) # PI_EMBODIED_E2E does not name behavior\n\ufe63 humanclaw: reset, observation, action, result (0.267451ms) # PI_EMBODIED_E2E does not name humanclaw\n\u2139 tests 7\n\u2139 suites 0\n\u2139 pass 1\n\u2139 fail 0\n\u2139 cancelled 0\n\u2139 skipped 6\n\u2139 todo 0\n\u2139 duration_ms 68326.74999\n"
+      },
+      "robolab-extended.log": {
+        "records": [
+          {
+            "robot": "robolab",
+            "task": "BananaInBowlTask",
+            "seed": 0,
+            "instruction": "Pick up the banana and place it in the bowl",
+            "instruction_type": "default",
+            "success": false,
+            "truncated": false,
+            "env_steps": 24,
+            "units_plugins": [
+              "recovery",
+              "auto_release",
+              "proprioception",
+              "variable_step",
+              "action_chunk",
+              "rotation",
+              "plan",
+              "mem_text"
+            ],
+            "units_wrist_view": true,
+            "code_api_digest": "6f824aed34f80aa3c70da4821c2699bef80459f7f0b260d8d8a8fa9c061c5384",
+            "code_api_tier": null,
+            "tool_calls": 0,
+            "planner_tokens": {
+              "input": 0,
+              "output": 0
+            },
+            "max_tool_calls": 0,
+            "max_tokens": 0,
+            "context_version": {
+              "system_prompt_sha256": null,
+              "templates": {
+                "modes/units/SYSTEM.md": "987a98656daae202916a4c10efd65e15e145a63d01905b9b489af2b9d123830a",
+                "planner/closed-loop.md": "17c9cd1a9773f14392adc50632b65a800434ab51af6b74b3d3d67b5ad33b7e5c",
+                "robots/behavior/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/behavior/SYSTEM.md": "d17e2073ba6cb30098bc15fe86ce44151300e783911e6b177b96573a09606202",
+                "robots/genesis/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/genesis/SYSTEM.md": "3bd4c630ced3d066502c9a0225de0bcc0e34664767340dba3041c1031c362e8f",
+                "robots/humanclaw/SYSTEM.md": "1aab4e0580ac6c843f26f8346c98f0a334684ee2d5d01c24cf1021e927fbbca6",
+                "robots/libero/compact/memory-local.md": "9c539fdb4c4be1f51e0212f263553a5711980d29ea6b1f8b078c10781e4617a3",
+                "robots/libero/compact/SYSTEM.md": "91dd5626bc29bc1917c77930c056e31f9ba90586c8b09d526d9078fed4bafa64",
+                "robots/libero/SYSTEM.md": "a8f6909b38e0b3a5801df8cc4edc887b5fcd7121c5888a10c65e2f1d4b9b6b0b",
+                "robots/maniskill/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/maniskill/SYSTEM.md": "9020635a2a64548164eeff7b6790b391c1abdfc027952d20cb594f572d839842",
+                "robots/metaworld/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/metaworld/SYSTEM.md": "f8dcbd9e5b4e7e749457f8ed8831e5cdff1a3a81a4caee53ec4ac0f72cac953a",
+                "robots/robocasa/memory-local.md": "e3812f977c3e4401f2d25111b576a356b48e98ae781faa4d3a7886877d72b1e2",
+                "robots/robocasa/SYSTEM.md": "df085a2802efec6081da71edd1e07f6ee6b9c169696a30391c991594b02a262f",
+                "robots/robodojo/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/robodojo/SYSTEM.md": "5caf2571237196eda6331d2a157878b10c0c4089404397f81ed5f09faa5be1d9",
+                "robots/robolab/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/robolab/SYSTEM.md": "06abfe9196074f8ff8cdad84260a29580b577247e99627a399f5501d63e10d14",
+                "robots/robosuite/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/robosuite/SYSTEM.md": "6bf699520c0aa893dff165b5ca98e5381bdb433a1a0199e065692ee594337965",
+                "robots/robotwin/memory.md": "75b037f04474b978e3c6c29eccab4eaf6107bd07f061bba4fb999070ccf07f21",
+                "robots/robotwin/SYSTEM.md": "232c3d49496e320e36f211c837de00736a611e6d96c933b84b5c404561fee6c3"
+              },
+              "memory_files": {},
+              "code_api_digest": "6f824aed34f80aa3c70da4821c2699bef80459f7f0b260d8d8a8fa9c061c5384",
+              "git_commit": "4b70d988b094c1498301393362484a3d5836012c"
+            },
+            "claimed": "failure",
+            "summary": "e2e: one unit",
+            "turns": 0,
+            "planner_budget_exhausted": null,
+            "cost_usd": 0,
+            "planner_error": null,
+            "env_error": false
+          }
+        ],
+        "tail": "humanclaw/SYSTEM.md\":\"1aab4e0580ac6c843f26f8346c98f0a334684ee2d5d01c24cf1021e927fbbca6\",\"robots/libero/compact/memory-local.md\":\"9c539fdb4c4be1f51e0212f263553a5711980d29ea6b1f8b078c10781e4617a3\",\"robots/libero/compact/SYSTEM.md\":\"91dd5626bc29bc1917c77930c056e31f9ba90586c8b09d526d9078fed4bafa64\",\"robots/libero/SYSTEM.md\":\"a8f6909b38e0b3a5801df8cc4edc887b5fcd7121c5888a10c65e2f1d4b9b6b0b\",\"robots/maniskill/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/maniskill/SYSTEM.md\":\"9020635a2a64548164eeff7b6790b391c1abdfc027952d20cb594f572d839842\",\"robots/metaworld/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/metaworld/SYSTEM.md\":\"f8dcbd9e5b4e7e749457f8ed8831e5cdff1a3a81a4caee53ec4ac0f72cac953a\",\"robots/robocasa/memory-local.md\":\"e3812f977c3e4401f2d25111b576a356b48e98ae781faa4d3a7886877d72b1e2\",\"robots/robocasa/SYSTEM.md\":\"df085a2802efec6081da71edd1e07f6ee6b9c169696a30391c991594b02a262f\",\"robots/robodojo/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/robodojo/SYSTEM.md\":\"5caf2571237196eda6331d2a157878b10c0c4089404397f81ed5f09faa5be1d9\",\"robots/robolab/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/robolab/SYSTEM.md\":\"06abfe9196074f8ff8cdad84260a29580b577247e99627a399f5501d63e10d14\",\"robots/robosuite/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/robosuite/SYSTEM.md\":\"6bf699520c0aa893dff165b5ca98e5381bdb433a1a0199e065692ee594337965\",\"robots/robotwin/memory.md\":\"75b037f04474b978e3c6c29eccab4eaf6107bd07f061bba4fb999070ccf07f21\",\"robots/robotwin/SYSTEM.md\":\"232c3d49496e320e36f211c837de00736a611e6d96c933b84b5c404561fee6c3\"},\"memory_files\":{},\"code_api_digest\":\"6f824aed34f80aa3c70da4821c2699bef80459f7f0b260d8d8a8fa9c061c5384\",\"git_commit\":\"4b70d988b094c1498301393362484a3d5836012c\"},\"claimed\":\"failure\",\"summary\":\"e2e: one unit\",\"turns\":0,\"planner_budget_exhausted\":null,\"cost_usd\":0,\"planner_error\":null,\"env_error\":false}\n\u2714 robolab: reset, observation, action, result (62755.369433ms)\n\ufe63 robodojo: reset, observation, action, result (0.257954ms) # PI_EMBODIED_E2E does not name robodojo\n\ufe63 behavior: reset, observation, action, result (0.073733ms) # PI_EMBODIED_E2E does not name behavior\n\ufe63 humanclaw: reset, observation, action, result (0.061577ms) # PI_EMBODIED_E2E does not name humanclaw\n\u2139 tests 7\n\u2139 suites 0\n\u2139 pass 1\n\u2139 fail 0\n\u2139 cancelled 0\n\u2139 skipped 6\n\u2139 todo 0\n\u2139 duration_ms 63528.830965\n"
+      },
+      "robosuite-e2e.log": {
+        "records": [],
+        "tail": "_runner/test:1409:7)\n      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {\n    generatedMessage: false,\n    code: 'ERR_ASSERTION',\n    actual: [ `robosuite unavailable: env server exited (1); it printed:\\n[robosuite WARNING] No private macro file found! (macros.py:53)\\n[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)\\n[robosuite WARNING] To setup, run: python /root/autodl-tmp/venvs/robosuite/lib/python3.11/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)\\nTraceback (most recent call last):\\n  File \"<frozen runpy>\", line 198, in _run_module_as_main\\n  File \"<frozen runpy>\", line 88, in _run_code\\n  File \"/root/autodl-tmp/pi/services/pi_embodied_services/robots/robosuite/env_server.py\", line 1779, in <module>\\n    main()\\n  File \"/root/autodl-tmp/pi/services/pi_embodied_services/robots/robosuite/env_server.py\", line 1746, in main\\n    facade = RobosuiteEnvFacade(\\n             ^^^^^^^^^^^^^^^^^^^\\n  File \"/root/autodl-tmp/pi/services/pi_embodied_services/robots/robosuite/env_server.py\", line 268, in __init__\\n    import robosuite as suite\\n  File \"/root/autodl-tmp/venvs/robosuite/lib/python3.11/site-packages/robosuite/__init__.py\", line 1, in <module>\\n    from robosuite.environments.base import make\\n  File \"/root/autodl-tmp/venvs/robosuite/lib/python3.11/site-packages/robosuite/environments/__init__.py\", line 1, in <module>\\n    from .base import REGISTERED_ENVS, MujocoEnv\\n  File \"/root/autodl-tmp/venvs/robosuite/lib/python3.11/site-packages/robosuite/environments/base.py\", line 13, in <module>\\n    from robosuite.utils.binding_utils import MjRenderContextOffscreen, MjSim\\n  File \"/root/autodl-tmp/venvs/robosuite/lib/python3.11/site-packages/robosuite/utils/binding_utils.py\", line 12, in <module>\\n    import mujoco\\n  File \"/root/autodl-tmp/venvs/robosuite/lib/python3.11/site-packages/mujoco/__init__.py\", line 62, in <module>\\n    from mujoco.gl_context import *\\n  File \"/root/autodl-tmp/venvs/robosuite/lib/python3.11/site-packages/mujoco/gl_context.py\", line 41, in <module>\\n    from mujoco.egl import GLContext as _GLContext\\n  File \"/root/autodl-tmp/venvs/robosuite/lib/python3.11/site-packages/mujoco/egl/__init__.py\", line 26, in <module>\\n    raise ImportError(\\nImportError: Cannot use EGL rendering platform. The PYOPENGL_PLATFORM environment variable is set to {!r} (should be either unset or 'egl').` ],\n    expected: [],\n    operator: 'deepStrictEqual',\n    diff: 'simple'\n  }\n"
+      },
+      "robosuite-extended.log": {
+        "records": [
+          {
+            "robot": "robosuite",
+            "task": "Lift",
+            "seed": 0,
+            "success": false,
+            "success_step": null,
+            "env_steps": 10,
+            "skills_off": {
+              "sam3": "unreachable: http://127.0.0.1:18300/call not ready: Error: http://127.0.0.1:18300/call: connect ECONNREFUSED 127.0.0.1:18300"
+            },
+            "units_plugins": [
+              "recovery",
+              "auto_release",
+              "proprioception",
+              "variable_step",
+              "action_chunk",
+              "rotation",
+              "plan",
+              "mem_text"
+            ],
+            "units_wrist_view": true,
+            "code_api_digest": "1dd9f040979ae476bf821f8624ffa18dd21a22b3bf4a24a50e1191084d38f166",
+            "code_api_tier": null,
+            "tool_calls": 0,
+            "planner_tokens": {
+              "input": 0,
+              "output": 0
+            },
+            "max_tool_calls": 0,
+            "max_tokens": 0,
+            "context_version": {
+              "system_prompt_sha256": null,
+              "templates": {
+                "modes/units/SYSTEM.md": "987a98656daae202916a4c10efd65e15e145a63d01905b9b489af2b9d123830a",
+                "planner/closed-loop.md": "17c9cd1a9773f14392adc50632b65a800434ab51af6b74b3d3d67b5ad33b7e5c",
+                "robots/behavior/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/behavior/SYSTEM.md": "d17e2073ba6cb30098bc15fe86ce44151300e783911e6b177b96573a09606202",
+                "robots/genesis/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/genesis/SYSTEM.md": "3bd4c630ced3d066502c9a0225de0bcc0e34664767340dba3041c1031c362e8f",
+                "robots/humanclaw/SYSTEM.md": "1aab4e0580ac6c843f26f8346c98f0a334684ee2d5d01c24cf1021e927fbbca6",
+                "robots/libero/compact/memory-local.md": "9c539fdb4c4be1f51e0212f263553a5711980d29ea6b1f8b078c10781e4617a3",
+                "robots/libero/compact/SYSTEM.md": "91dd5626bc29bc1917c77930c056e31f9ba90586c8b09d526d9078fed4bafa64",
+                "robots/libero/SYSTEM.md": "a8f6909b38e0b3a5801df8cc4edc887b5fcd7121c5888a10c65e2f1d4b9b6b0b",
+                "robots/maniskill/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/maniskill/SYSTEM.md": "9020635a2a64548164eeff7b6790b391c1abdfc027952d20cb594f572d839842",
+                "robots/metaworld/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/metaworld/SYSTEM.md": "f8dcbd9e5b4e7e749457f8ed8831e5cdff1a3a81a4caee53ec4ac0f72cac953a",
+                "robots/robocasa/memory-local.md": "e3812f977c3e4401f2d25111b576a356b48e98ae781faa4d3a7886877d72b1e2",
+                "robots/robocasa/SYSTEM.md": "df085a2802efec6081da71edd1e07f6ee6b9c169696a30391c991594b02a262f",
+                "robots/robodojo/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/robodojo/SYSTEM.md": "5caf2571237196eda6331d2a157878b10c0c4089404397f81ed5f09faa5be1d9",
+                "robots/robolab/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/robolab/SYSTEM.md": "06abfe9196074f8ff8cdad84260a29580b577247e99627a399f5501d63e10d14",
+                "robots/robosuite/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/robosuite/SYSTEM.md": "6bf699520c0aa893dff165b5ca98e5381bdb433a1a0199e065692ee594337965",
+                "robots/robotwin/memory.md": "75b037f04474b978e3c6c29eccab4eaf6107bd07f061bba4fb999070ccf07f21",
+                "robots/robotwin/SYSTEM.md": "232c3d49496e320e36f211c837de00736a611e6d96c933b84b5c404561fee6c3"
+              },
+              "memory_files": {},
+              "code_api_digest": "1dd9f040979ae476bf821f8624ffa18dd21a22b3bf4a24a50e1191084d38f166",
+              "git_commit": "4b70d988b094c1498301393362484a3d5836012c"
+            },
+            "claimed": "failure",
+            "summary": "e2e: one unit",
+            "turns": 0,
+            "planner_budget_exhausted": null,
+            "cost_usd": 0,
+            "planner_error": null,
+            "env_error": false
+          }
+        ],
+        "tail": "bots/libero/SYSTEM.md\":\"a8f6909b38e0b3a5801df8cc4edc887b5fcd7121c5888a10c65e2f1d4b9b6b0b\",\"robots/maniskill/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/maniskill/SYSTEM.md\":\"9020635a2a64548164eeff7b6790b391c1abdfc027952d20cb594f572d839842\",\"robots/metaworld/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/metaworld/SYSTEM.md\":\"f8dcbd9e5b4e7e749457f8ed8831e5cdff1a3a81a4caee53ec4ac0f72cac953a\",\"robots/robocasa/memory-local.md\":\"e3812f977c3e4401f2d25111b576a356b48e98ae781faa4d3a7886877d72b1e2\",\"robots/robocasa/SYSTEM.md\":\"df085a2802efec6081da71edd1e07f6ee6b9c169696a30391c991594b02a262f\",\"robots/robodojo/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/robodojo/SYSTEM.md\":\"5caf2571237196eda6331d2a157878b10c0c4089404397f81ed5f09faa5be1d9\",\"robots/robolab/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/robolab/SYSTEM.md\":\"06abfe9196074f8ff8cdad84260a29580b577247e99627a399f5501d63e10d14\",\"robots/robosuite/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/robosuite/SYSTEM.md\":\"6bf699520c0aa893dff165b5ca98e5381bdb433a1a0199e065692ee594337965\",\"robots/robotwin/memory.md\":\"75b037f04474b978e3c6c29eccab4eaf6107bd07f061bba4fb999070ccf07f21\",\"robots/robotwin/SYSTEM.md\":\"232c3d49496e320e36f211c837de00736a611e6d96c933b84b5c404561fee6c3\"},\"memory_files\":{},\"code_api_digest\":\"1dd9f040979ae476bf821f8624ffa18dd21a22b3bf4a24a50e1191084d38f166\",\"git_commit\":\"4b70d988b094c1498301393362484a3d5836012c\"},\"claimed\":\"failure\",\"summary\":\"e2e: one unit\",\"turns\":0,\"planner_budget_exhausted\":null,\"cost_usd\":0,\"planner_error\":null,\"env_error\":false}\n\u2714 robosuite: reset, observation, action, result (9578.85897ms)\n\ufe63 robocasa: reset, observation, action, result (0.398234ms) # PI_EMBODIED_E2E does not name robocasa\n\ufe63 robotwin: reset, observation, action, result (0.102606ms) # PI_EMBODIED_E2E does not name robotwin\n\ufe63 robolab: reset, observation, action, result (0.091297ms) # PI_EMBODIED_E2E does not name robolab\n\ufe63 robodojo: reset, observation, action, result (0.099975ms) # PI_EMBODIED_E2E does not name robodojo\n\ufe63 behavior: reset, observation, action, result (0.16357ms) # PI_EMBODIED_E2E does not name behavior\n\ufe63 humanclaw: reset, observation, action, result (0.07794ms) # PI_EMBODIED_E2E does not name humanclaw\n\u2139 tests 7\n\u2139 suites 0\n\u2139 pass 1\n\u2139 fail 0\n\u2139 cancelled 0\n\u2139 skipped 6\n\u2139 todo 0\n\u2139 duration_ms 10434.303797\n"
+      },
+      "robotwin-extended.log": {
+        "records": [],
+        "tail": "\ufe63 robosuite: reset, observation, action, result (0.726456ms) # PI_EMBODIED_E2E does not name robosuite\n\ufe63 robocasa: reset, observation, action, result (0.117902ms) # PI_EMBODIED_E2E does not name robocasa\n\u2716 robotwin: reset, observation, action, result (89368.721323ms)\n\ufe63 robolab: reset, observation, action, result (2.968035ms) # PI_EMBODIED_E2E does not name robolab\n\ufe63 robodojo: reset, observation, action, result (0.361873ms) # PI_EMBODIED_E2E does not name robodojo\n\ufe63 behavior: reset, observation, action, result (0.252377ms) # PI_EMBODIED_E2E does not name behavior\n\ufe63 humanclaw: reset, observation, action, result (0.280337ms) # PI_EMBODIED_E2E does not name humanclaw\n\u2139 tests 7\n\u2139 suites 0\n\u2139 pass 0\n\u2139 fail 1\n\u2139 cancelled 0\n\u2139 skipped 6\n\u2139 todo 0\n\u2139 duration_ms 90308.859487\n\n\u2716 failing tests:\n\ntest at ../../../../../tmp/pi-oct01-extended-smoke.ts:179:2\n\u2716 robotwin: reset, observation, action, result (89368.721323ms)\n  TypeError: Cannot read properties of undefined (reading 'status')\n      at file:///root/autodl-tmp/pi/packages/embodied/src/modes/units/verifier.ts:143:56\n      at Object.emit (file:///tmp/pi-oct01-extended-smoke.ts:105:52)\n      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n      at async episode (file:///tmp/pi-oct01-extended-smoke.ts:146:3)\n      at async TestContext.<anonymous> (file:///tmp/pi-oct01-extended-smoke.ts:180:30)\n      at async Test.run (node:internal/test_runner/test:1409:7)\n      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)\n"
+      },
+      "robotwin-retry.log": {
+        "records": [
+          {
+            "robot": "robotwin",
+            "skills_off": {
+              "lingbot": "unreachable: LingBot socket error at ws://127.0.0.1:18400"
+            },
+            "task_name": "beat_block_hammer",
+            "task_config": "demo_randomized",
+            "seed": 100000,
+            "task_language": "Catch the handheld medium claw hammer and use it on the block.",
+            "success": false,
+            "budget_exhausted": false,
+            "take_action_cnt": 25,
+            "policy_actions": 0,
+            "native_actions": 25,
+            "states": 2,
+            "units_plugins": [
+              "proprioception",
+              "variable_step",
+              "action_chunk",
+              "rotation",
+              "plan",
+              "mem_text"
+            ],
+            "units_wrist_view": true,
+            "code_api_digest": "7359192dd9e147f1f3242caab4eb8adfea9520eb8410225e9b0eb4448a9d2a40",
+            "code_api_tier": null,
+            "tool_calls": 0,
+            "planner_tokens": {
+              "input": 0,
+              "output": 0
+            },
+            "max_tool_calls": 0,
+            "max_tokens": 0,
+            "context_version": {
+              "system_prompt_sha256": null,
+              "templates": {
+                "modes/units/SYSTEM.md": "987a98656daae202916a4c10efd65e15e145a63d01905b9b489af2b9d123830a",
+                "planner/closed-loop.md": "17c9cd1a9773f14392adc50632b65a800434ab51af6b74b3d3d67b5ad33b7e5c",
+                "robots/behavior/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/behavior/SYSTEM.md": "d17e2073ba6cb30098bc15fe86ce44151300e783911e6b177b96573a09606202",
+                "robots/genesis/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/genesis/SYSTEM.md": "3bd4c630ced3d066502c9a0225de0bcc0e34664767340dba3041c1031c362e8f",
+                "robots/humanclaw/SYSTEM.md": "1aab4e0580ac6c843f26f8346c98f0a334684ee2d5d01c24cf1021e927fbbca6",
+                "robots/libero/compact/memory-local.md": "9c539fdb4c4be1f51e0212f263553a5711980d29ea6b1f8b078c10781e4617a3",
+                "robots/libero/compact/SYSTEM.md": "91dd5626bc29bc1917c77930c056e31f9ba90586c8b09d526d9078fed4bafa64",
+                "robots/libero/SYSTEM.md": "a8f6909b38e0b3a5801df8cc4edc887b5fcd7121c5888a10c65e2f1d4b9b6b0b",
+                "robots/maniskill/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/maniskill/SYSTEM.md": "9020635a2a64548164eeff7b6790b391c1abdfc027952d20cb594f572d839842",
+                "robots/metaworld/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/metaworld/SYSTEM.md": "f8dcbd9e5b4e7e749457f8ed8831e5cdff1a3a81a4caee53ec4ac0f72cac953a",
+                "robots/robocasa/memory-local.md": "e3812f977c3e4401f2d25111b576a356b48e98ae781faa4d3a7886877d72b1e2",
+                "robots/robocasa/SYSTEM.md": "df085a2802efec6081da71edd1e07f6ee6b9c169696a30391c991594b02a262f",
+                "robots/robodojo/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/robodojo/SYSTEM.md": "5caf2571237196eda6331d2a157878b10c0c4089404397f81ed5f09faa5be1d9",
+                "robots/robolab/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/robolab/SYSTEM.md": "06abfe9196074f8ff8cdad84260a29580b577247e99627a399f5501d63e10d14",
+                "robots/robosuite/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/robosuite/SYSTEM.md": "6bf699520c0aa893dff165b5ca98e5381bdb433a1a0199e065692ee594337965",
+                "robots/robotwin/memory.md": "75b037f04474b978e3c6c29eccab4eaf6107bd07f061bba4fb999070ccf07f21",
+                "robots/robotwin/SYSTEM.md": "232c3d49496e320e36f211c837de00736a611e6d96c933b84b5c404561fee6c3"
+              },
+              "memory_files": {},
+              "code_api_digest": "7359192dd9e147f1f3242caab4eb8adfea9520eb8410225e9b0eb4448a9d2a40",
+              "git_commit": "4b70d988b094c1498301393362484a3d5836012c"
+            },
+            "claimed": "failure",
+            "summary": "e2e: one unit",
+            "turns": 0,
+            "planner_budget_exhausted": null,
+            "cost_usd": 0,
+            "planner_error": null,
+            "env_error": false
+          }
+        ],
+        "tail": "bero/compact/memory-local.md\":\"9c539fdb4c4be1f51e0212f263553a5711980d29ea6b1f8b078c10781e4617a3\",\"robots/libero/compact/SYSTEM.md\":\"91dd5626bc29bc1917c77930c056e31f9ba90586c8b09d526d9078fed4bafa64\",\"robots/libero/SYSTEM.md\":\"a8f6909b38e0b3a5801df8cc4edc887b5fcd7121c5888a10c65e2f1d4b9b6b0b\",\"robots/maniskill/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/maniskill/SYSTEM.md\":\"9020635a2a64548164eeff7b6790b391c1abdfc027952d20cb594f572d839842\",\"robots/metaworld/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/metaworld/SYSTEM.md\":\"f8dcbd9e5b4e7e749457f8ed8831e5cdff1a3a81a4caee53ec4ac0f72cac953a\",\"robots/robocasa/memory-local.md\":\"e3812f977c3e4401f2d25111b576a356b48e98ae781faa4d3a7886877d72b1e2\",\"robots/robocasa/SYSTEM.md\":\"df085a2802efec6081da71edd1e07f6ee6b9c169696a30391c991594b02a262f\",\"robots/robodojo/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/robodojo/SYSTEM.md\":\"5caf2571237196eda6331d2a157878b10c0c4089404397f81ed5f09faa5be1d9\",\"robots/robolab/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/robolab/SYSTEM.md\":\"06abfe9196074f8ff8cdad84260a29580b577247e99627a399f5501d63e10d14\",\"robots/robosuite/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/robosuite/SYSTEM.md\":\"6bf699520c0aa893dff165b5ca98e5381bdb433a1a0199e065692ee594337965\",\"robots/robotwin/memory.md\":\"75b037f04474b978e3c6c29eccab4eaf6107bd07f061bba4fb999070ccf07f21\",\"robots/robotwin/SYSTEM.md\":\"232c3d49496e320e36f211c837de00736a611e6d96c933b84b5c404561fee6c3\"},\"memory_files\":{},\"code_api_digest\":\"7359192dd9e147f1f3242caab4eb8adfea9520eb8410225e9b0eb4448a9d2a40\",\"git_commit\":\"4b70d988b094c1498301393362484a3d5836012c\"},\"claimed\":\"failure\",\"summary\":\"e2e: one unit\",\"turns\":0,\"planner_budget_exhausted\":null,\"cost_usd\":0,\"planner_error\":null,\"env_error\":false}\n\u2714 robotwin: reset, observation, action, result (81377.533929ms)\n\ufe63 robolab: reset, observation, action, result (0.263731ms) # PI_EMBODIED_E2E does not name robolab\n\ufe63 robodojo: reset, observation, action, result (0.079815ms) # PI_EMBODIED_E2E does not name robodojo\n\ufe63 behavior: reset, observation, action, result (0.06027ms) # PI_EMBODIED_E2E does not name behavior\n\ufe63 humanclaw: reset, observation, action, result (0.10821ms) # PI_EMBODIED_E2E does not name humanclaw\n\u2139 tests 7\n\u2139 suites 0\n\u2139 pass 1\n\u2139 fail 0\n\u2139 cancelled 0\n\u2139 skipped 6\n\u2139 todo 0\n\u2139 duration_ms 82208.344659\n"
+      }
+    },
+    "same-version-final-20261001": {
+      "commit.txt": "4c9982020d1fcabcfcb6e19d866cf3899b34daba\n",
+      "extended-commit-after.txt": "4c9982020d1fcabcfcb6e19d866cf3899b34daba\n",
+      "extended-completed.txt": "2026-10-01T02:08:01+08:00\n",
+      "extended-status.txt": "metaworld 0\ngenesis 0\nmaniskill 1\nlibero 0\nrobosuite 0\nrobocasa 0\nrobotwin 0\nrobolab 0\nrobodojo 0\nbehavior 1\nhumanclaw 0\n",
+      "retry-commit-after.txt": "4c9982020d1fcabcfcb6e19d866cf3899b34daba\n",
+      "retry-completed.txt": "2026-10-01T02:32:00+08:00\n",
+      "retry-status.txt": "maniskill 0\nbehavior 1\n",
+      "behavior-extended.log": {
+        "records": [],
+        "tail": "m.DATA_PATH = determine_data_path()\\n' +\n  +     '                   ^^^^^^^^^^^^^^^^^^^^^\\n' +\n  +     '  File \"/root/autodl-tmp/src/BEHAVIOR-1K-61/OmniGibson/omnigibson/macros.py\", line 121, in determine_data_path\\n' +\n  +     '    assert os.path.exists(path), f\"Data path {path} does not exist!\"\\n' +\n  +     '           ^^^^^^^^^^^^^^^^^^^^\\n' +\n  +     'AssertionError: Data path /root/autodl-tmp/src/BEHAVIOR-1K-61/datasets does not exist!'\n  + ]\n  - []\n  \n      at episode (file:///tmp/pi-oct01-final-smoke.ts:135:10)\n      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n      at async TestContext.<anonymous> (file:///tmp/pi-oct01-final-smoke.ts:184:30)\n      at async Test.run (node:internal/test_runner/test:1409:7)\n      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {\n    generatedMessage: false,\n    code: 'ERR_ASSERTION',\n    actual: [ 'behavior unavailable: env server exited (1); it printed:\\nTraceback (most recent call last):\\n  File \"<frozen runpy>\", line 198, in _run_module_as_main\\n  File \"<frozen runpy>\", line 88, in _run_code\\n  File \"/root/autodl-tmp/pi-feedback-20261001/services/pi_embodied_services/robots/behavior/env_server.py\", line 1238, in <module>\\n    main()\\n  File \"/root/autodl-tmp/pi-feedback-20261001/services/pi_embodied_services/robots/behavior/env_server.py\", line 1159, in main\\n    from omnigibson.macros import gm\\n  File \"/root/autodl-tmp/src/BEHAVIOR-1K-61/OmniGibson/omnigibson/__init__.py\", line 8, in <module>\\n    from omnigibson.controllers import REGISTERED_CONTROLLERS\\n  File \"/root/autodl-tmp/src/BEHAVIOR-1K-61/OmniGibson/omnigibson/controllers/__init__.py\", line 3, in <module>\\n    from omnigibson.controllers.controller_base import (\\n  File \"/root/autodl-tmp/src/BEHAVIOR-1K-61/OmniGibson/omnigibson/controllers/controller_base.py\", line 7, in <module>\\n    from omnigibson.macros import create_module_macros\\n  File \"/root/autodl-tmp/src/BEHAVIOR-1K-61/OmniGibson/omnigibson/macros.py\", line 128, in <module>\\n    gm.DATA_PATH = determine_data_path()\\n                   ^^^^^^^^^^^^^^^^^^^^^\\n  File \"/root/autodl-tmp/src/BEHAVIOR-1K-61/OmniGibson/omnigibson/macros.py\", line 121, in determine_data_path\\n    assert os.path.exists(path), f\"Data path {path} does not exist!\"\\n           ^^^^^^^^^^^^^^^^^^^^\\nAssertionError: Data path /root/autodl-tmp/src/BEHAVIOR-1K-61/datasets does not exist!' ],\n    expected: [],\n    operator: 'deepStrictEqual',\n    diff: 'simple'\n  }\n"
+      },
+      "behavior-retry.log": {
+        "records": [],
+        "tail": "ule_as_main\\n' +\n  +     '  File \"<frozen runpy>\", line 88, in _run_code\\n' +\n  +     '  File \"/root/autodl-tmp/pi-feedback-20261001/services/pi_embodied_services/robots/behavior/env_server.py\", line 1238, in <module>\\n' +\n  +     '    main()\\n' +\n  +     '  File \"/root/autodl-tmp/pi-feedback-20261001/services/pi_embodied_services/robots/behavior/env_server.py\", line 1162, in main\\n' +\n  +     '    scene, instances = sim.find_task_scene(args.data_path, args.task)\\n' +\n  +     '                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\\n' +\n  +     '  File \"/root/autodl-tmp/pi-feedback-20261001/services/pi_embodied_services/robots/behavior/sim.py\", line 117, in find_task_scene\\n' +\n  +     '    raise FileNotFoundError(\\n' +\n  +     \"FileNotFoundError: no pre-sampled instances of 'turning_on_radio' (definition 0) under /root/autodl-tmp/assets/behavior/og_dataset/scenes; download the BEHAVIOR-1K dataset (install.sh) or set OMNIGIBSON_DATA_PATH\"\n  + ]\n  - []\n  \n      at episode (file:///tmp/pi-oct01-final-smoke.ts:135:10)\n      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n      at async TestContext.<anonymous> (file:///tmp/pi-oct01-final-smoke.ts:184:30)\n      at async Test.run (node:internal/test_runner/test:1409:7)\n      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {\n    generatedMessage: false,\n    code: 'ERR_ASSERTION',\n    actual: [ `behavior unavailable: env server exited (1); it printed:\\nTraceback (most recent call last):\\n  File \"<frozen runpy>\", line 198, in _run_module_as_main\\n  File \"<frozen runpy>\", line 88, in _run_code\\n  File \"/root/autodl-tmp/pi-feedback-20261001/services/pi_embodied_services/robots/behavior/env_server.py\", line 1238, in <module>\\n    main()\\n  File \"/root/autodl-tmp/pi-feedback-20261001/services/pi_embodied_services/robots/behavior/env_server.py\", line 1162, in main\\n    scene, instances = sim.find_task_scene(args.data_path, args.task)\\n                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\\n  File \"/root/autodl-tmp/pi-feedback-20261001/services/pi_embodied_services/robots/behavior/sim.py\", line 117, in find_task_scene\\n    raise FileNotFoundError(\\nFileNotFoundError: no pre-sampled instances of 'turning_on_radio' (definition 0) under /root/autodl-tmp/assets/behavior/og_dataset/scenes; download the BEHAVIOR-1K dataset (install.sh) or set OMNIGIBSON_DATA_PATH` ],\n    expected: [],\n    operator: 'deepStrictEqual',\n    diff: 'simple'\n  }\n"
+      },
+      "genesis-extended.log": {
+        "records": [
+          {
+            "robot": "genesis",
+            "task": "cube_pick",
+            "seed": 0,
+            "success": false,
+            "success_rule": "grasp",
+            "ever_grasped": false,
+            "env_steps": 26,
+            "skills_off": {
+              "sam3": "unreachable: http://127.0.0.1:18300/call not ready: Error: http://127.0.0.1:18300/call: connect ECONNREFUSED 127.0.0.1:18300"
+            },
+            "units_plugins": [
+              "recovery",
+              "auto_release",
+              "proprioception",
+              "variable_step",
+              "action_chunk",
+              "plan",
+              "mem_text"
+            ],
+            "units_wrist_view": true,
+            "code_api_digest": "0a1b0579fa194fc9b56c9bcbed77be0e164a34a0e02b55a9d621f0c70d4358be",
+            "code_api_tier": null,
+            "tool_calls": 0,
+            "planner_tokens": {
+              "input": 0,
+              "output": 0
+            },
+            "max_tool_calls": 0,
+            "max_tokens": 0,
+            "context_version": {
+              "system_prompt_sha256": null,
+              "templates": {
+                "modes/units/SYSTEM.md": "987a98656daae202916a4c10efd65e15e145a63d01905b9b489af2b9d123830a",
+                "planner/closed-loop.md": "17c9cd1a9773f14392adc50632b65a800434ab51af6b74b3d3d67b5ad33b7e5c",
+                "robots/behavior/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/behavior/SYSTEM.md": "d17e2073ba6cb30098bc15fe86ce44151300e783911e6b177b96573a09606202",
+                "robots/genesis/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/genesis/SYSTEM.md": "3bd4c630ced3d066502c9a0225de0bcc0e34664767340dba3041c1031c362e8f",
+                "robots/humanclaw/SYSTEM.md": "1aab4e0580ac6c843f26f8346c98f0a334684ee2d5d01c24cf1021e927fbbca6",
+                "robots/libero/compact/memory-local.md": "9c539fdb4c4be1f51e0212f263553a5711980d29ea6b1f8b078c10781e4617a3",
+                "robots/libero/compact/SYSTEM.md": "91dd5626bc29bc1917c77930c056e31f9ba90586c8b09d526d9078fed4bafa64",
+                "robots/libero/SYSTEM.md": "a8f6909b38e0b3a5801df8cc4edc887b5fcd7121c5888a10c65e2f1d4b9b6b0b",
+                "robots/maniskill/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/maniskill/SYSTEM.md": "9020635a2a64548164eeff7b6790b391c1abdfc027952d20cb594f572d839842",
+                "robots/metaworld/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/metaworld/SYSTEM.md": "f8dcbd9e5b4e7e749457f8ed8831e5cdff1a3a81a4caee53ec4ac0f72cac953a",
+                "robots/robocasa/memory-local.md": "e3812f977c3e4401f2d25111b576a356b48e98ae781faa4d3a7886877d72b1e2",
+                "robots/robocasa/SYSTEM.md": "df085a2802efec6081da71edd1e07f6ee6b9c169696a30391c991594b02a262f",
+                "robots/robodojo/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/robodojo/SYSTEM.md": "5caf2571237196eda6331d2a157878b10c0c4089404397f81ed5f09faa5be1d9",
+                "robots/robolab/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/robolab/SYSTEM.md": "06abfe9196074f8ff8cdad84260a29580b577247e99627a399f5501d63e10d14",
+                "robots/robosuite/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/robosuite/SYSTEM.md": "6bf699520c0aa893dff165b5ca98e5381bdb433a1a0199e065692ee594337965",
+                "robots/robotwin/memory.md": "75b037f04474b978e3c6c29eccab4eaf6107bd07f061bba4fb999070ccf07f21",
+                "robots/robotwin/SYSTEM.md": "232c3d49496e320e36f211c837de00736a611e6d96c933b84b5c404561fee6c3"
+              },
+              "memory_files": {},
+              "code_api_digest": "0a1b0579fa194fc9b56c9bcbed77be0e164a34a0e02b55a9d621f0c70d4358be",
+              "git_commit": "4c9982020d1fcabcfcb6e19d866cf3899b34daba"
+            },
+            "claimed": "failure",
+            "summary": "e2e: one unit",
+            "turns": 0,
+            "planner_budget_exhausted": null,
+            "cost_usd": 0,
+            "planner_error": null,
+            "env_error": false
+          }
+        ],
+        "tail": "md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/metaworld/SYSTEM.md\":\"f8dcbd9e5b4e7e749457f8ed8831e5cdff1a3a81a4caee53ec4ac0f72cac953a\",\"robots/robocasa/memory-local.md\":\"e3812f977c3e4401f2d25111b576a356b48e98ae781faa4d3a7886877d72b1e2\",\"robots/robocasa/SYSTEM.md\":\"df085a2802efec6081da71edd1e07f6ee6b9c169696a30391c991594b02a262f\",\"robots/robodojo/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/robodojo/SYSTEM.md\":\"5caf2571237196eda6331d2a157878b10c0c4089404397f81ed5f09faa5be1d9\",\"robots/robolab/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/robolab/SYSTEM.md\":\"06abfe9196074f8ff8cdad84260a29580b577247e99627a399f5501d63e10d14\",\"robots/robosuite/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/robosuite/SYSTEM.md\":\"6bf699520c0aa893dff165b5ca98e5381bdb433a1a0199e065692ee594337965\",\"robots/robotwin/memory.md\":\"75b037f04474b978e3c6c29eccab4eaf6107bd07f061bba4fb999070ccf07f21\",\"robots/robotwin/SYSTEM.md\":\"232c3d49496e320e36f211c837de00736a611e6d96c933b84b5c404561fee6c3\"},\"memory_files\":{},\"code_api_digest\":\"0a1b0579fa194fc9b56c9bcbed77be0e164a34a0e02b55a9d621f0c70d4358be\",\"git_commit\":\"4c9982020d1fcabcfcb6e19d866cf3899b34daba\"},\"claimed\":\"failure\",\"summary\":\"e2e: one unit\",\"turns\":0,\"planner_budget_exhausted\":null,\"cost_usd\":0,\"planner_error\":null,\"env_error\":false}\n\u2714 genesis: reset, observation, action, result (75018.964321ms)\n\ufe63 maniskill: reset, observation, action, result (0.682417ms) # PI_EMBODIED_E2E does not name maniskill\n\ufe63 libero: reset, observation, action, result (0.247949ms) # PI_EMBODIED_E2E does not name libero\n\ufe63 robosuite: reset, observation, action, result (0.216774ms) # PI_EMBODIED_E2E does not name robosuite\n\ufe63 robocasa: reset, observation, action, result (0.207755ms) # PI_EMBODIED_E2E does not name robocasa\n\ufe63 robotwin: reset, observation, action, result (0.353796ms) # PI_EMBODIED_E2E does not name robotwin\n\ufe63 robolab: reset, observation, action, result (0.212746ms) # PI_EMBODIED_E2E does not name robolab\n\ufe63 robodojo: reset, observation, action, result (0.244865ms) # PI_EMBODIED_E2E does not name robodojo\n\ufe63 behavior: reset, observation, action, result (0.384789ms) # PI_EMBODIED_E2E does not name behavior\n\ufe63 humanclaw: reset, observation, action, result (0.198906ms) # PI_EMBODIED_E2E does not name humanclaw\n\u2139 tests 11\n\u2139 suites 0\n\u2139 pass 1\n\u2139 fail 0\n\u2139 cancelled 0\n\u2139 skipped 10\n\u2139 todo 0\n\u2139 duration_ms 75828.539741\n"
+      },
+      "humanclaw-extended.log": {
+        "records": [
+          {
+            "robot": "humanclaw",
+            "mode": "pi",
+            "humanclaw_proprioception": false,
+            "preset": "humanclaw",
+            "episode": {
+              "scene_id": "104348028_171512877",
+              "episode_id": "1",
+              "object_category": "couch",
+              "rollout": 0,
+              "key": "104348028_171512877_ep1_couch",
+              "output_dir": "/tmp/pi-embodied-humanclaw/104348028_171512877_ep1_couch/rollout_00"
+            },
+            "rollout": 0,
+            "instruction": "Find the couch and move until your body is touching the target, with zero distance to the target object. Finally, sit on the couch.",
+            "steps": 1,
+            "active_stop": false,
+            "success": false,
+            "metrics": {
+              "find_sr": false,
+              "geo_find_sr": true,
+              "max_target_pixel_count": 3942,
+              "find_pixel_threshold": 100,
+              "nav_sr_20cm": false,
+              "geo_nav_sr_20cm": false,
+              "nav_sr_1m": false,
+              "final_body_target_aabb_distance_m": 2.643017007364253,
+              "active_stop": false,
+              "is_interact_episode": true,
+              "interact_sr": false,
+              "geo_interact_sr": false,
+              "n_sit": 0,
+              "collision_step_fraction": 0,
+              "collision_steps": 0,
+              "motion_steps": 1,
+              "by_body_group_step_fraction": {
+                "hand_arm": 0,
+                "torso": 0,
+                "leg": 0,
+                "head": 0
+              },
+              "initial_penetration_detected": false,
+              "affected_dynamic_object_count": 0,
+              "affected_object_path_length_sum_m": 0,
+              "motion_jerk_m_s3": null,
+              "cost": {
+                "decision_steps": 1,
+                "vlm_calls": 0,
+                "token_source": "unavailable_no_calls",
+                "input_tokens": 0,
+                "visible_output_tokens": 0,
+                "reasoning_tokens": 0,
+                "input_tokens_per_step": 0,
+                "visible_output_tokens_per_step": 0
+              }
+            },
+            "metrics_path": "/tmp/pi-embodied-humanclaw/104348028_171512877_ep1_couch/rollout_00/metrics.json",
+            "videos": [],
+            "units_plugins": [
+              "proprioception",
+              "plan"
+            ],
+            "units_wrist_view": false,
+            "code_api_digest": "d284185ac379d249c592a6dbbf479b1a7ca6137bf37370f82a41592926b28fbe",
+            "code_api_tier": null,
+            "tool_calls": 0,
+            "planner_tokens": {
+              "input": 0,
+              "output": 0
+            },
+            "max_tool_calls": 0,
+            "max_tokens": 0,
+            "context_version": {
+              "system_prompt_sha256": null,
+              "templates": {
+                "modes/units/SYSTEM.md": "987a98656daae202916a4c10efd65e15e145a63d01905b9b489af2b9d123830a",
+                "planner/closed-loop.md": "17c9cd1a9773f14392adc50632b65a800434ab51af6b74b3d3d67b5ad33b7e5c",
+                "robots/behavior/SYSTEM.md": "d17e2073ba6cb30098bc15fe86ce44151300e783911e6b177b96573a09606202",
+                "robots/genesis/SYSTEM.md": "3bd4c630ced3d066502c9a0225de0bcc0e34664767340dba3041c1031c362e8f",
+                "robots/humanclaw/SYSTEM.md": "1aab4e0580ac6c843f26f8346c98f0a334684ee2d5d01c24cf1021e927fbbca6",
+                "robots/libero/compact/SYSTEM.md": "91dd5626bc29bc1917c77930c056e31f9ba90586c8b09d526d9078fed4bafa64",
+                "robots/libero/SYSTEM.md": "a8f6909b38e0b3a5801df8cc4edc887b5fcd7121c5888a10c65e2f1d4b9b6b0b",
+                "robots/maniskill/SYSTEM.md": "9020635a2a64548164eeff7b6790b391c1abdfc027952d20cb594f572d839842",
+                "robots/metaworld/SYSTEM.md": "f8dcbd9e5b4e7e749457f8ed8831e5cdff1a3a81a4caee53ec4ac0f72cac953a",
+                "robots/robocasa/SYSTEM.md": "df085a2802efec6081da71edd1e07f6ee6b9c169696a30391c991594b02a262f",
+                "robots/robodojo/SYSTEM.md": "5caf2571237196eda6331d2a157878b10c0c4089404397f81ed5f09faa5be1d9",
+                "robots/robolab/SYSTEM.md": "06abfe9196074f8ff8cdad84260a29580b577247e99627a399f5501d63e10d14",
+                "robots/robosuite/SYSTEM.md": "6bf699520c0aa893dff165b5ca98e5381bdb433a1a0199e065692ee594337965",
+                "robots/robotwin/SYSTEM.md": "232c3d49496e320e36f211c837de00736a611e6d96c933b84b5c404561fee6c3"
+              },
+              "memory_files": {},
+              "code_api_digest": "d284185ac379d249c592a6dbbf479b1a7ca6137bf37370f82a41592926b28fbe",
+              "git_commit": "4c9982020d1fcabcfcb6e19d866cf3899b34daba"
+            },
+            "claimed": "failure",
+            "summary": "e2e: one unit",
+            "turns": 0,
+            "planner_budget_exhausted": null,
+            "cost_usd": 0,
+            "planner_error": null,
+            "env_error": false
+          }
+        ],
+        "tail": ",\"affected_object_path_length_sum_m\":0,\"motion_jerk_m_s3\":null,\"cost\":{\"decision_steps\":1,\"vlm_calls\":0,\"token_source\":\"unavailable_no_calls\",\"input_tokens\":0,\"visible_output_tokens\":0,\"reasoning_tokens\":0,\"input_tokens_per_step\":0,\"visible_output_tokens_per_step\":0}},\"metrics_path\":\"/tmp/pi-embodied-humanclaw/104348028_171512877_ep1_couch/rollout_00/metrics.json\",\"videos\":[],\"units_plugins\":[\"proprioception\",\"plan\"],\"units_wrist_view\":false,\"code_api_digest\":\"d284185ac379d249c592a6dbbf479b1a7ca6137bf37370f82a41592926b28fbe\",\"code_api_tier\":null,\"tool_calls\":0,\"planner_tokens\":{\"input\":0,\"output\":0},\"max_tool_calls\":0,\"max_tokens\":0,\"context_version\":{\"system_prompt_sha256\":null,\"templates\":{\"modes/units/SYSTEM.md\":\"987a98656daae202916a4c10efd65e15e145a63d01905b9b489af2b9d123830a\",\"planner/closed-loop.md\":\"17c9cd1a9773f14392adc50632b65a800434ab51af6b74b3d3d67b5ad33b7e5c\",\"robots/behavior/SYSTEM.md\":\"d17e2073ba6cb30098bc15fe86ce44151300e783911e6b177b96573a09606202\",\"robots/genesis/SYSTEM.md\":\"3bd4c630ced3d066502c9a0225de0bcc0e34664767340dba3041c1031c362e8f\",\"robots/humanclaw/SYSTEM.md\":\"1aab4e0580ac6c843f26f8346c98f0a334684ee2d5d01c24cf1021e927fbbca6\",\"robots/libero/compact/SYSTEM.md\":\"91dd5626bc29bc1917c77930c056e31f9ba90586c8b09d526d9078fed4bafa64\",\"robots/libero/SYSTEM.md\":\"a8f6909b38e0b3a5801df8cc4edc887b5fcd7121c5888a10c65e2f1d4b9b6b0b\",\"robots/maniskill/SYSTEM.md\":\"9020635a2a64548164eeff7b6790b391c1abdfc027952d20cb594f572d839842\",\"robots/metaworld/SYSTEM.md\":\"f8dcbd9e5b4e7e749457f8ed8831e5cdff1a3a81a4caee53ec4ac0f72cac953a\",\"robots/robocasa/SYSTEM.md\":\"df085a2802efec6081da71edd1e07f6ee6b9c169696a30391c991594b02a262f\",\"robots/robodojo/SYSTEM.md\":\"5caf2571237196eda6331d2a157878b10c0c4089404397f81ed5f09faa5be1d9\",\"robots/robolab/SYSTEM.md\":\"06abfe9196074f8ff8cdad84260a29580b577247e99627a399f5501d63e10d14\",\"robots/robosuite/SYSTEM.md\":\"6bf699520c0aa893dff165b5ca98e5381bdb433a1a0199e065692ee594337965\",\"robots/robotwin/SYSTEM.md\":\"232c3d49496e320e36f211c837de00736a611e6d96c933b84b5c404561fee6c3\"},\"memory_files\":{},\"code_api_digest\":\"d284185ac379d249c592a6dbbf479b1a7ca6137bf37370f82a41592926b28fbe\",\"git_commit\":\"4c9982020d1fcabcfcb6e19d866cf3899b34daba\"},\"claimed\":\"failure\",\"summary\":\"e2e: one unit\",\"turns\":0,\"planner_budget_exhausted\":null,\"cost_usd\":0,\"planner_error\":null,\"env_error\":false}\n\u2714 humanclaw: reset, observation, action, result (19198.289221ms)\n\u2139 tests 11\n\u2139 suites 0\n\u2139 pass 1\n\u2139 fail 0\n\u2139 cancelled 0\n\u2139 skipped 10\n\u2139 todo 0\n\u2139 duration_ms 20101.985167\n"
+      },
+      "libero-extended.log": {
+        "records": [
+          {
+            "robot": "libero",
+            "skills_off": {
+              "pi0": "unreachable: http://127.0.0.1:18200/call not ready: Error: http://127.0.0.1:18200/call: connect ECONNREFUSED 127.0.0.1:18200",
+              "sam3": "unreachable: http://127.0.0.1:18300/call not ready: Error: http://127.0.0.1:18300/call: connect ECONNREFUSED 127.0.0.1:18300"
+            },
+            "suite": "libero_spatial",
+            "task": 0,
+            "seed": 0,
+            "terminated": false,
+            "success_step": null,
+            "truncated": false,
+            "env_steps": 8,
+            "vla": {},
+            "libero_prompt": "rpent",
+            "units_plugins": [
+              "recovery",
+              "auto_release",
+              "proprioception",
+              "variable_step",
+              "action_chunk",
+              "rotation",
+              "plan",
+              "mem_text"
+            ],
+            "units_wrist_view": true,
+            "code_api_digest": "8ada7a3979a7920b4ba2a54195e605283c905319cbbfb4d116a6c9438184f162",
+            "code_api_tier": null,
+            "tool_calls": 0,
+            "planner_tokens": {
+              "input": 0,
+              "output": 0
+            },
+            "max_tool_calls": 0,
+            "max_tokens": 0,
+            "context_version": {
+              "system_prompt_sha256": null,
+              "templates": {
+                "modes/units/SYSTEM.md": "987a98656daae202916a4c10efd65e15e145a63d01905b9b489af2b9d123830a",
+                "planner/closed-loop.md": "17c9cd1a9773f14392adc50632b65a800434ab51af6b74b3d3d67b5ad33b7e5c",
+                "robots/behavior/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/behavior/SYSTEM.md": "d17e2073ba6cb30098bc15fe86ce44151300e783911e6b177b96573a09606202",
+                "robots/genesis/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/genesis/SYSTEM.md": "3bd4c630ced3d066502c9a0225de0bcc0e34664767340dba3041c1031c362e8f",
+                "robots/humanclaw/SYSTEM.md": "1aab4e0580ac6c843f26f8346c98f0a334684ee2d5d01c24cf1021e927fbbca6",
+                "robots/libero/compact/memory-local.md": "9c539fdb4c4be1f51e0212f263553a5711980d29ea6b1f8b078c10781e4617a3",
+                "robots/libero/compact/SYSTEM.md": "91dd5626bc29bc1917c77930c056e31f9ba90586c8b09d526d9078fed4bafa64",
+                "robots/libero/SYSTEM.md": "a8f6909b38e0b3a5801df8cc4edc887b5fcd7121c5888a10c65e2f1d4b9b6b0b",
+                "robots/maniskill/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/maniskill/SYSTEM.md": "9020635a2a64548164eeff7b6790b391c1abdfc027952d20cb594f572d839842",
+                "robots/metaworld/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/metaworld/SYSTEM.md": "f8dcbd9e5b4e7e749457f8ed8831e5cdff1a3a81a4caee53ec4ac0f72cac953a",
+                "robots/robocasa/memory-local.md": "e3812f977c3e4401f2d25111b576a356b48e98ae781faa4d3a7886877d72b1e2",
+                "robots/robocasa/SYSTEM.md": "df085a2802efec6081da71edd1e07f6ee6b9c169696a30391c991594b02a262f",
+                "robots/robodojo/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/robodojo/SYSTEM.md": "5caf2571237196eda6331d2a157878b10c0c4089404397f81ed5f09faa5be1d9",
+                "robots/robolab/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/robolab/SYSTEM.md": "06abfe9196074f8ff8cdad84260a29580b577247e99627a399f5501d63e10d14",
+                "robots/robosuite/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/robosuite/SYSTEM.md": "6bf699520c0aa893dff165b5ca98e5381bdb433a1a0199e065692ee594337965",
+                "robots/robotwin/memory.md": "75b037f04474b978e3c6c29eccab4eaf6107bd07f061bba4fb999070ccf07f21",
+                "robots/robotwin/SYSTEM.md": "232c3d49496e320e36f211c837de00736a611e6d96c933b84b5c404561fee6c3"
+              },
+              "memory_files": {},
+              "code_api_digest": "8ada7a3979a7920b4ba2a54195e605283c905319cbbfb4d116a6c9438184f162",
+              "git_commit": "4c9982020d1fcabcfcb6e19d866cf3899b34daba"
+            },
+            "claimed": "failure",
+            "summary": "e2e: one unit",
+            "turns": 0,
+            "planner_budget_exhausted": null,
+            "cost_usd": 0,
+            "planner_error": null,
+            "env_error": false
+          }
+        ],
+        "tail": "ill/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/maniskill/SYSTEM.md\":\"9020635a2a64548164eeff7b6790b391c1abdfc027952d20cb594f572d839842\",\"robots/metaworld/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/metaworld/SYSTEM.md\":\"f8dcbd9e5b4e7e749457f8ed8831e5cdff1a3a81a4caee53ec4ac0f72cac953a\",\"robots/robocasa/memory-local.md\":\"e3812f977c3e4401f2d25111b576a356b48e98ae781faa4d3a7886877d72b1e2\",\"robots/robocasa/SYSTEM.md\":\"df085a2802efec6081da71edd1e07f6ee6b9c169696a30391c991594b02a262f\",\"robots/robodojo/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/robodojo/SYSTEM.md\":\"5caf2571237196eda6331d2a157878b10c0c4089404397f81ed5f09faa5be1d9\",\"robots/robolab/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/robolab/SYSTEM.md\":\"06abfe9196074f8ff8cdad84260a29580b577247e99627a399f5501d63e10d14\",\"robots/robosuite/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/robosuite/SYSTEM.md\":\"6bf699520c0aa893dff165b5ca98e5381bdb433a1a0199e065692ee594337965\",\"robots/robotwin/memory.md\":\"75b037f04474b978e3c6c29eccab4eaf6107bd07f061bba4fb999070ccf07f21\",\"robots/robotwin/SYSTEM.md\":\"232c3d49496e320e36f211c837de00736a611e6d96c933b84b5c404561fee6c3\"},\"memory_files\":{},\"code_api_digest\":\"8ada7a3979a7920b4ba2a54195e605283c905319cbbfb4d116a6c9438184f162\",\"git_commit\":\"4c9982020d1fcabcfcb6e19d866cf3899b34daba\"},\"claimed\":\"failure\",\"summary\":\"e2e: one unit\",\"turns\":0,\"planner_budget_exhausted\":null,\"cost_usd\":0,\"planner_error\":null,\"env_error\":false}\n\u2714 libero: reset, observation, action, result (21148.57426ms)\n\ufe63 robosuite: reset, observation, action, result (0.332272ms) # PI_EMBODIED_E2E does not name robosuite\n\ufe63 robocasa: reset, observation, action, result (0.112207ms) # PI_EMBODIED_E2E does not name robocasa\n\ufe63 robotwin: reset, observation, action, result (0.100714ms) # PI_EMBODIED_E2E does not name robotwin\n\ufe63 robolab: reset, observation, action, result (0.117584ms) # PI_EMBODIED_E2E does not name robolab\n\ufe63 robodojo: reset, observation, action, result (0.13133ms) # PI_EMBODIED_E2E does not name robodojo\n\ufe63 behavior: reset, observation, action, result (0.129626ms) # PI_EMBODIED_E2E does not name behavior\n\ufe63 humanclaw: reset, observation, action, result (0.091128ms) # PI_EMBODIED_E2E does not name humanclaw\n\u2139 tests 11\n\u2139 suites 0\n\u2139 pass 1\n\u2139 fail 0\n\u2139 cancelled 0\n\u2139 skipped 10\n\u2139 todo 0\n\u2139 duration_ms 21961.647265\n"
+      },
+      "maniskill-extended.log": {
+        "records": [],
+        "tail": "lled 0\n\u2139 skipped 10\n\u2139 todo 0\n\u2139 duration_ms 8343.709906\n\n\u2716 failing tests:\n\ntest at ../../../../../tmp/pi-oct01-final-smoke.ts:183:2\n\u2716 maniskill: reset, observation, action, result (7505.599996ms)\n  Error: env.move_delta: Traceback (most recent call last):\n    File \"/root/autodl-tmp/pi-feedback-20261001/services/pi_embodied_services/utils/rpc/main_thread_serve.py\", line 155, in serve\n      req[\"result\"] = self._run_call(\n                      ^^^^^^^^^^^^^^^\n    File \"/root/autodl-tmp/pi-feedback-20261001/services/pi_embodied_services/utils/rpc/rpc_facade.py\", line 297, in _run_call\n      return self._dispatch(method, args, kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    File \"/root/autodl-tmp/pi-feedback-20261001/services/pi_embodied_services/utils/rpc/rpc_facade.py\", line 330, in _dispatch\n      return self._dispatch_nosession(method, args, kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    File \"/root/autodl-tmp/pi-feedback-20261001/services/pi_embodied_services/utils/rpc/rpc_facade.py\", line 336, in _dispatch_nosession\n      return handler(*args, **kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^^^\n    File \"/root/autodl-tmp/pi-feedback-20261001/services/pi_embodied_services/robots/maniskill/env_server.py\", line 1478, in move_delta\n      raise ValueError(\"this robot has one arm; leave `arm` out\")\n  ValueError: this robot has one arm; leave `arm` out\n  \n      at RpcClient.call (file:///root/autodl-tmp/pi-feedback-20261001/packages/embodied/src/infra/rpc.ts:256:24)\n      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n      at async move (file:///root/autodl-tmp/pi-feedback-20261001/packages/embodied/src/robots/maniskill/index.ts:853:13)\n      at async Object.apply (file:///root/autodl-tmp/pi-feedback-20261001/packages/embodied/src/robots/maniskill/index.ts:810:6)\n      at async act (file:///root/autodl-tmp/pi-feedback-20261001/packages/embodied/src/modes/units/index.ts:1011:14)\n      at async actAndSave (file:///root/autodl-tmp/pi-feedback-20261001/packages/embodied/src/modes/units/index.ts:792:11)\n      at async modelAct (file:///root/autodl-tmp/pi-feedback-20261001/packages/embodied/src/modes/units/index.ts:765:13)\n      at async call (file:///root/autodl-tmp/pi-feedback-20261001/packages/embodied/src/robot.ts:495:18)\n      at async exclusive (file:///root/autodl-tmp/pi-feedback-20261001/packages/embodied/src/robot.ts:456:11)\n      at async episode (file:///tmp/pi-oct01-final-smoke.ts:140:17)\n"
+      },
+      "maniskill-retry.log": {
+        "records": [
+          {
+            "robot": "maniskill",
+            "env_id": "PickCube-v1",
+            "seed": 0,
+            "success": false,
+            "ever_grasped": false,
+            "env_steps": 6,
+            "units_plugins": [
+              "recovery",
+              "auto_release",
+              "proprioception",
+              "variable_step",
+              "action_chunk",
+              "plan",
+              "mem_text"
+            ],
+            "units_wrist_view": true,
+            "code_api_digest": "cb5d359605b4df154d82c9e3c35da378e5d7bc058410e90d9c57f131c4e0044f",
+            "code_api_tier": null,
+            "tool_calls": 0,
+            "planner_tokens": {
+              "input": 0,
+              "output": 0
+            },
+            "max_tool_calls": 0,
+            "max_tokens": 0,
+            "context_version": {
+              "system_prompt_sha256": null,
+              "templates": {
+                "modes/units/SYSTEM.md": "987a98656daae202916a4c10efd65e15e145a63d01905b9b489af2b9d123830a",
+                "planner/closed-loop.md": "17c9cd1a9773f14392adc50632b65a800434ab51af6b74b3d3d67b5ad33b7e5c",
+                "robots/behavior/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/behavior/SYSTEM.md": "d17e2073ba6cb30098bc15fe86ce44151300e783911e6b177b96573a09606202",
+                "robots/genesis/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/genesis/SYSTEM.md": "3bd4c630ced3d066502c9a0225de0bcc0e34664767340dba3041c1031c362e8f",
+                "robots/humanclaw/SYSTEM.md": "1aab4e0580ac6c843f26f8346c98f0a334684ee2d5d01c24cf1021e927fbbca6",
+                "robots/libero/compact/memory-local.md": "9c539fdb4c4be1f51e0212f263553a5711980d29ea6b1f8b078c10781e4617a3",
+                "robots/libero/compact/SYSTEM.md": "91dd5626bc29bc1917c77930c056e31f9ba90586c8b09d526d9078fed4bafa64",
+                "robots/libero/SYSTEM.md": "a8f6909b38e0b3a5801df8cc4edc887b5fcd7121c5888a10c65e2f1d4b9b6b0b",
+                "robots/maniskill/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/maniskill/SYSTEM.md": "9020635a2a64548164eeff7b6790b391c1abdfc027952d20cb594f572d839842",
+                "robots/metaworld/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/metaworld/SYSTEM.md": "f8dcbd9e5b4e7e749457f8ed8831e5cdff1a3a81a4caee53ec4ac0f72cac953a",
+                "robots/robocasa/memory-local.md": "e3812f977c3e4401f2d25111b576a356b48e98ae781faa4d3a7886877d72b1e2",
+                "robots/robocasa/SYSTEM.md": "df085a2802efec6081da71edd1e07f6ee6b9c169696a30391c991594b02a262f",
+                "robots/robodojo/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/robodojo/SYSTEM.md": "5caf2571237196eda6331d2a157878b10c0c4089404397f81ed5f09faa5be1d9",
+                "robots/robolab/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/robolab/SYSTEM.md": "06abfe9196074f8ff8cdad84260a29580b577247e99627a399f5501d63e10d14",
+                "robots/robosuite/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/robosuite/SYSTEM.md": "6bf699520c0aa893dff165b5ca98e5381bdb433a1a0199e065692ee594337965",
+                "robots/robotwin/memory.md": "75b037f04474b978e3c6c29eccab4eaf6107bd07f061bba4fb999070ccf07f21",
+                "robots/robotwin/SYSTEM.md": "232c3d49496e320e36f211c837de00736a611e6d96c933b84b5c404561fee6c3"
+              },
+              "memory_files": {},
+              "code_api_digest": "cb5d359605b4df154d82c9e3c35da378e5d7bc058410e90d9c57f131c4e0044f",
+              "git_commit": "4c9982020d1fcabcfcb6e19d866cf3899b34daba"
+            },
+            "claimed": "failure",
+            "summary": "e2e: one unit",
+            "turns": 0,
+            "planner_budget_exhausted": null,
+            "cost_usd": 0,
+            "planner_error": null,
+            "env_error": false
+          }
+        ],
+        "tail": "SYSTEM.md\":\"9020635a2a64548164eeff7b6790b391c1abdfc027952d20cb594f572d839842\",\"robots/metaworld/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/metaworld/SYSTEM.md\":\"f8dcbd9e5b4e7e749457f8ed8831e5cdff1a3a81a4caee53ec4ac0f72cac953a\",\"robots/robocasa/memory-local.md\":\"e3812f977c3e4401f2d25111b576a356b48e98ae781faa4d3a7886877d72b1e2\",\"robots/robocasa/SYSTEM.md\":\"df085a2802efec6081da71edd1e07f6ee6b9c169696a30391c991594b02a262f\",\"robots/robodojo/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/robodojo/SYSTEM.md\":\"5caf2571237196eda6331d2a157878b10c0c4089404397f81ed5f09faa5be1d9\",\"robots/robolab/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/robolab/SYSTEM.md\":\"06abfe9196074f8ff8cdad84260a29580b577247e99627a399f5501d63e10d14\",\"robots/robosuite/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/robosuite/SYSTEM.md\":\"6bf699520c0aa893dff165b5ca98e5381bdb433a1a0199e065692ee594337965\",\"robots/robotwin/memory.md\":\"75b037f04474b978e3c6c29eccab4eaf6107bd07f061bba4fb999070ccf07f21\",\"robots/robotwin/SYSTEM.md\":\"232c3d49496e320e36f211c837de00736a611e6d96c933b84b5c404561fee6c3\"},\"memory_files\":{},\"code_api_digest\":\"cb5d359605b4df154d82c9e3c35da378e5d7bc058410e90d9c57f131c4e0044f\",\"git_commit\":\"4c9982020d1fcabcfcb6e19d866cf3899b34daba\"},\"claimed\":\"failure\",\"summary\":\"e2e: one unit\",\"turns\":0,\"planner_budget_exhausted\":null,\"cost_usd\":0,\"planner_error\":null,\"env_error\":false}\n\u2714 maniskill: reset, observation, action, result (7715.991738ms)\n\ufe63 libero: reset, observation, action, result (0.404301ms) # PI_EMBODIED_E2E does not name libero\n\ufe63 robosuite: reset, observation, action, result (0.134171ms) # PI_EMBODIED_E2E does not name robosuite\n\ufe63 robocasa: reset, observation, action, result (0.117887ms) # PI_EMBODIED_E2E does not name robocasa\n\ufe63 robotwin: reset, observation, action, result (0.422753ms) # PI_EMBODIED_E2E does not name robotwin\n\ufe63 robolab: reset, observation, action, result (0.606761ms) # PI_EMBODIED_E2E does not name robolab\n\ufe63 robodojo: reset, observation, action, result (0.430245ms) # PI_EMBODIED_E2E does not name robodojo\n\ufe63 behavior: reset, observation, action, result (0.921904ms) # PI_EMBODIED_E2E does not name behavior\n\ufe63 humanclaw: reset, observation, action, result (0.338304ms) # PI_EMBODIED_E2E does not name humanclaw\n\u2139 tests 11\n\u2139 suites 0\n\u2139 pass 1\n\u2139 fail 0\n\u2139 cancelled 0\n\u2139 skipped 10\n\u2139 todo 0\n\u2139 duration_ms 8751.434455\n"
+      },
+      "metaworld-extended.log": {
+        "records": [
+          {
+            "robot": "metaworld",
+            "task": "reach-v3",
+            "seed": 0,
+            "success": false,
+            "env_steps": 16,
+            "skills_off": {
+              "sam3": "unreachable: http://127.0.0.1:18300/call not ready: Error: http://127.0.0.1:18300/call: connect ECONNREFUSED 127.0.0.1:18300"
+            },
+            "units_plugins": [
+              "recovery",
+              "auto_release",
+              "proprioception",
+              "variable_step",
+              "action_chunk",
+              "plan",
+              "mem_text"
+            ],
+            "units_wrist_view": true,
+            "code_api_digest": "c688726dd07bb9b35a7c219393d09691a03cfcace46e4ce95a1a12491c848b88",
+            "code_api_tier": null,
+            "tool_calls": 0,
+            "planner_tokens": {
+              "input": 0,
+              "output": 0
+            },
+            "max_tool_calls": 0,
+            "max_tokens": 0,
+            "context_version": {
+              "system_prompt_sha256": null,
+              "templates": {
+                "modes/units/SYSTEM.md": "987a98656daae202916a4c10efd65e15e145a63d01905b9b489af2b9d123830a",
+                "planner/closed-loop.md": "17c9cd1a9773f14392adc50632b65a800434ab51af6b74b3d3d67b5ad33b7e5c",
+                "robots/behavior/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/behavior/SYSTEM.md": "d17e2073ba6cb30098bc15fe86ce44151300e783911e6b177b96573a09606202",
+                "robots/genesis/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/genesis/SYSTEM.md": "3bd4c630ced3d066502c9a0225de0bcc0e34664767340dba3041c1031c362e8f",
+                "robots/humanclaw/SYSTEM.md": "1aab4e0580ac6c843f26f8346c98f0a334684ee2d5d01c24cf1021e927fbbca6",
+                "robots/libero/compact/memory-local.md": "9c539fdb4c4be1f51e0212f263553a5711980d29ea6b1f8b078c10781e4617a3",
+                "robots/libero/compact/SYSTEM.md": "91dd5626bc29bc1917c77930c056e31f9ba90586c8b09d526d9078fed4bafa64",
+                "robots/libero/SYSTEM.md": "a8f6909b38e0b3a5801df8cc4edc887b5fcd7121c5888a10c65e2f1d4b9b6b0b",
+                "robots/maniskill/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/maniskill/SYSTEM.md": "9020635a2a64548164eeff7b6790b391c1abdfc027952d20cb594f572d839842",
+                "robots/metaworld/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/metaworld/SYSTEM.md": "f8dcbd9e5b4e7e749457f8ed8831e5cdff1a3a81a4caee53ec4ac0f72cac953a",
+                "robots/robocasa/memory-local.md": "e3812f977c3e4401f2d25111b576a356b48e98ae781faa4d3a7886877d72b1e2",
+                "robots/robocasa/SYSTEM.md": "df085a2802efec6081da71edd1e07f6ee6b9c169696a30391c991594b02a262f",
+                "robots/robodojo/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/robodojo/SYSTEM.md": "5caf2571237196eda6331d2a157878b10c0c4089404397f81ed5f09faa5be1d9",
+                "robots/robolab/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/robolab/SYSTEM.md": "06abfe9196074f8ff8cdad84260a29580b577247e99627a399f5501d63e10d14",
+                "robots/robosuite/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/robosuite/SYSTEM.md": "6bf699520c0aa893dff165b5ca98e5381bdb433a1a0199e065692ee594337965",
+                "robots/robotwin/memory.md": "75b037f04474b978e3c6c29eccab4eaf6107bd07f061bba4fb999070ccf07f21",
+                "robots/robotwin/SYSTEM.md": "232c3d49496e320e36f211c837de00736a611e6d96c933b84b5c404561fee6c3"
+              },
+              "memory_files": {},
+              "code_api_digest": "c688726dd07bb9b35a7c219393d09691a03cfcace46e4ce95a1a12491c848b88",
+              "git_commit": "4c9982020d1fcabcfcb6e19d866cf3899b34daba"
+            },
+            "claimed": "failure",
+            "summary": "e2e: one unit",
+            "turns": 0,
+            "planner_budget_exhausted": null,
+            "cost_usd": 0,
+            "planner_error": null,
+            "env_error": false
+          }
+        ],
+        "tail": "\"f8dcbd9e5b4e7e749457f8ed8831e5cdff1a3a81a4caee53ec4ac0f72cac953a\",\"robots/robocasa/memory-local.md\":\"e3812f977c3e4401f2d25111b576a356b48e98ae781faa4d3a7886877d72b1e2\",\"robots/robocasa/SYSTEM.md\":\"df085a2802efec6081da71edd1e07f6ee6b9c169696a30391c991594b02a262f\",\"robots/robodojo/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/robodojo/SYSTEM.md\":\"5caf2571237196eda6331d2a157878b10c0c4089404397f81ed5f09faa5be1d9\",\"robots/robolab/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/robolab/SYSTEM.md\":\"06abfe9196074f8ff8cdad84260a29580b577247e99627a399f5501d63e10d14\",\"robots/robosuite/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/robosuite/SYSTEM.md\":\"6bf699520c0aa893dff165b5ca98e5381bdb433a1a0199e065692ee594337965\",\"robots/robotwin/memory.md\":\"75b037f04474b978e3c6c29eccab4eaf6107bd07f061bba4fb999070ccf07f21\",\"robots/robotwin/SYSTEM.md\":\"232c3d49496e320e36f211c837de00736a611e6d96c933b84b5c404561fee6c3\"},\"memory_files\":{},\"code_api_digest\":\"c688726dd07bb9b35a7c219393d09691a03cfcace46e4ce95a1a12491c848b88\",\"git_commit\":\"4c9982020d1fcabcfcb6e19d866cf3899b34daba\"},\"claimed\":\"failure\",\"summary\":\"e2e: one unit\",\"turns\":0,\"planner_budget_exhausted\":null,\"cost_usd\":0,\"planner_error\":null,\"env_error\":false}\n\u2714 metaworld: reset, observation, action, result (10508.971414ms)\n\ufe63 genesis: reset, observation, action, result (0.311876ms) # PI_EMBODIED_E2E does not name genesis\n\ufe63 maniskill: reset, observation, action, result (0.092064ms) # PI_EMBODIED_E2E does not name maniskill\n\ufe63 libero: reset, observation, action, result (0.195327ms) # PI_EMBODIED_E2E does not name libero\n\ufe63 robosuite: reset, observation, action, result (0.075794ms) # PI_EMBODIED_E2E does not name robosuite\n\ufe63 robocasa: reset, observation, action, result (0.051524ms) # PI_EMBODIED_E2E does not name robocasa\n\ufe63 robotwin: reset, observation, action, result (0.048323ms) # PI_EMBODIED_E2E does not name robotwin\n\ufe63 robolab: reset, observation, action, result (0.077491ms) # PI_EMBODIED_E2E does not name robolab\n\ufe63 robodojo: reset, observation, action, result (0.074582ms) # PI_EMBODIED_E2E does not name robodojo\n\ufe63 behavior: reset, observation, action, result (0.09296ms) # PI_EMBODIED_E2E does not name behavior\n\ufe63 humanclaw: reset, observation, action, result (0.071144ms) # PI_EMBODIED_E2E does not name humanclaw\n\u2139 tests 11\n\u2139 suites 0\n\u2139 pass 1\n\u2139 fail 0\n\u2139 cancelled 0\n\u2139 skipped 10\n\u2139 todo 0\n\u2139 duration_ms 11324.615215\n"
+      },
+      "robocasa-extended.log": {
+        "records": [
+          {
+            "robot": "robocasa",
+            "skills_off": {
+              "rldx": "unreachable: http://127.0.0.1:18500/call not ready: Error: http://127.0.0.1:18500/call: connect ECONNREFUSED 127.0.0.1:18500"
+            },
+            "task_name": "OpenDrawer",
+            "split": "target",
+            "seed": 1,
+            "scene": null,
+            "env_id": "robocasa365/target/OpenDrawer",
+            "task_language": "Open the left drawer.",
+            "success": false,
+            "env_steps": 12,
+            "states": 2,
+            "attempts": 1,
+            "ended": "agent_end",
+            "rldx_max_chunks": 70,
+            "rldx_settle_patience": 999,
+            "rldx_action_steps_per_chunk": 8,
+            "units_plugins": [
+              "recovery",
+              "auto_release",
+              "proprioception",
+              "variable_step",
+              "action_chunk",
+              "plan",
+              "mem_text"
+            ],
+            "units_wrist_view": true,
+            "code_api_digest": "74cfd5c2d0f5003497cccc4060bf47491233fc8c5a3bba9bdbc4b77247e319e8",
+            "code_api_tier": null,
+            "tool_calls": 0,
+            "planner_tokens": {
+              "input": 0,
+              "output": 0
+            },
+            "max_tool_calls": 0,
+            "max_tokens": 0,
+            "context_version": {
+              "system_prompt_sha256": null,
+              "templates": {
+                "modes/units/SYSTEM.md": "987a98656daae202916a4c10efd65e15e145a63d01905b9b489af2b9d123830a",
+                "planner/closed-loop.md": "17c9cd1a9773f14392adc50632b65a800434ab51af6b74b3d3d67b5ad33b7e5c",
+                "robots/behavior/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/behavior/SYSTEM.md": "d17e2073ba6cb30098bc15fe86ce44151300e783911e6b177b96573a09606202",
+                "robots/genesis/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/genesis/SYSTEM.md": "3bd4c630ced3d066502c9a0225de0bcc0e34664767340dba3041c1031c362e8f",
+                "robots/humanclaw/SYSTEM.md": "1aab4e0580ac6c843f26f8346c98f0a334684ee2d5d01c24cf1021e927fbbca6",
+                "robots/libero/compact/memory-local.md": "9c539fdb4c4be1f51e0212f263553a5711980d29ea6b1f8b078c10781e4617a3",
+                "robots/libero/compact/SYSTEM.md": "91dd5626bc29bc1917c77930c056e31f9ba90586c8b09d526d9078fed4bafa64",
+                "robots/libero/SYSTEM.md": "a8f6909b38e0b3a5801df8cc4edc887b5fcd7121c5888a10c65e2f1d4b9b6b0b",
+                "robots/maniskill/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/maniskill/SYSTEM.md": "9020635a2a64548164eeff7b6790b391c1abdfc027952d20cb594f572d839842",
+                "robots/metaworld/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/metaworld/SYSTEM.md": "f8dcbd9e5b4e7e749457f8ed8831e5cdff1a3a81a4caee53ec4ac0f72cac953a",
+                "robots/robocasa/memory-local.md": "e3812f977c3e4401f2d25111b576a356b48e98ae781faa4d3a7886877d72b1e2",
+                "robots/robocasa/SYSTEM.md": "df085a2802efec6081da71edd1e07f6ee6b9c169696a30391c991594b02a262f",
+                "robots/robodojo/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/robodojo/SYSTEM.md": "5caf2571237196eda6331d2a157878b10c0c4089404397f81ed5f09faa5be1d9",
+                "robots/robolab/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/robolab/SYSTEM.md": "06abfe9196074f8ff8cdad84260a29580b577247e99627a399f5501d63e10d14",
+                "robots/robosuite/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/robosuite/SYSTEM.md": "6bf699520c0aa893dff165b5ca98e5381bdb433a1a0199e065692ee594337965",
+                "robots/robotwin/memory.md": "75b037f04474b978e3c6c29eccab4eaf6107bd07f061bba4fb999070ccf07f21",
+                "robots/robotwin/SYSTEM.md": "232c3d49496e320e36f211c837de00736a611e6d96c933b84b5c404561fee6c3"
+              },
+              "memory_files": {},
+              "code_api_digest": "74cfd5c2d0f5003497cccc4060bf47491233fc8c5a3bba9bdbc4b77247e319e8",
+              "git_commit": "4c9982020d1fcabcfcb6e19d866cf3899b34daba"
+            },
+            "claimed": "failure",
+            "summary": "e2e: one unit",
+            "turns": 0,
+            "planner_budget_exhausted": null,
+            "cost_usd": 0,
+            "planner_error": null,
+            "env_error": false
+          }
+        ],
+        "tail": "libero/compact/SYSTEM.md\":\"91dd5626bc29bc1917c77930c056e31f9ba90586c8b09d526d9078fed4bafa64\",\"robots/libero/SYSTEM.md\":\"a8f6909b38e0b3a5801df8cc4edc887b5fcd7121c5888a10c65e2f1d4b9b6b0b\",\"robots/maniskill/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/maniskill/SYSTEM.md\":\"9020635a2a64548164eeff7b6790b391c1abdfc027952d20cb594f572d839842\",\"robots/metaworld/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/metaworld/SYSTEM.md\":\"f8dcbd9e5b4e7e749457f8ed8831e5cdff1a3a81a4caee53ec4ac0f72cac953a\",\"robots/robocasa/memory-local.md\":\"e3812f977c3e4401f2d25111b576a356b48e98ae781faa4d3a7886877d72b1e2\",\"robots/robocasa/SYSTEM.md\":\"df085a2802efec6081da71edd1e07f6ee6b9c169696a30391c991594b02a262f\",\"robots/robodojo/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/robodojo/SYSTEM.md\":\"5caf2571237196eda6331d2a157878b10c0c4089404397f81ed5f09faa5be1d9\",\"robots/robolab/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/robolab/SYSTEM.md\":\"06abfe9196074f8ff8cdad84260a29580b577247e99627a399f5501d63e10d14\",\"robots/robosuite/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/robosuite/SYSTEM.md\":\"6bf699520c0aa893dff165b5ca98e5381bdb433a1a0199e065692ee594337965\",\"robots/robotwin/memory.md\":\"75b037f04474b978e3c6c29eccab4eaf6107bd07f061bba4fb999070ccf07f21\",\"robots/robotwin/SYSTEM.md\":\"232c3d49496e320e36f211c837de00736a611e6d96c933b84b5c404561fee6c3\"},\"memory_files\":{},\"code_api_digest\":\"74cfd5c2d0f5003497cccc4060bf47491233fc8c5a3bba9bdbc4b77247e319e8\",\"git_commit\":\"4c9982020d1fcabcfcb6e19d866cf3899b34daba\"},\"claimed\":\"failure\",\"summary\":\"e2e: one unit\",\"turns\":0,\"planner_budget_exhausted\":null,\"cost_usd\":0,\"planner_error\":null,\"env_error\":false}\n\u2714 robocasa: reset, observation, action, result (32104.844646ms)\n\ufe63 robotwin: reset, observation, action, result (0.599569ms) # PI_EMBODIED_E2E does not name robotwin\n\ufe63 robolab: reset, observation, action, result (0.293453ms) # PI_EMBODIED_E2E does not name robolab\n\ufe63 robodojo: reset, observation, action, result (0.281227ms) # PI_EMBODIED_E2E does not name robodojo\n\ufe63 behavior: reset, observation, action, result (0.300371ms) # PI_EMBODIED_E2E does not name behavior\n\ufe63 humanclaw: reset, observation, action, result (0.186757ms) # PI_EMBODIED_E2E does not name humanclaw\n\u2139 tests 11\n\u2139 suites 0\n\u2139 pass 1\n\u2139 fail 0\n\u2139 cancelled 0\n\u2139 skipped 10\n\u2139 todo 0\n\u2139 duration_ms 32961.298722\n"
+      },
+      "robodojo-extended.log": {
+        "records": [
+          {
+            "robot": "robodojo",
+            "task": "stack_bowls",
+            "seed": 0,
+            "eval_seed": 0,
+            "dimension": "generalization",
+            "instruction": "Stack the three bowls together.",
+            "success": false,
+            "score": 0,
+            "truncated": false,
+            "unstable": false,
+            "env_steps": 4,
+            "step_lim": 800,
+            "units_plugins": [
+              "proprioception",
+              "variable_step",
+              "action_chunk",
+              "rotation",
+              "plan",
+              "mem_text"
+            ],
+            "units_wrist_view": true,
+            "code_api_digest": "7c6260f95e5d29939711f3c038e0d000b5646fbe6229fdde55b79b786c4c2d7b",
+            "code_api_tier": null,
+            "tool_calls": 0,
+            "planner_tokens": {
+              "input": 0,
+              "output": 0
+            },
+            "max_tool_calls": 0,
+            "max_tokens": 0,
+            "context_version": {
+              "system_prompt_sha256": null,
+              "templates": {
+                "modes/units/SYSTEM.md": "987a98656daae202916a4c10efd65e15e145a63d01905b9b489af2b9d123830a",
+                "planner/closed-loop.md": "17c9cd1a9773f14392adc50632b65a800434ab51af6b74b3d3d67b5ad33b7e5c",
+                "robots/behavior/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/behavior/SYSTEM.md": "d17e2073ba6cb30098bc15fe86ce44151300e783911e6b177b96573a09606202",
+                "robots/genesis/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/genesis/SYSTEM.md": "3bd4c630ced3d066502c9a0225de0bcc0e34664767340dba3041c1031c362e8f",
+                "robots/humanclaw/SYSTEM.md": "1aab4e0580ac6c843f26f8346c98f0a334684ee2d5d01c24cf1021e927fbbca6",
+                "robots/libero/compact/memory-local.md": "9c539fdb4c4be1f51e0212f263553a5711980d29ea6b1f8b078c10781e4617a3",
+                "robots/libero/compact/SYSTEM.md": "91dd5626bc29bc1917c77930c056e31f9ba90586c8b09d526d9078fed4bafa64",
+                "robots/libero/SYSTEM.md": "a8f6909b38e0b3a5801df8cc4edc887b5fcd7121c5888a10c65e2f1d4b9b6b0b",
+                "robots/maniskill/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/maniskill/SYSTEM.md": "9020635a2a64548164eeff7b6790b391c1abdfc027952d20cb594f572d839842",
+                "robots/metaworld/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/metaworld/SYSTEM.md": "f8dcbd9e5b4e7e749457f8ed8831e5cdff1a3a81a4caee53ec4ac0f72cac953a",
+                "robots/robocasa/memory-local.md": "e3812f977c3e4401f2d25111b576a356b48e98ae781faa4d3a7886877d72b1e2",
+                "robots/robocasa/SYSTEM.md": "df085a2802efec6081da71edd1e07f6ee6b9c169696a30391c991594b02a262f",
+                "robots/robodojo/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/robodojo/SYSTEM.md": "5caf2571237196eda6331d2a157878b10c0c4089404397f81ed5f09faa5be1d9",
+                "robots/robolab/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/robolab/SYSTEM.md": "06abfe9196074f8ff8cdad84260a29580b577247e99627a399f5501d63e10d14",
+                "robots/robosuite/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/robosuite/SYSTEM.md": "6bf699520c0aa893dff165b5ca98e5381bdb433a1a0199e065692ee594337965",
+                "robots/robotwin/memory.md": "75b037f04474b978e3c6c29eccab4eaf6107bd07f061bba4fb999070ccf07f21",
+                "robots/robotwin/SYSTEM.md": "232c3d49496e320e36f211c837de00736a611e6d96c933b84b5c404561fee6c3"
+              },
+              "memory_files": {},
+              "code_api_digest": "7c6260f95e5d29939711f3c038e0d000b5646fbe6229fdde55b79b786c4c2d7b",
+              "git_commit": "4c9982020d1fcabcfcb6e19d866cf3899b34daba"
+            },
+            "claimed": "failure",
+            "summary": "e2e: one unit",
+            "turns": 0,
+            "planner_budget_exhausted": null,
+            "cost_usd": 0,
+            "planner_error": null,
+            "env_error": false
+          }
+        ],
+        "tail": "ots/genesis/SYSTEM.md\":\"3bd4c630ced3d066502c9a0225de0bcc0e34664767340dba3041c1031c362e8f\",\"robots/humanclaw/SYSTEM.md\":\"1aab4e0580ac6c843f26f8346c98f0a334684ee2d5d01c24cf1021e927fbbca6\",\"robots/libero/compact/memory-local.md\":\"9c539fdb4c4be1f51e0212f263553a5711980d29ea6b1f8b078c10781e4617a3\",\"robots/libero/compact/SYSTEM.md\":\"91dd5626bc29bc1917c77930c056e31f9ba90586c8b09d526d9078fed4bafa64\",\"robots/libero/SYSTEM.md\":\"a8f6909b38e0b3a5801df8cc4edc887b5fcd7121c5888a10c65e2f1d4b9b6b0b\",\"robots/maniskill/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/maniskill/SYSTEM.md\":\"9020635a2a64548164eeff7b6790b391c1abdfc027952d20cb594f572d839842\",\"robots/metaworld/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/metaworld/SYSTEM.md\":\"f8dcbd9e5b4e7e749457f8ed8831e5cdff1a3a81a4caee53ec4ac0f72cac953a\",\"robots/robocasa/memory-local.md\":\"e3812f977c3e4401f2d25111b576a356b48e98ae781faa4d3a7886877d72b1e2\",\"robots/robocasa/SYSTEM.md\":\"df085a2802efec6081da71edd1e07f6ee6b9c169696a30391c991594b02a262f\",\"robots/robodojo/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/robodojo/SYSTEM.md\":\"5caf2571237196eda6331d2a157878b10c0c4089404397f81ed5f09faa5be1d9\",\"robots/robolab/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/robolab/SYSTEM.md\":\"06abfe9196074f8ff8cdad84260a29580b577247e99627a399f5501d63e10d14\",\"robots/robosuite/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/robosuite/SYSTEM.md\":\"6bf699520c0aa893dff165b5ca98e5381bdb433a1a0199e065692ee594337965\",\"robots/robotwin/memory.md\":\"75b037f04474b978e3c6c29eccab4eaf6107bd07f061bba4fb999070ccf07f21\",\"robots/robotwin/SYSTEM.md\":\"232c3d49496e320e36f211c837de00736a611e6d96c933b84b5c404561fee6c3\"},\"memory_files\":{},\"code_api_digest\":\"7c6260f95e5d29939711f3c038e0d000b5646fbe6229fdde55b79b786c4c2d7b\",\"git_commit\":\"4c9982020d1fcabcfcb6e19d866cf3899b34daba\"},\"claimed\":\"failure\",\"summary\":\"e2e: one unit\",\"turns\":0,\"planner_budget_exhausted\":null,\"cost_usd\":0,\"planner_error\":null,\"env_error\":false}\n\u2714 robodojo: reset, observation, action, result (63623.793224ms)\n\ufe63 behavior: reset, observation, action, result (1.201615ms) # PI_EMBODIED_E2E does not name behavior\n\ufe63 humanclaw: reset, observation, action, result (0.194448ms) # PI_EMBODIED_E2E does not name humanclaw\n\u2139 tests 11\n\u2139 suites 0\n\u2139 pass 1\n\u2139 fail 0\n\u2139 cancelled 0\n\u2139 skipped 10\n\u2139 todo 0\n\u2139 duration_ms 64518.125917\n"
+      },
+      "robolab-extended.log": {
+        "records": [
+          {
+            "robot": "robolab",
+            "task": "BananaInBowlTask",
+            "seed": 0,
+            "instruction": "Pick up the banana and place it in the bowl",
+            "instruction_type": "default",
+            "success": false,
+            "truncated": false,
+            "env_steps": 24,
+            "units_plugins": [
+              "recovery",
+              "auto_release",
+              "proprioception",
+              "variable_step",
+              "action_chunk",
+              "rotation",
+              "plan",
+              "mem_text"
+            ],
+            "units_wrist_view": true,
+            "code_api_digest": "6f824aed34f80aa3c70da4821c2699bef80459f7f0b260d8d8a8fa9c061c5384",
+            "code_api_tier": null,
+            "tool_calls": 0,
+            "planner_tokens": {
+              "input": 0,
+              "output": 0
+            },
+            "max_tool_calls": 0,
+            "max_tokens": 0,
+            "context_version": {
+              "system_prompt_sha256": null,
+              "templates": {
+                "modes/units/SYSTEM.md": "987a98656daae202916a4c10efd65e15e145a63d01905b9b489af2b9d123830a",
+                "planner/closed-loop.md": "17c9cd1a9773f14392adc50632b65a800434ab51af6b74b3d3d67b5ad33b7e5c",
+                "robots/behavior/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/behavior/SYSTEM.md": "d17e2073ba6cb30098bc15fe86ce44151300e783911e6b177b96573a09606202",
+                "robots/genesis/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/genesis/SYSTEM.md": "3bd4c630ced3d066502c9a0225de0bcc0e34664767340dba3041c1031c362e8f",
+                "robots/humanclaw/SYSTEM.md": "1aab4e0580ac6c843f26f8346c98f0a334684ee2d5d01c24cf1021e927fbbca6",
+                "robots/libero/compact/memory-local.md": "9c539fdb4c4be1f51e0212f263553a5711980d29ea6b1f8b078c10781e4617a3",
+                "robots/libero/compact/SYSTEM.md": "91dd5626bc29bc1917c77930c056e31f9ba90586c8b09d526d9078fed4bafa64",
+                "robots/libero/SYSTEM.md": "a8f6909b38e0b3a5801df8cc4edc887b5fcd7121c5888a10c65e2f1d4b9b6b0b",
+                "robots/maniskill/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/maniskill/SYSTEM.md": "9020635a2a64548164eeff7b6790b391c1abdfc027952d20cb594f572d839842",
+                "robots/metaworld/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/metaworld/SYSTEM.md": "f8dcbd9e5b4e7e749457f8ed8831e5cdff1a3a81a4caee53ec4ac0f72cac953a",
+                "robots/robocasa/memory-local.md": "e3812f977c3e4401f2d25111b576a356b48e98ae781faa4d3a7886877d72b1e2",
+                "robots/robocasa/SYSTEM.md": "df085a2802efec6081da71edd1e07f6ee6b9c169696a30391c991594b02a262f",
+                "robots/robodojo/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/robodojo/SYSTEM.md": "5caf2571237196eda6331d2a157878b10c0c4089404397f81ed5f09faa5be1d9",
+                "robots/robolab/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/robolab/SYSTEM.md": "06abfe9196074f8ff8cdad84260a29580b577247e99627a399f5501d63e10d14",
+                "robots/robosuite/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/robosuite/SYSTEM.md": "6bf699520c0aa893dff165b5ca98e5381bdb433a1a0199e065692ee594337965",
+                "robots/robotwin/memory.md": "75b037f04474b978e3c6c29eccab4eaf6107bd07f061bba4fb999070ccf07f21",
+                "robots/robotwin/SYSTEM.md": "232c3d49496e320e36f211c837de00736a611e6d96c933b84b5c404561fee6c3"
+              },
+              "memory_files": {},
+              "code_api_digest": "6f824aed34f80aa3c70da4821c2699bef80459f7f0b260d8d8a8fa9c061c5384",
+              "git_commit": "4c9982020d1fcabcfcb6e19d866cf3899b34daba"
+            },
+            "claimed": "failure",
+            "summary": "e2e: one unit",
+            "turns": 0,
+            "planner_budget_exhausted": null,
+            "cost_usd": 0,
+            "planner_error": null,
+            "env_error": false
+          }
+        ],
+        "tail": "umanclaw/SYSTEM.md\":\"1aab4e0580ac6c843f26f8346c98f0a334684ee2d5d01c24cf1021e927fbbca6\",\"robots/libero/compact/memory-local.md\":\"9c539fdb4c4be1f51e0212f263553a5711980d29ea6b1f8b078c10781e4617a3\",\"robots/libero/compact/SYSTEM.md\":\"91dd5626bc29bc1917c77930c056e31f9ba90586c8b09d526d9078fed4bafa64\",\"robots/libero/SYSTEM.md\":\"a8f6909b38e0b3a5801df8cc4edc887b5fcd7121c5888a10c65e2f1d4b9b6b0b\",\"robots/maniskill/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/maniskill/SYSTEM.md\":\"9020635a2a64548164eeff7b6790b391c1abdfc027952d20cb594f572d839842\",\"robots/metaworld/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/metaworld/SYSTEM.md\":\"f8dcbd9e5b4e7e749457f8ed8831e5cdff1a3a81a4caee53ec4ac0f72cac953a\",\"robots/robocasa/memory-local.md\":\"e3812f977c3e4401f2d25111b576a356b48e98ae781faa4d3a7886877d72b1e2\",\"robots/robocasa/SYSTEM.md\":\"df085a2802efec6081da71edd1e07f6ee6b9c169696a30391c991594b02a262f\",\"robots/robodojo/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/robodojo/SYSTEM.md\":\"5caf2571237196eda6331d2a157878b10c0c4089404397f81ed5f09faa5be1d9\",\"robots/robolab/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/robolab/SYSTEM.md\":\"06abfe9196074f8ff8cdad84260a29580b577247e99627a399f5501d63e10d14\",\"robots/robosuite/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/robosuite/SYSTEM.md\":\"6bf699520c0aa893dff165b5ca98e5381bdb433a1a0199e065692ee594337965\",\"robots/robotwin/memory.md\":\"75b037f04474b978e3c6c29eccab4eaf6107bd07f061bba4fb999070ccf07f21\",\"robots/robotwin/SYSTEM.md\":\"232c3d49496e320e36f211c837de00736a611e6d96c933b84b5c404561fee6c3\"},\"memory_files\":{},\"code_api_digest\":\"6f824aed34f80aa3c70da4821c2699bef80459f7f0b260d8d8a8fa9c061c5384\",\"git_commit\":\"4c9982020d1fcabcfcb6e19d866cf3899b34daba\"},\"claimed\":\"failure\",\"summary\":\"e2e: one unit\",\"turns\":0,\"planner_budget_exhausted\":null,\"cost_usd\":0,\"planner_error\":null,\"env_error\":false}\n\u2714 robolab: reset, observation, action, result (31453.379526ms)\n\ufe63 robodojo: reset, observation, action, result (0.85084ms) # PI_EMBODIED_E2E does not name robodojo\n\ufe63 behavior: reset, observation, action, result (0.468619ms) # PI_EMBODIED_E2E does not name behavior\n\ufe63 humanclaw: reset, observation, action, result (0.232971ms) # PI_EMBODIED_E2E does not name humanclaw\n\u2139 tests 11\n\u2139 suites 0\n\u2139 pass 1\n\u2139 fail 0\n\u2139 cancelled 0\n\u2139 skipped 10\n\u2139 todo 0\n\u2139 duration_ms 32338.197492\n"
+      },
+      "robosuite-extended.log": {
+        "records": [
+          {
+            "robot": "robosuite",
+            "task": "Lift",
+            "seed": 0,
+            "success": false,
+            "success_step": null,
+            "env_steps": 10,
+            "skills_off": {
+              "sam3": "unreachable: http://127.0.0.1:18300/call not ready: Error: http://127.0.0.1:18300/call: connect ECONNREFUSED 127.0.0.1:18300"
+            },
+            "units_plugins": [
+              "recovery",
+              "auto_release",
+              "proprioception",
+              "variable_step",
+              "action_chunk",
+              "rotation",
+              "plan",
+              "mem_text"
+            ],
+            "units_wrist_view": true,
+            "code_api_digest": "1dd9f040979ae476bf821f8624ffa18dd21a22b3bf4a24a50e1191084d38f166",
+            "code_api_tier": null,
+            "tool_calls": 0,
+            "planner_tokens": {
+              "input": 0,
+              "output": 0
+            },
+            "max_tool_calls": 0,
+            "max_tokens": 0,
+            "context_version": {
+              "system_prompt_sha256": null,
+              "templates": {
+                "modes/units/SYSTEM.md": "987a98656daae202916a4c10efd65e15e145a63d01905b9b489af2b9d123830a",
+                "planner/closed-loop.md": "17c9cd1a9773f14392adc50632b65a800434ab51af6b74b3d3d67b5ad33b7e5c",
+                "robots/behavior/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/behavior/SYSTEM.md": "d17e2073ba6cb30098bc15fe86ce44151300e783911e6b177b96573a09606202",
+                "robots/genesis/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/genesis/SYSTEM.md": "3bd4c630ced3d066502c9a0225de0bcc0e34664767340dba3041c1031c362e8f",
+                "robots/humanclaw/SYSTEM.md": "1aab4e0580ac6c843f26f8346c98f0a334684ee2d5d01c24cf1021e927fbbca6",
+                "robots/libero/compact/memory-local.md": "9c539fdb4c4be1f51e0212f263553a5711980d29ea6b1f8b078c10781e4617a3",
+                "robots/libero/compact/SYSTEM.md": "91dd5626bc29bc1917c77930c056e31f9ba90586c8b09d526d9078fed4bafa64",
+                "robots/libero/SYSTEM.md": "a8f6909b38e0b3a5801df8cc4edc887b5fcd7121c5888a10c65e2f1d4b9b6b0b",
+                "robots/maniskill/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/maniskill/SYSTEM.md": "9020635a2a64548164eeff7b6790b391c1abdfc027952d20cb594f572d839842",
+                "robots/metaworld/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/metaworld/SYSTEM.md": "f8dcbd9e5b4e7e749457f8ed8831e5cdff1a3a81a4caee53ec4ac0f72cac953a",
+                "robots/robocasa/memory-local.md": "e3812f977c3e4401f2d25111b576a356b48e98ae781faa4d3a7886877d72b1e2",
+                "robots/robocasa/SYSTEM.md": "df085a2802efec6081da71edd1e07f6ee6b9c169696a30391c991594b02a262f",
+                "robots/robodojo/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/robodojo/SYSTEM.md": "5caf2571237196eda6331d2a157878b10c0c4089404397f81ed5f09faa5be1d9",
+                "robots/robolab/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/robolab/SYSTEM.md": "06abfe9196074f8ff8cdad84260a29580b577247e99627a399f5501d63e10d14",
+                "robots/robosuite/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/robosuite/SYSTEM.md": "6bf699520c0aa893dff165b5ca98e5381bdb433a1a0199e065692ee594337965",
+                "robots/robotwin/memory.md": "75b037f04474b978e3c6c29eccab4eaf6107bd07f061bba4fb999070ccf07f21",
+                "robots/robotwin/SYSTEM.md": "232c3d49496e320e36f211c837de00736a611e6d96c933b84b5c404561fee6c3"
+              },
+              "memory_files": {},
+              "code_api_digest": "1dd9f040979ae476bf821f8624ffa18dd21a22b3bf4a24a50e1191084d38f166",
+              "git_commit": "4c9982020d1fcabcfcb6e19d866cf3899b34daba"
+            },
+            "claimed": "failure",
+            "summary": "e2e: one unit",
+            "turns": 0,
+            "planner_budget_exhausted": null,
+            "cost_usd": 0,
+            "planner_error": null,
+            "env_error": false
+          }
+        ],
+        "tail": "libero/SYSTEM.md\":\"a8f6909b38e0b3a5801df8cc4edc887b5fcd7121c5888a10c65e2f1d4b9b6b0b\",\"robots/maniskill/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/maniskill/SYSTEM.md\":\"9020635a2a64548164eeff7b6790b391c1abdfc027952d20cb594f572d839842\",\"robots/metaworld/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/metaworld/SYSTEM.md\":\"f8dcbd9e5b4e7e749457f8ed8831e5cdff1a3a81a4caee53ec4ac0f72cac953a\",\"robots/robocasa/memory-local.md\":\"e3812f977c3e4401f2d25111b576a356b48e98ae781faa4d3a7886877d72b1e2\",\"robots/robocasa/SYSTEM.md\":\"df085a2802efec6081da71edd1e07f6ee6b9c169696a30391c991594b02a262f\",\"robots/robodojo/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/robodojo/SYSTEM.md\":\"5caf2571237196eda6331d2a157878b10c0c4089404397f81ed5f09faa5be1d9\",\"robots/robolab/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/robolab/SYSTEM.md\":\"06abfe9196074f8ff8cdad84260a29580b577247e99627a399f5501d63e10d14\",\"robots/robosuite/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/robosuite/SYSTEM.md\":\"6bf699520c0aa893dff165b5ca98e5381bdb433a1a0199e065692ee594337965\",\"robots/robotwin/memory.md\":\"75b037f04474b978e3c6c29eccab4eaf6107bd07f061bba4fb999070ccf07f21\",\"robots/robotwin/SYSTEM.md\":\"232c3d49496e320e36f211c837de00736a611e6d96c933b84b5c404561fee6c3\"},\"memory_files\":{},\"code_api_digest\":\"1dd9f040979ae476bf821f8624ffa18dd21a22b3bf4a24a50e1191084d38f166\",\"git_commit\":\"4c9982020d1fcabcfcb6e19d866cf3899b34daba\"},\"claimed\":\"failure\",\"summary\":\"e2e: one unit\",\"turns\":0,\"planner_budget_exhausted\":null,\"cost_usd\":0,\"planner_error\":null,\"env_error\":false}\n\u2714 robosuite: reset, observation, action, result (9696.603227ms)\n\ufe63 robocasa: reset, observation, action, result (0.419378ms) # PI_EMBODIED_E2E does not name robocasa\n\ufe63 robotwin: reset, observation, action, result (0.096269ms) # PI_EMBODIED_E2E does not name robotwin\n\ufe63 robolab: reset, observation, action, result (0.126597ms) # PI_EMBODIED_E2E does not name robolab\n\ufe63 robodojo: reset, observation, action, result (0.346118ms) # PI_EMBODIED_E2E does not name robodojo\n\ufe63 behavior: reset, observation, action, result (0.192467ms) # PI_EMBODIED_E2E does not name behavior\n\ufe63 humanclaw: reset, observation, action, result (0.070286ms) # PI_EMBODIED_E2E does not name humanclaw\n\u2139 tests 11\n\u2139 suites 0\n\u2139 pass 1\n\u2139 fail 0\n\u2139 cancelled 0\n\u2139 skipped 10\n\u2139 todo 0\n\u2139 duration_ms 10579.742634\n"
+      },
+      "robotwin-extended.log": {
+        "records": [
+          {
+            "robot": "robotwin",
+            "skills_off": {
+              "lingbot": "unreachable: LingBot socket error at ws://127.0.0.1:18400"
+            },
+            "task_name": "beat_block_hammer",
+            "task_config": "demo_randomized",
+            "seed": 100000,
+            "task_language": "Catch the handheld medium claw hammer and use it on the block.",
+            "success": false,
+            "budget_exhausted": false,
+            "take_action_cnt": 25,
+            "policy_actions": 0,
+            "native_actions": 25,
+            "states": 2,
+            "units_plugins": [
+              "proprioception",
+              "variable_step",
+              "action_chunk",
+              "rotation",
+              "plan",
+              "mem_text"
+            ],
+            "units_wrist_view": true,
+            "code_api_digest": "7359192dd9e147f1f3242caab4eb8adfea9520eb8410225e9b0eb4448a9d2a40",
+            "code_api_tier": null,
+            "tool_calls": 0,
+            "planner_tokens": {
+              "input": 0,
+              "output": 0
+            },
+            "max_tool_calls": 0,
+            "max_tokens": 0,
+            "context_version": {
+              "system_prompt_sha256": null,
+              "templates": {
+                "modes/units/SYSTEM.md": "987a98656daae202916a4c10efd65e15e145a63d01905b9b489af2b9d123830a",
+                "planner/closed-loop.md": "17c9cd1a9773f14392adc50632b65a800434ab51af6b74b3d3d67b5ad33b7e5c",
+                "robots/behavior/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/behavior/SYSTEM.md": "d17e2073ba6cb30098bc15fe86ce44151300e783911e6b177b96573a09606202",
+                "robots/genesis/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/genesis/SYSTEM.md": "3bd4c630ced3d066502c9a0225de0bcc0e34664767340dba3041c1031c362e8f",
+                "robots/humanclaw/SYSTEM.md": "1aab4e0580ac6c843f26f8346c98f0a334684ee2d5d01c24cf1021e927fbbca6",
+                "robots/libero/compact/memory-local.md": "9c539fdb4c4be1f51e0212f263553a5711980d29ea6b1f8b078c10781e4617a3",
+                "robots/libero/compact/SYSTEM.md": "91dd5626bc29bc1917c77930c056e31f9ba90586c8b09d526d9078fed4bafa64",
+                "robots/libero/SYSTEM.md": "a8f6909b38e0b3a5801df8cc4edc887b5fcd7121c5888a10c65e2f1d4b9b6b0b",
+                "robots/maniskill/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/maniskill/SYSTEM.md": "9020635a2a64548164eeff7b6790b391c1abdfc027952d20cb594f572d839842",
+                "robots/metaworld/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/metaworld/SYSTEM.md": "f8dcbd9e5b4e7e749457f8ed8831e5cdff1a3a81a4caee53ec4ac0f72cac953a",
+                "robots/robocasa/memory-local.md": "e3812f977c3e4401f2d25111b576a356b48e98ae781faa4d3a7886877d72b1e2",
+                "robots/robocasa/SYSTEM.md": "df085a2802efec6081da71edd1e07f6ee6b9c169696a30391c991594b02a262f",
+                "robots/robodojo/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/robodojo/SYSTEM.md": "5caf2571237196eda6331d2a157878b10c0c4089404397f81ed5f09faa5be1d9",
+                "robots/robolab/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/robolab/SYSTEM.md": "06abfe9196074f8ff8cdad84260a29580b577247e99627a399f5501d63e10d14",
+                "robots/robosuite/memory.md": "e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba",
+                "robots/robosuite/SYSTEM.md": "6bf699520c0aa893dff165b5ca98e5381bdb433a1a0199e065692ee594337965",
+                "robots/robotwin/memory.md": "75b037f04474b978e3c6c29eccab4eaf6107bd07f061bba4fb999070ccf07f21",
+                "robots/robotwin/SYSTEM.md": "232c3d49496e320e36f211c837de00736a611e6d96c933b84b5c404561fee6c3"
+              },
+              "memory_files": {},
+              "code_api_digest": "7359192dd9e147f1f3242caab4eb8adfea9520eb8410225e9b0eb4448a9d2a40",
+              "git_commit": "4c9982020d1fcabcfcb6e19d866cf3899b34daba"
+            },
+            "claimed": "failure",
+            "summary": "e2e: one unit",
+            "turns": 0,
+            "planner_budget_exhausted": null,
+            "cost_usd": 0,
+            "planner_error": null,
+            "env_error": false
+          }
+        ],
+        "tail": "ro/compact/memory-local.md\":\"9c539fdb4c4be1f51e0212f263553a5711980d29ea6b1f8b078c10781e4617a3\",\"robots/libero/compact/SYSTEM.md\":\"91dd5626bc29bc1917c77930c056e31f9ba90586c8b09d526d9078fed4bafa64\",\"robots/libero/SYSTEM.md\":\"a8f6909b38e0b3a5801df8cc4edc887b5fcd7121c5888a10c65e2f1d4b9b6b0b\",\"robots/maniskill/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/maniskill/SYSTEM.md\":\"9020635a2a64548164eeff7b6790b391c1abdfc027952d20cb594f572d839842\",\"robots/metaworld/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/metaworld/SYSTEM.md\":\"f8dcbd9e5b4e7e749457f8ed8831e5cdff1a3a81a4caee53ec4ac0f72cac953a\",\"robots/robocasa/memory-local.md\":\"e3812f977c3e4401f2d25111b576a356b48e98ae781faa4d3a7886877d72b1e2\",\"robots/robocasa/SYSTEM.md\":\"df085a2802efec6081da71edd1e07f6ee6b9c169696a30391c991594b02a262f\",\"robots/robodojo/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/robodojo/SYSTEM.md\":\"5caf2571237196eda6331d2a157878b10c0c4089404397f81ed5f09faa5be1d9\",\"robots/robolab/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/robolab/SYSTEM.md\":\"06abfe9196074f8ff8cdad84260a29580b577247e99627a399f5501d63e10d14\",\"robots/robosuite/memory.md\":\"e8d6da1699bb1d93c675d54d17067aa5573198a1db22857d88334a6b56dcf8ba\",\"robots/robosuite/SYSTEM.md\":\"6bf699520c0aa893dff165b5ca98e5381bdb433a1a0199e065692ee594337965\",\"robots/robotwin/memory.md\":\"75b037f04474b978e3c6c29eccab4eaf6107bd07f061bba4fb999070ccf07f21\",\"robots/robotwin/SYSTEM.md\":\"232c3d49496e320e36f211c837de00736a611e6d96c933b84b5c404561fee6c3\"},\"memory_files\":{},\"code_api_digest\":\"7359192dd9e147f1f3242caab4eb8adfea9520eb8410225e9b0eb4448a9d2a40\",\"git_commit\":\"4c9982020d1fcabcfcb6e19d866cf3899b34daba\"},\"claimed\":\"failure\",\"summary\":\"e2e: one unit\",\"turns\":0,\"planner_budget_exhausted\":null,\"cost_usd\":0,\"planner_error\":null,\"env_error\":false}\n\u2714 robotwin: reset, observation, action, result (80788.929487ms)\n\ufe63 robolab: reset, observation, action, result (0.6589ms) # PI_EMBODIED_E2E does not name robolab\n\ufe63 robodojo: reset, observation, action, result (0.246867ms) # PI_EMBODIED_E2E does not name robodojo\n\ufe63 behavior: reset, observation, action, result (0.305661ms) # PI_EMBODIED_E2E does not name behavior\n\ufe63 humanclaw: reset, observation, action, result (0.187908ms) # PI_EMBODIED_E2E does not name humanclaw\n\u2139 tests 11\n\u2139 suites 0\n\u2139 pass 1\n\u2139 fail 0\n\u2139 cancelled 0\n\u2139 skipped 10\n\u2139 todo 0\n\u2139 duration_ms 81626.164676\n"
+      }
+    }
+  },
+  "versions": {
+    "main": "4b70d988b094c1498301393362484a3d5836012c",
+    "candidate": "4c9982020d1fcabcfcb6e19d866cf3899b34daba"
+  }
+}

@@ -325,3 +325,19 @@ test("--serve-lock holds an exclusive flock until released", { skip: !hasFlock &
 	const second = await lockFile(path, 5);
 	second.release();
 });
+
+test("a missing Python executable cannot be mistaken for a healthy service with an undefined pid", async () => {
+	const port = await freePort();
+	const { pi } = stubPi({
+		services: servicesDir(),
+		python: "/nonexistent/pi-embodied-python",
+		sam3: `http://127.0.0.1:${port}`,
+		"serve-models": "sam3",
+		"serve-timeout": "5",
+		"serve-log-dir": mkdtempSync(join(tmpdir(), "model-services-logs-")),
+	});
+	const ms = modelServices(pi, { models: [fake("sam3")] });
+	await assert.rejects(ms.start(), /failed to start .*ENOENT/);
+	assert.deepEqual(ms.running(), []);
+	assert.equal(await healthy(port), false);
+});

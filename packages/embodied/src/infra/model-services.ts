@@ -197,7 +197,7 @@ async function startOne(o: {
 		// Ready means OUR process answers: another pi's server on the same port (bound while this one
 		// was still loading its model) must not be taken for it.
 		const pid = await answeringPid(rpc);
-		if (pid === proc.pid) return;
+		if (pid !== undefined && pid === proc.pid) return;
 		if (pid !== undefined)
 			throw new Error(
 				`:${o.port} is answered by another process (pid ${pid}), not the one started here (pid ${proc.pid})`,

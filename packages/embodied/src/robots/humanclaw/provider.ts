@@ -58,6 +58,7 @@ export function mountPsv(pi: ExtensionAPI, base: string, ask?: (m: Json[]) => Pr
 	let ids = 0;
 	let image: { data: string; mimeType: string } | undefined;
 	let restored: Parameters<PsvPlanner["restore"]>[0] | undefined;
+	let jsonFormatSupported = true;
 
 	/** One base-model request: the prompt text, then the current ego image (planner._message). */
 	const request = async (prompt: string, _stage: string, signal?: AbortSignal) => {
@@ -71,31 +72,57 @@ export function mountPsv(pi: ExtensionAPI, base: string, ask?: (m: Json[]) => Pr
 		const model = registry.find(base.slice(0, i), base.slice(i + 1));
 		if (!model) throw new Error(`humanclaw-psv: unknown base model ${base}`);
 		const json = pi.getFlag("humanclaw-json-format") !== false;
-		let message: AssistantMessage | undefined;
-		for await (const ev of registry.streamSimple(
-			model,
-			{ messages: [{ role: "user", content, timestamp: Date.now() } as unknown as Message] },
-			{
-				temperature: 0,
-				// The paper leaves reasoning at each model's default; --humanclaw-reasoning sets a level.
-				...(String(pi.getFlag("humanclaw-reasoning") ?? "")
-					? { reasoning: String(pi.getFlag("humanclaw-reasoning")) as SimpleStreamOptions["reasoning"] }
-					: {}),
-				maxTokens: Number(pi.getFlag("humanclaw-max-tokens") ?? 4096) || 4096,
-				signal,
-				// The release's adapter asks for a JSON object (configs/models/vllm_openai_compatible.json).
-				onPayload: (payload) =>
-					json && model.api === "openai-completions"
-						? { ...(payload as Json), response_format: { type: "json_object" } }
-						: undefined,
-			},
-		)) {
-			if (ev.type === "done") message = ev.message;
-			if (ev.type === "error") throw new Error(ev.error.errorMessage ?? "base model error");
+		const timestamp = Date.now();
+		for (let attempt = 0; attempt < 2; attempt++) {
+			let retryAsText = false;
+			let message: AssistantMessage | undefined;
+			for await (const ev of registry.streamSimple(
+				model,
+				{ messages: [{ role: "user", content, timestamp } as unknown as Message] },
+				{
+					temperature: 0,
+					// The paper leaves reasoning at each model's default; --humanclaw-reasoning sets a level.
+					...(String(pi.getFlag("humanclaw-reasoning") ?? "")
+						? { reasoning: String(pi.getFlag("humanclaw-reasoning")) as SimpleStreamOptions["reasoning"] }
+						: {}),
+					maxTokens: Number(pi.getFlag("humanclaw-max-tokens") ?? 4096) || 4096,
+					signal,
+					// The release's adapter asks for a JSON object (configs/models/vllm_openai_compatible.json).
+					onPayload: (payload) =>
+						json && jsonFormatSupported && model.api === "openai-completions"
+							? { ...(payload as Json), response_format: { type: "json_object" } }
+							: undefined,
+				},
+			)) {
+				if (ev.type === "done") message = ev.message;
+				if (ev.type === "error") {
+					const error = ev.error.errorMessage ?? "base model error";
+					// NInfer explicitly rejects constrained JSON. Retry this same observation in text
+					// mode, then keep using the existing JSON parser; never turn a protocol error into a walk.
+					if (
+						json &&
+						jsonFormatSupported &&
+						model.api === "openai-completions" &&
+						/"code"\s*:\s*"response_format_not_supported"/.test(error)
+					) {
+						jsonFormatSupported = false;
+						retryAsText = true;
+						pi.appendEntry("humanclaw_response_format", {
+							base,
+							format: "text",
+							reason: "response_format_not_supported",
+						});
+						break;
+					}
+					throw new Error(error);
+				}
+			}
+			if (retryAsText) continue;
+			if (!message) throw new Error("base model stream ended without a reply");
+			const text = message.content.flatMap((c) => (c.type === "text" ? [c.text] : [])).join("");
+			return { text, usage: { prompt_tokens: message.usage.input, completion_tokens: message.usage.output } };
 		}
-		if (!message) throw new Error("base model stream ended without a reply");
-		const text = message.content.flatMap((c) => (c.type === "text" ? [c.text] : [])).join("");
-		return { text, usage: { prompt_tokens: message.usage.input, completion_tokens: message.usage.output } };
+		throw new Error("humanclaw-psv: response format negotiation failed");
 	};
 	const planner = new PsvPlanner(request);
 
@@ -218,6 +245,7 @@ export function mountPsv(pi: ExtensionAPI, base: string, ask?: (m: Json[]) => Pr
 
 	pi.on("session_start", (_e, ctx) => {
 		registry = ctx.modelRegistry;
+		jsonFormatSupported = true;
 		// Resume: the history and planner state of the branch's decisions.
 		const entries = ctx.sessionManager
 			.getBranch()

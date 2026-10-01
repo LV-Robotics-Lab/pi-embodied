@@ -108,22 +108,23 @@ class AnyGraspFacade(GraspServer):
         if str(detection) not in sys.path:
             sys.path.insert(0, str(detection))
         try:
-            from gsnet import AnyGrasp
+            from gsnet import create_detector
         except ImportError as exc:
             raise RuntimeError(
                 "the AnyGrasp SDK's gsnet module is not importable (needs the authors' compiled module, "
                 "MinkowskiEngine 0.5.4, pointnet2 and graspnetAPI in this venv)"
             ) from exc
-        detector = AnyGrasp(
+        detector = create_detector(
             Namespace(
                 checkpoint_path=str(self._ckpt),
                 max_gripper_width=self._max_width,
                 gripper_height=self._height,
-                top_down_grasp=False,
-                debug=False,
             )
         )
-        detector.load_net()
+        if detector is None:
+            raise RuntimeError(
+                "AnyGrasp detector initialization failed; verify the SDK license"
+            )
         self._detector = detector
         logger.info("AnyGrasp loaded from %s", self._ckpt)
 
@@ -140,27 +141,15 @@ class AnyGraspFacade(GraspServer):
         if not (valid & mask).any():
             raise ValueError("the mask has no pixel with depth")
         pts = np.ascontiguousarray(points[valid], dtype=np.float32)
-        colors = (
-            np.ascontiguousarray(rgb[valid][:, :3], dtype=np.float32) / 255.0
-            if rgb is not None
-            else np.zeros_like(pts)
-        )
-        lims = [
-            float(pts[:, 0].min()),
-            float(pts[:, 0].max()),
-            float(pts[:, 1].min()),
-            float(pts[:, 1].max()),
-            0.0,
-            self._depth_max,
-        ]
-        grasps, _cloud = self._detector.get_grasp(
-            pts,
-            colors,
-            lims=lims,
-            apply_object_mask=True,
-            dense_grasp=False,
-            collision_detection=self._collision,
-        )
+        options: dict[str, Any] = {
+            "region_steering": np.ascontiguousarray(mask[valid], dtype=bool),
+            "dense_grasp": False,
+            "collision_detection": self._collision,
+        }
+        if up_direction_camera is not None:
+            options["approach_steering"] = -up_direction_camera
+            options["approach_thresh"] = np.pi / 6
+        grasps = self._detector.get_grasp(pts, options)
         metadata: dict[str, Any] = {
             "scene_points": int(len(pts)),
             "collision_detection": self._collision,

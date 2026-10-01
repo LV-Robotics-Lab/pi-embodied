@@ -19,11 +19,17 @@ import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { RpcClient } from "../src/infra/rpc.ts";
 import { RESULT_ENTRY, SERVICES, STATUS_EVENT } from "../src/robot.ts";
+import behavior from "../src/robots/behavior/index.ts";
 import genesis from "../src/robots/genesis/index.ts";
+import humanclaw from "../src/robots/humanclaw/index.ts";
 import libero from "../src/robots/libero/index.ts";
 import maniskill from "../src/robots/maniskill/index.ts";
 import metaworld from "../src/robots/metaworld/index.ts";
+import robocasa from "../src/robots/robocasa/index.ts";
+import robodojo from "../src/robots/robodojo/index.ts";
+import robolab from "../src/robots/robolab/index.ts";
 import robosuite from "../src/robots/robosuite/index.ts";
+import robotwin from "../src/robots/robotwin/index.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
@@ -121,7 +127,7 @@ const text = (r: any) => (r.content ?? []).map((c: any) => c.text ?? "").join("\
 
 /** Start the robot, run one MV_UP unit, check that the env stepped, finish, and read the result entry. */
 async function episode(robot: (pi: ExtensionAPI) => void, name: string, task: Record<string, unknown>) {
-	const r = load(robot, flags({ ...task, units: "true" }));
+	const r = load(robot, flags({ units: "true", ...task }));
 	try {
 		await r.emit("session_start", { reason: "startup" });
 		assert.deepEqual(r.errors, [], `${name} did not start`);
@@ -129,7 +135,12 @@ async function episode(robot: (pi: ExtensionAPI) => void, name: string, task: Re
 		const before = r.status.at(-1)?.step ?? 0;
 		await r.emit("before_agent_start", { prompt: "Solve the task.", systemPrompt: "" });
 		await r.emit("agent_start");
-		const acted = await r.call("act", { unit: "MV_UP" });
+		const acted = await r.call(
+			"act",
+			name === "humanclaw"
+				? { unit: "WALK", param: "slow", target_visible: false }
+				: { unit: "MV_UP", ...(name === "maniskill" ? {} : { arm: "left" }) },
+		);
 		assert.ok(!acted.isError, text(acted));
 		await r.emit("tool_execution_end", { toolName: "act" });
 		const after = r.status.at(-1);
@@ -175,6 +186,24 @@ test("maniskill: PickCube-v1 starts, steps a unit and reports", { skip: skip("ma
 test("libero: libero_10 task 0 starts, steps a unit and reports", { skip: skip("libero") }, async () => {
 	await episode(libero, "libero", { suite: "libero_10", task: "0", seed: "0" });
 });
+
+/** Fixed integration cases; these check execution, not model task success. */
+const INTEGRATION_CASES = [
+	[robocasa, "robocasa", { "task-name": "OpenDrawer", split: "target", seed: "1" }],
+	[robotwin, "robotwin", { "task-name": "beat_block_hammer", "task-config": "demo_randomized", seed: "100000" }],
+	[robolab, "robolab", { task: "BananaInBowlTask", seed: "0" }],
+	[robodojo, "robodojo", { task: "stack_bowls", seed: "0" }],
+	[behavior, "behavior", { task: "turning_on_radio", seed: "0" }],
+	[
+		humanclaw,
+		"humanclaw",
+		{ episode: "104348028_171512877_ep1_couch", units: "both", "humanclaw-mode": "pi", "humanclaw-metrics": true },
+	],
+] as const;
+for (const [robot, name, task] of INTEGRATION_CASES)
+	test(`${name}: starts, steps a unit and reports`, { skip: skip(name), timeout: 780000 }, async () => {
+		console.log(JSON.stringify(await episode(robot, name, task)));
+	});
 
 async function freePort(): Promise<number> {
 	const s = createServer();

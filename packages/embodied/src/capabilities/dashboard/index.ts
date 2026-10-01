@@ -137,6 +137,11 @@ const modelLabel = (pi: ExtensionAPI, ctx: ExtensionContext) =>
 
 /** Process-wide dashboard; it outlives extension runtimes, which pi rebuilds on every session switch. */
 type Hub = ReturnType<typeof createHub>;
+/** Optional fork APIs: keep official pi contexts valid without pretending these features exist. */
+type DashboardContext = ExtensionContext & {
+	exportSession?: (format: "jsonl" | "html", outputPath: string) => Promise<string>;
+	withdrawQueuedMessage?: (text: string) => boolean;
+};
 
 /** Before the robot publishes its status: its name and task from the branch's latest `robot_task` entry. */
 function taskEntry(ctx: ExtensionContext): Pick<RobotStatus, "robot" | "fields" | "task"> {
@@ -216,7 +221,7 @@ function createHub(server: Server, url: string, page: string, liveFps: number) {
 	let pump: ReturnType<typeof setInterval> | undefined;
 	const frameCache = new Map<string, Buffer>();
 	let pi: ExtensionAPI | undefined;
-	let ctx: ExtensionContext | undefined;
+	let ctx: DashboardContext | undefined;
 	let nextId = 0;
 	let items: Item[] = [];
 	let steps: Step[] = [];
@@ -259,6 +264,10 @@ function createHub(server: Server, url: string, page: string, liveFps: number) {
 	};
 	const snapshot = () => ({
 		op: "reset",
+		capabilities: {
+			sessionExport: typeof ctx?.exportSession === "function",
+			queueWithdrawal: typeof ctx?.withdrawQueuedMessage === "function",
+		},
 		episode,
 		items,
 		steps,
@@ -628,6 +637,10 @@ function createHub(server: Server, url: string, page: string, liveFps: number) {
 				// pi's own /export (JSONL or HTML) of the current session branch, into a temp file sent once.
 				const format = url.searchParams.get("format") === "html" ? "html" : "jsonl";
 				if (!ctx) return reply(409, { error: "session is switching; retry in a moment" });
+				if (typeof ctx.exportSession !== "function")
+					return reply(501, {
+						error: "Session export requires the pi-embodied fork. Use pi /export in this runtime.",
+					});
 				const dir = mkdtempSync(join(tmpdir(), "pi-dashboard-export-"));
 				const name = `session-${ctx.sessionManager.getSessionId()}.${format}`;
 				try {
@@ -730,6 +743,10 @@ function createHub(server: Server, url: string, page: string, liveFps: number) {
 				return reply(202, { ok: true, steered: true, id: q.id });
 			}
 			if (url.pathname === "/message/withdraw") {
+				if (typeof ctx.withdrawQueuedMessage !== "function")
+					return reply(501, {
+						error: "Queue withdrawal requires the pi-embodied fork. The message remains queued.",
+					});
 				const q = queued.find((x) => x.id === Number(body.id));
 				if (!q) return reply(404, { error: "no such message" });
 				if (q.status !== "queued") return reply(409, { error: `the message was already ${q.status}` });

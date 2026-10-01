@@ -473,3 +473,22 @@ test("the dashboard checks the Host header, and off loopback every request needs
 		await r.quit();
 	}
 });
+
+test("official pi context: fork-only actions are unavailable while steering and robot tools still work", async () => {
+	const r = rig({ idle: false });
+	Reflect.deleteProperty(r.ctx, "exportSession");
+	Reflect.deleteProperty(r.ctx, "withdrawQueuedMessage");
+	const url = await r.start();
+	try {
+		assert.deepEqual((await snapshot(url)).capabilities, { sessionExport: false, queueWithdrawal: false });
+		assert.equal((await call(`${url}download/session`)).status, 501);
+		const queued = await post(`${url}message`, { text: "go left" });
+		assert.equal(queued.status, 202);
+		assert.equal((await post(`${url}message/withdraw`, { id: queued.json.id })).status, 501);
+		assert.deepEqual(r.queue, ["go left"]);
+		r.setIdle(true);
+		assert.equal((await post(`${url}primitive`, { name: "move", arguments: { dx: 0.01 } })).status, 200);
+	} finally {
+		await r.quit();
+	}
+});

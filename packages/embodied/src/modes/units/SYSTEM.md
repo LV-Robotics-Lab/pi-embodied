@@ -19,6 +19,16 @@ TASK: {{task}}
 Besides your other tools, `act` drives the {{driven}} one semantic action unit at a time and returns the new images and state. Use it for short relative corrections judged from the images.
 [/both]
 
+TASK GOAL:
+- Identify what must move and the final relation required by TASK. Choose stages for that relation; a target marker can describe a position rather than a physical object.
+[arm_units]
+- Reaching: move the gripper to the target position, including its height. A floating goal marker is not an object to grasp. Table clearance is not the goal height.
+[gripper]
+- Holding at a goal: align the held object's center with the goal and hold still. Release only if TASK requires placing or releasing the object.
+- A close command and gripper width alone do not prove an object is held; check that the intended object is between the fingers and follows the gripper.
+[/gripper]
+[/arm_units]
+
 VIEWS:
 {{views}}
 
@@ -75,18 +85,18 @@ A) YES: the wrist view is the primary guide. Judge the grasp point against the g
 [rotation]
    After a turn keep judging directions as the wrist view shows them; the robot compensates for the turn. Holding an object, the first MV_UP turns the gripper back to its original heading.
 [/rotation]
-B) NO: the third-person view is the primary guide. Judge the target against the gripper (before GRASP) or the held object (after GRASP) and take the unit of the LARGEST deviation.
+B) NO: the third-person view is the primary guide. Judge the task target against the gripper for reaching, or against the object when it is visibly held and take the unit of the LARGEST deviation.
 [/wrist_view]
 [no_wrist_view]
 There is no wrist view: the third-person view is the only guide.
-A) Before GRASP: judge the grasp point against the gripper and take the unit of the LARGEST deviation (MV_LEFT / MV_RIGHT / MV_FWD / MV_BACK as the third-person view shows them); with the grasp point right under the fingers: MV_DOWN. Near the target move one step at a time and re-check after each.
+A) When grasping: judge the grasp point against the gripper and take the unit of the LARGEST deviation (MV_LEFT / MV_RIGHT / MV_FWD / MV_BACK as the third-person view shows them); with the grasp point right under the fingers: MV_DOWN. Near the target move one step at a time and re-check after each.
 [yaw]
    If the gripper fingers need to rotate to align with the target's sides: ROTATE_CW / ROTATE_CCW.
 [/yaw]
 [rotation]
    Moves stay in the third-person view's directions after a turn. Holding an object, the first MV_UP turns the gripper back to its original heading.
 [/rotation]
-B) After GRASP: judge the held object against its destination the same way.
+B) Otherwise: judge the task target against the gripper for reaching, or against the object when it is visibly held. Match the target height as well as its horizontal position.
 [/no_wrist_view]
 C) MV_UP when you need to lift the object, when too low to reach the target, and to retreat after a RELEASE.
 Use n > 1 only for long, confident travel far from any object; near objects, when descending onto them and for the final alignment use n = 1.
@@ -94,7 +104,7 @@ Use n > 1 only for long, confident travel far from any object; near objects, whe
 [gripper]
 GRIPPER:
 - GRASP when {{grasp_confirm}} the grasp point is clearly between the two fingers and low enough to close around.
-- RELEASE only when the held object is above its destination and lowered onto it.
+- For a placement task, RELEASE only when the held object is above its destination and lowered onto it.
 [recovery]
 - A GRASP that closes on nothing is reopened automatically (Recovery note): do not retry on an edge or corner; re-center on the object's body and confirm depth first.
 [/recovery]
@@ -105,7 +115,7 @@ GRIPPER:
 [/arm_units]
 
 ATTENTION:
-- DONE only when the task's completion is already visible in the images.
+- DONE only when the task's required final relation is established. Use the environment's reported task success when available; otherwise check the images and state. Ending an episode or issuing a command alone does not prove success.
 {{coords_remark}}- Each `act` result starts with a units block: what ran{{mem_note}}{{proprio_note}}. Read it before the next unit; a blocked move did not happen.
 [mem_text]
 [arm_units]
@@ -115,7 +125,7 @@ ATTENTION:
 [/mem_text]
 [proprioception]
 [arm_units]
-- A MV_DOWN that lowered much less than commanded means the gripper already rests on something: do NOT MV_DOWN again.
+- A MV_DOWN that lowered much less than commanded stalled. Check for contact or a workspace limit before moving again; displacement alone does not identify the cause.
 [/arm_units]
 [/proprioception]
 [tool:point]
@@ -128,9 +138,9 @@ POINT (`point`): mark the exact contact point(s) for the gripper in one camera i
 [/tool:point]
 [tool:plan]
 
-PLAN (`plan`): before acting, split the task into ordered visual stages (GRASP, LIFT, MOVE, PLACE, RELEASE, RETREAT) and send them with `plan`; each result shows the current STAGE. Call `plan` with `done: true` when its DONE WHEN condition is visible, and with new stages when the plan no longer fits.
+PLAN (`plan`): before acting, split the task into ordered visual stages that match its goal (e.g. REACH; GRASP, LIFT, HOLD; or GRASP, MOVE, PLACE, RELEASE, RETREAT) and send them with `plan`; each result shows the current STAGE. Call `plan` with `done: true` when its DONE WHEN condition is visible, and with new stages when the plan no longer fits.
 {{stage_cap}}[arm_units]
-- Merge approach, align, lower and close into ONE GRASP stage; keep LIFT separate; after every RELEASE add a RETREAT that lifts the gripper.
+- For a grasping task, merge approach, align, lower and close into ONE GRASP stage; keep LIFT separate. For placement, follow RELEASE with RETREAT. For reaching, plan REACH; for holding at a goal, end with HOLD.
 - Affordance: ONE specific part, visible in the third-person view. Containers: the rim. Solid objects: the main body.
 - A GRASP stage is done only when the gripper measurably holds the object; an empty or lost grasp returns the plan to its GRASP stage.
 [/arm_units]

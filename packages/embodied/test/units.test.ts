@@ -129,6 +129,7 @@ async function toyRobot(
 		onClose?: () => number;
 		blocked?: boolean;
 		prompt?: string;
+		instruction?: string;
 		maxYaw?: number;
 		rt?: UnitsSpec["rt"];
 		maxMove?: number;
@@ -191,7 +192,7 @@ async function toyRobot(
 			};
 		},
 		state: async () => ({ eef_xyz: [...pos], gripper_width: width, table_z: 0 }),
-		instruction: () => "put the cube in the bowl",
+		instruction: () => o.instruction ?? "put the cube in the bowl",
 		emptyWidthM: 0.005,
 	};
 	defineRobot(f.pi, {
@@ -288,7 +289,10 @@ test("a blocked move stops the repeat and says so", async () => {
 	const r = await f.run("act", { unit: "MV_DOWN", n: 4 });
 	assert.equal(f.moves.length, 1);
 	assert.match(head(r), /x1 of 4 \(stopped early\)/);
-	assert.match(head(r), /Last MV_DOWN lowered 0\.0 of 2\.0 cm -> already in contact, do NOT MV_DOWN again/);
+	assert.match(
+		head(r),
+		/Last MV_DOWN lowered 0\.0 of 2\.0 cm -> downward motion stalled; check for contact or a workspace limit before moving again/,
+	);
 });
 
 test("recovery reopens a GRASP that closed on nothing", async () => {
@@ -970,7 +974,7 @@ test("a chaining robot's continuous moves skip the stall check until the chain's
 		[true, true, undefined],
 	);
 	assert.match(head(r), /MV_DOWN x3\n/);
-	assert.match(head(r), /Last MV_DOWN lowered 0\.0 of 2\.0 cm -> already in contact/);
+	assert.match(head(r), /Last MV_DOWN lowered 0\.0 of 2\.0 cm -> downward motion stalled/);
 	// A robot that settles every move is judged per move (Show-Harness keeps chaining off by default).
 	const g = await toyRobot({}, { blocked: true, chains: false });
 	await g.run("act", { unit: "MV_DOWN", n: 3 });
@@ -1804,4 +1808,43 @@ test("stage_control counts steps per arm: one arm's units do not use the other a
 	assert.match(r, /STAGE 1\/2 \[MOVE\] \(left arm\).*step 1 of 2/, "the right arm's units did not count");
 	const next = head(await f.run("act", { unit: "MV_UP", arm: "left", n: 2 }));
 	assert.match(next, /used its 2-step cap/);
+});
+
+test("reach keeps its target above the table and completes a REACH stage without grasping", async () => {
+	const instruction = "Move the gripper to the floating red target, not the puck on the table.";
+	const f = await toyRobot({}, { instruction });
+	const prompt = (await f.emit("before_agent_start")).systemPrompt as string;
+	assert.ok(prompt.includes(`TASK: ${instruction}`));
+	assert.match(prompt, /For reaching, plan REACH/);
+	await f.run("plan", {
+		stages: [{ motion: "REACH", target: "floating red target", completion: "gripper at target" }],
+	});
+	const r = head(await f.run("act", { unit: "MV_UP" }));
+	assert.match(r, /22\.0 cm above the table/);
+	assert.doesNotMatch(r, /MV_DOWN first|Holding an object/);
+	assert.ok(r.includes(`TASK: ${instruction}`));
+	await f.run("plan", { done: true });
+	assert.match(head(await f.run("act", { unit: "STOP" })), /all planned stages are done/);
+	assert.ok(f.moves.every((m) => m.gripper === null));
+});
+
+test("an empty close reports the command and measured width without claiming a hold", async () => {
+	const f = await toyRobot({ "units-plugins": "proprioception" }, { onClose: () => 0.001 });
+	const r = head(await f.run("act", { unit: "GRASP" }));
+	assert.match(r, /width 0\.1 cm, commanded CLOSE/);
+	assert.doesNotMatch(r, /Holding an object|descend only to place/);
+});
+
+test("a hold-at-goal plan finishes with the gripper closed and no release stage", async () => {
+	const f = await toyRobot({}, { instruction: "Hold the cube at the green goal sphere and stay still." });
+	const prompt = (await f.emit("before_agent_start")).systemPrompt as string;
+	assert.match(prompt, /for holding at a goal, end with HOLD/);
+	assert.match(prompt, /A close command and gripper width alone do not prove an object is held/);
+	await f.run("plan", {
+		stages: [{ motion: "HOLD", target: "goal sphere", completion: "cube centered at goal and still" }],
+	});
+	await f.run("act", { unit: "GRASP" });
+	await f.run("plan", { done: true });
+	assert.match(head(await f.run("act", { unit: "STOP" })), /all planned stages are done/);
+	assert.ok(f.moves.every((m) => m.gripper !== "open"));
 });

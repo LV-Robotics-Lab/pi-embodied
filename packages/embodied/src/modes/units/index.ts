@@ -597,23 +597,18 @@ export function units(
 			const p = eef(st);
 			const g = gap(st);
 			const w = width(st);
-			const held = closed.get(arm ?? "") === true;
+			const commandedClosed = closed.get(arm ?? "") === true;
 			const parts: string[] = [];
 			if (g !== undefined) parts.push(`the gripper is ${(g * 100).toFixed(1)} cm above the table`);
 			else if (p) parts.push(`gripper at [${p.map(r3).join(", ")}] m`);
-			if (w !== undefined) parts.push(`width ${(w * 100).toFixed(1)} cm, commanded ${held ? "CLOSE" : "OPEN"}`);
+			if (w !== undefined)
+				parts.push(`width ${(w * 100).toFixed(1)} cm, commanded ${commandedClosed ? "CLOSE" : "OPEN"}`);
 			parts.push(
 				plugin("variable_step")
 					? `each step moves ~${(spec.stepM * 100).toFixed(0)} cm (${(coarse() * 100).toFixed(0)} cm)`
 					: `each step moves ~${(spec.stepM * 100).toFixed(0)} cm`,
 			);
 			out.push(`Proprioception: ${parts.join("; ")}.`);
-			if (g !== undefined)
-				out.push(
-					held
-						? "Holding an object: lift until clear of the table; descend only to place."
-						: `If height > ${(high * 100).toFixed(0)} cm, MV_DOWN first.`,
-				);
 		}
 		if (plugin("rotation") && Math.abs(yaw.get(arm ?? "") ?? 0) > NEUTRAL_YAW)
 			out.push(
@@ -1042,7 +1037,7 @@ export function units(
 					if (moved < commanded * STALL_RATIO) {
 						lines.push(
 							u === "MV_DOWN"
-								? `Last ${tag(q.slot)} lowered ${(moved * 100).toFixed(1)} of ${(commanded * 100).toFixed(1)} cm -> already in contact, do NOT MV_DOWN again`
+								? `Last ${tag(q.slot)} lowered ${(moved * 100).toFixed(1)} of ${(commanded * 100).toFixed(1)} cm -> downward motion stalled; check for contact or a workspace limit before moving again`
 								: `Last ${tag(q.slot)} moved ${(moved * 100).toFixed(1)} of ${(commanded * 100).toFixed(1)} cm -> blocked`,
 						);
 						stop = true;
@@ -1268,12 +1263,15 @@ export function units(
 
 	tool(
 		"plan",
-		"Subgoal plan: `stages` replaces the plan from the current stage on (ordered GRASP/LIFT/MOVE/PLACE/RELEASE/RETREAT/REASON stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
+		"Subgoal plan: `stages` replaces the plan from the current stage on (ordered task-appropriate stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
 		Type.Object({
 			stages: Type.Optional(
 				Type.Array(
 					Type.Object({
-						motion: Type.String({ description: "GRASP, LIFT, MOVE, PLACE, RELEASE, RETREAT or REASON" }),
+						motion: Type.String({
+							description:
+								"Task-appropriate stage, e.g. REACH, ALIGN, GRASP, LIFT, MOVE, HOLD, PUSH, PLACE, RELEASE, RETREAT or REASON",
+						}),
 						target: Type.String(),
 						affordance: Type.Optional(Type.String({ description: "The one visible part to aim at" })),
 						description: Type.Optional(

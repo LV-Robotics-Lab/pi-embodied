@@ -7,7 +7,7 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/../../../.." && pwd)
 out=$1
 envdir=$(cd "$2" && pwd)
-model=${3:-selfhost/qwen3.8-27b}
+model=${3:-relay/gpt-6-astra}
 for robot in metaworld maniskill libero; do
  [ -f "$envdir/$robot-env.sh" ] || { echo "missing $envdir/$robot-env.sh" >&2; exit 2; }
 done

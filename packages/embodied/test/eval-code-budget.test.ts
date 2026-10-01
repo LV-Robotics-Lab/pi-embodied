@@ -26,7 +26,12 @@ function twice(robot: string, positional: string[], flags: string, first: string
 	const script = new URL(`../src/robots/${robot}/eval.sh`, import.meta.url).pathname;
 	const once = (args: string[]) =>
 		spawnSync("bash", [script, join(dir, "out"), ...positional, ...args], {
-			env: { ...process.env, PI: pi, TIME_LIMIT: "0" },
+			env: {
+				...process.env,
+				PI: pi,
+				TIME_LIMIT: "0",
+				...(robot === "robocasa" ? { TASKS: "OpenDrawer", SCENES: "0" } : {}),
+			},
 			encoding: "utf8",
 		});
 	return [once(first), once(second)];
@@ -35,6 +40,7 @@ function twice(robot: string, positional: string[], flags: string, first: string
 for (const [robot, positional] of [
 	["libero", ["libero_10_task", "0", "0"]],
 	["maniskill", ["PickCube-v1", "0"]],
+	["robocasa", ["target"]],
 ] as const) {
 	test(`${robot}/eval.sh never mixes code budgets in one out dir`, () => {
 		const flags = "timeout=+max_calls=7+max_move=+helpers=false";

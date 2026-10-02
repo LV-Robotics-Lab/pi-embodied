@@ -1,14 +1,19 @@
 # Pi boundary and default regression
 
-The tested core baseline is pi 0.99.2, upstream commit
-`8ce69e9d2b171d173fe4b6b2b6256f1f4411e69d`. A wildcard peer dependency is
-installation metadata, not a claim that every pi version is supported.
+The development baseline is pi 1.0.0 (release tag `v1.0.0`, commit
+`a13d35a742c6ef8462812a28fbe1d8c8b7431c32`), including upstream fixes through
+`319fecb89b17b7bf8a4b62734de9a6cc6ceabe49`. Peer dependencies target pi 1.x;
+the range is installation metadata, not a claim that every pi 1.x release has
+passed the same regression checks.
 
 The agent loop, model registry, messages, sessions, tools and extension events
 belong to pi. Robot task state, motion gates, camera context and results belong
 to the embodied extension. Python RPC services own simulation, perception and
 bounded robot execution. New robotics features should use these boundaries
-before proposing another core patch.
+before proposing another core patch. Pi 1.0 removes the experimental harness and
+session-storage exports from `pi-agent-core`; durable sessions belong to
+`pi-durable`. Embodied adapters use the retained `Agent` and coding-agent
+extension APIs.
 
 `infra/service-process.ts` owns Python process startup, readiness, shutdown,
 attachment and environment construction. `defineRobot` owns episode lifecycle

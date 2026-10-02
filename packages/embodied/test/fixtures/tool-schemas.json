@@ -66,7 +66,7 @@
 			},
 			{
 				"name": "plan",
-				"description": "Subgoal plan: `stages` replaces the plan from the current stage on (ordered GRASP/LIFT/MOVE/PLACE/RELEASE/RETREAT/REASON stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
+				"description": "Subgoal plan: `stages` replaces the plan from the current stage on (ordered task-appropriate stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
 				"parameters": {
 					"type": "object",
 					"properties": {
@@ -82,7 +82,7 @@
 								"properties": {
 									"motion": {
 										"type": "string",
-										"description": "GRASP, LIFT, MOVE, PLACE, RELEASE, RETREAT or REASON"
+										"description": "Task-appropriate stage, e.g. REACH, ALIGN, GRASP, LIFT, MOVE, HOLD, PUSH, PLACE, RELEASE, RETREAT or REASON"
 									},
 									"target": {
 										"type": "string"
@@ -617,7 +617,7 @@
 			},
 			{
 				"name": "plan",
-				"description": "Subgoal plan: `stages` replaces the plan from the current stage on (ordered GRASP/LIFT/MOVE/PLACE/RELEASE/RETREAT/REASON stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
+				"description": "Subgoal plan: `stages` replaces the plan from the current stage on (ordered task-appropriate stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
 				"parameters": {
 					"type": "object",
 					"properties": {
@@ -633,7 +633,7 @@
 								"properties": {
 									"motion": {
 										"type": "string",
-										"description": "GRASP, LIFT, MOVE, PLACE, RELEASE, RETREAT or REASON"
+										"description": "Task-appropriate stage, e.g. REACH, ALIGN, GRASP, LIFT, MOVE, HOLD, PUSH, PLACE, RELEASE, RETREAT or REASON"
 									},
 									"target": {
 										"type": "string"
@@ -1230,7 +1230,7 @@
 			},
 			{
 				"name": "plan",
-				"description": "Subgoal plan: `stages` replaces the plan from the current stage on (ordered GRASP/LIFT/MOVE/PLACE/RELEASE/RETREAT/REASON stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
+				"description": "Subgoal plan: `stages` replaces the plan from the current stage on (ordered task-appropriate stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
 				"parameters": {
 					"type": "object",
 					"properties": {
@@ -1246,7 +1246,7 @@
 								"properties": {
 									"motion": {
 										"type": "string",
-										"description": "GRASP, LIFT, MOVE, PLACE, RELEASE, RETREAT or REASON"
+										"description": "Task-appropriate stage, e.g. REACH, ALIGN, GRASP, LIFT, MOVE, HOLD, PUSH, PLACE, RELEASE, RETREAT or REASON"
 									},
 									"target": {
 										"type": "string"
@@ -1793,7 +1793,7 @@
 			},
 			{
 				"name": "plan",
-				"description": "Subgoal plan: `stages` replaces the plan from the current stage on (ordered GRASP/LIFT/MOVE/PLACE/RELEASE/RETREAT/REASON stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
+				"description": "Subgoal plan: `stages` replaces the plan from the current stage on (ordered task-appropriate stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
 				"parameters": {
 					"type": "object",
 					"properties": {
@@ -1809,7 +1809,7 @@
 								"properties": {
 									"motion": {
 										"type": "string",
-										"description": "GRASP, LIFT, MOVE, PLACE, RELEASE, RETREAT or REASON"
+										"description": "Task-appropriate stage, e.g. REACH, ALIGN, GRASP, LIFT, MOVE, HOLD, PUSH, PLACE, RELEASE, RETREAT or REASON"
 									},
 									"target": {
 										"type": "string"
@@ -2489,7 +2489,7 @@
 			},
 			{
 				"name": "plan",
-				"description": "Subgoal plan: `stages` replaces the plan from the current stage on (ordered GRASP/LIFT/MOVE/PLACE/RELEASE/RETREAT/REASON stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
+				"description": "Subgoal plan: `stages` replaces the plan from the current stage on (ordered task-appropriate stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
 				"parameters": {
 					"type": "object",
 					"properties": {
@@ -2505,7 +2505,7 @@
 								"properties": {
 									"motion": {
 										"type": "string",
-										"description": "GRASP, LIFT, MOVE, PLACE, RELEASE, RETREAT or REASON"
+										"description": "Task-appropriate stage, e.g. REACH, ALIGN, GRASP, LIFT, MOVE, HOLD, PUSH, PLACE, RELEASE, RETREAT or REASON"
 									},
 									"target": {
 										"type": "string"
@@ -3615,7 +3615,7 @@
 			},
 			{
 				"name": "plan",
-				"description": "Subgoal plan: `stages` replaces the plan from the current stage on (ordered GRASP/LIFT/MOVE/PLACE/RELEASE/RETREAT/REASON stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
+				"description": "Subgoal plan: `stages` replaces the plan from the current stage on (ordered task-appropriate stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
 				"parameters": {
 					"type": "object",
 					"properties": {
@@ -3631,7 +3631,7 @@
 								"properties": {
 									"motion": {
 										"type": "string",
-										"description": "GRASP, LIFT, MOVE, PLACE, RELEASE, RETREAT or REASON"
+										"description": "Task-appropriate stage, e.g. REACH, ALIGN, GRASP, LIFT, MOVE, HOLD, PUSH, PLACE, RELEASE, RETREAT or REASON"
 									},
 									"target": {
 										"type": "string"
@@ -3951,7 +3951,7 @@
 			},
 			{
 				"name": "plan",
-				"description": "Subgoal plan: `stages` replaces the plan from the current stage on (ordered GRASP/LIFT/MOVE/PLACE/RELEASE/RETREAT/REASON stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
+				"description": "Subgoal plan: `stages` replaces the plan from the current stage on (ordered task-appropriate stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
 				"parameters": {
 					"type": "object",
 					"properties": {
@@ -3967,7 +3967,7 @@
 								"properties": {
 									"motion": {
 										"type": "string",
-										"description": "GRASP, LIFT, MOVE, PLACE, RELEASE, RETREAT or REASON"
+										"description": "Task-appropriate stage, e.g. REACH, ALIGN, GRASP, LIFT, MOVE, HOLD, PUSH, PLACE, RELEASE, RETREAT or REASON"
 									},
 									"target": {
 										"type": "string"
@@ -4579,7 +4579,7 @@
 			},
 			{
 				"name": "plan",
-				"description": "Subgoal plan: `stages` replaces the plan from the current stage on (ordered GRASP/LIFT/MOVE/PLACE/RELEASE/RETREAT/REASON stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
+				"description": "Subgoal plan: `stages` replaces the plan from the current stage on (ordered task-appropriate stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
 				"parameters": {
 					"type": "object",
 					"properties": {
@@ -4595,7 +4595,7 @@
 								"properties": {
 									"motion": {
 										"type": "string",
-										"description": "GRASP, LIFT, MOVE, PLACE, RELEASE, RETREAT or REASON"
+										"description": "Task-appropriate stage, e.g. REACH, ALIGN, GRASP, LIFT, MOVE, HOLD, PUSH, PLACE, RELEASE, RETREAT or REASON"
 									},
 									"target": {
 										"type": "string"
@@ -4963,7 +4963,7 @@
 			},
 			{
 				"name": "plan",
-				"description": "Subgoal plan: `stages` replaces the plan from the current stage on (ordered GRASP/LIFT/MOVE/PLACE/RELEASE/RETREAT/REASON stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
+				"description": "Subgoal plan: `stages` replaces the plan from the current stage on (ordered task-appropriate stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
 				"parameters": {
 					"type": "object",
 					"properties": {
@@ -4979,7 +4979,7 @@
 								"properties": {
 									"motion": {
 										"type": "string",
-										"description": "GRASP, LIFT, MOVE, PLACE, RELEASE, RETREAT or REASON"
+										"description": "Task-appropriate stage, e.g. REACH, ALIGN, GRASP, LIFT, MOVE, HOLD, PUSH, PLACE, RELEASE, RETREAT or REASON"
 									},
 									"target": {
 										"type": "string"
@@ -5346,7 +5346,7 @@
 			},
 			{
 				"name": "plan",
-				"description": "Subgoal plan: `stages` replaces the plan from the current stage on (ordered GRASP/LIFT/MOVE/PLACE/RELEASE/RETREAT/REASON stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
+				"description": "Subgoal plan: `stages` replaces the plan from the current stage on (ordered task-appropriate stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
 				"parameters": {
 					"type": "object",
 					"properties": {
@@ -5362,7 +5362,7 @@
 								"properties": {
 									"motion": {
 										"type": "string",
-										"description": "GRASP, LIFT, MOVE, PLACE, RELEASE, RETREAT or REASON"
+										"description": "Task-appropriate stage, e.g. REACH, ALIGN, GRASP, LIFT, MOVE, HOLD, PUSH, PLACE, RELEASE, RETREAT or REASON"
 									},
 									"target": {
 										"type": "string"
@@ -6105,7 +6105,7 @@
 			},
 			{
 				"name": "plan",
-				"description": "Subgoal plan: `stages` replaces the plan from the current stage on (ordered GRASP/LIFT/MOVE/PLACE/RELEASE/RETREAT/REASON stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
+				"description": "Subgoal plan: `stages` replaces the plan from the current stage on (ordered task-appropriate stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
 				"parameters": {
 					"type": "object",
 					"properties": {
@@ -6121,7 +6121,7 @@
 								"properties": {
 									"motion": {
 										"type": "string",
-										"description": "GRASP, LIFT, MOVE, PLACE, RELEASE, RETREAT or REASON"
+										"description": "Task-appropriate stage, e.g. REACH, ALIGN, GRASP, LIFT, MOVE, HOLD, PUSH, PLACE, RELEASE, RETREAT or REASON"
 									},
 									"target": {
 										"type": "string"
@@ -6555,7 +6555,7 @@
 			},
 			{
 				"name": "plan",
-				"description": "Subgoal plan: `stages` replaces the plan from the current stage on (ordered GRASP/LIFT/MOVE/PLACE/RELEASE/RETREAT/REASON stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
+				"description": "Subgoal plan: `stages` replaces the plan from the current stage on (ordered task-appropriate stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
 				"parameters": {
 					"type": "object",
 					"properties": {
@@ -6571,7 +6571,7 @@
 								"properties": {
 									"motion": {
 										"type": "string",
-										"description": "GRASP, LIFT, MOVE, PLACE, RELEASE, RETREAT or REASON"
+										"description": "Task-appropriate stage, e.g. REACH, ALIGN, GRASP, LIFT, MOVE, HOLD, PUSH, PLACE, RELEASE, RETREAT or REASON"
 									},
 									"target": {
 										"type": "string"
@@ -6879,7 +6879,7 @@
 			},
 			{
 				"name": "plan",
-				"description": "Subgoal plan: `stages` replaces the plan from the current stage on (ordered GRASP/LIFT/MOVE/PLACE/RELEASE/RETREAT/REASON stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
+				"description": "Subgoal plan: `stages` replaces the plan from the current stage on (ordered task-appropriate stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
 				"parameters": {
 					"type": "object",
 					"properties": {
@@ -6895,7 +6895,7 @@
 								"properties": {
 									"motion": {
 										"type": "string",
-										"description": "GRASP, LIFT, MOVE, PLACE, RELEASE, RETREAT or REASON"
+										"description": "Task-appropriate stage, e.g. REACH, ALIGN, GRASP, LIFT, MOVE, HOLD, PUSH, PLACE, RELEASE, RETREAT or REASON"
 									},
 									"target": {
 										"type": "string"
@@ -7665,7 +7665,7 @@
 			},
 			{
 				"name": "plan",
-				"description": "Subgoal plan: `stages` replaces the plan from the current stage on (ordered GRASP/LIFT/MOVE/PLACE/RELEASE/RETREAT/REASON stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
+				"description": "Subgoal plan: `stages` replaces the plan from the current stage on (ordered task-appropriate stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
 				"parameters": {
 					"type": "object",
 					"properties": {
@@ -7681,7 +7681,7 @@
 								"properties": {
 									"motion": {
 										"type": "string",
-										"description": "GRASP, LIFT, MOVE, PLACE, RELEASE, RETREAT or REASON"
+										"description": "Task-appropriate stage, e.g. REACH, ALIGN, GRASP, LIFT, MOVE, HOLD, PUSH, PLACE, RELEASE, RETREAT or REASON"
 									},
 									"target": {
 										"type": "string"
@@ -8253,7 +8253,7 @@
 			},
 			{
 				"name": "plan",
-				"description": "Subgoal plan: `stages` replaces the plan from the current stage on (ordered GRASP/LIFT/MOVE/PLACE/RELEASE/RETREAT/REASON stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
+				"description": "Subgoal plan: `stages` replaces the plan from the current stage on (ordered task-appropriate stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
 				"parameters": {
 					"type": "object",
 					"properties": {
@@ -8269,7 +8269,7 @@
 								"properties": {
 									"motion": {
 										"type": "string",
-										"description": "GRASP, LIFT, MOVE, PLACE, RELEASE, RETREAT or REASON"
+										"description": "Task-appropriate stage, e.g. REACH, ALIGN, GRASP, LIFT, MOVE, HOLD, PUSH, PLACE, RELEASE, RETREAT or REASON"
 									},
 									"target": {
 										"type": "string"
@@ -8709,7 +8709,7 @@
 			},
 			{
 				"name": "plan",
-				"description": "Subgoal plan: `stages` replaces the plan from the current stage on (ordered GRASP/LIFT/MOVE/PLACE/RELEASE/RETREAT/REASON stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
+				"description": "Subgoal plan: `stages` replaces the plan from the current stage on (ordered task-appropriate stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
 				"parameters": {
 					"type": "object",
 					"properties": {
@@ -8725,7 +8725,7 @@
 								"properties": {
 									"motion": {
 										"type": "string",
-										"description": "GRASP, LIFT, MOVE, PLACE, RELEASE, RETREAT or REASON"
+										"description": "Task-appropriate stage, e.g. REACH, ALIGN, GRASP, LIFT, MOVE, HOLD, PUSH, PLACE, RELEASE, RETREAT or REASON"
 									},
 									"target": {
 										"type": "string"

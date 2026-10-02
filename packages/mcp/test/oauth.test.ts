@@ -265,10 +265,12 @@ describe("MCP OAuth", () => {
 				openGetStream: false,
 			}),
 		);
+		// Neither token response names a scope, so the grant has the requested scope.
 		expect(provider.tokenSet).toEqual({
 			access_token: "refreshed-token",
 			refresh_token: "refresh-token",
 			token_type: "Bearer",
+			scope: "org:read",
 		});
 		expect(refreshes).toBe(1);
 		await refreshedClient.close();
@@ -347,7 +349,7 @@ describe("MCP OAuth", () => {
 	it("asks for authorization instead of refreshing when the server needs more scope", async () => {
 		const provider = new TestOAuthProvider("http://127.0.0.1/callback");
 		provider.client = { client_id: "client" };
-		provider.tokenSet = { access_token: "a1", refresh_token: "r1", token_type: "Bearer" };
+		provider.tokenSet = { access_token: "a1", refresh_token: "r1", token_type: "Bearer", scope: "repo read:org" };
 		const origin = await listen(async (request, response, serverOrigin) => {
 			const url = new URL(request.url ?? "/", serverOrigin);
 			if (url.pathname === "/.well-known/oauth-authorization-server") {
@@ -377,7 +379,8 @@ describe("MCP OAuth", () => {
 				token: "a1",
 			}),
 		).rejects.toBeInstanceOf(McpOAuthAuthorizationRequiredError);
-		expect(provider.authorizationUrl?.searchParams.get("scope")).toBe("repo admin");
+		// The challenge may list only the missing scopes; the new grant keeps the old ones too.
+		expect(provider.authorizationUrl?.searchParams.get("scope")).toBe("repo read:org admin");
 		// The working grant is kept until the user authorizes the new scope.
 		expect(provider.tokenSet?.access_token).toBe("a1");
 	});
@@ -505,6 +508,26 @@ describe("OAuthCallbackServer pages", () => {
 			const response = await fetch(`${callback.redirectUrl}?code=abc&state=s1`);
 			expect(response.headers.get("content-type")).toBe("text/plain; charset=utf-8");
 			expect(await response.text()).toBe("Authorization complete. You may close this window.");
+			expect((await pending).code).toBe("abc");
+		} finally {
+			await callback.close();
+		}
+	});
+
+	// #10302
+	it("rejects a response on another path than the expected one", async () => {
+		const callback = await OAuthCallbackServer.listen({ extraPaths: ["/callback/server-id"] });
+		try {
+			const origin = new URL(callback.redirectUrl).origin;
+			const mixedUp = callback.waitForCallback("s1", "/callback/server-id");
+			mixedUp.catch(() => undefined);
+			const wrong = await fetch(`${origin}/callback?code=abc&state=s1`);
+			expect(wrong.status).toBe(400);
+			await expect(mixedUp).rejects.toThrow("arrived on another redirect URI");
+
+			const pending = callback.waitForCallback("s2", "/callback/server-id");
+			const right = await fetch(`${origin}/callback/server-id?code=abc&state=s2`);
+			expect(right.status).toBe(200);
 			expect((await pending).code).toBe("abc");
 		} finally {
 			await callback.close();

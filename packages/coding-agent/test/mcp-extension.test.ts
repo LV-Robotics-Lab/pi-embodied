@@ -145,18 +145,32 @@ describe("MCP config", () => {
 						url: "https://a.example/mcp",
 						oauth: { authServerMetadataUrl: "http://idp.example/m" },
 					},
+					// #10302
+					cimd: {
+						url: "https://a.example/mcp",
+						oauth: { clientRegistration: "cimd", callbackUrl: "http://localhost/callback" },
+					},
+					badRegistration: { url: "https://a.example/mcp", oauth: { clientRegistration: "auto" } },
+					cimdClient: { url: "https://a.example/mcp", oauth: { clientRegistration: "cimd", clientId: "x" } },
+					cimdPath: {
+						url: "https://a.example/mcp",
+						oauth: { clientRegistration: "cimd", callbackUrl: "http://127.0.0.1/cb" },
+					},
 				},
 			},
 			{},
 		);
 		const { servers, errors } = loadMcpConfig({ ...paths, projectTrusted: false });
-		expect(servers.map((server) => server.name)).toEqual(["ok", "ipv6", "same", "named", "metadata"]);
+		expect(servers.map((server) => server.name)).toEqual(["ok", "ipv6", "same", "named", "metadata", "cimd"]);
 		expect(errors).toEqual([
 			expect.stringContaining('server "remote": oauth.callbackUrl must be an http URI on localhost'),
 			expect.stringContaining('server "both": oauth.callbackUrl and oauth.callbackPort name different ports'),
 			expect.stringContaining('server "scope": oauth.scope must be a string'),
 			expect.stringContaining('server "unnamed": oauth.clientName must be a non-empty string'),
 			expect.stringContaining('server "plainMetadata": oauth.authServerMetadataUrl must be an https URL'),
+			expect.stringContaining('server "badRegistration": oauth.clientRegistration must be "dcr" or "cimd"'),
+			expect.stringContaining('server "cimdClient": oauth.clientRegistration "cimd" cannot be combined'),
+			expect.stringContaining('server "cimdPath": oauth.clientRegistration "cimd" requires oauth.callbackUrl'),
 		]);
 	});
 

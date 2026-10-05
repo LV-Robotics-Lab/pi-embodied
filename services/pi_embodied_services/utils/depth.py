@@ -123,6 +123,33 @@ def fuse_depth(
     return fused, report
 
 
+def pinhole_intrinsics(K: Any) -> np.ndarray:
+    """The pinhole intrinsics (positive focal lengths, no skew) of a view whose ``K`` is a
+    sensor's K taken through the view's pixel map (``view_pixel_map``: a rotation by a
+    multiple of 90 degrees and/or a mirror, then a crop and a letterbox).
+
+    Such a view is the same camera turned or mirrored about its optical axis, so its depth is
+    the sensor's; only the matrix form differs: a quarter turn moves the focal lengths off
+    the diagonal and makes one negative ("K must have positive focal lengths" from the
+    UniDepth server on a ManiSkill wrist view, verify3 bug 40). The focal lengths are the
+    magnitudes of the one nonzero entry per row of ``K``'s 2x2 block, the principal point
+    is ``K``'s last column. A ``K`` of another shape, or with a genuine skew (both entries
+    of a row nonzero), is returned as given for the server to judge.
+    """
+    K = np.asarray(K, dtype=np.float64)
+    if K.shape != (3, 3) or not np.all(np.isfinite(K)):
+        return K
+    M = K[:2, :2]
+    diag, anti = abs(M[0, 0]) + abs(M[1, 1]), abs(M[0, 1]) + abs(M[1, 0])
+    tol = 1e-6 * max(diag, anti, 1.0)
+    if diag > tol and anti > tol:
+        return K
+    fx, fy = (
+        (abs(M[0, 1]), abs(M[1, 0])) if anti > tol else (abs(M[0, 0]), abs(M[1, 1]))
+    )
+    return np.array([[fx, 0.0, K[0, 2]], [0.0, fy, K[1, 2]], [0.0, 0.0, 1.0]])
+
+
 class DepthEstimator:
     """Client of the ``unidepth`` service (``components/unidepth_server.py``)."""
 
@@ -148,7 +175,8 @@ class DepthEstimator:
             K = np.asarray(K, dtype=np.float64)
             if K.shape != (3, 3):
                 raise ValueError(f"K must be 3x3, got shape {K.shape}")
-            kwargs["K"] = K
+            # A turned or mirrored view's K in the form a depth model takes (same depth).
+            kwargs["K"] = pinhole_intrinsics(K)
         result = self._client.call("depth.estimate", (), kwargs, timeout_s=timeout_s)
         depth = np.asarray(result["depth"], dtype=np.float32)
         if depth.shape != rgb.shape[:2]:
@@ -164,5 +192,6 @@ __all__ = [
     "MIN_DEPTH_M",
     "DepthEstimator",
     "fuse_depth",
+    "pinhole_intrinsics",
     "valid_depth",
 ]

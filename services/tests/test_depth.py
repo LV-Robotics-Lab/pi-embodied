@@ -23,7 +23,11 @@ import numpy as np
 import pytest
 
 from pi_embodied_services.components.unidepth_server import UniDepthFacade, decode_rgb
-from pi_embodied_services.utils.depth import DepthEstimator, fuse_depth
+from pi_embodied_services.utils.depth import (
+    DepthEstimator,
+    fuse_depth,
+    pinhole_intrinsics,
+)
 
 Image = pytest.importorskip("PIL.Image")
 
@@ -160,6 +164,39 @@ class FakeRpc:
             "model": "m",
             "inference_s": 0.1,
         }
+
+
+def test_pinhole_intrinsics_of_a_turned_or_mirrored_view() -> None:
+    """verify3 bug 40: ManiSkill's wrist view is the sensor turned 270 degrees, so its
+    intrinsics (view_pixel_map @ K) have no diagonal focal lengths and the UniDepth server
+    refused them ("K must have positive focal lengths"). Values recorded on the box
+    (PickCube-v1, panda, --view-size 256, 2026-10-05)."""
+    wrist_view = np.array([[0.0, -128.0, 127.0], [128.0, 0.0, 128.0], [0.0, 0.0, 1.0]])
+    assert np.array_equal(
+        pinhole_intrinsics(wrist_view),
+        [[128.0, 0.0, 127.0], [0.0, 128.0, 128.0], [0.0, 0.0, 1.0]],
+    )
+    # The agentview (640x480 letterboxed into 256: K scaled by 0.4) is a pinhole already.
+    agent_view = np.array(
+        [[166.27686767578126, 0, 127.7], [0, 166.27686767578126, 127.7], [0, 0, 1]]
+    )
+    assert np.array_equal(pinhole_intrinsics(agent_view), agent_view)
+    # A mirrored view (a horizontal flip negates fx): the magnitude.
+    mirrored = np.array([[-200.0, 0, 319.0], [0, 200.0, 240.0], [0, 0, 1]])
+    assert pinhole_intrinsics(mirrored)[0, 0] == 200.0
+    # Not a turned pinhole (a genuine skew): returned as given for the server to judge.
+    skewed = np.array([[200.0, 3.0, 320.0], [0, 200.0, 240.0], [0, 0, 1]])
+    assert np.array_equal(pinhole_intrinsics(skewed), skewed)
+    assert pinhole_intrinsics(np.eye(4)).shape == (4, 4)
+    # The client sends the pinhole form, so the server's check passes for the turned view.
+    rpc = FakeRpc()
+    DepthEstimator(rpc).estimate(np.zeros((256, 256, 3), np.uint8), wrist_view)
+    sent = rpc.calls[0][1]["K"]
+    assert sent[0, 0] == 128.0 and sent[1, 1] == 128.0 and sent[0, 1] == 0.0
+    facade = UniDepthFacade(FakeBackend(), resolution_level=4)
+    with pytest.raises(ValueError, match="positive focal lengths"):
+        facade.estimate(np.zeros((6, 8, 3), np.uint8), K=wrist_view)
+    assert facade.estimate(np.zeros((6, 8, 3), np.uint8), K=sent)["used_intrinsics"]
 
 
 def test_depth_estimator_client_contract() -> None:

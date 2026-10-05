@@ -46,8 +46,10 @@
 # lock once, exclusively, before starting the workers and holds it until they have all finished; the
 # workers and their pi processes and env servers do not hold it. Taking it per worker or per episode
 # would serialize the workers (an exclusive flock admits one holder), and a worker waiting on it while
-# its siblings run would deadlock with anything that waits for this run to finish. The flip side: a
-# service this run needs must not be started under the same lock, or this script waits forever.
+# its siblings run would deadlock with anything that waits for this run to finish. The workers run
+# eval.sh with LOCK unset: a serial `humanclaw/eval.sh` takes LOCK per episode itself, and under this
+# run it would wait on this run's own lock. The flip side: a service this run needs must not be started
+# under the same lock, or this script waits forever.
 # Heavy: robolab, robodojo and behavior (Isaac Sim), robotwin (cuRobo) and humanclaw (Habitat + a motion model). Light: libero, maniskill, metaworld,
 # robosuite, genesis and robocasa (an EGL, SAPIEN or Genesis renderer per episode, the planner off the
 # GPU); they share the GPU with whatever else runs and never take LOCK (it is noted and ignored), so a
@@ -253,8 +255,9 @@ worker() { # <k>
 		read -ra mine <<<"${vargs[v]}"
 		[ "$envs" = - ] && envs=""
 		# Runner args first: the user's args follow, so theirs win and a trailing bare flag stays last.
+		# LOCK is this run's (taken once above, never per episode): eval.sh must not see it.
 		# shellcheck disable=SC2086
-		env $envs bash "$script" "$vout" $args ${extra[@]+"${extra[@]}"} ${common[@]+"${common[@]}"} ${mine[@]+"${mine[@]}"} \
+		env -u LOCK $envs bash "$script" "$vout" $args ${extra[@]+"${extra[@]}"} ${common[@]+"${common[@]}"} ${mine[@]+"${mine[@]}"} \
 			</dev/null >"$state/w$k.call" 2>&1
 		rc=$?
 		cat "$state/w$k.call" >>"$log"

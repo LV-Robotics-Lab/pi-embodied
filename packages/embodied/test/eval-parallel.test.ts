@@ -380,6 +380,28 @@ test("workers get their GPU and the EGL device on its PCI bus; only a heavy robo
 	assert.equal(s.calls().at(-1)?.slice(1).join(" "), "CVD=unset EGL=unset ORDER=unset");
 });
 
+test("humanclaw under LOCK: the run takes the lock once and its workers' eval.sh runs with LOCK unset (no per-episode flock on this run's own lock)", () => {
+	const s = sandbox();
+	const flocks = join(s.dir, "flock.log");
+	// A flock that only logs and never runs its command: an eval.sh that wrapped pi in `flock $LOCK`
+	// would run no episode (as on the box, where it waits on this run's lock), and the cell would be missing.
+	s.tool("flock", `printf "%s\\n" "$*" >>"${flocks}"`);
+	// The humanclaw venv lists the episodes: one unit per key.
+	const py = join(s.dir, "bin/hc-python");
+	writeFileSync(py, `#!/usr/bin/env bash\nk=\${@: -1}\nprintf '%s\\t%s\\t-\\t--episodes %s\\n' "$k" "$k" "$k"\n`);
+	chmodSync(py, 0o755);
+	const out = join(s.dir, "hc");
+	const r = s.run(["-j", "1", "humanclaw", out, "sceneA_ep2_couch", "--mode", "pi", "--model", "p/m"], {
+		LOCK: join(s.dir, "gpu1.lock"),
+		HUMANCLAW_PYTHON: py,
+	});
+	assert.equal(r.status, 0, r.stdout + r.stderr);
+	assert.deepEqual(readFileSync(flocks, "utf8").trim().split("\n"), ["-n 9"], "the lock is taken once, by the run");
+	assert.deepEqual(cells(out), { sceneA_ep2_couch: "success" });
+	const argv = readFileSync(join(out, "sceneA_ep2_couch/argv"), "utf8").split("\n");
+	assert.equal(argv[argv.indexOf("--episode") + 1], "sceneA_ep2_couch");
+});
+
 test("robosuite '-' runs the seven CaP-X tasks; genesis and behavior are supported; behavior takes the lock", () => {
 	const s = sandbox();
 	const seven = ["Lift", "Stack", "Restack", "Wipe", "NutAssemblySquare", "TwoArmLift", "TwoArmHandover"];

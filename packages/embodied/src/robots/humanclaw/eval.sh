@@ -12,8 +12,10 @@
 # Rerunning retries only invalid episodes and refuses an out dir holding another configuration.
 # With --metrics the summary is HumanCLAW's own aggregate_metric_files() over every metrics.json
 # (summary.json, and metrics_summary.json beside it), run with $HUMANCLAW_PYTHON (the humanclaw venv).
-# Heavy: with LOCK set (e.g. /root/autodl-tmp/locks/gpu1.lock) each episode takes it with flock and
-# releases it between episodes, so other GPU jobs interleave; scripts/eval-parallel.sh takes it once.
+# Heavy: run serially with LOCK set (e.g. /root/autodl-tmp/locks/gpu1.lock), each episode takes it
+# with flock and releases it between episodes, so other GPU jobs interleave. scripts/eval-parallel.sh
+# takes it once for the whole run and starts this script with LOCK unset (an episode taking it here
+# would wait on that run's own lock).
 set -uo pipefail
 out=${1:?usage: eval.sh <out-dir> [--episodes ...] [--mode paper|pi] [--metrics] [--video] [pi args...]}
 shift

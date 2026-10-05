@@ -387,8 +387,8 @@ signature as pi's wrappers adapt them, `src/primitives/arguments.ts`), plus `obs
 observation path, `src/observation/path.ts`: the manifest's `get_observation`, else `render_camera`
 per camera and `get_state` with the robot's cameras, size and orientation), `reset`, `finish`,
 `stop`, `resume` and `robot_status`. Motion fails closed: no `healthz` now, another process on the port, a
-`stop` latch, a finished episode or a server that stopped answering all refuse; a busy arm (the
-hardware lock) fails the start. Not served, by design: `side: ts` tools (VLA adapters, waypoints,
+`stop` latch, a finished episode, a server that stopped answering, or a real arm without the operator's
+authorisation (below) all refuse; a busy arm (the hardware lock) fails the start. Not served, by design: `side: ts` tools (VLA adapters, waypoints,
 state viewers, advisors), module-owned tools, units, code mode (`run_code`), VDM, memory, exploration,
 replay, evaluation and `result.json`. Run `pi` for those.
 
@@ -404,19 +404,44 @@ robot; `PI_EMBODIED_DEPLOYMENT`, `PI_EMBODIED_TIER` (`high|low|raw`), `PI_EMBODI
 `PI_EMBODIED_NO_RESET=1` (a simulator's env is reset once at start, as every robot's session does;
 this skips it) are optional. A real arm (Franka, dual Franka, Piper, UR5e) is never reset when the
 server connects: pi's own start asks the operator before that motion, so here it is the `reset`
-tool, gated by the hosts' hooks like every motion.
+tool, under the operator gate like every motion.
+
+**The operator gate on a real arm is the server's own** (`src/integrations/mcp/gate.ts`) and does
+not depend on the host: on a real robot every motion tool and `reset` is refused unless the operator
+authorised it through a channel the model cannot reach, and the refusal names both channels. Either
+
+- `PI_EMBODIED_CONFIRM_FILE=/path` (`--confirm-file`; **recommended, and the one to use with
+  Codex**): before each motion the operator writes the tool's name into that file
+  (`echo move_delta > /path`); the next call of that tool consumes it (the file is removed), any
+  other call is refused and leaves it, an empty file or a ticket older than 10 minutes is refused.
+  Put the file where only the operator can write: outside the model's workspace and outside `/tmp`
+  (Codex's `workspace-write` sandbox allows both of those; the server warns when the path is under
+  either), e.g. `~/.pi/agent/confirm-ur5e`. Or
+- `PI_EMBODIED_MOTION_CONFIRMED=1` exported before the host starts, so it is in the server's
+  environment at launch: **the whole session's motions are authorised**, as if the operator had
+  confirmed every call in advance. For a bench with nobody in the arm's reach, nothing else.
+
+Simulators are not gated by the server (the hosts' own approval still applies). `robot_status`
+reports the gate (`operator_gate`: real, session_confirmed, confirm_file, the ticket on file). The
+hosts' PreToolUse hooks (below) remain a second layer where they run.
 
 Claude Code (2.1.220 or later):
 
 ```bash
 claude plugin marketplace add LV-Robotics-Lab/pi-embodied
 claude plugin install pi-embodied@pi-embodied        # asks for the checkout, the robot, env_url or serve_args, ...
+# non-interactive: every option as --config key=value
+claude plugin install pi-embodied@pi-embodied --config repo=/path/to/pi-embodied --config robot=libero \
+  --config env_url=http://127.0.0.1:PORT                # --config confirm_file=~/.pi/agent/confirm-ur5e on a real arm
 claude --plugin-dir packages/embodied/integrations/claude-code   # from a checkout, with PI_EMBODIED_* exported
+claude -p "Check the robot with robot_status and observe, then describe the scene." \
+  --allowedTools mcp__pi-embodied__robot_status,mcp__pi-embodied__observe   # the prompt comes before --allowedTools
 ```
 
 `/pi-embodied:robot-status` checks the robot without moving it. A PreToolUse hook asks the operator
 before high-risk motions, with `--approval standard`'s classes (grasp/place execution, resets, moves
-to an absolute target, relative moves over 0.1 m, and every motion on a real robot).
+to an absolute target, relative moves over 0.1 m, and every motion on a real robot); the hook runs
+(verified with `hook.ts --decision ask`), and on a real arm the server's gate above applies as well.
 
 Codex (0.160 or later):
 
@@ -424,19 +449,30 @@ Codex (0.160 or later):
 codex plugin marketplace add LV-Robotics-Lab/pi-embodied
 codex plugin add pi-embodied@pi-embodied
 export PI_EMBODIED_ROOT=/path/to/pi-embodied PI_EMBODIED_ROBOT=libero PI_EMBODIED_ENV_URL=http://127.0.0.1:PORT
+codex exec -s workspace-write "Check the robot with robot_status and observe, then describe the scene."
+# codex exec has no --full-auto: -s workspace-write (the sandbox) and --approve-for-me (the model
+# answers Codex's approval prompts itself) are the knobs. On a real arm, --approve-for-me without the
+# server's gate would let the model move the robot: set PI_EMBODIED_CONFIRM_FILE first.
 ```
 
-Codex passes exactly the `PI_EMBODIED_*` variables through to the server. Every motion tool is
-`approval_mode: "prompt"` in the plugin's `.mcp.json` (generated from the manifests), and the same
-PreToolUse hook denies a high-risk motion unless `PI_EMBODIED_MOTION_CONFIRMED=1` is exported (Codex
-hooks cannot ask; plugin hooks run only after you trust them in Codex's hook review).
+Codex passes exactly the `PI_EMBODIED_*` variables through to the server (`env_vars` in the plugin's
+`.mcp.json`). Every motion tool is `approval_mode: "prompt"` in that `.mcp.json` (generated from the
+manifests), which is Codex's own approval. **Codex 0.160 runs no plugin hooks**: it lists
+`plugin_hooks` among its removed features, and the plugin's PreToolUse hook never ran in the
+end-to-end test (not with `RUST_LOG=debug`, not with `--dangerously-bypass-hook-trust`); with
+`--approve-for-me` the model drove the LIBERO arm with nothing in the way but the server. So on a
+real arm the server-side gate is the protection in Codex, not the hook: start with
+`PI_EMBODIED_CONFIRM_FILE` and write each ticket yourself. The hook stays in the plugin for a Codex
+that runs hooks again. Codex copies the plugin into its cache from the marketplace clone and
+re-materialises it when the marketplace's `main` moves (`codex plugin marketplace update`, or a
+fresh `codex plugin add`), so a running Codex keeps the plugin files of the commit it installed.
 
 Direct, without a host plugin:
 `node --experimental-strip-types packages/embodied/src/integrations/mcp/server.ts --robot libero --env http://127.0.0.1:PORT#token=HEX`
-(or `--serve -- --suite libero_10 --task 0 --seed 0`); `--list` prints the tool list without a server.
-The plugins live in `packages/embodied/integrations/`: `shared/` holds the skills and scripts once,
-`node packages/embodied/integrations/sync.mjs` copies them into both plugins and generates
-`codex/.mcp.json`; `test/integrations.test.ts` fails on drift.
+(or `--serve -- --suite libero_10 --task 0 --seed 0`; `--confirm-file /path` on a real arm); `--list`
+prints the tool list without a server. The plugins live in `packages/embodied/integrations/`:
+`shared/` holds the skills and scripts once, `node packages/embodied/integrations/sync.mjs` copies
+them into both plugins and generates `codex/.mcp.json`; `test/integrations.test.ts` fails on drift.
 
 ## LIBERO
 

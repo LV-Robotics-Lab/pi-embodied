@@ -1,5 +1,5 @@
 {
-	"description": "Operator gate on pi-embodied motion tools. Codex hooks cannot prompt, so a high-risk motion (--approval standard's classes; every motion on a real robot) is denied unless the operator exported PI_EMBODIED_MOTION_CONFIRMED=1; the plugin's .mcp.json also marks every motion tool approval_mode prompt.",
+	"description": "Second-layer operator gate on pi-embodied motion tools. Codex 0.160 runs no plugin hooks (plugin_hooks is a removed feature), so this hook is kept for a Codex that does; the protection on a real robot is the MCP server's own gate (PI_EMBODIED_CONFIRM_FILE tickets or PI_EMBODIED_MOTION_CONFIRMED=1 at launch). Where it runs: a high-risk motion (--approval standard's classes; every motion on a real robot) is denied unless PI_EMBODIED_MOTION_CONFIRMED=1 is exported; the plugin's .mcp.json also marks every motion tool approval_mode prompt.",
 	"hooks": {
 		"PreToolUse": [
 			{

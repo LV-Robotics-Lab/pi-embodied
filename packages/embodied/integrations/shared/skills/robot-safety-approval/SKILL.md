@@ -9,8 +9,16 @@ description: The safety and approval rules for pi-embodied robot tools - which m
 
 The env server enforces the robot's limits for every caller (per-call move and rotation caps,
 workspace box, z floor, reach and collision checks where IK is on); a refusal is final for that
-call. On top of that the plugin's PreToolUse hook asks the operator before high-risk motions, with
-the same risk classes as pi's `--approval standard`:
+call. On a real robot (Franka, dual Franka, Piper, UR5e) the MCP server itself refuses every motion
+tool and `reset` unless the operator authorised it outside this session: either the server was
+started with `PI_EMBODIED_MOTION_CONFIRMED=1` (the whole session), or the operator wrote the tool's
+name into the server's confirm file (`--confirm-file` / `PI_EMBODIED_CONFIRM_FILE`) right before
+the call, which that one call consumes. The refusal names both channels; you cannot satisfy either:
+tell the operator which tool you want to call and why, then wait. Never write to the confirm file
+yourself, and never ask for the variable to be set to get past one refusal.
+
+On top of that the plugin's PreToolUse hook asks the operator before high-risk motions, with the
+same risk classes as pi's `--approval standard`:
 
 - grasp or place execution (`execute_grasp`, `execute_place`, `release`, VLA skills) and resets,
   including the built-in `reset` (a simulator's new episode; on a real arm the gripper opens and the
@@ -19,10 +27,11 @@ the same risk classes as pi's `--approval standard`:
 - a relative move commanding more than 0.1 m (`--large-move`);
 - on a real robot (Franka, dual Franka, Piper, UR5e): every motion.
 
-Claude Code prompts the operator (`permissionDecision: ask`). Codex has no prompt from a hook, so
-there the hook denies a high-risk motion unless the operator exported `PI_EMBODIED_MOTION_CONFIRMED=1`
-for the session; the plugin's `.mcp.json` also marks every motion tool `approval_mode: "prompt"`, so
-Codex itself asks before each one. Do not look for a way around a denial: report it and wait.
+Claude Code prompts the operator (`permissionDecision: ask`). Codex 0.160 runs no plugin hooks at
+all; there the plugin's `.mcp.json` marks every motion tool `approval_mode: "prompt"` so Codex itself
+asks before each one, and on a real robot the server's gate above is what protects the arm (with
+`--approve-for-me` the model answers Codex's prompt, not the operator). Do not look for a way around
+a denial: report it and wait.
 
 ## Stop, resume, E-stop
 

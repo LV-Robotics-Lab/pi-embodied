@@ -1,5 +1,5 @@
 {
-	"description": "Operator gate on pi-embodied motion tools: high-risk motions (--approval standard's classes; every motion on a real robot) ask the operator before they run.",
+	"description": "Operator gate on pi-embodied motion tools: high-risk motions (--approval standard's classes; every motion on a real robot) ask the operator before they run. A second layer: on a real robot the MCP server's own gate also needs the operator's ticket (confirm_file) or PI_EMBODIED_MOTION_CONFIRMED=1 at launch.",
 	"hooks": {
 		"PreToolUse": [
 			{

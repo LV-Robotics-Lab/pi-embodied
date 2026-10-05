@@ -685,6 +685,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 			const misconfigured =
 				configProblem(pi) ??
 				paramsError(pi) ??
+				mem?.configError() ??
 				tr.configError() ??
 				un?.configError() ??
 				co?.configError() ??

@@ -116,11 +116,25 @@ export async function checkSimExplore(o: {
 		assert.match(String(refused?.reason), /DISTIL/);
 	}
 
-	// A memory run (--memory-dir) without a corpus refuses to start instead of skipping memory silently.
+	// A memory run (--memory-dir) without a corpus refuses to start instead of skipping memory silently:
+	// the robot's fail-closed start (no tools, exit code 1), not a thrown handler (bug 38).
 	const bare = stubPi({ ...o.values, "memory-dir": "memory" });
 	o.load(bare.pi);
 	mkdirSync(join(bare.dir, "memory"));
-	await assert.rejects(bare.emit("session_start"), /local memory corpus not found/, "no corpus: the run refuses");
+	const lines: string[] = [];
+	const log = console.error;
+	console.error = (line: string) => lines.push(String(line));
+	try {
+		await bare.emit("session_start");
+	} finally {
+		console.error = log;
+	}
+	assert.deepEqual(bare.active(), [], "no corpus: the run refuses");
+	assert.equal(process.exitCode, 1);
+	assert.ok(
+		lines.some((l) => /unavailable: local memory corpus not found/.test(l)),
+		`the refusal is reported: ${lines.join(" | ")}`,
+	);
 	process.exitCode = undefined;
 
 	const e = stubPi({ ...o.values, "memory-dir": "memory" });

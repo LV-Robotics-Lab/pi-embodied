@@ -300,7 +300,10 @@ test("guard fails closed without a cell, output dir or session_start", async () 
 		] as const)
 			assert.match(call(tool, path)?.reason ?? "", /file access is disabled/, `${JSON.stringify(setup)} ${tool}`);
 	}
-	await assert.rejects(guarded({ cell: "../x" }), /invalid memory cell tag/);
+	// A bad cell tag is a start problem the robot reads (robot.ts), not a thrown handler.
+	const bad = await guarded({ cell: "../x" });
+	assert.match(bad.mem.configError() ?? "", /invalid memory cell tag/);
+	assert.match(bad.call("read", join(bad.home, "libero", "MEMORY.md"))?.reason ?? "", /file access is disabled/);
 });
 
 test("a robot without a published corpus defaults to its local memory, empty or not; asking for it explicitly still needs one", async () => {
@@ -324,6 +327,10 @@ test("a robot without a published corpus defaults to its local memory, empty or 
 		return m;
 	};
 	// No HF sync is attempted (it would need the network) and the missing corpus is no error.
-	assert.equal((await start({})).profile, "local");
-	await assert.rejects(start({ "memory-profile": "local" }), /local memory corpus not found/);
+	const plain = await start({});
+	assert.equal(plain.profile, "local");
+	assert.equal(plain.configError(), undefined);
+	// Bug 38: the missing corpus is recorded for robot.ts's fail-closed start, not thrown
+	// (pi logs a throwing session_start handler and the episode would run memory-less).
+	assert.match((await start({ "memory-profile": "local" })).configError() ?? "", /local memory corpus not found/);
 });

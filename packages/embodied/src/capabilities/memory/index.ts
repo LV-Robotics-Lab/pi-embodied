@@ -257,9 +257,25 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 		outputDir = out ? canonicalPath(out, ctx.cwd) : "";
 	}
 
+	/** Why this session cannot have memory (robot.ts refuses to start), else undefined. */
+	let problem: string | undefined;
+
+	// A failure here is a fail-closed start, not an extension error: pi would log a throwing
+	// handler and go on, and the robot's own session_start would run the episode memory-less
+	// (verify3 bug 38). The problem is recorded and robot.ts reads it before the robot boots.
 	pi.on("session_start", async (_event, ctx) => {
 		guard = undefined;
 		loaded = {};
+		problem = undefined;
+		try {
+			await establish(ctx);
+		} catch (err) {
+			guard = undefined;
+			problem = err instanceof Error ? err.message : String(err);
+		}
+	});
+
+	async function establish(ctx: ExtensionContext) {
 		locate(ctx);
 		cell = opts.cell?.();
 		if (!cell) return;
@@ -290,7 +306,7 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 			!["global", "suite", "task_only"].some((s) => hasFiles(join(root, s)))
 		)
 			throw new Error(`local memory corpus not found at ${root}; run exploration first or use --memory-profile hf`);
-	});
+	}
 
 	// A robot's file tools fail closed: until session_start has established every root, nothing is reachable.
 	pi.on("tool_call", (event, ctx) => {
@@ -404,6 +420,8 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 	return {
 		/** Built-in tools the agent uses on memory; add them to setActiveTools. */
 		tools: ["read", "ls", "grep", "find", "write", ...(opts.audit ? ["write_audit"] : [])],
+		/** Why memory could not be established this session (no corpus, a bad cell tag or profile); robot.ts fails the start with it. */
+		configError: () => problem,
 		/** The memory files the agent read this episode, with their SHA-256 at the time. */
 		loaded: () => ({ ...loaded }),
 		get profile() {

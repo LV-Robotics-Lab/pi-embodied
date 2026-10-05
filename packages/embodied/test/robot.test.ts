@@ -202,6 +202,29 @@ test("memory's session_start sees the resolved task", async (t) => {
 	assert.ok((await f.emit("tool_call", { toolName: "read", input: { path: "/etc/passwd" } }))?.block);
 });
 
+test("memory without a corpus is a fail-closed start: no tools, one env_error result, not a memory-less episode", async (t) => {
+	// verify3 bug 38: memory's session_start threw, pi logged an extension error, and the robot
+	// started without memory as a valid failure.
+	const f = fakePi({ "memory-profile": "local" });
+	t.after(f.restore);
+	const robot = toy(f.pi, async () => ["move", "finish"], {
+		memory: {
+			home: () => join(f.dir, "memory"),
+			cell: () => ({ tag: `cell_${robot.task.suite}`, reference: "" }),
+			primitives: ["move"],
+		},
+	});
+	await f.emit("session_start");
+	assert.deepEqual(f.active(), []);
+	assert.equal(f.stderr.length, 1);
+	assert.match(f.stderr[0], /^\[toy\] unavailable: local memory corpus not found at .*memory\/toy; run exploration first/);
+	assert.equal(process.exitCode, 1);
+	await f.emit("session_shutdown");
+	const results = f.entries.filter((e) => e.type === RESULT_ENTRY);
+	assert.equal(results.length, 1);
+	assert.equal(results[0].data.env_error, true);
+});
+
 test("pure units mode keeps memory: the file tools stay and memory's section follows the units prompt", async (t) => {
 	const f = fakePi({ "memory-profile": "local", units: "true", "units-plugins": "" });
 	t.after(f.restore);

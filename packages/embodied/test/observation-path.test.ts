@@ -7,19 +7,29 @@
  */
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { type Call, flipRows, observationPath, robotObservation } from "../src/observation/path.ts";
 import { loadManifest, type Manifest } from "../src/primitives/manifest.ts";
 
 const all = () => true;
 
-test("LIBERO: get_observation for everything, render_camera by the facade's camera name at 1024, flipped", async () => {
+test("LIBERO: get_observation for everything, render_camera by the facade's camera name at its 512, flipped", async () => {
 	const decl = await robotObservation("libero");
 	assert.deepEqual(decl, {
 		cameras: { agentview: "agentview", wrist: "robot0_eye_in_hand" },
-		size: 1024,
+		size: 512,
 		flip: true,
 	});
+	// The size is the facade's own (GRASP_RES): segment, back_project, align_wrist and get_observation
+	// all speak 512x512 pixels, and MCP forwards a pixel without pi's scaling.
+	const server = readFileSync(
+		fileURLToPath(new URL("../../../services/pi_embodied_services/robots/libero/env_server.py", import.meta.url)),
+		"utf8",
+	);
+	assert.match(server, new RegExp(`^GRASP_RES = ${decl.size}$`, "m"));
+	assert.match(server, /^CODE_RES = GRASP_RES$/m);
 	const p = observationPath(loadManifest("libero"), all, {}, decl);
 	assert.equal(p.observation, "env.get_observation");
 	assert.equal(p.state, "env.get_state");
@@ -27,8 +37,8 @@ test("LIBERO: get_observation for everything, render_camera by the facade's came
 	assert.deepEqual(p.render?.cameras, { agentview: "agentview", wrist: "robot0_eye_in_hand" });
 	assert.deepEqual(p.render?.kwargs("robot0_eye_in_hand"), {
 		camera_name: "robot0_eye_in_hand",
-		height: 1024,
-		width: 1024,
+		height: 512,
+		width: 512,
 	});
 	assert.equal(p.render?.flip, true);
 });

@@ -149,8 +149,15 @@ const TOOLS = [
 	"finish",
 ];
 const CAMERAS = { agentview: "agentview", wrist: "robot0_eye_in_hand" } as const;
-/** Observed without pi (../../observation/path.ts): its cameras, the tools' 1024 render, MuJoCo's bottom-up rows. */
-export const OBSERVATION: ObservationDecl = { cameras: CAMERAS, size: 1024, flip: true };
+/** The env server's frame size for its own perception (GRASP_RES in libero/env_server.py). */
+export const FACADE_RES = 512;
+/**
+ * Observed without pi (../../observation/path.ts): its cameras, MuJoCo's bottom-up rows, and the facade's
+ * 512 views (env_server.py GRASP_RES): `get_observation`, `segment`, `back_project` and `align_wrist`
+ * all read and return pixels of the 512x512 frames, so a caller without pi's 1024 state history (and
+ * its pixel scaling) must see the same frames. pi's own tools render 1024 and scale (segment, back_project).
+ */
+export const OBSERVATION: ObservationDecl = { cameras: CAMERAS, size: FACADE_RES, flip: true };
 /** Units mode (../units): how the two images look, and which way each unit moves in them. */
 const VIEWS = `Each result shows the agentview, then the wrist view (verified in LIBERO: MV_FWD is world +x, MV_LEFT is -y).
 - Agentview (first image) faces the robot, whose base is at the image top: MV_LEFT / MV_RIGHT move the gripper toward the image left / right, MV_FWD toward the image bottom (toward the camera), MV_BACK toward the image top.

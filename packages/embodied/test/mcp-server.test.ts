@@ -386,13 +386,14 @@ test("observe returns the cameras as image content; finish ends the episode; sto
 			assert.equal(o.content.filter((c) => c.type === "image").length, 2);
 			assert.deepEqual(text(o).eef_pos, [0.1, 0.2, 0.3]);
 			assert.deepEqual(text(o).agentview.rgb, { image: 1, shape: [4, 4, 3] });
-			// One camera: LIBERO's own path (robots/libero OBSERVATION): the facade's camera name, the tools' size.
+			// One camera: LIBERO's own path (robots/libero OBSERVATION): the facade's camera name and its 512 views,
+			// the frames segment/back_project/align_wrist take pixels of (the same size get_observation returns).
 			const one = await mcp.callTool("observe", { camera: "wrist" });
 			assert.equal(one.content.filter((c) => c.type === "image").length, 1);
 			assert.deepEqual(text(one).wrist, { image: 1, shape: [4, 4, 3] });
 			assert.deepEqual(env.calls.at(-1), {
 				method: "env.render_camera",
-				kwargs: { camera_name: "robot0_eye_in_hand", height: 1024, width: 1024 },
+				kwargs: { camera_name: "robot0_eye_in_hand", height: 512, width: 512 },
 				token: undefined,
 			});
 			const none = await mcp.callTool("observe", { camera: "overhead" });

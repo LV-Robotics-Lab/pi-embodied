@@ -54,6 +54,9 @@
  * Modified by pi-embodied: core/runners/mvtoken.py, core/runners/dual_mvtoken.py, core/vlm/mvtoken_roles.py,
  * core/vlm/dual_mvtoken_roles.py and the bare-token, pair and chain shapes of core/vlm/vlm_client.py
  * ported as a pi provider; prompts/v3 and prompts/v4 lite and dual templates copied verbatim into ./templates/.
+ * ./templates/v5_libero_mvtoken.txt is not Show-Harness's: it is prompt_v5.txt of the Hugging Face dataset
+ * aaroncaozj/libero_show-harness_tokenized (MIT, gated), copied verbatim; its provenance, hash and terms are in
+ * services/pi_embodied_services/finetuned/showharness/prompts/v5/NOTICE.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -223,7 +226,8 @@ export function activeSubgoal(
 }
 /**
  * The v5 prompt: prompt_v5.txt of the gated HF dataset aaroncaozj/libero_show-harness_tokenized,
- * copied verbatim (sha256 f4550b74...6a2f; also services/.../showharness/prompts/v5/prompt_v5.txt).
+ * copied verbatim (sha256 f4550b74...6a2f; also services/.../showharness/prompts/v5/prompt_v5.txt, whose NOTICE
+ * records the dataset's declared license (MIT), its gating, the fetch and the hash).
  * `--ft-prompt v5-libero` runs it with the v5 rules; no other name does: an --ft-prompt that is neither a
  * prompt version nor a template file is refused before the first step (a misspelt v5-lite would otherwise
  * run the v5 prompt under v3's budget and rules).

@@ -1,0 +1,44 @@
+prompt_v5.txt: provenance and terms
+
+Source
+  Hugging Face dataset aaroncaozj/libero_show-harness_tokenized
+  https://huggingface.co/datasets/aaroncaozj/libero_show-harness_tokenized
+  File: prompt_v5.txt (the prompt the aaroncaozj LIBERO adapters,
+  huggingface.co/aaroncaozj/qwen3_5_9b_mvtoken_libero, were trained and measured with).
+
+Copy in this repository
+  services/pi_embodied_services/finetuned/showharness/prompts/v5/prompt_v5.txt and
+  packages/embodied/src/modes/finetuned/templates/v5_libero_mvtoken.txt (the provider's copy;
+  test/finetuned.test.ts checks that the two are identical and that this NOTICE names the hash).
+  sha256 f4550b74d0ee4ac6dbc6b0b69932ff4e896c16ca058898b7a8a11d3f3a4a6a2f
+  Fetched 2026-09-28 through hf-mirror.com on the lab's training box (commit 81cfbd6d9); the
+  dataset revision was not recorded at that time, so the hash above is the file's only identity.
+  Not modified. --ft-prompt v5-libero runs it (packages/embodied/src/modes/finetuned/index.ts).
+
+Terms, as the dataset page shows them (read 2026-10-05)
+  Declared license: MIT (the dataset's license tag).
+  Access: gated; the page asks the downloader to agree to share their contact information with
+  the dataset's authors. That agreement was given by the person who fetched the file.
+  The dataset card (README.md) carries no further license text and no copyright line.
+
+MIT License (the dataset's declared license, reproduced for this file)
+
+  Copyright (c) the authors of the Hugging Face dataset aaroncaozj/libero_show-harness_tokenized
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy of this software
+  and associated documentation files (the "Software"), to deal in the Software without
+  restriction, including without limitation the rights to use, copy, modify, merge, publish,
+  distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the
+  Software is furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all copies or
+  substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING
+  BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+  NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+  DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+The other prompts under ../v3 and ../v4 are Show-Harness's (github.com/showlab/Show-Harness
+@137d571), Apache License 2.0: see ../../LICENSE.

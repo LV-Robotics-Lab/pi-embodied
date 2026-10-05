@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -878,6 +879,17 @@ test("v5-libero runs the vendored prompt_v5.txt verbatim with the 15-unit vocabu
 	assert.deepEqual(allowedTokens(tpl.trim()), [...V5_ACTIONS]);
 	assert.equal(trainedTokens("v5-libero").length, 15);
 	assert.match(formatPrompt(tpl.trim(), { task: "t", recent_moves: "none" }), /^You are controlling a robot arm/);
+	// The file is not Show-Harness's: its NOTICE names the source dataset, the declared license and this exact hash (U4).
+	const notice = readFileSync(
+		new URL("../../../services/pi_embodied_services/finetuned/showharness/prompts/v5/NOTICE", import.meta.url),
+		"utf8",
+	);
+	assert.match(notice, /huggingface\.co\/datasets\/aaroncaozj\/libero_show-harness_tokenized/);
+	assert.match(notice, /Declared license: MIT/);
+	assert.ok(
+		notice.includes(createHash("sha256").update(vendored).digest("hex")),
+		"the NOTICE names the vendored file's sha256",
+	);
 });
 
 test("--ft-prompt names a prompt version or a template file; anything else is refused before the first step (U3)", async () => {
@@ -885,7 +897,11 @@ test("--ft-prompt names a prompt version or a template file; anything else is re
 	for (const name of ["v5-lite", "v5", "v6-libero"]) {
 		const p = fakePi({ "ft-prompt": name }, "libero");
 		await p.emit("session_start");
-		assert.match(p.warnings.join("\n"), new RegExp(`--ft-prompt ${name}: not a prompt version \\(.*v5-libero.*\\) and not a template file`), name);
+		assert.match(
+			p.warnings.join("\n"),
+			new RegExp(`--ft-prompt ${name}: not a prompt version \\(.*v5-libero.*\\) and not a template file`),
+			name,
+		);
 	}
 	assert.equal(isV5("v5"), false);
 	assert.equal(isV5("v5-libero"), true);

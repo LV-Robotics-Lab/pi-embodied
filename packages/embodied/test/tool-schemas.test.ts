@@ -9,6 +9,7 @@ import behavior from "../src/robots/behavior/index.ts";
 import dualFranka, { DUAL_FRANKA_UNITS } from "../src/robots/dual_franka/index.ts";
 import franka from "../src/robots/franka/index.ts";
 import genesis from "../src/robots/genesis/index.ts";
+import humanclaw from "../src/robots/humanclaw/index.ts";
 import libero from "../src/robots/libero/index.ts";
 import maniskill from "../src/robots/maniskill/index.ts";
 import metaworld from "../src/robots/metaworld/index.ts";
@@ -43,6 +44,7 @@ const ROBOTS: Record<string, (pi: ExtensionAPI) => unknown> = {
 	dual_franka: dualFranka,
 	franka,
 	genesis,
+	humanclaw,
 	libero,
 	maniskill,
 	metaworld,

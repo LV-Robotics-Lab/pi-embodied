@@ -56,6 +56,7 @@ const LOADERS: Record<string, () => Promise<{ default: (pi: ExtensionAPI) => unk
 	libero: () => import("../src/robots/libero/index.ts"),
 	metaworld: () => import("../src/robots/metaworld/index.ts"),
 	genesis: () => import("../src/robots/genesis/index.ts"),
+	humanclaw: () => import("../src/robots/humanclaw/index.ts"),
 	behavior: () => import("../src/robots/behavior/index.ts"),
 	maniskill: () => import("../src/robots/maniskill/index.ts"),
 	franka: () => import("../src/robots/franka/index.ts"),

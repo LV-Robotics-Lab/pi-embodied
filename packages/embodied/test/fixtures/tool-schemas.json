@@ -2307,6 +2307,137 @@
 				}
 			}
 		],
+		"humanclaw": [
+			{
+				"name": "act",
+				"description": "Execute one action unit of this robot (WALK, TURN_LEFT, TURN_RIGHT, SIDE_LEFT, SIDE_RIGHT, STEP_BACK, CLIMB_UP, WALK_DOWN, SIT, STOP) with its `param`, repeated n times. Returns the new images and state.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"unit"
+					],
+					"properties": {
+						"unit": {
+							"type": "string",
+							"enum": [
+								"WALK",
+								"TURN_LEFT",
+								"TURN_RIGHT",
+								"SIDE_LEFT",
+								"SIDE_RIGHT",
+								"STEP_BACK",
+								"CLIMB_UP",
+								"WALK_DOWN",
+								"SIT",
+								"STOP"
+							],
+							"description": "The action unit"
+						},
+						"target_visible": {
+							"type": "boolean",
+							"description": "TARGET CHECK: is the task's target visible in the current image?"
+						},
+						"param": {
+							"anyOf": [
+								{
+									"type": "string"
+								},
+								{
+									"type": "number"
+								}
+							],
+							"description": "The unit's parameter: WALK speed: slow | normal | fast, default slow; TURN_LEFT degree: 10..120 deg; TURN_RIGHT degree: 10..120 deg; SIDE_LEFT distance: 0.1..0.5 m, default 0.25; SIDE_RIGHT distance: 0.1..0.5 m, default 0.25; STEP_BACK distance: 0.1..0.6 m, default 0.25; SIT height: 0.15..0.85 m, default 0.5"
+						},
+						"n": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 10,
+							"description": "Repeat count (default 1; never for a unit that ends the episode)"
+						}
+					}
+				}
+			},
+			{
+				"name": "plan",
+				"description": "Subgoal plan: `stages` replaces the plan from the current stage on (ordered task-appropriate stages, each with a visible DONE WHEN); `done: true` marks the current stage complete. The current stage is shown in every act result.",
+				"parameters": {
+					"type": "object",
+					"properties": {
+						"stages": {
+							"type": "array",
+							"items": {
+								"type": "object",
+								"required": [
+									"motion",
+									"target",
+									"completion"
+								],
+								"properties": {
+									"motion": {
+										"type": "string",
+										"description": "Task-appropriate stage, e.g. REACH, ALIGN, GRASP, LIFT, MOVE, HOLD, PUSH, PLACE, RELEASE, RETREAT or REASON"
+									},
+									"target": {
+										"type": "string"
+									},
+									"affordance": {
+										"type": "string",
+										"description": "The one visible part to aim at"
+									},
+									"description": {
+										"type": "string",
+										"description": "Visual strategy; for REASON the complete IF ... THEN rule"
+									},
+									"completion": {
+										"type": "string",
+										"description": "DONE WHEN: a condition visible in the images"
+									},
+									"arm": {
+										"type": "string",
+										"description": "Dual-arm robots: the arm of this stage"
+									}
+								}
+							}
+						},
+						"done": {
+							"type": "boolean",
+							"description": "The current stage's DONE WHEN is visible"
+						}
+					}
+				}
+			},
+			{
+				"name": "finish",
+				"description": "End the episode. Success is measured by the benchmark (distance, contact), not by this call; STOP first when the task is done.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"status",
+						"summary"
+					],
+					"properties": {
+						"status": {
+							"type": "string",
+							"enum": [
+								"success",
+								"failure"
+							]
+						},
+						"summary": {
+							"type": "string"
+						}
+					}
+				}
+			},
+			{
+				"name": "look",
+				"description": "The current head-view (ego) image, without acting.",
+				"parameters": {
+					"type": "object",
+					"properties": {}
+				}
+			}
+		],
 		"libero": [
 			{
 				"name": "write_audit",

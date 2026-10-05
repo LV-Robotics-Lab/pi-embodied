@@ -1520,3 +1520,20 @@ test("dashboard pad: only the arm's STOP is labelled Look; a vocabulary's termin
 	assert.match(page, /gumiPost\("\/gumi\/look", \{\}\)/);
 	assert.doesNotMatch(page, /unit === "STOP" \? T\.look/);
 });
+
+test("observation reads the robot's JSON from details.robot_text when letters_blind dropped it from the content (U5)", () => {
+	const content = [{ type: "text" as const, text: "units: ACT_F x1\nREVIEW ..." }, image(1), image(2)];
+	const blind = observation({ content });
+	assert.deepEqual([blind?.labels, blind?.json], [["", ""], undefined]);
+	const state = { images: ["agentview", "wrist"], eef_xyz: [0, 0, 0.1] };
+	const carried = observation({ content, details: { robot_text: [JSON.stringify(state)] } });
+	assert.deepEqual(carried?.labels, ["agentview", "wrist"]);
+	assert.deepEqual(carried?.json, state);
+	assert.equal(Object.keys(views(carried as Observation, [ARM])).join(), "agentview,wrist");
+	// The content's own JSON wins when both are there.
+	const both = observation({
+		content: [{ type: "text" as const, text: JSON.stringify({ images: ["front"] }) }, image(1)],
+		details: { robot_text: [JSON.stringify({ images: ["other"] })] },
+	});
+	assert.deepEqual(both?.labels, ["front"]);
+});

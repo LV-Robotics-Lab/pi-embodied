@@ -293,16 +293,26 @@ type Image = { type: "image"; data: string; mimeType: string };
 /** A robot tool result's images, their camera labels and its JSON part (state), if any. */
 export type Observation = { images: Image[]; labels: string[]; json: Record<string, unknown> | undefined };
 
-/** The images and their labels (the result JSON's `images` list, as the dashboard reads it). */
-export function observation(result: Pick<AgentToolResult<unknown>, "content">): Observation | undefined {
+/**
+ * The images and their labels (the result JSON's `images` list, as the dashboard reads it). `act` puts
+ * its units header before the robot's own JSON text; the letters_blind ablation drops that text from
+ * the model's content and carries it in `details.robot_text` instead, read here the same way.
+ */
+export function observation(
+	result: Pick<AgentToolResult<unknown>, "content"> & { details?: unknown },
+): Observation | undefined {
 	const images = result.content.filter((c): c is Image => c.type === "image");
 	if (!images.length) return undefined;
 	let json: Record<string, unknown> | undefined;
-	// `act` puts its units header before the robot's own JSON text.
-	for (const c of result.content) {
-		if (json || c.type !== "text") continue;
+	const hidden = (result.details as { robot_text?: unknown } | undefined)?.robot_text;
+	const texts = [
+		...result.content.flatMap((c) => (c.type === "text" ? [c.text] : [])),
+		...(Array.isArray(hidden) ? hidden.filter((t): t is string => typeof t === "string") : []),
+	];
+	for (const t of texts) {
+		if (json) break;
 		try {
-			const v = JSON.parse(c.text);
+			const v = JSON.parse(t);
 			if (v && typeof v === "object" && !Array.isArray(v)) json = v;
 		} catch {}
 	}

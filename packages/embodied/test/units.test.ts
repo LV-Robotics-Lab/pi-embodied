@@ -1561,6 +1561,8 @@ test("action_ablation (experimental): letters_blind reviews each blind move with
 	assert.deepEqual(images, ["m2", "m1"], "the frame from before ACT_F rides last");
 	// The robot's own text (its command, whose delta names the direction) never reaches the model (#26).
 	assert.deepEqual(r.content.filter((c: any) => c.type === "text").length, 1, "only the funnelled units block");
+	// GUMI still gets the robot's text (its labels and state JSON) through details.robot_text (U5).
+	assert.deepEqual(r.details.robot_text, ["obs"]);
 	// Only the reviewed symbol's note is recorded.
 	const next = await f.run("act", {
 		unit: "ACT_E",

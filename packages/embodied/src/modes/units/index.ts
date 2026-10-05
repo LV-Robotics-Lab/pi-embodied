@@ -759,9 +759,15 @@ export function units(
 		if (harvested) lines.push(`Recorded in your table: ${harvested}`);
 		// The robot's own text (its state JSON, the command it ran: a Piper result names the move's
 		// delta) passes the funnel too; blind, it is dropped whole, since its numbers reveal directions.
-		const images: Result["content"] = rest.flatMap((c): Result["content"] =>
-			c.type !== "text" ? [c] : ablation?.mode === "letters_blind" ? [] : [text(ablation?.filter(c.text) ?? c.text)],
-		);
+		// GUMI's observation() still needs it (the camera labels, the state JSON): it rides in
+		// `details.robot_text`, which the model never reads.
+		const dropped: string[] = [];
+		const images: Result["content"] = rest.flatMap((c): Result["content"] => {
+			if (c.type !== "text") return [c];
+			if (ablation?.mode !== "letters_blind") return [text(ablation?.filter(c.text) ?? c.text)];
+			dropped.push(c.text);
+			return [];
+		});
 		if (ablation.mode === "letters_blind") {
 			lines.push(ablation.table());
 			const m = /^units: (MV_\w+) x1\n/.exec(head?.type === "text" ? head.text : "");
@@ -772,7 +778,13 @@ export function units(
 			}
 			save();
 		}
-		return { ...r, content: [text(lines.join("\n")), ...images] };
+		return {
+			...r,
+			...(dropped.length
+				? { details: { ...((r.details as Record<string, unknown>) ?? {}), robot_text: dropped } }
+				: {}),
+			content: [text(lines.join("\n")), ...images],
+		};
 	}
 	/** `act`, then the state entry (the agent's and the operator's units both change the episode state). */
 	async function actAndSave(params: ActParams, signal: AbortSignal | undefined) {

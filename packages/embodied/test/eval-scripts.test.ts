@@ -478,7 +478,7 @@ test("eval.sh keys the units mode on --units-plugins and the summary on a no-wri
 				"--units-point-verify",
 				"0",
 			]),
-			"true+plugins=plan,action_ablation+ablation=letters_blind+stage-steps=20+point-verify=0",
+			"true+plugins=plan,action_ablation+ablation=letters_blind+stage-steps=20/arm+point-verify=0",
 			robot,
 		);
 	}

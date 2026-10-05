@@ -38,8 +38,12 @@ eval_parse_options() {
 		--units-plugins) units_plugins=${args[i + 1]-} ;;
 		--units-plugins=*) units_plugins=${args[i]#*=} ;;
 		# The units' experiment knobs (stage cap, action ablation, point self-check) are part of the units mode too.
-		--units-stage-steps | --units-ablation | --units-point-verify) units_opts+="+${args[i]#--units-}=${args[i + 1]-}" ;;
-		--units-stage-steps=* | --units-ablation=* | --units-point-verify=*) units_opts+="+${args[i]#--units-}" ;;
+		# The stage cap counts each arm's units since #27 (per arm, not per plan: two arms may run 2N): keyed
+		# stage-steps=N/arm, so results from the per-plan cap (stage-steps=N) are another configuration.
+		--units-stage-steps) units_opts+="+stage-steps=${args[i + 1]-}/arm" ;;
+		--units-stage-steps=*) units_opts+="+stage-steps=${args[i]#*=}/arm" ;;
+		--units-ablation | --units-point-verify) units_opts+="+${args[i]#--units-}=${args[i + 1]-}" ;;
+		--units-ablation=* | --units-point-verify=*) units_opts+="+${args[i]#--units-}" ;;
 		# pi sets a boolean flag to true whatever value it is given (`--stateless=false` runs stateless)
 		# and takes a following word as that value: only the forms that say what pi runs are accepted.
 		--stateless) case ${args[i + 1]:-} in "" | -* | @* | true) stateless=true ;; *)

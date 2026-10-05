@@ -449,10 +449,12 @@ Codex (0.160 or later):
 codex plugin marketplace add LV-Robotics-Lab/pi-embodied
 codex plugin add pi-embodied@pi-embodied
 export PI_EMBODIED_ROOT=/path/to/pi-embodied PI_EMBODIED_ROBOT=libero PI_EMBODIED_ENV_URL=http://127.0.0.1:PORT
-codex exec -s workspace-write "Check the robot with robot_status and observe, then describe the scene."
-# codex exec has no --full-auto: -s workspace-write (the sandbox) and --approve-for-me (the model
-# answers Codex's approval prompts itself) are the knobs. On a real arm, --approve-for-me without the
-# server's gate would let the model move the robot: set PI_EMBODIED_CONFIRM_FILE first.
+codex exec -s workspace-write "Check the robot with robot_status and observe, then describe the scene." </dev/null
+# codex exec has no --full-auto. Either -s workspace-write (the sandbox; Codex still asks before each
+# motion, which a script cannot answer) or --approve-for-me (the model answers Codex's approval prompts
+# itself and implies workspace-write) - the two cannot be combined. From a script, give </dev/null:
+# with a non-TTY stdin codex exec waits for more input until EOF. On a real arm, --approve-for-me
+# without the server's gate would let the model move the robot: set PI_EMBODIED_CONFIRM_FILE first.
 ```
 
 Codex passes exactly the `PI_EMBODIED_*` variables through to the server (`env_vars` in the plugin's
@@ -464,7 +466,7 @@ end-to-end test (not with `RUST_LOG=debug`, not with `--dangerously-bypass-hook-
 real arm the server-side gate is the protection in Codex, not the hook: start with
 `PI_EMBODIED_CONFIRM_FILE` and write each ticket yourself. The hook stays in the plugin for a Codex
 that runs hooks again. Codex copies the plugin into its cache from the marketplace clone and
-re-materialises it when the marketplace's `main` moves (`codex plugin marketplace update`, or a
+re-materialises it when the marketplace's `main` moves (`codex plugin marketplace upgrade`, or a
 fresh `codex plugin add`), so a running Codex keeps the plugin files of the commit it installed.
 
 Direct, without a host plugin:

@@ -536,6 +536,8 @@ export default function libero(pi: ExtensionAPI) {
 					suite: robot.task.suite,
 					task_id: Number(robot.task.task),
 					seed: Number(robot.task.seed),
+					// flash-generate reads the task from the audit (else it demands --language).
+					task_language: language,
 					regime: "strict_perception",
 					final_state: lastState ?? null,
 					libero_terminated: terminated,

@@ -107,7 +107,7 @@ async function fakeEnv() {
 				s.steps = 0;
 				s.eef = [0, 0, 1];
 				result = [obs(), {}];
-			} else if (method === "env.get_task_language") result = "put the black bowl on the plate";
+			} else if (method === "env.get_task_language") result = "put the black bowl on the stove";
 			else if (method === "env.raw_obs")
 				result = {
 					robot0_eef_pos: f32(s.eef),
@@ -303,7 +303,7 @@ test("--libero-prompt compact keeps the short prompt; an unknown variant fails t
 	const s = await session(t, { "libero-prompt": "compact" });
 	const { systemPrompt } = await s.emit("before_agent_start", { systemPrompt: "base" });
 	assert.match(systemPrompt, /^You control a Franka arm in the LIBERO simulator/);
-	assert.match(systemPrompt, /Task: put the black bowl on the plate/);
+	assert.match(systemPrompt, /Task: put the black bowl on the stove/);
 	assert.doesNotMatch(systemPrompt, /PROVEN LEVERS/);
 	await s.emit("agent_start");
 	await s.emit("session_shutdown");
@@ -426,6 +426,8 @@ test("LIBERO's audit is a write_audit call with the cell and the latest state fi
 		[audit.suite, audit.task_id, audit.seed, audit.regime, audit.libero_terminated, audit.terminated],
 		["libero_10_task", 2, 0, "strict_perception", false, false],
 	);
+	// Bug 42: the audit carries the episode's task text, so flash-generate needs no --language.
+	assert.equal(audit.task_language, "put the black bowl on the stove");
 	assert.ok(Array.isArray(audit.final_state.robot0_eef_pos), "final_state is the latest state");
 	// Flash plan generation reads it as written (strict JSON, the suite matching the file name).
 	await s.run("write_audit", { terminated: true, strategy_notes: "solved", memory_files_read: [] });
@@ -437,7 +439,6 @@ test("LIBERO's audit is a write_audit call with the cell and the latest state fi
 		audit: join(s.out, "10_task_t2_s0.json"),
 		recipe: join(s.out, "10_task_t2_s0_recipe.jsonl"),
 		destination: join(s.out, "flash"),
-		language: "put the black bowl on the stove",
 	});
 	assert.equal(`${plan.family}_${plan.key}`, "10_task_t2");
 });

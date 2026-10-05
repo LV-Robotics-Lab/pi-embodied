@@ -802,6 +802,8 @@ export default function dualFranka(pi: ExtensionAPI) {
 		envMeta = plain(await envRpc.call<Json>("env.get_env_meta", {}, 30_000)) as Json;
 		// An attached server must enforce pi's limits (or tighter ones); a spawned one got them above.
 		served = servedLimits(envMeta.motion_limits, wanted(setup.task.constraints));
+		// Code mode: a server that would refuse every program fails here, before the operator confirms and the arm resets.
+		await robot.codePreflight(envRpc);
 		const go = await ctx.ui.confirm(
 			exploring() ? "Restore the scene and reset both Franka arms?" : "Reset both Franka arms?",
 			`${exploring() ? `Exploration attempt 1: restore the tabletop to the task's initial layout (${setup.task.setup}). ` : ""}RLinf's reset opens both grippers and moves both arms to the configured reset posture. Remove held objects, clear the workspace and keep both emergency stops in reach.`,

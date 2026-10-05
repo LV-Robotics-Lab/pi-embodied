@@ -185,6 +185,8 @@ async function mockServer(
 				return { status: "ok" };
 			case "code.api":
 				return codeApiReply("ur5e", kwargs.tier);
+			case "code.preflight":
+				return { isolated: true, error: null };
 			case "env.get_env_meta":
 				return {
 					ok: true,

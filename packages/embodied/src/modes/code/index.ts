@@ -436,9 +436,29 @@ export function code(
 
 	/** The oracle this session ran (`--code-oracle`), once it ran. */
 	let oracleRun: Oracle | undefined;
+	/** The server passed `code.preflight` this session (a real robot asks before it confirms or resets; `start` otherwise). */
+	let preflighted = false;
 	pi.on("session_start", () => {
 		oracleRun = undefined;
+		preflighted = false;
 	});
+
+	/**
+	 * Preflight the env server once per session: a server that cannot isolate a program from this
+	 * host's processes refuses code mode here, before the robot resets or an operator confirms
+	 * anything (a real robot calls it as soon as its server answers, ../../robot.ts `codePreflight`).
+	 * A server on another host (URL#token) cannot expose this process: its refusal is waived.
+	 */
+	async function preflight(client: Pick<RpcClient, "call"> & { url?: string }): Promise<void> {
+		if (!mode() || preflighted) return;
+		const remote = !isLocalEndpoint(client.url ?? "");
+		const pre = await client
+			.call<{ error?: string | null }>("code.preflight", { remote }, 30_000)
+			// A server without code.preflight (older, or a stand-in): its code.run still refuses on its own.
+			.catch((): { error?: string | null } => ({}));
+		if (pre.error) throw new Error(pre.error);
+		preflighted = true;
+	}
 	// --code-oracle: the first prompt runs the reference program once, as run_code would; the model is never asked.
 	pi.on("input", async (_event, ctx) => {
 		if (!oracleRef() || !mode() || !(base.ready?.() ?? false)) return undefined;
@@ -507,6 +527,8 @@ export function code(
 				return "code mode on a real robot needs both --code-real and --operator (every program is then confirmed by the operator)";
 			return oracleError();
 		},
+		/** The env server's `code.preflight`, once per session; a real robot calls it before it confirms or resets. */
+		preflight,
 		/** After the robot is up: fetch this tier's registry (and the helpers) and register `run_code`; the tools to activate. */
 		start: async (): Promise<string[]> => {
 			if (!mode()) return [];
@@ -530,15 +552,8 @@ export function code(
 				throw new Error(
 					`this robot has no ${tier()}-tier code primitives this run; its tiers are ${manifestTiers().join(", ") || "none"}`,
 				);
-			// Preflight before the episode starts (no reset, no operator confirmation wasted): a server
-			// that cannot isolate a program from this host's processes refuses code mode here. A
-			// server on another host (URL#token) cannot expose this process: its refusal is waived.
-			const remote = !isLocalEndpoint((client as RpcClient).url ?? "");
-			const pre = await client
-				.call<{ error?: string | null }>("code.preflight", { remote }, 30_000)
-				// A server without code.preflight (older, or a stand-in): its code.run still refuses on its own.
-				.catch((): { error?: string | null } => ({}));
-			if (pre.error) throw new Error(pre.error);
+			// Unless the robot asked before its reset and operator confirmation (a real robot does).
+			await preflight(client as RpcClient);
 			helpers = helpersOn() ? await client.call<Helper[]>("code.helpers", {}, 30_000) : [];
 			registerTool();
 			return ["run_code"];

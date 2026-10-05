@@ -823,6 +823,8 @@ export function piperRobot(pi: ExtensionAPI, dual: boolean) {
 			throw new Error(
 				"--view-select picks each move's frame from its guiding view, so the config needs motion.units_frame: base (it is heading)",
 			);
+		// Code mode: a server that would refuse every program fails here, before the operator confirms and the arm resets.
+		await robot.codePreflight(rpc);
 		const go = await ctx.ui.confirm(
 			dual ? "Move both Piper arms?" : "Move the Piper arm?",
 			dual

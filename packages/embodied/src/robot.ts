@@ -1121,6 +1121,15 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 			return api;
 		},
 		/**
+		 * A real robot, the moment its env server answers and before it asks the operator to confirm
+		 * anything or resets the arm: code mode's `code.preflight` (../modes/code), so a server that
+		 * would refuse every program fails the start first. No-op when code mode is off; `start` of
+		 * a robot that did not call it runs the same check after the robot is up.
+		 */
+		async codePreflight(rpc: RpcClient): Promise<void> {
+			await co?.preflight(rpc);
+		},
+		/**
 		 * Start `python ...args --transport http --host 127.0.0.1 --port 0 --parent-watch` (a service RPC
 		 * server; it picks its port and exits with pi) and wait for healthz. It is stopped at the next start and at shutdown.
 		 */

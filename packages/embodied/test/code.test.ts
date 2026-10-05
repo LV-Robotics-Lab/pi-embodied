@@ -644,6 +644,48 @@ test("code mode's preflight refuses a server that cannot isolate a program, befo
 	assert.equal(isLocalEndpoint("http://robot-pc.tailnet:9000/call"), false);
 });
 
+test("a real robot preflights the server before it confirms or resets: once, and a refusal stops it there", async () => {
+	// Audit 92245e3 CM-2: the preflight sat in code mode's start(), after the robot's confirm + reset.
+	for (const refused of [false, true]) {
+		const f = fakePi({ code: true, "code-real": true, operator: true }, true);
+		const env = fakeEnv(() => ({}));
+		if (refused) env.queue.preflight = { isolated: false, error: "run_code refused: run the server as root" };
+		const order: string[] = [];
+		const robot = defineRobot(f.pi, {
+			name: "toy",
+			manifest: "toy",
+			task: [],
+			keepImages: 2,
+			operator: { step: () => 0 },
+			start: async (ctx) => {
+				order.push("connected");
+				await robot.codePreflight(env.rpc as never);
+				order.push("confirm");
+				await ctx.ui.confirm("Reset the arm?", "it moves");
+				order.push("reset");
+				return ["move_to"];
+			},
+			result: () => ({}),
+			code: { rpc: () => env.rpc, real: true, observe: async () => ({ content: [], details: {} }) },
+			finish: {
+				description: "finish",
+				parameters: Type.Object({ status: Type.String(), summary: Type.String() }),
+				result: (p) => ({ content: [{ type: "text", text: p.status }], details: p }),
+			},
+		});
+		await f.emit("session_start");
+		if (refused) {
+			assert.deepEqual(order, ["connected"], "neither confirmed nor reset");
+			assert.deepEqual(f.confirmed, []);
+			assert.ok(!f.active().includes("run_code"));
+		} else {
+			assert.deepEqual(order, ["connected", "confirm", "reset"]);
+			assert.ok(f.active().includes("run_code"));
+			assert.equal(env.calls.filter((c) => c.method === "code.preflight").length, 1, "start() did not ask again");
+		}
+	}
+});
+
 test("--code-api defaults to the robot's highest tier; an explicit tier it lacks is refused naming its tiers", async () => {
 	const toy = await toyRobot({ code: true });
 	assert.deepEqual(toy.env.calls.find((c) => c.method === "code.api")?.kwargs, { tier: "high" });

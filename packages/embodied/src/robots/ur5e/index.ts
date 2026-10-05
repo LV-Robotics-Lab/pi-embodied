@@ -844,6 +844,8 @@ export default function ur5e(pi: ExtensionAPI) {
 			);
 		if (!m.has_begin_pose)
 			throw new Error("calibration.begin_joints is not set in the robot config; reset would fail");
+		// Code mode: a server that would refuse every program fails here, before the operator confirms and the arm resets.
+		await robot.codePreflight(rpc);
 		const lift = m.limits?.reset_lift_m;
 		const go = await ctx.ui.confirm(
 			`Move the UR5e arm ${m.arm_id}?`,

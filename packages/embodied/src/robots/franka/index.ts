@@ -1439,6 +1439,8 @@ export default function franka(pi: ExtensionAPI) {
 			throw new Error(
 				`the ${caps.backend} backend has no VLA action space: drop --vla and use a task without vla_grasp`,
 			);
+		// Code mode: a server that would refuse every program fails here, before the operator confirms and the arm resets.
+		await robot.codePreflight(envRpc);
 		const go = await ctx.ui.confirm(
 			`Reset the Franka arm (${caps.backend})?`,
 			"The arm will move to its configured reset pose. Clear the workspace and keep the emergency stop in reach.",

@@ -126,7 +126,10 @@ function operatorPi(values: Record<string, unknown>, confirms: boolean[]) {
 const LIMITS = { max_move_m: 0.04, max_rotate_rad: 0.5, z_floor_m: 0.14, workspace_xy: [0.159, 1.159, -0.456, 0.544] };
 
 /** A fake franka env server (`--env-url`, RLinf capabilities) whose `code.run` made two motions. */
-async function fakeFranka(limits: Record<string, unknown> = LIMITS) {
+async function fakeFranka(
+	limits: Record<string, unknown> = LIMITS,
+	preflight: Record<string, unknown> = { isolated: true, error: null },
+) {
 	const calls: { method: string; kwargs: Record<string, any> }[] = [];
 	const nd = (shape: number[]) => ({
 		__ndarray__: Buffer.alloc(shape.reduce((a, b) => a * b, 1)).toString("base64"),
@@ -151,6 +154,7 @@ async function fakeFranka(limits: Record<string, unknown> = LIMITS) {
 				result = { raw_base_state: { tcp_pose: [0.5, 0, 0.3, 1, 0, 0, 0], gripper_open: true } };
 			else if (method === "env.get_camera_meta") result = null;
 			else if (method === "code.api") result = codeApiReply("franka", kwargs.tier);
+			else if (method === "code.preflight") result = preflight;
 			else if (method === "code.run")
 				result = {
 					status: "ran",
@@ -213,6 +217,10 @@ test("franka --code: the server enforces pi's limits, every program is confirmed
 	// The attached server reported pi's limits (motion_limits); pi sends none itself.
 	assert.ok(!env.calls.some((c) => c.method === "code.set_limits"));
 	assert.equal(env.calls.filter((c) => c.method === "env.reset").length, 1);
+	// Audit 92245e3 CM-2: the server's preflight runs before the operator confirms the reset and the arm moves.
+	const order = env.calls.map((c) => c.method);
+	assert.ok(order.indexOf("code.preflight") < order.indexOf("env.reset"), order.join(","));
+	assert.equal(env.calls.filter((c) => c.method === "code.preflight").length, 1, "asked once, not again at start");
 	await f.emit("agent_start");
 	const r = await f.run("run_code", { code: "move_delta([0, 0, -0.02])" });
 	assert.equal(f.asked[1], "Run this program on the robot?");
@@ -226,6 +234,20 @@ test("franka --code: the server enforces pi's limits, every program is confirmed
 	const no = await f.run("run_code", { code: "move_delta([0, 0, 0.02])" });
 	assert.match(no.content[0].text, /operator declined/);
 	assert.equal(env.calls.filter((c) => c.method === "code.run").length, 1);
+});
+
+test("franka --code: a server that would refuse every program fails the start before the operator confirms or the arm resets", async (t) => {
+	const env = await fakeFranka(LIMITS, { isolated: false, error: "run_code refused: run the server as root" });
+	t.after(env.close);
+	const dir = mkdtempSync(join(tmpdir(), "franka-py-"));
+	const f = operatorPi({ ...CODE_FLAGS, "env-url": env.url, python: fakePython(dir), out: dir }, [true]);
+	franka(f.pi);
+	await f.emit("session_start");
+	process.exitCode = undefined;
+	assert.match(f.notes.join("\n"), /run_code refused: run the server as root/);
+	assert.deepEqual(f.asked, [], "the operator was not asked to confirm a reset");
+	assert.equal(env.calls.filter((c) => c.method === "env.reset").length, 0, "the arm did not move");
+	assert.ok(!f.active().includes("run_code"));
 });
 
 test("franka --code without --code-real or --operator refuses before touching the robot", async (t) => {

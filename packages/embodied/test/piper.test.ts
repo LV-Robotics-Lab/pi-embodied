@@ -362,6 +362,8 @@ async function mockServer(o: ServerOpts = {}) {
 				return { ok: true, robot_state: state() };
 			case "code.api":
 				return codeApiReply("piper", kwargs.tier, (c) => c === "dual" && dual);
+			case "code.preflight":
+				return { isolated: true, error: null };
 			case "env.get_observation":
 				return { images: Object.fromEntries(cameras.map((c) => [c, img])), robot_state: state() };
 			case "env.get_robot_state":

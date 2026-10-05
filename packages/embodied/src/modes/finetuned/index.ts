@@ -19,7 +19,7 @@
  * --ft-max-steps end the episode with `finish`. A reply that parses to no unit falls back to MV_DOWN
  * like the runner; a failed request (after retries) is a model error. Usage is zero; an abort ends it.
  *
- * `--ft-prompt v5` runs the aaroncaozj LIBERO adapters (huggingface.co/aaroncaozj/qwen3_5_9b_mvtoken_libero)
+ * `--ft-prompt v5-libero` runs the aaroncaozj LIBERO adapters (huggingface.co/aaroncaozj/qwen3_5_9b_mvtoken_libero)
  * as their model card measures them: 15 units (the six moves, RT_ROLL/PITCH/YAW turns that the robot
  * runs with --units-rt=true, GRASP, RELEASE, DONE), moves and turns in the recent-units history, the
  * no-progress guard (an MV_* that moved the TCP < 5 mm twice in a row is withheld from the next
@@ -56,7 +56,7 @@
  * ported as a pi provider; prompts/v3 and prompts/v4 lite and dual templates copied verbatim into ./templates/.
  */
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import {
 	type Api,
 	type AssistantMessage,
@@ -224,10 +224,13 @@ export function activeSubgoal(
 /**
  * The v5 prompt: prompt_v5.txt of the gated HF dataset aaroncaozj/libero_show-harness_tokenized,
  * copied verbatim (sha256 f4550b74...6a2f; also services/.../showharness/prompts/v5/prompt_v5.txt).
- * `--ft-prompt v5-libero` runs it with the v5 rules; `v5` is the same.
+ * `--ft-prompt v5-libero` runs it with the v5 rules; no other name does: an --ft-prompt that is neither a
+ * prompt version nor a template file is refused before the first step (a misspelt v5-lite would otherwise
+ * run the v5 prompt under v3's budget and rules).
  */
-/** A v5 prompt version: the aaroncaozj LIBERO adapters' 15-unit prompt and rules. */
-export const isV5 = (version: string) => version === "v5" || version.startsWith("v5-");
+/** The prompt versions that run prompt_v5.txt with the v5 rules (the aaroncaozj LIBERO adapters' 15 units). */
+export const V5_VERSIONS: readonly string[] = ["v5-libero"];
+export const isV5 = (version: string) => V5_VERSIONS.includes(version);
 export const V5_PROMPT = new URL("./templates/v5_libero_mvtoken.txt", import.meta.url);
 
 /**
@@ -245,7 +248,6 @@ export const PRESETS: Record<string, Preset> = {
 	"v4-piper": RUNNER,
 	"v3-subgoal": RUNNER,
 	"v3-affordance": RUNNER,
-	v5: { maxSteps: 200, stuckGuardMm: 5, ignoreDone: true, oov: "reask" },
 	"v5-libero": { maxSteps: 200, stuckGuardMm: 5, ignoreDone: true, oov: "reask" },
 	// configs/robot_piper_ft.yaml max_steps (the dual runner's budget); no guard, DONE ends (both arms).
 	...Object.fromEntries(
@@ -656,7 +658,7 @@ export default function finetuned(pi: ExtensionAPI) {
 	let stall = { token: "", count: 0 };
 	let dones = 0;
 
-	/** Why the policy cannot run on this robot's images (set at session start), else undefined. */
+	/** Why the policy cannot run (an --ft-prompt that names nothing, this robot's images), set at session start. */
 	let refused: string | undefined;
 	const cameraIndices = () =>
 		(flag("ft-cameras") === "auto" || !flag("ft-cameras") ? (dual() ? "0,1,2" : "0,1") : flag("ft-cameras"))
@@ -692,10 +694,20 @@ export default function finetuned(pi: ExtensionAPI) {
 			return `${named}: image${wristIdx.length > 1 ? "s" : ""} ${wristIdx.join(", ")} ${wristIdx.length > 1 ? "must be wrist views" : "must be a wrist view"} and image ${agent} a third-person view (the robot's wrist views are image(s) ${wrists.join(", ") || "none"}); pass --ft-cameras <agentview>,${d ? "<left wrist>,<right wrist>" : "<wrist>"}`;
 		return undefined;
 	}
-	/** Refuse the episode before the first step: the model never sees the wrong images. */
+	/**
+	 * Why --ft-prompt names nothing to run, else undefined: a prompt version (PRESETS) or a template file.
+	 * A name that is neither (v5-lite) must not start: template() would read a file that is not there, or
+	 * worse, a version-like name would run under RUNNER's rules.
+	 */
+	function versionRefusal(): string | undefined {
+		const p = version();
+		if (p in PRESETS || existsSync(p)) return undefined;
+		return `--ft-prompt ${p}: not a prompt version (${Object.keys(PRESETS).join(", ")}) and not a template file`;
+	}
+	/** Refuse the episode before the first step: the model never runs an unknown version or sees the wrong images. */
 	function refuse(ctx: ExtensionContext) {
 		if (ctx.model?.provider !== "finetuned" || refused) return;
-		refused = imageRefusal();
+		refused = versionRefusal() ?? imageRefusal();
 		if (!refused) return;
 		over = true;
 		if (ctx.hasUI) ctx.ui.notify(`finetuned: ${refused}`, "error");

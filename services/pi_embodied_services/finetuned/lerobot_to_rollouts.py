@@ -15,7 +15,7 @@
 """A LeRobot v3.0 dataset of ours (flywheel/export.py, flywheel/gumi.py) as Show-Harness rollouts.
 
     python -m pi_embodied_services.finetuned.lerobot_to_rollouts <dataset dir> --out <rollouts dir> \\
-        [--prompt v3|v5] [--include-failures] [--robot R] [--agentview spec --wrist spec] [--task T]
+        [--prompt v3|v5-libero] [--include-failures] [--robot R] [--agentview spec --wrist spec] [--task T]
 
 Writes the layout ``finetuned/prepare.ts`` writes from GUMI recordings and ``train.sh`` feeds to
 Show-Harness's ``rollouts_to_alpaca.py``: ``<out>/<task>/rollout_NNN/{agentview,wrist}/NNNN.png``,
@@ -41,7 +41,7 @@ Tokens:
   ``metadata.json`` says ``token_source: quantized``.
 
 Episodes: those with ``success`` set (a GUMI export marks each run; a Flywheel export only holds
-successes) unless ``--include-failures``. ``--prompt v5`` keeps RT_* turns, any other version
+successes) unless ``--include-failures``. ``--prompt v5-libero`` keeps RT_* turns, any other version
 drops them like ``prepare.ts`` (v3/v4 offer no turn). Needs pyarrow, numpy, pillow and node.
 """
 
@@ -70,7 +70,7 @@ RT_UNITS = (
     "RT_YAW_CCW",
 )
 #: finetuned/index.ts PRESETS: the prompt versions, and the one whose vocabulary has turns.
-PROMPT_VERSIONS = ("v3", "v4-franka", "v4-piper", "v5")
+PROMPT_VERSIONS = ("v3", "v4-franka", "v4-piper", "v5-libero")
 PI_ROOT = Path(__file__).resolve().parents[3]
 TRANSFORM = PI_ROOT / "packages/embodied/src/modes/finetuned/transform.ts"
 #: Show-Harness's lattice (real2sim's step_m, the units' default step).
@@ -362,10 +362,10 @@ def convert(
             token_source = "quantized"
         turns = (
             [r["step"] for r in rows if r["token"] in RT_UNITS]
-            if prompt != "v5"
+            if prompt != "v5-libero"
             else []
         )
-        rows = [r for r in rows if prompt == "v5" or r["token"] not in RT_UNITS]
+        rows = [r for r in rows if prompt == "v5-libero" or r["token"] not in RT_UNITS]
         task_dir = out_root / slug(text)
         # Numbering continues after rollouts already there (several datasets into one root).
         n = counters.get(
@@ -414,7 +414,7 @@ def convert(
         if turns:
             print(
                 f"warning: episode {ep}: dropped RT_* steps {', '.join(map(str, turns))} "
-                f"({prompt} has no turns; --prompt v5 keeps them)",
+                f"({prompt} has no turns; --prompt v5-libero keeps them)",
                 file=log,
             )
         print(

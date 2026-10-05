@@ -60,7 +60,7 @@ export const ROBOTS: Robot[] = [
 		modes: ["tools", "units", "finetuned", "flash"],
 		task: "--libero-type pro --suite libero_10 --task 0 --seed 0",
 		weights: "Pi0.5 LIBERO SFT + SAM3 (gated: HF_TOKEN)",
-		finetuned: "--model finetuned/local --ft-model <served adapter> --ft-prompt v5",
+		finetuned: "--model finetuned/local --ft-model <served adapter> --ft-prompt v5-libero",
 	},
 	{
 		id: "libero",
@@ -70,7 +70,7 @@ export const ROBOTS: Robot[] = [
 		modes: ["tools", "units", "finetuned", "flash"],
 		task: "--libero-type standard --suite libero_10 --task 0 --seed 0",
 		weights: "Pi0.5 LIBERO SFT + SAM3 (gated: HF_TOKEN)",
-		finetuned: "--model finetuned/local --ft-model <served adapter> --ft-prompt v5",
+		finetuned: "--model finetuned/local --ft-model <served adapter> --ft-prompt v5-libero",
 	},
 	{
 		id: "maniskill",

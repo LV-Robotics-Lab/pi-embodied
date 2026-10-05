@@ -13,6 +13,8 @@ import finetuned, {
 	buildRequest,
 	DUAL_PROMPTS,
 	formatPrompt,
+	isV5,
+	PRESETS,
 	PROMPTS,
 	parsePair,
 	parseToken,
@@ -412,8 +414,8 @@ test("prepare turns a GUMI run into a Show-Harness rollout with the provider's c
 });
 
 test("prepare keeps RT_* turns for the v5 vocabulary (15 units) and drops them for v3", () => {
-	assert.equal(trainedTokens("v5").length, 15);
-	assert.ok(RT_UNITS.every((u) => trainedTokens("v5").includes(u)));
+	assert.equal(trainedTokens("v5-libero").length, 15);
+	assert.ok(RT_UNITS.every((u) => trainedTokens("v5-libero").includes(u)));
 	assert.ok(!RT_UNITS.some((u) => trainedTokens("v3").includes(u)));
 	assert.throws(() => trainedTokens("v9"), /unknown prompt version v9/);
 	const run = mkdtempSync(join(tmpdir(), "gumi-"));
@@ -448,13 +450,13 @@ test("prepare keeps RT_* turns for the v5 vocabulary (15 units) and drops them f
 	);
 	assert.match(v3.r.warnings.join(), /dropped RT_\* steps 1, 3 \(v3 has no turns/);
 	assert.equal(v3.meta.prompt_version, "v3");
-	const v5 = convert("v5");
+	const v5 = convert("v5-libero");
 	assert.deepEqual(
 		v5.lines.map((l) => l.token),
 		tokens,
 	);
 	assert.deepEqual(v5.r.warnings, []);
-	assert.equal(v5.meta.prompt_version, "v5");
+	assert.equal(v5.meta.prompt_version, "v5-libero");
 });
 
 const V5_TEMPLATE = `Task: {task}
@@ -466,7 +468,7 @@ function v5Run(ep: { url: string }, eef: number[][], vocabulary: readonly string
 	const file = join(mkdtempSync(join(tmpdir(), "v5-")), "prompt_v5.txt");
 	writeFileSync(file, `${V5_TEMPLATE}\n`);
 	return fakePi(
-		{ "ft-endpoint": ep.url, "ft-prompt": "v5", "ft-prompt-file": file, "units-plugins": "", ...flags },
+		{ "ft-endpoint": ep.url, "ft-prompt": "v5-libero", "ft-prompt-file": file, "units-plugins": "", ...flags },
 		"libero",
 		["act", "finish"],
 		{ vocabulary, state: async () => ({ eef_xyz: eef.shift() ?? [0, 0, 0] }) },
@@ -589,7 +591,7 @@ test("v5: the budget, an endpoint that ignores the constraint, and a robot that 
 	}
 
 	// v5 reads the vendored prompt (no warning); plugins that regrind a token are flagged.
-	const none = fakePi({ "ft-prompt": "v5", "units-plugins": "variable_step,mem_text" }, "libero");
+	const none = fakePi({ "ft-prompt": "v5-libero", "units-plugins": "variable_step,mem_text" }, "libero");
 	await none.emit("session_start");
 	await none.emit("before_agent_start");
 	assert.doesNotMatch(none.warnings.join("\n"), /not vendored/);
@@ -876,4 +878,25 @@ test("v5-libero runs the vendored prompt_v5.txt verbatim with the 15-unit vocabu
 	assert.deepEqual(allowedTokens(tpl.trim()), [...V5_ACTIONS]);
 	assert.equal(trainedTokens("v5-libero").length, 15);
 	assert.match(formatPrompt(tpl.trim(), { task: "t", recent_moves: "none" }), /^You are controlling a robot arm/);
+});
+
+test("--ft-prompt names a prompt version or a template file; anything else is refused before the first step (U3)", async () => {
+	// v5-lite (a misspelt v5-libero) used to start and run prompt_v5 under v3's rules; v5 was an alias.
+	for (const name of ["v5-lite", "v5", "v6-libero"]) {
+		const p = fakePi({ "ft-prompt": name }, "libero");
+		await p.emit("session_start");
+		assert.match(p.warnings.join("\n"), new RegExp(`--ft-prompt ${name}: not a prompt version \\(.*v5-libero.*\\) and not a template file`), name);
+	}
+	assert.equal(isV5("v5"), false);
+	assert.equal(isV5("v5-libero"), true);
+	assert.equal(PRESETS.v5, undefined, "no alias of v5-libero");
+	// A known version, and a template file by path, start.
+	const ok = fakePi({ "ft-prompt": "v5-libero" }, "libero");
+	await ok.emit("session_start");
+	assert.doesNotMatch(ok.warnings.join("\n"), /not a prompt version/);
+	const file = join(mkdtempSync(join(tmpdir(), "ft-")), "prompt.txt");
+	writeFileSync(file, `${V5_TEMPLATE}\n`);
+	const byPath = fakePi({ "ft-prompt": file }, "libero");
+	await byPath.emit("session_start");
+	assert.doesNotMatch(byPath.warnings.join("\n"), /not a prompt version/);
 });

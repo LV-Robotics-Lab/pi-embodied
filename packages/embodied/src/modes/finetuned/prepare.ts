@@ -2,7 +2,7 @@
  * GUMI recordings -> Show-Harness rollouts that train/data_preparation/rollouts_to_alpaca.py reads.
  *
  *   node --experimental-strip-types packages/embodied/src/modes/finetuned/prepare.ts \
- *     --out /root/autodl-tmp/data/finetuned/mydata/rollouts [--prompt v5] [--include-failures] <gumi record dir>...
+ *     --out /root/autodl-tmp/data/finetuned/mydata/rollouts [--prompt v5-libero] [--include-failures] <gumi record dir>...
  *
  * Only runs saved as successful are converted (`success: true` in summary.json, which GUMI writes
  * when the operator saves with "success"); failed, stopped and unfinished runs (a session that ended
@@ -17,7 +17,7 @@
  * training and deployment images are identical pixel for pixel. Rows are kept in order as recorded;
  * tokens outside the single-arm vocabulary (ROTATE_*, STILL) are left for the converter to skip.
  * `--prompt` is the model the data trains (--ft-prompt's versions, default v3): RT_* turns (GUMI's
- * --units-rt keys) are kept, token unchanged, for v5 (V5_ACTIONS, the 15 units) and dropped otherwise,
+ * --units-rt keys) are kept, token unchanged, for v5-libero (V5_ACTIONS, the 15 units) and dropped otherwise,
  * since v3/v4 offer no turn.
  */
 
@@ -112,7 +112,7 @@ export function convertRun(
 	if (missing.length)
 		warnings.push(`${run}: dropped steps ${missing.join(", ")} (recorded without both camera views)`);
 	if (turns.length)
-		warnings.push(`${run}: dropped RT_* steps ${turns.join(", ")} (${version} has no turns; --prompt v5 keeps them)`);
+		warnings.push(`${run}: dropped RT_* steps ${turns.join(", ")} (${version} has no turns; --prompt v5-libero keeps them)`);
 	if (repeats)
 		warnings.push(
 			`${run}: ${repeats} steps executed their unit n>1 times from one frame; each stays one sample (one history entry)`,
@@ -150,7 +150,7 @@ function main() {
 	});
 	if (!values.out || !positionals.length) {
 		console.error(
-			"usage: prepare.ts --out <dir> [--task T] [--robot R] [--agentview spec] [--wrist spec] [--prompt v3|v5|...] [--include-failures] <gumi dir>...",
+			"usage: prepare.ts --out <dir> [--task T] [--robot R] [--agentview spec] [--wrist spec] [--prompt v3|v5-libero|...] [--include-failures] <gumi dir>...",
 		);
 		process.exit(2);
 	}

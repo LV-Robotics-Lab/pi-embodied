@@ -274,7 +274,7 @@ def test_gumi_dataset_round_trips_to_prepare_ts_bytes(tmp_path, capsys):
 
     # v5 keeps the turn; failures join on request, numbered after the successes.
     summary = l2r.convert(
-        ds, tmp_path / "v5", prompt="v5", include_failures=True, node="node"
+        ds, tmp_path / "v5", prompt="v5-libero", include_failures=True, node="node"
     )
     assert (summary["rollouts"], summary["steps"]) == (2, 8)
     assert [
@@ -288,7 +288,7 @@ def test_gumi_dataset_round_trips_to_prepare_ts_bytes(tmp_path, capsys):
         json.loads(
             (tmp_path / "v5/pick_the_cube/rollout_001/metadata.json").read_text()
         )["prompt_version"]
-        == "v5"
+        == "v5-libero"
     )
     with pytest.raises(ValueError, match="unknown prompt version"):
         l2r.convert(ds, tmp_path / "v9", prompt="v9")

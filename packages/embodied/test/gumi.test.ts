@@ -984,10 +984,10 @@ test("gumi: RT_* keys with --units-rt; recorded token unchanged; prepare keeps t
 	const v3 = prepare();
 	assert.deepEqual(v3.tokens, ["MV_FWD"]);
 	assert.match(v3.stderr, /dropped RT_\* steps 1, 2, 3 \(v3 has no turns/);
-	const v5 = prepare("--prompt", "v5");
+	const v5 = prepare("--prompt", "v5-libero");
 	assert.deepEqual(v5.tokens, ["MV_FWD", "RT_ROLL_LEFT", "RT_ROLL_LEFT", "RT_YAW_CCW"]);
 	assert.doesNotMatch(v5.stderr, /dropped/);
-	assert.equal(v5.meta.prompt_version, "v5");
+	assert.equal(v5.meta.prompt_version, "v5-libero");
 	const bad = spawnSync(
 		process.execPath,
 		[

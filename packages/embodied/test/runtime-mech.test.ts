@@ -353,6 +353,44 @@ test("a real robot defaults to --approval human; one prompt covers a real-robot 
 	assert.deepEqual(k.confirms, ["Run this program on the robot?"]);
 });
 
+test("the approval counters: an approval counts once as approved, a refusal once as rejected, whoever decided", async (t) => {
+	// A human-approved run_code is cached for code mode's own confirmation; that caching is not a rejection.
+	const real = { real: true, rpc: () => ({}) as never, observe: async () => ({ content: [], details: {} }) };
+	const k = fakePi({ approval: "human" }, { hasUI: true, confirm: true });
+	t.after(k.restore);
+	toyWith(k, ["run_code"], { code: real as RobotSpec["code"] });
+	await k.emit("session_start");
+	assert.equal(await call(k, "run_code", { code: "move_to([0, 0, 0.3])" }), undefined);
+	const human = await end(k);
+	assert.equal(human.approval_requests, 1);
+	assert.equal(human.approval_approved, 1);
+	assert.equal(human.approval_rejected, 0);
+	assert.equal(human.approval_errors, 0);
+	// A reviewer-approved motion is approved, not approved and rejected at once.
+	const f = fakePi({ approval: "reviewed" });
+	t.after(f.restore);
+	toy(f);
+	await f.emit("session_start");
+	assert.equal(await call(f, "move"), undefined);
+	assert.equal(await call(f, "move"), undefined);
+	const reviewed = await end(f);
+	assert.equal(reviewed.approval_requests, 2);
+	assert.equal(reviewed.approval_approved, 2);
+	assert.equal(reviewed.approval_rejected, 0);
+	assert.equal(reviewed.approval_errors, 0);
+	// A declined motion is one rejection and no approval.
+	const g = fakePi({ approval: "human" }, { hasUI: true, confirm: false });
+	t.after(g.restore);
+	toy(g);
+	await g.emit("session_start");
+	assert.equal((await call(g, "move"))?.block, true);
+	const declined = await end(g);
+	assert.equal(declined.approval_requests, 1);
+	assert.equal(declined.approval_approved, 0);
+	assert.equal(declined.approval_rejected, 1);
+	assert.equal(declined.approval_errors, 0);
+});
+
 test("--approval off (the simulation default) reviews nothing and leaves the result without approval fields", async (t) => {
 	const f = fakePi();
 	t.after(f.restore);

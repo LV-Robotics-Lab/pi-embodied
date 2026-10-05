@@ -627,9 +627,11 @@ export function approval(pi: ExtensionAPI, robot: ApprovalRobot) {
 			}
 		}
 		if (allowed) counts.approved++;
+		else if (entry.decision !== "error") counts.rejected++;
+		// A human-approved program is remembered for code mode's own confirmation (consumeApproved); this
+		// caching is not a decision and must not touch the counters.
 		if (allowed && entry.source === "human" && event.toolName === "run_code" && typeof event.input?.code === "string")
 			approvedCode = event.input.code;
-		else if (entry.decision !== "error") counts.rejected++;
 		Object.assign(entry, { reason, ms: Date.now() - started });
 		pi.appendEntry(APPROVAL_ENTRY, entry);
 		if (allowed) return undefined;

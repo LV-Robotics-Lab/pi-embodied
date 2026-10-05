@@ -11,12 +11,14 @@
  *   privileged --privileged (the simulator's ground truth)
  *
  * The expansion is not a mechanism of its own: ./params.ts's tracker reads a flag the tier expands
- * to as the tier's value unless that flag was given itself, so the robot, its modules and `params`
- * (what the result records) all see the same values. A flag given with another value than the
- * tier's is a start-time error naming both (`configError`), never a silent override; an M tier leaves
- * --privileged free and is recorded as `M2+privileged`, a combination, not one of the eight. A tier
- * the robot cannot serve (no code mode, no high-tier primitives, no VDM, no ground truth) is refused
- * at start too. The result records `tier` and `axes` (the expanded turns / feedback / api / privileged).
+ * to as the tier's value unless that flag was given itself (`Tracked.given`: named on the command
+ * line at any value, its own default included, as `--tier S3 --max-turns 0`), so the robot, its
+ * modules and `params` (what the result records) all see the same values. A flag given with another
+ * value than the tier's is a start-time error naming both (`configError`), never a silent override;
+ * an M tier leaves --privileged free and is recorded as `M2+privileged`, a combination, not one of
+ * the eight. A tier the robot cannot serve (no code mode, no high-tier primitives, no VDM, no ground
+ * truth) is refused at start too. The result records `tier` and `axes` (the expanded turns /
+ * feedback / api / privileged).
  *
  * `--preset <name>` (`PRESETS`) is the same for the other ported repositories, which do not write
  * code but call a tool or pick an action each step, so their settings are multi-turn with image
@@ -29,7 +31,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { type FlagSpec, trackFlags } from "./params.ts";
+import { trackFlags } from "./params.ts";
 
 export type Turns = "single" | "multi";
 export type Feedback = "none" | "text" | "image" | "vdm" | "image+vdm";
@@ -159,14 +161,11 @@ export function choose(tier: unknown, preset: unknown): Choice | undefined {
 export const norm = (v: unknown): string =>
 	v === true || v === "pure" ? "true" : v === false ? "false" : String(v ?? "");
 
-/** Whether a flag read as `raw` was given (differs from what it was registered with). */
-export const given = (raw: unknown, spec: FlagSpec | undefined) =>
-	spec !== undefined && raw !== undefined && norm(raw) !== norm(spec.default);
-
 /**
  * Why the flags given (`explicit`: name to value, the ones on the command line) contradict the
  * choice: one message per flag, exact names and values; empty when they agree. Shared by the robot
- * (which knows what was given from each flag's default) and tier-flags.mjs (which reads pi's argv).
+ * (whose flag tracker knows which flags were given, ./params.ts `Tracked.given`) and tier-flags.mjs
+ * (which parses the eval run's pi arguments the same way, `argvFlags`), so both refuse the same ones.
  */
 export function conflicts(c: Choice, explicit: Map<string, unknown>): string[] {
 	if ("error" in c) return [c.error];
@@ -277,20 +276,17 @@ export function tiers(pi: ExtensionAPI, caps: Caps) {
 		description: `A source repository's native setting (${PRESET_NAMES.join(", ")}): sets the flags it stands for; mutually exclusive with --tier`,
 	});
 	const choice = () => choose(t.raw("tier"), t.raw("preset"));
-	t.expand = (name, raw, spec) => {
+	t.expand = (name, raw) => {
 		const c = choice();
 		if (!c || "error" in c || !(name in c.flags)) return raw;
 		const want = c.flags[name];
-		if (want === null || given(raw, spec)) return raw;
+		if (want === null || t.given(name)) return raw;
 		return want;
 	};
 	/** The flags the robot registered that were given on the command line, with their raw values. */
 	const explicit = () => {
 		const m = new Map<string, unknown>();
-		for (const [name, spec] of t.names) {
-			const raw = t.raw(name);
-			if (given(raw, spec)) m.set(name, raw);
-		}
+		for (const name of t.names.keys()) if (t.given(name)) m.set(name, t.raw(name));
 		return m;
 	};
 	return {

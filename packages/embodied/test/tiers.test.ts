@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { trackedFlags } from "../src/infra/params.ts";
 import {
 	axesFlags,
 	choose,
@@ -345,6 +346,34 @@ test("--tier S1 runs the privileged registry with ground_truth_poses; an M tier 
 	assert.deepEqual(r3.axes, { turns: "multi", feedback: "vdm", api: "high", privileged: false });
 });
 
+test("a flag named on the command line at its registered default is given: --tier S3 --max-turns 0 is refused, as tier-flags.mjs refuses it", async () => {
+	// pi applies the command line after the extensions loaded and answers the default otherwise, so the
+	// tracker reads the process's own argv for what was named (params.ts argvFlags, pi's rules).
+	const argv = process.argv;
+	process.argv = [...argv, "--tier=S3", "--max-turns", "0", "--units=false"];
+	try {
+		const zero = await toy({ tier: "S3", "max-turns": "0", units: "false" }, { units: true });
+		assert.equal(
+			zero.refused,
+			"--tier S3 leaves --units at its default, but --units=false was given; --tier S3 sets --max-turns=1, but --max-turns=0 was given",
+		);
+		assert.equal(trackedFlags(zero.pi)?.given("max-turns"), true);
+		assert.equal(trackedFlags(zero.pi)?.given("units"), true);
+		assert.equal(trackedFlags(zero.pi)?.given("keep-images"), false, "not named, at its default");
+	} finally {
+		process.argv = argv;
+	}
+	// Not named and at its default: not given; the tier's value stands and is what the robot reads.
+	const def = await toy({ tier: "S3" });
+	assert.equal(def.refused, undefined);
+	assert.equal(def.pi.getFlag("max-turns"), "1");
+	assert.equal(trackedFlags(def.pi)?.given("max-turns"), false);
+	// A value that is not the default is given however it was set (an SDK session's flag values).
+	const five = await toy({ tier: "S3", "max-turns": "5" });
+	assert.equal(five.refused, "--tier S3 sets --max-turns=1, but --max-turns=5 was given");
+	assert.equal(trackedFlags(five.pi)?.given("max-turns"), true);
+});
+
 test("a flag given with another value than the tier's refuses to start, naming both; the same value is fine", async () => {
 	const same = await toy({ tier: "S3", "code-api": "low", code: "pure", "max-turns": "1" });
 	assert.equal(same.refused, undefined);
@@ -669,6 +698,14 @@ test("tier-flags.mjs prints the flags a tier stands for, and refuses a contradic
 	const unknown = node("tier-flags.mjs", ["--tier", "S9"]);
 	assert.equal(unknown.status, 2);
 	assert.match(unknown.stderr, /not a CaP-X tier/);
+	// A flag given at its registered default is a contradiction here as in the robot (the same parse).
+	const zero = node("tier-flags.mjs", ["--tier", "S3", "--max-turns", "0"]);
+	assert.equal(zero.status, 2);
+	assert.match(zero.stderr, /^--tier S3 sets --max-turns=1, but --max-turns=0 was given$/m);
+	// pi's rules: `--` ends the options (what follows is a message), an @file is not a flag's value.
+	const after = node("tier-flags.mjs", ["--tier", "S3", "--", "--max-turns", "0"]);
+	assert.equal(after.status, 0, after.stderr);
+	assert.equal(node("tier-flags.mjs", ["--tier", "S3", "--privileged", "@notes.md"]).status, 2);
 });
 
 /** eval-options.sh over `args`: the parsed variables, or the exit code of a refused run. */
@@ -718,6 +755,9 @@ test("eval-options.sh keys a --tier run by the flags it expands to, keeps pi's a
 	const bad = evalOptions(["--tier", "S3", "--code-api=high"]);
 	assert.equal(bad.status, 2);
 	assert.match(bad.stderr, /--tier S3 sets --code-api=low, but --code-api=high was given/);
+	const zero = evalOptions(["--tier", "S3", "--max-turns", "0"]);
+	assert.equal(zero.status, 2);
+	assert.match(zero.stderr, /--tier S3 sets --max-turns=1, but --max-turns=0 was given/);
 	const none = evalOptions(["--code=both", "--code-api", "low"]);
 	assert.deepEqual(JSON.parse(none.stdout).slice(0, 8), ["both", "low", "0", "false", "false", "false", "", ""]);
 });

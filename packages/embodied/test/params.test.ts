@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { DEPLOYMENT, NUMERIC, numberError, params, trackedFlags } from "../src/infra/params.ts";
+import { argvFlags, DEPLOYMENT, NUMERIC, numberError, params, trackedFlags, trackFlags } from "../src/infra/params.ts";
 import { deployFlags } from "./helpers/deployment.ts";
 
 /** Every robot extension, loaded into a stub pi (flags at their defaults). */
@@ -126,6 +126,44 @@ test("the result records the extras that were on, every experiment flag (params)
 	assert.equal(r.params_default["max-turns"], "0");
 	assert.equal(r.params["object-memory"], true);
 	assert.equal(r.params_default["object-memory"], false);
+});
+
+test("argvFlags parses pi's --name[=value] rules; the tracker's given() reads the process's own argv", () => {
+	const args = ["--tier=S3", "--max-turns", "0", "--vdm", "--task", "@notes.md", "--", "--code=true"];
+	assert.deepEqual(
+		[...argvFlags(args)],
+		[
+			["tier", "S3"],
+			["max-turns", "0"],
+			["vdm", true],
+			["task", true],
+		],
+	);
+	assert.deepEqual([...argvFlags(["-p", "hello", "--privileged", "-c"])], [["privileged", true]]);
+	// A stub pi as pi behaves: a value for a flag given on the command line, else the registered default.
+	const values: Record<string, unknown> = { "max-turns": "0", "keep-images": "4" };
+	const flags: Record<string, unknown> = {};
+	const pi = {
+		registerFlag: (n: string, o: { default?: unknown }) => {
+			flags[n] = n in values ? values[n] : o.default;
+		},
+		getFlag: (n: string) => flags[n],
+	} as unknown as ExtensionAPI;
+	const argv = process.argv;
+	process.argv = [...argv, "--max-turns", "0"];
+	try {
+		const t = trackFlags(pi);
+		pi.registerFlag("max-turns", { type: "string", default: "0" });
+		pi.registerFlag("keep-images", { type: "string", default: "2" });
+		pi.registerFlag("vdm", { type: "boolean", default: false });
+		assert.equal(t.given("max-turns"), true, "named on the command line, at its default");
+		assert.equal(t.given("keep-images"), true, "not its default: set another way");
+		assert.equal(t.given("vdm"), false, "neither named nor changed");
+		assert.equal(t.given("seed"), false, "not a tracked flag");
+		assert.equal(pi.getFlag("max-turns"), "0");
+	} finally {
+		process.argv = argv;
+	}
 });
 
 test("a robot refuses to start on a number that does not parse", async () => {

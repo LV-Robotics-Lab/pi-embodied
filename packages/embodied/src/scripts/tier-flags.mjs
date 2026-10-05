@@ -6,20 +6,11 @@
  * arguments contradict the choice (src/infra/tiers.ts `conflicts`), so an eval run stops before its
  * first cell, as the robot would at start. Nothing is printed without a choice.
  */
+import { argvFlags } from "../infra/params.ts";
 import { choose, conflicts, norm } from "../infra/tiers.ts";
 
-const args = process.argv.slice(2).map(String);
-/** Every `--name[=value]` given, with its value (`--name word` for a string flag, true for a bare switch). */
-const given = new Map();
-for (let i = 0; i < args.length; i++) {
-	const a = args[i];
-	if (!a.startsWith("--")) continue;
-	const eq = a.indexOf("=");
-	const name = eq > 0 ? a.slice(2, eq) : a.slice(2);
-	if (eq > 0) given.set(name, a.slice(eq + 1));
-	else if (i + 1 < args.length && !args[i + 1].startsWith("-")) given.set(name, args[++i]);
-	else given.set(name, true);
-}
+// Every `--name[=value]` given, by pi's rules: the parse the robot's flag tracker makes of its own argv.
+const given = argvFlags(process.argv.slice(2));
 const c = choose(given.get("tier"), given.get("preset"));
 if (!c) process.exit(0);
 const bad = conflicts(c, given);

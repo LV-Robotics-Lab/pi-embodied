@@ -13,6 +13,13 @@
  * The tracker also owns the robot's reads (`getFlag`): `--tier` / `--preset` (./tiers.ts) set the
  * values of the flags they expand to before the robot reads them (`Tracked.expand`), so a tier is
  * nothing but those flags' values, and `params` records what ran.
+ * pi does not expose whether a flag was given: it applies the command line's values after the
+ * extensions loaded and answers `getFlag` with the registered default otherwise, so `--max-turns 0`
+ * and no `--max-turns` read alike. The tracker therefore reads the process's own command line
+ * (`argvFlags`, pi's `--name[=value]` rules) for the flags named on it (`Tracked.given`), the same
+ * parse the eval scripts' tier-flags.mjs makes of the arguments it is given, so the robot and the
+ * scripts refuse the same contradictions (`--tier S3 --max-turns 0` included); a value that is not
+ * the registered default counts as given too (a flag set another way than the command line).
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -23,9 +30,40 @@ export type Tracked = {
 	duplicates: string[];
 	/** A flag's value as given (the command line, else its default), before any expansion. */
 	raw: (name: string) => unknown;
-	/** What `getFlag` returns for `name` given its raw value and registration (./tiers.ts sets it). */
-	expand?: (name: string, raw: unknown, spec: FlagSpec | undefined) => unknown;
+	/**
+	 * Whether a tracked flag was given: named on the process's command line (at any value, its
+	 * default included), or holding another value than its registered default.
+	 */
+	given: (name: string) => boolean;
+	/** What `getFlag` returns for `name` given its raw value (./tiers.ts sets it). */
+	expand?: (name: string, raw: unknown) => unknown;
 };
+
+/**
+ * The `--name[=value]` flags among `args`, with their values, by pi's own rules
+ * (packages/coding-agent/src/cli/args.ts): `--name=value`; `--name value` when the next word is not
+ * an option or an @file; else a bare switch, true; `--` ends the options. Shared by the tracker
+ * (over `process.argv`) and ../scripts/tier-flags.mjs (over the pi arguments an eval run is given).
+ */
+export function argvFlags(args: readonly string[]): Map<string, string | true> {
+	const found = new Map<string, string | true>();
+	for (let i = 0; i < args.length; i++) {
+		const a = String(args[i]);
+		if (a === "--") break;
+		if (!a.startsWith("--")) continue;
+		const eq = a.indexOf("=");
+		if (eq > 0) {
+			found.set(a.slice(2, eq), a.slice(eq + 1));
+			continue;
+		}
+		const next = args[i + 1];
+		if (next !== undefined && !next.startsWith("-") && !next.startsWith("@")) {
+			found.set(a.slice(2), next);
+			i++;
+		} else found.set(a.slice(2), true);
+	}
+	return found;
+}
 
 /** Numeric flags: the range a value must fall in (inclusive), and whether it must be an integer. */
 export const NUMERIC: Record<string, { min?: number; max?: number; integer?: boolean }> = {
@@ -96,17 +134,32 @@ const tracked = new WeakMap<object, Tracked>();
  * Track every flag registered on `pi` from now on (call it first in a robot's extension). A second
  * registration of the same name is recorded as a duplicate and ignored, so the first owner's
  * definition stands (pi itself would silently keep the last one). Reads go through `expand` when
- * one is set: a flag a tier expands to reads as the tier's value unless it was given itself.
+ * one is set: a flag a tier expands to reads as the tier's value unless it was given itself
+ * (`given`: named on the command line, or not at its default).
  */
 export function trackFlags(pi: ExtensionAPI): Tracked {
 	const had = tracked.get(pi);
 	if (had) return had;
 	const raw = pi.getFlag.bind(pi);
-	const t: Tracked = { names: new Map(), duplicates: [], raw };
+	// The command line's flags, read when first asked (after the robot registered its flags).
+	let named: Map<string, string | true> | undefined;
+	const t: Tracked = {
+		names: new Map(),
+		duplicates: [],
+		raw,
+		given: (name) => {
+			const spec = t.names.get(name);
+			if (!spec) return false;
+			named ??= argvFlags(process.argv);
+			if (named.has(name)) return true;
+			const value = raw(name);
+			return value !== undefined && String(value) !== String(spec.default ?? "");
+		},
+	};
 	tracked.set(pi, t);
 	(pi as { getFlag: typeof pi.getFlag }).getFlag = ((name: string) => {
 		const value = raw(name);
-		return t.expand ? t.expand(name, value, t.names.get(name)) : value;
+		return t.expand ? t.expand(name, value) : value;
 	}) as typeof pi.getFlag;
 	const register = pi.registerFlag.bind(pi);
 	(pi as { registerFlag: typeof pi.registerFlag }).registerFlag = ((name: string, spec: FlagSpec) => {

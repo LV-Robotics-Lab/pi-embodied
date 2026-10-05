@@ -110,9 +110,13 @@ insertions, which only LIBERO's full-orientation `execute_place` can run (servic
 ManiSkill (the Panda and the xArm6) and Genesis take `--ik <url>` too: `preview_reach` over the env
 server's `env.preview_reach` (the ik service gained an `xarm6` model); Genesis's `move_delta` then
 refuses an unreachable target before it moves.
-`--point` adds Molmo's `point` on the same robots (BEHAVIOR has it by default) over `--molmo`: one
-camera through `molmo.ground`, several at once through MolmoPoint's `molmo.ground_set`, each point
-with its camera and, where the robot has depth, its world point (`src/primitives/pointing.ts`).
+`--point` adds Molmo's `point` on every arm (Metaworld, Genesis, ManiSkill, Robosuite, RoboCasa, RoboLab,
+RoboDojo, RoboTwin, Piper, UR5e, the Franka and dual Franka; BEHAVIOR has it by default; on LIBERO it is
+`molmo_point`, since its units' `point` plugin owns the name) over `--molmo`, a running Molmo server
+(services `components/molmo_server.py`, default `http://127.0.0.1:18400`; `--molmo off` or none leaves
+pointing off, and a set of cameras needs one started with `--model molmopoint`): one camera through
+`molmo.ground`, several at once through MolmoPoint's `molmo.ground_set`, each point with its camera and,
+where the robot has depth, its world point (the Franka: the pixel's base-frame point; `src/primitives/pointing.ts`).
 
 ManiSkill's `--robot` picks the arm (ManiSkill 3.0.1 agents the stock table scene places, and the
 robots the other scenes of OpenETA's ManiSkill table are built for), all translation-only with the same
@@ -211,8 +215,9 @@ Shared modules:
   ported in `src/robots/robosuite/oracle/` and `src/robots/libero/oracle/`; the result records `code_oracle`).
   Every simulator serves it (LIBERO, Robosuite, MetaWorld, ManiSkill, Genesis, BEHAVIOR, RoboCasa,
   RoboLab, RoboTwin, RoboDojo), and the real robots (Franka, dual Franka, Piper, UR5e) when their
-  server runs with `--code`; eval.sh records `--code`, `--code-api` and `--code-oracle`
-  (services/PROTOCOL.md, code mode).
+  server runs with `--code`; eval.sh records `--code`, `--code-api`, `--code-oracle` and the budget
+  (`--code-timeout`, `--code-max-calls`, `--code-max-move`, `--code-helpers`, as `code_budget_flags`), and
+  never mixes them in one out dir (services/PROTOCOL.md, code mode).
 - `src/primitives/xpolicy.ts`: XPolicyLab policies (github.com/XPolicyLab/XPolicyLab, pinned `d6332bf`).
   pi-embodied is only the environment client: start the policy server the XPolicyLab way
   (`policy/<name>/setup_eval_policy_server.sh`) and pass `--xpolicy ws://host:port`
@@ -427,6 +432,11 @@ Show-Harness (137d571):
 - Its runners and VLM client (`core/runners`, `core/vlm`): the planner is the model; MvTokenRunner
   is the `finetuned/<adapter>` provider, and the verifier and video_ref calls go through pi's model
   registry.
+- `--ft-prompt v5-libero` runs the aaroncaozj LIBERO adapters (huggingface.co/aaroncaozj/qwen3_5_9b_mvtoken_libero)
+  on their prompt_v5.txt, vendored as `src/modes/finetuned/templates/v5_libero_mvtoken.txt` (the same file as
+  services/.../showharness/prompts/v5/prompt_v5.txt), with the model card's eval rules (`src/modes/finetuned`).
+  The LIBERO, ManiSkill and RoboLab eval.sh record a `finetuned/*` run's `--ft-*` flags as `ft_flags`
+  (`default` with none) and never mix them in one out dir.
 
 OpenETA (7d4a0a1):
 

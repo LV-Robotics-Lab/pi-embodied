@@ -45,6 +45,7 @@ import { trackFlags } from "../../infra/params.ts";
 import { encodePng } from "../../infra/png.ts";
 import { NdArray, type RpcClient } from "../../infra/rpc.ts";
 import { MOVE_UNITS, type MoveUnit, type Vec3 } from "../../modes/units/index.ts";
+import type { ObservationDecl } from "../../observation/path.ts";
 import { template } from "../../planner/context-version.ts";
 import { detectionActive, detectionArgs, detectionTools, registerDetectionFlags } from "../../primitives/detections.ts";
 import { mountGraspTool } from "../../primitives/grasp.ts";
@@ -405,6 +406,19 @@ export type RobotId = keyof typeof ROBOTS;
 export const ROBOT_IDS = Object.keys(ROBOTS) as RobotId[];
 /** Whether a robot's observations carry a wrist view. */
 export const hasWrist = (r: ManiskillRobot) => r.setup.wrist_mount !== "none";
+/**
+ * Observed without pi (../../observation/path.ts): the two views, and the ones the server's robot has
+ * (`env.get_env_meta`'s robot in ROBOTS, a Panda when absent, as the session reads it): the facade
+ * raises for the wrist of a robot without one (widowxai, panda_stick, the pairs).
+ */
+export const OBSERVATION: ObservationDecl = {
+	cameras: ["agentview", "wrist"],
+	active: async (call) => {
+		const meta = await call<Meta>("env.get_env_meta", {});
+		const r = ROBOTS[(meta.robot ?? "panda") as RobotId] as ManiskillRobot | undefined;
+		return !r || hasWrist(r) ? ["agentview", "wrist"] : ["agentview"];
+	},
+};
 /** Whether a robot has a gripper (the stick has none). */
 export const hasGripper = (r: ManiskillRobot) => r.gripper !== false;
 

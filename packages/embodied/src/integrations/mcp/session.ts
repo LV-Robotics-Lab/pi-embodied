@@ -211,6 +211,8 @@ export class RobotSession implements ToolProvider {
 	private readonly o: SessionOptions;
 	private readonly has: (capability: string) => boolean;
 	private path: Promise<ObservationPath> | undefined;
+	/** The cameras active on the configured robot (the path's `active`, asked once). */
+	private cameras: Promise<string[]> | undefined;
 
 	constructor(o: SessionOptions) {
 		this.o = o;
@@ -401,15 +403,12 @@ export class RobotSession implements ToolProvider {
 				return failure(
 					`${this.o.robot}'s manifest declares no render_camera${camera === undefined ? " or get_observation" : ""}: nothing to observe${camera === undefined ? "" : " per camera"}`,
 				);
-			// A camera by its name or by the facade's camera_name.
+			// The cameras active on this robot (ManiSkill's widowxai has no wrist), by name or by the facade's camera_name.
+			this.cameras ??= render.active((method, kwargs) => this.rpcCall(method, kwargs, signal));
+			const active = await this.cameras;
 			const names =
-				camera === undefined
-					? Object.keys(render.cameras)
-					: Object.entries(render.cameras)
-							.filter(([k, v]) => k === camera || v === camera)
-							.map(([k]) => k);
-			if (names.length === 0)
-				return failure(`camera ${camera}: ${this.o.robot}'s cameras are ${Object.keys(render.cameras).join(", ")}`);
+				camera === undefined ? active : active.filter((k) => k === camera || render.cameras[k] === camera);
+			if (names.length === 0) return failure(`camera ${camera}: ${this.o.robot}'s cameras are ${active.join(", ")}`);
 			const out: Record<string, unknown> = {};
 			for (const name of names) {
 				const image = await this.rpcCall(render.method, render.kwargs(render.cameras[name]), signal);

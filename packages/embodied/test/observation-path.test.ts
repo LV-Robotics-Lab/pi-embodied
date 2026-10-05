@@ -8,7 +8,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { flipRows, observationPath, robotObservation } from "../src/observation/path.ts";
+import { type Call, flipRows, observationPath, robotObservation } from "../src/observation/path.ts";
 import { loadManifest, type Manifest } from "../src/primitives/manifest.ts";
 
 const all = () => true;
@@ -63,6 +63,35 @@ test("RoboTwin: render per declared view with only camera_name, upright; the sta
 	assert.deepEqual(p.render?.cameras, { head: "head", left_wrist: "left_wrist", right_wrist: "right_wrist" });
 	assert.deepEqual(p.render?.kwargs("head"), { camera_name: "head" });
 	assert.equal(p.render?.flip, false);
+});
+
+test("ManiSkill: the active cameras are the server's robot's (widowxai: no wrist); --var cameras names them", async () => {
+	const decl = await robotObservation("maniskill");
+	assert.deepEqual(decl.cameras, ["agentview", "wrist"]);
+	const meta = (robot?: string) =>
+		(async (method: string) => {
+			assert.equal(method, "env.get_env_meta");
+			return robot ? { robot } : {};
+		}) as Call;
+	assert.deepEqual(await decl.active?.(meta("widowxai")), ["agentview"]);
+	assert.deepEqual(await decl.active?.(meta("panda_stick")), ["agentview"]);
+	assert.deepEqual(await decl.active?.(meta("panda")), ["agentview", "wrist"]);
+	assert.deepEqual(await decl.active?.(meta()), ["agentview", "wrist"], "no robot in the meta: a Panda");
+	assert.deepEqual(
+		await decl.active?.(meta("some_future_robot")),
+		["agentview", "wrist"],
+		"unknown: the server tells",
+	);
+	const m = loadManifest("maniskill");
+	assert.deepEqual(await observationPath(m, all, {}, decl).render?.active(meta("widowxai")), ["agentview"]);
+	// --var cameras decides without asking the server; a list with no declared camera is an error, not a guess.
+	const never: Call = async () => assert.fail("the server was asked");
+	const given = observationPath(m, all, { cameras: ["agentview"] }, decl);
+	assert.deepEqual(await given.render?.active(never), ["agentview"]);
+	const wrong = observationPath(m, all, { cameras: ["overhead"] }, decl);
+	await assert.rejects(() => wrong.render?.active(never) ?? Promise.resolve(), /none of the cameras overhead/);
+	// Without a declaration or a variable, every enum camera is active.
+	assert.deepEqual(await observationPath(m, all).render?.active(never), ["agentview", "wrist"]);
 });
 
 test("a robot without a declaration is observed from its manifest: the enum's cameras, the server's default size", async () => {

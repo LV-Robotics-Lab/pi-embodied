@@ -14,14 +14,25 @@
  * `height` and `width`), and whether the sim renders bottom-up (MuJoCo: LIBERO, RoboCasa), in which
  * case the rows are flipped as the robot's tools flip them. A robot without one is observed from its
  * manifest alone: the enum's camera names, the server's default size, no flip.
+ *
+ * The cameras ACTIVE on the configured robot can be fewer than the declared ones (ManiSkill's
+ * widowxai and panda_stick have no wrist camera: the facade raises for it). `--var cameras`, the
+ * list the manifest's enums are built from, names the active set when the operator gives it; else
+ * the robot's `active` reads it from the server as its own tools do (ManiSkill: `env.get_env_meta`'s
+ * robot against its ROBOTS table); else every declared camera is active.
  */
 
 import { inMode } from "../primitives/arguments.ts";
 import { available, enumValues, type Manifest, type Vars } from "../primitives/manifest.ts";
 
+/** An RPC call on the robot's env server (the session's, with its failure handling). */
+export type Call = <T = unknown>(method: string, kwargs: Record<string, unknown>) => Promise<T>;
+
 /** A robot's declaration (`OBSERVATION` in its index.ts): cameras as name → facade camera_name (or just names), size, orientation. */
 export type ObservationDecl = {
 	cameras?: Readonly<Record<string, string>> | readonly string[];
+	/** The camera names active on the server's configured robot (a subset of `cameras`), asked of the server. */
+	active?: (call: Call) => Promise<readonly string[]>;
 	/** The square image size the robot's tools render at (`height` and `width`). */
 	size?: number;
 	/** The sim renders bottom-up: flip the rows, as the robot's tools do. */
@@ -38,6 +49,8 @@ export type ObservationPath = {
 		/** The method's kwargs for one camera: its required parameters filled from the declaration. */
 		kwargs: (cameraName: string) => Record<string, unknown>;
 		flip: boolean;
+		/** The active camera names: `--var cameras` when given, else the robot's `active`, else every camera. */
+		active: (call: Call) => Promise<string[]>;
 	};
 	/** The zero-argument state method (`env.get_state`; RoboTwin's is `env.policy_frame`). */
 	state?: string;
@@ -96,7 +109,21 @@ export function observationPath(
 		}
 		return kw;
 	};
-	return { ...out, render: { method: render.method as string, cameras, kwargs, flip: decl.flip === true } };
+	const declared = Object.keys(cameras);
+	const given = vars.cameras;
+	const active = async (call: Call): Promise<string[]> => {
+		const names = Array.isArray(given) ? [...given] : decl.active ? [...(await decl.active(call))] : declared;
+		const known = names.filter((n) => declared.includes(n));
+		if (known.length === 0)
+			throw new Error(
+				`${m.robot}: none of the cameras ${names.join(", ")} (${Array.isArray(given) ? "--var cameras" : "the robot's active set"}) is one of ${declared.join(", ")}`,
+			);
+		return known;
+	};
+	return {
+		...out,
+		render: { method: render.method as string, cameras, kwargs, flip: decl.flip === true, active },
+	};
 }
 
 /** The robot's `OBSERVATION` declaration (../robots/<robot>/index.ts), or none for a robot module without one. */

@@ -293,6 +293,55 @@ test("observe on RoboTwin: render_camera(camera_name) per declared view, upright
 	}
 });
 
+test("observe on ManiSkill renders the cameras the server's robot has: widowxai has no wrist; --var cameras names the set", async () => {
+	useDeployment({});
+	const env = fakeEnv({ robot: "maniskill", has: () => false });
+	delete env.methods["env.get_observation"];
+	delete env.methods["env.get_state"];
+	let robot = "widowxai";
+	env.methods["env.get_env_meta"] = () => ({ env_id: "PickCubeWidowXAI-v1", seed: 0, robot, view_size: 256 });
+	// The facade (maniskill/env_server.py `_camera`): the wrist of a robot without one raises.
+	env.methods["env.render_camera"] = (kw) => {
+		if (kw.camera_name === "wrist" && robot !== "panda") throw new Error(`--robot ${robot} has no wrist camera`);
+		return rowsImage();
+	};
+	const url = await env.listen();
+	try {
+		const a = parseArgs(["--robot", "maniskill", "--env", url]);
+		const s = session(a, await connect(a));
+		const { c: mcp, close } = await client(s);
+		try {
+			const o = await mcp.callTool("observe", {});
+			assert.equal(o.isError, undefined, JSON.stringify(o.content[0]));
+			assert.deepEqual(Object.keys(text(o)), ["agentview"]);
+			assert.deepEqual(
+				env.calls.filter((c) => c.method === "env.render_camera").map((c) => c.kwargs),
+				[{ camera_name: "agentview" }],
+				"the wrist is never asked of a robot without one",
+			);
+			assert.equal(env.calls.filter((c) => c.method === "env.get_env_meta").length, 1, "the robot is read once");
+			const wrist = await mcp.callTool("observe", { camera: "wrist" });
+			assert.equal(wrist.isError, true);
+			assert.match(wrist.content[0].type === "text" ? wrist.content[0].text : "", /cameras are agentview$/);
+		} finally {
+			await close();
+		}
+		// A Panda has both; --var cameras=agentview restricts the set without asking the server.
+		robot = "panda";
+		env.calls.length = 0;
+		const signal = new AbortController().signal;
+		const both = session(a, await connect(a));
+		assert.deepEqual(Object.keys(text(await both.call("observe", {}, signal))), ["agentview", "wrist"]);
+		env.calls.length = 0;
+		const few = parseArgs(["--robot", "maniskill", "--env", url, "--var", "cameras=agentview"]);
+		const one = session(few, await connect(few));
+		assert.deepEqual(Object.keys(text(await one.call("observe", {}, signal))), ["agentview"]);
+		assert.ok(!env.calls.some((c) => c.method === "env.get_env_meta"), "--var cameras decides without the server");
+	} finally {
+		env.close();
+	}
+});
+
 test("a tool whose parameters differ from the method's is adapted as pi adapts it: align_wrist's point reaches the facade as row, col", async () => {
 	useDeployment({});
 	const env = fakeEnv({ has: (c) => c === "sam3" || c === "align_wrist" });

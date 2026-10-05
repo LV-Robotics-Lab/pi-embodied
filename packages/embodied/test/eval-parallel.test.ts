@@ -391,7 +391,8 @@ test("humanclaw under LOCK: the run takes the lock once and its workers' eval.sh
 	writeFileSync(py, `#!/usr/bin/env bash\nk=\${@: -1}\nprintf '%s\\t%s\\t-\\t--episodes %s\\n' "$k" "$k" "$k"\n`);
 	chmodSync(py, 0o755);
 	const out = join(s.dir, "hc");
-	const r = s.run(["-j", "1", "humanclaw", out, "sceneA_ep2_couch", "--mode", "pi", "--model", "p/m"], {
+	// --seed 0 is for the stand-in pi (an even seed succeeds); humanclaw/eval.sh passes pi args through.
+	const r = s.run(["-j", "1", "humanclaw", out, "sceneA_ep2_couch", "--mode", "pi", "--model", "p/m", "--seed", "0"], {
 		LOCK: join(s.dir, "gpu1.lock"),
 		HUMANCLAW_PYTHON: py,
 	});

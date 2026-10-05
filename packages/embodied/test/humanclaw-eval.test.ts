@@ -71,7 +71,10 @@ test("humanclaw/eval.sh keys paper mode's request parameters: both reasoning for
 	const out = mkdtempSync(join(tmpdir(), "hc-out-"));
 	const r = run(out, ["--humanclaw-reasoning=low", "--humanclaw-max-tokens", "1200"], {}, "paper");
 	assert.equal(r.status, 0, r.stderr);
-	assert.match(config(out), /^mode=paper\/preset=humanclaw\/model=humanclaw-psv\/p\/m\/.*\/reasoning=low\/request_tokens=1200$/);
+	assert.match(
+		config(out),
+		/^mode=paper\/preset=humanclaw\/model=humanclaw-psv\/p\/m\/.*\/reasoning=low\/request_tokens=1200$/,
+	);
 	// The same request contract in the other spelling is the same configuration; dropping --humanclaw-max-tokens is another.
 	assert.equal(run(out, ["--humanclaw-reasoning", "low", "--humanclaw-max-tokens=1200"], {}, "paper").status, 0);
 	const mixed = run(out, ["--humanclaw-reasoning", "low"], {}, "paper");
@@ -90,8 +93,20 @@ test("humanclaw/eval.sh keys paper mode's request parameters: both reasoning for
 test("humanclaw/eval.sh keys pi mode's planner flags as eval-options.sh parses them", () => {
 	const out = mkdtempSync(join(tmpdir(), "hc-out-"));
 	const r = run(out, [
-		"--thinking", "low", "--max-turns=40", "--time-limit", "900", "--units-plugins", "plan", "--units-stage-steps=3",
-		"--anchor-image", "--vdm", "--vdm-model=v/m", "--fallback-model", "f/m", "--fallback-after=3",
+		"--thinking",
+		"low",
+		"--max-turns=40",
+		"--time-limit",
+		"900",
+		"--units-plugins",
+		"plan",
+		"--units-stage-steps=3",
+		"--anchor-image",
+		"--vdm",
+		"--vdm-model=v/m",
+		"--fallback-model",
+		"f/m",
+		"--fallback-after=3",
 	]);
 	assert.equal(r.status, 0, r.stderr);
 	assert.match(
@@ -118,4 +133,28 @@ test("humanclaw/eval.sh takes --humanclaw-max-steps only as a --smoke, and keys 
 	assert.equal(argv.status, "success");
 	// A full run does not share the smoke's out dir.
 	assert.equal(run(out, []).status, 1);
+});
+
+test("humanclaw/eval.sh keys --humanclaw-collision-feedback (pi mode, with --metrics only)", () => {
+	const out = mkdtempSync(join(tmpdir(), "hc-out-"));
+	// --metrics ends with the humanclaw venv's aggregate_metric_files(): a no-op python here.
+	const py = { HUMANCLAW_PYTHON: "true" };
+	const r = run(out, ["--metrics", "--humanclaw-collision-feedback"], py);
+	assert.equal(r.status, 0, r.stderr);
+	assert.match(config(out), /\/metrics=true\/.*\/collision_feedback=true$/);
+	const plain = run(out, ["--metrics"], py);
+	assert.equal(plain.status, 1);
+	assert.match(plain.stderr, /holds a result of another configuration/);
+	assert.equal(
+		run(mkdtempSync(join(tmpdir(), "hc-out-")), ["--humanclaw-collision-feedback"]).status,
+		2,
+		"needs --metrics",
+	);
+	const paper = run(
+		mkdtempSync(join(tmpdir(), "hc-out-")),
+		["--metrics", "--humanclaw-collision-feedback"],
+		py,
+		"paper",
+	);
+	assert.equal(paper.status, 2);
 });

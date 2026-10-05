@@ -21,7 +21,10 @@
  * prompt v4 + verifier v3 byte for byte; the robot's SYSTEM.md, VDM, memory and verifier plug-ins are
  * refused. pi: the model plans with our SYSTEM.md and gives `target_visible` with every `act`, which
  * is FindSR's subjective acknowledgement. --privileged adds ground_truth_poses (target centres and
- * the humanoid root pose), recorded as `humanclaw+privileged`.
+ * the humanoid root pose), recorded as `humanclaw+privileged`. The observation is the ego image and
+ * the step counters, as the paper's; --humanclaw-proprioception (measured self-motion) and
+ * --humanclaw-collision-feedback (the metric tracker's contact verdict for the step) are pi-mode
+ * experiments, off by default, recorded in `robot_result` and keyed by eval.sh.
  *
  * Copyright 2026 The HumanCLAW Authors (github.com/Human-CLAW/HumanCLAW @c4f9351).
  * Licensed under the Apache License, Version 2.0.
@@ -95,6 +98,12 @@ export default function humanclaw(pi: ExtensionAPI) {
 		description:
 			"pi mode experiment: report actual relative body motion (different observation setting from paper mode)",
 	});
+	pi.registerFlag("humanclaw-collision-feedback", {
+		type: "boolean",
+		default: false,
+		description:
+			"pi mode experiment: report the paper's collision verdict for each step (needs --humanclaw-metrics; not in the paper's observation)",
+	});
 	pi.registerFlag("humanclaw-metrics", {
 		type: "boolean",
 		default: false,
@@ -140,6 +149,7 @@ export default function humanclaw(pi: ExtensionAPI) {
 	if (base) mountPsv(pi, base);
 	const mode = () => flag("humanclaw-mode", "paper");
 	const proprioception = () => pi.getFlag("humanclaw-proprioception") === true;
+	const collisionFeedback = () => pi.getFlag("humanclaw-collision-feedback") === true;
 
 	let env: RpcClient;
 	let obs: Obs;
@@ -172,11 +182,15 @@ export default function humanclaw(pi: ExtensionAPI) {
 				? SYSTEM.replaceAll("{{task}}", obs?.instruction ?? "") +
 					(proprioception()
 						? "\nSelf-motion feedback reports measured movement, not the requested motion. turned_left_deg is positive for left turns and negative for right turns. Use measured turns to keep the seat behind you; a requested 120 degree turn may execute only partially. height_from_start_m is relative to the initial root, not seat height. Small displacement after a walking action signals a blocked approach; choose a different route. A lower root alone does not prove that you are sitting on the target. Track the measured turning and sitting phase with plan."
+						: "") +
+					(collisionFeedback()
+						? "\nCollision feedback (collision.collided) reports whether the last action made contact with the scene above the floor, as the benchmark's collision metric counts it. Back away from or turn out of a contact before continuing."
 						: "")
 				: "The HumanCLAW planner (humanclaw-psv) drives this episode.",
 		result: () => ({
 			mode: mode(),
 			humanclaw_proprioception: proprioception(),
+			humanclaw_collision_feedback: collisionFeedback(),
 			preset: pi.getFlag("privileged") === true ? "humanclaw+privileged" : "humanclaw",
 			episode: obs?.episode ?? null,
 			rollout: Number(flag("rollout", "0")),
@@ -260,7 +274,8 @@ export default function humanclaw(pi: ExtensionAPI) {
 			unit,
 			param,
 			action: call.action_name,
-			collision: obs.collision ?? {},
+			// The metric tracker's verdict is not in the paper's observation space: shown only on request.
+			...(collisionFeedback() ? { collision: obs.collision ?? {} } : {}),
 			...(proprioception() ? { proprioception: obs.proprioception ?? {} } : {}),
 		};
 	}
@@ -310,6 +325,12 @@ export default function humanclaw(pi: ExtensionAPI) {
 			throw new Error(
 				"--humanclaw-proprioception is a pi-mode experiment; paper mode keeps the published observations",
 			);
+		if (m === "paper" && collisionFeedback())
+			throw new Error(
+				"--humanclaw-collision-feedback is a pi-mode experiment; paper mode keeps the published observations",
+			);
+		if (collisionFeedback() && !pi.getFlag("humanclaw-metrics"))
+			throw new Error("--humanclaw-collision-feedback reads the metric tracker: it needs --humanclaw-metrics");
 		if (String(pi.getFlag("units") ?? "") !== "both")
 			throw new Error("HumanCLAW runs with --units=both (the units' act plus the robot's look)");
 		if (m === "paper") {

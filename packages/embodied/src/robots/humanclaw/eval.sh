@@ -11,7 +11,7 @@
 # --humanclaw-proprioception, --metrics, --video, paper mode's request parameters
 # (--humanclaw-reasoning, --humanclaw-max-tokens) and, when set, pi mode's planner flags (--thinking,
 # --max-turns, --time-limit, --units-plugins and the units knobs, --anchor-image, --vdm-model,
-# --fallback-*, --approval, --max-tool-calls, --max-tokens) and a
+# --fallback-*, --approval, --max-tool-calls, --max-tokens, --humanclaw-collision-feedback) and a
 # --smoke step cap (--humanclaw-max-steps). An episode is valid when the environment produced a result
 # and the planner did not fail. Rerunning retries only invalid episodes and refuses an out dir holding
 # another configuration.
@@ -37,12 +37,14 @@ source "$here/../../scripts/eval-options.sh"
 eval_options_defaults
 units=both # eval.sh passes --units=both itself; --units-plugins / --units-stage-steps extend it
 episodes=one mode=paper metrics=false video=false smoke=false
-verify=false proprioception=false reasoning="" request_tokens=4096 max_steps=""
+verify=false proprioception=false collision=false reasoning="" request_tokens=4096 max_steps=""
 eval_robot_option() {
 	case $1 in
 	--units-verify) verify=true ;;
 	--humanclaw-proprioception | --humanclaw-proprioception=true) proprioception=true ;;
 	--humanclaw-proprioception=*) echo "omit --humanclaw-proprioception to disable it" >&2; exit 2 ;;
+	--humanclaw-collision-feedback | --humanclaw-collision-feedback=true) collision=true ;;
+	--humanclaw-collision-feedback=*) echo "omit --humanclaw-collision-feedback to disable it" >&2; exit 2 ;;
 	# Paper mode's request parameters (provider.ts): the base model's reasoning level and max_tokens.
 	--humanclaw-reasoning) reasoning=${2:-} ;;
 	--humanclaw-reasoning=*) reasoning=${1#*=} ;;
@@ -76,12 +78,16 @@ if [ "$mode" = paper ] && [[ $model != humanclaw-psv/* ]]; then
 	echo "--mode paper runs HumanCLAW's planner: --model humanclaw-psv/<base>" >&2
 	exit 2
 fi
-if [ "$mode" = paper ] && { $verify || $vdm || $stateless || $proprioception; }; then
-	echo "--mode paper runs HumanCLAW's planner as published: no --units-verify, --vdm, --stateless or --humanclaw-proprioception" >&2
+if [ "$mode" = paper ] && { $verify || $vdm || $stateless || $proprioception || $collision; }; then
+	echo "--mode paper runs HumanCLAW's planner as published: no --units-verify, --vdm, --stateless, --humanclaw-proprioception or --humanclaw-collision-feedback" >&2
 	exit 2
 fi
 if [ "$mode" = pi ] && { [ -n "$reasoning" ] || [ "$request_tokens" != 4096 ]; }; then
 	echo "--humanclaw-reasoning and --humanclaw-max-tokens are paper mode's request parameters; pi mode plans with --thinking and the model's own limits" >&2
+	exit 2
+fi
+if $collision && ! $metrics; then
+	echo "--humanclaw-collision-feedback reads the metric tracker: add --metrics" >&2
 	exit 2
 fi
 if [ -n "$max_steps" ] && ! $smoke; then
@@ -104,6 +110,7 @@ extra=""
 $anchor && extra+="/anchor"
 [ -n "$vdm_model" ] && extra+="/vdm_model=$vdm_model"
 [ -n "$fallback_model" ] && extra+="/fallback=$fallback_model:$fallback_after:$fallback_retry"
+$collision && extra+="/collision_feedback=true"
 [ -n "$max_steps" ] && extra+="/max_steps=$max_steps"
 # The OpenETA extras this run turns on (eval-options.sh's $extras; robot.ts records them as `extras`): part of the configuration.
 config="mode=$mode/preset=$preset/model=$model/metrics=$metrics/video=$video/verify=$verify/vdm=$vdm/stateless=$stateless/proprioception=$proprioception${reasoning:+/reasoning=$reasoning}$extra${extras:+/extras=$extras}"

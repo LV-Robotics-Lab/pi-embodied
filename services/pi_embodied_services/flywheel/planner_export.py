@@ -631,31 +631,34 @@ def dataset_info(name: str, file_name: str) -> dict[str, Any]:
 
 def planner_type(result: dict[str, Any], entries: list[dict[str, Any]]) -> str:
     """Who planned the episode: the result's ``planner`` field (``model``, ``flash``, ``replay``,
-    ``human``, ``scripted``, ...) when the run recorded one; otherwise inferred from the session's
-    planner provider: ``flash/...`` is flash, ``replay/...`` replay, ``human/...`` a human, and
-    anything else a model (a scripted stand-in behind an OpenAI-compatible endpoint is only
-    recognized through the field)."""
+    ``human``, ``scripted``, ...) when the run recorded one; otherwise inferred from the planner
+    provider of every assistant turn (the ``model_change`` in force when it was written, or the
+    message's own ``provider``), not only the last ``model_change``: ``human`` when any turn was a
+    person's (an operator who hands over to a model mid-episode wrote assistant turns no model
+    planned), else the last turn's: ``flash/...`` is flash, ``replay/...`` replay, and anything else
+    a model (a scripted stand-in behind an OpenAI-compatible endpoint is only recognized through
+    the field)."""
     recorded = result.get("planner")
     if isinstance(recorded, dict):
         recorded = recorded.get("type") or recorded.get("kind")
     if isinstance(recorded, str) and recorded:
         return recorded
-    provider = next(
-        (
-            e.get("provider")
-            for e in reversed(entries)
-            if e.get("type") == "model_change"
-        ),
-        None,
-    ) or next(
-        (
-            e["message"].get("provider")
-            for e in reversed(entries)
-            if e.get("type") == "message" and e["message"].get("role") == "assistant"
-        ),
-        None,
-    )
-    return provider if provider in NON_MODEL_PROVIDERS else "model"
+
+    def kind(provider: Any) -> str:
+        return provider if provider in NON_MODEL_PROVIDERS else "model"
+
+    current: Any = None
+    turns: list[str] = []
+    for e in entries:
+        if e.get("type") == "model_change":
+            current = e.get("provider")
+        elif e.get("type") == "message" and e["message"].get("role") == "assistant":
+            turns.append(kind(e["message"].get("provider") or current))
+    if not turns and current is not None:
+        turns.append(kind(current))
+    if "human" in turns:
+        return "human"
+    return turns[-1] if turns else "model"
 
 
 def excluded(

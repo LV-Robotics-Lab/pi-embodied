@@ -660,6 +660,46 @@ def test_every_row_has_one_placeholder_per_image(tmp_path: Path) -> None:
     )
 
 
+def test_a_session_an_operator_handed_to_a_model_is_the_operators(
+    tmp_path: Path,
+) -> None:
+    # Runs recorded before the planner field: every assistant turn's planner counts, not only the
+    # last model_change. The operator planned the first turn, then switched to a model: the
+    # session holds assistant turns no model planned, so it is not the model's data.
+    runs = tmp_path / "runs"
+    s = Session()
+    s.add({"type": "model_change", "provider": "human", "modelId": "operator"})
+    s.step("h1", text("moved"))
+    s.add({"type": "model_change", "provider": "selfhost", "modelId": "muse"})
+    s.finish()
+    s.write(runs / "handover", {"success": True})
+    # A switch before the first turn leaves nothing of the first planner in the session.
+    s = Session()
+    s.add({"type": "model_change", "provider": "human", "modelId": "operator"})
+    s.add({"type": "model_change", "provider": "selfhost", "modelId": "muse"})
+    s.finish()
+    s.write(runs / "switched_first", {"success": True})
+    # The message's own provider counts when it carries one (pi writes it on every reply).
+    s = Session()
+    s.msg(
+        {
+            **assistant([call("h2", "move_to", x="h2")]),
+            "provider": "human",
+            "model": "operator",
+        }
+    )
+    s.msg(result("h2", "move_to", text("moved")))
+    s.finish()
+    s.write(runs / "message_provider", {"success": True})
+    summary = export_planner([runs], tmp_path / "out")
+    assert summary["episodes"] == 1 and summary["skipped"] == {"planner_human": 2}
+    [row] = rows(tmp_path / "out")
+    assert row["id"].startswith("switched_first") and row["planner"] == "model"
+    assert (
+        export_planner([runs], tmp_path / "human", planners=["human"])["episodes"] == 2
+    )
+
+
 def test_cli_export_planner(tmp_path: Path, capsys) -> None:
     runs = tmp_path / "runs"
     write_session(runs / "ep", outcome={"success": True})

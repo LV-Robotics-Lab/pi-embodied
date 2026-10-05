@@ -77,7 +77,9 @@ test("Claude Code plugin: manifest, MCP server, hook and command agree on the se
 test("Codex plugin: portable manifest, overlay paths that exist, hooks that deny, approval on every motion tool", () => {
 	const dir = `${INT}codex/`;
 	const portable = json(`${dir}plugin.json`);
-	assert.equal(portable.$schema, "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json");
+	// No Agent Plugins `$schema` here: Codex 0.160 takes a root plugin.json that carries it as the whole manifest
+	// and ignores .codex-plugin/plugin.json, so the MCP server is never registered (plugin-e2e, 2026-10-06).
+	assert.equal(portable.$schema, undefined);
 	assert.equal(portable.name, "pi-embodied");
 	assert.equal(portable.extensions, undefined, "the overlay in .codex-plugin supplies the OpenAI settings");
 	const overlay = json(`${dir}.codex-plugin/plugin.json`);

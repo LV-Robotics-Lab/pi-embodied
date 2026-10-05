@@ -23,6 +23,12 @@
 # with flock and releases it between episodes, so other GPU jobs interleave. scripts/eval-parallel.sh
 # takes it once for the whole run and starts this script with LOCK unset (an episode taking it here
 # would wait on that run's own lock).
+#
+# Verification: the option parsing, configuration key, result.json statuses, rerun rules and LOCK
+# handling are tested with a stand-in pi and flock (test/humanclaw-eval.test.ts,
+# test/eval-parallel.test.ts). Episode runs through this script on bjb2 (paper or pi mode, --metrics
+# aggregation, the LOCK path, the eval-parallel entry) are 未上机验证: 409298b9f recorded no box run,
+# and the LOCK path deadlocked under eval-parallel until HC-1's fix (`env -u LOCK`), so it had never run.
 set -uo pipefail
 out=${1:?usage: eval.sh <out-dir> [--episodes ...] [--mode paper|pi] [--metrics] [--video] [--smoke] [pi args...]}
 shift

@@ -8,7 +8,8 @@
  * `look` / `act` result, the text history this provider keeps (evaluator._history_item rows, one
  * `humanclaw_psv_step` session entry per decision, rebuilt on resume), the planner request to the
  * base model (the prompt text, then the image; temperature 0, --humanclaw-max-tokens, a JSON-object
- * response format, no system prompt, no tools, no transcript), up to 5 attempts at the same state,
+ * response format, the SDK's two transport retries, no system prompt, no tools, no transcript), up to 5
+ * attempts at the same state,
  * the verifier where its route asks for one, and the final action as one `act` call (unit + param,
  * which the robot maps back through HumanCLAW's own `_chooser_action`). The decision record goes to
  * the robot on DECISION_EVENT so the env server's metric recorder and step JSON get the planner's
@@ -86,6 +87,10 @@ export function mountPsv(pi: ExtensionAPI, base: string, ask?: (m: Json[]) => Pr
 						? { reasoning: String(pi.getFlag("humanclaw-reasoning")) as SimpleStreamOptions["reasoning"] }
 						: {}),
 					maxTokens: Number(pi.getFlag("humanclaw-max-tokens") ?? 4096) || 4096,
+					// The paper's adapter is the OpenAI SDK at its default max_retries=2 per attempt (408/409/429,
+					// 5xx and connection errors); pi-ai's openai-completions retries 0 times unless told. A
+					// paper-consistency parameter, not a flag: the 5-attempt loop above it is the planner's own.
+					maxRetries: 2,
 					signal,
 					// The release's adapter asks for a JSON object (configs/models/vllm_openai_compatible.json).
 					onPayload: (payload) =>

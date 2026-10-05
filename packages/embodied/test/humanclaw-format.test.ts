@@ -10,13 +10,15 @@ test("PSV retries NInfer's unsupported JSON format at the same observation and r
 	const s = stubPi();
 	const requests: unknown[] = [];
 	const contexts: unknown[] = [];
+	const options: SimpleStreamOptions[] = [];
 	const model = { id: "qwen", api: "openai-completions", provider: "selfhost" } as Model<Api>;
 	const registry = {
 		find: () => model,
-		async *streamSimple(_model: Model<Api>, context: unknown, options: SimpleStreamOptions) {
-			const payload = await options.onPayload?.({}, model);
+		async *streamSimple(_model: Model<Api>, context: unknown, opts: SimpleStreamOptions) {
+			const payload = await opts.onPayload?.({}, model);
 			requests.push(payload);
 			contexts.push(context);
+			options.push(opts);
 			if (requests.length === 1) {
 				yield {
 					type: "error",
@@ -75,4 +77,10 @@ test("PSV retries NInfer's unsupported JSON format at the same observation and r
 	assert.equal(requests.length, 3);
 	assert.equal(requests[2], undefined, "later steps must not repeat the rejected format");
 	assert.equal(s.entries.filter((e) => e.type === "humanclaw_response_format").length, 1);
+	// Every request is the paper's: temperature 0, max_tokens 4096 by default and the OpenAI SDK's two retries.
+	for (const o of options) {
+		assert.equal(o.temperature, 0);
+		assert.equal(o.maxTokens, 4096);
+		assert.equal(o.maxRetries, 2, "the paper's adapter is the SDK at max_retries=2");
+	}
 });

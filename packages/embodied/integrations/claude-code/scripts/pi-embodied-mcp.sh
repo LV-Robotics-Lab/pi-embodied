@@ -13,7 +13,7 @@
 #   PI_EMBODIED_CAPABILITIES a,b   what the env server was started with, when it serves no code.api
 #   PI_EMBODIED_VARS         "cameras=agentview,wrist;arms="   robot variables the manifest's enums need
 #   PI_EMBODIED_TIMEOUT_MS   per-call RPC timeout
-#   PI_EMBODIED_NO_RESET     1: do not env.reset at start (a real arm whose start pose is the operator's business)
+#   PI_EMBODIED_NO_RESET     1: do not env.reset a simulator at start (a real arm is never reset at start: its reset tool is)
 set -eu
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 root=${PI_EMBODIED_ROOT:-${CLAUDE_PLUGIN_OPTION_REPO:-}}

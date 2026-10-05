@@ -12,7 +12,9 @@ workspace box, z floor, reach and collision checks where IK is on); a refusal is
 call. On top of that the plugin's PreToolUse hook asks the operator before high-risk motions, with
 the same risk classes as pi's `--approval standard`:
 
-- grasp or place execution (`execute_grasp`, `execute_place`, `release`, VLA skills) and resets;
+- grasp or place execution (`execute_grasp`, `execute_place`, `release`, VLA skills) and resets,
+  including the built-in `reset` (a simulator's new episode; on a real arm the gripper opens and the
+  arm moves to its start pose, which is why a real arm is never reset when the server connects);
 - a move to an absolute target (`move_to`, `move_pose`, `move_grip`, `navigate_to`, `move_to_joints`);
 - a relative move commanding more than 0.1 m (`--large-move`);
 - on a real robot (Franka, dual Franka, Piper, UR5e): every motion.

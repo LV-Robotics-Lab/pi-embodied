@@ -104,6 +104,9 @@
 				"set_gripper": {
 					"approval_mode": "prompt"
 				},
+				"reset": {
+					"approval_mode": "prompt"
+				},
 				"stop": {
 					"approval_mode": "prompt"
 				},

@@ -382,8 +382,8 @@ pi is the entry point for everything in this package. Codex and Claude Code get 
 **tools mode** through an MCP server generated from the primitive manifests
 (`src/integrations/mcp/server.ts`): one tool per env-side manifest entry the tier and `requires`
 filters admit (schema from `params`, description from `doc.tool`, pi's rules for privileged variants),
-forwarded to the robot's env server over the same RPC pi uses, plus `observe`, `finish`, `stop`,
-`resume` and `robot_status`. Motion fails closed: no `healthz` now, another process on the port, a
+forwarded to the robot's env server over the same RPC pi uses, plus `observe`, `reset`, `finish`,
+`stop`, `resume` and `robot_status`. Motion fails closed: no `healthz` now, another process on the port, a
 `stop` latch, a finished episode or a server that stopped answering all refuse; a busy arm (the
 hardware lock) fails the start. Not served, by design: `side: ts` tools (VLA adapters, waypoints,
 state viewers, advisors), module-owned tools, units, code mode (`run_code`), VDM, memory, exploration,
@@ -398,8 +398,10 @@ robot-specific environment such as `MUJOCO_GL=egl` is the caller's). `PI_EMBODIE
 robot; `PI_EMBODIED_DEPLOYMENT`, `PI_EMBODIED_TIER` (`high|low|raw`), `PI_EMBODIED_PRIVILEGED`,
 `PI_EMBODIED_CAPABILITIES` (for a server without `code.api`), `PI_EMBODIED_VARS`
 (`cameras=agentview,wrist;arms=`: the robot variables the manifest's enums need) and
-`PI_EMBODIED_NO_RESET=1` (the server resets the env once at start, as every robot's session does;
-skip it for a real arm whose start pose is the operator's business) are optional.
+`PI_EMBODIED_NO_RESET=1` (a simulator's env is reset once at start, as every robot's session does;
+this skips it) are optional. A real arm (Franka, dual Franka, Piper, UR5e) is never reset when the
+server connects: pi's own start asks the operator before that motion, so here it is the `reset`
+tool, gated by the hosts' hooks like every motion.
 
 Claude Code (2.1.220 or later):
 

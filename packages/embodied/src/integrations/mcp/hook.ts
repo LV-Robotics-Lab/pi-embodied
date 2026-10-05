@@ -11,7 +11,8 @@
  *
  * A tool that is not one of our server's, or does not move the robot, gets no decision (the host's
  * normal flow). The manifest decides what moves (`mutating`), the same declaration the server
- * exposes; when the robot is unknown (no --robot, no PI_EMBODIED_ROBOT / CLAUDE_PLUGIN_OPTION_ROBOT)
+ * exposes, plus the server's built-in motions (./tools.ts BUILTIN_MOTIONS: `reset`, a reset by
+ * `--approval standard`'s classes); when the robot is unknown (no --robot, no PI_EMBODIED_ROBOT / CLAUDE_PLUGIN_OPTION_ROBOT)
  * or its manifest cannot be read, every tool of our server gets the decision: fail closed.
  *
  *   node --experimental-strip-types src/integrations/mcp/hook.ts [--robot <name>] [--server <mcp server name>]
@@ -21,7 +22,7 @@
 import { pathToFileURL } from "node:url";
 import { highRisk } from "../../capabilities/operator.ts";
 import { loadManifest, type ManifestEntry } from "../../primitives/manifest.ts";
-import { REAL_ROBOTS } from "./tools.ts";
+import { BUILTIN_MOTIONS, REAL_ROBOTS } from "./tools.ts";
 
 export type HookArgs = {
 	robot: string;
@@ -111,7 +112,7 @@ export function decide(input: HookInput, a: HookArgs, env: NodeJS.ProcessEnv = p
 			`${tool}: cannot read ${a.robot}'s manifest (${err instanceof Error ? err.message : err}); the operator must decide`,
 		);
 	}
-	if (!entry?.mutating) return undefined;
+	if (!entry?.mutating && !BUILTIN_MOTIONS.includes(tool)) return undefined;
 	const args =
 		input.tool_input && typeof input.tool_input === "object" ? (input.tool_input as Record<string, unknown>) : {};
 	const real = REAL_ROBOTS.includes(a.robot);

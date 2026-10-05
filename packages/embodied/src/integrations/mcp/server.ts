@@ -15,7 +15,10 @@
  * `--env-url`). A server for a held arm exits at startup with the hardware lock's refusal
  * (services/.../utils/hardware_lock.py): the start fails and nothing is served. The server's
  * `code.api` must carry this manifest's digest (a server of another version is refused, as pi
- * refuses it) and tells which `requires` are met (./tools.ts).
+ * refuses it) and tells which `requires` are met (./tools.ts). A simulator's env is reset once at
+ * connect, as every robot's start does (`--no-reset` leaves it as found); a real arm (./tools.ts
+ * REAL_ROBOTS) is never reset at connect, since pi's own start asks the operator before that motion:
+ * its `reset` tool is the explicit, hook-gated motion that does it.
  *
  * pi stays the entry point for everything beyond tools: units, code mode, VDM, memory, exploration,
  * evaluation and their results are pi's and are not served here (README "Using the robots from
@@ -33,7 +36,7 @@ import { loadManifest, type Vars } from "../../primitives/manifest.ts";
 import { fetchCodeApi } from "../../primitives/registry.ts";
 import { McpToolServer, StdioServerTransport } from "./protocol.ts";
 import { RobotSession, type SessionOptions } from "./session.ts";
-import { capabilitiesFrom, type McpTier, manifestTools, parseTier, parseVar } from "./tools.ts";
+import { capabilitiesFrom, isReal, type McpTier, manifestTools, parseTier, parseVar } from "./tools.ts";
 
 export const VERSION = "0.0.1";
 const log = (line: string) => console.error(`[pi-embodied-mcp] ${line}`);
@@ -51,8 +54,11 @@ export type Args = {
 	vars: Vars;
 	timeoutMs?: number;
 	list: boolean;
-	/** `env.reset` once the server is up, as every robot's start does (`--no-reset` leaves the env as found). */
-	reset: boolean;
+	/**
+	 * `env.reset` once the server is up: `--no-reset` sets false; unset, a simulator resets (as every
+	 * robot's start does) and a real robot never does (`connect`).
+	 */
+	reset?: boolean;
 };
 
 export function parseArgs(argv: readonly string[]): Args {
@@ -65,7 +71,6 @@ export function parseArgs(argv: readonly string[]): Args {
 		capabilities: [],
 		vars: {},
 		list: false,
-		reset: true,
 	};
 	const vars: Record<string, string | readonly string[]> = {};
 	for (let i = 0; i < argv.length; i++) {
@@ -182,9 +187,12 @@ export async function connect(a: Args, manifest = loadManifest(a.robot)): Promis
 		);
 	}
 	if (!api) log("env server serves no code.api: only --capabilities decides which `requires` are met");
-	// Every robot's start resets the env before the first observation (the simulators have no
-	// observation until then; a real arm goes to its start pose). The same here, unless --no-reset.
-	if (a.reset) {
+	// A simulator's start resets the env before the first observation (it has none until then). The
+	// same here, unless --no-reset. A real arm's reset is a motion (the UR5e opens the gripper and
+	// moves to its begin pose) that pi's start lets the operator confirm first: never at connect,
+	// only through the session's `reset` tool, which the hosts' hooks gate like every motion.
+	const reset = a.reset ?? !isReal(a.robot);
+	if (reset) {
 		try {
 			await rpc.call("env.reset", {}, 600_000);
 		} catch (err) {
@@ -193,7 +201,7 @@ export async function connect(a: Args, manifest = loadManifest(a.robot)): Promis
 				`env.reset failed: ${err instanceof Error ? err.message : err} (--no-reset leaves the env as found)`,
 			);
 		}
-	}
+	} else if (isReal(a.robot)) log(`${a.robot} is a real robot: the env is left as found (its reset tool resets it)`);
 	return { rpc, pid: health.pid, served: api?.available, close };
 }
 

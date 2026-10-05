@@ -3,7 +3,8 @@
  * One source for what the Codex and Claude Code plugins share: `shared/skills/` and `shared/scripts/`
  * are copied into `claude-code/` and `codex/` (the hosts' installers copy a plugin directory and do
  * not follow symlinks, so each plugin carries its own copy), and `codex/.mcp.json` is generated from
- * the primitive manifests: every env tool that moves the robot (`mutating`) gets Codex's
+ * the primitive manifests: every env tool that moves the robot (`mutating`) and the server's
+ * built-in motion `reset` (../src/integrations/mcp/tools.ts BUILTIN_MOTIONS) get Codex's
  * `approval_mode: "prompt"`, the rest `approve`. Run after editing anything under `shared/` or a
  * manifest; `--check` reports drift and exits 1 (test/integrations.test.ts runs it).
  *
@@ -108,7 +109,7 @@ export function codexMcpConfig() {
 				startup_timeout_sec: 600,
 				default_tools_approval_mode: "approve",
 				tools: Object.fromEntries(
-					[...motionTools(), "stop", "resume"].map((name) => [name, { approval_mode: "prompt" }]),
+					[...motionTools(), "reset", "stop", "resume"].map((name) => [name, { approval_mode: "prompt" }]),
 				),
 			},
 		},

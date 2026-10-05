@@ -6,6 +6,9 @@
  *
  *   observe       the current camera images and state (`env.get_observation`, else `env.render_camera`
  *                 and `env.get_state`), images as MCP image content
+ *   reset         `env.reset`: a simulator's new episode, a real arm's start-pose motion (the gripper
+ *                 opens, the arm moves). A motion like the manifest's: the guard, the latch and the
+ *                 hosts' approval hooks apply; a real arm is never reset at connect (./server.ts)
  *   finish        the agent's claim `{status, summary}`; afterwards only observe, robot_status, stop
  *                 and finish run ("The episode is finished.", as the robot base refuses)
  *   stop          the server's `stop` (what pi's abort sends; services/PROTOCOL.md "stop semantics",
@@ -37,7 +40,15 @@ import { NdArray, type RpcClient, RpcUnavailable } from "../../infra/rpc.ts";
 import type { Manifest, ManifestEntry, Vars } from "../../primitives/manifest.ts";
 import { message, plain, rgbOf, serverError } from "../../robot.ts";
 import type { ToolProvider } from "./protocol.ts";
-import { capabilitiesFrom, type LeftOut, type McpTier, type McpTool, manifestTools, moves } from "./tools.ts";
+import {
+	BUILTIN_MOTIONS,
+	capabilitiesFrom,
+	type LeftOut,
+	type McpTier,
+	type McpTool,
+	manifestTools,
+	moves,
+} from "./tools.ts";
 
 export type SessionOptions = {
 	robot: string;
@@ -59,7 +70,7 @@ export type SessionOptions = {
 };
 
 type Claim = { status: string; summary: string };
-const BUILTIN = ["observe", "finish", "stop", "resume", "robot_status"] as const;
+const BUILTIN = ["observe", "reset", "finish", "stop", "resume", "robot_status"] as const;
 type Builtin = (typeof BUILTIN)[number];
 /** Built-ins that run after finish, under the latch, and (robot_status) after a failure. */
 const AFTER_FINISH: ReadonlySet<string> = new Set(["observe", "finish", "stop", "robot_status"]);
@@ -75,6 +86,13 @@ const BUILTINS: Record<Builtin, Tool> = {
 			Type.Object({ camera: Type.Optional(Type.String({ description: "A camera name (default: every camera)" })) }),
 		),
 		annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+	},
+	reset: {
+		name: "reset",
+		description:
+			"Reset the robot's env (the env server's reset): a simulator starts a new episode of its task; a real arm opens its gripper (releasing anything held) and moves to its start pose. This moves the robot: the operator gate applies, and nothing is reset when the server connects to a real arm. Observe afterwards.",
+		inputSchema: schema(Type.Object({})),
+		annotations: { title: "reset", readOnlyHint: false, destructiveHint: true, openWorldHint: false },
 	},
 	finish: {
 		name: "finish",
@@ -175,7 +193,7 @@ export class RobotSession implements ToolProvider {
 		this.leftOut = leftOut;
 		this.info = { name: `pi-embodied-${o.robot}`, version: o.version ?? "0.0.1", title: `pi-embodied ${o.robot}` };
 		this.instructions = [
-			`Robot ${o.robot}: ${this.byName.size} manifest tools${o.tier ? ` (tier ${o.tier})` : ""}${o.privileged ? " with the simulator's ground truth" : ""}, plus observe, finish, stop, resume, robot_status.`,
+			`Robot ${o.robot}: ${this.byName.size} manifest tools${o.tier ? ` (tier ${o.tier})` : ""}${o.privileged ? " with the simulator's ground truth" : ""}, plus observe, reset, finish, stop, resume, robot_status.`,
 			"Observe before the first motion and after every motion: a motion's result reports what the controller did, not what the scene is.",
 			"Tools that move the robot are marked destructiveHint; call them one at a time and read the result's refusal or stopped fields.",
 			"When the task is done or cannot be done, call finish with your evidence.",
@@ -197,10 +215,15 @@ export class RobotSession implements ToolProvider {
 		if (this.broken !== undefined && name !== "robot_status")
 			return `The robot failed: ${this.broken}. The episode is over.`;
 		if (this.claimed && !AFTER_FINISH.has(name)) return "The episode is finished.";
-		const t = this.byName.get(name);
-		if (t && moves(t.entry) && this.halted)
+		if (this.moves(name) && this.halted)
 			return "Motion is stopped (stop was issued): observe, then call resume to re-arm the motion tools.";
 		return undefined;
+	}
+
+	/** Whether `name` moves the robot: a `mutating` manifest tool or a built-in motion (reset). */
+	private moves(name: string): boolean {
+		const t = this.byName.get(name);
+		return t ? moves(t.entry) : BUILTIN_MOTIONS.includes(name);
 	}
 
 	/** The server broke (stopped answering): end the episode. */
@@ -260,13 +283,21 @@ export class RobotSession implements ToolProvider {
 		} catch (err) {
 			return failure(`${name}: ${message(err)}`);
 		}
-		if (moves(t.entry)) {
-			const blocked = await this.motionGuard();
-			if (blocked) return failure(blocked);
-		}
+		const dispatch = () => this.rpcCall(t.entry.method as string, params, signal);
+		return moves(t.entry) ? this.motion(dispatch) : this.forward(dispatch);
+	}
+
+	/** Run a motion: the guard (healthz now, the pid attached), then the dispatch. */
+	private async motion(dispatch: () => Promise<unknown>): Promise<CallToolResult> {
+		const blocked = await this.motionGuard();
+		if (blocked) return failure(blocked);
+		return this.forward(dispatch);
+	}
+
+	/** Dispatch a call; the server's error is the result text. */
+	private async forward(dispatch: () => Promise<unknown>): Promise<CallToolResult> {
 		try {
-			const result = await this.rpcCall(t.entry.method as string, params, signal);
-			return renderResult(result);
+			return renderResult(await dispatch());
 		} catch (err) {
 			return failure(message(serverError(err) ?? err));
 		}
@@ -278,6 +309,9 @@ export class RobotSession implements ToolProvider {
 		switch (name) {
 			case "robot_status":
 				return this.status();
+			case "reset":
+				// A simulator's reset re-renders the scene; a real arm's moves: minutes, as connect allows.
+				return this.motion(() => this.rpcCall("env.reset", {}, signal, 600_000));
 			case "stop": {
 				await this.rpc.interrupt();
 				this.halted = true;

@@ -46,6 +46,16 @@ export type McpTier = (typeof MCP_TIERS)[number];
  */
 export const REAL_ROBOTS: readonly string[] = ["franka", "dual_franka", "piper", "ur5e"];
 
+/** Whether `robot`'s env server drives hardware (its connect never resets; every motion is high risk). */
+export const isReal = (robot: string) => REAL_ROBOTS.includes(robot);
+
+/**
+ * The session's built-in tools (./session.ts) that move the robot: `reset` (`env.reset`, a simulator's
+ * new episode or a real arm's start-pose motion). The hook (./hook.ts) and Codex's `.mcp.json`
+ * (../../../integrations/sync.mjs) gate them as they gate the manifest's `mutating` tools.
+ */
+export const BUILTIN_MOTIONS: readonly string[] = ["reset"];
+
 export type Selection = { tier?: McpTier; privileged: boolean };
 
 /**

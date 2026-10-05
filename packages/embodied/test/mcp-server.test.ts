@@ -23,9 +23,10 @@ import { useDeployment } from "./helpers/deployment.ts";
 
 type Call = { method: string; kwargs: Record<string, unknown>; token?: string };
 
-/** A fake libero env server: healthz, code.api (with SAM3), a few env methods; records every call. */
-function fakeEnv(o: { pid?: () => number; has?: (c: string) => boolean } = {}) {
+/** A fake env server (libero by default): healthz, code.api (with SAM3), a few env methods; records every call. */
+function fakeEnv(o: { robot?: string; pid?: () => number; has?: (c: string) => boolean } = {}) {
 	const calls: Call[] = [];
+	const robot = o.robot ?? "libero";
 	const pid = o.pid ?? (() => 4242);
 	const image = () => ({
 		__ndarray__: Buffer.alloc(4 * 4 * 3, 200).toString("base64"),
@@ -33,14 +34,15 @@ function fakeEnv(o: { pid?: () => number; has?: (c: string) => boolean } = {}) {
 		shape: [4, 4, 3],
 	});
 	const methods: Record<string, (kw: Record<string, unknown>) => unknown> = {
-		healthz: () => ({ status: "ok", service: "libero-env", version: "test", pid: pid() }),
-		"code.api": (kw) => codeApiReply("libero", (kw.tier as string) ?? null, o.has ?? ((c) => c === "sam3")),
+		healthz: () => ({ status: "ok", service: `${robot}-env`, version: "test", pid: pid() }),
+		"code.api": (kw) => codeApiReply(robot, (kw.tier as string) ?? null, o.has ?? ((c) => c === "sam3")),
 		"env.set_gripper": (kw) => ({ ok: true, gripper: kw.gripper, steps_used: 3 }),
 		"env.move_to": (kw) => ({ ok: true, xyz: kw.xyz, final_dist_m: 0.001, steps_used: 12 }),
 		"env.get_observation": () => ({ agentview: { rgb: image() }, wrist: { rgb: image() }, eef_pos: [0.1, 0.2, 0.3] }),
 		"env.render_camera": () => image(),
 		"env.segment": (kw) => ({ masks: [], prompt: kw.prompt }),
 		"env.reset": () => [{ eef_pos: [0, 0, 0] }, {}],
+		"env.move_delta": (kw) => ({ ok: true, delta_xyz: kw.delta_xyz }),
 		stop: () => ({ ok: true, stop_generation: 1, call_in_progress: false }),
 	};
 	const server: Server = createServer((req, res) => {
@@ -244,6 +246,47 @@ test("a motion refuses when another process answers on the port, and ends the ep
 	}
 });
 
+test("a real robot connects without env.reset; its reset is a tool under the motion guard and the stop latch", async () => {
+	useDeployment({});
+	const env = fakeEnv({ robot: "ur5e" });
+	const url = await env.listen();
+	try {
+		const a = parseArgs(["--robot", "ur5e", "--env", url]);
+		assert.equal(a.reset, undefined, "unset: the robot decides");
+		const c = await connect(a);
+		assert.deepEqual(
+			env.calls.map((x) => x.method),
+			["healthz", "healthz", "code.api"],
+			"connecting to a real arm sends no env.reset (pi's start asks the operator first)",
+		);
+		const s = session(a, c);
+		const { c: mcp, close } = await client(s);
+		try {
+			const reset = (await mcp.listTools()).find((t) => t.name === "reset");
+			assert.equal(reset?.annotations?.destructiveHint, true, "reset is a motion");
+			assert.equal(reset?.annotations?.readOnlyHint, false);
+			const r = await mcp.callTool("reset", {});
+			assert.equal(r.isError, undefined);
+			const i = env.calls.findIndex((x) => x.method === "env.reset");
+			assert.ok(i > 0, "reset reached the server only through the tool");
+			assert.equal(env.calls[i - 1]?.method, "healthz", "the motion guard ran first");
+			await mcp.callTool("stop", {});
+			const halted = await mcp.callTool("reset", {});
+			assert.equal(halted.isError, true);
+			assert.match(halted.content[0].type === "text" ? halted.content[0].text : "", /stop was issued/);
+			assert.equal(env.calls.filter((x) => x.method === "env.reset").length, 1);
+			await mcp.callTool("finish", { status: "aborted", summary: "done" });
+			assert.equal((await mcp.callTool("reset", {})).isError, true, "no reset after finish");
+		} finally {
+			await close();
+		}
+		// --no-reset still skips a simulator's reset; a simulator resets by default (the first test).
+		assert.equal(parseArgs(["--robot", "ur5e", "--env", url, "--no-reset"]).reset, false);
+	} finally {
+		env.close();
+	}
+});
+
 test("--tier and --privileged select entries as pi's manifestTool does; a server of another manifest version is refused", async () => {
 	useDeployment({});
 	const env = fakeEnv();
@@ -286,6 +329,7 @@ test("--list prints the tool list without a server; --capabilities stands in for
 	assert.throws(() => parseArgs(["--robot", "libero", "--tier", "privileged"]), /--tier privileged/);
 	assert.throws(() => parseArgs(["--env", "x"]), /--robot/);
 	assert.equal(parseArgs(["--robot", "libero", "--no-reset"]).reset, false);
+	assert.equal(parseArgs(["--robot", "libero"]).reset, undefined);
 	assert.throws(() => parseArgs(["--robot", "libero", "--env", "x", "--serve"]), /exclusive/);
 });
 

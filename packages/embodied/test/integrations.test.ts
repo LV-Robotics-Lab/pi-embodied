@@ -11,7 +11,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_SERVER } from "../src/integrations/mcp/hook.ts";
-import { selectEntries } from "../src/integrations/mcp/tools.ts";
+import { BUILTIN_MOTIONS, selectEntries } from "../src/integrations/mcp/tools.ts";
 import { loadManifest } from "../src/primitives/manifest.ts";
 
 const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
@@ -110,7 +110,7 @@ test("Codex plugin: portable manifest, overlay paths that exist, hooks that deny
 		.filter(([, v]) => (v as { approval_mode: string }).approval_mode === "prompt")
 		.map(([k]) => k)
 		.sort();
-	assert.deepEqual(prompted, [...motion, "stop", "resume"].sort());
+	assert.deepEqual(prompted, [...motion, ...BUILTIN_MOTIONS, "stop", "resume"].sort());
 	for (const n of still) assert.ok(!motion.has(n) || prompted.includes(n), n);
 });
 

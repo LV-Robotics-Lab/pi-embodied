@@ -12,7 +12,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { decide, type HookArgs, ourTool, parseHookArgs } from "../src/integrations/mcp/hook.ts";
-import { REAL_ROBOTS } from "../src/integrations/mcp/tools.ts";
+import { BUILTIN_MOTIONS, REAL_ROBOTS } from "../src/integrations/mcp/tools.ts";
 import { loadManifest } from "../src/primitives/manifest.ts";
 
 const ask = (robot: string, over: Partial<HookArgs> = {}): HookArgs => ({
@@ -31,6 +31,13 @@ test("simulation: high-risk motions ask, small relative motions and look-only to
 	assert.equal(decision(decide(call("move_to", { xyz: [0.1, 0.2, 0.3] }), a, {})), "ask", "absolute move");
 	assert.equal(decision(decide(call("release"), a, {})), "ask", "release is a grasp/place tool");
 	assert.equal(decision(decide(call("execute_grasp", { grasp_id: "g1" }), a, {})), "ask");
+	assert.equal(decision(decide(call("reset"), a, {})), "ask", "the built-in reset is a reset");
+	assert.match(decide(call("reset"), a, {})?.hookSpecificOutput.permissionDecisionReason ?? "", /a reset/);
+	assert.equal(
+		decide(call("reset"), ask("libero", { decision: "deny" }), { PI_EMBODIED_MOTION_CONFIRMED: "1" }),
+		undefined,
+	);
+	assert.equal(decide(call("resume"), a, {}), undefined, "the latch's clear is not a motion");
 	assert.equal(decide(call("set_gripper", { gripper: 1 }), a, {}), undefined, "a gripper command is not high risk");
 	assert.equal(decide(call("rotate_wrist", { delta_yaw: 0.1 }), a, {}), undefined);
 	assert.equal(decide(call("observe"), a, {}), undefined);
@@ -73,6 +80,13 @@ test("real robots: every motion asks; Codex's deny mode denies unless the operat
 		);
 		const look = m.primitives.find((e) => e.side === "env" && !e.mutating && e.doc.tool);
 		if (look) assert.equal(decide(call(look.name), ask(robot), {}), undefined, `${robot}: ${look.name} is look-only`);
+		// The built-in reset moves a real arm (the gripper opens, the arm goes to its start pose).
+		for (const builtin of BUILTIN_MOTIONS) {
+			const b = decide(call(builtin), ask(robot), {});
+			assert.equal(decision(b), "ask", `${robot}: ${builtin}`);
+			assert.match(b?.hookSpecificOutput.permissionDecisionReason ?? "", /real robot/);
+			assert.equal(decision(decide(call(builtin), ask(robot, { decision: "deny" }), {})), "deny");
+		}
 	}
 });
 

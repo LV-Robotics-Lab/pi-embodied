@@ -23,7 +23,7 @@ const ROBOTS = readdirSync(DIR)
 	.filter((f) => f.endsWith(".json"))
 	.map((f) => f.slice(0, -5))
 	.sort();
-const BUILTINS = ["observe", "finish", "stop", "resume", "robot_status"];
+const BUILTINS = ["observe", "reset", "finish", "stop", "resume", "robot_status"];
 const VARS = {
 	arms: ["left", "right"],
 	cameras: ["agentview", "wrist"],

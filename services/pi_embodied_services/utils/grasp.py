@@ -1593,7 +1593,9 @@ class GraspPlanner:
         Returns:
             dict with ``candidates`` (each: ``id`` such as ``p2``, ``eef_position``,
             ``eef_quat_xyzw``, ``eef_yaw``, ``eef_pitch``, ``object_position``: where the
-            object's grasp center lands), ``active``, ``held`` and ``expired_ids``.
+            object's visible points' centroid lands, not the grasp point: a bowl held by
+            its rim comes to rest a rim's width from the fingers), ``active``, ``held`` and
+            ``expired_ids``.
 
         Example:
             >>> p = plan_place(region["id"], "g1"); claim_waypoints(p["active"])

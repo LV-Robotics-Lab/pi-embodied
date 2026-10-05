@@ -178,3 +178,14 @@ test("humanclaw/eval.sh without --metrics records every episode unscored, never 
 	assert.equal(result(measured).status, "success");
 	assert.match(run(measured, []).stdout, /scored 1\/1 \(success 1\), unscored 0, invalid 0/);
 });
+
+test("humanclaw/eval.sh keys the OpenETA extras a run turns on, as eval-options.sh collects them", () => {
+	const out = fresh();
+	const r = run(out, ["--web-tools", "--object-memory=true"]);
+	assert.equal(r.status, 0, r.stderr);
+	assert.match(config(out), /\/extras=object-memory,web-tools$/);
+	const other = run(out, ["--web-tools"]);
+	assert.equal(other.status, 1);
+	assert.match(other.stderr, /holds a result of another configuration/);
+	assert.equal(run(fresh(), ["--object-memory=false"]).status, 2, "pi would turn it on: refused");
+});

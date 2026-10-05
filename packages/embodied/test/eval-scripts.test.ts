@@ -512,6 +512,74 @@ test("eval.sh keys the units mode on --units-plugins and the summary on a no-wri
 	assert.match(r.stdout, /refusing to summarize: .* mixes configurations .*units=true\/no-wrist:recovery/);
 });
 
+test("libero/eval.sh records a finetuned/* model's --ft-* flags as ft_flags and never mixes them in one out dir", () => {
+	const positional = ["libero_10_task", "0", "0"];
+	const run1 = (args: string[]) => run("libero", positional, "libero_10_task_t0_s0", args);
+	// Another model never reads the fine-tuned flags: they are not part of its configuration.
+	assert.equal(run1(["--ft-prompt", "v5-libero"]).result?.ft_flags, null);
+	assert.equal(run1(["--model", "finetuned/x"]).result?.ft_flags, "default");
+	// The flags as given, without where the adapter is served or its key; pi gets them all.
+	const ft = run1([
+		"--model=finetuned/local",
+		"--ft-model",
+		"a",
+		"--ft-prompt=v5-libero",
+		"--ft-endpoint",
+		"http://h:1/v1",
+		"--ft-api-key=k",
+		"--ft-wrist",
+		"flip=none",
+	]);
+	assert.equal(ft.result?.ft_flags, "model=a+prompt=v5-libero+wrist=flip=none");
+	assert.ok(ft.argv?.includes("--ft-endpoint") && ft.argv?.includes("--ft-api-key=k"), String(ft.argv));
+	for (const [first, second] of [
+		[
+			["--model", "finetuned/x", "--ft-prompt", "v5-libero"],
+			["--model", "finetuned/x"],
+		],
+		[
+			["--model", "finetuned/x"],
+			["--model", "finetuned/x", "--ft-wrist", "flip=none"],
+		],
+	]) {
+		const [a, b] = rerun("libero", positional, {}, first, second);
+		assert.equal(a.status, 0, a.stdout + a.stderr);
+		assert.equal(b.status, 1, `${first} then ${second}`);
+		assert.match(b.stderr, /--ft-\* flags/);
+	}
+	const [, same] = rerun(
+		"libero",
+		positional,
+		{},
+		["--model", "finetuned/x", "--ft-prompt", "v5-libero"],
+		["--model=finetuned/x", "--ft-prompt=v5-libero"],
+	);
+	assert.equal(same.status, 0, same.stdout + same.stderr);
+	assert.match(same.stdout, /\/ft=prompt=v5-libero: success 1\/1/);
+	// A finetuned/* result from before the flags were recorded (the LIBERO wrist frame changed
+	// meanwhile) is another configuration: it needs another out dir.
+	const dir = mkdtempSync(join(tmpdir(), "eval-"));
+	mkdirSync(join(dir, "out", "libero_10_task_t0_s0"), { recursive: true });
+	const old = {
+		status: "success",
+		model: "finetuned/x",
+		thinking: null,
+		max_turns: 0,
+		time_limit: 0,
+		units: "false",
+		stateless: false,
+		libero_prompt: "rpent",
+	};
+	writeFileSync(join(dir, "out", "libero_10_task_t0_s0", "result.json"), JSON.stringify(old));
+	const script = new URL("../src/robots/libero/eval.sh", import.meta.url).pathname;
+	const again = spawnSync("bash", [script, join(dir, "out"), ...positional, "--model", "finetuned/x"], {
+		env: { ...process.env, PI: "false", TIME_LIMIT: "0" },
+		encoding: "utf8",
+	});
+	assert.equal(again.status, 1);
+	assert.match(again.stderr, /--ft-\* flags/);
+});
+
 test("libero/eval.sh records --libero-prompt (rpent by default) and never mixes prompts in one out dir", () => {
 	const positional = ["libero_10_task", "0", "0"];
 	const run1 = (args: string[]) => run("libero", positional, "libero_10_task_t0_s0", args);

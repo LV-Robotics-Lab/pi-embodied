@@ -14,7 +14,7 @@ eval_options_defaults() {
 	privileged=false
 	fallback_model="" fallback_after=2 fallback_retry=0
 	code=false code_api="" code_oracle="" code_timeout="" code_max_calls="" code_max_move="" code_helpers=false
-	units_opts=""
+	units_opts="" ft_opts=""
 	unset units_plugins
 	extras="" eval_extras=()
 	return 0
@@ -120,6 +120,11 @@ eval_parse_options() {
 			echo "${args[i]}: pi ignores a boolean flag's value and would turn it on; omit it to leave it off" >&2
 			exit 2
 			;;
+		# The fine-tuned policy's flags (src/modes/finetuned) are its configuration, recorded as result.json's
+		# ft_flags in the order given; --ft-endpoint and --ft-api-key only say where the adapter is served.
+		--ft-endpoint | --ft-api-key | --ft-endpoint=* | --ft-api-key=*) ;;
+		--ft-*=*) ft_opts+="+${args[i]#--ft-}" ;;
+		--ft-*) ft_opts+="+${args[i]#--ft-}=${args[i + 1]-}" ;;
 		*) if declare -F eval_robot_option >/dev/null; then eval_robot_option "${args[i]}" "${args[i + 1]-}"; fi ;;
 		esac
 	done
@@ -133,6 +138,11 @@ eval_normalize_options() {
 	[ "$units" != false ] && units="$units${units_opts-}"
 	[ "$vdm_video" = true ] && vdm_video=$vdm_video_frames || vdm_video=""
 	extras=$(printf '%s\n' ${eval_extras[@]+"${eval_extras[@]}"} | sort -u | paste -sd, -)
+	# Only a finetuned/<adapter> model reads the --ft-* flags: "default" with none, else the flags as given.
+	case $model in
+	finetuned/*) export FT_FLAGS="${ft_opts:-+default}" && FT_FLAGS=${FT_FLAGS#+} ;;
+	*) export FT_FLAGS="" ;;
+	esac
 	export CODE_BUDGET_FLAGS="timeout=$code_timeout+max_calls=$code_max_calls+max_move=$code_max_move+helpers=$code_helpers${code_oracle:++oracle}"
 	return 0
 }

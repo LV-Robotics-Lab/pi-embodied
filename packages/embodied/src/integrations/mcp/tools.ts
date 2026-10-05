@@ -55,8 +55,9 @@ export const isReal = (robot: string) => REAL_ROBOTS.includes(robot);
 
 /**
  * The session's built-in tools (./session.ts) that move the robot: `reset` (`env.reset`, a simulator's
- * new episode or a real arm's start-pose motion). The hook (./hook.ts) and Codex's `.mcp.json`
- * (../../../integrations/sync.mjs) gate them as they gate the manifest's `mutating` tools.
+ * new episode or a real arm's start-pose motion). The server's gate (./gate.ts), the hook (./hook.ts)
+ * and Codex's `.mcp.json` (../../../integrations/sync.mjs) gate them as they gate the manifest's
+ * `mutating` tools.
  */
 export const BUILTIN_MOTIONS: readonly string[] = ["reset"];
 

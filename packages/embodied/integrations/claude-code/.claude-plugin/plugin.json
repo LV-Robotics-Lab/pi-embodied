@@ -58,6 +58,12 @@
 			"title": "Robot variables",
 			"description": "Semicolon-separated name=value[,value] the manifest's enums need, e.g. cameras=agentview,wrist;arms=",
 			"default": ""
+		},
+		"confirm_file": {
+			"type": "string",
+			"title": "Operator confirm file (real robots)",
+			"description": "A path only the operator writes to (outside the workspace and /tmp): before each motion on a real arm the operator writes the tool's name into it and the server consumes it; without it, and without PI_EMBODIED_MOTION_CONFIRMED=1 exported before claude starts, every motion on a real arm is refused",
+			"default": ""
 		}
 	}
 }

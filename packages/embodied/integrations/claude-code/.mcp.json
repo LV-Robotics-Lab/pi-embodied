@@ -11,7 +11,8 @@
 				"PI_EMBODIED_DEPLOYMENT": "${user_config.deployment}",
 				"PI_EMBODIED_TIER": "${user_config.tier}",
 				"PI_EMBODIED_CAPABILITIES": "${user_config.capabilities}",
-				"PI_EMBODIED_VARS": "${user_config.vars}"
+				"PI_EMBODIED_VARS": "${user_config.vars}",
+				"PI_EMBODIED_CONFIRM_FILE": "${user_config.confirm_file}"
 			}
 		}
 	}

@@ -528,8 +528,10 @@ test("a real robot connects without env.reset; its reset is a tool under the mot
 	const env = fakeEnv({ robot: "ur5e" });
 	const url = await env.listen();
 	try {
-		const a = parseArgs(["--robot", "ur5e", "--env", url]);
+		// The operator authorised the session (test/mcp-gate.test.ts covers the gate itself).
+		const a = parseArgs(["--robot", "ur5e", "--env", url], { PI_EMBODIED_MOTION_CONFIRMED: "1" });
 		assert.equal(a.reset, undefined, "unset: the robot decides");
+		assert.equal(a.confirmed, true);
 		const c = await connect(a);
 		assert.deepEqual(
 			env.calls.map((x) => x.method),

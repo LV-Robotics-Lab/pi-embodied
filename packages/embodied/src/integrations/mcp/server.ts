@@ -5,7 +5,8 @@
  *   node --experimental-strip-types src/integrations/mcp/server.ts --robot <name>
  *        [--deployment <name>] [--tier high|low|raw] [--privileged]
  *        [--env URL[#token=HEX] | --serve [-- <env server args>]] [--serve-module <python module>]
- *        [--capabilities a,b] [--var name=value[,value]]... [--timeout <ms>] [--no-reset] [--list]
+ *        [--capabilities a,b] [--var name=value[,value]]... [--timeout <ms>] [--no-reset]
+ *        [--confirm-file <path>] [--list]
  *
  * The deployment config (../../infra/config.ts: ~/.pi/agent/embodied.json, $PI_EMBODIED_CONFIG,
  * <cwd>/.pi/embodied.json; `--deployment` as pi's flag) gives the python, the services tree and the
@@ -18,7 +19,10 @@
  * refuses it) and tells which `requires` are met (./tools.ts). A simulator's env is reset once at
  * connect, as every robot's start does (`--no-reset` leaves it as found); a real arm (./tools.ts
  * REAL_ROBOTS) is never reset at connect, since pi's own start asks the operator before that motion:
- * its `reset` tool is the explicit, hook-gated motion that does it.
+ * its `reset` tool is the explicit, gated motion that does it. On a real arm the server itself gates
+ * every motion and `reset` (./gate.ts), whatever the host runs: `PI_EMBODIED_MOTION_CONFIRMED=1` in
+ * the environment at launch authorises the session, `--confirm-file <path>` takes the operator's
+ * per-call tickets; without either every motion is refused.
  *
  * pi stays the entry point for everything beyond tools: units, code mode, VDM, memory, exploration,
  * evaluation and their results are pi's and are not served here (README "Using the robots from
@@ -34,6 +38,7 @@ import type { RpcClient } from "../../infra/rpc.ts";
 import { attach, shutdown, startService } from "../../infra/service-process.ts";
 import { loadManifest, type Vars } from "../../primitives/manifest.ts";
 import { fetchCodeApi } from "../../primitives/registry.ts";
+import { CONFIRMED_ENV } from "./gate.ts";
 import { McpToolServer, StdioServerTransport } from "./protocol.ts";
 import { RobotSession, type SessionOptions } from "./session.ts";
 import { capabilitiesFrom, isReal, type McpTier, manifestTools, parseTier, parseVar } from "./tools.ts";
@@ -59,9 +64,13 @@ export type Args = {
 	 * robot's start does) and a real robot never does (`connect`).
 	 */
 	reset?: boolean;
+	/** `PI_EMBODIED_MOTION_CONFIRMED` was set in the environment: a real robot's session is authorised. */
+	confirmed: boolean;
+	/** `--confirm-file`: the operator's per-call tickets for a real robot (./gate.ts). */
+	confirmFile?: string;
 };
 
-export function parseArgs(argv: readonly string[]): Args {
+export function parseArgs(argv: readonly string[], env: NodeJS.ProcessEnv = process.env): Args {
 	const a: Args = {
 		robot: "",
 		deployment: "",
@@ -71,6 +80,7 @@ export function parseArgs(argv: readonly string[]): Args {
 		capabilities: [],
 		vars: {},
 		list: false,
+		confirmed: Boolean(env[CONFIRMED_ENV]?.trim()),
 	};
 	const vars: Record<string, string | readonly string[]> = {};
 	for (let i = 0; i < argv.length; i++) {
@@ -122,6 +132,9 @@ export function parseArgs(argv: readonly string[]): Args {
 				break;
 			case "--no-reset":
 				a.reset = false;
+				break;
+			case "--confirm-file":
+				a.confirmFile = next();
 				break;
 			case "--":
 				a.serveArgs = argv.slice(i + 1);
@@ -190,7 +203,7 @@ export async function connect(a: Args, manifest = loadManifest(a.robot)): Promis
 	// A simulator's start resets the env before the first observation (it has none until then). The
 	// same here, unless --no-reset. A real arm's reset is a motion (the UR5e opens the gripper and
 	// moves to its begin pose) that pi's start lets the operator confirm first: never at connect,
-	// only through the session's `reset` tool, which the hosts' hooks gate like every motion.
+	// only through the session's `reset` tool, which the operator gate holds like every motion.
 	const reset = a.reset ?? !isReal(a.robot);
 	if (reset) {
 		try {
@@ -218,11 +231,15 @@ export function session(a: Args, c: Connected, o: Partial<SessionOptions> = {}):
 		pid: c.pid,
 		vars: a.vars,
 		timeoutMs: a.timeoutMs,
+		confirm: { session: a.confirmed, file: a.confirmFile },
 		version: VERSION,
 		log,
 		...o,
 	});
 	for (const l of s.leftOut) log(`tool ${l.name} left out: ${l.reason} (give --var)`);
+	log(s.gate.describe());
+	const warning = s.gate.warning();
+	if (warning) log(`WARNING: ${warning}`);
 	return s;
 }
 

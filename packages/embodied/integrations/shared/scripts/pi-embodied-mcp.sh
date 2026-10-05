@@ -14,6 +14,12 @@
 #   PI_EMBODIED_VARS         "cameras=agentview,wrist;arms="   robot variables the manifest's enums need
 #   PI_EMBODIED_TIMEOUT_MS   per-call RPC timeout
 #   PI_EMBODIED_NO_RESET     1: do not env.reset a simulator at start (a real arm is never reset at start: its reset tool is)
+# The operator gate on a real arm (the server's own, src/integrations/mcp/gate.ts; hosts' hooks are a second
+# layer and Codex 0.160 runs none): one of
+#   PI_EMBODIED_CONFIRM_FILE      a path the operator writes a tool's name into before each motion (--confirm-file;
+#                                 recommended; outside the model's workspace and /tmp), or
+#   PI_EMBODIED_MOTION_CONFIRMED  1 exported before the host starts: the WHOLE session's motions are authorised
+#                                 (the server reads it from its environment; nothing to map here).
 set -eu
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 root=${PI_EMBODIED_ROOT:-${CLAUDE_PLUGIN_OPTION_REPO:-}}
@@ -42,6 +48,7 @@ case "${PI_EMBODIED_PRIVILEGED:-}" in 1 | true | yes) set -- "$@" --privileged ;
 [ -n "${PI_EMBODIED_CAPABILITIES:-}" ] && set -- "$@" --capabilities "$PI_EMBODIED_CAPABILITIES"
 [ -n "${PI_EMBODIED_TIMEOUT_MS:-}" ] && set -- "$@" --timeout "$PI_EMBODIED_TIMEOUT_MS"
 case "${PI_EMBODIED_NO_RESET:-}" in 1 | true | yes) set -- "$@" --no-reset ;; esac
+[ -n "${PI_EMBODIED_CONFIRM_FILE:-}" ] && set -- "$@" --confirm-file "$PI_EMBODIED_CONFIRM_FILE"
 if [ -n "${PI_EMBODIED_VARS:-}" ]; then
 	old_ifs=$IFS
 	IFS=';'

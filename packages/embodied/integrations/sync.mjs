@@ -5,7 +5,8 @@
  * not follow symlinks, so each plugin carries its own copy), and `codex/.mcp.json` is generated from
  * the primitive manifests: every env tool that moves the robot (`mutating`) and the server's
  * built-in motion `reset` (../src/integrations/mcp/tools.ts BUILTIN_MOTIONS) get Codex's
- * `approval_mode: "prompt"`, the rest `approve`. Run after editing anything under `shared/` or a
+ * `approval_mode: "prompt"`, the rest `approve` (Codex's own approval; on a real arm the server's gate,
+ * ../src/integrations/mcp/gate.ts, is the protection, since Codex 0.160 runs no plugin hooks). Run after editing anything under `shared/` or a
  * manifest; `--check` reports drift and exits 1 (test/integrations.test.ts runs it).
  *
  *   node packages/embodied/integrations/sync.mjs [--check]
@@ -101,6 +102,8 @@ export function codexMcpConfig() {
 					"PI_EMBODIED_VARS",
 					"PI_EMBODIED_TIMEOUT_MS",
 					"PI_EMBODIED_NO_RESET",
+					"PI_EMBODIED_CONFIRM_FILE",
+					"PI_EMBODIED_MOTION_CONFIRMED",
 					"PI_EMBODIED_CONFIG",
 					"PI_EMBODIED_SERVICES",
 					"PI_EMBODIED_PYTHON",

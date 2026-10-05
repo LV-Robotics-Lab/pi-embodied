@@ -1,6 +1,8 @@
 /**
  * The PreToolUse hook behind the Codex and Claude Code plugins (integrations/<host>/hooks): the host's
- * operator gate for the motion tools the MCP server (./server.ts) exposes, with the risk classes of
+ * operator gate for the motion tools the MCP server (./server.ts) exposes, a second layer over the
+ * server's own gate on real robots (./gate.ts, which does not depend on the host; Codex 0.160 runs no
+ * plugin hooks at all, so there this hook protects nothing), with the risk classes of
  * `--approval standard` (../../capabilities/operator.ts `highRisk`: grasp/place execution, resets,
  * moves to an absolute target, relative moves over `--large-move` m, and every motion on a real
  * robot). The hook reads the host's JSON on stdin and prints a `hookSpecificOutput` decision:
@@ -123,7 +125,7 @@ export function decide(input: HookInput, a: HookArgs, env: NodeJS.ProcessEnv = p
 		: `${tool} is a high-risk motion (grasp/place execution, a reset, a move to an absolute target, or more than ${a.largeMove} m): the operator must confirm`;
 	return out(
 		a.decision === "deny"
-			? `${why}; export ${a.confirmedEnv}=1 after confirming, or approve the tool in Codex's MCP approval settings`
+			? `${why}; export ${a.confirmedEnv}=1 after confirming (on a real robot the MCP server's own gate asks the same, or a ticket in its --confirm-file), or approve the tool in Codex's MCP approval settings`
 			: why,
 	);
 }

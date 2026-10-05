@@ -12,7 +12,7 @@
  *                 images as MCP image content
  *   reset         `env.reset`: a simulator's new episode, a real arm's start-pose motion (the gripper
  *                 opens, the arm moves). A motion like the manifest's: the guard, the latch and the
- *                 hosts' approval hooks apply; a real arm is never reset at connect (./server.ts)
+ *                 operator gate apply; a real arm is never reset at connect (./server.ts)
  *   finish        the agent's claim `{status, summary}`; afterwards only observe, robot_status, stop
  *                 and finish run ("The episode is finished.", as the robot base refuses)
  *   stop          the server's `stop` (what pi's abort sends; services/PROTOCOL.md "stop semantics",
@@ -21,12 +21,15 @@
  *   robot_status  healthz, the server pid against the one attached, the manifest digest, the latch
  *
  * Fail closed: a motion tool runs only when the server answers `healthz` now and is the process this
- * session attached (another server on the port is refused), the stop latch is clear and the episode
- * is not finished. Calls run concurrently (MCP requests are independent), so `stop` latches
- * synchronously, before its RPC, and counts a stop generation: a motion checks the latch and the
- * generation it was admitted under again right before its dispatch, with no await in between, so a
- * motion that waited on the guard while a stop (or a stop and a resume) went by is refused and
- * never reaches the server. A server that stopped answering (`RpcUnavailable`) ends the episode: every tool
+ * session attached (another server on the port is refused), the stop latch is clear, the episode
+ * is not finished and, on a real robot, the operator authorised it outside the model (./gate.ts:
+ * `PI_EMBODIED_MOTION_CONFIRMED=1` at launch for the session, or a per-call ticket in the
+ * `--confirm-file`; the hosts' hooks are only a second layer, and Codex 0.160 runs none). Calls run
+ * concurrently (MCP requests are independent), so `stop` latches synchronously, before its RPC, and
+ * counts a stop generation: a motion checks the latch and the generation it was admitted under again
+ * right before its dispatch, with no await in between, so a motion that waited on the guard while a
+ * stop (or a stop and a resume) went by is refused and never reaches the server; the ticket check
+ * sits in that same stretch, so a ticket is spent only by the call it admits. A server that stopped answering (`RpcUnavailable`) ends the episode: every tool
  * but robot_status answers "The robot failed: ...", as the robot base does. The hardware lock
  * (services/.../utils/hardware_lock.py) is the env server's: a second server for a held arm exits at
  * startup, which ./server.ts reports instead of serving. Result text is the robot base's `plain`
@@ -55,10 +58,12 @@ import {
 import { rpcArguments } from "../../primitives/arguments.ts";
 import type { Manifest, ManifestEntry, Vars } from "../../primitives/manifest.ts";
 import { message, plain, rgbOf, serverError } from "../../robot.ts";
+import { CONFIRMED_ENV, OperatorGate } from "./gate.ts";
 import type { ToolProvider } from "./protocol.ts";
 import {
 	BUILTIN_MOTIONS,
 	capabilitiesFrom,
+	isReal,
 	type LeftOut,
 	type McpTier,
 	type McpTool,
@@ -81,6 +86,12 @@ export type SessionOptions = {
 	vars?: Vars;
 	/** Per-call RPC timeout, ms (the client's default otherwise). */
 	timeoutMs?: number;
+	/**
+	 * The operator's authorisation for a real robot's motions (./gate.ts): `session` when
+	 * `PI_EMBODIED_MOTION_CONFIRMED` was set at launch, `file` the `--confirm-file` path. Neither on a
+	 * real robot: every motion and reset is refused. Ignored on a simulator.
+	 */
+	confirm?: { session?: boolean; file?: string };
 	/** The robot's observation declaration (default: `OBSERVATION` of ../../robots/<robot>/index.ts). */
 	observation?: ObservationDecl;
 	log?: (line: string) => void;
@@ -140,7 +151,7 @@ const BUILTINS: Record<Builtin, Tool> = {
 	robot_status: {
 		name: "robot_status",
 		description:
-			"The env server's health (healthz: service, version, pid), whether it is the process this session attached, the manifest digest match, the tier, the stop latch, the episode claim and the tools served.",
+			"The env server's health (healthz: service, version, pid), whether it is the process this session attached, the manifest digest match, the tier, the stop latch, the operator gate (a real robot: session authorisation or the ticket on file), the episode claim and the tools served.",
 		inputSchema: schema(Type.Object({})),
 		annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
 	},
@@ -213,6 +224,8 @@ export class RobotSession implements ToolProvider {
 	private path: Promise<ObservationPath> | undefined;
 	/** The cameras active on the configured robot (the path's `active`, asked once). */
 	private cameras: Promise<string[]> | undefined;
+	/** The operator gate on a real robot's motions. */
+	readonly gate: OperatorGate;
 
 	constructor(o: SessionOptions) {
 		this.o = o;
@@ -224,12 +237,23 @@ export class RobotSession implements ToolProvider {
 		const { tools, leftOut } = manifestTools(o.manifest, { tier: o.tier, privileged: o.privileged }, has, o.vars);
 		for (const t of tools) this.byName.set(t.tool.name, t);
 		this.leftOut = leftOut;
+		this.gate = new OperatorGate({
+			robot: o.robot,
+			real: isReal(o.robot),
+			sessionConfirmed: Boolean(o.confirm?.session),
+			confirmFile: o.confirm?.file,
+		});
 		this.info = { name: `pi-embodied-${o.robot}`, version: o.version ?? "0.0.1", title: `pi-embodied ${o.robot}` };
 		this.instructions = [
 			`Robot ${o.robot}: ${this.byName.size} manifest tools${o.tier ? ` (tier ${o.tier})` : ""}${o.privileged ? " with the simulator's ground truth" : ""}, plus observe, reset, finish, stop, resume, robot_status.`,
 			"Observe before the first motion and after every motion: a motion's result reports what the controller did, not what the scene is.",
 			"Tools that move the robot are marked destructiveHint; call them one at a time and read the result's refusal or stopped fields.",
 			"When the task is done or cannot be done, call finish with your evidence.",
+			...(this.gate.real
+				? [
+						`${o.robot} is a real robot: a motion tool or reset runs only with the operator's authorisation given outside this session (${CONFIRMED_ENV}=1 when the server was started, or a ticket the operator writes into the server's confirm file before the call). A refusal is final until the operator acts: report it and wait.`,
+					]
+				: []),
 		].join(" ");
 	}
 
@@ -334,6 +358,9 @@ export class RobotSession implements ToolProvider {
 				? "Motion is stopped (stop was issued while this call waited for the guard): observe, then call it again if it still applies."
 				: this.refusal(name);
 		if (late) return failure(late);
+		// The operator's authorisation last, synchronously: a ticket is consumed by the call it admits.
+		const unauthorised = this.gate.authorise(name);
+		if (unauthorised) return failure(unauthorised);
 		return this.forward(dispatch);
 	}
 
@@ -443,6 +470,7 @@ export class RobotSession implements ToolProvider {
 			privileged: this.o.privileged,
 			halted: this.halted,
 			stops: this.stops,
+			operator_gate: this.gate.status(),
 			claimed: this.claimed ?? null,
 			broken: this.broken ?? null,
 			tools: [...this.byName.keys()],

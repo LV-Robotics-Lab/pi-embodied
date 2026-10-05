@@ -67,7 +67,7 @@ Every service except the LingBot-VLA launcher speaks the same JSON-over-HTTP RPC
 | `shutdown` | - | `{"ok": true}`; the process exits after answering |
 
 Service names: `libero-env`, `robocasa-env`, `maniskill-env`, `metaworld-env`, `genesis-env`, `rldx-vla`,
-`robotwin-env`, `robolab-env`, `robodojo-env`, `behavior-env`, `franka-env`, `dual-franka-env`, `franka-polymetis-env`, `ur5e-env`, `pi05-vla`, `sam3`, `molmo`,
+`robotwin-env`, `robolab-env`, `robodojo-env`, `behavior-env`, `humanclaw-env`, `franka-env`, `dual-franka-env`, `franka-polymetis-env`, `ur5e-env`, `pi05-vla`, `sam3`, `molmo`,
 `unidepth`, `openvla`, `openvla-oft`, `gr00t`, `ik`, `xpolicy-bridge` (`xpolicy.*`, see
 `components/xpolicy_bridge.py`).
 
@@ -95,6 +95,7 @@ client's queued calls.
 | robolab-env | queued calls; `env.move_delta` / `env.rotate_delta` before each control step; `env.chunk_step` before each action | the Isaac Lab `env.step` in progress (one control step of 8 physics substeps), `env.reset` |
 | robodojo-env | queued calls; `env.move_to` / `env.move_delta` / `env.rotate_delta` / `env.set_gripper` / `env.go_home` before each control step (`cancelled: true`); `env.chunk_step` before each action | the RoboDojo `take_action` in progress (one 25 Hz control step: 10 physics steps of 4 ms), `env.reset` (a layout load, 300+ settling steps and the stability check) |
 | behavior-env | queued calls; every primitive (`env.navigate_to_pose`, `env.move_hand`, `env.grasp_object`, `env.open_gripper`, `env.close_gripper`) between control steps (`cancelled: true`, `ok: false`); `env.chunk_step` before each action | the OmniGibson `env.step` in progress (one action, 4 physics substeps), a cuRobo plan being computed, `env.reset` |
+| humanclaw-env | queued calls (every business call runs on the main thread, one at a time) | the decision step in progress (`env.step`: one motion-model generation and one 0.5 s chunk of Half-Physics), `env.reset` (Habitat scene build, motion weights), `env.finish` (metrics, trajectories, videos) |
 | franka-env | queued calls; `env.move_delta` / `env.rotate_delta` / `env.set_gripper` before each servo step; `env.chunk_step` after each action | the servo step in progress (one RLinf `env.step`: one Cartesian target plus the pacing sleep, and up to 0.6 s when it toggles the gripper); `env.reset` (RLinf go-to-rest / joint reset) |
 | franka-polymetis-env | queued calls; `env.move_delta` / `env.rotate_delta` before each servo tick (setpoint advance <= `servo_step_m` / `servo_step_rad`) and during settle; `env.set_gripper` between width polls; `env.reset` between lift ticks and joint-stream ticks (`reset.method: joint_stream`) | the ZeroRPC call in flight (one setpoint); a gripper command already sent; `env.reset` with `reset.method: move_to_joint_positions` (blocking on the NUC) |
 | ur5e-env | queued calls; `env.move_delta` / `env.move_pose` / `env.rotate_delta` between polls of the running moveL (`limits.poll_s`, default 20 ms), which is then brought to rest with ur_rtde `stopL`; `env.open_gripper` / `env.close_gripper` between Robotiq register polls; `env.reset` and `env.move_to_joints` between polls of the moveJ (`stopJ`) | the deceleration itself (stopL at 10 m/s^2, stopJ at 2 rad/s^2); a Robotiq command already sent (the fingers finish it). After a stop the setpoint is cleared: the next command starts from the measured pose |
@@ -131,7 +132,8 @@ wrapper; single-env servers strip the leading env dimension.
 `--privileged`, CaP-X's S1 tier): kw `names=null` (list of str; null or empty = every object) ->
 `{"frame": "world", "poses": {name: {"pos": [x, y, z], "quat_xyzw": [x, y, z, w]}}}`, simulator
 world frame, metres, rounded to 1e-5. The names are the simulator's own object list (per server
-below); an unknown name is an error that lists them.
+below); an unknown name is an error that lists them. humanclaw-env's has another shape (its
+section): the target instances' centres and the humanoid root, Habitat world frame, y up.
 
 `code.api` (read-only; every env server): derived from the robot's primitive manifest
 (`packages/embodied/src/primitives/manifests/<robot>.json`, read by `components/manifest.py`; pi
@@ -260,7 +262,8 @@ docs without their examples). pi's `--code-oracle <file>` sends a ported CaP-X h
 The servers with `code.run`: libero-env, robosuite-env, metaworld-env, maniskill-env, genesis-env,
 behavior-env, robocasa-env, robolab-env, robotwin-env, robodojo-env, and, only when started with `--code` (pi
 passes it with `--code-real`), franka-env, franka-polymetis-env, dual-franka-env, piper-env and
-ur5e-env. Each one's run fields are what its pi robot absorbs: the steps the run took, the
+ur5e-env. humanclaw-env serves `code.api` (the registry pi records) but no `code.run`: HumanCLAW
+has no code mode. Each one's run fields are what its pi robot absorbs: the steps the run took, the
 episode's (latched) success or termination flags, the new observation in the shape its tools
 return, and a bounded video (`frames`; real robots record the run as their next state step).
 What a program receives of a primitive is that facade method's result minus object state (e.g.
@@ -633,6 +636,40 @@ primitive's result is the observation plus `{"primitive", "ok", "phase", "steps"
 | `env.get_task_language` | - | str (the challenge's task description) |
 | `env.ground_truth_poses` | kw `names=null` | poses of the task's BDDL object instances (`task.object_scope` names) |
 | `code.api` | kw `tier=null` | from the robot's manifest (`code.api`, above) |
+
+### humanclaw-env (`robots/humanclaw/env_server.py`)
+
+One HumanClawBench rollout at a time (HumanCLAW @c4f9351, profile `paper_fullval_v1`) over the
+release's own evaluator objects: Habitat + Half-Physics, the motion diffusion model, the trajectory
+recorder, and with `--metrics` the paper metric recorder (metrics.json), with `--video` the ego/exo
+writers. `--output-root` is the evaluator's layout (`<scene>_ep<id>_<category>/rollout_NN`),
+`--cuda-device` the GPU (sets CUDA_VISIBLE_DEVICES, as the release's dispatcher), `--max-steps` a
+smoke-only cap. Every call runs on the main thread (Habitat contexts are not thread-safe); Habitat is
+closed at `env.finish` and rebuilt by the next `env.reset`. An observation is `{"ego" uint8[448,448,3],
+"instruction", "step", "max_steps", "done", "stopped", "episode": {scene_id, episode_id,
+object_category, rollout, key, output_dir}}` plus `"proprioception"` (measured self-motion: `turned_left_deg`,
+`horizontal_displacement_m`, `height_from_start_m`) only when `env.reset` asked for it; body and object
+states never leave the server. pi's robot (`packages/embodied/src/robots/humanclaw`) drives one
+decision per `env.record_decision` + `env.step`; the `env.<skill>` methods are the manifest's code
+primitives (served as `code.api`, no `code.run`), each one `env.step` of the SkillCall HumanCLAW's
+own parser (`_chooser_action`) makes of the action name.
+
+| method | args | result |
+|---|---|---|
+| `env.get_env_meta` | - | `{"profile", "compute_metrics", "save_video", "device", "output_root", "agent_asset", "max_steps"}` |
+| `env.list_episodes` | kw `subset="one"` (`one`, `val100`, `fullval`, a JSON episode list) | `[{scene_id, episode_id, object_category}, ...]` in the release's order |
+| `env.reset` | kw `episode="one"` (`one`, `val100:<i>`, `fullval:<i>`, `<list.json>:<i>`, `<scene>_ep<id>_<category>` or `{scene_id, episode_id, object_category}`), `rollout=0`, `proprioception=false` | the first observation (an unfinished earlier rollout is closed first: replay written, no metrics) |
+| `env.record_decision` | kw `decision` (the planner/verifier record: `raw_plan`, `action`, `planner_skill`, `verifier`, `stages`), `find_observation=null` | `{"step", "written": [stepNNN_*.json]}`; the metric recorder gets the decision with the target pixels of the image the model saw |
+| `env.step` | kw `skill` (one of the eight), `cond`, `action_name`, `action_id`, `reasoning` | the observation plus `{"action", "action_text", "collision": {"collided": bool} (metric mode; `{}` otherwise)}`; `stand` commits the pose and ends the episode; a decision nobody recorded counts as one |
+| `env.walk_forward` `speed="slow"`, `env.turn` `direction, degree`, `env.side_walk` `direction, distance`, `env.step_back` `distance`, `env.step_climb_up`, `env.step_climb_down`, `env.sit` `height`, `env.stand` | as the manifest's parameters (clamped by HumanCLAW's parser) | as `env.step` |
+| `env.metric_observation` | - | `metric_find_observation()` of the image last returned; `{"available": false, ...}` without `--metrics` |
+| `env.finish` | - | `{"episode", "steps", "active_stop", "metrics" (the paper summary: success variants, collision scalars, jerk, cost; null without `--metrics`), "metrics_path", "videos"}`; unloads the motion model, writes the artifacts, closes Habitat |
+| `env.ground_truth_poses` | kw `names` (ignored) | `{"frame": "habitat_world_y_up", "targets": [{object_name, object_id, center}], "human_root": {"pos", "quat_xyzw"}}` (behind pi's `--privileged`) |
+| `env.render_camera` | `camera_name="ego"` | `{"rgb": uint8[448,448,3]}` (the image last returned) |
+| `env.get_camera_meta` | `camera_name="ego"` | `{"camera_name", "resolution", "fps", "frames_per_step": 15}` |
+| `env.get_task_language` | - | str (the episode's instruction) |
+| `env.chunk_step` | - | an error: HumanCLAW steps one skill per decision |
+| `code.api` | kw `tier=null` | from the robot's manifest (`code.api`, above); there is no `code.run` |
 
 ### franka-env (`robots/franka/env_server.py`)
 

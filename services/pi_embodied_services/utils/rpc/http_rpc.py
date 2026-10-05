@@ -207,6 +207,8 @@ class _HttpRpcHandler(BaseHTTPRequestHandler):
             extra = {} if session_id is None else {"session_id": session_id}
             if "token" in request:
                 extra["token"] = request["token"]
+            # The connection's peer address: the facade's code mode decides "remote caller" from it.
+            extra["peer"] = self.client_address[0]
             result = self.server.dispatch(method, args, kwargs, **extra)
             response: dict = {"ok": True, "result": result}
         except Exception as exc:

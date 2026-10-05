@@ -78,6 +78,7 @@ import base64
 import contextlib
 import inspect
 import io
+import ipaddress
 import json
 import math
 import multiprocessing
@@ -85,6 +86,7 @@ import os
 import re
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -602,6 +604,12 @@ SANDBOX_UID_ENV = "PI_EMBODIED_CODE_UID"
 #: non-root server that is isolated another way -- a container or VM). See
 #: :func:`code_isolation_error`.
 ALLOW_UNISOLATED_ENV = "PI_EMBODIED_CODE_ALLOW_UNISOLATED"
+#: Set truthy to let a caller on *another host* run programs unisolated here when
+#: :func:`code_isolation_error` refuses (its pi's keys are not in this host's /proc, but every
+#: other process of this server's uid on this host -- the shell that started it, a bridge
+#: started from it -- stays readable to its programs). Decided per call from the transport's
+#: peer address (:meth:`CodeRunner.remote_waiver`); a same-host caller is never waived.
+REMOTE_OK_ENV = "PI_EMBODIED_CODE_REMOTE_OK"
 #: Modules imported before the child drops its uid: afterwards a root server's interpreter
 #: (e.g. under /root, mode 0700) may be unreadable, so later imports can fail.
 PRELOAD = tuple(
@@ -632,6 +640,32 @@ def _proc_isolation_relevant() -> bool:
     """Whether a same-uid process here can read another's ``/proc/<pid>/environ`` or memory
     (Linux with ``/proc``); false off Linux, where it cannot."""
     return sys.platform.startswith("linux") and os.path.isdir("/proc")
+
+
+def is_local_address(addr: str | None) -> bool:
+    """Whether a peer address is this host's own: loopback, unspecified, an IPv4-mapped loopback,
+    or an address one of this host's interfaces holds (a UDP socket can bind to it), so a pi on
+    this host reaching the server by its FQDN, LAN or tailnet address is local. Anything that is
+    not an IP address (no peer known, a stub) counts as local: nothing says it is remote."""
+    if not addr:
+        return True
+    host = addr.split("%", 1)[0]
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return True
+    mapped = getattr(ip, "ipv4_mapped", None)
+    if mapped is not None:
+        ip = mapped
+    if ip.is_loopback or ip.is_unspecified:
+        return True
+    family = socket.AF_INET6 if ip.version == 6 else socket.AF_INET
+    try:
+        with socket.socket(family, socket.SOCK_DGRAM) as probe:
+            probe.bind((addr if ip.version == 6 else str(ip), 0))
+        return True
+    except OSError:
+        return False
 
 
 def code_isolation_error() -> str | None:
@@ -1059,8 +1093,12 @@ class CodeRunner:
         primitive_thread: bool = True,
         on_abandon: Callable[[str], None] | None = None,
         on_released: Callable[[str], None] | None = None,
+        peer: Callable[[], str | None] | None = None,
     ) -> None:
         self._primitives = list(primitives)
+        #: The running call's peer address as the transport saw it (the facade's ``active_peer``;
+        #: None: unknown, which counts as local). Read per call by :meth:`remote_waiver`.
+        self._peer = peer
         # Primitives run on a worker thread so the run's deadline can abandon one that never
         # returns. A server whose backend needs every call on one thread (MainThreadServeMixin)
         # passes False: its primitives run on the calling thread and cannot be abandoned.
@@ -1071,9 +1109,6 @@ class CodeRunner:
         self._on_abandon = on_abandon
         self._on_released = on_released
         self._abandoned: list[threading.Thread] = []
-        #: Set by :meth:`preflight` when the caller runs on another host (its secrets are not
-        #: readable through this host's /proc): the isolation refusal is waived for good.
-        self.isolation_waived = False
         self._stop_requested = stop_requested
         self._on_timeout = on_timeout
         self._begin = begin
@@ -1145,16 +1180,53 @@ class CodeRunner:
             out.extend(describe_helpers())
         return out
 
-    def preflight(self, remote: bool = False) -> dict:
+    def remote_waiver(self) -> str | None:
+        """Why this call may run a program although :func:`code_isolation_error` refuses, else
+        None: the call comes from another host (the transport's peer address is neither loopback
+        nor one of this host's own, :func:`is_local_address`; what the caller says about itself
+        is not consulted) *and* the operator set ``PI_EMBODIED_CODE_REMOTE_OK`` on this server,
+        accepting that the program can still read every other process of the server's uid here.
+        Decided per call, never remembered: a later same-host caller is refused as usual."""
+        peer = self._peer() if self._peer is not None else None
+        if is_local_address(peer):
+            return None
+        if os.environ.get(REMOTE_OK_ENV, "").strip().lower() not in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        ):
+            return None
+        return f"remote caller {peer} ({REMOTE_OK_ENV} set)"
+
+    def _refusal(self) -> str | None:
+        """Why this call's programs are refused (:func:`code_isolation_error`, unless
+        :meth:`remote_waiver`), with the remote caller's way out named when it applies."""
+        error = code_isolation_error()
+        if error is None or self.remote_waiver() is not None:
+            return None
+        peer = self._peer() if self._peer is not None else None
+        if not is_local_address(peer):
+            error += (
+                f" This caller is on another host ({peer}): set {REMOTE_OK_ENV}=1 on the server "
+                "to let its programs run unisolated here (every process of this server's uid on "
+                "this host stays readable to them)."
+            )
+        return error
+
+    def preflight(self, remote: bool | None = None) -> dict:
         """Code mode's start check (``code.preflight``), before the robot resets or an operator
         confirms anything: ``{"isolated", "error"}``. ``error`` says why every program would be
-        refused (:func:`code_isolation_error`). A caller on another host (``remote``: pi attached
-        by ``URL#token``) holds no secrets this host's /proc could expose; the refusal is waived."""
+        refused (:func:`code_isolation_error`), ``waived`` why a refusal does not apply to this
+        caller (:meth:`remote_waiver`). ``remote`` is what older pi said about itself; it is
+        ignored -- the server decides from the call's peer address."""
         error = code_isolation_error()
-        if error is not None and remote:
-            self.isolation_waived = True
-            return {"isolated": False, "error": None, "waived": "remote caller"}
-        return {"isolated": error is None, "error": error}
+        if error is None:
+            return {"isolated": True, "error": None}
+        waived = self.remote_waiver()
+        if waived is not None:
+            return {"isolated": False, "error": None, "waived": waived}
+        return {"isolated": False, "error": self._refusal()}
 
     def abort(self) -> None:
         """Kill the running child (a ``stop`` while a run executes); no-op when idle."""
@@ -1190,7 +1262,7 @@ class CodeRunner:
             raise ValueError("timeout_s must be positive")
         if max_move_m is not None and not (float(max_move_m) >= 0):
             raise ValueError("max_move_m must be a non-negative number")
-        refusal = None if self.isolation_waived else code_isolation_error()
+        refusal = self._refusal()
         if refusal is not None:
             raise CodeIsolationError(refusal)
         stuck = self.wedged
@@ -1635,6 +1707,8 @@ class CodeRunMixin:
             primitive_thread=not isinstance(self, MainThreadServeMixin),
             on_abandon=self._halt_for_abandoned,
             on_released=self._release_abandoned,
+            # The call's peer address (the transport's): a caller on another host may be waived.
+            peer=lambda: getattr(self, "active_peer", None),
         )
         self._rpc["code.run"] = self._code.run
         self._rpc["code.preflight"] = self._code.preflight
@@ -1755,8 +1829,10 @@ __all__ = [
     "jsonable",
     "ABANDON_GRACE_S",
     "ALLOW_UNISOLATED_ENV",
+    "REMOTE_OK_ENV",
     "child_env",
     "code_isolation_error",
+    "is_local_address",
     "kill_tree",
     "sandbox_uid",
     "scrub_env",

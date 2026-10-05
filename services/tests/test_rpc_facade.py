@@ -41,6 +41,8 @@ class Dummy(RpcFacade):
         self._rpc["slow"] = self.slow
         self._rpc["read"] = self.read
         self._rpc["loop"] = self.loop
+        #: The peer address the transport reported for the running call (code mode's "remote caller").
+        self._rpc["peer"] = lambda: self.active_peer
         #: Set once a ``slow`` call has arrived and captured its stop generation.
         self.slow_arrived = threading.Event()
         # Formerly allowed to run concurrently; must not any more.
@@ -293,3 +295,17 @@ def test_servers_without_the_opt_in_need_no_token(capsys):
     assert "token" not in capsys.readouterr().out
     assert client.call("read") == "read"
     stop()
+
+
+def test_the_running_call_sees_its_peer_address_and_nothing_outlives_the_call():
+    """Audit 92245e3 CM-3: code mode decides "remote caller" from the transport's peer address,
+    per call; it reaches the handler through the facade and is gone once the call returns."""
+    facade = Dummy()
+    client, stop = _serve(facade)
+    try:
+        assert client.call("peer", timeout_s=CLIENT_TIMEOUT_S) == "127.0.0.1"
+        assert facade.active_peer is None
+    finally:
+        stop()
+    # A call that came without one (no transport): unknown, not loopback.
+    assert facade._serve_dispatch("peer", (), {}) is None

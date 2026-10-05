@@ -137,6 +137,8 @@ class RpcFacade:
         self._stop_lock = threading.Lock()
         self._stop_generation = 0
         self._active_generation: int | None = None
+        #: The running call's peer address (the transport's), None when idle or unknown.
+        self._active_peer: str | None = None
         #: Set while motion must be refused regardless of any call (see :meth:`halt_motion`).
         self._motion_halt: str | None = None
         self._rpc: dict[str, Callable] = {}
@@ -227,6 +229,12 @@ class RpcFacade:
         """Stop generation the running call was received under (None when idle)."""
         return self._active_generation
 
+    @property
+    def active_peer(self) -> str | None:
+        """The running call's peer address as the transport saw it (an IP; None when idle,
+        or when the call came without one). Per call, never remembered across calls."""
+        return self._active_peer
+
     # ---- admission ---------------------------------------------------------
 
     def _exclusive_call_active(self) -> bool:
@@ -263,6 +271,7 @@ class RpcFacade:
         *,
         session_id: str | None = None,
         token: str | None = None,
+        peer: str | None = None,
     ) -> Any:
         """Transport entry point: admission, lock-free framework methods, locked business calls."""
         self._admit(method, token)
@@ -274,6 +283,7 @@ class RpcFacade:
             kwargs,
             session_id=session_id,
             arrival_generation=self._stop_generation,
+            peer=peer,
         )
 
     def _run_call(
@@ -284,6 +294,7 @@ class RpcFacade:
         *,
         session_id: str | None,
         arrival_generation: int,
+        peer: str | None = None,
     ) -> Any:
         """Run one business call under the call lock (one call at a time)."""
         with self._call_lock:
@@ -292,12 +303,14 @@ class RpcFacade:
             ):
                 raise CallCancelled(f"{method}: cancelled by stop before it started")
             self._active_generation = arrival_generation
+            self._active_peer = peer
             try:
                 if session_id is None:
                     return self._dispatch(method, args, kwargs)
                 return self._dispatch(method, args, kwargs, session_id=session_id)
             finally:
                 self._active_generation = None
+                self._active_peer = None
 
     def _dispatch(
         self, method: str, args: tuple, kwargs: dict, *, session_id: str | None = None

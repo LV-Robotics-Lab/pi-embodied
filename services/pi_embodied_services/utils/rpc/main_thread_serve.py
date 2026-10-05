@@ -58,6 +58,7 @@ class MainThreadServeMixin:
         *,
         session_id: str | None = None,
         token: str | None = None,
+        peer: str | None = None,
     ) -> Any:
         """Transport-side proxy for :meth:`serve`.
 
@@ -81,6 +82,7 @@ class MainThreadServeMixin:
             "args": args,
             "kwargs": kwargs,
             "session_id": session_id,
+            "peer": peer,
             # Captured on arrival so a stop sent while this call waits in the
             # queue cancels it (see RpcFacade._run_call).
             "arrival_generation": self._stop_generation,
@@ -159,6 +161,7 @@ class MainThreadServeMixin:
                         req["kwargs"],
                         session_id=req["session_id"],
                         arrival_generation=req["arrival_generation"],
+                        peer=req.get("peer"),
                     )
                 except Exception as exc:
                     req["error"] = exc

@@ -7,7 +7,6 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
 	type Helper,
-	isLocalEndpoint,
 	ORACLE_MAX_CALLS,
 	ORACLE_TIMEOUT_S,
 	oracleTierHint,
@@ -219,7 +218,7 @@ test("--code=true leaves only run_code and finish, fetches the tier's API and re
 		f.env.calls.map((c) => [c.method, c.kwargs]),
 		[
 			["code.api", { tier: "high" }],
-			["code.preflight", { remote: false }],
+			["code.preflight", {}],
 		],
 	);
 	const prompt = (await f.emit("before_agent_start")).systemPrompt as string;
@@ -249,7 +248,7 @@ test("--code=both adds run_code to the robot's tools and appends the code sectio
 		both.env.calls.map((c) => [c.method, c.kwargs]),
 		[
 			["code.api", { tier: "low" }],
-			["code.preflight", { remote: false }],
+			["code.preflight", {}],
 			["code.helpers", {}],
 		],
 	);
@@ -643,8 +642,8 @@ test("code mode's preflight refuses a server that cannot isolate a program, befo
 	const r = f.entries.find((e) => e.type === RESULT_ENTRY)?.data ?? (await result(f));
 	assert.match(String(r.error), /run_code refused: run the server as root/);
 	assert.equal(f.env.calls.filter((c) => c.method === "code.run").length, 0);
-	assert.equal(isLocalEndpoint("http://127.0.0.1:8080/call"), true);
-	assert.equal(isLocalEndpoint("http://robot-pc.tailnet:9000/call"), false);
+	// Audit 92245e3 CM-3: pi no longer tells the server whether it is remote; the server reads its peer address.
+	assert.deepEqual(f.env.calls.find((c) => c.method === "code.preflight")?.kwargs, {});
 });
 
 test("only a server without code.preflight is let through; its other rejections fail the start", async () => {

@@ -18,6 +18,7 @@ child holds no env, budgets refuse, a timeout kills and stops, an abort kills.""
 from __future__ import annotations
 
 import os
+import socket
 import threading
 import time
 
@@ -892,23 +893,72 @@ def test_an_abandoned_primitive_is_stopped_and_refused_when_it_wakes_to_move(
     )
 
 
-def test_preflight_reports_the_refusal_up_front_and_a_remote_caller_waives_it(
+def test_preflight_reports_the_refusal_up_front_and_the_server_decides_who_is_remote(
     monkeypatch,
 ):
     """Audit a2c880c #12: the refusal came only inside code.run, after the robot's reset and
-    the operator's confirmation; and a caller on another host (URL#token) was refused too."""
+    the operator's confirmation. Audit 92245e3 CM-3 / S1 / S3: the waiver trusted the caller's
+    `remote` flag and was latched for the server's lifetime; now the server decides per call
+    from the transport's peer address, and only with PI_EMBODIED_CODE_REMOTE_OK set."""
     monkeypatch.setattr(code_exec, "_proc_isolation_relevant", lambda: True)
     monkeypatch.setattr(code_exec, "sandbox_uid", lambda: None)
     monkeypatch.delenv(code_exec.ALLOW_UNISOLATED_ENV, raising=False)
     monkeypatch.delenv(code_exec.SANDBOX_UID_ENV, raising=False)
-    r = runner(Toy())
+    monkeypatch.delenv(code_exec.REMOTE_OK_ENV, raising=False)
+    peer: dict = {"addr": None}
+    r = runner(Toy(), peer=lambda: peer["addr"])
     local = r.preflight()
     assert local["isolated"] is False and "run_code refused" in local["error"]
     with pytest.raises(code_exec.CodeIsolationError):
         r.run("RESULT = 1\n")
-    remote = r.preflight(remote=True)
-    assert remote["error"] is None and remote["waived"] == "remote caller"
+    # What the caller says about itself is not consulted.
+    assert r.preflight(remote=True)["error"] is not None
+    # A same-host caller by its LAN / FQDN address is local: no waiver, whatever the operator set.
+    monkeypatch.setenv(code_exec.REMOTE_OK_ENV, "1")
+    peer["addr"] = "127.0.0.1"
+    assert r.preflight()["error"] is not None
+    # A caller on another host (TEST-NET-3 is never one of this host's addresses).
+    peer["addr"] = "203.0.113.5"
+    monkeypatch.delenv(code_exec.REMOTE_OK_ENV)
+    refused = r.preflight()
+    assert refused["error"] is not None and code_exec.REMOTE_OK_ENV in refused["error"]
+    with pytest.raises(code_exec.CodeIsolationError, match=code_exec.REMOTE_OK_ENV):
+        r.run("RESULT = 1\n")
+    monkeypatch.setenv(code_exec.REMOTE_OK_ENV, "1")
+    remote = r.preflight()
+    assert remote["error"] is None and remote["waived"].startswith(
+        "remote caller 203.0.113.5"
+    )
     assert r.run("RESULT = 1\n")["result"] == 1
+    # Never latched: the next call from this host is refused as before.
+    peer["addr"] = None
+    assert r.preflight()["error"] is not None
+    with pytest.raises(code_exec.CodeIsolationError):
+        r.run("RESULT = 1\n")
+
+
+def test_is_local_address_knows_loopback_this_host_and_nothing_else():
+    local = code_exec.is_local_address
+    for addr in (
+        None,
+        "",
+        "127.0.0.1",
+        "127.0.0.2",
+        "::1",
+        "::ffff:127.0.0.1",
+        "0.0.0.0",
+        "::",
+    ):
+        assert local(addr), addr
+    # Not an IP address (a stub, a unix socket): nothing says it is remote.
+    assert local("robot-pc.local")
+    # An address this host holds (the one a socket to loopback binds).
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        probe.connect(("127.0.0.1", 9))
+        assert local(probe.getsockname()[0])
+    # Documentation ranges are never one of this host's interfaces.
+    assert not local("203.0.113.5")
+    assert not local("2001:db8::1")
 
 
 def test_a_done_message_written_just_before_the_child_exits_is_read_not_lost():

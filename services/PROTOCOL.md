@@ -312,13 +312,20 @@ mode** (`code.run` returns `run_code refused: ...`) unless the operator opts out
 `PI_EMBODIED_CODE_ALLOW_UNISOLATED=1` (or `PI_EMBODIED_CODE_UID=none`) for a deployment isolated
 another way (a container or VM). Off Linux there is no `/proc` and a same-uid process cannot read
 another's environment or memory, so nothing is refused. The refusal is known before the episode: pi's
-code mode calls `code.preflight` (kw `remote`, bool) when it starts, before any reset or operator
-confirmation, and does not start when it answers `{"error": "run_code refused: ..."}`. A caller on
-another host (pi attached with `--env-url URL#token` to a non-loopback address) holds nothing this
-host's `/proc` exposes: with `remote=true` the refusal is waived for the server's lifetime
-(`{"error": null, "waived": "remote caller"}`). Real robots: run the env server as root (programs
+code mode calls `code.preflight` (no arguments; a `remote` kw from older pi is ignored) when it
+starts -- a real robot the moment its server answers, before the operator confirms anything and the
+arm resets -- and does not start when it answers `{"error": "run_code refused: ..."}`. A caller on
+another host may be waived: the server decides it per call, from the connection's peer address
+(loopback, or an address one of the server host's interfaces holds, is local -- a pi on the same
+host reaching the server by its FQDN, LAN or tailnet address is not remote; what the caller says
+about itself is never consulted), and only when the operator set `PI_EMBODIED_CODE_REMOTE_OK=1` on
+the server: a remote pi's keys are not in this host's `/proc`, but every other process of the
+server's uid on this host (the shell that started it, a bridge started from it) stays readable to
+its programs. Then `code.preflight` answers `{"error": null, "waived": "remote caller <ip> (...)"}`
+and `code.run` runs; without the variable both name it in the refusal. Nothing is remembered
+between calls: a same-host caller is refused as usual. Real robots: run the env server as root (programs
 then run under the dedicated uid), or on the robot's own computer attached from pi's by
-`URL#token`; a server that shares pi's host and uid serves no code mode. A root server runs the program as an
+`URL#token` with `PI_EMBODIED_CODE_REMOTE_OK=1`; a server that shares pi's host and uid serves no code mode. A root server runs the program as an
 unprivileged uid of its own (61000 + n, one per server, held by an flock in /run/lock;
 `PI_EMBODIED_CODE_UID=<uid>` or `none` overrides): the child preloads common stdlib modules, `numpy.linalg/random/fft` and
 `scipy.spatial.transform`, sets its limits and drops to that uid and gid for good before the

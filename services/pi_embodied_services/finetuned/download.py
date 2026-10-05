@@ -1,7 +1,7 @@
 """Fetch a released Show-Harness adapter and the base model it names, pinned and verified.
 
     python -m pi_embodied_services.finetuned.download --adapter qwen3_5_2b_sim \\
-        --dest /root/autodl-tmp/checkpoints
+        --dest /root/autodl-tmp/pi-embodied/.local/checkpoints
 
 writes ``<dest>/Show-Harness-VLMs/<adapter>/`` and ``<dest>/<base name>/`` (e.g. ``Qwen3.5-2B``).
 Files come from ``$HF_ENDPOINT`` (default https://hf-mirror.com) at a pinned revision, big ones
@@ -550,7 +550,7 @@ def main() -> None:
         default="qwen3_5_2b_sim",
         help="Folder in showlab/Show-Harness-VLMs",
     )
-    p.add_argument("--dest", default="/root/autodl-tmp/checkpoints")
+    p.add_argument("--dest", default="/root/autodl-tmp/pi-embodied/.local/checkpoints")
     p.add_argument("--no-base", action="store_true", help="Only the adapter")
     args = p.parse_args()
     dest = Path(args.dest)

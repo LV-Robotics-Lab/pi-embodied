@@ -5,7 +5,7 @@
 """Fetch the released Show-Harness training data (showlab/Show-Harness-Data), pinned and verified.
 
     python -m pi_embodied_services.finetuned.download_dataset --splits real sim \\
-        --dest /root/autodl-tmp/data/Show-Harness-Data [--register --lf-root $LF_ROOT]
+        --dest /root/autodl-tmp/pi-embodied/.local/data/Show-Harness-Data [--register --lf-root $LF_ROOT]
 
 writes ``<dest>/<split>/`` (``rollouts.json`` with image paths relative to it, the frames and
 ``episodes.jsonl``) plus ``README.md``, all from ``$HF_ENDPOINT`` (default https://hf-mirror.com) at
@@ -126,7 +126,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument(
         "--splits", nargs="+", default=["real", "sim"], choices=sorted(SPLITS)
     )
-    p.add_argument("--dest", default="/root/autodl-tmp/data/Show-Harness-Data")
+    p.add_argument(
+        "--dest", default="/root/autodl-tmp/pi-embodied/.local/data/Show-Harness-Data"
+    )
     p.add_argument("--jobs", type=int, default=16)
     p.add_argument(
         "--register",

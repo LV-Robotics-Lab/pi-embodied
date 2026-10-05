@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Fetch the RLinf real2sim rigs (BlockPAP-v1 / BlockStack-v1) that ./scenes.py registers.
 #
-#   bash fetch_real2sim.sh [dest]          # default /root/autodl-tmp/assets/RLinf-real2sim
+#   bash fetch_real2sim.sh [dest]          # default /root/autodl-tmp/pi-embodied/.local/assets/RLinf-real2sim
 #   HTTPS_PROXY=http://127.0.0.1:1056 bash fetch_real2sim.sh   # when github.com is flaky (code only)
 #
 # 1. Code: real_franka/ of github.com/AaronCaoZJ/RLinf (Apache-2.0, a fork of RLinf/RLinf by a
@@ -14,10 +14,10 @@
 # Then point the env server at it: RLINF_ROOT=<dest> (scenes.py's default is the same path).
 set -euo pipefail
 
-DEST="${1:-/root/autodl-tmp/assets/RLinf-real2sim}"
+DEST="${1:-/root/autodl-tmp/pi-embodied/.local/assets/RLinf-real2sim}"
 REPO=https://github.com/AaronCaoZJ/RLinf.git
 REV=fd52554870dc9c0dbd4243c052f5ec32c56f1340
-PYTHON="${PYTHON:-/root/autodl-tmp/venvs/maniskill/bin/python}"
+PYTHON="${PYTHON:-/root/autodl-tmp/pi-embodied/.local/venvs/maniskill/bin/python}"
 SERVICES="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 HF="${HF_ENDPOINT:-https://hf-mirror.com}/datasets/RLinf/maniskill_assets/resolve/c23fc1880ed7861686d4f995360101eaee4d18a0"
 

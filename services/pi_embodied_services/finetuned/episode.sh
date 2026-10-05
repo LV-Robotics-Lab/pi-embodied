@@ -2,11 +2,11 @@
 # episode.sh <robot> <out dir> [pi args...]: serve a fine-tuned adapter (serve.sh), run one pi episode
 # per seed with `--model finetuned/local --ft-model $ADAPTER`, then stop the server. The whole run holds the GPU1 lock.
 #
-#   SEEDS="0 1" bash episode.sh maniskill /root/autodl-tmp/runs/finetuned/pickcube --env-id PickCube-v1
+#   SEEDS="0 1" bash episode.sh maniskill /root/autodl-tmp/pi-embodied/.local/runs/finetuned/pickcube --env-id PickCube-v1
 #
 #   ADAPTER=qwen3_5_2b_showharness_sim   the served adapter name (serve.sh's LORA name; MODEL/LORA/FAMILY pass through)
 #   SEEDS="0"  SEED_FLAG=--seed           one episode per seed, sessions in <out dir>/s<seed>
-#   PORT=8010  LOCK=/root/autodl-tmp/locks/gpu1.lock (LOCK= to skip)  PI=<pi checkout>  ENV_SH=<file to source>
+#   PORT=8010  LOCK=/root/autodl-tmp/pi-embodied/.local/locks/gpu1.lock (LOCK= to skip)  PI=<pi checkout>  ENV_SH=<file to source>
 #   DASHBOARD_PORT=8778 (empty: no dashboard)  PROMPT="Solve the task."
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -14,11 +14,11 @@ PI="${PI:-$(cd "$HERE/../../.." && pwd)}"
 robot=$1 out=$2; shift 2
 ADAPTER="${ADAPTER:-qwen3_5_2b_showharness_sim}"
 PORT="${PORT:-8010}"
-LOCK="${LOCK-/root/autodl-tmp/locks/gpu1.lock}"
+LOCK="${LOCK-/root/autodl-tmp/pi-embodied/.local/locks/gpu1.lock}"
 DASHBOARD_PORT="${DASHBOARD_PORT-8778}"
 mkdir -p "$out"
 [ -n "${ENV_SH:-}" ] && . "$ENV_SH"
-export PATH=/root/autodl-tmp/tools/node/bin:$PATH
+export PATH=/root/autodl-tmp/pi-embodied/.local/tools/node/bin:$PATH
 
 run() {
   PORT=$PORT setsid bash "$HERE/serve.sh" > "$out/vllm.log" 2>&1 < /dev/null &

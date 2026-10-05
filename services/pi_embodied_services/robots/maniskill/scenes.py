@@ -50,7 +50,9 @@ from typing import Any, Callable, Mapping, Optional
 
 import numpy as np
 
-RLINF_ROOT = os.environ.get("RLINF_ROOT", "/root/autodl-tmp/assets/RLinf-real2sim")
+RLINF_ROOT = os.environ.get(
+    "RLINF_ROOT", "/root/autodl-tmp/pi-embodied/.local/assets/RLinf-real2sim"
+)
 
 # Wrist camera placement, relative to the gripper: the D415 rig's ORIENTATION
 # (realsense_joint rpy = 0, -1.5707, 3.1415 in panda_v3.urdf), mounted on ``panda_hand``

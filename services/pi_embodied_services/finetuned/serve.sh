@@ -12,13 +12,13 @@
 #
 # On the shared box GPU1 is time-shared: run it only while holding the lock, and stop it after
 # the episodes (episode.sh does both):
-#   flock /root/autodl-tmp/locks/gpu1.lock bash serve.sh
+#   flock /root/autodl-tmp/pi-embodied/.local/locks/gpu1.lock bash serve.sh
 #
-#   MODEL=      base weights dir (default /root/autodl-tmp/checkpoints/Qwen3.5-2B, from download.py)
+#   MODEL=      base weights dir (default /root/autodl-tmp/pi-embodied/.local/checkpoints/Qwen3.5-2B, from download.py)
 #   LORA=       name=path,... ; the name is what the client requests (default the released sim adapter)
 #   FAMILY=     qwen3_5 | internvl3_5 | gemma4: the chat template that reproduces training's rendering
 #   PORT=8010   GPU=1   GPU_UTIL=0.3 (fraction of the whole card; GPU1 is shared)   MAX_LEN=8192
-#   VLLM_VENV=  /root/autodl-tmp/venvs/vllm     DRY_RUN=1 prints the command
+#   VLLM_VENV=  /root/autodl-tmp/pi-embodied/.local/venvs/vllm     DRY_RUN=1 prints the command
 #
 # Three silent failure modes this guards, as upstream: the adapter must be served with the jinja that
 # reproduces LlamaFactory's training template (Qwen3.5's own emits an empty think block the adapter
@@ -27,7 +27,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CK=/root/autodl-tmp/checkpoints
+CK=/root/autodl-tmp/pi-embodied/.local/checkpoints
 MODEL="${MODEL:-$CK/Qwen3.5-2B}"
 LORA="${LORA:-qwen3_5_2b_showharness_sim=$CK/Show-Harness-VLMs/qwen3_5_2b_sim}"
 FAMILY="${FAMILY:-qwen3_5}"
@@ -37,7 +37,7 @@ GPU_UTIL="${GPU_UTIL:-0.3}"
 MAX_LEN="${MAX_LEN:-8192}"
 MAX_NUM_SEQS="${MAX_NUM_SEQS:-8}"
 MAX_LORA_RANK="${MAX_LORA_RANK:-64}"
-VENV="${VLLM_VENV:-/root/autodl-tmp/venvs/vllm}"
+VENV="${VLLM_VENV:-/root/autodl-tmp/pi-embodied/.local/venvs/vllm}"
 SERVED_NAME="${SERVED_NAME:-$(basename "$MODEL")}"
 
 LORA_ARGS=()
@@ -77,10 +77,10 @@ fi
 # sm_120 FlashInfer JIT needs CUDA >= 12.9: the venv's pip cu13 toolkit, as tools/vllm-up.sh does.
 CU13="$VENV/lib/python3.12/site-packages/nvidia/cu13"
 if [ -d "$CU13" ]; then
-  [ -x /root/autodl-tmp/tools/cuda-pip-links.sh ] && /root/autodl-tmp/tools/cuda-pip-links.sh >/dev/null
+  [ -x /root/autodl-tmp/pi-embodied/.local/tools/cuda-pip-links.sh ] && /root/autodl-tmp/pi-embodied/.local/tools/cuda-pip-links.sh >/dev/null
   export CUDA_HOME="$CU13" PATH="$CU13/bin:$PATH"
 fi
-export CUDA_VISIBLE_DEVICES="$GPU" HF_HUB_OFFLINE=1 VLLM_CACHE_ROOT="${VLLM_CACHE_ROOT:-/root/autodl-tmp/.cache/vllm}"
+export CUDA_VISIBLE_DEVICES="$GPU" HF_HUB_OFFLINE=1 VLLM_CACHE_ROOT="${VLLM_CACHE_ROOT:-/root/autodl-tmp/pi-embodied/.local/.cache/vllm}"
 # shellcheck disable=SC1091
 source "$VENV/bin/activate"
 

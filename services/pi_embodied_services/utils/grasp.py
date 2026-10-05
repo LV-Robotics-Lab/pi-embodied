@@ -51,6 +51,8 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 import numpy as np
+from scipy import ndimage
+from scipy.spatial import cKDTree
 
 from pi_embodied_services.utils.detections import (
     MOTION_METHODS,
@@ -92,7 +94,9 @@ PLACE_MAX_CLEARANCE_M = 0.25
 #: A held object is set down this far above the region's top surface, then released.
 PLACE_SETTLE_CLEARANCE_M = 0.01
 #: A placed object's footprint must lie over the region: at least this fraction of its points
-#: within PLACE_FOOTPRINT_TOL_M (in xy) of a region point (a bowl on a plate's rim tips off).
+#: within PLACE_FOOTPRINT_TOL_M (in xy) of a region point, or in a hole the region's points
+#: enclose (what the object itself hides), see PlacementSurface (a bowl on a plate's rim tips off).
+#: The tolerance grows to 1.5 pixel pitches when the depth image samples the region coarser.
 PLACE_MIN_FOOTPRINT = 0.8
 PLACE_FOOTPRINT_TOL_M = 0.015
 #: The longest standoff or lift a claim accepts.
@@ -265,6 +269,98 @@ def object_points(
         np.ascontiguousarray(points[valid & mask], dtype=np.float32),
         np.ascontiguousarray(points[valid & ~mask], dtype=np.float32),
     )
+
+
+def mask_pixel_pitch(
+    depth: np.ndarray,
+    K: np.ndarray,
+    mask: np.ndarray,
+    *,
+    depth_max: float = DEFAULT_DEPTH_TRUNCATION,
+) -> float:
+    """How far apart (m) neighbouring pixels of a mask lie on the surface they see: the
+    larger of the median horizontal and vertical neighbour distances, so a tilted view
+    reports its stretched direction. 0 when the mask has no neighbouring pair."""
+    points = backproject(depth, K)
+    keep = valid_points(depth, 0.0, depth_max) & np.asarray(mask).astype(bool)
+    if keep.shape != points.shape[:2]:
+        raise GraspError(f"mask {keep.shape} does not match depth {points.shape[:2]}")
+    pitch = 0.0
+    for a, b, both in (
+        (points[:, 1:], points[:, :-1], keep[:, 1:] & keep[:, :-1]),
+        (points[1:, :], points[:-1, :], keep[1:, :] & keep[:-1, :]),
+    ):
+        d = np.linalg.norm(a - b, axis=-1)[both]
+        if len(d):
+            pitch = max(pitch, float(np.median(d)))
+    return pitch
+
+
+@dataclass
+class PlacementSurface:
+    """The placement region's visible points as a surface in the world's xy plane.
+
+    A placed object's point is over the surface when it lies within ``tol`` of a visible
+    region point (the exact nearest-neighbour distance over every point, so the depth
+    image's raster order and a large region's point count do not matter), or in a hole the
+    visible points enclose on a grid of ``cell`` metres (what the held object, or an object
+    already sitting there, hides from the camera: the plate under a bowl). The centre is the
+    filled area's centroid, which such a hole and a tilted view's density gradient do not
+    move, unlike the visible points' median.
+    """
+
+    tree: Any
+    tol: float
+    cell: float
+    #: The lowest visible xy: grid cell (1, 1) starts here, (0, *) and (*, 0) stay empty.
+    lo: np.ndarray
+    #: Grid cells inside a ring of visible points but without one of their own.
+    holes: np.ndarray
+    centre: np.ndarray
+
+    @classmethod
+    def of(cls, region_xy: np.ndarray, pixel_pitch: float) -> PlacementSurface:
+        xy = np.asarray(region_xy, dtype=np.float64).reshape(-1, 2)
+        tol = max(PLACE_FOOTPRINT_TOL_M, 1.5 * float(pixel_pitch))
+        # Neighbouring pixels (a pitch apart) fall into the same or adjacent cells, so the
+        # visible points close around what they surround; a stray far point cannot blow the
+        # grid up past 2000 cells a side.
+        lo = xy.min(axis=0)
+        cell = max(tol, float((xy.max(axis=0) - lo).max()) / 2000.0)
+        idx = cls._cells(xy, lo, cell)
+        shape = tuple(idx.max(axis=0) + 2)
+        occupied = np.zeros(shape, dtype=bool)
+        occupied[idx[:, 0], idx[:, 1]] = True
+        filled = ndimage.binary_fill_holes(occupied)
+        # The filled area's centroid: each visible cell at its points' mean, each hole cell
+        # at its centre (the grid is coarser than the points).
+        sums = np.zeros((*shape, 2))
+        counts = np.zeros(shape)
+        np.add.at(sums, (idx[:, 0], idx[:, 1]), xy)
+        np.add.at(counts, (idx[:, 0], idx[:, 1]), 1.0)
+        cells = np.argwhere(filled)
+        n = counts[cells[:, 0], cells[:, 1]]
+        at = np.where(
+            (n > 0)[:, None],
+            sums[cells[:, 0], cells[:, 1]] / np.maximum(n, 1.0)[:, None],
+            lo + (cells - 0.5) * cell,
+        )
+        return cls(cKDTree(xy), tol, cell, lo, filled & ~occupied, at.mean(axis=0))
+
+    @staticmethod
+    def _cells(xy: np.ndarray, lo: np.ndarray, cell: float) -> np.ndarray:
+        return np.floor((xy - lo) / cell).astype(int) + 1
+
+    def over(self, xy: np.ndarray) -> np.ndarray:
+        """Per point: whether it is over the surface (within ``tol`` of a visible region
+        point or in one of its holes)."""
+        p = np.asarray(xy, dtype=np.float64).reshape(-1, 2)
+        near = self.tree.query(p)[0] <= self.tol
+        idx = self._cells(p, self.lo, self.cell)
+        inside = (idx >= 0).all(axis=1) & (idx < self.holes.shape).all(axis=1)
+        in_hole = np.zeros(len(p), dtype=bool)
+        in_hole[inside] = self.holes[idx[inside, 0], idx[inside, 1]]
+        return near | in_hole
 
 
 def make_candidate(
@@ -1694,8 +1790,19 @@ class GraspPlanner:
             view["depth"], view["intrinsic_K"], region_mask, depth_max=self._depth_max
         )
         region_w = reg_cam.astype(np.float64) @ T_cw[:3, :3].T + T_cw[:3, 3]
-        region_xy = region_w[:: max(1, len(region_w) // 3000), :2]
-        centre = np.median(region_w[:, :2], axis=0) if len(region_w) else None
+        surface = (
+            PlacementSurface.of(
+                region_w[:, :2],
+                mask_pixel_pitch(
+                    view["depth"],
+                    view["intrinsic_K"],
+                    region_mask,
+                    depth_max=self._depth_max,
+                ),
+            )
+            if len(region_w)
+            else None
+        )
         ids: list[str] = []
         cands: list[dict[str, Any]] = []
         refused: list[dict[str, Any]] = []
@@ -1724,7 +1831,7 @@ class GraspPlanner:
                 refused.append({"rank": i, "reason": why})
                 continue
             footprint, offset, landed_at = self._landing(
-                T_place, T_cw, obj_cam, region_xy, centre
+                T_place, T_cw, obj_cam, surface
             )
             if footprint is not None and footprint < PLACE_MIN_FOOTPRINT:
                 refused.append(
@@ -1821,31 +1928,20 @@ class GraspPlanner:
         T_place_camera: np.ndarray,
         cam2world: np.ndarray,
         object_camera: np.ndarray,
-        region_xy: np.ndarray,
-        centre: np.ndarray | None,
+        surface: PlacementSurface | None,
     ) -> tuple[float | None, float | None, np.ndarray | None]:
-        """(fraction of the placed object's points over the region in xy, the xy distance of
-        its centroid from the region's centre, that centroid in the world), or None for what
-        cannot be measured."""
-        if len(object_camera) == 0 or len(region_xy) == 0 or centre is None:
+        """(fraction of the placed object's points over the region's surface in xy, the xy
+        distance of its centroid from the surface's centre, that centroid in the world), or
+        None for what cannot be measured."""
+        if len(object_camera) == 0 or surface is None:
             return None, None, None
         T = np.asarray(T_place_camera, dtype=np.float64)
         obj = np.asarray(object_camera, dtype=np.float64)[
             :: max(1, len(object_camera) // 800)
         ]
         placed = (obj @ T[:3, :3].T + T[:3, 3]) @ cam2world[:3, :3].T + cam2world[:3, 3]
-        d = np.linalg.norm(placed[:, None, :2] - region_xy[None, :, :], axis=2).min(
-            axis=1
-        )
-        # A coarse depth image spaces the region's points further apart than the tolerance.
-        probe = region_xy[:: max(1, len(region_xy) // 300)]
-        gaps = np.linalg.norm(probe[:, None] - region_xy[None], axis=2)
-        gaps[gaps == 0] = np.inf
-        nearest = gaps.min(axis=1)
-        nearest = nearest[np.isfinite(nearest)]
-        spacing = float(np.median(nearest)) if len(nearest) else 0.0
-        footprint = float(np.mean(d <= max(PLACE_FOOTPRINT_TOL_M, 1.5 * spacing)))
-        offset = float(np.linalg.norm(placed[:, :2].mean(axis=0) - centre))
+        footprint = float(np.mean(surface.over(placed[:, :2])))
+        offset = float(np.linalg.norm(placed[:, :2].mean(axis=0) - surface.centre))
         return footprint, offset, placed.mean(axis=0)
 
     @staticmethod

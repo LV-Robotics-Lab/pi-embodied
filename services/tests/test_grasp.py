@@ -18,6 +18,8 @@ that expire with the observation, and the same-snapshot rule of plan_place."""
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
 
@@ -1194,3 +1196,101 @@ def test_a_places_object_position_is_where_the_object_lands_not_the_grasp_point(
     # The grasp is at the block's (0, 0); the block mask's centroid sits at world (0.02, 0.02).
     assert p["eef_position"][:2] == pytest.approx([0.0, 0.0], abs=1e-6)
     assert p["object_position"][:2] == pytest.approx([0.02, 0.02], abs=1e-3)
+
+
+def test_pixel_pitch_is_the_regions_sample_spacing_on_its_surface():
+    """Audit 92245e3 G1: the footprint tolerance follows the depth image's pitch on the
+    region (z / f looking down; stretched along a tilt), not a nearest-neighbour estimate
+    over a raster-strided subsample."""
+    depth = np.full((H, W), 0.9, dtype=np.float32)
+    mask = np.zeros((H, W), bool)
+    mask[2:14, 2:14] = True
+    flat = G.mask_pixel_pitch(depth, K, mask)
+    assert flat == pytest.approx(0.9 / 20.0)
+    # A plane tilted 45 deg about the camera's x (z = 0.9 + y): rows stretch towards sqrt 2
+    # (the median row lies a little nearer than the optical axis's).
+    v = np.arange(H)[:, None] - K[1, 2]
+    tilted = (0.9 / (1.0 - v / K[1, 1])).astype(np.float32) * np.ones((1, W))
+    assert 1.25 * flat < G.mask_pixel_pitch(tilted, K, mask) < math.sqrt(2) * flat
+    assert G.mask_pixel_pitch(depth, K, np.zeros((H, W), bool)) == 0.0
+
+
+#: A 480 x 640 camera 1 m above a table: an 8 cm block (60 px at 0.8 m) in the middle of a
+#: 45 x 60 cm tray (300 x 400 px at 0.9 m).
+TRAY_K = np.array([[600.0, 0, 320.0], [0, 600.0, 240.0], [0, 0, 1]])
+TRAY_BLOCK = np.zeros((480, 640), bool)
+TRAY_BLOCK[210:270, 290:350] = True
+TRAY = np.zeros((480, 640), bool)
+TRAY[90:390, 120:520] = True
+
+
+def _tray_place(region, transforms):
+    """plan_place of the block onto ``region`` for AnyPlace's camera-frame ``transforms``."""
+
+    def view(camera):
+        depth = np.full(TRAY_BLOCK.shape, 0.9, dtype=np.float32)
+        depth[TRAY_BLOCK] = 0.8
+        return {
+            "rgb": np.zeros((*TRAY_BLOCK.shape, 3), np.uint8),
+            "depth": depth,
+            "intrinsic_K": TRAY_K,
+            "extrinsic_cam2world": CAM2WORLD,
+        }
+
+    planner = G.GraspPlanner(
+        view,
+        cameras=["agentview"],
+        backends={"contact_graspnet": FakeServer([_camera_candidate(0.9, 0.0)])},
+        sam3=FakeSam3(TRAY_BLOCK),
+        anyplace=FakeAnyPlace(transforms),
+    )
+    obj = planner.segment_mask("block")["id"]
+    planner._sam3 = FakeSam3(region)
+    reg = planner.segment_mask("tray")["id"]
+    gid = planner.plan_grasp(mask_id=obj)["active"]
+    return planner.plan_place(reg, gid)
+
+
+def _shift(x):
+    T = np.eye(4)
+    T[0, 3] = x  # along camera x (world -y)
+    return T
+
+
+def test_a_place_on_a_large_region_keeps_its_whole_footprint():
+    """Audit 92245e3 G1: the region's points were subsampled in raster order (every k-th
+    point), so the subsample was k pixels apart along a row and the tolerance, estimated from
+    its nearest neighbours, saw only the row gap: on a 300 x 400 px region (k = 40) a centred
+    8 cm block scored a 27% footprint and every placement was refused. The footprint is now
+    the exact nearest-neighbour test over every region point, with a tolerance from the
+    pixel pitch."""
+    place = _tray_place(TRAY, [_shift(0.0), _shift(0.30)])
+    centred = place["candidates"][0]
+    assert centred["rank"] == 0 and centred["footprint_on_region"] == 1.0
+    assert centred["landing_offset_m"] < 0.005
+    # Half over the tray's edge (x 0.26-0.34 m against an edge at 0.30): still refused.
+    assert [r["rank"] for r in place["refused"]] == [1]
+    assert "footprint" in place["refused"][0]["reason"]
+
+
+def test_the_region_hidden_by_the_object_itself_still_carries_it():
+    """Audit 92245e3 G2: when the held object (or one already sitting there) hides part of the
+    region, the region's points have a hole of the object's size, so a centred landing was
+    far from every visible point (refused), and the visible points' median, pushed away from
+    the hole, favoured off-centre candidates. Enclosed holes count as surface and the centre
+    is the filled area's centroid, so the place over the hole is accepted with the landing
+    offset it has on the unoccluded tray."""
+    occluded = TRAY & ~TRAY_BLOCK
+    occluded[210:270, 350:365] = False  # the shadow its parallax casts on one side
+    whole = _tray_place(TRAY, [_shift(0.0)])["candidates"][0]
+    holed = _tray_place(occluded, [_shift(0.0)])
+    assert holed["refused"] == []
+    assert holed["candidates"][0]["footprint_on_region"] == 1.0
+    assert holed["candidates"][0]["landing_offset_m"] == pytest.approx(
+        whole["landing_offset_m"], abs=1e-3
+    )
+    # A hole open to the region's edge is not surface: the object would overhang there.
+    bitten = TRAY.copy()
+    bitten[210:270, 290:520] = False
+    with pytest.raises(G.GraspError, match="footprint"):
+        _tray_place(bitten, [_shift(0.0)])

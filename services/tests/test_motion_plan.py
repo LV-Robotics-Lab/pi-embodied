@@ -344,6 +344,64 @@ def test_plan_goes_around_obstacles_and_leaves_out_the_target():
     assert [o["name"] for o in sent["obstacles"]] == ["wall"]
 
 
+TABLE = {
+    "type": "box",
+    "name": "table/7",
+    "position": [0.4, 0, -0.1],
+    "extent": [1.0, 1.2, 0.2],  # top face at z = 0
+    "fixed": True,
+}
+
+
+def test_a_goal_inside_a_fixture_is_refused_before_planning():
+    """verify3 bug 45: the table is left out of the world when the goal is within 4 cm of it
+    (the surface under the object), so a target 3 cm below its top was "planned" and executed
+    to a stall. A goal inside a fixed obstacle is refused before anything is sent."""
+    assert collision.parse_obstacle(TABLE)["fixed"] is True
+    assert collision.parse_obstacle(BOWL)["fixed"] is False, "movable by default"
+    assert collision.to_wire(collision.parse_obstacle(TABLE))["fixed"] is True
+    ik = PointIk()
+    planner = motion.MotionPlanner("http://ik", "panda_libero", client=ik)
+    start = [0.1, 0.0, 0.1]
+    q = [*start, 0, 0, 0, 0]
+    # 3 cm below the table top, under the bowl: refused, nothing sent to the ik service.
+    out = planner.plan(q, start, [0.5, 0.0, -0.03], UP, [TABLE, BOWL])
+    assert out["status"] == "blocked"
+    assert out["message"] == (
+        "the target lies inside table/7 (30 mm deep), a fixture the hand cannot enter; "
+        "aim above it"
+    )
+    assert ik.calls == []
+    assert planner.inside_fixture([0.5, 0.0, -0.03], [TABLE, BOWL]) == (
+        "table/7",
+        pytest.approx(0.03),
+    )
+    # On the top, or grazing it within the tolerance: the surface under the object, planned
+    # with the table left out as before.
+    for z in (0.0, -0.004):
+        out = planner.plan(q, start, [0.5, 0.0, z], UP, [TABLE, BOWL])
+        assert out["status"] == "planned", out["message"]
+        assert sorted(out["left_out"]) == ["bowl", "table/7"]
+    # Inside a movable object's bounding box (a grasp at a bowl's rim): not a fixture, planned.
+    out = planner.plan(q, start, [0.5, 0.0, 0.03], UP, [TABLE, BOWL])
+    assert out["status"] == "planned" and "bowl" in out["left_out"]
+    # The floor plane is a fixture too; the deepest fixture names the refusal.
+    floor = {
+        "type": "halfspace",
+        "name": "floor",
+        "point": [0, 0, -0.9],
+        "normal": [0, 0, 1],
+        "fixed": True,
+    }
+    out = planner.plan(q, start, [0.5, 0.0, -0.95], UP, [TABLE, floor])
+    assert "lies inside floor (50 mm" in out["message"]
+    # Without the flag (an older server's world) nothing changes: the box is left out.
+    out = planner.plan(
+        q, start, [0.5, 0.0, -0.03], UP, [{**TABLE, "fixed": False}, BOWL]
+    )
+    assert out["status"] == "planned"
+
+
 def test_plan_refuses_blocked_and_detouring_paths_and_is_unknown_without_a_service():
     roof = {
         "type": "box",
@@ -454,7 +512,13 @@ def test_static_world_reads_the_env_file(tmp_path, monkeypatch):
         '"point": [0, 0, 0], "normal": [0, 0, 1]}]}'
     )
     monkeypatch.setenv(motion.WORLD_ENV, str(path))
-    assert motion.static_world()[0]["name"] == "table"
+    world = motion.static_world()
+    assert world[0]["name"] == "table"
+    assert world[0]["fixed"] is True, "a static scene's entries are the cell's fixtures"
+    path.write_text(
+        '[{"type": "box", "name": "bin", "position": [0, 0, 0], "extent": [1, 1, 1], "fixed": false}]'
+    )
+    assert motion.static_world()[0]["fixed"] is False
 
 
 def test_follow_waypoints_checks_before_each_segment_and_stops_on_contact():
@@ -637,6 +701,27 @@ def test_libero_move_to_refuses_without_a_collision_free_path_and_stops_on_conta
     out = f.move_to([0.5, 0.0, 0.06], max_steps=120)
     assert out["stopped"] == "contact" and "wall" in out["contact"]
     assert out["final_dist_m"] > 0.1
+
+
+def test_libero_move_to_below_the_table_top_is_refused_unmoved():
+    """verify3 bug 45 (B16b): move_to 3 cm below the table top ran to a physical stall. The
+    LIBERO world marks its fixture geoms fixed (collision.mujoco_collision_world), and the
+    planner refuses the target before the ik service is asked."""
+    table = {
+        **TABLE,
+        "position": [0.4, 0.0, -0.05],
+        "extent": [1.0, 1.2, 0.2],
+    }  # top at 0.05
+    f, ik = libero([table, BOWL])
+    with pytest.raises(
+        ValueError, match="move_to refused: the target lies inside table/7 \\(30 mm"
+    ):
+        f.move_to([0.5, 0.0, 0.02])
+    assert f._env.steps == 0
+    assert ik.calls == []
+    # Just above it: planned as before (the table under the goal is left out).
+    out = f.move_to([0.5, 0.0, 0.06], max_steps=120)
+    assert "planned" in out and f._env.steps > 0
 
 
 def test_libero_without_ik_has_no_planning_rpcs():

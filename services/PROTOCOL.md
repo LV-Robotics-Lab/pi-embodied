@@ -227,7 +227,10 @@ contact (`stopped: "contact"` in the result). The planning world is LIBERO's col
 geoms (one box per movable object, oriented boxes per fixture geom), a Franka cell's
 `$PI_EMBODIED_IK_WORLD` JSON obstacle list (base frame; `right_base` on the dual rig), and on the
 dual rig the other arm at its current joints. Obstacles within 4 cm of the start or goal TCP (the
-object being grasped, held or placed on) are left out. A movable object is its axis-aligned bounding
+object being grasped, held or placed on) are left out, but a goal more than 5 mm inside a `fixed`
+obstacle (LIBERO's table and fixture geoms, the floor plane, a static scene file's entries) is refused
+before planning (`move_to refused: the target lies inside <name> (<n> mm deep), a fixture the hand
+cannot enter`). A movable object is its axis-aligned bounding
 box, so a neighbour's corners count: a goal whose hand (not TCP) reaches a neighbouring object's
 box is refused, and the refusal says why, by the planner's status first: the arm already touches
 an obstacle where it stands (`the arm is already touching <object>'s bounding box where it is;
@@ -822,7 +825,7 @@ Same method names; poses are reported in the `right_base` frame. `arm` is `"left
 | ik | `ik.solve` | `robot` str, `target_pose` (`{"pos": [x, y, z], "quat_xyzw": [...]}` or flat `[x, y, z, qx, qy, qz, qw]`, TCP in the robot base frame, m), kw `seed_q=null` (arm joints, rad) | `{"robot", "q": [arm joints] \| null, "ok", "error" str \| null, "position_err" m, "orientation_err" rad, "solve_ms"}` plus `seeds_tried` (pyroki) or `self_collision_checked` (curobo); `ok` needs both errors within `--pos-tol` (5 mm) / `--ori-tol` (0.05 rad) and the joints within limits; `q` on failure is the best attempt |
 | ik | `ik.check` | `robot`, exactly one of kw `q` / `path`, kw `obstacles=null` (as `ik.plan`), `margin=0.0` (m) | `{"robot", "backend", "checked", "obstacles", "collision_free", "min_clearance_m" \| null, "clearances", "worst_index", "nearest", "check_ms"}`: PyRoKi's collision capsules or cuRobo's collision spheres against the obstacles |
 | ik | `ik.fk` | `robot`, `q` | `{"robot", "pos", "quat_xyzw"}` (TCP, base frame) |
-| ik | `ik.plan` | `robot`, `start_q`, exactly one of kw `goal_pose` / `goal_q`, kw `obstacles=null` (list of `{"type": "box", "position", "extent"[, "quat_xyzw"]}`, `{"type": "sphere", "center", "radius"}`, `{"type": "capsule", "position", "radius", "height"[, "quat_xyzw"]}`, `{"type": "halfspace", "point", "normal"}`, `{"type": "robot", "robot", "q", "base_pose"}` (another arm, expanded into its cuRobo collision spheres; curobo only), m, base frame), kw `waypoints=20` | `{"robot", "backend", "tcp_path" (TCP poses xyz + xyzw per waypoint, when ok), "path": [[arm joints], ...] \| null, "ok", "error", "plan_ms", "collision_free": bool \| null (null = no obstacles given)}` plus `max_joint_step_rad`, `min_clearance_m` (pyroki) or `status`, `dt`, `obstacles` (curobo) |
+| ik | `ik.plan` | `robot`, `start_q`, exactly one of kw `goal_pose` / `goal_q`, kw `obstacles=null` (list of `{"type": "box", "position", "extent"[, "quat_xyzw"]}`, `{"type": "sphere", "center", "radius"}`, `{"type": "capsule", "position", "radius", "height"[, "quat_xyzw"]}`, `{"type": "halfspace", "point", "normal"}`, each with optional `name` and `fixed`, `{"type": "robot", "robot", "q", "base_pose"}` (another arm, expanded into its cuRobo collision spheres; curobo only), m, base frame), kw `waypoints=20` | `{"robot", "backend", "tcp_path" (TCP poses xyz + xyzw per waypoint, when ok), "path": [[arm joints], ...] \| null, "ok", "error", "plan_ms", "collision_free": bool \| null (null = no obstacles given)}` plus `max_joint_step_rad`, `min_clearance_m` (pyroki) or `status`, `dt`, `obstacles` (curobo) |
 
 `ik` (`components/ik_server.py`) is an internal dependency of the env servers (`env.preview_reach`,
 their motion primitives' reach check and collision-free moves, a Robosuite `move_to`), not an

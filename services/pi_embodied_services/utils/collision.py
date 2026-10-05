@@ -18,7 +18,9 @@ An obstacle is a dict in some frame (metres): ``box`` (``position``, ``extent`` 
 lengths, optional ``quat_xyzw``), ``sphere`` (``center``, ``radius``), ``capsule``
 (``position``, ``radius``, ``height`` = the length of its axis segment along local z,
 optional ``quat_xyzw``) or ``halfspace`` (``point``, ``normal``; the obstacle is the side
-the normal points away from). Every obstacle may carry a ``name``.
+the normal points away from). Every obstacle may carry a ``name`` and ``fixed`` (true for a
+fixture the hand can never be inside: a table, a panel, the floor; false, the default, for a
+movable object, whose bounding box a grasp does enter).
 
 The ik service also accepts ``robot`` obstacles (another arm at its joints, see
 ``components/ik_server.py``); they are expanded there, not here.
@@ -41,7 +43,11 @@ def parse_obstacle(obstacle: Any) -> dict[str, Any]:
     if not isinstance(obstacle, dict) or "type" not in obstacle:
         raise ValueError("each obstacle is a dict with a 'type'")
     kind = str(obstacle["type"])
-    out: dict[str, Any] = {"type": kind, "name": str(obstacle.get("name", ""))}
+    out: dict[str, Any] = {
+        "type": kind,
+        "name": str(obstacle.get("name", "")),
+        "fixed": bool(obstacle.get("fixed", False)),
+    }
 
     def vec(key: str, n: int) -> np.ndarray:
         if key not in obstacle:
@@ -177,9 +183,10 @@ def mujoco_collision_world(
 
     A free-jointed object (a movable LIBERO object) becomes one axis-aligned box around all
     its geoms, named after its root body; a fixture geom (table, cabinet panel, wall) is an
-    oriented box around the geom (``geom_aabb``), named ``<body>/<geom id>``; a plane is a
-    halfspace. Geoms farther than ``radius`` from ``base_pos`` are left out, and the
-    nearest ``max_boxes`` boxes are kept. The result is JSON-ready (lists)."""
+    oriented box around the geom (``geom_aabb``), named ``<body>/<geom id>`` and ``fixed``;
+    a plane is a ``fixed`` halfspace. Geoms farther than ``radius`` from ``base_pos`` are
+    left out, and the nearest ``max_boxes`` boxes are kept. The result is JSON-ready
+    (lists)."""
     import mujoco
 
     m = getattr(sim.model, "_model", sim.model)
@@ -215,6 +222,7 @@ def mujoco_collision_world(
                     "name": f"{body_name(b)}/{g}",
                     "point": pos.tolist(),
                     "normal": rot[:, 2].tolist(),
+                    "fixed": True,
                 }
             )
             continue
@@ -235,6 +243,7 @@ def mujoco_collision_world(
             "position": center.tolist(),
             "extent": (2 * half).tolist(),
             "quat_xyzw": Rotation.from_matrix(rot).as_quat().tolist(),
+            "fixed": True,
         }
         boxes.append((_box_gap(center, half, rot, base), box))
     for root, corner_sets in movable.items():

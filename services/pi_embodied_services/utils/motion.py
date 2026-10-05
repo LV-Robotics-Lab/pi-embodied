@@ -59,6 +59,11 @@ extents (``nearest`` names the obstacle category, the text the agent already see
 scene). Obstacles within ``contact_radius`` of the start or goal TCP are left out of the
 world (the object being grasped, held or placed on, and the surface under it): contact
 there is the point of the move, and the primitive's own guards (z floor, grip) cover it.
+That exception is for touching, not entering: a goal TCP more than
+``FIXTURE_PENETRATION_M`` inside a ``fixed`` obstacle (the table, a panel, the floor;
+``utils/collision.py``) is refused before any planning, since the left-out table would
+otherwise let a target below its top be "planned" and executed to a stall (verify3 bug 45).
+A movable object's bounding box is not a fixture: a grasp at a bowl's rim is inside it.
 """
 
 from __future__ import annotations
@@ -82,6 +87,8 @@ logger = get_logger("motion")
 DEFAULT_TIMEOUT_S = 60.0
 #: Obstacles this close (m) to the start or goal TCP are the ones the move is about.
 CONTACT_RADIUS_M = 0.04
+#: A goal TCP deeper than this (m) inside a ``fixed`` obstacle is refused before planning.
+FIXTURE_PENETRATION_M = 0.005
 #: Servo segments per move, and their minimum length (m).
 MAX_SEGMENTS = 10
 MIN_SEGMENT_M = 0.02
@@ -94,7 +101,9 @@ WORLD_ENV = "PI_EMBODIED_IK_WORLD"
 
 
 def static_world() -> list[dict[str, Any]]:
-    """The obstacles of ``$PI_EMBODIED_IK_WORLD`` (a JSON list, validated), or none."""
+    """The obstacles of ``$PI_EMBODIED_IK_WORLD`` (a JSON list, validated), or none. A
+    static scene describes the cell's fixtures: its entries are ``fixed`` unless one says
+    ``"fixed": false`` (an object that is moved)."""
     path = os.environ.get(WORLD_ENV, "").strip()
     if not path:
         return []
@@ -104,7 +113,12 @@ def static_world() -> list[dict[str, Any]]:
         data = data.get("obstacles", [])
     if not isinstance(data, list):
         raise ValueError(f"{path}: expected a list of obstacles")
-    return [collision.to_wire(collision.parse_obstacle(o)) for o in data]
+    return [
+        collision.to_wire(collision.parse_obstacle({"fixed": True, **o}))
+        if isinstance(o, dict)
+        else collision.to_wire(collision.parse_obstacle(o))
+        for o in data
+    ]
 
 
 def add_unplanned_argument(parser: Any) -> None:
@@ -260,6 +274,26 @@ class MotionPlanner:
             )
         return kept, dropped
 
+    def inside_fixture(
+        self, point: Any, obstacles: list[dict[str, Any]]
+    ) -> tuple[str, float] | None:
+        """The ``fixed`` obstacle (scene frame) ``point`` lies more than
+        ``FIXTURE_PENETRATION_M`` inside, as (name, depth m: the distance to its nearest
+        face), the deepest first; None when the point is clear of, on, or only grazing
+        every fixture."""
+        p = np.asarray(point, dtype=np.float64).reshape(3)
+        deepest: tuple[str, float] | None = None
+        for i, raw in enumerate(obstacles):
+            obs = collision.parse_obstacle(raw)
+            if not obs.get("fixed"):
+                continue
+            depth = -float(collision.point_distance(obs, p)[0])
+            if depth > FIXTURE_PENETRATION_M and (
+                deepest is None or depth > deepest[1]
+            ):
+                deepest = (obs["name"] or f"{obs['type']}_{i}", depth)
+        return deepest
+
     def plan(
         self,
         q: Any,
@@ -292,6 +326,19 @@ class MotionPlanner:
             "path_m": None,
             "backend": None,
         }
+        # The hand can touch a fixture (the left-out world below) but never be inside one:
+        # refused before the fixture is dropped from the world as "the surface under it".
+        inside = self.inside_fixture(goal[:3], obstacles)
+        if inside is not None:
+            name, depth = inside
+            out.update(
+                status="blocked",
+                message=(
+                    f"the target lies inside {name} ({round(depth * 1000)} mm deep), "
+                    "a fixture the hand cannot enter; aim above it"
+                ),
+            )
+            return out
         base_from_scene, scene_from_base = self._frames(base_pose)
         kept, dropped = self.world(
             obstacles, base_pose=base_pose, near=[start, goal[:3]]

@@ -127,9 +127,9 @@ def main(argv: list[str] | None = None) -> int:
         action="append",
         default=[],
         metavar="TYPE[,TYPE]",
-        help="also export sessions planned by these planner types (flash, replay, human, scripted, "
-        "...; 'all' for every type); default only model-planned sessions (model, ensemble, "
-        "fallback, finetuned)",
+        help="also export sessions planned by these planner types (flash, replay, human; 'all' "
+        "for every type); default only model-planned sessions (model, ensemble, fallback, "
+        "finetuned)",
     )
     planner.add_argument(
         "--include-explore-attempts",

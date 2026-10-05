@@ -304,8 +304,8 @@ def test_only_model_planned_sessions_unless_other_planners_are_asked_for(
 ) -> None:
     runs = tmp_path / "runs"
     write_session(runs / "model", outcome={"success": True})
-    # The recorded field wins: a scripted OpenAI-compatible stand-in looks like a model otherwise.
-    write_session(runs / "scripted", outcome={"success": True, "planner": "scripted"})
+    # The recorded field (planner/kind.ts) wins over the session's providers (selfhost here).
+    write_session(runs / "replayfield", outcome={"success": True, "planner": "replay"})
     write_session(runs / "flashfield", outcome={"success": True, "planner": "flash"})
     # Runs recorded before the field: the planner provider tells flash, replay and human apart.
     for provider in ("flash", "replay", "human"):
@@ -319,25 +319,21 @@ def test_only_model_planned_sessions_unless_other_planners_are_asked_for(
         assert summary["skipped"] == {
             "planner_flash": 2,
             "planner_human": 1,
-            "planner_replay": 1,
-            "planner_scripted": 1,
+            "planner_replay": 2,
         }, fmt
     [row] = rows(tmp_path / "sharegpt-default")
     assert row["planner"] == "model"
     [rl] = rows(tmp_path / "verl-rl-default")
     assert rl["extra_info"]["source"]["planner"] == "model"
-    summary = export_planner(
-        [runs], tmp_path / "some", planners=["model", "flash", "scripted"]
-    )
-    assert summary["episodes"] == 4 and summary["skipped"] == {
+    summary = export_planner([runs], tmp_path / "some", planners=["model", "flash"])
+    assert summary["episodes"] == 3 and summary["skipped"] == {
         "planner_human": 1,
-        "planner_replay": 1,
+        "planner_replay": 2,
     }
     assert sorted(r["planner"] for r in rows(tmp_path / "some")) == [
         "flash",
         "flash",
         "model",
-        "scripted",
     ]
     assert export_planner([runs], tmp_path / "all", planners=["all"])["episodes"] == 6
 

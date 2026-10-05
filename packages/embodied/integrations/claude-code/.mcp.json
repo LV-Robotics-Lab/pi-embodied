@@ -1,0 +1,18 @@
+{
+	"mcpServers": {
+		"pi-embodied": {
+			"command": "sh",
+			"args": ["${CLAUDE_PLUGIN_ROOT}/scripts/pi-embodied-mcp.sh"],
+			"env": {
+				"PI_EMBODIED_ROOT": "${user_config.repo}",
+				"PI_EMBODIED_ROBOT": "${user_config.robot}",
+				"PI_EMBODIED_ENV_URL": "${user_config.env_url}",
+				"PI_EMBODIED_SERVE_ARGS": "${user_config.serve_args}",
+				"PI_EMBODIED_DEPLOYMENT": "${user_config.deployment}",
+				"PI_EMBODIED_TIER": "${user_config.tier}",
+				"PI_EMBODIED_CAPABILITIES": "${user_config.capabilities}",
+				"PI_EMBODIED_VARS": "${user_config.vars}"
+			}
+		}
+	}
+}

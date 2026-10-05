@@ -1,0 +1,63 @@
+{
+	"name": "pi-embodied",
+	"version": "0.0.1",
+	"description": "Drive pi-embodied robots (LIBERO, ManiSkill, RoboCasa, Franka, Piper, UR5e, ...) from Claude Code: the robot's primitive manifest as MCP tools, with an operator gate on high-risk motions. Tools mode only; units, code mode, VDM, memory and evaluation stay in pi.",
+	"author": {
+		"name": "LV Robotics Lab",
+		"url": "https://github.com/LV-Robotics-Lab/pi-embodied"
+	},
+	"homepage": "https://github.com/LV-Robotics-Lab/pi-embodied/tree/main/packages/embodied",
+	"repository": "https://github.com/LV-Robotics-Lab/pi-embodied",
+	"license": "Apache-2.0",
+	"keywords": ["robotics", "mcp", "pi-embodied", "manipulation"],
+	"userConfig": {
+		"repo": {
+			"type": "directory",
+			"title": "pi-embodied checkout",
+			"description": "A built clone of LV-Robotics-Lab/pi-embodied (npm install && npm run build:offline); the MCP server and the hook run from its packages/embodied",
+			"required": true
+		},
+		"robot": {
+			"type": "string",
+			"title": "Robot",
+			"description": "The robot's manifest name: libero, maniskill, metaworld, robosuite, robocasa, robotwin, robolab, robodojo, genesis, behavior, humanclaw, franka, dual_franka, piper, ur5e",
+			"required": true
+		},
+		"env_url": {
+			"type": "string",
+			"title": "Env server URL",
+			"description": "A running env server, http://host:port[#token=HEX]; leave empty to start one with serve_args",
+			"default": ""
+		},
+		"serve_args": {
+			"type": "string",
+			"title": "Env server arguments",
+			"description": "Start the env server with these arguments (e.g. --suite libero_10 --task 0 --seed 0), using the deployment's python and services tree; ignored when env_url is set",
+			"default": ""
+		},
+		"deployment": {
+			"type": "string",
+			"title": "Deployment",
+			"description": "A deployment name in ~/.pi/agent/embodied.json (empty: default, or the only one)",
+			"default": ""
+		},
+		"tier": {
+			"type": "string",
+			"title": "Tier",
+			"description": "high, low or raw; empty serves every non-privileged tool",
+			"default": ""
+		},
+		"capabilities": {
+			"type": "string",
+			"title": "Capabilities",
+			"description": "Comma-separated capabilities the env server was started with (sam3, ik, grasp, ...), for servers without a code.api",
+			"default": ""
+		},
+		"vars": {
+			"type": "string",
+			"title": "Robot variables",
+			"description": "Semicolon-separated name=value[,value] the manifest's enums need, e.g. cameras=agentview,wrist;arms=",
+			"default": ""
+		}
+	}
+}

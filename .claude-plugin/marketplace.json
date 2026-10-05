@@ -1,0 +1,18 @@
+{
+	"name": "pi-embodied",
+	"description": "pi-embodied robots for Claude Code: the robots' primitive manifests as MCP tools, with an operator gate on high-risk motions (tools mode; pi remains the entry point for units, code mode, VDM, memory and evaluation).",
+	"owner": {
+		"name": "LV Robotics Lab",
+		"url": "https://github.com/LV-Robotics-Lab"
+	},
+	"plugins": [
+		{
+			"name": "pi-embodied",
+			"source": "./packages/embodied/integrations/claude-code",
+			"description": "Drive pi-embodied robots (LIBERO, ManiSkill, RoboCasa, Franka, Piper, UR5e, ...) from Claude Code through the robot's primitive manifest, with an operator gate on high-risk motions.",
+			"version": "0.0.1",
+			"category": "robotics",
+			"tags": ["robotics", "mcp", "manipulation"]
+		}
+	]
+}

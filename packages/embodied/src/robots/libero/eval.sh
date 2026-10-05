@@ -114,8 +114,8 @@ const same = r.model === (model || null) && r.thinking === (thinking || null) &&
 	// The --ft-* flags a finetuned/* run was given ("default" with none). A finetuned/* result without them was
 	// written before they were recorded (the LIBERO wrist frame changed meanwhile): another configuration.
 	&& (!(model || "").startsWith("finetuned/") || r.ft_flags === process.env.FT_FLAGS)
-	// Results written before the code budget was recorded ran the default one.
-	&& (codeMode === "false" || (r.code_budget_flags ?? "timeout=+max_calls=+max_move=+helpers=false") === process.env.CODE_BUDGET_FLAGS)
+	// A code-mode result without its budget key predates the key: whether its helpers were on is unknown, so it is another configuration.
+	&& (codeMode === "false" || r.code_budget_flags === process.env.CODE_BUDGET_FLAGS)
 	// Results written before --fallback-model existed ran without a fallback planner.
 	&& (r.fallback_model ?? null) === (fallbackModel || null) && (r.fallback_after ?? null) === (fallbackModel ? Number(fallbackAfter) : null)
 	&& (r.fallback_retry_primary ?? null) === (fallbackModel ? Number(fallbackRetry) : null)

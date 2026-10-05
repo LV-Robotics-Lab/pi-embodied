@@ -57,11 +57,12 @@ function rerun(
 	const entry = JSON.stringify({
 		type: "custom",
 		customType: "robot_result",
-		data: { robot, terminated: true, success: true, env_error: false, planner_error: null, ...data },
+		// The code budget as pi's code mode records it: for the same flags its string equals eval.sh's CODE_BUDGET_FLAGS.
+		data: { robot, terminated: true, success: true, env_error: false, planner_error: null, code_budget_flags: "@BUDGET@", ...data },
 	});
 	writeFileSync(
 		pi,
-		`#!/usr/bin/env bash\nwhile [ $# -gt 0 ]; do [ "$1" = --session-dir ] && dir=$2; shift; done\necho '${entry}' > "$dir/s.jsonl"\n`,
+		`#!/usr/bin/env bash\nwhile [ $# -gt 0 ]; do [ "$1" = --session-dir ] && dir=$2; shift; done\necho '${entry}' | sed "s/@BUDGET@/$CODE_BUDGET_FLAGS/" > "$dir/s.jsonl"\n`,
 	);
 	chmodSync(pi, 0o755);
 	const script = new URL(`../src/robots/${robot}/eval.sh`, import.meta.url).pathname;

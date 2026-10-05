@@ -100,8 +100,8 @@ const same = r.model === (model || null) && r.thinking === (thinking || null) &&
 	// Results written before code mode existed here ran without it.
 	&& (r.code ?? "false") === codeMode && (codeMode === "false" ? (r.code_api ?? null) === null : codeApi ? r.code_api === codeApi : r.code_api_auto === true || (r.code_api_auto === undefined && r.code_api === "high"))
 	&& (r.code_oracle ?? null) === (codeMode === "false" ? null : codeOracle || null)
-	// Results written before the code budget was recorded ran the default one.
-	&& (codeMode === "false" || (r.code_budget_flags ?? "timeout=+max_calls=+max_move=+helpers=false") === process.env.CODE_BUDGET_FLAGS);
+	// A code-mode result without its budget key predates the key: whether its helpers were on is unknown, so it is another configuration.
+	&& (codeMode === "false" || r.code_budget_flags === process.env.CODE_BUDGET_FLAGS);
 process.exit(same && [...(r.extras ?? [])].sort().join(",") === (extras ?? "") ? 0 : 2);
 ' "$1/result.json" "${config[@]}" 2>/dev/null || return $?
 	# Every experiment flag the robot recorded (params) against this run's (../../scripts/params-match.mjs).

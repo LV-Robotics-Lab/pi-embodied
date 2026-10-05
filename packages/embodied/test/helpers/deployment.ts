@@ -69,7 +69,7 @@ export function splitFlags(all: Record<string, unknown>): { flags: Record<string
 		else if (k === "cuda-device" || k === "gpu-id") d.cuda_device = s;
 		else if (k in DIRS) d.dirs[DIRS[k]] = s;
 		else if (k === "ft-endpoint") d.services.finetuned = s;
-		else if (k === "molmo" && s === "off") on("molmo", s, "flash-reanchor", false);
+		else if (k === "molmo" && s === "off") on("molmo", s, "flash-reanchor", "off");
 		else if (SERVICES.includes(k)) d.services[k] = s;
 		else if (k === "robot-sam3") on("sam3", s, "segment", true);
 		else if (k === "robot-vla") on("vla", s, "vla", true);

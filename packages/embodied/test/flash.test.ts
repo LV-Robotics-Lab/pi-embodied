@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { type FlashCall, type FlashHook, type FlashProgram, flash } from "../src/capabilities/flash/index.ts";
+import { type FlashCall, type FlashHook, type FlashProgram, flash, reanchor } from "../src/capabilities/flash/index.ts";
 import { defineRobot, type RobotSpec } from "../src/robot.ts";
 import { liberoFlash } from "../src/robots/libero/flash.ts";
 import { AUDIT_FIELDS, generateFlashPlan, readAudit } from "../src/robots/libero/flash-generate.ts";
@@ -390,6 +390,24 @@ test("LIBERO with --molmo off replays the recorded calls verbatim, without pick 
 	assert.match(out.notes, /the bowl kept at its recorded position \(no Molmo\)/);
 	assert.equal(out.finish.status, "success");
 	assert.match(out.finish.summary, /replayed the goal_swap_t3 program: 7 actions, 2 anchors re-localized/);
+});
+
+test("--flash-reanchor is on|off: off replays without Molmo, and the old `=false` is an invalid replay", async () => {
+	// Bug 43: pi sets a boolean extension flag to true whatever value follows it, so the old
+	// `--flash-reanchor=false` never held; the flag is a string with two values (pi keeps a
+	// string flag's value as given).
+	const stub = (v: unknown) => ({ getFlag: () => v }) as unknown as ExtensionAPI;
+	assert.deepEqual([reanchor(stub(undefined)), reanchor(stub("on")), reanchor(stub(" ON "))], [true, true, true]);
+	assert.equal(reanchor(stub("off")), false);
+	assert.throws(() => reanchor(stub("false")), /--flash-reanchor takes on or off, not "false"/);
+	const off = libero({ "flash-reanchor": "off", "flash-plans": liberoPlans() });
+	const out = await drive(off, liberoExec([-0.1, 0.1, 0.9]));
+	assert.match(out.notes, /the bowl kept at its recorded position \(no Molmo\)/);
+	assert.equal(out.finish.status, "success");
+	const bad = libero({ "flash-reanchor": "false", "flash-plans": liberoPlans() });
+	const invalid = await drive(bad, liberoExec([-0.1, 0.1, 0.9]));
+	assert.equal(invalid.finish.status, "failure");
+	assert.match(invalid.finish.summary, /^flash error: no program to replay: --flash-reanchor takes on or off, not "false"/);
 });
 
 test("LIBERO with Molmo re-localizes anchors, refines from the wrist, retries a pick, and carries the held offset", async (t) => {

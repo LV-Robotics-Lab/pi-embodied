@@ -4,7 +4,7 @@
  * episode's primitive calls, re-anchored on the live scene when the plan says what each target was
  * relative to.
  *
- *   pi -p -e src/<robot> --model flash/replay <the robot's task flags> [--flash-reanchor=false] "Solve the task."
+ *   pi -p -e src/<robot> --model flash/replay <the robot's task flags> [--flash-reanchor off] "Solve the task."
  *
  * A program is, in the robot's plan directories (dirs.flash_plans in the deployment config, else the memory's `flash/` then
  * `task_only/`), under the first of the robot's program names that has one:
@@ -20,7 +20,7 @@
  * anchor then moves with it in x/y (its height is the recorded one). A relative target (a delta
  * move) is a reconstructed absolute waypoint: at replay the delta is the anchored waypoint minus
  * where the end effector is now, split into moves the robot's per-call limit allows. An anchor that
- * cannot be found stops the replay before the first call that needs it. With `--flash-reanchor=false` anchors
+ * cannot be found stops the replay before the first call that needs it. With `--flash-reanchor off` anchors
  * stay where they were recorded.
  */
 
@@ -29,7 +29,15 @@ import { dirname, join, resolve } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { dir, service } from "../../infra/config.ts";
 import { RpcClient } from "../../infra/rpc.ts";
-import type { FlashCall, FlashHook, FlashPicks, FlashReply, FlashRobot } from "./index.ts";
+import {
+	type FlashCall,
+	type FlashHook,
+	type FlashPicks,
+	type FlashReply,
+	type FlashRobot,
+	reanchor,
+	registerReanchorFlag,
+} from "./index.ts";
 
 type Json = Record<string, unknown>;
 /** One planned call; `to` is a relative target's absolute end position (the recording's, before anchoring). */
@@ -312,14 +320,9 @@ export async function startRecipe(
 	};
 }
 
-/** Register --flash-reanchor and return the robot's recipe Flash hook. */
+/** Register --flash-reanchor on|off and return the robot's recipe Flash hook. */
 export function recipeFlash(pi: ExtensionAPI, o: RecipeFlashOptions): FlashHook<RecipeProgram> {
-	pi.registerFlag("flash-reanchor", {
-		type: "boolean",
-		default: true,
-		description:
-			"Flash re-anchors each point with Molmo (services.molmo); false replays anchors at their recorded positions",
-	});
+	registerReanchorFlag(pi);
 	let molmo: RpcClient | undefined;
 	return {
 		load(cwd) {
@@ -334,7 +337,7 @@ export function recipeFlash(pi: ExtensionAPI, o: RecipeFlashOptions): FlashHook<
 						const path = join(dir, file);
 						tried.push(path);
 						if (!existsSync(path)) continue;
-						molmo = pi.getFlag("flash-reanchor") === false ? undefined : new RpcClient(service(pi, "molmo"));
+						molmo = reanchor(pi) ? new RpcClient(service(pi, "molmo")) : undefined;
 						return loadProgram(path, name);
 					}
 			throw new Error(`no Flash program for this episode; looked for ${tried.join(", ")}`);

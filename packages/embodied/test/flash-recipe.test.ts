@@ -754,7 +754,7 @@ test("the hook finds the cell's program first, then the reference's, in flash/ t
 	const memory = mkdtempSync(join(tmpdir(), "memory-"));
 	for (const d of ["flash", "task_only"]) mkdirSync(join(memory, d));
 	recipeFile(join(memory, "task_only"), "ref");
-	const flags: Record<string, unknown> = { "flash-reanchor": false };
+	const flags: Record<string, unknown> = { "flash-reanchor": "off" };
 	useDeployment({});
 	const pi = { registerFlag: () => {}, getFlag: (n: string) => flags[n] } as unknown as ExtensionAPI;
 	const hook = recipeFlash(pi, {

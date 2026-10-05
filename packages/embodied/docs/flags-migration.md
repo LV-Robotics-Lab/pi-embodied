@@ -10,7 +10,7 @@ results keeps a flag, which now says what to use rather than where it listens.
 |---|---|
 | `--sam3 URL`, `--robot-sam3 URL` | `services.sam3` (sims: always used; real arms: `--segment`) |
 | `--molmo URL` | `services.molmo` |
-| `--molmo off` (Flash) | `--flash-reanchor=false` |
+| `--molmo off` (Flash) | `--flash-reanchor off` (a value, not `=false`: pi reads a boolean extension flag as true whatever follows it) |
 | `--vla URL` (LIBERO) | `services.vla` |
 | `--robot-vla URL` (Franka, dual Franka) | `--vla` + `services.vla` |
 | `--openvla URL`, `--openvla-oft URL`, `--gr00t URL` | `--vla-adapter openvla[,openvla-oft,gr00t]` + `services.openvla` / `.openvla_oft` / `.gr00t` |

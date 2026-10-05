@@ -102,6 +102,29 @@ export type FlashHook<P extends FlashProgram = FlashProgram> = {
 	textResult?: (text: string) => Json | undefined;
 };
 
+/**
+ * Register `--flash-reanchor on|off`. A string flag on purpose: pi sets a boolean extension flag to
+ * true whatever follows it (`--flash-reanchor=false` was true), so the off switch needs a value pi
+ * keeps. Both Flash hooks (../flash/recipe.ts, ../../robots/libero/flash.ts) register it.
+ */
+export function registerReanchorFlag(pi: ExtensionAPI) {
+	pi.registerFlag("flash-reanchor", {
+		type: "string",
+		default: "on",
+		description:
+			"Flash re-anchors each point with Molmo (services.molmo): on (default) | off (anchors replay at their recorded positions)",
+	});
+}
+
+/** Whether Flash re-anchors (`--flash-reanchor on|off`); another value throws, and the replay is invalid. */
+export function reanchor(pi: ExtensionAPI): boolean {
+	const v = String(pi.getFlag("flash-reanchor") ?? "on")
+		.trim()
+		.toLowerCase();
+	if (v === "on" || v === "off") return v === "on";
+	throw new Error(`--flash-reanchor takes on or off, not ${JSON.stringify(v)}`);
+}
+
 /** Walk `program`: rewrite each call through the robot, run it, retry picks. */
 export async function runFlash<P extends FlashProgram>(hook: FlashHook<P>, program: P, robot: FlashRobot) {
 	const replay = await hook.start(program, robot);

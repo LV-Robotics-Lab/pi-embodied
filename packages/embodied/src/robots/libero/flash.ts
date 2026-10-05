@@ -9,7 +9,7 @@
  * then parks over each Molmo anchor and asks again from the wrist, kept only within 5 cm of the
  * coarse reading. Waypoints are replayed as offsets from their live anchor, and while an object is
  * held, as offsets of the object rather than the gripper. A `pi0_pick` that does not take hold is
- * retried by ../flash. With `--flash-reanchor=false` nothing is pointed at: point anchors stay where they were
+ * retried by ../flash. With `--flash-reanchor off` nothing is pointed at: point anchors stay where they were
  * recorded and picks keep their recorded thresholds without retries, so the plan replays its
  * recorded calls verbatim (meaningful only on the recorded seed). With `--molmo-set` (a MolmoPoint
  * server, `--model molmopoint`) the survey points at each anchor in the agentview and wrist images at
@@ -33,6 +33,8 @@ import {
 	type FlashReply,
 	type FlashRobot,
 	flash,
+	reanchor,
+	registerReanchorFlag,
 } from "../../capabilities/flash/index.ts";
 import { dir, service } from "../../infra/config.ts";
 import { RpcClient } from "../../infra/rpc.ts";
@@ -316,15 +318,10 @@ async function start(program: Program, robot: FlashRobot, molmo: RpcClient | und
 type Cell = () => { suite: string; task: string; liberoType?: string };
 
 /**
- * LIBERO's Flash hook; `cell` reads its --suite, --task and --libero-type. Registers --flash-reanchor. The robot passes it as `flash` in its spec, and ../robot.ts mounts ../flash with it.
+ * LIBERO's Flash hook; `cell` reads its --suite, --task and --libero-type. Registers --flash-reanchor on|off. The robot passes it as `flash` in its spec, and ../robot.ts mounts ../flash with it.
  */
 export function liberoFlash(pi: ExtensionAPI, cell: Cell): FlashHook<Program> {
-	pi.registerFlag("flash-reanchor", {
-		type: "boolean",
-		default: true,
-		description:
-			"Flash re-anchors each point with Molmo (services.molmo); false replays anchors at their recorded positions",
-	});
+	registerReanchorFlag(pi);
 	pi.registerFlag("molmo-set", {
 		type: "boolean",
 		default: false,
@@ -351,7 +348,7 @@ export function liberoFlash(pi: ExtensionAPI, cell: Cell): FlashHook<Program> {
 			const dirs = flag ? [String(flag)] : ["flash", "task_card"].map((d) => join(memory, d));
 			const plans = dirs.map((d) => resolve(cwd, d));
 			const loaded = load(plans.find((d) => existsSync(join(d, `${program}_plan.json`))) ?? plans[0], program);
-			molmo = pi.getFlag("flash-reanchor") === false ? undefined : new RpcClient(service(pi, "molmo"));
+			molmo = reanchor(pi) ? new RpcClient(service(pi, "molmo")) : undefined;
 			return loaded;
 		},
 		start: (program, robot) => start(program, robot, molmo, pi.getFlag("molmo-set") === true),

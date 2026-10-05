@@ -68,3 +68,24 @@ records `deployment` and `deployment_sha`.
 
 A launcher that must run both older and newer checkouts can test for
 `packages/embodied/src/infra/config.ts` in the checkout and pass the old flags only when it is missing.
+
+## `--tier` and `--preset`: one flag for a whole setting
+
+`--tier S1..M4` (CaP-X's tiers) and `--preset showharness|humanclaw|rpent|openeta|xpolicylab|capx-<tier>`
+(the source repositories' native settings) are not a new mechanism and add no aliases: each stands for
+values of the flags above (`src/infra/tiers.ts`, the README's two tables), which read as those values
+unless given themselves. A flag given with another value is a start-time error naming both
+(`--tier S3 sets --code-api=low, but --code-api=high was given`); a choice the robot cannot serve is
+refused at start too. The result records `tier` or `preset` and `axes`, and `params` the expanded
+flags, so `params-match.mjs` keeps a `--tier S3` run apart from the same flags spelled out. The eval
+scripts expand a choice through `src/scripts/tier-flags.mjs` (`eval-options.sh`) and refuse a
+contradicting argument before any cell runs.
+
+| Setting | Flag |
+|---|---|
+| CaP-X S1 ... M4 | `--tier S1` ... `--tier M4` (or `--preset capx-S1`) |
+| Show-Harness zero-shot | `--preset showharness` (= `--units=true`) |
+| HumanCLAW paper mode | `--preset humanclaw` (= `--units=both --humanclaw-mode paper`) |
+| RPent | `--preset rpent` (the robot's tools with memory; no mode flag) |
+| OpenETA | `--preset openeta` (= `--vdm --anchor-image`) |
+| XPolicyLab / RoboDojo | `--preset xpolicylab` (with `--xpolicy ws://host:port`) |

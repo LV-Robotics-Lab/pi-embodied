@@ -217,7 +217,8 @@ Shared modules:
   RoboLab, RoboTwin, RoboDojo), and the real robots (Franka, dual Franka, Piper, UR5e) when their
   server runs with `--code`; eval.sh records `--code`, `--code-api`, `--code-oracle` and the budget
   (`--code-timeout`, `--code-max-calls`, `--code-max-move`, `--code-helpers`, as `code_budget_flags`), and
-  never mixes them in one out dir (services/PROTOCOL.md, code mode).
+  never mixes them in one out dir (services/PROTOCOL.md, code mode). `--tier S1..M4` sets the whole
+  CaP-X tier at once (the table below).
 - `src/primitives/xpolicy.ts`: XPolicyLab policies (github.com/XPolicyLab/XPolicyLab, pinned `d6332bf`).
   pi-embodied is only the environment client: start the policy server the XPolicyLab way
   (`policy/<name>/setup_eval_policy_server.sh`) and pass `--xpolicy ws://host:port`
@@ -275,6 +276,49 @@ Shared modules:
 - `src/observation/vdm.ts`: `--vdm-video` describes each change from the step's episode frames
   (`--vdm-video-frames` sampled) instead of the before/after pair (CaP-X's video differencing).
 - `src/robots/libero/flash.ts`: Flash replay without an LLM (`--model flash/replay`).
+
+`--tier <S1..M4>` is a CaP-X tier in one flag (`src/infra/tiers.ts`): four orthogonal axes, each an
+existing flag you may also set alone. Turns: single = `--max-turns 1` (one program, then the
+environment's verdict), multi = any other budget. Feedback: none / text = `--keep-images 0` with
+`--anchor-image` off (the model sees no camera frame; recordings and videos keep them), image = frames
+kept, vdm = `--vdm --keep-images 0` (the VLM's description, not the frames), image+vdm = `--vdm` (not
+one of the eight).
+Api: `--code-api` in `--code=true`. Privileged: `--privileged`. The tier's flags read as its values
+unless given themselves; a flag given with another value stops the robot at start, naming both
+(`--tier S3 sets --code-api=low, but --code-api=high was given`), as does a tier the robot cannot
+serve (no code mode, no primitives of that tier, no ground truth for S1, no VDM for M3 / M4). An M
+tier leaves `--privileged` free and is then recorded as `M2+privileged`, a combination, not a tier.
+
+| `--tier` | turns | feedback | api | privileged | the flags it sets |
+| --- | --- | --- | --- | --- | --- |
+| `S1` | single | none | high (ground-truth `get_object_pose`) | on | `--code=true --code-api=high --max-turns 1 --keep-images 0 --privileged` |
+| `S2` | single | none | high | off | `--code=true --code-api=high --max-turns 1 --keep-images 0` |
+| `S3` | single | none | low | off | `--code=true --code-api=low --max-turns 1 --keep-images 0` |
+| `S4` | single | none | low, no examples | off | `--code=true --code-api=low-noexamples --max-turns 1 --keep-images 0` |
+| `M1` | multi | text (stdout / stderr) | high | free | `--code=true --code-api=high --keep-images 0` |
+| `M2` | multi | image | high | free | `--code=true --code-api=high` |
+| `M3` | multi | vdm (scene description + each turn's change, no frames) | high | free | `--code=true --code-api=high --vdm --keep-images 0` |
+| `M4` | multi | vdm | low | free | `--code=true --code-api=low --vdm --keep-images 0` |
+
+`--preset <name>` is the same for the other ported repositories' native settings; they call a tool
+or pick an action each step, so all are multi-turn with image feedback and differ in the primitives'
+level (the `api` column by analogy). A preset needs the modules it stands for mounted, is mutually
+exclusive with `--tier`, and leaves `--privileged` free (`rpent+privileged` when stacked).
+
+| `--preset` | source | turns / feedback / api | the flags it sets | needs |
+| --- | --- | --- | --- | --- |
+| `showharness` | Show-Harness | multi / image / raw | `--units=true` (one 2 cm action unit per step, no perception primitives) | units |
+| `humanclaw` | HumanCLAW, paper mode | multi / image / raw | `--units=both --humanclaw-mode paper` (its motion vocabulary and verifier; `--model humanclaw-psv/<base>`) | the HumanCLAW robot |
+| `rpent` | RPent | multi / image / low | the robot's own tools (perception, `move_to`, the `pi0_pick` skill; `--code`, `--units`, `--vdm`, `--stateless` stay off) | memory, `pi0_pick` |
+| `openeta` | OpenETA | multi / image+vdm / low | `--vdm --anchor-image` (its composite grasp and place are the tools) | VDM |
+| `xpolicylab` | XPolicyLab (RoboDojo's and RoboTwin's benchmark) | multi / image / policy | none: the policy at `--xpolicy ws://host:port` acts (`xpolicy_act`), which must be given | the XPolicyLab client |
+| `capx-<tier>` | CaP-X | as `--tier <tier>` | the tier's flags (recorded as that `tier`) | |
+
+A result records `tier` or `preset` and `axes` (the expanded turns / feedback / api / privileged) next
+to the flags themselves in `params`; the eval scripts expand a choice the same way (`eval-options.sh`
+parses what `src/scripts/tier-flags.mjs` prints, `params-match.mjs` compares the expanded values), so
+a `--tier S3` run matches `--tier S3`, not its flags spelled out, and a contradicting argument stops
+the run before its first cell.
 
 Every robot result carries `robot`, `claimed`, `summary`, `turns`, `planner_budget_exhausted`,
 `planner_error` and `env_error` (also set when the env server exits or a service stops answering

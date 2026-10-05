@@ -122,7 +122,7 @@ test("humanclaw/eval.sh keys pi mode's planner flags as eval-options.sh parses t
 	assert.equal(r.status, 0, r.stderr);
 	assert.match(
 		config(out),
-		/\/vdm=true\/.*\/thinking=low\/turns=40\/limit=900\/units=both\+plugins=plan\+stage-steps=3\/anchor\/aux_model=v\/m\/fallback=f\/m:3:0$/,
+		/\/vdm=true\/.*\/thinking=low\/turns=40\/limit=900\/units=both\+plugins=plan\+stage-steps=3\/arm\/anchor\/aux_model=v\/m\/fallback=f\/m:3:0$/,
 	);
 	const other = run(out, ["--thinking", "high"]);
 	assert.equal(other.status, 1);

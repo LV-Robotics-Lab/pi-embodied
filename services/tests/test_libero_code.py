@@ -629,6 +629,22 @@ def test_a_wrist_turn_expires_the_ids_and_an_empty_grasp_is_not_placed():
         f._rpc["env.plan_place"](region, gid)
 
 
+def test_a_place_planned_before_the_grasp_is_refused_with_an_open_hand():
+    """verify3 bug 44 (B5): execute_grasp refused before moving, so the grasp stayed live;
+    plan_place on it returned placements (held false) and execute_place ran them with an
+    empty gripper, nudging the bowl. The place is refused unmoved until the hand holds."""
+    f, G = grasp_facade()
+    gid = f._rpc["env.plan_grasp"](object="bowl")["active"]
+    region = f._rpc["env.segment_mask"]("plate")["id"]
+    place = f._rpc["env.plan_place"](region, gid)
+    assert place["held"] is False and place["active"].startswith("p")
+    before = f._eef().copy()
+    with pytest.raises(G.GraspError, match="holds nothing"):
+        f._rpc["env.execute_place"](place_id=place["active"])
+    assert np.allclose(f._eef(), before), "refused before moving"
+    assert f._rpc["env.resolve_grasp"](place["active"])["id"] == place["active"]
+
+
 def test_the_executors_are_code_primitives_only_with_a_grasp_server():
     plain = set(available(facade(), "low"))
     assert {"execute_grasp", "execute_place"} & plain == set()

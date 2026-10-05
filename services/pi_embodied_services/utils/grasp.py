@@ -1476,6 +1476,15 @@ class GraspPlanner:
                 ),
             }
         else:
+            # A placement is executable only with the object in the hand. One planned before
+            # its grasp (plan_place on a live g id) or whose grasp missed would otherwise be
+            # carried out empty-handed, nudging whatever sits on the region (verify3 bug 44).
+            if self._holding is not None and self._holding(arm) is False:
+                raise GraspError(
+                    f"the gripper holds nothing: {grasp_id} places the object of grasp "
+                    f"{item.get('source_grasp_id')}, which is not in the hand; execute_grasp "
+                    "first, then plan_place again from the new observation"
+                )
             waypoints = {"pre_place": pre, "place": at, "retreat": pre}
             steps = [
                 {"to": "pre_place", "gripper": 1},

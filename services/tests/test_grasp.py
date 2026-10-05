@@ -367,6 +367,40 @@ def test_plan_place_composes_and_refuses_mixed_snapshots():
     assert obj3 != obj2
 
 
+def test_a_placement_planned_before_its_grasp_is_not_executed_empty_handed():
+    """verify3 bug 44: plan_place on a live grasp id (before execute_grasp) returns
+    placements (held false), and claiming one with nothing in the hand was carried out,
+    nudging what sat on the region. The claim refuses until the hand holds the object."""
+    T = np.eye(4)
+    T[:3, 3] = [0.0, 0.05, 0.0]
+    holding = {"now": False}
+    planner, _ = _planner(
+        sam3=FakeSam3(_block_mask()),
+        anyplace=FakeAnyPlace([T]),
+        holding=lambda arm: holding["now"],
+    )
+    region = planner.segment_mask("plate")["id"]
+    gid = planner.plan_grasp(object="block")["active"]
+    place = planner.plan_place(region, gid)
+    assert place["held"] is False and place["candidate_count"] == 1
+    pid = place["active"]
+    with pytest.raises(G.GraspError, match="holds nothing") as err:
+        planner.claim_waypoints(pid)
+    assert f"{pid} places the object of grasp {gid}" in str(err.value)
+    assert planner.resolve_grasp(pid)["id"] == pid, "refused before anything moved"
+    # The grasp claimed and the hand closed on the object: the same placement executes.
+    planner.claim_waypoints(gid)
+    holding["now"] = True
+    assert planner.claim_waypoints(pid)["kind"] == "placement"
+    # A planner without a holding check (no gripper to read) claims as before.
+    plain, _ = _planner(sam3=FakeSam3(_block_mask()), anyplace=FakeAnyPlace([T]))
+    region = plain.segment_mask("plate")["id"]
+    gid = plain.plan_grasp(object="block")["active"]
+    assert plain.claim_waypoints(plain.plan_place(region, gid)["active"])["kind"] == (
+        "placement"
+    )
+
+
 def test_the_planner_shares_ids_and_the_observation_clock_with_the_segment_book():
     """One id names one mask: the segment book and the planner draw from one counter, and a
     motion (or a new observation) expires both books at once."""

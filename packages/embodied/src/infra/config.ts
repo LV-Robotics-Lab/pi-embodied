@@ -142,6 +142,14 @@ function select(pi: ExtensionAPI): { name: string; deployment: Deployment; probl
 	if (all.default) return { name: "default", deployment: all.default };
 	const names = Object.keys(all);
 	if (names.length === 1) return { name: names[0], deployment: all[names[0]] };
+	// Several deployments and no default: picking none silently left python.* and services.*
+	// unresolved (an env server on PATH's python), recorded as an env_error without its cause.
+	if (names.length > 1)
+		return {
+			name: "",
+			deployment: {},
+			problem: `${names.length} deployments (${names.join(", ")}) and no \`default\`: pass --deployment <name> or name one \`default\``,
+		};
 	return { name: "", deployment: {} };
 }
 

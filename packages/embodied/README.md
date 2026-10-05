@@ -339,7 +339,7 @@ has one owner (`test/params.test.ts`).
 Where things run is deployment config, not flags (`src/infra/config.ts`): `~/.pi/agent/embodied.json`
 (`$PI_EMBODIED_CONFIG` replaces the path) and `<cwd>/.pi/embodied.json` (the project's, which wins),
 one entry per machine under `deployments`, picked with `--deployment <name>` (default: `default`, or
-the only one). A deployment names model-server endpoints (`services.sam3`, `.molmo`, `.vla`, `.ik`,
+the only one; several without a `default` stop the robot at start). A deployment names model-server endpoints (`services.sam3`, `.molmo`, `.vla`, `.ik`,
 `.contact_graspnet`, `.graspgenx`, `.anygrasp`, `.graspnet1b`, `.anyplace`, `.unidepth`, `.openvla`,
 `.openvla_oft`, `.gr00t`, `.rldx`, `.lingbot`, `.finetuned`), Pythons (`python.default`,
 `python.<robot>`, `python.flywheel`, `python.viser`, `python.xpolicy`, `python.<model service>`),

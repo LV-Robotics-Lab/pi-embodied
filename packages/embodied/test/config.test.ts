@@ -73,6 +73,15 @@ test("built-in < deployment; the project file wins key by key; --deployment pick
 test("an unknown deployment, service key or dir kind, or a malformed file, is a start-stopping problem", () => {
 	withFiles({ deployments: { a: {}, b: {} } }, undefined, () => {
 		assert.match(configProblem(pi({ deployment: "c" })) ?? "", /--deployment c is not in .*known: a, b/);
+		// Bug 39: two deployments and no default is an ambiguity that stops the robot, not an empty deployment.
+		assert.match(configProblem(pi()) ?? "", /2 deployments \(a, b\) and no `default`: pass --deployment <name>/);
+		assert.equal(configProblem(pi({ deployment: "a" })), undefined);
+	});
+	withFiles({ deployments: { a: {}, b: {}, default: {} } }, undefined, () => {
+		assert.equal(configProblem(pi()), undefined);
+	});
+	withFiles({ deployments: {} }, undefined, () => {
+		assert.equal(configProblem(pi()), undefined, "no deployment at all is the built-in configuration");
 	});
 	withFiles({ deployments: { default: { services: { sam: "x" } } } }, undefined, () => {
 		assert.match(configProblem(pi()) ?? "", /unknown services\.sam/);

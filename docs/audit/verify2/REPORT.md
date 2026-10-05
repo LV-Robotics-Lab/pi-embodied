@@ -281,3 +281,6 @@ Box: three runtime files still carry pre-migration paths (~/.liberopro + ~/.libe
 45. cuRobo --ik blocks nothing on LIBERO: targets in the bowl wall, 3 cm below the table top and inside the plate are "planned" and executed to a physical stall; on 81cfbd6d9 such targets were refused (IK_FAIL). Suspect 02de8be8's table carve-out or the collision world sent by the server.
 
 Blocked by GPU memory beside the user's 16 GB of servers: D1, bug 35 (OFT), MolmoPoint-8B (B3 set). Not reproducible with Qwen: the leaked-call row (unit test only).
+
+### Status of the re-run bugs (2026-10-06)
+All fixed on main: 38 → 61cd1150, 39 → 96d77926, 40 → 96d50540 (bug 16 on agentview is a UniDepth model limitation; the scale_out_of_bounds refusal is correct), 41 → f616acd4, 42 → c5a22756, 43 → 61c03b24 (`--flash-reanchor on|off`), 44 → 8b1762c1, 45 → d82f102a (root cause: motion.py's 4 cm near-drop removed the table itself when the goal lay inside it; fixtures are now fixed obstacles and a goal >5 mm inside one is refused before planning; verified live on the box with cuRobo). Codex review findings on the same range: hardware lock keeps address + serial locks (fccfa156), approval_rejected counts refusals only (f616acd4), explicitly given default-valued flags are given (06a85fcf).

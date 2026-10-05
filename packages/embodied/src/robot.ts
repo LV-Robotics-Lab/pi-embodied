@@ -300,6 +300,9 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		units: spec.units !== undefined,
 		vdm: spec.vdm !== undefined,
 		groundTruth: spec.groundTruth !== undefined,
+		memory: spec.memory !== undefined,
+		xpolicy: spec.xpolicy !== undefined,
+		vla: manifest?.primitives.some((e) => e.name === "pi0_pick") ?? false,
 		codeTiers: () =>
 			["high", "low", "raw"].filter((t) =>
 				manifest?.primitives.some((e) => e.side !== "ts" && e.doc.code && e.tier === t),

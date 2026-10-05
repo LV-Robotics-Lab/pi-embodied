@@ -13,7 +13,16 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { axesFlags, choose, conflicts, TIER_NAMES, TIERS, unsupported } from "../src/infra/tiers.ts";
+import {
+	axesFlags,
+	choose,
+	conflicts,
+	PRESET_NAMES,
+	PRESETS,
+	TIER_NAMES,
+	TIERS,
+	unsupported,
+} from "../src/infra/tiers.ts";
 import type { UnitsSpec } from "../src/modes/units/index.ts";
 import { codeApiReply } from "./helpers/code-api.ts";
 
@@ -82,7 +91,14 @@ const UNITS: UnitsSpec = {
 /** A toy robot: code mode over a fake env server, and the modules `o` mounts. The start's error, when it was refused. */
 async function toy(
 	flags: Record<string, unknown>,
-	o: { code?: boolean; units?: boolean; vdm?: boolean; groundTruth?: boolean; manifest?: string } = {},
+	o: {
+		code?: boolean;
+		units?: boolean;
+		vdm?: boolean;
+		groundTruth?: boolean;
+		xpolicy?: boolean;
+		manifest?: string;
+	} = {},
 ) {
 	const f = fakePi(flags);
 	const calls: { method: string; kwargs: Record<string, unknown> }[] = [];
@@ -111,6 +127,8 @@ async function toy(
 			...(o.units ? { units: UNITS } : {}),
 			...(o.vdm ? { vdm: { views: 1 } } : {}),
 			...(o.groundTruth ? { groundTruth: async () => ({ poses: {} }) } : {}),
+			// Mounted without a policy: the module registers --xpolicy, and starts nothing while it is empty.
+			...(o.xpolicy ? { xpolicy: () => undefined } : {}),
 			...(o.code === false
 				? {}
 				: {
@@ -245,6 +263,9 @@ test("unsupported: no code mode, no tier of primitives, no ground truth, no VDM"
 		units: false,
 		vdm: true,
 		groundTruth: true,
+		memory: false,
+		xpolicy: false,
+		vla: false,
 		codeTiers: () => ["high", "low"],
 	};
 	const c = (n: string) => choose(n, "") as Exclude<ReturnType<typeof choose>, undefined>;
@@ -383,6 +404,203 @@ test("a robot that cannot serve the tier refuses to start", async () => {
 	);
 	const novdm = await toy({ tier: "M4" });
 	assert.equal(novdm.refused, "--tier M4 describes each change with VDM (--vdm), which toy does not mount");
+});
+
+// --- presets
+
+type Chosen = Exclude<ReturnType<typeof choose>, undefined>;
+
+test("the presets expand to each repository's native flags; capx-<tier> is that tier", () => {
+	assert.deepEqual(Object.keys(PRESETS), ["showharness", "humanclaw", "rpent", "openeta", "xpolicylab"]);
+	assert.deepEqual(
+		PRESET_NAMES.slice(5),
+		TIER_NAMES.map((n) => `capx-${n}`),
+	);
+	const multi = (api: string, feedback = "image") => ({ turns: "multi", feedback, api });
+	assert.deepEqual(PRESETS.showharness.axes, multi("raw"));
+	assert.deepEqual(PRESETS.showharness.flags, { units: "true", code: null, vdm: false, "vdm-video": false });
+	assert.deepEqual(PRESETS.humanclaw.axes, multi("raw"));
+	assert.deepEqual(PRESETS.humanclaw.flags, {
+		units: "both",
+		"humanclaw-mode": "paper",
+		vdm: false,
+		"vdm-video": false,
+	});
+	assert.deepEqual(PRESETS.rpent.axes, multi("low"));
+	assert.deepEqual(PRESETS.rpent.flags, { code: null, units: null, vdm: false, "vdm-video": false, stateless: false });
+	assert.deepEqual(PRESETS.openeta.axes, multi("low", "image+vdm"));
+	assert.deepEqual(PRESETS.openeta.flags, { vdm: true, "anchor-image": true, code: null, units: null });
+	assert.deepEqual(PRESETS.xpolicylab.axes, multi("policy"));
+	assert.deepEqual(PRESETS.xpolicylab.requires, { flag: "xpolicy", hint: "ws://host:port (the policy server)" });
+	// None of them pins --privileged: stacked, it is recorded as <preset>+privileged.
+	for (const p of Object.values(PRESETS)) assert.equal(p.axes.privileged, undefined);
+	const capx = choose("", "capx-M3") as Chosen;
+	assert.ok(!("error" in capx));
+	assert.equal(capx.kind, "tier");
+	assert.equal(capx.name, "M3");
+	assert.equal(capx.flag, "--preset capx-M3");
+	assert.deepEqual(capx.flags, axesFlags(TIERS.M3));
+	assert.match(
+		String((choose("", "capx-S9") as { error: string }).error),
+		/no such preset; the presets are showharness, humanclaw, rpent, openeta, xpolicylab, capx-S1/,
+	);
+	assert.match(String((choose("", "rlbench") as { error: string }).error), /--preset rlbench: no such preset/);
+});
+
+test("a preset needs what it stands for mounted", () => {
+	const none = {
+		robot: "toy",
+		code: false,
+		units: false,
+		vdm: false,
+		groundTruth: false,
+		memory: false,
+		xpolicy: false,
+		vla: false,
+		codeTiers: () => [],
+	};
+	const c = (n: string) => choose("", n) as Chosen;
+	assert.equal(
+		unsupported(c("showharness"), none),
+		"--preset showharness drives the arm with Show-Harness action units (--units), which toy does not mount",
+	);
+	assert.equal(unsupported(c("showharness"), { ...none, units: true }), undefined);
+	assert.equal(
+		unsupported(c("humanclaw"), { ...none, units: true }),
+		"--preset humanclaw is the HumanCLAW robot's paper setting (--units=both --humanclaw-mode paper); toy is not it",
+	);
+	assert.equal(unsupported(c("humanclaw"), { ...none, robot: "humanclaw" }), undefined);
+	assert.equal(unsupported(c("rpent"), none), "--preset rpent plans with RPent's memory, which toy does not mount");
+	assert.equal(
+		unsupported(c("rpent"), { ...none, memory: true }),
+		"--preset rpent calls a VLA skill (pi0_pick), which toy's manifest does not declare",
+	);
+	assert.equal(unsupported(c("rpent"), { ...none, memory: true, vla: true }), undefined);
+	assert.equal(
+		unsupported(c("openeta"), none),
+		"--preset openeta describes each change with VDM (--vdm), which toy does not mount",
+	);
+	assert.equal(unsupported(c("openeta"), { ...none, vdm: true }), undefined);
+	assert.equal(
+		unsupported(c("xpolicylab"), none),
+		"--preset xpolicylab runs an XPolicyLab policy (--xpolicy), which toy does not mount",
+	);
+	assert.equal(unsupported(c("xpolicylab"), { ...none, xpolicy: true }), undefined);
+	assert.equal(unsupported(c("capx-S3"), { ...none, code: true, codeTiers: () => ["low"] }), undefined);
+	assert.equal(
+		unsupported(c("capx-S2"), { ...none, code: true, codeTiers: () => ["low"] }),
+		"--preset capx-S2 needs high-tier code primitives; toy's manifest has low (its tiers: S3, S4, M4)",
+	);
+});
+
+test("--preset reads as the repository's flags, records preset and axes, and refuses what the robot lacks", async () => {
+	const sh = await toy({ preset: "showharness" }, { units: true });
+	assert.equal(sh.refused, undefined);
+	assert.deepEqual(sh.active(), ["act", "plan", "finish"]);
+	assert.equal(sh.pi.getFlag("units"), "true");
+	assert.equal(sh.flags.units, "false");
+	const rs = await result(sh);
+	assert.equal(rs.preset, "showharness");
+	assert.equal(rs.tier, undefined);
+	assert.deepEqual(rs.axes, { turns: "multi", feedback: "image", api: "raw", privileged: false });
+	assert.equal(rs.params.preset, "showharness");
+	assert.equal(rs.params.units, "true");
+	assert.equal(rs.params.tier, "");
+	const oe = await toy({ preset: "openeta" }, { vdm: true });
+	assert.equal(oe.refused, undefined);
+	assert.equal(oe.pi.getFlag("vdm"), true);
+	assert.equal(oe.pi.getFlag("anchor-image"), true);
+	const ro = await result(oe);
+	assert.equal(ro.preset, "openeta");
+	assert.equal(ro.vdm, true);
+	assert.equal(ro.anchor_image, true);
+	assert.deepEqual(ro.axes, { turns: "multi", feedback: "image+vdm", api: "low", privileged: false });
+	// capx-S3 is the S3 tier, recorded as such; the messages name the spelling given.
+	const capx = await toy({ preset: "capx-S3" });
+	assert.equal(capx.refused, undefined);
+	assert.deepEqual(capx.calls[0], { method: "code.api", kwargs: { tier: "low" } });
+	const rc = await result(capx);
+	assert.equal(rc.tier, "S3");
+	assert.equal(rc.preset, undefined);
+	assert.equal(rc.params.preset, "capx-S3");
+	const clash = await toy({ preset: "capx-S3", "code-api": "high" });
+	assert.equal(clash.refused, "--preset capx-S3 sets --code-api=low, but --code-api=high was given");
+	// Ground truth stacked on a preset is a combination.
+	const stacked = await toy({ preset: "showharness", privileged: true }, { units: true, groundTruth: true });
+	assert.equal(stacked.refused, undefined);
+	assert.equal((await result(stacked)).preset, "showharness+privileged");
+	// Refusals: a module the preset stands for is not mounted, a flag contradicts it, the policy server is missing.
+	const nounits = await toy({ preset: "showharness" });
+	assert.equal(
+		nounits.refused,
+		"--preset showharness drives the arm with Show-Harness action units (--units), which toy does not mount",
+	);
+	const novdm = await toy({ preset: "openeta" });
+	assert.equal(novdm.refused, "--preset openeta describes each change with VDM (--vdm), which toy does not mount");
+	const notrpent = await toy({ preset: "rpent" });
+	assert.equal(notrpent.refused, "--preset rpent plans with RPent's memory, which toy does not mount");
+	const nothc = await toy({ preset: "humanclaw" }, { units: true });
+	assert.equal(
+		nothc.refused,
+		"--preset humanclaw is the HumanCLAW robot's paper setting (--units=both --humanclaw-mode paper); toy is not it",
+	);
+	const both = await toy({ preset: "showharness", units: "both" }, { units: true });
+	assert.equal(both.refused, "--preset showharness sets --units=true, but --units=both was given");
+	const coded = await toy({ preset: "showharness", code: "true" }, { units: true });
+	assert.equal(coded.refused, "--preset showharness leaves --code at its default, but --code=true was given");
+	const nopolicy = await toy({ preset: "xpolicylab" }, { xpolicy: true });
+	assert.equal(nopolicy.refused, "--preset xpolicylab needs --xpolicy ws://host:port (the policy server)");
+	const unmounted = await toy({ preset: "xpolicylab", xpolicy: "ws://x:1" });
+	assert.equal(
+		unmounted.refused,
+		"--preset xpolicylab runs an XPolicyLab policy (--xpolicy), which toy does not mount",
+	);
+	const unknown = await toy({ preset: "rlbench" });
+	assert.match(
+		String(unknown.refused),
+		/^--preset rlbench: no such preset; the presets are showharness, humanclaw, rpent, openeta, xpolicylab, capx-S1, /,
+	);
+});
+
+test("the eval scripts expand a preset as the robot does", async () => {
+	const f = await toy({ preset: "showharness" }, { units: true });
+	const r = await result(f);
+	const dir = mkdtempSync(join(tmpdir(), "presets-"));
+	try {
+		const file = join(dir, "result.json");
+		writeFileSync(file, JSON.stringify(r));
+		const match = (args: string[]) => node("params-match.mjs", [file], { PI_ARGS_JSON: JSON.stringify(args) });
+		assert.equal(match(["--preset", "showharness"]).status, 0);
+		const spelled = match(["--units=true"]);
+		assert.equal(spelled.status, 2);
+		assert.match(spelled.stderr, /--preset ran "showharness", now ""/);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+	const oe = node("tier-flags.mjs", ["--preset", "openeta", "--model", "x/y"]);
+	assert.deepEqual(oe.stdout.trim().split("\n"), ["--vdm=true", "--anchor-image=true"]);
+	const hc = node("tier-flags.mjs", ["--preset=humanclaw"]);
+	assert.deepEqual(hc.stdout.trim().split("\n"), ["--units=both", "--humanclaw-mode=paper"]);
+	const bad = node("tier-flags.mjs", ["--preset", "showharness", "--units", "both"]);
+	assert.equal(bad.status, 2);
+	assert.match(bad.stderr, /--preset showharness sets --units=true, but --units=both was given/);
+	const sh = evalOptions(["--preset", "showharness", "--model", "x/y"]);
+	assert.equal(sh.status, 0, sh.stderr);
+	assert.deepEqual(JSON.parse(sh.stdout).slice(0, 8), ["false", "", "0", "false", "false", "true", "", "showharness"]);
+	const capx = evalOptions(["--preset=capx-S4"]);
+	assert.deepEqual(JSON.parse(capx.stdout).slice(0, 8), [
+		"true",
+		"low-noexamples",
+		"1",
+		"false",
+		"false",
+		"false",
+		"",
+		"capx-S4",
+	]);
+	const excl = evalOptions(["--preset", "rpent", "--tier", "S3"]);
+	assert.equal(excl.status, 2);
+	assert.match(excl.stderr, /mutually exclusive/);
 });
 
 // --- the eval scripts

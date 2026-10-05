@@ -54,14 +54,19 @@ function fakeEnv(o: { robot?: string; pid?: () => number; has?: (c: string) => b
 			const call = JSON.parse(body) as { method: string; kwargs?: Record<string, unknown>; token?: string };
 			calls.push({ method: call.method, kwargs: call.kwargs ?? {}, token: call.token });
 			const fn = methods[call.method];
-			res.writeHead(200, { "Content-Type": "application/json" });
-			res.end(
-				JSON.stringify(
-					fn
-						? { ok: true, result: fn(call.kwargs ?? {}) }
-						: { ok: false, error: `unknown RPC method: '${call.method}'` },
-				),
-			);
+			// A method may answer later (a test holds healthz to order the calls) or throw (a facade's error).
+			void (async () => {
+				let reply: unknown;
+				try {
+					reply = fn
+						? { ok: true, result: await fn(call.kwargs ?? {}) }
+						: { ok: false, error: `unknown RPC method: '${call.method}'` };
+				} catch (err) {
+					reply = { ok: false, error: err instanceof Error ? err.message : String(err) };
+				}
+				res.writeHead(200, { "Content-Type": "application/json" });
+				res.end(JSON.stringify(reply));
+			})();
 		});
 	});
 	return {
@@ -241,6 +246,74 @@ test("a motion refuses when another process answers on the port, and ends the ep
 		} finally {
 			await close();
 		}
+	} finally {
+		env.close();
+	}
+});
+
+test("a motion that waited on the guard is refused when stop (or stop and resume) went by; stop latches before its RPC", async () => {
+	useDeployment({});
+	const env = fakeEnv();
+	const url = await env.listen();
+	try {
+		const a = parseArgs(["--robot", "libero", "--env", url]);
+		const s = session(a, await connect(a));
+		const signal = new AbortController().signal;
+		const healthz = env.methods.healthz;
+		/** Hold the next healthz (the motion guard) until released; resolves when the motion reached it. */
+		const hold = () => {
+			let arrived = () => {};
+			let release = () => {};
+			const reached = new Promise<void>((r) => {
+				arrived = r;
+			});
+			const released = new Promise<void>((r) => {
+				release = r;
+			});
+			env.methods.healthz = async (kw) => {
+				env.methods.healthz = healthz;
+				arrived();
+				await released;
+				return healthz(kw);
+			};
+			return { reached, release };
+		};
+		const moved = () => env.calls.filter((c) => c.method === "env.set_gripper").length;
+
+		// stop arrives while the motion waits on the guard: the motion is refused, the server never sees it.
+		let gate = hold();
+		let motion = s.call("set_gripper", { gripper: 1 }, signal);
+		await gate.reached;
+		const stopping = s.call("stop", {}, signal);
+		assert.ok(s.refusal("set_gripper"), "the latch is set synchronously, before stop's RPC answers");
+		await stopping;
+		gate.release();
+		let r = await motion;
+		assert.equal(r.isError, true);
+		assert.match(r.content[0].type === "text" ? r.content[0].text : "", /stop was issued/);
+		assert.equal(moved(), 0, "the motion never reached the server");
+		assert.ok(
+			env.calls.some((c) => c.method === "stop"),
+			"the server's stop was sent",
+		);
+
+		// stop then resume while the motion waits: the generation changed, so it is still refused.
+		await s.call("resume", {}, signal);
+		gate = hold();
+		motion = s.call("set_gripper", { gripper: 1 }, signal);
+		await gate.reached;
+		await s.call("stop", {}, signal);
+		await s.call("resume", {}, signal);
+		gate.release();
+		r = await motion;
+		assert.equal(r.isError, true);
+		assert.match(r.content[0].type === "text" ? r.content[0].text : "", /stop was issued while this call waited/);
+		assert.equal(moved(), 0);
+
+		// A motion admitted after the resume runs.
+		assert.equal((await s.call("set_gripper", { gripper: 1 }, signal)).isError, undefined);
+		assert.equal(moved(), 1);
+		assert.equal(text(await s.call("robot_status", {}, signal)).stops, 2);
 	} finally {
 		env.close();
 	}

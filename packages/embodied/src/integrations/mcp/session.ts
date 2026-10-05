@@ -18,7 +18,11 @@
  *
  * Fail closed: a motion tool runs only when the server answers `healthz` now and is the process this
  * session attached (another server on the port is refused), the stop latch is clear and the episode
- * is not finished. A server that stopped answering (`RpcUnavailable`) ends the episode: every tool
+ * is not finished. Calls run concurrently (MCP requests are independent), so `stop` latches
+ * synchronously, before its RPC, and counts a stop generation: a motion checks the latch and the
+ * generation it was admitted under again right before its dispatch, with no await in between, so a
+ * motion that waited on the guard while a stop (or a stop and a resume) went by is refused and
+ * never reaches the server. A server that stopped answering (`RpcUnavailable`) ends the episode: every tool
  * but robot_status answers "The robot failed: ...", as the robot base does. The hardware lock
  * (services/.../utils/hardware_lock.py) is the env server's: a second server for a held arm exits at
  * startup, which ./server.ts reports instead of serving. Result text is the robot base's `plain`
@@ -176,6 +180,8 @@ export class RobotSession implements ToolProvider {
 	readonly leftOut: LeftOut[];
 	private claimed: Claim | undefined;
 	private halted = false;
+	/** Counts the stops issued; a motion admitted under one generation is refused under another. */
+	private stops = 0;
 	private broken: string | undefined;
 	private readonly rpc: RpcClient;
 	private readonly timeoutMs: number | undefined;
@@ -284,13 +290,22 @@ export class RobotSession implements ToolProvider {
 			return failure(`${name}: ${message(err)}`);
 		}
 		const dispatch = () => this.rpcCall(t.entry.method as string, params, signal);
-		return moves(t.entry) ? this.motion(dispatch) : this.forward(dispatch);
+		return moves(t.entry) ? this.motion(name, dispatch) : this.forward(dispatch);
 	}
 
-	/** Run a motion: the guard (healthz now, the pid attached), then the dispatch. */
-	private async motion(dispatch: () => Promise<unknown>): Promise<CallToolResult> {
+	/**
+	 * Run a motion admitted by `refusal` now: the guard (healthz now, the pid attached), then, with no
+	 * await in between, the latch and the stop generation again, then the dispatch.
+	 */
+	private async motion(name: string, dispatch: () => Promise<unknown>): Promise<CallToolResult> {
+		const admitted = this.stops;
 		const blocked = await this.motionGuard();
 		if (blocked) return failure(blocked);
+		const late =
+			this.stops !== admitted
+				? "Motion is stopped (stop was issued while this call waited for the guard): observe, then call it again if it still applies."
+				: this.refusal(name);
+		if (late) return failure(late);
 		return this.forward(dispatch);
 	}
 
@@ -311,10 +326,12 @@ export class RobotSession implements ToolProvider {
 				return this.status();
 			case "reset":
 				// A simulator's reset re-renders the scene; a real arm's moves: minutes, as connect allows.
-				return this.motion(() => this.rpcCall("env.reset", {}, signal, 600_000));
+				return this.motion(name, () => this.rpcCall("env.reset", {}, signal, 600_000));
 			case "stop": {
-				await this.rpc.interrupt();
+				// Latch first, synchronously: a motion past its refusal check sees it before its dispatch.
 				this.halted = true;
+				this.stops++;
+				await this.rpc.interrupt();
 				return renderResult({
 					ok: true,
 					halted: true,
@@ -381,6 +398,7 @@ export class RobotSession implements ToolProvider {
 			tier: this.o.tier ?? null,
 			privileged: this.o.privileged,
 			halted: this.halted,
+			stops: this.stops,
 			claimed: this.claimed ?? null,
 			broken: this.broken ?? null,
 			tools: [...this.byName.keys()],

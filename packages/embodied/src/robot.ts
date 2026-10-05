@@ -26,6 +26,7 @@ import { type ModelServicesSpec, modelServices } from "./infra/model-services.ts
 import { params, paramsError, trackFlags } from "./infra/params.ts";
 import { forgetUnresponsive, NdArray, type RpcClient, RpcUnavailable } from "./infra/rpc.ts";
 import { type ServiceOptions, shutdown, startService } from "./infra/service-process.ts";
+import { tiers } from "./infra/tiers.ts";
 import { type CodeSpec, code } from "./modes/code/index.ts";
 import { type UnitsSpec, units } from "./modes/units/index.ts";
 import { VLM_COST_EVENT } from "./modes/units/vlm.ts";
@@ -292,6 +293,18 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	trackFlags(pi);
 	registerConfig(pi);
 	const manifest: Manifest | undefined = spec.manifest ? loadManifest(spec.manifest) : undefined;
+	// --tier / --preset (./infra/tiers.ts) read as the flags they expand to from here on.
+	const tr = tiers(pi, {
+		robot: name,
+		code: spec.code !== undefined,
+		units: spec.units !== undefined,
+		vdm: spec.vdm !== undefined,
+		groundTruth: spec.groundTruth !== undefined,
+		codeTiers: () =>
+			["high", "low", "raw"].filter((t) =>
+				manifest?.primitives.some((e) => e.side !== "ts" && e.doc.code && e.tier === t),
+			),
+	});
 	let task: Record<string, string> = {};
 	let ready = false;
 	let failed: string | undefined;
@@ -669,6 +682,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 			const misconfigured =
 				configProblem(pi) ??
 				paramsError(pi) ??
+				tr.configError() ??
 				un?.configError() ??
 				co?.configError() ??
 				ap.configError(ctx.hasUI) ??
@@ -973,6 +987,8 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 						robot: name,
 						...withSkillsOff(spec.result(when), perceptionOff),
 						...mark,
+						// --tier / --preset and the axes they expanded to (./infra/tiers.ts).
+						...tr.result(),
 						// The units verifier: whether the success finish was checked, and the call's error.
 						...un?.result(),
 						// Code mode (../code): `code` and `code_api`, so evaluations never mix it with tool runs.

@@ -344,6 +344,7 @@ vdirs.forEach((vdir, v) => {
 			r.vdm ? `vdm=${r.vdm_model ?? "default"}${r.vdm_wrist ? "+wrist" : ""}` : "", r.privileged ? "privileged" : "",
 			r.fallback_model ? `fallback=${r.fallback_model}:${r.fallback_after}:${r.fallback_retry_primary}` : "",
 			r.code && r.code !== "false" ? `code=${r.code}:${r.code_api}` : "",
+			r.tier ? `tier=${r.tier}` : r.preset ? `preset=${r.preset}` : "",
 			r.max_move === undefined ? "" : `max_move=${r.max_move}`, r.grasping_mode ? `grasp=${r.grasping_mode}` : "",
 			(r.maniskill_robot ?? "panda") !== "panda" ? `robot=${r.maniskill_robot}` : "",
 			r.protocol_id ?? ""].filter(Boolean).join("/")));

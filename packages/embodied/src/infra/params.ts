@@ -10,12 +10,22 @@
  *   runs generically (../scripts/params-match.mjs) instead of by hand-kept lists.
  * Where services and files live is deployment config (./config.ts), not flags; the few flags
  * that remain about where things run (`--deployment`, `--env-url`, ...) are left out of `params`.
+ * The tracker also owns the robot's reads (`getFlag`): `--tier` / `--preset` (./tiers.ts) set the
+ * values of the flags they expand to before the robot reads them (`Tracked.expand`), so a tier is
+ * nothing but those flags' values, and `params` records what ran.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-type FlagSpec = { type?: string; default?: unknown; description?: string };
-export type Tracked = { names: Map<string, FlagSpec>; duplicates: string[] };
+export type FlagSpec = { type?: string; default?: unknown; description?: string };
+export type Tracked = {
+	names: Map<string, FlagSpec>;
+	duplicates: string[];
+	/** A flag's value as given (the command line, else its default), before any expansion. */
+	raw: (name: string) => unknown;
+	/** What `getFlag` returns for `name` given its raw value and registration (./tiers.ts sets it). */
+	expand?: (name: string, raw: unknown, spec: FlagSpec | undefined) => unknown;
+};
 
 /** Numeric flags: the range a value must fall in (inclusive), and whether it must be an integer. */
 export const NUMERIC: Record<string, { min?: number; max?: number; integer?: boolean }> = {
@@ -84,13 +94,19 @@ const tracked = new WeakMap<object, Tracked>();
 /**
  * Track every flag registered on `pi` from now on (call it first in a robot's extension). A second
  * registration of the same name is recorded as a duplicate and ignored, so the first owner's
- * definition stands (pi itself would silently keep the last one).
+ * definition stands (pi itself would silently keep the last one). Reads go through `expand` when
+ * one is set: a flag a tier expands to reads as the tier's value unless it was given itself.
  */
 export function trackFlags(pi: ExtensionAPI): Tracked {
 	const had = tracked.get(pi);
 	if (had) return had;
-	const t: Tracked = { names: new Map(), duplicates: [] };
+	const raw = pi.getFlag.bind(pi);
+	const t: Tracked = { names: new Map(), duplicates: [], raw };
 	tracked.set(pi, t);
+	(pi as { getFlag: typeof pi.getFlag }).getFlag = ((name: string) => {
+		const value = raw(name);
+		return t.expand ? t.expand(name, value, t.names.get(name)) : value;
+	}) as typeof pi.getFlag;
 	const register = pi.registerFlag.bind(pi);
 	(pi as { registerFlag: typeof pi.registerFlag }).registerFlag = ((name: string, spec: FlagSpec) => {
 		if (t.names.has(name)) {

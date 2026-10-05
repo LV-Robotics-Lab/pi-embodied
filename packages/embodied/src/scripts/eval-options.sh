@@ -17,18 +17,24 @@ eval_options_defaults() {
 	units_opts="" ft_opts=""
 	unset units_plugins
 	extras="" eval_extras=()
+	tier="" preset=""
 	return 0
 }
 
 eval_parse_options() {
 	local args=("$@")
-	local i a
+	local i a chosen=""
 	for ((i = 0; i < ${#args[@]}; i++)); do
 		case ${args[i]} in
 		--model) model=${args[i + 1]:-} ;;
 		--thinking) thinking=${args[i + 1]:-} ;;
 		--model=*) model=${args[i]#*=} ;;
 		--thinking=*) thinking=${args[i]#*=} ;;
+		# --tier / --preset (src/infra/tiers.ts) stand for the flags they expand to: parsed below as if given.
+		--tier) tier=${args[i + 1]:-} chosen=1 ;;
+		--tier=*) tier=${args[i]#*=} chosen=1 ;;
+		--preset) preset=${args[i + 1]:-} chosen=1 ;;
+		--preset=*) preset=${args[i]#*=} chosen=1 ;;
 		--max-turns) turns=${args[i + 1]:-0} ;;
 		--max-turns=*) turns=${args[i]#*=} ;;
 		--time-limit) limit=${args[i + 1]:-0} limited=1 ;;
@@ -140,6 +146,13 @@ eval_parse_options() {
 		*) if declare -F eval_robot_option >/dev/null; then eval_robot_option "${args[i]}" "${args[i + 1]-}"; fi ;;
 		esac
 	done
+	# The choice's flags, as the robot reads them (and the robot's refusal, before any cell runs).
+	if [ -n "$chosen" ]; then
+		local expanded
+		expanded=$(node "$(dirname "${BASH_SOURCE[0]}")/tier-flags.mjs" "$@") || exit 2
+		# shellcheck disable=SC2086
+		[ -z "$expanded" ] || eval_parse_options $expanded
+	fi
 	return 0
 }
 

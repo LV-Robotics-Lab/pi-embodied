@@ -4,11 +4,14 @@
  * script runs now (PARAMS.md 2.6). The robot records `params` (every experiment flag's effective
  * value) and `params_default` (its default) in its result (src/infra/params.ts); PI_ARGS_JSON is
  * the pi arguments the script passes (a JSON list). A flag given on the command line must have
- * run with that value, every other one with its default. Exit 0 = the same configuration (or a
- * result written before `params` existed: the script's own checks judge it), 2 = another one (the
- * differing flags on stderr). The cell's own flags (task, seed, ...) are the directory's, not compared.
+ * run with that value, every other one with its default; `--tier` / `--preset` stand for the flags
+ * they expand to (src/infra/tiers.ts), which must have run with the expanded values. Exit 0 = the
+ * same configuration (or a result written before `params` existed: the script's own checks judge
+ * it), 2 = another one (the differing flags on stderr). The cell's own flags (task, seed, ...) are the
+ * directory's, not compared.
  */
 import { readFileSync } from "node:fs";
+import { choose } from "../infra/tiers.ts";
 
 const CELL = new Set(["task", "seed", "suite", "task-config", "split", "scene", "layout-set", "episode"]);
 
@@ -27,11 +30,18 @@ for (let i = 0; i < args.length; i++) {
 	else if (boolean) given.set(name, true);
 	else if (i + 1 < args.length) given.set(name, args[++i]);
 }
-const norm = (v) => (v === null || v === undefined ? "" : String(v));
+const norm = (v) => (v === null || v === undefined ? "" : v === "pure" ? "true" : String(v));
+// The choice's flags read as its values unless given themselves (the robot's rule: tiers.ts `expand`).
+const choice = choose(given.get("tier"), given.get("preset"));
+const expanded = choice && !("error" in choice) ? choice.flags : {};
 const differ = [];
 for (const [name, ran] of Object.entries(r.params)) {
 	if (CELL.has(name)) continue;
-	const want = given.has(name) ? given.get(name) : r.params_default[name];
+	const want = given.has(name)
+		? given.get(name)
+		: name in expanded && expanded[name] !== null
+			? expanded[name]
+			: r.params_default[name];
 	if (norm(ran) !== norm(want)) differ.push(`--${name} ran ${JSON.stringify(ran)}, now ${JSON.stringify(want)}`);
 }
 if (differ.length) {

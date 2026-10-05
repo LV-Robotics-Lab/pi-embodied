@@ -1,0 +1,20 @@
+{
+	"name": "pi-embodied",
+	"interface": {
+		"displayName": "pi-embodied robots"
+	},
+	"plugins": [
+		{
+			"name": "pi-embodied",
+			"source": {
+				"source": "local",
+				"path": "./packages/embodied/integrations/codex"
+			},
+			"policy": {
+				"installation": "AVAILABLE",
+				"authentication": "ON_USE"
+			},
+			"category": "Developer Tools"
+		}
+	]
+}

@@ -1,0 +1,116 @@
+{
+	"mcpServers": {
+		"pi-embodied": {
+			"command": "./scripts/pi-embodied-mcp.sh",
+			"args": [],
+			"cwd": ".",
+			"env_vars": [
+				"PATH",
+				"HOME",
+				"PI_EMBODIED_ROOT",
+				"PI_EMBODIED_ROBOT",
+				"PI_EMBODIED_ENV_URL",
+				"PI_EMBODIED_SERVE_ARGS",
+				"PI_EMBODIED_DEPLOYMENT",
+				"PI_EMBODIED_TIER",
+				"PI_EMBODIED_PRIVILEGED",
+				"PI_EMBODIED_CAPABILITIES",
+				"PI_EMBODIED_VARS",
+				"PI_EMBODIED_TIMEOUT_MS",
+				"PI_EMBODIED_NO_RESET",
+				"PI_EMBODIED_CONFIG",
+				"PI_EMBODIED_SERVICES",
+				"PI_EMBODIED_PYTHON",
+				"PI_CODING_AGENT_DIR"
+			],
+			"startup_timeout_sec": 600,
+			"default_tools_approval_mode": "approve",
+			"tools": {
+				"align_wrist": {
+					"approval_mode": "prompt"
+				},
+				"close_gripper": {
+					"approval_mode": "prompt"
+				},
+				"execute_grasp": {
+					"approval_mode": "prompt"
+				},
+				"execute_place": {
+					"approval_mode": "prompt"
+				},
+				"go_home": {
+					"approval_mode": "prompt"
+				},
+				"goto_pose": {
+					"approval_mode": "prompt"
+				},
+				"grasp_object": {
+					"approval_mode": "prompt"
+				},
+				"halt_arm": {
+					"approval_mode": "prompt"
+				},
+				"home_pose": {
+					"approval_mode": "prompt"
+				},
+				"move_base": {
+					"approval_mode": "prompt"
+				},
+				"move_delta": {
+					"approval_mode": "prompt"
+				},
+				"move_grip": {
+					"approval_mode": "prompt"
+				},
+				"move_hand": {
+					"approval_mode": "prompt"
+				},
+				"move_pose": {
+					"approval_mode": "prompt"
+				},
+				"move_to": {
+					"approval_mode": "prompt"
+				},
+				"navigate_to": {
+					"approval_mode": "prompt"
+				},
+				"navigate_to_pose": {
+					"approval_mode": "prompt"
+				},
+				"open_gripper": {
+					"approval_mode": "prompt"
+				},
+				"recover_joint_posture": {
+					"approval_mode": "prompt"
+				},
+				"release": {
+					"approval_mode": "prompt"
+				},
+				"rotate_delta": {
+					"approval_mode": "prompt"
+				},
+				"rotate_pitch": {
+					"approval_mode": "prompt"
+				},
+				"rotate_wrist": {
+					"approval_mode": "prompt"
+				},
+				"rotate_yaw": {
+					"approval_mode": "prompt"
+				},
+				"scripted_grasp": {
+					"approval_mode": "prompt"
+				},
+				"set_gripper": {
+					"approval_mode": "prompt"
+				},
+				"stop": {
+					"approval_mode": "prompt"
+				},
+				"resume": {
+					"approval_mode": "prompt"
+				}
+			}
+		}
+	}
+}

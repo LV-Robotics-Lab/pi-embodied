@@ -20,6 +20,13 @@ attachment and environment construction. `defineRobot` owns episode lifecycle
 and decides whether a service exit invalidates its episode. Existing robot
 helper exports remain available to robot extensions.
 
+The Codex and Claude Code plugins (`packages/embodied/integrations/`) and the
+MCP server behind them (`src/integrations/mcp`) consume only the primitive
+manifests, the RPC client, the deployment config and the operator's risk
+classes; they register nothing in pi and change no robot or mode behaviour.
+They serve tools mode only: units, code mode, VDM, memory, exploration, replay
+and evaluation remain pi's, so the pi regression boundary above is unchanged.
+
 ## Official pi and fork capabilities
 
 The fork adds `ExtensionContext.exportSession` and `withdrawQueuedMessage`.

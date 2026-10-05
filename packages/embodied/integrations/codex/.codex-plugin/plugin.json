@@ -1,0 +1,29 @@
+{
+	"name": "pi-embodied",
+	"version": "0.0.1",
+	"description": "Drive pi-embodied robots from Codex: the robot's primitive manifest as MCP tools, with an operator gate on high-risk motions. Tools mode only; units, code mode, VDM, memory and evaluation stay in pi.",
+	"author": {
+		"name": "LV Robotics Lab",
+		"url": "https://github.com/LV-Robotics-Lab/pi-embodied"
+	},
+	"homepage": "https://github.com/LV-Robotics-Lab/pi-embodied/tree/main/packages/embodied",
+	"repository": "https://github.com/LV-Robotics-Lab/pi-embodied",
+	"license": "Apache-2.0",
+	"keywords": ["robotics", "mcp", "pi-embodied", "manipulation"],
+	"skills": "./skills/",
+	"mcpServers": "./.mcp.json",
+	"hooks": "./hooks/hooks.json",
+	"interface": {
+		"displayName": "pi-embodied robots",
+		"shortDescription": "Robot tools from pi-embodied's primitive manifests",
+		"longDescription": "Observe and act on a pi-embodied robot (simulators and real arms) through the tools its primitive manifest declares, forwarded to the robot's env server. High-risk motions are gated for the operator. Units, code mode, VDM, memory and evaluation remain pi features.",
+		"developerName": "LV Robotics Lab",
+		"category": "Developer Tools",
+		"capabilities": ["Read", "Write"],
+		"websiteURL": "https://github.com/LV-Robotics-Lab/pi-embodied",
+		"defaultPrompt": [
+			"Check the robot with robot_status and observe, then describe the scene.",
+			"Pick up the black bowl and place it on the plate, observing after every move."
+		]
+	}
+}

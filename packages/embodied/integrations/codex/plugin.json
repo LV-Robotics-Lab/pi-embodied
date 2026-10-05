@@ -1,0 +1,14 @@
+{
+	"$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+	"name": "pi-embodied",
+	"version": "0.0.1",
+	"description": "Drive pi-embodied robots (LIBERO, ManiSkill, RoboCasa, Franka, Piper, UR5e, ...) from Codex: the robot's primitive manifest as MCP tools, with an operator gate on high-risk motions. Tools mode only; units, code mode, VDM, memory and evaluation stay in pi.",
+	"author": {
+		"name": "LV Robotics Lab",
+		"url": "https://github.com/LV-Robotics-Lab/pi-embodied"
+	},
+	"homepage": "https://github.com/LV-Robotics-Lab/pi-embodied/tree/main/packages/embodied",
+	"repository": "https://github.com/LV-Robotics-Lab/pi-embodied",
+	"license": "Apache-2.0",
+	"keywords": ["robotics", "mcp", "pi-embodied", "manipulation"]
+}

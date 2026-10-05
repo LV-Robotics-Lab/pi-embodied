@@ -376,6 +376,63 @@ Developer guides: [adding a robot](docs/adding-a-robot.md) and [adding a primiti
 skipped unless `PI_EMBODIED_E2E` names a robot and a GPU answers); `test/gpu-e2e.sh` runs it robot by
 robot on a GPU box (docs/adding-a-robot.md, "Testing on a GPU").
 
+## Using the robots from Codex or Claude Code
+
+pi is the entry point for everything in this package. Codex and Claude Code get the robots'
+**tools mode** through an MCP server generated from the primitive manifests
+(`src/integrations/mcp/server.ts`): one tool per env-side manifest entry the tier and `requires`
+filters admit (schema from `params`, description from `doc.tool`, pi's rules for privileged variants),
+forwarded to the robot's env server over the same RPC pi uses, plus `observe`, `finish`, `stop`,
+`resume` and `robot_status`. Motion fails closed: no `healthz` now, another process on the port, a
+`stop` latch, a finished episode or a server that stopped answering all refuse; a busy arm (the
+hardware lock) fails the start. Not served, by design: `side: ts` tools (VLA adapters, waypoints,
+state viewers, advisors), module-owned tools, units, code mode (`run_code`), VDM, memory, exploration,
+replay, evaluation and `result.json`. Run `pi` for those.
+
+Both hosts need, on the machine that reaches the env server: a built checkout
+(`npm install && npm run build:offline`), the deployment config (`~/.pi/agent/embodied.json`, which
+gives the python, the services tree and the CUDA device), and an env server to attach to
+(`PI_EMBODIED_ENV_URL=http://host:port[#token=HEX]`, started with the robot's `serve.sh`) or to
+start (`PI_EMBODIED_SERVE_ARGS="--suite libero_10 --task 0 --seed 0"`: the env server's own arguments;
+robot-specific environment such as `MUJOCO_GL=egl` is the caller's). `PI_EMBODIED_ROBOT` names the
+robot; `PI_EMBODIED_DEPLOYMENT`, `PI_EMBODIED_TIER` (`high|low|raw`), `PI_EMBODIED_PRIVILEGED`,
+`PI_EMBODIED_CAPABILITIES` (for a server without `code.api`), `PI_EMBODIED_VARS`
+(`cameras=agentview,wrist;arms=`: the robot variables the manifest's enums need) and
+`PI_EMBODIED_NO_RESET=1` (the server resets the env once at start, as every robot's session does;
+skip it for a real arm whose start pose is the operator's business) are optional.
+
+Claude Code (2.1.220 or later):
+
+```bash
+claude plugin marketplace add LV-Robotics-Lab/pi-embodied
+claude plugin install pi-embodied@pi-embodied        # asks for the checkout, the robot, env_url or serve_args, ...
+claude --plugin-dir packages/embodied/integrations/claude-code   # from a checkout, with PI_EMBODIED_* exported
+```
+
+`/pi-embodied:robot-status` checks the robot without moving it. A PreToolUse hook asks the operator
+before high-risk motions, with `--approval standard`'s classes (grasp/place execution, resets, moves
+to an absolute target, relative moves over 0.1 m, and every motion on a real robot).
+
+Codex (0.160 or later):
+
+```bash
+codex plugin marketplace add LV-Robotics-Lab/pi-embodied
+codex plugin add pi-embodied@pi-embodied
+export PI_EMBODIED_ROOT=/path/to/pi-embodied PI_EMBODIED_ROBOT=libero PI_EMBODIED_ENV_URL=http://127.0.0.1:PORT
+```
+
+Codex passes exactly the `PI_EMBODIED_*` variables through to the server. Every motion tool is
+`approval_mode: "prompt"` in the plugin's `.mcp.json` (generated from the manifests), and the same
+PreToolUse hook denies a high-risk motion unless `PI_EMBODIED_MOTION_CONFIRMED=1` is exported (Codex
+hooks cannot ask; plugin hooks run only after you trust them in Codex's hook review).
+
+Direct, without a host plugin:
+`node --experimental-strip-types packages/embodied/src/integrations/mcp/server.ts --robot libero --env http://127.0.0.1:PORT#token=HEX`
+(or `--serve -- --suite libero_10 --task 0 --seed 0`); `--list` prints the tool list without a server.
+The plugins live in `packages/embodied/integrations/`: `shared/` holds the skills and scripts once,
+`node packages/embodied/integrations/sync.mjs` copies them into both plugins and generates
+`codex/.mcp.json`; `test/integrations.test.ts` fails on drift.
+
 ## LIBERO
 
 Needs the repository's Python services (`services/`, package `pi_embodied_services`) installed

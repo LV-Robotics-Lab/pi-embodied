@@ -1,0 +1,18 @@
+{
+	"description": "Operator gate on pi-embodied motion tools. Codex hooks cannot prompt, so a high-risk motion (--approval standard's classes; every motion on a real robot) is denied unless the operator exported PI_EMBODIED_MOTION_CONFIRMED=1; the plugin's .mcp.json also marks every motion tool approval_mode prompt.",
+	"hooks": {
+		"PreToolUse": [
+			{
+				"matcher": "mcp__pi-embodied__.*",
+				"hooks": [
+					{
+						"type": "command",
+						"command": "sh \"${PLUGIN_ROOT}/scripts/approve-motion.sh\" --decision deny",
+						"timeout": 30,
+						"statusMessage": "pi-embodied motion gate"
+					}
+				]
+			}
+		]
+	}
+}

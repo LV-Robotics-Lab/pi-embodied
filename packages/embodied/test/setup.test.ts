@@ -236,3 +236,18 @@ test("setup.sh flywheel installs the LeRobot v3.0 export venv and names it for -
 	assert.doesNotMatch(out, /export PI_EMBODIED_PYTHON=/);
 	assert.doesNotMatch(out, /preflight:/);
 });
+
+test("setup.sh behavior builds the Isaac Sim 6.1 stack unless B1K_STACK=isaac51 asks for OmniGibson's own", () => {
+	const script = join(PKG, "../../services/setup.sh");
+	const home = mkdtempSync(join(tmpdir(), "pi-embodied-home-"));
+	const run = (env: Record<string, string>) =>
+		execFileSync("bash", [script, "behavior", "--dry-run", "--venv", join(home, "b1k")], {
+			env: { ...process.env, HOME: home, PI_EMBODIED_WEIGHTS: join(home, "w"), ...env },
+			encoding: "utf8",
+		});
+	const out = run({});
+	assert.match(out, /robots\/behavior\/install_isaac61\.sh \S*\/b1k \S*\/BEHAVIOR-1K/);
+	assert.doesNotMatch(out, /robots\/behavior\/install\.sh /);
+	assert.match(out, /export OMNIGIBSON_DATA_PATH=/);
+	assert.match(run({ B1K_STACK: "isaac51" }), /robots\/behavior\/install\.sh \S*\/b1k \S*\/BEHAVIOR-1K/);
+});

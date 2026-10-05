@@ -27,7 +27,8 @@
 # OMNIGIBSON_DATA_PATH=<data> (or --data-path).
 #
 # Index choices: pypi.nvidia.com for the NVIDIA wheels (NVIDIA_INDEX, e.g. https://pypi.nvidia.cn),
-# PIP_INDEX for the rest, TORCH_FIND_LINKS for torch (default download.pytorch.org cu128).
+# PIP_INDEX for the rest, TORCH_INDEX for torch (default download.pytorch.org/whl/cu128); B1K_GIT and
+# CUROBO_GIT name the two git repositories (a GitHub mirror where github.com is slow).
 set -euo pipefail
 V=${1:?venv dir}
 R=${2:?BEHAVIOR-1K checkout dir}
@@ -36,47 +37,49 @@ DATASET=false
 [ "${1:-}" = --dataset ] && DATASET=true
 HERE=$(cd "$(dirname "$0")" && pwd)
 B1K_VERSION=3.9.0
-CUROBO_URL=https://github.com/StanfordVL/curobo.git
+B1K_GIT=${B1K_GIT:-https://github.com/StanfordVL/BEHAVIOR-1K.git}
+CUROBO_GIT=${CUROBO_GIT:-https://github.com/StanfordVL/curobo.git}
 CUROBO_COMMIT=78612f45cef52c3fa0298de243a54cd7ca614414
 PIP_INDEX=${PIP_INDEX:-https://pypi.org/simple}
 NVIDIA_INDEX=${NVIDIA_INDEX:-https://pypi.nvidia.com}
-TORCH_FIND_LINKS=${TORCH_FIND_LINKS:-https://download.pytorch.org/whl/cu128}
+TORCH_INDEX=${TORCH_INDEX:-https://download.pytorch.org/whl/cu128}
 TORCH=(torch==2.11.0+cu128 torchvision==0.26.0+cu128 torchaudio==2.11.0+cu128)
 UV=${UV:-uv}
+# Every install resolves against PyPI and the torch index (the +cu128 builds live only there).
+IDX=(--index-url "$PIP_INDEX" --extra-index-url "$TORCH_INDEX" --index-strategy unsafe-best-match)
 export OMNI_KIT_ACCEPT_EULA=YES
 
 [ -x "$V/bin/python" ] || "$UV" venv --python 3.12 "$V"
 PY="$V/bin/python"
-"$UV" pip install --python "$PY" --index-url "$PIP_INDEX" --find-links "$TORCH_FIND_LINKS" "${TORCH[@]}"
-"$UV" pip install --python "$PY" --index-url "$PIP_INDEX" --extra-index-url "$NVIDIA_INDEX" \
-	--find-links "$TORCH_FIND_LINKS" --index-strategy unsafe-best-match --prerelease allow \
+"$UV" pip install --python "$PY" "${IDX[@]}" "${TORCH[@]}"
+"$UV" pip install --python "$PY" "${IDX[@]}" --extra-index-url "$NVIDIA_INDEX" --prerelease allow \
 	--override <(printf '%s\n' "${TORCH[@]}") \
 	"isaaclab[isaacsim]==3.0.0rc1"
 # OmniGibson's runtime deps (its setup.py install_requires, minus the lerobot fork) on the Isaac stack's own
 # numpy / pillow / websockets / warp, plus the services' RPC layer (msgpack, msgpack-numpy) and the build tools.
 LOCK=$(mktemp)
 "$UV" pip freeze --python "$PY" | grep -iE '^(numpy|pillow|websockets|torch|torchvision|torchaudio|warp-lang|isaacsim|isaaclab)(==| @)' >"$LOCK"
-"$UV" pip install --python "$PY" --index-url "$PIP_INDEX" --override "$LOCK" \
+"$UV" pip install --python "$PY" "${IDX[@]}" --override "$LOCK" \
 	"huggingface-hub>=0.34.4" "gymnasium>=0.28.1" scipy GitPython transforms3d networkx PyYAML addict ipython future \
 	trimesh h5py cryptography opencv-python-headless nest_asyncio imageio imageio-ffmpeg termcolor progressbar pymeshlab \
 	click aenum rtree graphviz matplotlib lxml numba cffi omegaconf msgpack msgpack-numpy \
 	ninja "setuptools<82" setuptools_scm wheel
 
 if [ ! -d "$R/OmniGibson" ]; then
-	git clone --depth 1 --branch "v$B1K_VERSION" https://github.com/StanfordVL/BEHAVIOR-1K.git "$R"
+	git clone --depth 1 --branch "v$B1K_VERSION" "$B1K_GIT" "$R"
 fi
 if git -C "$R" apply --check "$HERE/behavior-isaac61.patch" 2>/dev/null; then
 	git -C "$R" apply "$HERE/behavior-isaac61.patch"
 else
 	git -C "$R" apply --reverse --check "$HERE/behavior-isaac61.patch" # already applied, or fail loudly
 fi
-"$UV" pip install --python "$PY" --index-url "$PIP_INDEX" --no-deps -e "$R/bddl3" -e "$R/OmniGibson"
+"$UV" pip install --python "$PY" "${IDX[@]}" --no-deps -e "$R/bddl3" -e "$R/OmniGibson"
 
 # cuRobo: an editable install without its .git would fail setuptools_scm, so the checkout keeps its history.
 C="$R/third_party/curobo"
 if [ ! -d "$C/.git" ]; then
 	rm -rf "$C"
-	git clone "$CUROBO_URL" "$C"
+	git clone "$CUROBO_GIT" "$C"
 fi
 git -C "$C" checkout -q "$CUROBO_COMMIT"
 if git -C "$C" apply --check "$HERE/curobo-isaac61.patch" 2>/dev/null; then
@@ -91,7 +94,7 @@ export CUDA_HOME=${CUDA_HOME:-/usr/local/cuda}
 }
 export TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST:-$("$PY" -c 'import torch; print("%d.%d" % torch.cuda.get_device_capability())')}
 export PATH="$CUDA_HOME/bin:$PATH" MAX_JOBS=${MAX_JOBS:-8}
-"$UV" pip install --python "$PY" --index-url "$PIP_INDEX" --override "$LOCK" --no-build-isolation -e "$C"
+"$UV" pip install --python "$PY" "${IDX[@]}" --override "$LOCK" --no-build-isolation -e "$C"
 
 if $DATASET; then
 	export OMNIGIBSON_DATA_PATH=${OMNIGIBSON_DATA_PATH:-$R/datasets}

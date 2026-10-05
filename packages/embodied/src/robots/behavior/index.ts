@@ -189,6 +189,11 @@ export default function behavior(pi: ExtensionAPI) {
 		default: "sticky",
 		description: "OmniGibson grasping: sticky (CaP-X) or assisted",
 	});
+	pi.registerFlag("curobo-batch-size", {
+		type: "string",
+		default: "3",
+		description: "The primitives' cuRobo batch (OmniGibson's 3); 1 fits a 32 GB GPU shared with other servers",
+	});
 	pi.registerFlag("env-url", {
 		type: "string",
 		description: "Attach to a running env server instead of starting one",
@@ -477,6 +482,7 @@ export default function behavior(pi: ExtensionAPI) {
 					// Unset: the server resolves the GPU as every env server does (utils/gpu.py).
 					...(cudaDevice(pi) ? ["--gpu-id", cudaDevice(pi)] : []),
 					...["--image-size", flag("image-size", "480"), "--grasping-mode", flag("grasping-mode", "sticky")],
+					...["--curobo-batch-size", flag("curobo-batch-size", "3")],
 					// The server runs segment (--sam3) and point (--molmo) itself.
 					...["--sam3", service(pi, "sam3"), "--molmo", service(pi, "molmo")],
 					...detectionArgs(pi, { sam3: false }),

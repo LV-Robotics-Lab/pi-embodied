@@ -605,3 +605,58 @@ def test_omnigibson_39_instances_are_overlays_found_in_every_split(tmp_path):
     (full / f"{scene}_task_{act}_0_5_template.json").write_text("{}")
     assert sim.find_task_scene(tmp_path, act) == (scene, [5])
     assert sim.instance_split(tmp_path, scene, act, 5) is None
+
+
+def test_launch_sizes_curobo_for_a_house_and_a_shared_gpu(monkeypatch):
+    """The primitives are built with the base joint limit that reaches a house's pre-sampled
+    poses (OmniGibson's +-5 m fails IK at y = 6.04), no headless viewer camera, and the caller's
+    cuRobo batch (its warmup memory grows with it)."""
+    import sys
+    import types
+
+    built = {}
+
+    class Primitives:
+        def __init__(self, env, robot, **kw):
+            built.update(kw, env=env, robot=robot)
+
+    class Environment:
+        def __init__(self, configs):
+            self.configs = configs
+            self.robots = ["r1pro"]
+            self.task = "task"
+
+    og = types.ModuleType("omnigibson")
+    og.Environment = Environment
+    pkg = types.ModuleType("omnigibson.action_primitives")
+    curobo = types.ModuleType("omnigibson.action_primitives.curobo")
+    curobo.m = SimpleNamespace(HOLONOMIC_BASE_PRISMATIC_JOINT_LIMIT=5.0)
+    pkg.curobo = curobo
+    base = types.ModuleType("omnigibson.action_primitives.action_primitive_set_base")
+    base.ActionPrimitiveError = RuntimeError
+    starter = types.ModuleType(
+        "omnigibson.action_primitives.starter_semantic_action_primitives"
+    )
+    starter.StarterSemanticActionPrimitives = Primitives
+    macros = types.ModuleType("omnigibson.macros")
+    macros.gm = SimpleNamespace(RENDER_VIEWER_CAMERA=True)
+    for name, mod in {
+        "omnigibson": og,
+        "omnigibson.action_primitives": pkg,
+        "omnigibson.action_primitives.curobo": curobo,
+        "omnigibson.action_primitives.action_primitive_set_base": base,
+        "omnigibson.action_primitives.starter_semantic_action_primitives": starter,
+        "omnigibson.macros": macros,
+    }.items():
+        monkeypatch.setitem(sys.modules, name, mod)
+
+    h = sim.launch({"scene": {}}, curobo_batch_size=1)
+    assert h.env.configs == {"scene": {}} and built["robot"] == "r1pro"
+    assert built["curobo_batch_size"] == 1 and built["enable_head_tracking"] is False
+    assert (
+        curobo.m.HOLONOMIC_BASE_PRISMATIC_JOINT_LIMIT == sim.BASE_JOINT_LIMIT_M == 30.0
+    )
+    assert macros.gm.RENDER_VIEWER_CAMERA is False
+    assert (
+        macros.gm.USE_GPU_DYNAMICS is False and macros.gm.ENABLE_OBJECT_STATES is True
+    )

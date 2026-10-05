@@ -51,6 +51,13 @@ CHALLENGE_DIR = "2025-challenge-task-instances"
 CHALLENGE_INSTANCES = "2026-challenge-task-instances"
 #: The splits of :data:`CHALLENGE_INSTANCES` (OmniGibson's modes and their directories).
 INSTANCE_SPLITS = {"train": "scenes", "public_test": "scene_test/public"}
+#: cuRobo's position limit for the holonomic base's x and y joints, metres. OmniGibson's
+#: primitives plan the base as three joints of the robot's root link, which stays at the world
+#: origin: the joints hold the robot's world x, y and yaw. OmniGibson limits them to +-5 m
+#: (``HOLONOMIC_BASE_PRISMATIC_JOINT_LIMIT``), so in a house whose pre-sampled robot pose lies
+#: farther out every base plan fails at IK (measured: turning_on_radio in
+#: house_double_floor_lower starts at y = 6.04). This covers the challenge scenes.
+BASE_JOINT_LIMIT_M = 30.0
 
 
 def to_np(x: Any) -> np.ndarray:
@@ -331,15 +338,20 @@ class Handle:
         self.error = error
 
 
-def launch(config: dict) -> Handle:
+def launch(config: dict, *, curobo_batch_size: int = 3) -> Handle:
     """Start OmniGibson (Isaac Sim) headless on ``OMNIGIBSON_GPU_ID`` and load the task.
 
     Object states and transition rules stay on (BDDL predicates need them); GPU dynamics off
-    (the primitives' cuRobo planner owns the GPU). Imports OmniGibson here: its macros read the
-    environment at import, so the caller sets ``OMNIGIBSON_*`` first.
+    (the primitives' cuRobo planner owns the GPU); no viewer camera (the server is headless and
+    reads the robot's sensors only: its 1280x720 render target would cost GPU memory the house
+    scene needs). Imports OmniGibson here: its macros read the environment at import, so the
+    caller sets ``OMNIGIBSON_*`` first. ``curobo_batch_size`` is the primitives' cuRobo batch
+    (OmniGibson's default 3): the planner warms up that many parallel rollouts of every seed, and
+    its GPU memory grows with it; 1 plans the same attempts in sequence.
     """
     os.environ.setdefault("OMNIGIBSON_HEADLESS", "1")
     import omnigibson as og
+    from omnigibson.action_primitives import curobo as og_curobo
     from omnigibson.action_primitives.action_primitive_set_base import (
         ActionPrimitiveError,
     )
@@ -348,12 +360,17 @@ def launch(config: dict) -> Handle:
     )
     from omnigibson.macros import gm
 
+    og_curobo.m.HOLONOMIC_BASE_PRISMATIC_JOINT_LIMIT = BASE_JOINT_LIMIT_M
     gm.ENABLE_OBJECT_STATES = True
     gm.ENABLE_TRANSITION_RULES = True
     gm.USE_GPU_DYNAMICS = False
+    gm.RENDER_VIEWER_CAMERA = False
     env = og.Environment(configs=config)
     controller = with_settable_arm(StarterSemanticActionPrimitives)(
-        env, env.robots[0], enable_head_tracking=False
+        env,
+        env.robots[0],
+        enable_head_tracking=False,
+        curobo_batch_size=curobo_batch_size,
     )
     return Handle(og=og, env=env, controller=controller, error=ActionPrimitiveError)
 

@@ -1129,6 +1129,13 @@ def main():
         help="control steps one primitive may take before it is declared stuck",
     )
     p.add_argument(
+        "--curobo-batch-size",
+        type=int,
+        default=3,
+        help="the primitives' cuRobo batch (OmniGibson's default 3): parallel rollouts per plan; "
+        "its GPU memory grows with it, 1 fits a 32 GB GPU shared with other servers",
+    )
+    p.add_argument(
         "--data-path",
         default=os.environ.get("OMNIGIBSON_DATA_PATH"),
         help="OmniGibson's data dir (og_dataset, assets); default OMNIGIBSON_DATA_PATH or the install's",
@@ -1177,7 +1184,7 @@ def main():
         max_steps=args.max_steps,
     )
     t0 = time.monotonic()
-    handle = sim.launch(config)
+    handle = sim.launch(config, curobo_batch_size=args.curobo_batch_size)
     # A failure after Kit is up must not reach its shutdown, which can swallow the traceback and
     # exit 0: print it and leave hard.
     try:
@@ -1199,6 +1206,7 @@ def main():
                 "image_size": args.image_size,
                 "grasping_mode": args.grasping_mode,
                 "max_steps": args.max_steps,
+                "curobo_batch_size": args.curobo_batch_size,
                 "gpu_id": args.gpu_id,
             },
             max_primitive_steps=args.max_primitive_steps,

@@ -26,7 +26,7 @@ BEHAVIOR-1K at `v3.9.0` when missing and applies `behavior-isaac61.patch`, insta
 Isaac Sim 5.x and 4.5 segfault at RTX startup on NVIDIA driver 595.x (isaac-sim/IsaacSim#677),
 which is why the 6.1 port exists; `install.sh` (the 5.1 / 4.5 stacks) has not been run on this
 repository's only BEHAVIOR host, which has that driver. Mirrors: `PIP_INDEX`, `NVIDIA_INDEX`,
-`TORCH_FIND_LINKS` (`TORCH_INDEX` for install.sh).
+`TORCH_INDEX`.
 
 ### The data
 
@@ -67,8 +67,8 @@ is evaluated on Isaac Sim 5.1. What differs from upstream (StanfordVL/BEHAVIOR-1
   events. One OmniGibson 3.9.0 bug on compute capability 12.0 (RTX 50-series), not an Isaac Sim
   one: `CuRoboMotionGenerator` drops the R1Pro's DEFAULT embodiment there (its cuRobo warmup hits
   an illegal memory access), and `update_obstacles` then raised `KeyError` on every plan; it now
-  updates the shared collision world through the MotionGen that exists. Planning uses the arm
-  embodiments only.
+  updates the shared collision world through the MotionGen that exists. Plans use the ARM and
+  BASE embodiments; whole-body (DEFAULT) planning and `check_collisions` are unavailable on such a GPU.
 - cuRobo (`curobo-isaac61.patch`): `wp.device_from_torch` (warp 1.16 dropped `warp.torch` from
   the top-level namespace); built for the host GPU only.
 - GPU selection: on Isaac Sim 6 the server leaves `OMNIGIBSON_GPU_ID` unset (`sim.set_render_gpu`):
@@ -87,7 +87,10 @@ house takes about 5 minutes), BDDL's `success` reads false before anything is do
 
 - The env server (Isaac Sim, the scene, OmniGibson's cuRobo primitives) takes one GPU:
   `--gpu-id N`. Loading a house takes minutes; every episode of `eval.sh` starts its own server,
-  so on a shared GPU run the whole eval under that GPU's lock.
+  so on a shared GPU run the whole eval under that GPU's lock. A house with the R1Pro's three
+  cameras takes about 7 GB before the primitives; cuRobo's warmup adds the rest in proportion to
+  `--curobo-batch-size` (OmniGibson's default 3 peaked past 20 GB on the box and ran out of
+  memory next to 12 GB of other servers; 1 plans the same attempts in sequence).
 - The perception servers the env server calls (SAM3 for `segment`, `--sam3`; Molmo for
   `point`, `--molmo`; `--molmo ""` when none runs) are started once, before pi, and should sit
   on another GPU.

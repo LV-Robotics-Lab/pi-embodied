@@ -72,6 +72,7 @@ export const NUMERIC: Record<string, { min?: number; max?: number; integer?: boo
 	"dashboard-live-fps": { min: 0.2, max: 30 },
 	"humanclaw-max-steps": { min: 1, integer: true },
 	"humanclaw-max-tokens": { min: 1, integer: true },
+	"curobo-batch-size": { min: 1, integer: true },
 };
 
 /**

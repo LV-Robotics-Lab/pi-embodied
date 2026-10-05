@@ -1850,3 +1850,34 @@ test("a hold-at-goal plan finishes with the gripper closed and no release stage"
 	assert.match(head(await f.run("act", { unit: "STOP" })), /all planned stages are done/);
 	assert.ok(f.moves.every((m) => m.gripper !== "open"));
 });
+
+test("act says what ran: `executed` is the unit behind an mcq letter, `ran` the count, 0 and ` not run: ` when nothing moved (U1, U6)", async () => {
+	const f = await toyRobot({ "units-plugins": "mcq,mem_text" });
+	const r = await f.run("act", { unit: "C", n: 2 });
+	assert.deepEqual([r.details.unit, r.details.executed, r.details.ran], ["MV_LEFT", "MV_LEFT", 2]);
+	// A repeat cut short by a blocked move counts what ran, not what was asked.
+	const b = await toyRobot({}, { blocked: true });
+	const cut = await b.run("act", { unit: "MV_DOWN", n: 3 });
+	assert.deepEqual([cut.details.executed, cut.details.ran], ["MV_DOWN", 1]);
+	// A paired step or a chunk of different units has no single executed unit, only the count.
+	const pair = await toyRobot({}, { arms: ["left", "right"] });
+	const both = await pair.run("act", { unit: "MV_UP", arm: "left", other: "MV_DOWN" });
+	assert.deepEqual([both.details.executed, both.details.ran], [undefined, 1]);
+	// A robot's own vocabulary: the plan's last stage used its cap, so the next unit never reaches the
+	// robot; the result says ` not run: ` (GUMI's halt marker) and carries no `executed`.
+	const h = await humanoid({ "units-plugins": "plan,mem_text", "units-stage-steps": "1" });
+	await h.run("plan", { stages: [{ motion: "FIND", target: "chair", completion: "chair in view" }] });
+	const walked = await h.run("act", { unit: "WALK" });
+	assert.deepEqual([walked.details.executed, walked.details.ran], ["WALK(normal)", 1]);
+	const none = await h.run("act", { unit: "WALK" });
+	assert.match(head(none), /^units: WALK\(normal\) not run: 0 of 1\n/);
+	assert.doesNotMatch(head(none), /ended the episode/);
+	assert.deepEqual([none.details.executed, none.details.ran], [undefined, 0]);
+	assert.equal(h.ran.length, 1, "the robot was not asked to move");
+	// The arm's units refused at the first tick say the same.
+	const turned = await toyRobot({ "units-plugins": "" }, { yaw: 0.3 });
+	await turned.run("act", { unit: "ROTATE_CW", n: 10 });
+	const over = await turned.run("act", { unit: "ROTATE_CW", n: 10 });
+	assert.match(head(over), /^units: ROTATE_CW not run: 0 of 10\n/);
+	assert.deepEqual([over.details.executed, over.details.ran], [undefined, 0]);
+});

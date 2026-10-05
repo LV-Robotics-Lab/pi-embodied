@@ -30,6 +30,7 @@ import {
 	Takeover,
 	UNITS_EVENT,
 	type UnitsHandle,
+	unitsRan,
 	views,
 } from "../src/capabilities/gumi/index.ts";
 import { normalizeDecision, OPERATOR_ENTRY, oscillates, vlmOperator } from "../src/capabilities/gumi/operator.ts";
@@ -1381,4 +1382,72 @@ test("/gumi-replay must be stoppable: Esc in the TUI; elsewhere only with the da
 	assert.match(tui.notes.at(-1) as string, /stopped before record 1 of 2/);
 	// Once it ended, Esc is the TUI's again.
 	assert.deepEqual(tui.c.press("\x1b"), []);
+});
+
+test("gumi records an agent act as it ran: the executed unit, the count that ran, nothing when ran is 0 (U1, U6)", async () => {
+	assert.equal(unitsRan({ ran: 2 }), 2);
+	assert.equal(unitsRan({ ran: 0 }), 0);
+	assert.equal(unitsRan({}), undefined);
+	assert.equal(unitsRan(undefined), undefined);
+	const root = mkdtempSync(join(tmpdir(), "gumi-ran-"));
+	const f = fakePi({ "gumi-record": root });
+	const g = gumi(f.pi);
+	const robot = fakeRobot();
+	await f.emit("session_start");
+	f.pi.events.emit(UNITS_EVENT, robot.handle);
+	g.record("start");
+	f.setIdle(false);
+	await f.emit("context", { messages: [] });
+	// The first observation (a STOP look), then an mcq letter whose n was cut to 2 by a blocked move.
+	await f.emit("tool_call", { toolName: "act", input: { unit: "STOP" } });
+	await f.emit("tool_result", { toolName: "act", input: { unit: "STOP" }, ...result([1, 2], ["agentview", "wrist"]) });
+	await f.emit("tool_call", { toolName: "act", input: { unit: "B", n: 3 } });
+	await f.emit("tool_result", {
+		toolName: "act",
+		input: { unit: "B", n: 3 },
+		...result([3, 4], ["agentview", "wrist"]),
+		details: { unit: "MV_FWD", executed: "MV_FWD", ran: 2 },
+	});
+	// A unit the robot never ran (the plan's stage cap) is no step.
+	await f.emit("tool_call", { toolName: "act", input: { unit: "MV_UP" } });
+	await f.emit("tool_result", {
+		toolName: "act",
+		input: { unit: "MV_UP" },
+		content: [{ type: "text", text: "units: MV_UP not run: 0 of 1\nSTAGE 1 used its cap" }],
+		details: { unit: "MV_UP", ran: 0, stage_cap_exceeded: true },
+	});
+	assert.equal(g.state().steps, 1);
+	assert.equal(g.state().last, "agent MV_FWD×2");
+	const dir = g.record("save", false).dir;
+	const lines = readFileSync(join(dir, "actions.jsonl"), "utf8")
+		.trim()
+		.split("\n")
+		.map((l) => JSON.parse(l));
+	assert.deepEqual(
+		lines.map((l) => [l.token, l.n, l.src]),
+		[["MV_FWD", 2, "agent"]],
+	);
+	// The operator's path: a unit that ran 0 times halts the batch and is not recorded.
+	f.setIdle(true);
+	const run = robot.handle.run;
+	robot.handle.run = async (params, signal) => {
+		const r = await run(params, signal);
+		if (params.unit !== "MV_LEFT") return r;
+		return {
+			content: [{ type: "text", text: "units: MV_LEFT not run: 0 of 1" }, ...r.content.slice(1)],
+			details: { ran: 0 },
+		};
+	};
+	g.record("start");
+	const out = await g.step({ command: "w a w" });
+	assert.deepEqual([out.executed, out.results.map((r) => r.ok)], [1, [true, false]]);
+	assert.match(out.results[1].error ?? "", /not run: 0 of 1/);
+	const second = g.record("save", false).dir;
+	assert.deepEqual(
+		readFileSync(join(second, "actions.jsonl"), "utf8")
+			.trim()
+			.split("\n")
+			.map((l) => JSON.parse(l).token),
+		["MV_FWD"],
+	);
 });

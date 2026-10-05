@@ -845,7 +845,7 @@ export function units(
 				content: [
 					await header(["units: not run: every planned stage used its step cap; send a new plan or finish."], arm),
 				],
-				details: { unit, stage_cap_exceeded: true },
+				details: { unit, ran: 0, stage_cap_exceeded: true },
 			};
 		if (!wristView && p.target_in_wrist !== undefined && !p.operator)
 			lines.push("target_in_wrist ignored: this robot has no wrist view.");
@@ -1058,15 +1058,28 @@ export function units(
 			if (stop) break;
 		}
 		const queue = ticks.map((t) => t.map(tag).join("+"));
-		const what =
-			queue.every((u) => u === queue[0]) && ran.every((u) => u === ran[0])
-				? `${ran[0] ?? queue[0]} x${ran.length}`
-				: ran.join(", ");
+		const same = queue.every((u) => u === queue[0]) && ran.every((u) => u === ran[0]);
+		const what = same ? `${ran[0] ?? queue[0]} x${ran.length}` : ran.join(", ");
+		// Nothing ran (the first tick was refused, or the plan's last stage had used its cap): said as
+		// ` not run: `, which GUMI's haltReason reads, never as an executed unit.
 		lines.unshift(
-			`units: ${what}${arm && !pairArm ? ` (${arm} arm)` : ""}${ran.length < ticks.length ? ` of ${ticks.length} (stopped early)` : ""}`,
+			ran.length
+				? `units: ${what}${arm && !pairArm ? ` (${arm} arm)` : ""}${ran.length < ticks.length ? ` of ${ticks.length} (stopped early)` : ""}`
+				: `units: ${queue[0]} not run: 0 of ${ticks.length}`,
 		);
-		if (!last) return { content: [await header(lines, arm)], details: { unit } };
-		return { ...last, content: [await header(lines, arm), ...last.content] };
+		// `ran`: units run (0 = the robot did not move); `executed`: the unit as run (the mcq letter or
+		// action_ablation symbol resolved), when every tick ran the same one. GUMI records from these.
+		const details = {
+			unit,
+			ran: ran.length,
+			...(ran.length && same && ticks[0].length === 1 ? { executed: ticks[0][0].u } : {}),
+		};
+		if (!last) return { content: [await header(lines, arm)], details };
+		return {
+			...last,
+			details: { ...((last.details as Record<string, unknown>) ?? {}), ...details },
+			content: [await header(lines, arm), ...last.content],
+		};
 	}
 	/**
 	 * `act` over the robot's own vocabulary: the parameter checked (clamped, defaulted), the unit run
@@ -1086,7 +1099,7 @@ export function units(
 		if (ended && !params.operator)
 			return {
 				content: [text("units: not run: the episode already ended (a terminal unit ran); call finish.")],
-				details: { unit: name },
+				details: { unit: name, ran: 0 },
 			};
 		if (capped && !params.operator && plugin("plan"))
 			return {
@@ -1096,7 +1109,7 @@ export function units(
 						undefined,
 					),
 				],
-				details: { unit: name, stage_cap_exceeded: true },
+				details: { unit: name, ran: 0, stage_cap_exceeded: true },
 			};
 		const lines: string[] = said ? [said] : [];
 		const label = unitLabel(name, param);
@@ -1112,13 +1125,21 @@ export function units(
 			if (unit.terminal) ended = true;
 			if (d?.error || d?.terminated) break;
 		}
-		lines.unshift(`units: ${label} x${ran}${ran < n ? ` of ${n} (stopped early)` : ""}`);
-		if (unit.terminal) lines.push(`${name} ended the episode: call finish.`);
-		// `executed`: the unit with the parameter it ran with (clamped, defaulted), which GUMI records.
-		if (!last) return { content: [await header(lines, undefined)], details: { unit: name, executed: label } };
+		// Nothing ran (the plan's last stage had used its cap before the first unit): ` not run: ` for
+		// GUMI's haltReason, and no `executed`, so no recorder writes a unit the robot never ran.
+		lines.unshift(
+			ran
+				? `units: ${label} x${ran}${ran < n ? ` of ${n} (stopped early)` : ""}`
+				: `units: ${label} not run: 0 of ${n}`,
+		);
+		if (unit.terminal && ran) lines.push(`${name} ended the episode: call finish.`);
+		// `executed`: the unit with the parameter it ran with (clamped, defaulted), which GUMI records;
+		// `ran`: how many times (0 = the robot did not move).
+		const details = { unit: name, ran, ...(ran ? { executed: label } : {}) };
+		if (!last) return { content: [await header(lines, undefined)], details };
 		return {
 			...last,
-			details: { ...((last.details as Record<string, unknown>) ?? {}), executed: label },
+			details: { ...((last.details as Record<string, unknown>) ?? {}), ...details },
 			content: [await header(lines, undefined), ...last.content],
 		};
 	}

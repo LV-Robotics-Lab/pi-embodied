@@ -669,14 +669,24 @@ export function actSteps(
 }
 
 /**
- * A one-arm step as it actually ran: a robot's own unit reports `executed` ("TURN(120)" for a typed
- * TURN(500), clamped), which replaces the typed label; anything else is returned unchanged.
+ * A one-arm step as it actually ran: `act` reports `executed`, the unit as run (a robot's own unit with
+ * its clamped parameter, "TURN(120)" for a typed TURN(500); the arm's unit behind an mcq letter or an
+ * action_ablation symbol), which replaces the typed label; anything else is returned unchanged.
  */
 export function executedStep(step: Step, details: unknown): Step {
 	const ran = (details as { executed?: unknown } | undefined)?.executed;
 	const keys = Object.keys(step);
 	if (typeof ran !== "string" || keys.length !== 1 || step[keys[0]] === ran) return step;
 	return { [keys[0]]: ran };
+}
+
+/**
+ * How many units an `act` result says ran (`details.ran`): 0 when the robot did not move (the plan's
+ * stage cap, a refused first unit), so nothing is recorded; undefined when the result does not say.
+ */
+export function unitsRan(details: unknown): number | undefined {
+	const n = (details as { ran?: unknown } | undefined)?.ran;
+	return typeof n === "number" && Number.isFinite(n) ? Math.max(0, Math.floor(n)) : undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -884,8 +894,12 @@ export function gumi(
 		if (handle && event.toolName === handle.tool) {
 			const p = pending;
 			pending = undefined;
-			if (p && !event.isError) {
+			// Recorded as it ran: the unit `executed`, repeated as many times as `ran` says (an n cut short by
+			// a blocked move); a call that moved nothing (ran 0) is no step.
+			const ran = unitsRan(event.details);
+			if (p && !event.isError && ran !== 0) {
 				p.step = executedStep(p.step, event.details);
+				p.n = ran ?? p.n;
 				if (recorder?.active && p.obs)
 					recorder.add(p.obs, p.step, { src: "agent", dagger: false, closed: p.closed, state: p.state, n: p.n });
 				track(p.step);
@@ -1023,8 +1037,9 @@ export function gumi(
 					const typed = step;
 					step = executedStep(step, result.details);
 					if (step !== typed) o.onAction?.(arms.length > 1 ? label : step[ARM]);
-					// STOP (hold and look) only refreshes the observation: not a training step.
-					const moved = arms.some((a) => step[a] !== STILL && step[a] !== "STOP");
+					// STOP (hold and look) only refreshes the observation, and a unit the robot did not run
+					// (`ran` 0: the plan's stage cap) moved nothing: neither is a training step.
+					const moved = unitsRan(result.details) !== 0 && arms.some((a) => step[a] !== STILL && step[a] !== "STOP");
 					if (recorder?.active && moved) {
 						if (obs) recorder.add(obs, step, info);
 						else message = "no observation before this step; not recorded";

@@ -101,7 +101,22 @@ test("explicit planner options override protocol defaults and repeated scalar fl
 	assert.equal(values[3], "timeout=+max_calls=+max_move=+helpers=false+oracle");
 });
 
+test("--code-helpers is keyed as pi runs it: on in every accepted spelling", () => {
+	for (const args of [
+		["--code-helpers"],
+		["--code-helpers=true"],
+		["--code-helpers", "--model", "m/x"],
+		["--code-helpers", "@task.md"],
+	]) {
+		const result = parse(args);
+		assert.equal(result.status, 0, `${args.join(" ")}: ${result.stderr}`);
+		assert.equal(JSON.parse(result.stdout)[3], "timeout=+max_calls=+max_move=+helpers=true", args.join(" "));
+	}
+	assert.equal(JSON.parse(parse([]).stdout)[3], "timeout=+max_calls=+max_move=+helpers=false");
+});
+
 test("boolean values that pi would interpret differently are rejected before running a task", () => {
+	// --code-helpers too (audit 92245e3 CM-4): `--code-helpers=false` ran with the helpers, keyed as without.
 	for (const flag of [
 		"stateless",
 		"privileged",
@@ -111,6 +126,7 @@ test("boolean values that pi would interpret differently are rejected before run
 		"vdm-video",
 		"waypoints",
 		"object-memory",
+		"code-helpers",
 	]) {
 		for (const args of [[`--${flag}=false`], [`--${flag}`, "false"]]) {
 			const result = parse(args);

@@ -104,7 +104,15 @@ eval_parse_options() {
 		--code-max-calls=*) code_max_calls=${args[i]#*=} ;;
 		--code-max-move) code_max_move=${args[i + 1]-} ;;
 		--code-max-move=*) code_max_move=${args[i]#*=} ;;
-		--code-helpers | --code-helpers=true) code_helpers=true ;;
+		# --code-helpers (CaP-X's numpy helpers in the program) is a boolean like --stateless: pi turns it on whatever value it is given.
+		--code-helpers) case ${args[i + 1]:-} in "" | -* | @* | true) code_helpers=true ;; *)
+			echo "--code-helpers takes no value: pi would inject the helpers and swallow '${args[i + 1]}'" >&2 && exit 2 ;;
+		esac ;;
+		--code-helpers=true) code_helpers=true ;;
+		--code-helpers=*)
+			echo "${args[i]}: pi ignores a boolean flag's value and would inject the helpers; omit --code-helpers for a run without them" >&2
+			exit 2
+			;;
 		# --anchor-image (keep the first camera frame in context) is a boolean like --stateless.
 		--anchor-image) case ${args[i + 1]:-} in "" | -* | @* | true) anchor=true ;; *)
 			echo "--anchor-image takes no value: pi would turn it on and swallow '${args[i + 1]}'" >&2 && exit 2 ;;

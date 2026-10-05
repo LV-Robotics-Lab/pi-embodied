@@ -1,15 +1,20 @@
 #!/usr/bin/env bash
 # Run HumanClawBench episodes with pi in print mode and report the paper metrics.
-#   eval.sh <out-dir> [--episodes one|val100|fullval|<list.json>] [--mode paper|pi] [--metrics] [--video] [pi args...]
+#   eval.sh <out-dir> [--episodes one|val100|fullval|<list.json>] [--mode paper|pi] [--metrics] [--video] [--smoke] [pi args...]
 #   eval.sh runs/hc-paper --episodes one --mode paper --metrics --model humanclaw-psv/selfhost/muse-glimmer-30b
 #   eval.sh runs/hc-pi --episodes val100 --mode pi --metrics --model selfhost/muse-glimmer-30b   (GPU: cuda_device or PI_EMBODIED_CUDA_DEVICE)
 #
 # One pi process (and one env server: Habitat and the motion model are rebuilt per episode, as the
 # release's dispatcher runs one process per episode) per episode, in <out>/<scene>_ep<id>_<category>/,
 # ending with a result.json from the session's `robot_result` plus the configuration: mode, preset
-# (`humanclaw`, `humanclaw+privileged`), model, --units-verify / --vdm / --stateless, --metrics,
-# --video, and --approval / --max-tool-calls / --max-tokens when set. An episode is valid when the environment produced a result and the planner did not fail.
-# Rerunning retries only invalid episodes and refuses an out dir holding another configuration.
+# (`humanclaw`, `humanclaw+privileged`), model, --units-verify / --vdm / --stateless /
+# --humanclaw-proprioception, --metrics, --video, paper mode's request parameters
+# (--humanclaw-reasoning, --humanclaw-max-tokens) and, when set, pi mode's planner flags (--thinking,
+# --max-turns, --time-limit, --units-plugins and the units knobs, --anchor-image, --vdm-model,
+# --fallback-*, --approval, --max-tool-calls, --max-tokens) and a
+# --smoke step cap (--humanclaw-max-steps). An episode is valid when the environment produced a result
+# and the planner did not fail. Rerunning retries only invalid episodes and refuses an out dir holding
+# another configuration.
 # With --metrics the summary is HumanCLAW's own aggregate_metric_files() over every metrics.json
 # (summary.json, and metrics_summary.json beside it), run with $HUMANCLAW_PYTHON (the humanclaw venv).
 # Heavy: run serially with LOCK set (e.g. /root/autodl-tmp/locks/gpu1.lock), each episode takes it
@@ -17,7 +22,7 @@
 # takes it once for the whole run and starts this script with LOCK unset (an episode taking it here
 # would wait on that run's own lock).
 set -uo pipefail
-out=${1:?usage: eval.sh <out-dir> [--episodes ...] [--mode paper|pi] [--metrics] [--video] [pi args...]}
+out=${1:?usage: eval.sh <out-dir> [--episodes ...] [--mode paper|pi] [--metrics] [--video] [--smoke] [pi args...]}
 shift
 here=$(cd "$(dirname "$0")" && pwd)
 # Renamed flags and the ones the deployment config replaced stop here, before any cell runs.
@@ -25,9 +30,31 @@ here=$(cd "$(dirname "$0")" && pwd)
 old_flags "$@" || exit 2
 PI=${PI:-pi}
 PY=${HUMANCLAW_PYTHON:-${PI_EMBODIED_PYTHON:-python}}
-episodes=one mode=paper metrics=false video=false
-model="" privileged=false verify=false vdm=false stateless=false reasoning="" proprioception=false
-approval=off max_tool_calls=0 max_tokens=0
+# The shared pi flags (model, thinking, turns, time limit, units plug-ins, stateless, anchor, vdm,
+# privileged, fallback, approval, budgets) are parsed by scripts/eval-options.sh; only HumanCLAW's own
+# flags live here. Every flag that changes a request or an episode is part of the configuration key.
+source "$here/../../scripts/eval-options.sh"
+eval_options_defaults
+units=both # eval.sh passes --units=both itself; --units-plugins / --units-stage-steps extend it
+episodes=one mode=paper metrics=false video=false smoke=false
+verify=false proprioception=false reasoning="" request_tokens=4096 max_steps=""
+eval_robot_option() {
+	case $1 in
+	--units-verify) verify=true ;;
+	--humanclaw-proprioception | --humanclaw-proprioception=true) proprioception=true ;;
+	--humanclaw-proprioception=*) echo "omit --humanclaw-proprioception to disable it" >&2; exit 2 ;;
+	# Paper mode's request parameters (provider.ts): the base model's reasoning level and max_tokens.
+	--humanclaw-reasoning) reasoning=${2:-} ;;
+	--humanclaw-reasoning=*) reasoning=${1#*=} ;;
+	--humanclaw-max-tokens) request_tokens=${2:-4096} ;;
+	--humanclaw-max-tokens=*) request_tokens=${1#*=} ;;
+	# pi sets a boolean flag to true whatever value it is given: the JSON response format cannot be turned off here.
+	--humanclaw-json-format*) echo "$1: the JSON response format is always requested (a boolean flag cannot be turned off from the command line); omit it" >&2; exit 2 ;;
+	# A step cap truncates the episode: a smoke, never a scored run (--smoke says so and keys it).
+	--humanclaw-max-steps) max_steps=${2:-} ;;
+	--humanclaw-max-steps=*) max_steps=${1#*=} ;;
+	esac
+}
 pass=()
 while [ $# -gt 0 ]; do
 	case $1 in
@@ -37,26 +64,13 @@ while [ $# -gt 0 ]; do
 	--mode=*) mode=${1#*=} ;;
 	--metrics) metrics=true ;;
 	--video) video=true ;;
-	--model) model=${2:-}; pass+=("$1" "${2:-}"); shift ;;
-	--model=*) model=${1#*=}; pass+=("$1") ;;
-	--privileged) privileged=true; pass+=("$1") ;;
-	--humanclaw-proprioception | --humanclaw-proprioception=true) proprioception=true; pass+=("$1") ;;
-	--humanclaw-proprioception=*) echo "omit --humanclaw-proprioception to disable it" >&2; exit 2 ;;
-	--humanclaw-reasoning) reasoning=${2:-}; pass+=("$1" "${2:-}"); shift ;;
-	--units-verify) verify=true; pass+=("$1") ;;
-	--vdm) vdm=true; pass+=("$1") ;;
-	--stateless) stateless=true; pass+=("$1") ;;
-	# --approval (src/capabilities/operator.ts) and the --max-tool-calls / --max-tokens budgets (src/robot.ts).
-	--approval) approval=${2:-off}; pass+=("$1" "${2:-}"); shift ;;
-	--approval=*) approval=${1#*=}; pass+=("$1") ;;
-	--max-tool-calls) max_tool_calls=${2:-0}; pass+=("$1" "${2:-}"); shift ;;
-	--max-tool-calls=*) max_tool_calls=${1#*=}; pass+=("$1") ;;
-	--max-tokens) max_tokens=${2:-0}; pass+=("$1" "${2:-}"); shift ;;
-	--max-tokens=*) max_tokens=${1#*=}; pass+=("$1") ;;
+	--smoke) smoke=true ;;
 	*) pass+=("$1") ;;
 	esac
 	shift
 done
+eval_parse_options ${pass[@]+"${pass[@]}"}
+eval_normalize_options
 case $mode in paper | pi) ;; *) echo "--mode $mode: paper or pi" >&2; exit 2 ;; esac
 if [ "$mode" = paper ] && [[ $model != humanclaw-psv/* ]]; then
 	echo "--mode paper runs HumanCLAW's planner: --model humanclaw-psv/<base>" >&2
@@ -66,6 +80,14 @@ if [ "$mode" = paper ] && { $verify || $vdm || $stateless || $proprioception; };
 	echo "--mode paper runs HumanCLAW's planner as published: no --units-verify, --vdm, --stateless or --humanclaw-proprioception" >&2
 	exit 2
 fi
+if [ "$mode" = pi ] && { [ -n "$reasoning" ] || [ "$request_tokens" != 4096 ]; }; then
+	echo "--humanclaw-reasoning and --humanclaw-max-tokens are paper mode's request parameters; pi mode plans with --thinking and the model's own limits" >&2
+	exit 2
+fi
+if [ -n "$max_steps" ] && ! $smoke; then
+	echo "--humanclaw-max-steps truncates the episode: a smoke, not a scored run; add --smoke to run it (keyed max_steps=$max_steps)" >&2
+	exit 2
+fi
 preset=humanclaw
 $privileged && preset=humanclaw+privileged
 # Named only when set, so an out dir written before these were keyed keeps its configuration.
@@ -73,8 +95,17 @@ extra=""
 [ "$approval" != off ] && extra+="/approval=$approval"
 [ "$max_tool_calls" != 0 ] && extra+="/tool_calls=$max_tool_calls"
 [ "$max_tokens" != 0 ] && extra+="/tokens=$max_tokens"
-# The OpenETA extras this run turns on (robot.ts records them as `extras`): part of the configuration.
-extras=$(for a in "${pass[@]}"; do case $a in (--waypoints | --waypoints=true | --align-wrist | --align-wrist=true | --grasp-advisor | --grasp-advisor=true | --object-memory | --object-memory=true | --web-tools | --web-tools=true) a=${a#--} && echo "${a%=true}" ;; esac; done | sort -u | paste -sd, -)
+# Paper mode's request contract (reasoning is keyed above, both forms) and pi mode's planner flags.
+[ "$request_tokens" != 4096 ] && extra+="/request_tokens=$request_tokens"
+[ -n "$thinking" ] && extra+="/thinking=$thinking"
+[ "$turns" != 0 ] && extra+="/turns=$turns"
+[ -n "$limited" ] && extra+="/limit=$limit"
+[ "$units" != both ] && extra+="/units=$units"
+$anchor && extra+="/anchor"
+[ -n "$vdm_model" ] && extra+="/vdm_model=$vdm_model"
+[ -n "$fallback_model" ] && extra+="/fallback=$fallback_model:$fallback_after:$fallback_retry"
+[ -n "$max_steps" ] && extra+="/max_steps=$max_steps"
+# The OpenETA extras this run turns on (eval-options.sh's $extras; robot.ts records them as `extras`): part of the configuration.
 config="mode=$mode/preset=$preset/model=$model/metrics=$metrics/video=$video/verify=$verify/vdm=$vdm/stateless=$stateless/proprioception=$proprioception${reasoning:+/reasoning=$reasoning}$extra${extras:+/extras=$extras}"
 mkdir -p "$out"
 if [[ $episodes == *_ep*_* ]]; then list=$episodes; else list=$(cd "$out" && "$PY" -c '

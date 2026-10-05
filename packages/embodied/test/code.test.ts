@@ -89,7 +89,7 @@ function fakeEnv(
 	const calls: { method: string; kwargs: Record<string, unknown>; signal?: AbortSignal }[] = [];
 	let interrupts = 0;
 	/** While set, `code.run` waits in the client's queue (behind another call) until it resolves. */
-	const queue: { hold?: Promise<void>; preflight?: Record<string, unknown> } = {};
+	const queue: { hold?: Promise<void>; preflight?: Record<string, unknown> | Error } = {};
 	const rpc = {
 		interrupt: async () => {
 			interrupts++;
@@ -112,7 +112,10 @@ function fakeEnv(
 			calls.push({ method, kwargs, signal });
 			if (method === "code.api") return (codeApi?.() ?? codeApiReply("toy", kwargs.tier as string | undefined)) as T;
 			if (method === "code.helpers") return HELPERS as T;
-			if (method === "code.preflight") return (queue.preflight ?? { isolated: true, error: null }) as T;
+			if (method === "code.preflight") {
+				if (queue.preflight instanceof Error) throw queue.preflight;
+				return (queue.preflight ?? { isolated: true, error: null }) as T;
+			}
 			if (method === "code.run")
 				return {
 					status: "ran",
@@ -160,8 +163,8 @@ async function toyRobot(
 		observeNeedsSignal?: boolean;
 		/** Override the server's code.api reply. */
 		codeApi?: () => unknown;
-		/** What the env's `code.preflight` answers. */
-		preflight?: Record<string, unknown>;
+		/** What the env's `code.preflight` answers (an Error: the call is rejected with it). */
+		preflight?: Record<string, unknown> | Error;
 		/** The fixture manifest (default toy: high and low tiers). */
 		manifest?: string;
 	} = {},
@@ -642,6 +645,25 @@ test("code mode's preflight refuses a server that cannot isolate a program, befo
 	assert.equal(f.env.calls.filter((c) => c.method === "code.run").length, 0);
 	assert.equal(isLocalEndpoint("http://127.0.0.1:8080/call"), true);
 	assert.equal(isLocalEndpoint("http://robot-pc.tailnet:9000/call"), false);
+});
+
+test("only a server without code.preflight is let through; its other rejections fail the start", async () => {
+	// Audit 92245e3 S4: every rejection (a token refusal, a busy server, a timeout) was read as "no such method".
+	const old = await toyRobot(
+		{ code: true },
+		{ hasUI: false, preflight: new Error("code.preflight: unknown RPC method: 'code.preflight'") },
+	);
+	assert.ok(old.active().includes("run_code"), "an older server's code.run still refuses on its own");
+	for (const why of [
+		"code.preflight: refused: this server requires its RPC token",
+		"code.preflight: refused: a run_code program is running on this server",
+		"code.preflight: timed out after 30000 ms",
+	]) {
+		const f = await toyRobot({ code: true }, { hasUI: false, preflight: new Error(why) });
+		assert.ok(!f.active().includes("run_code"), why);
+		const r = f.entries.find((e) => e.type === RESULT_ENTRY)?.data ?? (await result(f));
+		assert.equal(r.error, why);
+	}
 });
 
 test("a real robot preflights the server before it confirms or resets: once, and a refusal stops it there", async () => {

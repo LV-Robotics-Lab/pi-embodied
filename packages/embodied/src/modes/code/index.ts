@@ -452,10 +452,15 @@ export function code(
 	async function preflight(client: Pick<RpcClient, "call"> & { url?: string }): Promise<void> {
 		if (!mode() || preflighted) return;
 		const remote = !isLocalEndpoint(client.url ?? "");
-		const pre = await client
-			.call<{ error?: string | null }>("code.preflight", { remote }, 30_000)
-			// A server without code.preflight (older, or a stand-in): its code.run still refuses on its own.
-			.catch((): { error?: string | null } => ({}));
+		let pre: { error?: string | null };
+		try {
+			pre = await client.call<{ error?: string | null }>("code.preflight", { remote }, 30_000);
+		} catch (err) {
+			// Only a server without the method (older, or a stand-in) is let through: its code.run still
+			// refuses on its own. A token refusal, a busy server or a timeout is the server's answer.
+			if (!/unknown (RPC )?method/i.test(err instanceof Error ? err.message : String(err))) throw err;
+			pre = {};
+		}
 		if (pre.error) throw new Error(pre.error);
 		preflighted = true;
 	}

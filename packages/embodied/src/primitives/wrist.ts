@@ -15,6 +15,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { encodePng } from "../infra/png.ts";
 import { type Json, type Mat, mark, type Rgb, round, roundAll } from "../robot.ts";
+import { pointArgs } from "./arguments.ts";
 import { optionalTools } from "./optional.ts";
 import { type ToolDef, toolDef } from "./steps.ts";
 
@@ -133,7 +134,7 @@ export function alignWrist(rig: ServerWristRig): ToolDef {
 			execute: Type.Optional(Type.Boolean({ description: "Also move by the correction (default false)" })),
 		}),
 		async (p, signal) => {
-			const [row, col] = (p.point as number[]).map(Number);
+			const { row, col } = pointArgs(p.point as number[]);
 			const maxCorrection = Math.min(0.05, Math.max(0.005, Number(p.max_correction_m ?? 0.03)));
 			const a = await rig.align(Math.round(row / scale), Math.round(col / scale), maxCorrection, signal);
 			const px = (v: unknown) => (Array.isArray(v) ? v.map((x) => Math.round(Number(x) * scale)) : v);

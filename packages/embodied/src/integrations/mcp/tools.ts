@@ -3,7 +3,10 @@
  * env-side entry the tier and `requires` filters admit, its JSON Schema the manifest's `params`
  * (`toolSchema`) and its description `doc.tool`, the same rules pi applies when it registers the
  * robot's tools (../../robot.ts `manifestTool`, `servable`). Nothing here is a second declaration:
- * the manifest stays the one source, and this module only reads it.
+ * the manifest stays the one source, and this module only reads it. The schema keeps the parameters
+ * the env server's method takes (../../primitives/arguments.ts `rpcParams`): a tool-only parameter
+ * that is pi-side state (LIBERO's `step`, `resolution`) is not offered, and `point: [row, col]` is
+ * mapped onto the method's `row`, `col` at the call (../session.ts).
  *
  * What is exposed and what is not (the capability boundary, see README "Using the robots from Codex
  * or Claude Code"): `side: env` tools forward to the env server's facade method, which enforces the
@@ -24,6 +27,7 @@
  */
 
 import type { Tool } from "@earendil-works/pi-mcp";
+import { rpcParams } from "../../primitives/arguments.ts";
 import {
 	available,
 	type Manifest,
@@ -124,7 +128,9 @@ export function manifestTools(
 		if (!available(entry, has)) continue;
 		try {
 			// A TypeBox schema is JSON Schema with symbol-keyed kinds; serializing drops the symbols.
-			const inputSchema = JSON.parse(JSON.stringify(toolSchema(entry, vars))) as Record<string, unknown>;
+			const inputSchema = JSON.parse(
+				JSON.stringify(toolSchema({ ...entry, params: rpcParams(entry) }, vars)),
+			) as Record<string, unknown>;
 			tools.push({
 				entry,
 				tool: {

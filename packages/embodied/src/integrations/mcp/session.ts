@@ -1,8 +1,10 @@
 /**
  * One MCP session on one robot env server: the manifest's env tools (./tools.ts) forwarded to the
  * server over our RPC (../../infra/rpc.ts), each call checked against its schema as pi checks an
- * operator's manual call (`validateToolArguments`, as ../../robot.ts `prepare` does), and the
- * built-in tools that mirror the pi session where they do not depend on pi's agent loop:
+ * operator's manual call (`validateToolArguments`, as ../../robot.ts `prepare` does) and its
+ * arguments adapted to the method's as pi's tool wrappers adapt them (../../primitives/arguments.ts
+ * `rpcArguments`: `point: [row, col]` → `row`, `col`), and the built-in tools that mirror the pi
+ * session where they do not depend on pi's agent loop:
  *
  *   observe       the current camera images and state (`env.get_observation`, else `env.render_camera`
  *                 and `env.get_state`), images as MCP image content
@@ -41,6 +43,7 @@ import {
 import { Type } from "typebox";
 import { encodePng } from "../../infra/png.ts";
 import { NdArray, type RpcClient, RpcUnavailable } from "../../infra/rpc.ts";
+import { rpcArguments } from "../../primitives/arguments.ts";
 import type { Manifest, ManifestEntry, Vars } from "../../primitives/manifest.ts";
 import { message, plain, rgbOf, serverError } from "../../robot.ts";
 import type { ToolProvider } from "./protocol.ts";
@@ -273,23 +276,24 @@ export class RobotSession implements ToolProvider {
 		if (!t) throw new McpError(JSON_RPC_ERROR_CODES.invalidParams, `Unknown tool: ${name}`);
 		const why = this.refusal(name);
 		if (why) return failure(why);
-		let params: Record<string, unknown>;
+		let kwargs: Record<string, unknown>;
 		try {
 			const tool: AiTool = {
 				name,
 				description: t.tool.description ?? "",
 				parameters: t.tool.inputSchema as AiTool["parameters"],
 			};
-			params = validateToolArguments(tool, {
+			const params = validateToolArguments(tool, {
 				type: "toolCall",
 				id: "mcp",
 				name,
 				arguments: args as Parameters<typeof validateToolArguments>[1]["arguments"],
 			}) as Record<string, unknown>;
+			kwargs = rpcArguments(t.entry, params);
 		} catch (err) {
 			return failure(`${name}: ${message(err)}`);
 		}
-		const dispatch = () => this.rpcCall(t.entry.method as string, params, signal);
+		const dispatch = () => this.rpcCall(t.entry.method as string, kwargs, signal);
 		return moves(t.entry) ? this.motion(name, dispatch) : this.forward(dispatch);
 	}
 

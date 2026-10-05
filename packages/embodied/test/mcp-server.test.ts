@@ -41,6 +41,14 @@ function fakeEnv(o: { robot?: string; pid?: () => number; has?: (c: string) => b
 		"env.get_observation": () => ({ agentview: { rgb: image() }, wrist: { rgb: image() }, eef_pos: [0.1, 0.2, 0.3] }),
 		"env.render_camera": () => image(),
 		"env.segment": (kw) => ({ masks: [], prompt: kw.prompt }),
+		// The facade's signature (utils/wrist_alignment.py): row and col, not the tool's point.
+		"env.align_wrist": (kw) => {
+			const unknown = Object.keys(kw).filter((k) => !["row", "col", "max_correction_m", "execute"].includes(k));
+			if (unknown.length) throw new Error(`align_wrist() got an unexpected keyword argument '${unknown[0]}'`);
+			if (!("row" in kw) || !("col" in kw))
+				throw new Error("align_wrist() missing required arguments: 'row', 'col'");
+			return { desired_pixel: [8, 8], target_pixel: [kw.row, kw.col], aligned_xyz: [0.1, 0.2, 0.3] };
+		},
 		"env.reset": () => [{ eef_pos: [0, 0, 0] }, {}],
 		"env.move_delta": (kw) => ({ ok: true, delta_xyz: kw.delta_xyz }),
 		stop: () => ({ ok: true, stop_generation: 1, call_in_progress: false }),
@@ -167,6 +175,41 @@ test("tools/call forwards to the manifest's method with the validated kwargs; ba
 			assert.match(bad.content[0].type === "text" ? bad.content[0].text : "", /move_to/);
 			assert.ok(!env.calls.some((c) => c.method === "env.move_to"), "an invalid call never reaches the server");
 			await assert.rejects(mcp.callTool("no_such_tool", {}), /Unknown tool/);
+			// segment's `step` (pi's recorded states) is not offered; the method's own point is.
+			const segment = (await mcp.listTools()).find((t) => t.name === "segment");
+			const props = Object.keys((segment?.inputSchema as { properties?: object }).properties ?? {});
+			assert.ok(props.includes("point") && !props.includes("step"), props.join(","));
+		} finally {
+			await close();
+		}
+	} finally {
+		env.close();
+	}
+});
+
+test("a tool whose parameters differ from the method's is adapted as pi adapts it: align_wrist's point reaches the facade as row, col", async () => {
+	useDeployment({});
+	const env = fakeEnv({ has: (c) => c === "sam3" || c === "align_wrist" });
+	const url = await env.listen();
+	try {
+		const a = parseArgs(["--robot", "libero", "--env", url]);
+		const s = session(a, await connect(a));
+		const { c: mcp, close } = await client(s);
+		try {
+			const tool = (await mcp.listTools()).find((t) => t.name === "align_wrist");
+			assert.ok(tool, "align_wrist served (the server's code.api lists it)");
+			assert.deepEqual(Object.keys((tool.inputSchema as { properties: object }).properties).sort(), [
+				"execute",
+				"max_correction_m",
+				"point",
+			]);
+			const r = await mcp.callTool("align_wrist", { point: [100, 200], max_correction_m: 0.02 });
+			assert.equal(r.isError, undefined, JSON.stringify(r.content));
+			assert.deepEqual(text(r).target_pixel, [100, 200]);
+			const sent = env.calls.find((c) => c.method === "env.align_wrist");
+			assert.deepEqual(sent?.kwargs, { row: 100, col: 200, max_correction_m: 0.02 });
+			const bad = await mcp.callTool("align_wrist", { point: [1] });
+			assert.equal(bad.isError, true, "a one-element point fails the schema");
 		} finally {
 			await close();
 		}

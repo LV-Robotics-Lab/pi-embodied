@@ -85,15 +85,16 @@ house takes about 5 minutes), BDDL's `success` reads false before anything is do
 
 ## What runs where
 
-- The env server (Isaac Sim, the scene, OmniGibson's cuRobo primitives) takes one GPU:
-  `--gpu-id N`. Loading a house takes minutes; every episode of `eval.sh` starts its own server,
+- The env server (Isaac Sim, the scene, OmniGibson's cuRobo primitives) takes one GPU: the
+  deployment's `cuda_device` (the server's `--gpu-id`). Loading a house takes minutes; every episode of `eval.sh` starts its own server,
   so on a shared GPU run the whole eval under that GPU's lock. A house with the R1Pro's three
   cameras takes about 7 GB before the primitives; cuRobo's warmup adds the rest in proportion to
   `--curobo-batch-size` (OmniGibson's default 3 peaked past 20 GB on the box and ran out of
   memory next to 12 GB of other servers; 1 plans the same attempts in sequence).
-- The perception servers the env server calls (SAM3 for `segment`, `--sam3`; Molmo for
-  `point`, `--molmo`; `--molmo ""` when none runs) are started once, before pi, and should sit
-  on another GPU.
+- The perception servers the env server calls (SAM3 for `segment`, Molmo for `point`: the
+  deployment's `services.sam3` / `services.molmo`, the server's `--sam3` / `--molmo`; a
+  deployment without `services.molmo` offers no `point`) are started once, before pi, and should
+  sit on another GPU.
 - pi itself runs anywhere that reaches them: `--env` attaches to a running env server.
 
 ```bash

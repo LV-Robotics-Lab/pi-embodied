@@ -176,23 +176,67 @@ def test_a_lock_file_this_user_cannot_open_reads_as_in_use(tmp_path, monkeypatch
         acquire(["ur5e:10.0.0.9"], directory=str(tmp_path))
 
 
-def test_serials_come_first_and_one_arm_gets_one_id_under_both_franka_backends():
+def test_serials_come_first_and_the_address_locks_stay_alongside_them():
     rlinf_yaml = {"robot": {"ip": "172.16.0.2", "serial": "295341-1325480"}}
     polymetis_yaml = {"robot": {"nuc_ip": "192.168.1.100", "serial": "295341-1325480"}}
+    # Both Franka backends lock the serial (one id for one arm) and keep their own address lock.
     assert hardware_lock.hardware_ids("franka", rlinf_yaml, ["franka:172.16.0.2"]) == [
-        "franka:295341-1325480"
+        "franka:295341-1325480",
+        "franka:172.16.0.2",
     ]
     assert hardware_lock.hardware_ids(
         "franka", polymetis_yaml, ["franka-polymetis:192.168.1.100"]
-    ) == ["franka:295341-1325480"]
+    ) == ["franka:295341-1325480", "franka-polymetis:192.168.1.100"]
     # Without a serial: the addresses given, else the config's.
     assert hardware_lock.hardware_ids("ur5e", {"robot": {"ip": "10.0.0.9"}}) == [
         "ur5e:10.0.0.9"
     ]
-    # UR5e's calibration.arm_id is its controller serial.
+    # UR5e's calibration.arm_id is its controller serial; the address is locked too.
     assert hardware_lock.hardware_ids(
         "ur5e", {"robot": {"ip": "10.0.0.9"}, "calibration": {"arm_id": "2023300001"}}
-    ) == ["ur5e:2023300001"]
+    ) == ["ur5e:2023300001", "ur5e:10.0.0.9"]
+
+
+def test_a_server_configured_by_serial_and_one_by_address_alone_collide(tmp_path):
+    # The same arm at 172.16.0.2: one config names its serial, the other only its address. Both
+    # must hold the address lock, or they would lock disjoint ids and drive the arm together.
+    by_serial = hardware_lock.hardware_ids(
+        "franka", {"robot": {"ip": "172.16.0.2", "serial": "arm123"}}
+    )
+    by_address = hardware_lock.hardware_ids("franka", {"robot": {"ip": "172.16.0.2"}})
+    assert by_serial == ["franka:arm123", "franka:172.16.0.2"]
+    assert by_address == ["franka:172.16.0.2"]
+    with acquire(by_serial, directory=str(tmp_path), holder="franka-env"):
+        with pytest.raises(
+            RobotBusyError, match=r"arm franka:172\.16\.0\.2 .*franka-env"
+        ):
+            acquire(by_address, directory=str(tmp_path))
+    # And the other way round: the address holder refuses the serial-configured server.
+    with acquire(by_address, directory=str(tmp_path), holder="franka-env"):
+        with pytest.raises(
+            RobotBusyError, match=r"arm franka:172\.16\.0\.2 .*franka-env"
+        ):
+            acquire(by_serial, directory=str(tmp_path))
+
+
+def test_a_dual_arm_config_naming_one_serial_keeps_both_address_locks():
+    dual = {
+        "robot": {
+            "arms": {
+                "left": {"ip": "10.0.0.1", "serial": "left-serial"},
+                "right": {"ip": "10.0.0.2"},
+            }
+        }
+    }
+    assert hardware_lock.hardware_ids("franka", dual) == [
+        "franka:left-serial",
+        "franka:10.0.0.1",
+        "franka:10.0.0.2",
+    ]
+    # The RLinf server passes the addresses it resolved itself: the same rule.
+    assert hardware_lock.hardware_ids(
+        "franka", dual, ["franka:10.0.0.1", "franka:10.0.0.2"]
+    ) == ["franka:left-serial", "franka:10.0.0.1", "franka:10.0.0.2"]
 
 
 def test_camera_devices_are_locked_too():

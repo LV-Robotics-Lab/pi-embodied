@@ -3,10 +3,12 @@
 OpenETA's real-robot MCP (real/mcp/observation_core.py ``RealEnvManager._acquire_lock``) holds a
 non-blocking ``fcntl.flock`` on one lock file while its env exists, so two agents on one machine
 cannot drive the bench at once. Here each device has its own lock, ``<lock dir>/<id>.lock``: the
-arm by its serial when the config names one (``robot.serial`` / ``calibration.arm_id``, the same
-id whichever backend drives it: an RLinf and a Polymetis server of one Franka collide), else by
-its address (``franka:172.16.0.2``, ``ur5e:192.168.1.10``, ``piper:<CAN serial>``), and every
-camera device the config opens (``camera:<serial or /dev path>``). Two servers for different
+arm by its address (``franka:172.16.0.2``, ``ur5e:192.168.1.10``, ``piper:<CAN serial>``) and,
+when the config names one, by its serial as well (``robot.serial`` / ``calibration.arm_id``, the
+same id whichever backend drives it: an RLinf and a Polymetis server of one Franka collide on it
+even when they address the arm differently), and every camera device the config opens
+(``camera:<serial or /dev path>``). The address lock is never dropped for the serial one: a server
+whose config names no serial still collides with one whose config does. Two servers for different
 devices run side by side; a second server for a held one is refused at startup, before it
 touches the hardware, naming the holder (pid, server, time). The kernel drops a lock when its
 holder exits, crashed or not.
@@ -227,13 +229,17 @@ def read_config(path: Any) -> dict[str, Any]:
 
 
 def hardware_ids(kind: str, tree: Any, addresses: Iterable[str] = ()) -> list[str]:
-    """What a server of ``kind`` locks: its arms by serial when the config names one, else by
-    ``addresses`` (or the config's addresses), plus its camera devices."""
+    """What a server of ``kind`` locks: its arms by serial when the config names one AND by
+    ``addresses`` (or the config's addresses), plus its camera devices. The serial ids come first;
+    the address ids are kept alongside, never replaced, so a server configured by serial and one
+    configured by address alone collide on the address, and a dual-arm config naming one arm's
+    serial still locks the other arm's address."""
     robot = tree.get("robot") if isinstance(tree, Mapping) else None
-    arms = (
-        arm_serials(kind, tree) or list(addresses) or config_arm_ids(kind, robot or {})
-    )
-    return [*arms, *camera_ids(tree)]
+    arms = [
+        *arm_serials(kind, tree),
+        *(list(addresses) or config_arm_ids(kind, robot or {})),
+    ]
+    return list(dict.fromkeys([*arms, *camera_ids(tree)]))
 
 
 ADDRESS_KEYS = r"(\w+_)?robot_ip|ip|nuc_ip"

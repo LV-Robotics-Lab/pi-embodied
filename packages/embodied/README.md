@@ -432,8 +432,9 @@ in a new session. Boolean flags take the next word as their value; write them as
 - Genesis: the services' `[genesis]` extra (Python 3.11, Genesis 1.4, a GPU for rendering, no assets);
   OpenETA's Franka `cube_pick` (`--task cube_pick --seed 0`), a base-frame `move_delta` plus `gripper`,
   depth tools, units mode and `--privileged`; `src/robots/genesis/eval.sh`.
-- BEHAVIOR-1K: the venv `services/setup.sh behavior` builds (Isaac Sim, OmniGibson and BDDL from a
-  BEHAVIOR-1K checkout, the challenge dataset; see services/pi_embodied_services/robots/behavior/README.md);
+- BEHAVIOR-1K: the venv `services/setup.sh behavior` builds (Isaac Sim 6.1 with OmniGibson 3.9 patched by
+  `behavior-isaac61.patch` and its cuRobo, from a BEHAVIOR-1K checkout; the data under `OMNIGIBSON_DATA_PATH`,
+  whose 2026 task instances are the `--seed`s; see services/pi_embodied_services/robots/behavior/README.md);
   the 50 2025-challenge activities on the R1Pro (`--task turning_on_radio --seed <instance>`; GPU: `cuda_device`),
   OmniGibson's semantic primitives as tools (`navigate_to_pose`, `move_hand`, `grasp_object`, the
   grippers), `segment` / `point` / `back_project` on three cameras, `--grasping-mode` and

@@ -74,10 +74,14 @@ uv pip install -e "services[robocasa]" \
 # (sparse-clones the rig code, fetches the table textures with sha256 checks, and writes
 # BlockStack's extended-finger Panda URDF, which is not published anywhere).
 
-# BEHAVIOR-1K / R1Pro (OmniGibson + BDDL; Isaac Sim from NVIDIA's index, the challenge dataset:
-# tens of GB): robots/behavior/install.sh <venv> <BEHAVIOR-1K checkout> [--dataset]; the env
-# server takes --gpu-id (OMNIGIBSON_GPU_ID). See robots/behavior/README.md for what runs where.
-bash services/pi_embodied_services/robots/behavior/install.sh services/.venv-behavior ~/BEHAVIOR-1K --dataset
+# BEHAVIOR-1K / R1Pro (OmniGibson 3.9.0 + BDDL): OmniGibson pins Isaac Sim 5.1, which segfaults at RTX
+# startup on driver 595.x, so robots/behavior/install_isaac61.sh builds an Isaac Sim 6.1 venv (Python 3.12,
+# torch 2.11 cu128), patches OmniGibson with behavior-isaac61.patch and its cuRobo with curobo-isaac61.patch
+# (built for the host GPU; needs a CUDA 12.x nvcc at CUDA_HOME), and with --dataset fetches the data (31 GB,
+# license key) into OMNIGIBSON_DATA_PATH. The env server takes --gpu-id and --data-path. robots/behavior/install.sh
+# is OmniGibson's own 5.1 / 4.5 stack (not run here). See robots/behavior/README.md for the data layout and
+# what runs where.
+bash services/pi_embodied_services/robots/behavior/install_isaac61.sh services/.venv-behavior ~/BEHAVIOR-1K --dataset
 
 # RoboDojo (robodojo-benchmark/RoboDojo @726e9aa, eval only; two ARX X5 arms): it pins Isaac Sim 5.1,
 # whose RTX scene DB segfaults at startup on driver 595.x (isaac-sim/IsaacSim#677; reproduced with

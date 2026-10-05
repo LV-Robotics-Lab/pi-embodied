@@ -1,0 +1,17 @@
+OmniGibson's cuRobo (StanfordVL/curobo @78612f45, the [primitives] pin) on warp 1.16 (Isaac Sim 6.1's):
+warp.torch is gone from the top-level namespace; device_from_torch is exported as wp.device_from_torch.
+Applied by install_isaac61.sh in <behavior-1k-dir>/third_party/curobo.
+
+diff --git a/src/curobo/geom/sdf/world_mesh.py b/src/curobo/geom/sdf/world_mesh.py
+index 2bde2a5..0788e04 100644
+--- a/src/curobo/geom/sdf/world_mesh.py
++++ b/src/curobo/geom/sdf/world_mesh.py
+@@ -64,7 +64,7 @@ class WorldMeshCollision(WorldPrimitiveCollision):
+         self._env_n_mesh = None
+         self._mesh_tensor_list = None
+         self._env_mesh_names = None
+-        self._wp_device = wp.torch.device_from_torch(self.tensor_args.device)
++        self._wp_device = wp.device_from_torch(self.tensor_args.device)
+         self._wp_mesh_cache = {}  # stores warp meshes across environments
+ 
+         super().__init__(config)

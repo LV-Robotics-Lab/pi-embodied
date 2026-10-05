@@ -8,7 +8,8 @@
  *      (run_code over the server's registry; a primitive takes minutes: --code-timeout defaults to 900 s)
  *
  * Starts one BEHAVIOR env server per session (services/.../robots/behavior/env_server.py in the
- * `behavior` venv, see robots/behavior/install.sh; OmniGibson loads a whole house, minutes). The
+ * `behavior` venv, see robots/behavior/install_isaac61.sh: Isaac Sim 6.1 with OmniGibson 3.9 patched by
+ * behavior-isaac61.patch; OmniGibson loads a whole house, minutes). The
  * tools are OmniGibson's semantic primitives as CaP-X's R1ProControlApi exposed them
  * (navigate_to_pose, move_hand, grasp_object, open/close_gripper, get_robot_position), the
  * perception tools (segment via SAM3, point via Molmo, back_project through the cameras' metric

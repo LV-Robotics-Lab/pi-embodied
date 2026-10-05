@@ -1,0 +1,223 @@
+OmniGibson 3.9.0 (StanfordVL/BEHAVIOR-1K v3.9.0, 6559858) on Isaac Sim 6.1 / Kit 110 (Python 3.12,
+torch 2.11 cu128, warp 1.16). Applied by install_isaac61.sh at the BEHAVIOR-1K root; run on the box's
+RTX 5090 with driver 595.71.05, where OmniGibson's own Isaac Sim 5.1 segfaults at RTX startup
+(isaac-sim/IsaacSim#677).
+
+- simulator.py: an omnigibson_6_1_0.kit for Isaac Sim 6.1.0 (OmniGibson picks its kit file by the
+  exact Isaac Sim version); the PhysX interface and PhysX simulation interface come from omni.physx
+  (Isaac Sim 6.1's PhysicsContext no longer keeps _physx_interface / _physx_sim_interface).
+- omnigibson_6_1_0.kit: omnigibson_5_1_0.kit with Kit 110's extension registry. The deprecated
+  isaacsim.core.* extensions OmniGibson uses still ship (extsDeprecated) and load through
+  isaacsim.exp.base.
+- prims/material_prim.py: OpenUSD without Ndr renamed SdrShaderNode.GetInput / GetInputNames to
+  GetShaderInput / GetShaderInputNames (old names kept as the fallback).
+- utils/deprecated_utils.py: Isaac Sim 6.1 invalidates an articulation's physics view through
+  carb.eventdispatcher (GLOBAL_EVENT_STOP only, events without .type).
+- action_primitives/curobo.py: an OmniGibson 3.9.0 bug on compute capability 12.0 (RTX 50-series),
+  not an Isaac Sim 6.1 one: CuRoboMotionGenerator drops the R1Pro's DEFAULT embodiment there (its
+  warmup hits a CUDA illegal memory access in cuRobo's optimizer; reproduced with cuRobo built for
+  sm_120), then update_obstacles indexed the missing DEFAULT MotionGen, so every plan raised
+  KeyError. It now updates the shared world collision checker through the MotionGen that exists.
+
+Not changed, measured: Kit renders on the one GPU CUDA_VISIBLE_DEVICES leaves visible when
+OMNIGIBSON_GPU_ID is unset (the env server's sim.set_render_gpu); an explicit active_gpu 0 makes
+RTX create no device on Isaac Sim 6.1.
+
+diff --git a/OmniGibson/omnigibson/action_primitives/curobo.py b/OmniGibson/omnigibson/action_primitives/curobo.py
+index fe3e885..482264e 100644
+--- a/OmniGibson/omnigibson/action_primitives/curobo.py
++++ b/OmniGibson/omnigibson/action_primitives/curobo.py
+@@ -311,7 +311,11 @@ class CuRoboMotionGenerator:
+ 
+         world = lazy.curobo.geom.types.WorldConfig(**obstacles)
+         world = world.get_collision_check_world()
+-        self.mg[CuRoboEmbodimentSelection.DEFAULT].update_world(world)
++        # Isaac Sim 6.1 port, an OmniGibson 3.9.0 bug on compute capability 12.0 (RTX 50-series): the R1Pro's DEFAULT
++        # embodiment is excluded in __init__ (its cuRobo warmup hits an illegal memory access), so self.mg may have no
++        # DEFAULT entry and this line raised KeyError on every plan. All MotionGens share one world collision checker.
++        mg = self.mg.get(CuRoboEmbodimentSelection.DEFAULT) or next(iter(self.mg.values()))
++        mg.update_world(world)
+ 
+     def check_collisions(
+         self,
+diff --git a/OmniGibson/omnigibson/omnigibson_6_1_0.kit b/OmniGibson/omnigibson/omnigibson_6_1_0.kit
+new file mode 100644
+index 0000000..eafd980
+--- /dev/null
++++ b/OmniGibson/omnigibson/omnigibson_6_1_0.kit
+@@ -0,0 +1,56 @@
++# Isaac Sim 6.1 port: omnigibson_5_1_0.kit for Kit 110 (the extension registry of Kit 110 instead of 107).
++# Its dependencies all ship with Isaac Sim 6.1; the deprecated isaacsim.core.* extensions OmniGibson uses
++# come in through isaacsim.exp.base.
++
++[package]
++description = "A platform for accelerating Embodied AI research"
++title = "OmniGibson"
++version = "3.9.0"
++
++keywords = ["experience", "app", "usd", "isaacsim"] # That makes it browsable in UI with "experience" filter
++
++
++[dependencies]
++"isaacsim.exp.base" = {}
++"omni.flowusd" = {}
++#"omni.kit.xr.profile.vr" = {}
++"omni.physx.supportui" = {}
++#"omni.isaac.physics_inspector" = {}
++
++[settings.app]
++name = "OmniGibson"
++version = "3.9.0"
++settings.persistent = false       # settings reset on each run with this app
++window.title = "OmniGibson"
++vulkan = true # Explicitly enable Vulkan (on by default on Linux, off by default on Windows)
++window.iconPath = "${app}/OmniGibson_logo.png"
++enableDeveloperWarnings = false    # disable developer warnings to reduce log noise
++
++[settings.crashreporter]
++enabled = false           # disable Kit crash reporter
++gatherUserStory = false
++
++[settings.app.livestream]
++proto = "ws"
++allowResize = true
++outDirectory = "${data}"
++
++[settings.app.exts.folders]
++'++' = [
++    "${app}",
++    "${app}/../exts",
++    "${app}/../extscache",
++    "${app}/../extsPhysics",
++    "${app}/../extsUser",
++    "${app}/../extsDeprecated",
++]
++
++[settings.exts."omni.kit.registry.nucleus"]
++registries = [
++	{ name = "kit/default", url = "https://ovextensionsprod.blob.core.windows.net/exts/kit/prod/110/shared" },
++	{ name = "kit/sdk", url = "https://ovextensionsprod.blob.core.windows.net/exts/kit/prod/sdk/${kit_version_short}/${kit_git_hash}" },
++	{ name = "kit/community", url = "https://dw290v42wisod.cloudfront.net/exts/kit/community" },
++]
++
++[settings.app.extensions]
++pathStatCacheEnabled = false
+diff --git a/OmniGibson/omnigibson/prims/material_prim.py b/OmniGibson/omnigibson/prims/material_prim.py
+index 50e08c4..8fbffbd 100644
+--- a/OmniGibson/omnigibson/prims/material_prim.py
++++ b/OmniGibson/omnigibson/prims/material_prim.py
+@@ -13,6 +13,18 @@ from omnigibson.utils.usd_utils import absolute_prim_path_to_scene_relative, get
+ log = create_module_logger(module_name=__name__)
+ 
+ 
++def _sdr_input(node, name):
++    """An Sdr shader node's input: GetShaderInput on OpenUSD without Ndr (Isaac Sim 6.1), GetInput before."""
++    get = getattr(node, "GetShaderInput", None) or node.GetInput
++    return get(name)
++
++
++def _sdr_input_names(node):
++    """An Sdr shader node's input names (GetShaderInputNames on Isaac Sim 6.1, GetInputNames before)."""
++    get = getattr(node, "GetShaderInputNames", None) or node.GetInputNames
++    return get()
++
++
+ class MaterialPrim(BasePrim):
+     """
+     Provides high level functions to deal with a material prim and its attributes/ properties.
+@@ -272,7 +284,7 @@ class MaterialPrim(BasePrim):
+         if non_default_inp is not None:
+             return non_default_inp
+ 
+-        return self._shader_node.GetInput(inp).GetDefaultValue()
++        return _sdr_input(self._shader_node, inp).GetDefaultValue()
+ 
+     def set_input(self, inp, val):
+         """
+@@ -314,7 +326,7 @@ class MaterialPrim(BasePrim):
+         Returns:
+             set: All the shader input names associated with this material that have default values
+         """
+-        return set(self._shader_node.GetInputNames())
++        return set(_sdr_input_names(self._shader_node))
+ 
+     def get_shader_input_names_by_type(self, input_type, include_default=False):
+         """
+@@ -332,7 +344,7 @@ class MaterialPrim(BasePrim):
+         shader_default_input_names = {
+             inp_name
+             for inp_name in self.shader_default_input_names
+-            if self._shader_node.GetInput(inp_name).GetType() == input_type
++            if _sdr_input(self._shader_node, inp_name).GetType() == input_type
+         }
+         return shader_input_names | shader_default_input_names
+ 
+diff --git a/OmniGibson/omnigibson/simulator.py b/OmniGibson/omnigibson/simulator.py
+index fd21294..69411b0 100644
+--- a/OmniGibson/omnigibson/simulator.py
++++ b/OmniGibson/omnigibson/simulator.py
+@@ -69,6 +69,7 @@ m.INITIAL_SCENE_PRIM_Z_OFFSET = -100.0
+ 
+ m.KIT_FILES = {
+     (5, 1, 0): "omnigibson_5_1_0.kit",
++    (6, 1, 0): "omnigibson_6_1_0.kit",
+ }
+ 
+ 
+@@ -462,20 +463,23 @@ def _launch_simulator(*args, **kwargs):
+ 
+             # Store other references to variables that will be initialized later
+             self._scenes = []
++            # Isaac Sim 6.1 port: PhysicsContext no longer keeps the PhysX interface (_physx_interface); omni.physx
++            # hands out the same interface.
++            physx_interface = lazy.omni.physx.get_physx_interface()
+             # The callback will be called right *before* the physics step
+-            self._pre_physics_step_callback = self._physics_context._physx_interface.subscribe_physics_on_step_events(
++            self._pre_physics_step_callback = physx_interface.subscribe_physics_on_step_events(
+                 lambda _: self._on_pre_physics_step(),
+                 pre_step=True,
+                 order=0,
+             )
+             # The callback will be called right *after* the physics step
+-            self._post_physics_step_callback = self._physics_context._physx_interface.subscribe_physics_on_step_events(
++            self._post_physics_step_callback = physx_interface.subscribe_physics_on_step_events(
+                 lambda _: self._on_post_physics_step(),
+                 pre_step=False,
+                 order=0,
+             )
+             self._simulation_event_callback = (
+-                self._physics_context._physx_interface.get_simulation_event_stream_v2().create_subscription_to_pop(
++                physx_interface.get_simulation_event_stream_v2().create_subscription_to_pop(
+                     self._on_simulation_event
+                 )
+             )
+@@ -1121,11 +1125,11 @@ def _launch_simulator(*args, **kwargs):
+ 
+         @property
+         def pi(self):
+-            return self._physics_context._physx_interface
++            return lazy.omni.physx.get_physx_interface()  # Isaac Sim 6.1: not on PhysicsContext any more
+ 
+         @property
+         def psi(self):
+-            return self._physics_context._physx_sim_interface
++            return lazy.omni.physx.get_physx_simulation_interface()  # Isaac Sim 6.1: not on PhysicsContext any more
+ 
+         @property
+         def psqi(self):
+diff --git a/OmniGibson/omnigibson/utils/deprecated_utils.py b/OmniGibson/omnigibson/utils/deprecated_utils.py
+index f4857ba..956c34f 100644
+--- a/OmniGibson/omnigibson/utils/deprecated_utils.py
++++ b/OmniGibson/omnigibson/utils/deprecated_utils.py
+@@ -591,7 +591,10 @@ class ArticulationView(_ArticulationView):
+ 
+     def _invalidate_physics_handle_callback(self, event):
+         # Overwrite super method, add additional de-initialization
+-        if event.type == int(omni.timeline.TimelineEventType.STOP):
++        # Isaac Sim 6.1 port: the base class observes only the timeline's GLOBAL_EVENT_STOP through
++        # carb.eventdispatcher, whose events carry no .type; older ones get every timeline event.
++        event_type = getattr(event, "type", None)
++        if event_type is None or event_type == int(omni.timeline.TimelineEventType.STOP):
+             self._physics_view = None
+             self._invalidate_physics_handle_event = None
+             self._is_initialized = False

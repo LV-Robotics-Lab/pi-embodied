@@ -23,7 +23,8 @@
 #                   Assets/ (~41 GB) under the weights dir unless --no-assets
 #   humanclaw       HumanCLAW venv (py3.10, torch 2.6 cu124 + its constraints; HUMANCLAW_TORCH on sm_120), patched
 #                   Habitat-Sim, paper_fullval_v1 weights, HSSD val41 (gated; robots/humanclaw/install.sh)
-#   behavior        Isaac Sim + OmniGibson/BDDL venv from a BEHAVIOR-1K checkout (robots/behavior/install.sh)
+#   behavior        Isaac Sim 6.1 venv + patched OmniGibson 3.9 + its cuRobo from a BEHAVIOR-1K checkout
+#                   (robots/behavior/install_isaac61.sh; B1K_STACK=isaac51 for OmniGibson's own Isaac Sim 5.1 stack, install.sh)
 #   franka          [franka,sam3] py3.11 (real arm; RLinf controller stack and Ray on the box)
 #   franka-polymetis [franka-polymetis] py3.10 (real arm on a Polymetis NUC)
 #   dual-franka     [franka,sam3] py3.11 (two real arms)
@@ -229,7 +230,9 @@ robodojo)
 	;;
 behavior)
 	root=${BEHAVIOR_1K_ROOT:-$HOME/BEHAVIOR-1K}
-	run bash "$SERVICES/pi_embodied_services/robots/behavior/install.sh" "$venv" "$root"
+	b1k=install_isaac61.sh
+	[ "${B1K_STACK:-isaac61}" = isaac51 ] && b1k=install.sh
+	run bash "$SERVICES/pi_embodied_services/robots/behavior/$b1k" "$venv" "$root"
 	export_env OMNIGIBSON_DATA_PATH "${OMNIGIBSON_DATA_PATH:-$root/datasets}"
 	export_env OMNI_KIT_ACCEPT_EULA YES
 	;;

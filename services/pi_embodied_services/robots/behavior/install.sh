@@ -7,12 +7,11 @@
 # Two supported stacks (B1K_VERSION): 3.9.0 (default; Isaac Sim 5.1, Python 3.11, what OpenETA
 # pins) and 3.7.2 (Isaac Sim 4.5, Python 3.10, CaP-X's capx/third_party/b1k fork). Both pin
 # Isaac Sim releases whose RTX startup segfaults on NVIDIA driver 595.x (isaac-sim/IsaacSim#677:
-# 5.x verified, 4.5 see the robot's README); Isaac Sim 6.1 (Python 3.12) is not supported by
-# OmniGibson: B1K_ISAAC=6.1.0.0 B1K_PYTHON=3.12 builds the probe venv described there (OmniGibson
-# imports, Kit launches; not a supported combination).
+# 5.x verified, 4.5 see the robot's README): there use install_isaac61.sh (Isaac Sim 6.1, Python
+# 3.12, OmniGibson 3.9.0 patched by behavior-isaac61.patch), the only stack this repository has run.
 #
-# The dataset (--dataset: og_dataset scenes, assets, the 2025-challenge-task-instances; tens of
-# GB) is fetched by OmniGibson's own downloader into OMNIGIBSON_DATA_PATH (default
+# The dataset (--dataset: the robot assets, behavior-1k-assets, the 2025-challenge-task-instances;
+# tens of GB) is fetched by OmniGibson's own downloader into OMNIGIBSON_DATA_PATH (default
 # <behavior-1k-dir>/datasets). Mirrors: PIP_INDEX for PyPI, NVIDIA_INDEX for the Isaac Sim
 # wheels (e.g. https://pypi.nvidia.cn), TORCH_INDEX for torch.
 set -euo pipefail

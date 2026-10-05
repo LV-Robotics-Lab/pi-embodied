@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 import os
 import time
 from dataclasses import dataclass, field
@@ -119,10 +120,12 @@ class RobotModel:
     curobo_config: str | None = None
     #: Links that stay put in the world whatever the joints (the base and the first link,
     #: which only turns about the base axis). A robot mounted at a table edge sits in the
-    #: table's box with them (LIBERO: 126 mm into it), so every plan would start in collision.
-    #: cuRobo keeps their spheres and leaves out of a plan or check the obstacles they already
-    #: penetrate at the start configuration (reported as ``excluded_by_base``); PyRoKi leaves
-    #: the links out of world collision instead.
+    #: table's box with them (LIBERO: 126 mm by PyRoKi's capsules), so every plan would start
+    #: in collision. cuRobo keeps their spheres and carves the column they occupy out of the
+    #: obstacles they already penetrate at the start configuration (reported as
+    #: ``excluded_by_base``; the rest of each obstacle stays in the world for every other
+    #: link); PyRoKi leaves the links out of world collision instead. 未上机验证: the cuRobo
+    #: path is covered by the fakes in test_motion_plan.py, not by a GPU run.
     static_links: tuple[str, ...] = ()
     note: str = ""
 
@@ -899,6 +902,56 @@ def _curobo_deterministic() -> None:
     LBFGSOpt._pi_torch_step = True
 
 
+#: A carved obstacle's pieces stay this far from the base's spheres (``carve_column``).
+BASE_CARVE_MARGIN_M = 0.01
+
+
+def carve_column(
+    box: dict[str, Any], radius: float, z_lo: float, z_hi: float
+) -> list[dict[str, Any]]:
+    """The parsed ``box`` less a vertical column of ``radius`` about the base frame's z axis
+    (the base's spheres lie between ``z_lo`` and ``z_hi``), cut through the box's whole
+    height: up to four boxes with the box's name and orientation, those with an extent left.
+    The column is cut along the box's most vertical axis; when the box is tilted the column's
+    footprint on it is bounded conservatively (the cylinder's extent along each cross axis).
+    """
+    R = Rotation.from_quat(box["quat_xyzw"]).as_matrix()
+    c = np.asarray(box["position"], dtype=np.float64)
+    e = np.asarray(box["extent"], dtype=np.float64)
+    lo, hi = -e / 2.0, e / 2.0
+    k = int(np.argmax(np.abs(R[2, :])))  # the box axis most along the world's z
+    cross = [a for a in range(3) if a != k]
+    mid_local = R.T @ (np.array([0.0, 0.0, 0.5 * (z_lo + z_hi)]) - c)
+    half_h = 0.5 * (z_hi - z_lo)
+    span: dict[int, tuple[float, float]] = {}
+    for a in cross:
+        uz = abs(float(R[2, a]))
+        half = radius * math.sqrt(max(0.0, 1.0 - uz * uz)) + half_h * uz
+        span[a] = (
+            max(float(lo[a]), float(mid_local[a]) - half),
+            min(float(hi[a]), float(mid_local[a]) + half),
+        )
+    a, b = cross
+    if span[a][0] >= span[a][1] or span[b][0] >= span[b][1]:
+        return [box]  # the column misses the box: nothing to carve
+    pieces: list[dict[str, Any]] = []
+    for bounds in (
+        {a: (float(lo[a]), span[a][0])},
+        {a: (span[a][1], float(hi[a]))},
+        {a: span[a], b: (float(lo[b]), span[b][0])},
+        {a: span[a], b: (span[b][1], float(hi[b]))},
+    ):
+        p_lo, p_hi = lo.copy(), hi.copy()
+        for axis, (low, high) in bounds.items():
+            p_lo[axis], p_hi[axis] = low, high
+        if np.any(p_hi - p_lo < 1e-3):
+            continue
+        pieces.append(
+            {**box, "position": c + R @ ((p_lo + p_hi) / 2.0), "extent": p_hi - p_lo}
+        )
+    return pieces
+
+
 class CuroboBackend:
     """IK with self-collision checks and collision-free planning with cuRobo (GPU).
 
@@ -1038,44 +1091,52 @@ class CuroboBackend:
     # -- helpers ----------------------------------------------------------
 
     @staticmethod
-    def _world_dict(obstacles: list[dict[str, Any]]) -> dict[str, Any]:
+    def _as_box(obs: dict[str, Any]) -> dict[str, Any]:
+        """A parsed obstacle as a parsed box: a box as it is, a sphere its bounding cube, a
+        capsule its bounding box and a halfspace a 10 m slab below its plane; all
+        conservative."""
+        if obs["type"] == "box":
+            return obs
+        out: dict[str, Any] = {"type": "box", "name": obs["name"]}
+        if obs["type"] == "sphere":
+            side = 2.0 * obs["radius"]
+            out["position"] = np.asarray(obs["center"], dtype=np.float64)
+            out["extent"] = np.array([side, side, side])
+            out["quat_xyzw"] = np.array([0.0, 0.0, 0.0, 1.0])
+        elif obs["type"] == "capsule":
+            side = 2.0 * obs["radius"]
+            out["position"] = np.asarray(obs["position"], dtype=np.float64)
+            out["extent"] = np.array([side, side, obs["height"] + side])
+            out["quat_xyzw"] = np.asarray(obs["quat_xyzw"], dtype=np.float64)
+        else:
+            normal = obs["normal"] / np.linalg.norm(obs["normal"])
+            depth = 10.0
+            rot = Rotation.align_vectors([normal], [[0.0, 0.0, 1.0]])[0]
+            out["position"] = obs["point"] - normal * depth / 2.0
+            out["extent"] = np.array([depth * 2, depth * 2, depth])
+            out["quat_xyzw"] = rot.as_quat()
+        return out
+
+    @classmethod
+    def _world_dict(cls, obstacles: list[dict[str, Any]]) -> dict[str, Any]:
         """cuRobo ``WorldConfig`` dict of cuboids only: cuRobo's primitive collision checker
         (MotionGen's) sees nothing but cuboids and meshes and silently ignores spheres and
-        capsules (measured: a plan into another arm's spheres succeeded), so a sphere becomes
-        its bounding cube, a capsule its bounding box and a halfspace a 10 m slab below its
-        plane; all conservative."""
+        capsules (measured: a plan into another arm's spheres succeeded), so every obstacle
+        is its ``_as_box``. The pieces of a carved obstacle (``base_excluded``) share its
+        name; their keys here are numbered."""
         cuboids: dict[str, dict[str, Any]] = {}
         for i, obs in enumerate(obstacles):
+            box = cls._as_box(obs)
             name = obs["name"] or f"{obs['type']}_{i}"
-            if obs["type"] == "box":
-                q = np.asarray(obs["quat_xyzw"])[[3, 0, 1, 2]]
-                cuboids[name] = {
-                    "dims": obs["extent"].tolist(),
-                    "pose": [*obs["position"].tolist(), *q.tolist()],
-                }
-            elif obs["type"] == "sphere":
-                side = 2.0 * obs["radius"]
-                cuboids[name] = {
-                    "dims": [side, side, side],
-                    "pose": [*obs["center"].tolist(), 1.0, 0.0, 0.0, 0.0],
-                }
-            elif obs["type"] == "capsule":
-                q = np.asarray(obs["quat_xyzw"])[[3, 0, 1, 2]]
-                side = 2.0 * obs["radius"]
-                cuboids[name] = {
-                    "dims": [side, side, obs["height"] + side],
-                    "pose": [*obs["position"].tolist(), *q.tolist()],
-                }
-            else:
-                normal = obs["normal"] / np.linalg.norm(obs["normal"])
-                depth = 10.0
-                rot = Rotation.align_vectors([normal], [[0.0, 0.0, 1.0]])[0]
-                center = obs["point"] - normal * depth / 2.0
-                q = rot.as_quat()[[3, 0, 1, 2]]
-                cuboids[name] = {
-                    "dims": [depth * 2, depth * 2, depth],
-                    "pose": [*center.tolist(), *q.tolist()],
-                }
+            key = name if name not in cuboids else f"{name}#{i}"
+            q = np.asarray(box["quat_xyzw"])[[3, 0, 1, 2]]
+            cuboids[key] = {
+                "dims": np.asarray(box["extent"], dtype=np.float64).tolist(),
+                "pose": [
+                    *np.asarray(box["position"], dtype=np.float64).tolist(),
+                    *q.tolist(),
+                ],
+            }
         return {"cuboid": cuboids} if cuboids else dict(CUROBO_EMPTY_WORLD)
 
     def _full_q(self, solver: Any, arm_q: np.ndarray) -> np.ndarray:
@@ -1125,8 +1186,17 @@ class CuroboBackend:
     def base_excluded(
         self, robot: str, q: Any, obstacles: list[dict[str, Any]]
     ) -> tuple[list[dict[str, Any]], list[str]]:
-        """``obstacles`` without those the static links' spheres (``RobotModel.static_links``)
-        already penetrate at ``q`` (the table box a mounted base sits in), and their names."""
+        """``obstacles`` with those the static links' spheres (``RobotModel.static_links``)
+        already penetrate at ``q`` (the table box a mounted base stands in) carved around the
+        base, and those obstacles' names.
+
+        Only the pair (that obstacle, the base's spheres) is excused; the obstacle stays in
+        the world for every other link. A column about the base axis, as far out as the
+        base's spheres reach from it (whatever joint 1 turns them to) plus
+        ``BASE_CARVE_MARGIN_M``, is cut out of it (``carve_column``), and the pieces keep
+        their surfaces where they were, so an elbow dipping into the table is still a
+        collision. A sphere, capsule or halfspace is carved as the box cuRobo's planner sees
+        it as anyway (``_as_box``). Plans and checks get the same pieces."""
         model = self._model(robot)
         if not model.static_links or not obstacles:
             return obstacles, []
@@ -1144,11 +1214,23 @@ class CuroboBackend:
             -1, 4
         )
         base = spheres[idx]
+        base = base[base[:, 3] > 0]  # cuRobo disables a sphere by a negative radius
+        if not len(base):
+            return obstacles, []
+        reach = float(np.max(np.linalg.norm(base[:, :2], axis=1) + base[:, 3]))
         kept, excluded = [], []
         for i, obs in enumerate(obstacles):
             gap, _ = collision.sphere_clearance([obs], base)
             if gap < 0.0:
                 excluded.append(obs["name"] or f"{obs['type']}_{i}")
+                kept.extend(
+                    carve_column(
+                        self._as_box(obs),
+                        reach + BASE_CARVE_MARGIN_M,
+                        float(np.min(base[:, 2] - base[:, 3])),
+                        float(np.max(base[:, 2] + base[:, 3])),
+                    )
+                )
             else:
                 kept.append(obs)
         return kept, excluded

@@ -971,7 +971,13 @@ def test_curobo_keeps_the_base_spheres_and_excludes_what_the_base_already_sits_i
         [0.4, 0, 0.3, 0, 0, 0, 0],
         [collision.parse_obstacle(o) for o in (table, shelf)],
     )
-    assert excluded == ["table/7"] and [o["name"] for o in kept] == ["shelf"]
+    # Audit 92245e3 CUROBO-1: the table is not dropped from the arm's world; it is carved
+    # around the base (four pieces keeping its name), so only the (table, base) pair is excused.
+    assert excluded == ["table/7"]
+    assert [o["name"] for o in kept] == ["table/7"] * 4 + ["shelf"]
+    base_sphere = [[0, 0, 0.05, 0.05]]
+    assert collision.sphere_clearance(kept[:4], base_sphere)[0] >= 0.01 - 1e-9
+    assert min(collision.point_distance(o, [[0.4, 0, 0.0]])[0] for o in kept[:4]) < 0
     out = IkFacade(backend).check(
         "panda", q=[0.4, 0, 0.25, 0, 0, 0, 0], obstacles=[table, shelf]
     )
@@ -979,8 +985,196 @@ def test_curobo_keeps_the_base_spheres_and_excludes_what_the_base_already_sits_i
     assert (
         out["collision_free"] is False and out["nearest"] == "shelf"
     )  # the hand still counts
+    # A path whose hand dips into the table away from the base is refused, by the table.
+    out = IkFacade(backend).check(
+        "panda",
+        path=[[0.4, 0, 0.3, 0, 0, 0, 0], [0.4, 0, 0.0, 0, 0, 0, 0]],
+        obstacles=[table, shelf],
+    )
+    assert out["collision_free"] is False and out["worst_index"] == 1
+    assert out["nearest"] == "table/7" and out["excluded_by_base"] == ["table/7"]
     # Robots without static links (ur5e) exclude nothing.
     assert backend.base_excluded("ur5e", [0] * 6, kept) == (kept, [])
+
+
+def test_carve_column_cuts_only_the_base_out_of_a_box():
+    """Audit 92245e3 CUROBO-1: the column the base's spheres reach is cut out of the box
+    (whatever its orientation); the rest keeps the box's name and surfaces."""
+    from scipy.spatial.transform import Rotation
+
+    from pi_embodied_services.components.ik_server import carve_column
+
+    for quat in (
+        [0, 0, 0, 1],
+        Rotation.from_euler("z", 45, degrees=True).as_quat(),
+        Rotation.from_euler("x", 20, degrees=True).as_quat(),
+    ):
+        box = collision.parse_obstacle(
+            {
+                "type": "box",
+                "name": "table",
+                "position": [0.3, 0, -0.1],
+                "extent": [1.0, 1.0, 0.25],
+                "quat_xyzw": list(quat),
+            }
+        )
+        pieces = carve_column(box, 0.06, 0.0, 0.1)
+        assert 1 <= len(pieces) <= 4 and all(p["name"] == "table" for p in pieces)
+        # The base's sphere is a margin clear of every piece ...
+        assert (
+            collision.sphere_clearance(pieces, [[0, 0, 0.05, 0.05]])[0] >= 0.01 - 1e-9
+        )
+        # ... while the table 10 cm and 40 cm out of the axis is still solid.
+        for point in ([0.12, 0, -0.1], [0.4, 0, -0.1]):
+            assert min(collision.point_distance(p, [point])[0] for p in pieces) < 0
+    # A column that misses the box leaves it whole.
+    far = collision.parse_obstacle(
+        {
+            "type": "box",
+            "name": "shelf",
+            "position": [1, 0, 0],
+            "extent": [0.2, 0.2, 0.2],
+        }
+    )
+    assert carve_column(far, 0.06, 0.0, 0.1) == [far]
+
+
+def _fake_curobo(monkeypatch):
+    """The cuRobo modules ``CuroboBackend.plan`` imports, as doubles."""
+    import sys
+    import types
+
+    class WorldConfig:
+        def __init__(self, d):
+            self.d = d
+
+        @classmethod
+        def from_dict(cls, d):
+            return cls(d)
+
+    class JointState:
+        def __init__(self, position):
+            self.position = position
+
+        @classmethod
+        def from_position(cls, position):
+            return cls(position)
+
+    class MotionGenPlanConfig:
+        def __init__(self, **kw):
+            self.kw = kw
+
+    for name, attrs in (
+        ("curobo", {}),
+        ("curobo.geom", {}),
+        ("curobo.geom.types", {"WorldConfig": WorldConfig}),
+        ("curobo.types", {}),
+        ("curobo.types.state", {"JointState": JointState}),
+        ("curobo.wrap", {}),
+        ("curobo.wrap.reacher", {}),
+        (
+            "curobo.wrap.reacher.motion_gen",
+            {"MotionGenPlanConfig": MotionGenPlanConfig},
+        ),
+    ):
+        module = types.ModuleType(name)
+        module.__dict__.update(attrs)
+        monkeypatch.setitem(sys.modules, name, module)
+
+
+def test_curobo_plans_against_the_table_carved_around_the_base(monkeypatch):
+    """Audit 92245e3 CUROBO-1: ``plan`` gave cuRobo a world without the table the base stands
+    in, so a trajectory sweeping the forearm through the table came back collision_free. The
+    planner's world now holds the table's pieces around the base (and the check the same)."""
+    _fake_curobo(monkeypatch)
+
+    class Config:
+        link_name_to_idx_map = {"panda_link0": 0, "panda_hand": 1}
+
+        @staticmethod
+        def get_sphere_index_from_link_name(name):
+            return _T([0] if name == "panda_link0" else [1])
+
+    class Kin(_Kin):
+        kinematics_config = Config()
+
+        def get_state(self, rows):
+            rows = np.asarray(rows, dtype=float)
+
+            class S:
+                link_spheres_tensor = _T(
+                    np.stack([[[0, 0, 0.05, 0.05], [*r[:3], 0.04]] for r in rows])
+                )
+
+            return S()
+
+    class Solver:
+        kinematics = Kin()
+        tensor_args = _TA()
+
+    class Planner:
+        kinematics = Kin()
+        tensor_args = _TA()
+
+        class world_coll_checker:
+            @staticmethod
+            def clear_cache():
+                pass
+
+        def __init__(self):
+            self.worlds = []
+
+        def update_world(self, world):
+            self.worlds.append(world.d)
+
+        def plan_single_js(self, start, goal, cfg):
+            class Result:
+                success = _T([False])
+                status = "MotionGenStatus.TRAJOPT_FAIL"
+
+            return Result()
+
+    planner = Planner()
+    backend = CuroboBackend(
+        solver_factory=lambda m: Solver(), planner_factory=lambda m: planner
+    )
+    table = {
+        "type": "box",
+        "name": "table/7",
+        "position": [0.3, 0, -0.1],
+        "extent": [1.0, 1.0, 0.25],
+    }
+    shelf = {
+        "type": "box",
+        "name": "shelf",
+        "position": [0.4, 0, 0.3],
+        "extent": [0.2, 0.2, 0.02],
+    }
+    out = backend.plan(
+        "panda",
+        [0.4, 0, 0.3, 0, 0, 0, 0],
+        goal_q=[0.4, 0, 0.0, 0, 0, 0, 0],
+        obstacles=[table, shelf],
+    )
+    assert out["ok"] is False and out["status"] == "MotionGenStatus.TRAJOPT_FAIL"
+    assert out["excluded_by_base"] == ["table/7"] and out["obstacles"] == 5
+    world = planner.worlds[-1]["cuboid"]
+    assert sorted(world) == ["shelf", "table/7", "table/7#1", "table/7#2", "table/7#3"]
+    pieces = [
+        collision.parse_obstacle(
+            {
+                "type": "box",
+                "position": c["pose"][:3],
+                "extent": c["dims"],
+                "quat_xyzw": [*c["pose"][4:], c["pose"][3]],
+            }
+        )
+        for key, c in world.items()
+        if key.startswith("table")
+    ]
+    # cuRobo sees the table everywhere but in the base's column.
+    assert collision.sphere_clearance(pieces, [[0, 0, 0.05, 0.05]])[0] >= 0.01 - 1e-9
+    assert min(collision.point_distance(p, [[0.4, 0, 0.0]])[0] for p in pieces) < 0
 
 
 def test_the_plan_reports_what_the_base_excluded():
@@ -1024,3 +1218,4 @@ def test_a_blocked_plan_says_why():
     # Out of reach without any obstacle.
     out = planner.plan([*start, 0, 0, 0, 0], start, [1.2, 0, 0.1], UP, [roof])
     assert "out of reach" in out["message"]
+

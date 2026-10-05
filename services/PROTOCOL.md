@@ -781,9 +781,16 @@ their motion primitives' reach check and collision-free moves, a Robosuite `move
 agent tool; `--backend curobo` is the switch for collision-avoiding plans (MotionGen) and the
 dual Franka's arm-arm check (other arms become collision spheres). The Panda's base links
 (`panda_link0` / `panda_link1`) keep their cuRobo collision spheres; an obstacle they already
-penetrate at the start configuration (a table a mounted arm stands in) is left out of that plan or
-check and named in its `excluded_by_base`. PyRoKi leaves those two links out of world collision
-(its capsules put a LIBERO Panda's base 126 mm into the table's box). Robot models:
+penetrate at the start configuration (a table a mounted arm stands in) is named in that plan's or
+check's `excluded_by_base` and carved around the base: the column the base's spheres reach (plus
+1 cm) is cut out of it and the rest stays in the world for every other link, so only the
+(obstacle, base) pair is excused and an elbow dipping into the table is still a collision; plan and
+check see the same pieces. PyRoKi leaves those two links out of world collision (its capsules put
+a LIBERO Panda's base 126 mm into the table's box). 未上机验证: the cuRobo base-sphere behaviour
+(which obstacles a LIBERO scene excludes, how deep franka_mesh.yml's `link0` spheres, z 0.055-0.115,
+sit in the table box) is covered by test_motion_plan.py's fake kinematics, not by a GPU run; a scene
+whose table top lies below the base spheres excludes nothing and cuRobo reports
+`INVALID_START_STATE_WORLD_COLLISION` for every plan. Robot models:
 `panda` (TCP = libfranka's O_T_EE, flange + 0.1034 m; the Frankas' `tcp_pose`), `panda_libero`
 (robosuite's `robot0_eef_pos` grip site 0.097 m below `panda_hand`, `robot0_eef_quat`; poses in
 the `robot0_base` frame), `ur5e` (TCP = `tool0`), `piper` (TCP = `gripper_base`). Backends:

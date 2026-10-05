@@ -277,9 +277,10 @@ function stubPi(values: Record<string, unknown> = {}) {
 
 /**
  * A fake RoboCasa env server (`--env`, also the `--rldx` session server): OpenDrawer target seed 0,
- * robot observations, renders and a `code.run` that stepped 12 times and solved the task.
+ * robot observations, renders and a `code.run` that stepped 12 times and solved the task (with
+ * `undone`, solved it at its step 2 and undid it before it returned: the server's latched success only).
  */
-async function fakeEnv() {
+async function fakeEnv(o: { undone?: boolean } = {}) {
 	const calls: { method: string; kwargs: Record<string, unknown>; args: unknown[] }[] = [];
 	const nd = (dtype: string, shape: number[], data: Buffer) => ({
 		__ndarray__: data.toString("base64"),
@@ -298,6 +299,7 @@ async function fakeEnv() {
 		robot0_base_to_eef_quat: f32([0, 0, 0, 1]),
 	});
 	let solved = false;
+	let runs = 0;
 	const server = createServer((req, res) => {
 		let body = "";
 		req.on("data", (c) => {
@@ -331,7 +333,9 @@ async function fakeEnv() {
 					env_steps: 11,
 				};
 			else if (method === "code.run") {
-				solved = true;
+				// With `undone`, only the first program solved the task (at its step 2) and undid it.
+				const first = runs++ === 0;
+				solved = !o.undone;
 				result = {
 					status: "ran",
 					stdout: "",
@@ -344,7 +348,8 @@ async function fakeEnv() {
 					move_m: 0.3,
 					ms: 5,
 					steps: 12,
-					success: true,
+					success: first,
+					success_step: first ? 2 : null,
 					obs: raw(1.2),
 					frames: [nd("uint8", [2, 2, 3], Buffer.alloc(12))],
 				};
@@ -389,6 +394,29 @@ test("--code=true: run_code runs on the env server; the run becomes a state, its
 	assert.equal(result.env_steps, 12);
 	assert.equal(result.code, "true");
 	assert.equal(result.code_api, "low");
+});
+
+test("a program that solved the task and undid it before returning: the server's latched success is the episode's", async (t) => {
+	// Audit 92245e3 CM-1: the server latched success_step=2, pi re-read env.check_success live (false).
+	const env = await fakeEnv({ undone: true });
+	t.after(env.close);
+	const s = stubPi({ "env-url": env.url, rldx: env.url, code: "true", "code-api": "low", services: SERVICES });
+	robocasa(s.pi);
+	await s.emit("session_start");
+	process.exitCode = undefined;
+	await s.emit("agent_start");
+	const r = await s.run("run_code", { code: "lift(); drop()" });
+	assert.equal(r.details.success, true, "the run's state carries the latched success");
+	assert.equal(JSON.parse(r.content[1].text).robocasa_terminated, true);
+	// A later program that solves nothing does not unlatch it (env.check_success still answers false).
+	const again = await s.run("run_code", { code: "pass" });
+	assert.equal(again.details.success, true);
+	assert.equal(JSON.parse(again.content[1].text).step, 2, "a fresh capture, not the run's state re-read");
+	await s.run("finish", { status: "success", summary: "lifted" });
+	await s.emit("agent_end", { messages: [] });
+	const result = s.entries.find((e) => e.type === "robot_result")?.data;
+	assert.equal(result.success, true);
+	assert.equal(result.env_steps, 24);
 });
 
 test("the motion tools are the env server's methods: manifest schemas, no env.step from pi, obs and steps absorbed", async (t) => {

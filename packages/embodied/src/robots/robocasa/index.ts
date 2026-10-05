@@ -184,6 +184,12 @@ export default function robocasa(pi: ExtensionAPI) {
 	let criteria = "";
 	let states: State[] = [];
 	let envSteps = 0;
+	/**
+	 * A run_code program solved the task at some step of its run (the server's latched `success` /
+	 * `success_step`, services robots/robocasa/env_server.py `_finish_run`): the episode stays solved
+	 * even when the program then undid it, and every later state, `over`/`solved` and the result see it.
+	 */
+	let codeSolved = false;
 	// True whenever a non-VLA primitive stepped the env since the last RLDX call; the next
 	// RLDX call then reseeds its frame history instead of stitching stale frames on.
 	let vlaDesync = true;
@@ -291,6 +297,8 @@ export default function robocasa(pi: ExtensionAPI) {
 				for (const f of (r.frames as NdArray[] | undefined) ?? []) robot.video.frame(f);
 				const steps = Number(r.steps) || 0;
 				if (r.obs) obs = { ...obs, ...(r.obs as Raw) };
+				// Latched by the server for the run; latched here for the episode (capture reads it).
+				if (r.success === true || typeof r.success_step === "number") codeSolved = true;
 				if (steps > 0) {
 					envSteps += steps;
 					// The program stepped the env: RLDX's frame history no longer holds.
@@ -503,7 +511,8 @@ export default function robocasa(pi: ExtensionAPI) {
 	/** Record the current observation as the next numbered state. */
 	async function capture(command: Record<string, unknown> | null, result: unknown, elapsed: number | null) {
 		const hi = Number(flag("hi-res", "0"));
-		const success = await env.call<boolean>("env.check_success");
+		// Live, or latched by a run_code program that solved the task at one of its steps.
+		const success = codeSolved || (await env.call<boolean>("env.check_success"));
 		const progress = await env.call<Record<string, unknown>>("env.get_task_progress").catch(() => ({}));
 		const agent = await rgbd(CAMERAS.agentview, SIZE);
 		const wrist = await rgbd(CAMERAS.wrist, SIZE);
@@ -1074,6 +1083,7 @@ export default function robocasa(pi: ExtensionAPI) {
 	async function startEpisode() {
 		states = [];
 		envSteps = 0;
+		codeSolved = false;
 		modality = lastPrompt = undefined;
 		hist = [];
 		vlaDesync = true;

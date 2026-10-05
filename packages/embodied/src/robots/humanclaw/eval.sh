@@ -10,10 +10,12 @@
 # (`humanclaw`, `humanclaw+privileged`), model, --units-verify / --vdm / --stateless /
 # --humanclaw-proprioception, --metrics, --video, paper mode's request parameters
 # (--humanclaw-reasoning, --humanclaw-max-tokens) and, when set, pi mode's planner flags (--thinking,
-# --max-turns, --time-limit, --units-plugins and the units knobs, --anchor-image, --vdm-model,
+# --max-turns, --time-limit, --units-plugins and the units knobs, --anchor-image, --aux-model,
 # --fallback-*, --approval, --max-tool-calls, --max-tokens, --humanclaw-collision-feedback) and a
 # --smoke step cap (--humanclaw-max-steps). An episode is valid when the environment produced a result
-# and the planner did not fail; it is scored (success = NavSR@20cm, else failure) only with --metrics,
+# and the planner did not fail. The key is the run's readable label and the gate for results from before
+# `params` was recorded; on top of it scripts/params-match.mjs compares every flag the robot recorded.
+# An episode is scored (success = NavSR@20cm, else failure) only with --metrics,
 # which is where the benchmark's verdict is computed: without it every valid episode is `unscored`
 # (kept, not counted, exit status 1), never a failure. Rerunning retries only invalid episodes and
 # refuses an out dir holding another configuration.
@@ -116,7 +118,7 @@ extra=""
 [ -n "$limited" ] && extra+="/limit=$limit"
 [ "$units" != both ] && extra+="/units=$units"
 $anchor && extra+="/anchor"
-[ -n "$vdm_model" ] && extra+="/vdm_model=$vdm_model"
+[ -n "$vdm_model" ] && extra+="/aux_model=$vdm_model"
 [ -n "$fallback_model" ] && extra+="/fallback=$fallback_model:$fallback_after:$fallback_retry"
 $collision && extra+="/collision_feedback=true"
 [ -n "$max_steps" ] && extra+="/max_steps=$max_steps"
@@ -142,7 +144,7 @@ for key in $list; do
 	if [ -f "$dir/result.json" ]; then
 		st=$(node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));console.log(r.config===process.argv[2]?r.status:"other")' "$dir/result.json" "$config")
 		# Every experiment flag the robot recorded (params) against this run's (../../scripts/params-match.mjs).
-		case $st in success | failure) node "$here/../../scripts/params-match.mjs" "$dir/result.json" >/dev/null || st=other ;; esac
+		case $st in success | failure | unscored) node "$here/../../scripts/params-match.mjs" "$dir/result.json" >/dev/null || st=other ;; esac
 		case $st in
 		success | failure | unscored) continue ;;
 		other) echo "$dir holds a result of another configuration; use another out dir" >&2 && exit 1 ;;

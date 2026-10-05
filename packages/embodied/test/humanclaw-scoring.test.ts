@@ -43,7 +43,12 @@ for (const metrics of [null, { nav_sr_20cm: false, find_sr: true }, { nav_sr_20c
 			return undefined;
 		});
 		t.after(() => env.close());
-		const s = stubPi({ env: env.url, units: "both", "humanclaw-mode": "pi", "humanclaw-metrics": metrics !== null });
+		const s = stubPi({
+			"env-url": env.url,
+			units: "both",
+			"humanclaw-mode": "pi",
+			"humanclaw-metrics": metrics !== null,
+		});
 		humanclaw(s.pi);
 		await s.emit("session_start");
 		process.exitCode = undefined;

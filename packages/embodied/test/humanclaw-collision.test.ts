@@ -38,7 +38,7 @@ for (const enabled of [false, true]) {
 		});
 		t.after(() => env.close());
 		const s = stubPi({
-			env: env.url,
+			"env-url": env.url,
 			units: "both",
 			"humanclaw-mode": "pi",
 			"humanclaw-metrics": true,
@@ -58,7 +58,7 @@ for (const enabled of [false, true]) {
 
 test("HumanCLAW collision feedback needs the metric tracker and is refused in paper mode", async () => {
 	const noMetrics = stubPi({
-		env: "http://127.0.0.1:1",
+		"env-url": "http://127.0.0.1:1",
 		units: "both",
 		"humanclaw-mode": "pi",
 		"humanclaw-collision-feedback": true,
@@ -68,7 +68,7 @@ test("HumanCLAW collision feedback needs the metric tracker and is refused in pa
 	process.exitCode = undefined;
 	assert.deepEqual(noMetrics.active(), []);
 	const paper = stubPi({
-		env: "http://127.0.0.1:1",
+		"env-url": "http://127.0.0.1:1",
 		units: "both",
 		"humanclaw-mode": "paper",
 		"humanclaw-metrics": true,

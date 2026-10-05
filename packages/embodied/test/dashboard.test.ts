@@ -172,3 +172,44 @@ test("a second teleop request while a batch runs is refused and leaves the batch
 		await p.quit();
 	}
 });
+
+test("POST /gumi/look refreshes the view without a recorded step; 409 on a robot that cannot look (U2)", async () => {
+	const p = fakePi();
+	const url = await p.start();
+	const calls: string[] = [];
+	const handle = {
+		tool: "act",
+		arms: [],
+		vocabulary: ["WALK", "STOP"],
+		terminal: ["STOP"],
+		stepM: 0,
+		tools: () => ["act"],
+		refuse: () => undefined,
+		run: async (params: { unit: string }) => {
+			calls.push(params.unit);
+			return { content: [{ type: "text", text: "{}" }], details: {} };
+		},
+		look: async () => {
+			calls.push("observe");
+			return { content: [{ type: "text", text: "{}" }], details: {} };
+		},
+	} as unknown as UnitsHandle;
+	try {
+		p.pi.events.emit(UNITS_EVENT, handle);
+		const looked = await post(`${url}gumi/look`, {});
+		assert.equal(looked.status, 200);
+		assert.deepEqual(
+			[looked.body.ok, looked.body.state.look, looked.body.state.terminal, looked.body.state.steps],
+			[true, true, ["STOP"], 0],
+		);
+		assert.deepEqual(calls, ["observe"]);
+		delete (handle as { look?: unknown }).look;
+		p.pi.events.emit(UNITS_EVENT, handle);
+		const none = await post(`${url}gumi/look`, {});
+		assert.equal(none.status, 409);
+		assert.match(none.body.error, /no way to look without acting/);
+		assert.equal(none.body.state.look, false);
+	} finally {
+		await p.quit();
+	}
+});

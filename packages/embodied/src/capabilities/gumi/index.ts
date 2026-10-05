@@ -646,18 +646,26 @@ export class Takeover {
 // the robot's unit layer, as ../units publishes it on pi.events
 
 /**
+ * The arm's STOP (hold and look) and DONE move nothing and are not recorded, like the rollouts' own
+ * vocabulary (rollouts_to_alpaca.py synthesizes DONE). A robot's own vocabulary names its `terminal`
+ * units (HumanCLAW's STOP ends the episode): that one is a step, the episode's last.
+ */
+export const isLook = (unit: string, terminal: readonly string[]) =>
+	(baseName(unit) === "STOP" || baseName(unit) === "DONE") && !terminal.includes(baseName(unit));
+
+/**
  * What an `act` call asked for, as one step: `{unit, n}`, on two arms `{unit, arm, n}` (the other arm
- * holds STILL). STOP (hold and look) and DONE move nothing and are not recorded, like the rollouts'
- * own vocabulary (rollouts_to_alpaca.py synthesizes DONE).
+ * holds STILL); undefined for a look (`isLook`).
  */
 export function actSteps(
 	input: Record<string, unknown>,
 	arms: readonly string[],
+	terminal: readonly string[] = [],
 ): { step: Step; n: number } | undefined {
 	const n = Math.max(1, Math.floor(Number(input.n ?? 1)) || 1);
 	const raw = typeof input.unit === "string" ? input.unit.trim() : "";
 	const name = raw.replace(/^[^(]*/, (b) => b.toUpperCase());
-	if (!name || name === "STOP" || name === "DONE") return undefined;
+	if (!name || isLook(name, terminal)) return undefined;
 	// A robot's own unit with its parameter is recorded whole: TURN(45).
 	const unit = input.param !== undefined && !name.includes("(") ? `${name}(${String(input.param)})` : name;
 	if (arms.length === 1) return { step: { [arms[0]]: unit }, n };
@@ -710,6 +718,10 @@ export type GumiState = {
 	rt: boolean;
 	/** The key bindings for these arms (`keyMap`): KeyboardEvent.code -> [arm, unit]. */
 	keys: Record<string, [string, string]>;
+	/** The robot can look without a step (`/gumi/look`: the arm's STOP, a vocabulary's observe). */
+	look: boolean;
+	/** A robot's own vocabulary: its units that end the episode (its STOP is no look; the pad labels it as itself). */
+	terminal: readonly string[];
 	/** The VLM operator (./operator.ts), when mounted. */
 	operator?: unknown;
 };
@@ -783,6 +795,8 @@ export function gumi(
 					Object.entries(handle.keys).map(([code, unit]) => [code, [arms[0], unit] as [string, string]]),
 				)
 			: keyMap(arms, handle?.rt ? handle.vocabulary : undefined, handle?.vocabulary),
+		look: handle?.look !== undefined,
+		terminal: handle?.terminal ?? [],
 		...(operator ? { operator: operator.state() } : {}),
 	});
 	const publish = (msg?: string) => {
@@ -883,7 +897,7 @@ export function gumi(
 			};
 		}
 		if (event.toolName !== handle.tool) return undefined;
-		const parsed = actSteps(event.input, arms);
+		const parsed = actSteps(event.input, arms, handle.terminal ?? []);
 		pending = parsed ? { ...parsed, obs: latest, state: await stateNow(latest), closed: { ...closed } } : undefined;
 		publish();
 		return undefined;
@@ -943,6 +957,8 @@ export function gumi(
 				throw fail(409, "this robot has no way to look without acting (its vocabulary declares no observe)");
 			const r = await handle.look();
 			latest = observation(r) ?? latest;
+			// The dashboard shows the view it returned (a timeline row like a step's); nothing is recorded.
+			o.onStep?.("look", {}, r, false);
 			publish();
 		},
 		/** Carry the VLM operator's state in the teleop state, and re-send it. */
@@ -986,6 +1002,7 @@ export function gumi(
 			// The gates an agent's call passes: robot up and not broken, episode not over, budget left, scene confirmed.
 			const refused = handle.refuse();
 			if (refused) throw fail(409, refused);
+			const terminal = handle.terminal ?? [];
 			takeover.begin();
 			batch = new AbortController();
 			// The agent's abort stops the batch too, as before.
@@ -1037,9 +1054,11 @@ export function gumi(
 					const typed = step;
 					step = executedStep(step, result.details);
 					if (step !== typed) o.onAction?.(arms.length > 1 ? label : step[ARM]);
-					// STOP (hold and look) only refreshes the observation, and a unit the robot did not run
-					// (`ran` 0: the plan's stage cap) moved nothing: neither is a training step.
-					const moved = unitsRan(result.details) !== 0 && arms.some((a) => step[a] !== STILL && step[a] !== "STOP");
+					// A look (the arm's STOP) only refreshes the observation, and a unit the robot did not run
+					// (`ran` 0: the plan's stage cap) moved nothing: neither is a training step. A vocabulary's
+					// terminal STOP is one, the episode's last.
+					const moved =
+						unitsRan(result.details) !== 0 && arms.some((a) => step[a] !== STILL && !isLook(step[a], terminal));
 					if (recorder?.active && moved) {
 						if (obs) recorder.add(obs, step, info);
 						else message = "no observation before this step; not recorded";

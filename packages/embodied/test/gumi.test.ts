@@ -14,6 +14,7 @@ import {
 	executedStep,
 	gumi,
 	haltReason,
+	isLook,
 	KEYS,
 	keyMap,
 	type Observation,
@@ -1450,4 +1451,72 @@ test("gumi records an agent act as it ran: the executed unit, the count that ran
 			.map((l) => JSON.parse(l).token),
 		["MV_FWD"],
 	);
+});
+
+test("gumi records a vocabulary's terminal STOP as the episode's last step; the arm's STOP stays a look (U7)", async () => {
+	assert.equal(isLook("STOP", []), true);
+	assert.equal(isLook("STOP", ["STOP"]), false);
+	assert.equal(isLook("DONE", ["STOP"]), true);
+	assert.equal(isLook("WALK(fast)", ["STOP"]), false);
+	assert.equal(actSteps({ unit: "STOP" }, [ARM]), undefined);
+	assert.deepEqual(actSteps({ unit: "stop" }, [ARM], ["STOP"]), { step: { [ARM]: "STOP" }, n: 1 });
+	const root = mkdtempSync(join(tmpdir(), "gumi-terminal-"));
+	const f = fakePi({ "gumi-record": root });
+	const g = gumi(f.pi);
+	const robot = fakeRobot();
+	robot.handle.vocabulary = ["WALK", "TURN", "STOP"];
+	robot.handle.keys = { KeyW: "WALK(normal)", KeyX: "STOP" };
+	robot.handle.terminal = ["STOP"];
+	robot.handle.look = (signal) => robot.handle.run({ unit: "OBSERVE" }, signal);
+	await f.emit("session_start");
+	f.pi.events.emit(UNITS_EVENT, robot.handle);
+	// The state tells the pad which STOP it has, and that the robot can look without a step.
+	assert.deepEqual([g.state().terminal, g.state().look], [["STOP"], true]);
+	g.record("start");
+	const out = await g.step({ command: "WALK(normal) STOP" });
+	assert.equal(out.executed, 2);
+	assert.deepEqual(
+		robot.calls.map((c) => c.unit),
+		["OBSERVE", "WALK(normal)", "STOP"],
+	);
+	assert.equal(g.takeover.driven.length, 2, "the operator's STOP counts as a step the agent must learn of");
+	// The agent's STOP on this robot is recorded too (it has seen the operator's steps: a robot result arrived).
+	await f.emit("tool_result", { toolName: "act", input: { unit: "STOP" }, ...result([7, 8], ["agentview", "wrist"]) });
+	f.setIdle(false);
+	await f.emit("context", { messages: [] });
+	await f.emit("tool_call", { toolName: "act", input: { unit: "STOP" } });
+	await f.emit("tool_result", {
+		toolName: "act",
+		input: { unit: "STOP" },
+		...result([9, 10], ["agentview", "wrist"]),
+		details: { unit: "STOP", executed: "STOP", ran: 1 },
+	});
+	f.setIdle(true);
+	const dir = g.record("save", true).dir;
+	assert.deepEqual(
+		readFileSync(join(dir, "actions.jsonl"), "utf8")
+			.trim()
+			.split("\n")
+			.map((l) => [JSON.parse(l).token, JSON.parse(l).src]),
+		[
+			["WALK(normal)", "human"],
+			["STOP", "human"],
+			["STOP", "agent"],
+		],
+	);
+	// A look through the controller is no step.
+	g.record("start");
+	await g.look();
+	assert.equal(robot.calls.at(-1)?.unit, "OBSERVE");
+	assert.equal(g.state().steps, 0);
+	g.record("discard");
+});
+
+test("dashboard pad: only the arm's STOP is labelled Look; a vocabulary's terminal STOP is itself, with a Look button on /gumi/look (U2)", () => {
+	const page = readFileSync(new URL("../src/capabilities/dashboard/page.html", import.meta.url), "utf8");
+	assert.match(page, /const stopLooks = G\.vocabulary\.includes\("STOP"\) && !terminal\.includes\("STOP"\);/);
+	assert.match(page, /unit === "STOP" && stopLooks \? T\.look : UNIT_LABEL\[unit\] \|\| unit/);
+	assert.match(page, /G\.look && !stopLooks/);
+	assert.match(page, /gumiPost\("\/gumi\/look", \{\}\)/);
+	assert.doesNotMatch(page, /unit === "STOP" \? T\.look/);
 });

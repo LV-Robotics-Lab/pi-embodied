@@ -1154,6 +1154,7 @@ export function units(
 		...(custom?.keys
 			? { keys: Object.fromEntries(Object.entries(custom.keys).map(([k, v]) => [k, unitLabel(v.unit, v.param)])) }
 			: {}),
+		...(custom ? { terminal: custom.units.filter((u) => u.terminal).map((u) => u.name) } : {}),
 		run: actAndSave,
 		...(custom
 			? custom.observe

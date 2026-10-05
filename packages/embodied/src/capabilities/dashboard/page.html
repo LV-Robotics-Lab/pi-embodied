@@ -195,6 +195,7 @@ const COPY = {
     take: "Take over", release: "Hand back", waiting: "Waiting for the unit…",
     recOn: (r, n) => `REC ${r} · ${n} steps`, recOff: "not recording", recDisabled: "recording off (--gumi-record)",
     confirmDiscard: "Delete the rollout being recorded?", look: "Look",
+    lookTitle: "Refresh the view without a step (not recorded)", endsEpisode: "ends the episode (recorded as the last step)",
     help: "keys: W/S/A/D move · Q/E up/down · G grasp · R release · Space toggle gripper · hold to repeat",
     helpDual: "left W/S/A/D Q/E, G or L-Shift grasp, R release, L-Ctrl STILL · right I/K/J/L U/O, R-Shift grasp, . release, R-Ctrl STILL · hold to repeat",
     arms: { arm: "arm", left: "left arm", right: "right arm" },
@@ -231,6 +232,7 @@ const COPY = {
     take: "接管", release: "交还智能体", waiting: "等待当前动作结束…",
     recOn: (r, n) => `录制中 ${r} · ${n} 步`, recOff: "未录制", recDisabled: "未开启录制(--gumi-record)",
     confirmDiscard: "删除正在录制的轨迹?", look: "观察",
+    lookTitle: "只刷新视图,不执行动作(不录制)", endsEpisode: "结束回合(录为最后一步)",
     help: "按键:W/S/A/D 平移 · Q/E 上/下 · G 抓取 · R 松开 · 空格 切换夹爪 · 按住连续执行",
     helpDual: "左臂 W/S/A/D Q/E,G 或左 Shift 抓取,R 松开,左 Ctrl 保持 · 右臂 I/K/J/L U/O,右 Shift 抓取,. 松开,右 Ctrl 保持 · 按住连续执行",
     arms: { arm: "机械臂", left: "左臂", right: "右臂" },
@@ -513,22 +515,32 @@ function renderGumi(g) {
     $("opStatus").textContent = [O.model, O.status, `${O.executed} steps`, O.lastDecision ? `${O.lastDecision.phase}: ${O.lastDecision.command || "-"} (${O.lastDecision.confidence})` : ""].filter(Boolean).join(" · ");
   }
   $("tpStatus").textContent = [G.message, G.last ? `last: ${G.last}` : "", dual() ? T.helpDual : T.help, turnHelp()].filter(Boolean).join(" · ");
-  const key = G.arms.join() + "|" + G.vocabulary.join() + "|" + JSON.stringify(G.keys ?? {});
+  const terminal = G.terminal ?? [];
+  const key = G.arms.join() + "|" + G.vocabulary.join() + "|" + JSON.stringify(G.keys ?? {}) + "|" + terminal.join() + "|" + G.look;
   if (key === padsKey) return;
   padsKey = key;
+  // The arm's STOP holds one step and returns the view: the pad calls it Look. A robot's own STOP that ends
+  // the episode (`terminal`) is labelled as itself; its look (the vocabulary's observe) is a separate button.
+  const stopLooks = G.vocabulary.includes("STOP") && !terminal.includes("STOP");
   $("tpPads").replaceChildren(...G.arms.map((arm) => {
     const pad = el("div", "pad"); pad.append(el("b", "", T.arms[arm] ?? arm));
     for (const unit of G.vocabulary.filter((u) => u !== "DONE" && (u !== "STILL" || dual()))) {
       const code = keyOf(arm, unit);
-      const b = el("button", "", unit === "STOP" ? T.look : UNIT_LABEL[unit] ?? unit);
+      const b = el("button", "", unit === "STOP" && stopLooks ? T.look : UNIT_LABEL[unit] || unit);
       if (code) b.append(el("kbd", "", keyName(code)));
-      b.title = unit; b.dataset.id = `btn:${arm}:${unit}`;
+      b.title = terminal.includes(unit) ? `${unit}: ${T.endsEpisode}` : unit; b.dataset.id = `btn:${arm}:${unit}`;
       b.onpointerdown = (e) => { e.preventDefault(); press(b.dataset.id, arm, unit); };
       b.onpointerup = b.onpointerleave = () => release(b.dataset.id);
       pad.append(b);
     }
     return pad;
-  }));
+  }), ...(G.look && !stopLooks ? [(() => {
+    const pad = el("div", "pad");
+    const b = el("button", "", T.look); b.title = T.lookTitle;
+    b.onclick = () => gumiPost("/gumi/look", {});
+    pad.append(b);
+    return pad;
+  })()] : []));
 }
 function press(id, arm, unit) {
   if (held.has(id)) return;

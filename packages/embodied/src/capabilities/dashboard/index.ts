@@ -842,6 +842,11 @@ function createHub(server: Server, url: string, page: string, liveFps: number) {
 				const g = teleop;
 				try {
 					if (url.pathname === "/gumi/step") return reply(200, await g.step(body));
+					// The view without a step (the arm's STOP, a vocabulary's observe): never a recorded unit.
+					if (url.pathname === "/gumi/look") {
+						await g.look();
+						return reply(200, { ok: true, state: g.state() });
+					}
 					if (url.pathname === "/gumi/record")
 						return reply(200, g.record(String(body.action ?? ""), body.success));
 					if (url.pathname === "/gumi/control") return reply(200, g.control(String(body.action ?? "")));

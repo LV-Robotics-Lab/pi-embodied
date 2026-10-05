@@ -23,6 +23,11 @@ export type UnitsHandle = {
 	vocabulary: readonly string[];
 	/** A robot's own vocabulary: GUMI key bindings, KeyboardEvent.code -> the unit as recorded ("TURN(45)"). */
 	keys?: Record<string, string>;
+	/**
+	 * A robot's own vocabulary: the names of its units that end the episode (its STOP). GUMI never looks
+	 * with one and records it as the episode's last step; the arm's STOP (a hold) is not one.
+	 */
+	terminal?: readonly string[];
 	stepM: number;
 	yawStepRad?: number;
 	/** What one `act` call does (grounding, `apply`, recovery / auto_release, the units header), without the model. */

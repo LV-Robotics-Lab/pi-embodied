@@ -280,3 +280,29 @@ for (const [robot, positional] of [
 		);
 		assert.equal(again.status, 0, "the same values, spelled differently");
 	});
+
+// Audit 92245e3 G3: a run's --grasp-max-tilt (and --grasp / --place) is part of its configuration.
+for (const [robot, positional] of [
+	["robosuite", ["Lift", "0"]],
+	["metaworld", ["reach-v3", "0"]],
+] as [string, string[]][])
+	test(`${robot}/eval.sh never mixes runs of another --grasp-max-tilt, --grasp or --place in one out dir`, () => {
+		const flags = ["--grasp", "contact_graspnet", "--place", "anyplace", "--grasp-max-tilt", "60"];
+		const recorded = {
+			params: { grasp: "contact_graspnet", place: "anyplace", "grasp-max-tilt": "60", "max-turns": "0", task: "Lift" },
+			params_default: { grasp: "", place: "", "grasp-max-tilt": "", "max-turns": "0", task: "Lift" },
+		};
+		const [same] = rerun(robot, positional, flags, [], recorded);
+		assert.equal(same.status, 0, same.stdout + same.stderr);
+		for (const [second, differing] of [
+			[["--grasp", "contact_graspnet", "--place", "anyplace", "--grasp-max-tilt", "30"], "--grasp-max-tilt"],
+			[["--grasp", "contact_graspnet", "--place", "anyplace"], "--grasp-max-tilt"],
+			[["--grasp", "contact_graspnet", "--grasp-max-tilt=60"], "--place"],
+			[["--grasp=graspgenx", "--place", "anyplace", "--grasp-max-tilt", "60"], "--grasp"],
+		] as [string[], string][]) {
+			const [a, b] = rerun(robot, positional, flags, second, recorded);
+			assert.equal(a.status, 0, a.stdout + a.stderr);
+			assert.equal(b.status, 1, `${second.join(" ")}: another configuration`);
+			assert.match(b.stderr, new RegExp(`another configuration: .*${differing} ran`));
+		}
+	});

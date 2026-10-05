@@ -60,6 +60,23 @@ for (const [robot, load] of Object.entries(ROBOTS))
 		assert.deepEqual(Object.keys(p.params), Object.keys(p.params_default));
 	});
 
+// Audit 92245e3 G3: --grasp-max-tilt (and the grasp / place backends) decide which grasps and places
+// run, so they are experiment parameters: recorded in params and compared by params-match.mjs.
+for (const robot of ["libero", "robosuite", "metaworld", "genesis", "franka", "dual_franka"])
+	test(`${robot}: the grasp backends, the place backend and --grasp-max-tilt are recorded params`, async () => {
+		const { pi } = stubPi({ grasp: "contact_graspnet", place: "anyplace", "grasp-max-tilt": "60" });
+		(await ROBOTS[robot]()).default(pi);
+		const p = params(pi);
+		assert.deepEqual(
+			[p.params.grasp, p.params.place, p.params["grasp-max-tilt"]],
+			["contact_graspnet", "anyplace", "60"],
+		);
+		assert.deepEqual([p.params_default.grasp, p.params_default.place, p.params_default["grasp-max-tilt"]], ["", "", ""]);
+		assert.match(String(numberError("grasp-max-tilt", "abc")), /must be a number/);
+		assert.match(String(numberError("grasp-max-tilt", "95")), /at most 90/);
+		assert.equal(numberError("grasp-max-tilt", "30"), undefined);
+	});
+
 test("a number that does not parse or is out of range is refused, never defaulted", () => {
 	assert.match(String(numberError("max-turns", "abc")), /must be a number/);
 	assert.match(String(numberError("max-turns", "1.5")), /must be an integer/);

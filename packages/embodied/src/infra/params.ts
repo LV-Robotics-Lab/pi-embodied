@@ -30,6 +30,7 @@ export const NUMERIC: Record<string, { min?: number; max?: number; integer?: boo
 	"max-move": { min: 0 },
 	"max-rotate": { min: 0 },
 	"max-yaw": { min: 0 },
+	"grasp-max-tilt": { min: 0, max: 90 },
 	"unit-tol": { min: 0 },
 	"units-coarse-step": { min: 0.001 },
 	"units-stage-steps": { min: 0, integer: true },

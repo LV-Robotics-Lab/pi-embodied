@@ -16,7 +16,8 @@
 
 import type { ManifestEntry, ManifestParam } from "./manifest.ts";
 
-const inMode = (p: ManifestParam, mode: "tool" | "code") => !p.modes || p.modes.includes(mode);
+/** Whether a parameter exists in `mode` (default both). */
+export const inMode = (p: ManifestParam, mode: "tool" | "code") => !p.modes || p.modes.includes(mode);
 const toolOnly = (p: ManifestParam) => p.modes?.includes("tool") === true && !p.modes.includes("code");
 
 /** `point: [row, col]` as the method's `row` and `col` (the pixel's integer coordinates). */

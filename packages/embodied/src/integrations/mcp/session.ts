@@ -6,8 +6,10 @@
  * `rpcArguments`: `point: [row, col]` → `row`, `col`), and the built-in tools that mirror the pi
  * session where they do not depend on pi's agent loop:
  *
- *   observe       the current camera images and state (`env.get_observation`, else `env.render_camera`
- *                 and `env.get_state`), images as MCP image content
+ *   observe       the current camera images and state along the robot's observation path
+ *                 (../../observation/path.ts: the manifest's `get_observation`, else `render_camera`
+ *                 per camera and `get_state`, with the robot's own cameras, size and orientation),
+ *                 images as MCP image content
  *   reset         `env.reset`: a simulator's new episode, a real arm's start-pose motion (the gripper
  *                 opens, the arm moves). A motion like the manifest's: the guard, the latch and the
  *                 hosts' approval hooks apply; a real arm is never reset at connect (./server.ts)
@@ -43,6 +45,13 @@ import {
 import { Type } from "typebox";
 import { encodePng } from "../../infra/png.ts";
 import { NdArray, type RpcClient, RpcUnavailable } from "../../infra/rpc.ts";
+import {
+	flipRows,
+	type ObservationDecl,
+	type ObservationPath,
+	observationPath,
+	robotObservation,
+} from "../../observation/path.ts";
 import { rpcArguments } from "../../primitives/arguments.ts";
 import type { Manifest, ManifestEntry, Vars } from "../../primitives/manifest.ts";
 import { message, plain, rgbOf, serverError } from "../../robot.ts";
@@ -72,6 +81,8 @@ export type SessionOptions = {
 	vars?: Vars;
 	/** Per-call RPC timeout, ms (the client's default otherwise). */
 	timeoutMs?: number;
+	/** The robot's observation declaration (default: `OBSERVATION` of ../../robots/<robot>/index.ts). */
+	observation?: ObservationDecl;
 	log?: (line: string) => void;
 	version?: string;
 };
@@ -88,7 +99,7 @@ const BUILTINS: Record<Builtin, Tool> = {
 	observe: {
 		name: "observe",
 		description:
-			"Look before and after acting: the robot's current camera images and state (the env server's get_observation, else render_camera and get_state). Images come back as image content, arrays as shapes. Give camera to render one camera only.",
+			"Look before and after acting: the robot's current camera images and state (the env server's get_observation, else render_camera per camera and get_state, as the robot's own observe does). Images come back as image content, arrays as shapes. Give camera to render one camera only.",
 		inputSchema: schema(
 			Type.Object({ camera: Type.Optional(Type.String({ description: "A camera name (default: every camera)" })) }),
 		),
@@ -135,8 +146,6 @@ const BUILTINS: Record<Builtin, Tool> = {
 	},
 };
 
-const UNKNOWN_METHOD = /unknown RPC method/i;
-
 /** Walk a decoded RPC result: `[H, W, 3+]` uint8 arrays out as PNGs, a stub in their place. */
 function extractImages(value: unknown, pngs: Buffer[]): unknown {
 	if (value instanceof NdArray) {
@@ -176,6 +185,16 @@ export function renderResult(result: unknown): CallToolResult {
 
 const failure = (text: string): CallToolResult => ({ content: [{ type: "text", text }], isError: true });
 
+/** A rendered image (or `[rgb, depth]`) with its rows in top-down order (a sim that renders bottom-up). */
+function flipped(value: unknown): unknown {
+	if (value instanceof NdArray)
+		return value.shape.length >= 2
+			? new NdArray(value.dtype, value.shape, flipRows(value.data, value.shape[0]))
+			: value;
+	if (Array.isArray(value)) return value.map(flipped);
+	return value;
+}
+
 export class RobotSession implements ToolProvider {
 	readonly info: { name: string; version: string; title: string };
 	readonly instructions: string;
@@ -190,6 +209,8 @@ export class RobotSession implements ToolProvider {
 	private readonly timeoutMs: number | undefined;
 	private readonly log: (line: string) => void;
 	private readonly o: SessionOptions;
+	private readonly has: (capability: string) => boolean;
+	private path: Promise<ObservationPath> | undefined;
 
 	constructor(o: SessionOptions) {
 		this.o = o;
@@ -197,6 +218,7 @@ export class RobotSession implements ToolProvider {
 		this.timeoutMs = o.timeoutMs;
 		this.log = o.log ?? (() => {});
 		const has = capabilitiesFrom(o.manifest, o.served, o.capabilities ?? [], o.privileged);
+		this.has = has;
 		const { tools, leftOut } = manifestTools(o.manifest, { tier: o.tier, privileged: o.privileged }, has, o.vars);
 		for (const t of tools) this.byName.set(t.tool.name, t);
 		this.leftOut = leftOut;
@@ -357,24 +379,43 @@ export class RobotSession implements ToolProvider {
 		}
 	}
 
+	/** The robot's observation path, resolved once (its declaration is read from its module). */
+	private observationPath(): Promise<ObservationPath> {
+		this.path ??= (async () =>
+			observationPath(
+				this.o.manifest,
+				this.has,
+				this.o.vars ?? {},
+				this.o.observation ?? (await robotObservation(this.o.robot)),
+			))();
+		return this.path;
+	}
+
 	private async observe(camera: string | undefined, signal: AbortSignal): Promise<CallToolResult> {
 		try {
-			if (camera === undefined) {
-				try {
-					return renderResult(await this.rpcCall("env.get_observation", {}, signal));
-				} catch (err) {
-					if (!UNKNOWN_METHOD.test(message(err))) throw err;
-				}
-			}
+			const path = await this.observationPath();
+			if (camera === undefined && path.observation)
+				return renderResult(await this.rpcCall(path.observation, {}, signal));
+			const render = path.render;
+			if (!render)
+				return failure(
+					`${this.o.robot}'s manifest declares no render_camera${camera === undefined ? " or get_observation" : ""}: nothing to observe${camera === undefined ? "" : " per camera"}`,
+				);
+			// A camera by its name or by the facade's camera_name.
+			const names =
+				camera === undefined
+					? Object.keys(render.cameras)
+					: Object.entries(render.cameras)
+							.filter(([k, v]) => k === camera || v === camera)
+							.map(([k]) => k);
+			if (names.length === 0)
+				return failure(`camera ${camera}: ${this.o.robot}'s cameras are ${Object.keys(render.cameras).join(", ")}`);
 			const out: Record<string, unknown> = {};
-			out.image = await this.rpcCall("env.render_camera", camera ? { camera_name: camera } : {}, signal);
-			if (camera === undefined) {
-				try {
-					out.state = await this.rpcCall("env.get_state", {}, signal);
-				} catch (err) {
-					if (!UNKNOWN_METHOD.test(message(err))) throw err;
-				}
+			for (const name of names) {
+				const image = await this.rpcCall(render.method, render.kwargs(render.cameras[name]), signal);
+				out[name] = render.flip ? flipped(image) : image;
 			}
+			if (camera === undefined && path.state) out.state = await this.rpcCall(path.state, {}, signal);
 			return renderResult(out);
 		} catch (err) {
 			return failure(message(serverError(err) ?? err));

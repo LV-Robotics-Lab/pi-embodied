@@ -13,6 +13,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { McpClient, StdioTransport } from "@earendil-works/pi-mcp";
 import { createInMemoryTransportPair } from "@earendil-works/pi-mcp/testing";
+import { decodePng } from "../src/infra/png.ts";
 import { RpcClient } from "../src/infra/rpc.ts";
 import { McpToolServer } from "../src/integrations/mcp/protocol.ts";
 import { connect, listOnly, parseArgs, session } from "../src/integrations/mcp/server.ts";
@@ -187,6 +188,111 @@ test("tools/call forwards to the manifest's method with the validated kwargs; ba
 	}
 });
 
+/** A 4x4 image whose first row is dark and the rest bright: a flip puts the dark row last. */
+const rowsImage = () => {
+	const data = Buffer.alloc(4 * 4 * 3, 200);
+	data.fill(10, 0, 4 * 3);
+	return { __ndarray__: data.toString("base64"), dtype: "uint8", shape: [4, 4, 3] };
+};
+/** The first PNG of a result, decoded to its top-left and bottom-left pixel values. */
+const corners = (r: { content: { type: string; data?: string }[] }) => {
+	const png = r.content.find((c) => c.type === "image")?.data ?? "";
+	const { data, width, height, channels } = decodePng(Buffer.from(png, "base64"));
+	return { top: data[0], bottom: data[(height - 1) * width * channels] };
+};
+
+test("observe on RoboCasa: no get_observation; render_camera(camera_name, height, width, depth) per camera with the robot's names and size, rows flipped; get_state", async () => {
+	useDeployment({});
+	const env = fakeEnv({ robot: "robocasa", has: () => false });
+	delete env.methods["env.get_observation"];
+	// The facade's signature (robocasa/env_server.py): every argument required, the sim's camera names.
+	env.methods["env.render_camera"] = (kw) => {
+		for (const k of ["camera_name", "height", "width", "depth"])
+			if (!(k in kw)) throw new Error(`render_camera() missing 1 required positional argument: '${k}'`);
+		const unknown = Object.keys(kw).filter((k) => !["camera_name", "height", "width", "depth"].includes(k));
+		if (unknown.length) throw new Error(`render_camera() got an unexpected keyword argument '${unknown[0]}'`);
+		if (!["robot0_agentview_left", "mobilebase0_navview", "robot0_eye_in_hand"].includes(kw.camera_name as string))
+			throw new Error(`unknown camera ${kw.camera_name}`);
+		return rowsImage();
+	};
+	env.methods["env.get_state"] = () => ({ eef_pos: [0.4, 0.5, 0.6], gripper: 0.1 });
+	const url = await env.listen();
+	try {
+		const a = parseArgs(["--robot", "robocasa", "--env", url]);
+		const s = session(a, await connect(a));
+		const { c: mcp, close } = await client(s);
+		try {
+			const o = await mcp.callTool("observe", {});
+			assert.equal(o.isError, undefined, JSON.stringify(o.content[0]));
+			assert.equal(o.content.filter((c) => c.type === "image").length, 3);
+			assert.deepEqual(Object.keys(text(o)), ["agentview", "navview", "wrist", "state"]);
+			assert.deepEqual(text(o).state.eef_pos, [0.4, 0.5, 0.6]);
+			const renders = env.calls.filter((c) => c.method === "env.render_camera").map((c) => c.kwargs);
+			assert.deepEqual(renders, [
+				{ camera_name: "robot0_agentview_left", height: 256, width: 256, depth: false },
+				{ camera_name: "mobilebase0_navview", height: 256, width: 256, depth: false },
+				{ camera_name: "robot0_eye_in_hand", height: 256, width: 256, depth: false },
+			]);
+			assert.ok(
+				!env.calls.some((c) => c.method === "env.get_observation"),
+				"never asked for a method RoboCasa lacks",
+			);
+			// MuJoCo renders bottom-up: the dark first row of the render is the image's last row.
+			assert.deepEqual(corners(o), { top: 200, bottom: 10 });
+			const one = await mcp.callTool("observe", { camera: "navview" });
+			assert.equal(one.content.filter((c) => c.type === "image").length, 1);
+			assert.deepEqual(env.calls.at(-1)?.kwargs, {
+				camera_name: "mobilebase0_navview",
+				height: 256,
+				width: 256,
+				depth: false,
+			});
+			assert.ok(!env.calls.slice(-1).some((c) => c.method === "env.get_state"), "one camera: no state");
+		} finally {
+			await close();
+		}
+	} finally {
+		env.close();
+	}
+});
+
+test("observe on RoboTwin: render_camera(camera_name) per declared view, upright, and the state from env.policy_frame", async () => {
+	useDeployment({});
+	const env = fakeEnv({ robot: "robotwin", has: () => false });
+	delete env.methods["env.get_observation"];
+	delete env.methods["env.get_state"];
+	env.methods["env.render_camera"] = (kw) => {
+		if (!("camera_name" in kw)) throw new Error("render_camera() missing 1 required argument: 'camera_name'");
+		if (!["head", "left_wrist", "right_wrist"].includes(kw.camera_name as string))
+			throw new Error(`no camera ${kw.camera_name}`);
+		return rowsImage();
+	};
+	env.methods["env.policy_frame"] = () => ({ qpos: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] });
+	const url = await env.listen();
+	try {
+		const a = parseArgs(["--robot", "robotwin", "--env", url]);
+		const s = session(a, await connect(a));
+		const { c: mcp, close } = await client(s);
+		try {
+			const o = await mcp.callTool("observe", {});
+			assert.equal(o.isError, undefined, JSON.stringify(o.content[0]));
+			assert.deepEqual(Object.keys(text(o)), ["head", "left_wrist", "right_wrist", "state"]);
+			assert.deepEqual(
+				env.calls.filter((c) => c.method === "env.render_camera").map((c) => c.kwargs),
+				[{ camera_name: "head" }, { camera_name: "left_wrist" }, { camera_name: "right_wrist" }],
+			);
+			assert.equal(env.calls.at(-1)?.method, "env.policy_frame", "RoboTwin's get_state is env.policy_frame");
+			assert.deepEqual(corners(o), { top: 10, bottom: 200 }, "SAPIEN renders upright: no flip");
+			const head = await mcp.callTool("observe", { camera: "head" });
+			assert.deepEqual(Object.keys(text(head)), ["head"]);
+		} finally {
+			await close();
+		}
+	} finally {
+		env.close();
+	}
+});
+
 test("a tool whose parameters differ from the method's is adapted as pi adapts it: align_wrist's point reaches the facade as row, col", async () => {
 	useDeployment({});
 	const env = fakeEnv({ has: (c) => c === "sam3" || c === "align_wrist" });
@@ -231,13 +337,18 @@ test("observe returns the cameras as image content; finish ends the episode; sto
 			assert.equal(o.content.filter((c) => c.type === "image").length, 2);
 			assert.deepEqual(text(o).eef_pos, [0.1, 0.2, 0.3]);
 			assert.deepEqual(text(o).agentview.rgb, { image: 1, shape: [4, 4, 3] });
+			// One camera: LIBERO's own path (robots/libero OBSERVATION): the facade's camera name, the tools' size.
 			const one = await mcp.callTool("observe", { camera: "wrist" });
 			assert.equal(one.content.filter((c) => c.type === "image").length, 1);
+			assert.deepEqual(text(one).wrist, { image: 1, shape: [4, 4, 3] });
 			assert.deepEqual(env.calls.at(-1), {
 				method: "env.render_camera",
-				kwargs: { camera_name: "wrist" },
+				kwargs: { camera_name: "robot0_eye_in_hand", height: 1024, width: 1024 },
 				token: undefined,
 			});
+			const none = await mcp.callTool("observe", { camera: "overhead" });
+			assert.equal(none.isError, true);
+			assert.match(none.content[0].type === "text" ? none.content[0].text : "", /cameras are agentview, wrist/);
 
 			await mcp.callTool("stop", {});
 			const halted = await mcp.callTool("set_gripper", { gripper: -1 });

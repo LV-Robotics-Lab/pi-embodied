@@ -169,7 +169,8 @@ export function fill(text: string, vars: Vars = {}) {
 	});
 }
 
-function enumValues(values: string[] | string, vars: Vars): string[] {
+/** An enum's values: the list given, or the robot variable `{{name}}` names (an error without it). */
+export function enumValues(values: string[] | string, vars: Vars): string[] {
 	if (Array.isArray(values)) return values;
 	const m = /^\{\{(\w+)\}\}$/.exec(values);
 	const v = m ? vars[m[1]] : undefined;

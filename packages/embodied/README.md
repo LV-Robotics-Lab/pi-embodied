@@ -382,7 +382,10 @@ pi is the entry point for everything in this package. Codex and Claude Code get 
 **tools mode** through an MCP server generated from the primitive manifests
 (`src/integrations/mcp/server.ts`): one tool per env-side manifest entry the tier and `requires`
 filters admit (schema from `params`, description from `doc.tool`, pi's rules for privileged variants),
-forwarded to the robot's env server over the same RPC pi uses, plus `observe`, `reset`, `finish`,
+forwarded to the robot's env server over the same RPC pi uses (tool arguments adapted to the facade's
+signature as pi's wrappers adapt them, `src/primitives/arguments.ts`), plus `observe` (the robot's own
+observation path, `src/observation/path.ts`: the manifest's `get_observation`, else `render_camera`
+per camera and `get_state` with the robot's cameras, size and orientation), `reset`, `finish`,
 `stop`, `resume` and `robot_status`. Motion fails closed: no `healthz` now, another process on the port, a
 `stop` latch, a finished episode or a server that stopped answering all refuse; a busy arm (the
 hardware lock) fails the start. Not served, by design: `side: ts` tools (VLA adapters, waypoints,

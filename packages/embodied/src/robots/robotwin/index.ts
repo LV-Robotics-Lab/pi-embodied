@@ -30,6 +30,7 @@ import { trackFlags } from "../../infra/params.ts";
 import { encodePng } from "../../infra/png.ts";
 import { NdArray, type RpcClient } from "../../infra/rpc.ts";
 import type { Move } from "../../modes/units/index.ts";
+import type { ObservationDecl } from "../../observation/path.ts";
 import { template } from "../../planner/context-version.ts";
 import { vlaSeeds } from "../../planner/vla-seed.ts";
 import {
@@ -49,6 +50,8 @@ const SYSTEM = read("./SYSTEM.md");
 const MEMORY = read("./memory.md");
 const EXPLORE = read("./explore.md");
 const VIEWS = ["head", "left_wrist", "right_wrist"] as const;
+/** Observed without pi (../../observation/path.ts): render_camera needs a view name; SAPIEN renders upright. */
+export const OBSERVATION: ObservationDecl = { cameras: VIEWS };
 type View = (typeof VIEWS)[number];
 type Arm = "left" | "right";
 /**

@@ -32,6 +32,7 @@ import { trackFlags } from "../../infra/params.ts";
 import { encodePng } from "../../infra/png.ts";
 import { NdArray, RpcClient } from "../../infra/rpc.ts";
 import type { Move } from "../../modes/units/index.ts";
+import { flipRows, type ObservationDecl } from "../../observation/path.ts";
 import { template } from "../../planner/context-version.ts";
 import { vlaSeeds } from "../../planner/vla-seed.ts";
 import {
@@ -53,6 +54,8 @@ const EXPLORE = read("./explore.md");
 const CAMERAS = { agentview: "robot0_agentview_left", navview: "mobilebase0_navview", wrist: "robot0_eye_in_hand" };
 const VLA_CAMERAS = ["robot0_agentview_left", "robot0_agentview_right", "robot0_eye_in_hand"];
 const SIZE = 256; // env camera and RLDX observation resolution
+/** Observed without pi (../../observation/path.ts): the sim's camera names, the 256 render it requires, MuJoCo's bottom-up rows. */
+export const OBSERVATION: ObservationDecl = { cameras: CAMERAS, size: SIZE, flip: true };
 const PRIMITIVES = [
 	"move_to",
 	"move_delta",
@@ -118,14 +121,6 @@ const UNITS_VIEWS = `Each result shows the agentview, then the navview, then the
 - Agentview (first image): a camera on the robot's base, behind and left of the arm, looking forward at the counter: MV_FWD moves the gripper toward the image top (deeper into the scene), MV_BACK toward the bottom, MV_LEFT / MV_RIGHT toward the image left / right.
 - Navview (second image): the floor around the base, for navigation; ignore it for arm moves.
 - Wrist view (third image): moves with the gripper. These directions come from the robot's geometry and are not calibrated: after the first move, check where the gripper went in the agentview and trust what you see.`;
-/** Rows of an HxWx3 image in reverse order (MuJoCo renders bottom-up). */
-function flipRows(data: Buffer, height: number): Buffer {
-	const row = data.length / height;
-	const out = Buffer.alloc(data.length);
-	for (let y = 0; y < height; y++) data.copy(out, (height - 1 - y) * row, y * row, (y + 1) * row);
-	return out;
-}
-
 /** RpcClient bound to one RPC session (the RLDX server keys policy memory/RTC state by it). */
 /** The RLDX-1 VLA server (robocasa/serve.sh), for --serve-models rldx. */
 const RLDX: ModelService = {

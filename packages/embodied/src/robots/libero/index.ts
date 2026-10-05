@@ -25,6 +25,7 @@ import { trackFlags } from "../../infra/params.ts";
 import { decodePng, decodePngChannel, encodePng } from "../../infra/png.ts";
 import { NdArray, RpcClient } from "../../infra/rpc.ts";
 import { finishMove, type Move, type UnitsSpec } from "../../modes/units/index.ts";
+import { flipRows, type ObservationDecl } from "../../observation/path.ts";
 import { template } from "../../planner/context-version.ts";
 import { vlaSeeds } from "../../planner/vla-seed.ts";
 import { graspAdvisorTool } from "../../primitives/advisor.ts";
@@ -148,6 +149,8 @@ const TOOLS = [
 	"finish",
 ];
 const CAMERAS = { agentview: "agentview", wrist: "robot0_eye_in_hand" } as const;
+/** Observed without pi (../../observation/path.ts): its cameras, the tools' 1024 render, MuJoCo's bottom-up rows. */
+export const OBSERVATION: ObservationDecl = { cameras: CAMERAS, size: 1024, flip: true };
 /** Units mode (../units): how the two images look, and which way each unit moves in them. */
 const VIEWS = `Each result shows the agentview, then the wrist view (verified in LIBERO: MV_FWD is world +x, MV_LEFT is -y).
 - Agentview (first image) faces the robot, whose base is at the image top: MV_LEFT / MV_RIGHT move the gripper toward the image left / right, MV_FWD toward the image bottom (toward the camera), MV_BACK toward the image top.
@@ -257,13 +260,6 @@ export function xyRefusal(from: number[], to: number[], what: string): string | 
 		: undefined;
 }
 const clip = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
-
-/** Rows of an HxWxC byte image in reverse order (LIBERO renders upside down). */
-function flipRows(data: Buffer, height: number, rowBytes: number): Buffer {
-	const out = Buffer.alloc(data.length);
-	for (let y = 0; y < height; y++) data.copy(out, (height - 1 - y) * rowBytes, y * rowBytes, (y + 1) * rowBytes);
-	return out;
-}
 
 /** Rotation matrix of an xyzw quaternion. */
 function rotation([x, y, z, w]: number[]): number[][] {

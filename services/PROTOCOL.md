@@ -227,8 +227,12 @@ geoms (one box per movable object, oriented boxes per fixture geom), a Franka ce
 dual rig the other arm at its current joints. Obstacles within 4 cm of the start or goal TCP (the
 object being grasped, held or placed on) are left out. A movable object is its axis-aligned bounding
 box, so a neighbour's corners count: a goal whose hand (not TCP) reaches a neighbouring object's
-box is refused, and the refusal names it (`at the goal the arm touches <object>'s bounding box`),
-or says the goal is out of reach, or that the goal is clear and only the path is blocked. The geometry is infrastructure: used with
+box is refused, and the refusal says why, by the planner's status first: the arm already touches
+an obstacle where it stands (`the arm is already touching <object>'s bounding box where it is;
+back off before planning`, cuRobo's `INVALID_START_STATE_*`), the goal is clear and only the path
+is blocked (cuRobo's own collision-aware IK found the goal, trajectory optimisation failed), the
+goal is out of reach, or the goal configuration found touches an obstacle (`the goal configuration
+found touches <object>'s bounding box`; cuRobo's `IK_FAIL`, or a backend without a status). The geometry is infrastructure: used with
 or without `--privileged`, never returned (results carry counts, clearances and the nearest
 obstacle's name). A planner error or invalid answer refuses the move (an unchecked segment
 stops it); an unreachable ik service refuses too, unless `--ik-allow-unplanned` lets the move run

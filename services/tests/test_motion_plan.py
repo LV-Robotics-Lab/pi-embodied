@@ -1214,8 +1214,74 @@ def test_a_blocked_plan_says_why():
         "http://ik", "panda_libero", client=PointIk(), contact_radius=0.01
     )
     out = tight.plan([*start, 0, 0, 0, 0], start, [0.5, 0, 0.1], UP, [roof, bowl])
-    assert "touches akita_black_bowl_2_main's bounding box" in out["message"]
+    assert (
+        "the goal configuration found touches akita_black_bowl_2_main's bounding box"
+        in out["message"]
+    )
     # Out of reach without any obstacle.
     out = planner.plan([*start, 0, 0, 0, 0], start, [1.2, 0, 0.1], UP, [roof])
     assert "out of reach" in out["message"]
 
+
+def test_a_blocked_plan_is_explained_by_the_planners_status():
+    """Audit 92245e3 CUROBO-2: _why_blocked diagnosed every failed plan the same way (IK at
+    the goal, then a check there), never reading cuRobo's status: an arm refused for standing
+    in collision was told "the goal is reachable and clear; the path between is blocked" and
+    kept re-aiming from the same spot, and a trajopt failure after cuRobo's own IK had found
+    a clear goal could name a neighbour the one solution we checked happened to touch."""
+
+    class StatusIk(PointIk):
+        def __init__(self, status):
+            super().__init__()
+            self.status = status
+
+        def call(self, method, args=(), kwargs=None, *, timeout_s=None):
+            if method == "ik.plan":
+                self.calls.append((method, kwargs))
+                return {
+                    "ok": False,
+                    "error": f"cuRobo found no collision-free path ({self.status})",
+                    "status": self.status,
+                    "backend": "curobo",
+                }
+            return super().call(method, args, kwargs, timeout_s=timeout_s)
+
+    def plan(status, start, obstacles):
+        ik = StatusIk(status)
+        planner = motion.MotionPlanner(
+            "http://ik", "panda_libero", client=ik, contact_radius=0.01
+        )
+        out = planner.plan([*start, 0, 0, 0, 0], start, [0.5, 0, 0.1], UP, obstacles)
+        assert out["status"] == "blocked"
+        return out["message"], [m for m, _ in ik.calls]
+
+    # The point robot (2 cm) overlaps the wall 1.5 cm from its face: the start is in collision.
+    touching = [0.26, 0, 0.1]
+    msg, calls = plan(
+        "MotionGenStatus.INVALID_START_STATE_WORLD_COLLISION", touching, [WALL]
+    )
+    assert "the arm is already touching wall's bounding box where it is" in msg
+    assert "back off before planning" in msg and "path between" not in msg
+    assert calls == ["ik.plan", "ik.check"], (
+        "the start is checked, the goal not re-solved"
+    )
+    msg, _ = plan(
+        "MotionGenStatus.INVALID_START_STATE_SELF_COLLISION", [0.1, 0, 0.1], [WALL]
+    )
+    assert "not a valid start" in msg and "SELF_COLLISION" in msg
+    # Trajectory optimisation failed after cuRobo's IK found the goal: the goal is fine.
+    msg, calls = plan("MotionGenStatus.TRAJOPT_FAIL", [0.1, 0, 0.1], [WALL])
+    assert "the goal is reachable and clear; the path between is blocked" in msg
+    assert calls == ["ik.plan"], "no single IK solution is checked for a path failure"
+    # IK failed: the goal is diagnosed; a clear single solution means cuRobo's seeds all hit.
+    msg, calls = plan("MotionGenStatus.IK_FAIL", [0.1, 0, 0.1], [WALL])
+    assert "the planner found no collision-free configuration for it" in msg
+    assert calls == ["ik.plan", "ik.solve", "ik.check"]
+    beside = {
+        "type": "box",
+        "name": "cup",
+        "position": [0.5, 0.065, 0.1],
+        "extent": [0.1, 0.1, 0.05],
+    }
+    msg, _ = plan("MotionGenStatus.IK_FAIL", [0.1, 0, 0.1], [WALL, beside])
+    assert "the goal configuration found touches cup's bounding box" in msg

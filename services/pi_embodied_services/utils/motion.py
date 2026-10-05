@@ -328,7 +328,7 @@ class MotionPlanner:
         # Obstacles the robot's own base already sits in (the table under a mounted arm).
         out["excluded_by_base"] = list(result.get("excluded_by_base") or [])
         if not result["ok"]:
-            why = self._why_blocked(q, goal_base, kept)
+            why = self._why_blocked(q, goal_base, kept, result.get("status"))
             out.update(
                 status="blocked",
                 message=f"no collision-free path: {result.get('error') or 'plan failed'}"
@@ -372,11 +372,25 @@ class MotionPlanner:
         return out
 
     def _why_blocked(
-        self, q: Any, goal_base: np.ndarray, kept: list[dict[str, Any]]
+        self,
+        q: Any,
+        goal_base: np.ndarray,
+        kept: list[dict[str, Any]],
+        status: Any = None,
     ) -> str | None:
-        """Why a plan failed, from the ik service: the goal is unreachable (IK fails without
-        obstacles), or the arm at the goal touches an obstacle (named; its box is a bound, so a
-        round object's corners count). None when the service cannot tell."""
+        """Why a plan failed, by the planner's ``status`` first (cuRobo's MotionGenStatus):
+        an invalid start (the arm already touches an obstacle where it is, or is in
+        self-collision / past a joint limit: back off before aiming elsewhere), a path failure
+        after cuRobo's own collision-aware IK found a clear goal (the goal is fine, the path
+        is blocked), or an IK failure, which, like a planner without a status, is diagnosed
+        from the ik service: the goal is unreachable (IK fails without obstacles), or the goal
+        configuration found touches an obstacle (named; its box is a bound, so a round
+        object's corners count). None when the service cannot tell."""
+        code = str(status or "").upper().replace(" ", "_")
+        if "INVALID_START_STATE" in code:
+            return self._start_invalid(q, kept, str(status))
+        if code and "IK_FAIL" not in code:
+            return f"the goal is reachable and clear; the path between is blocked ({status})"
         try:
             sol = self._call(
                 "ik.solve",
@@ -402,11 +416,51 @@ class MotionPlanner:
             logger.warning("blocked plan not diagnosed: %s", exc)
             return None
         if chk.get("collision_free"):
+            if code:  # cuRobo's 32-seed collision-aware IK found no clear configuration
+                return (
+                    "the goal is reachable, but the planner found no collision-free "
+                    f"configuration for it ({status}); aim a little further from the obstacles"
+                )
             return "the goal is reachable and clear; the path between is blocked"
         name = str(chk.get("nearest") or "an obstacle").split("/")[0]
         gap = chk.get("min_clearance_m")
         mm = "" if gap is None else f", {round(float(gap) * 1000)} mm"
-        return f"at the goal the arm touches {name}'s bounding box{mm}; aim clear of it"
+        return (
+            f"the goal configuration found touches {name}'s bounding box{mm}; "
+            "aim clear of it"
+        )
+
+    def _start_invalid(self, q: Any, kept: list[dict[str, Any]], status: str) -> str:
+        """The planner refused the start configuration: name what the arm touches there."""
+        if kept:
+            try:
+                chk = self._call(
+                    "ik.check",
+                    robot=self.robot,
+                    q=[float(v) for v in np.asarray(q, dtype=np.float64).reshape(-1)],
+                    obstacles=kept,
+                    margin=self.margin,
+                )
+            except (RpcError, OSError, ValueError, KeyError, TypeError) as exc:
+                logger.warning("invalid start not diagnosed: %s", exc)
+                chk = {}
+            if chk and not chk.get("collision_free"):
+                name = str(chk.get("nearest") or "an obstacle").split("/")[0]
+                gap = chk.get("min_clearance_m")
+                mm = "" if gap is None else f", {round(float(gap) * 1000)} mm"
+                return (
+                    f"the arm is already touching {name}'s bounding box where it is{mm}; "
+                    "back off before planning"
+                )
+        if "WORLD_COLLISION" in status.upper():
+            return (
+                "the arm already stands within the planner's collision margin of an "
+                f"obstacle ({status}); back off before planning"
+            )
+        return (
+            f"the arm's current configuration is not a valid start ({status}: "
+            "self-collision or a joint limit); back off before planning"
+        )
 
     def check(
         self,

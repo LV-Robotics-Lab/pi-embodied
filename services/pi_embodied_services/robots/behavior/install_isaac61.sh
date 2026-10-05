@@ -55,14 +55,15 @@ PY="$V/bin/python"
 "$UV" pip install --python "$PY" "${IDX[@]}" --extra-index-url "$NVIDIA_INDEX" --prerelease allow \
 	--override <(printf '%s\n' "${TORCH[@]}") \
 	"isaaclab[isaacsim]==3.0.0rc1"
-# OmniGibson's runtime deps (its setup.py install_requires, minus the lerobot fork) on the Isaac stack's own
-# numpy / pillow / websockets / warp, plus the services' RPC layer (msgpack, msgpack-numpy) and the build tools.
+# OmniGibson's runtime deps (its setup.py install_requires, minus the lerobot fork, plus av, which its eval
+# utilities import at package import) on the Isaac stack's own numpy / pillow / websockets / warp, plus the
+# services' RPC layer (msgpack, msgpack-numpy) and the build tools.
 LOCK=$(mktemp)
 "$UV" pip freeze --python "$PY" | grep -iE '^(numpy|pillow|websockets|torch|torchvision|torchaudio|warp-lang|isaacsim|isaaclab)(==| @)' >"$LOCK"
 "$UV" pip install --python "$PY" "${IDX[@]}" --override "$LOCK" \
 	"huggingface-hub>=0.34.4" "gymnasium>=0.28.1" scipy GitPython transforms3d networkx PyYAML addict ipython future \
 	trimesh h5py cryptography opencv-python-headless nest_asyncio imageio imageio-ffmpeg termcolor progressbar pymeshlab \
-	click aenum rtree graphviz matplotlib lxml numba cffi omegaconf msgpack msgpack-numpy \
+	click aenum rtree graphviz matplotlib lxml numba cffi omegaconf av msgpack msgpack-numpy \
 	ninja "setuptools<82" setuptools_scm wheel
 
 if [ ! -d "$R/OmniGibson" ]; then
@@ -94,7 +95,8 @@ export CUDA_HOME=${CUDA_HOME:-/usr/local/cuda}
 }
 export TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST:-$("$PY" -c 'import torch; print("%d.%d" % torch.cuda.get_device_capability())')}
 export PATH="$CUDA_HOME/bin:$PATH" MAX_JOBS=${MAX_JOBS:-8}
-"$UV" pip install --python "$PY" "${IDX[@]}" --override "$LOCK" --no-build-isolation -e "$C"
+# The patched checkout is dirty for setuptools_scm: name cuRobo's version (StanfordVL's fork of 0.7.x) instead.
+SETUPTOOLS_SCM_PRETEND_VERSION=0.7.7 "$UV" pip install --python "$PY" "${IDX[@]}" --override "$LOCK" --no-build-isolation -e "$C"
 
 if $DATASET; then
 	export OMNIGIBSON_DATA_PATH=${OMNIGIBSON_DATA_PATH:-$R/datasets}

@@ -10,12 +10,12 @@ import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { McpClient } from "@earendil-works/pi-mcp";
 import { createInMemoryTransportPair } from "@earendil-works/pi-mcp/testing";
-import { CONFIRMED_ENV, OperatorGate, TICKET_TTL_MS } from "../src/integrations/mcp/gate.ts";
+import { CONFIRMED_ENV, expandHome, OperatorGate, TICKET_TTL_MS } from "../src/integrations/mcp/gate.ts";
 import { McpToolServer } from "../src/integrations/mcp/protocol.ts";
 import { connect, parseArgs, session } from "../src/integrations/mcp/server.ts";
 import { REAL_ROBOTS } from "../src/integrations/mcp/tools.ts";
@@ -263,6 +263,13 @@ test("a simulator is not gated: motions run with neither channel; --confirm-file
 });
 
 test("OperatorGate alone: describe/warning/status; a ticket that cannot be removed authorises nothing; every REAL_ROBOT is gated", () => {
+	// The documented `--config confirm_file=~/.pi/agent/confirm-ur5e` reaches the server with a literal tilde.
+	assert.equal(
+		new OperatorGate({ robot: "ur5e", real: true, sessionConfirmed: false, confirmFile: "~/.pi/agent/confirm-ur5e" }).confirmFile,
+		join(homedir(), ".pi/agent/confirm-ur5e"),
+	);
+	assert.equal(expandHome("~"), homedir());
+	assert.equal(expandHome("/abs/~/x"), "/abs/~/x");
 	const none = new OperatorGate({ robot: "ur5e", real: true, sessionConfirmed: false });
 	assert.match(none.describe(), /every motion tool and reset will be refused/);
 	assert.equal(none.warning(), undefined);

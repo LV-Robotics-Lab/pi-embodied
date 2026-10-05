@@ -24,7 +24,7 @@
  */
 
 import { readFileSync, statSync, unlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { resolve, sep } from "node:path";
 import { message } from "../../robot.ts";
 
@@ -47,6 +47,11 @@ export type GateOptions = {
 /** What the confirm file holds right now (not consumed). */
 export type Ticket = { tool: string; ageMs: number } | { error: string } | undefined;
 
+/** `~` or `~/x` as the operator's home; anything else unchanged. */
+export function expandHome(path: string): string {
+	return path === "~" ? homedir() : path.startsWith("~/") ? homedir() + path.slice(1) : path;
+}
+
 export class OperatorGate {
 	readonly real: boolean;
 	readonly sessionConfirmed: boolean;
@@ -58,7 +63,8 @@ export class OperatorGate {
 		this.robot = o.robot;
 		this.real = o.real;
 		this.sessionConfirmed = o.sessionConfirmed;
-		this.confirmFile = o.confirmFile === undefined ? undefined : resolve(o.confirmFile);
+		// A shell does not expand a quoted `~/…` (the documented --config confirm_file=~/… form): expand it here.
+		this.confirmFile = o.confirmFile === undefined ? undefined : resolve(expandHome(o.confirmFile));
 		this.now = o.now ?? Date.now;
 	}
 

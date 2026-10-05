@@ -342,6 +342,33 @@ test("observe on ManiSkill renders the cameras the server's robot has: widowxai 
 	}
 });
 
+test("a failed camera discovery is not cached: the next observe asks the server again", async () => {
+	useDeployment({});
+	const env = fakeEnv({ robot: "maniskill", has: () => false });
+	delete env.methods["env.get_observation"];
+	delete env.methods["env.get_state"];
+	let fail = true;
+	env.methods["env.get_env_meta"] = () => {
+		if (fail) throw new Error("meta unavailable");
+		return { env_id: "PickCube-v1", seed: 0, robot: "panda", view_size: 256 };
+	};
+	env.methods["env.render_camera"] = () => rowsImage();
+	const url = await env.listen();
+	try {
+		const a = parseArgs(["--robot", "maniskill", "--env", url]);
+		const s = session(a, await connect(a));
+		const signal = new AbortController().signal;
+		const first = await s.call("observe", {}, signal);
+		assert.equal(first.isError, true, JSON.stringify(first.content));
+		assert.match(JSON.stringify(first.content), /meta unavailable/);
+		fail = false;
+		assert.deepEqual(Object.keys(text(await s.call("observe", {}, signal))), ["agentview", "wrist"]);
+		assert.equal(env.calls.filter((c) => c.method === "env.get_env_meta").length, 2, "discovery retried once");
+	} finally {
+		env.close();
+	}
+});
+
 test("a tool whose parameters differ from the method's is adapted as pi adapts it: align_wrist's point reaches the facade as row, col", async () => {
 	useDeployment({});
 	const env = fakeEnv({ has: (c) => c === "sam3" || c === "align_wrist" });

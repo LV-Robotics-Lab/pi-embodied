@@ -13,8 +13,10 @@
 # --max-turns, --time-limit, --units-plugins and the units knobs, --anchor-image, --vdm-model,
 # --fallback-*, --approval, --max-tool-calls, --max-tokens, --humanclaw-collision-feedback) and a
 # --smoke step cap (--humanclaw-max-steps). An episode is valid when the environment produced a result
-# and the planner did not fail. Rerunning retries only invalid episodes and refuses an out dir holding
-# another configuration.
+# and the planner did not fail; it is scored (success = NavSR@20cm, else failure) only with --metrics,
+# which is where the benchmark's verdict is computed: without it every valid episode is `unscored`
+# (kept, not counted, exit status 1), never a failure. Rerunning retries only invalid episodes and
+# refuses an out dir holding another configuration.
 # With --metrics the summary is HumanCLAW's own aggregate_metric_files() over every metrics.json
 # (summary.json, and metrics_summary.json beside it), run with $HUMANCLAW_PYTHON (the humanclaw venv).
 # Heavy: run serially with LOCK set (e.g. /root/autodl-tmp/locks/gpu1.lock), each episode takes it
@@ -114,6 +116,7 @@ $collision && extra+="/collision_feedback=true"
 [ -n "$max_steps" ] && extra+="/max_steps=$max_steps"
 # The OpenETA extras this run turns on (eval-options.sh's $extras; robot.ts records them as `extras`): part of the configuration.
 config="mode=$mode/preset=$preset/model=$model/metrics=$metrics/video=$video/verify=$verify/vdm=$vdm/stateless=$stateless/proprioception=$proprioception${reasoning:+/reasoning=$reasoning}$extra${extras:+/extras=$extras}"
+$metrics || echo "eval.sh: without --metrics the benchmark measures nothing: every episode is recorded unscored" >&2
 mkdir -p "$out"
 if [[ $episodes == *_ep*_* ]]; then list=$episodes; else list=$(cd "$out" && "$PY" -c '
 import sys
@@ -135,7 +138,7 @@ for key in $list; do
 		# Every experiment flag the robot recorded (params) against this run's (../../scripts/params-match.mjs).
 		case $st in success | failure) node "$here/../../scripts/params-match.mjs" "$dir/result.json" >/dev/null || st=other ;; esac
 		case $st in
-		success | failure) continue ;;
+		success | failure | unscored) continue ;;
 		other) echo "$dir holds a result of another configuration; use another out dir" >&2 && exit 1 ;;
 		esac
 	fi
@@ -158,7 +161,8 @@ for (const f of readdirSync(dir).filter((f) => f.endsWith(".jsonl")))
 	}
 const last = results.length === 1 ? results[0] : undefined;
 const status = results.length > 1 ? "duplicate_result" : !last ? (Number(code) ? "env_error" : "missing")
-	: last.env_error ? "env_error" : last.planner_error ? "planner_error" : last.success ? "success" : "failure";
+	: last.env_error ? "env_error" : last.planner_error ? "planner_error"
+	: last.success === true ? "success" : last.success === false ? "failure" : "unscored";
 const r = { ...(last ?? {}), status, exit_code: Number(code), config, mode, preset, model: model || null };
 writeFileSync(`${dir}/result.json`, `${JSON.stringify(r, null, 2)}\n`);
 console.log(JSON.stringify({ status, steps: r.steps, metrics: r.metrics }));
@@ -168,8 +172,9 @@ done
 node -e '
 const fs=require("fs");const [out,...cells]=process.argv.slice(1);
 const rows=cells.map(c=>{try{return JSON.parse(fs.readFileSync(`${out}/${c}/result.json`,"utf8"))}catch{return {status:"missing"}}});
-const n=s=>rows.filter(r=>r.status===s).length;const scored=n("success")+n("failure");
-console.log(`${rows[0]?.config??"-"}: scored ${scored}/${rows.length}, invalid ${rows.length-scored}`);
+const n=s=>rows.filter(r=>r.status===s).length;const scored=n("success")+n("failure"),unscored=n("unscored");
+console.log(`${rows[0]?.config??"-"}: scored ${scored}/${rows.length} (success ${n("success")}), unscored ${unscored}, invalid ${rows.length-scored-unscored}`);
+if(unscored) console.log("unscored episodes ran without --metrics: no NavSR verdict; score them in another out dir with --metrics");
 if(rows.length-scored) process.exitCode=1;
 ' "$out" "${cells[@]}"
 bad=$?

@@ -197,12 +197,18 @@ export default function humanclaw(pi: ExtensionAPI) {
 			instruction: obs?.instruction ?? null,
 			steps: obs?.step ?? 0,
 			active_stop: obs?.stopped ?? false,
-			success: Boolean((summary?.metrics as { nav_sr_20cm?: boolean } | null)?.nav_sr_20cm),
+			// NavSR@20cm exists only in metrics.json (--humanclaw-metrics): without it the episode is unscored, not failed.
+			success: summary?.metrics ? Boolean((summary.metrics as { nav_sr_20cm?: boolean }).nav_sr_20cm) : null,
 			metrics: summary?.metrics ?? null,
 			metrics_path: summary?.metrics_path ?? null,
 			videos: summary?.videos ?? [],
 		}),
-		status: () => ({ language: obs.instruction, step: obs.step, solved: obs.stopped }),
+		// `solved` is the benchmark's verdict once measured; choosing STOP is not it.
+		status: () => ({
+			language: obs.instruction,
+			step: obs.step,
+			solved: summary?.metrics ? Boolean((summary.metrics as { nav_sr_20cm?: boolean }).nav_sr_20cm) : undefined,
+		}),
 		finish: {
 			description:
 				"End the episode. Success is measured by the benchmark (distance, contact), not by this call; STOP first when the task is done.",

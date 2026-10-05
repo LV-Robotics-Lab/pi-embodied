@@ -60,7 +60,8 @@
 #
 # The summary gives, per variant, the success rate over valid cells, Pass@k (the unbiased estimator
 # 1 - C(n-c,k)/C(n,k) over a task's n valid seeds with c successes, averaged over the tasks with at
-# least k valid seeds), and the invalid cells (env_error, planner_error, timeout, missing, duplicate)
+# least k valid seeds), and the invalid cells (env_error, planner_error, timeout, missing, duplicate,
+# humanclaw's unscored: run without --metrics, so the benchmark gave no verdict)
 # counted apart; it is also written to <out-dir>/summary.json. The exit status is nonzero when a
 # variant has invalid cells, mixes configurations, or misses --min-success. RoboCasa's Target50
 # validator score needs a serial `robocasa/eval.sh <dir> all` afterwards (it skips every valid cell).
@@ -368,7 +369,7 @@ vdirs.forEach((vdir, v) => {
 		const value = eligible.length ? eligible.reduce((a, t) => a + pass(t.n, t.c, k), 0) / eligible.length : null;
 		return { k, value, tasks: eligible.length };
 	});
-	const invalid = { env_error: n("env_error"), planner_error: n("planner_error"), timeout: n("timeout"), missing: n("missing"), duplicate_result: n("duplicate_result") };
+	const invalid = { env_error: n("env_error"), planner_error: n("planner_error"), timeout: n("timeout"), missing: n("missing"), duplicate_result: n("duplicate_result"), unscored: n("unscored") };
 	const invalidCount = rows.length - scored;
 	const rate = scored ? n("success") / scored : null;
 	const row = { variant: name, dir: `${out}/${vdir}`, config: [...configs][0] ?? null, cells: rows.length, success: n("success"),

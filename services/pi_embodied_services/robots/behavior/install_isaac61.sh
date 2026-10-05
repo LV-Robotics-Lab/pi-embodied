@@ -12,7 +12,8 @@
 # The Isaac stack is isaaclab[isaacsim]==3.0.0rc1's (the build this repository's RoboDojo and RoboLab ports
 # run on; OmniGibson itself uses no Isaac Lab). OmniGibson's runtime deps are installed against that
 # stack's numpy 2 / pillow 12 / websockets (OmniGibson pins numpy<2, pillow~=11 and a pymeshlab with no
-# cp312 wheel; the lerobot fork is dataset export only), so OmniGibson and bddl go in --no-deps.
+# cp312 wheel; its lerobot fork, dataset export only, is replaced by a stand-in package), so OmniGibson and
+# bddl go in --no-deps.
 # cuRobo is OmniGibson's pin (StanfordVL/curobo @78612f45, the [primitives] extra), a torch CUDA extension:
 # curobo-isaac61.patch adapts it to Isaac Sim 6.1's warp 1.16 and the build needs a CUDA 12.x nvcc
 # (CUDA_HOME, default /usr/local/cuda; torch refuses a CUDA major mismatch) for this GPU's architecture
@@ -75,6 +76,15 @@ else
 	git -C "$R" apply --reverse --check "$HERE/behavior-isaac61.patch" # already applied, or fail loudly
 fi
 "$UV" pip install --python "$PY" "${IDX[@]}" --no-deps -e "$R/bddl3" -e "$R/OmniGibson"
+# OmniGibson imports its LeRobot dataset wrappers at package import; the env server never uses them and
+# the real lerobot fork pins another torch / numpy stack: a stand-in package (lerobot_stub.py, see its docstring).
+"$PY" - "$HERE/lerobot_stub.py" <<'PYEOF'
+import os, shutil, sys, sysconfig
+d = os.path.join(sysconfig.get_paths()["purelib"], "lerobot")
+os.makedirs(d, exist_ok=True)
+shutil.copy(sys.argv[1], os.path.join(d, "__init__.py"))
+print("lerobot stand-in at", d)
+PYEOF
 
 # cuRobo: an editable install without its .git would fail setuptools_scm, so the checkout keeps its history.
 C="$R/third_party/curobo"

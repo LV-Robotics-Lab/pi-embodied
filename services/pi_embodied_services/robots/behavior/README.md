@@ -71,6 +71,10 @@ is evaluated on Isaac Sim 5.1. What differs from upstream (StanfordVL/BEHAVIOR-1
   BASE embodiments; whole-body (DEFAULT) planning and `check_collisions` are unavailable on such a GPU.
 - cuRobo (`curobo-isaac61.patch`): `wp.device_from_torch` (warp 1.16 dropped `warp.torch` from
   the top-level namespace); built for the host GPU only.
+- No LeRobot: OmniGibson's dataset export and playback wrappers (`LeRobotDataWrapper`,
+  `LeRobotPlaybackWrapper`) import a lerobot fork whose torch / numpy pins are not Isaac Sim 6.1's;
+  the venv holds a stand-in `lerobot` package instead (`lerobot_stub.py`), so those wrappers do not
+  work. The env server never uses them.
 - GPU selection: on Isaac Sim 6 the server leaves `OMNIGIBSON_GPU_ID` unset (`sim.set_render_gpu`):
   RTX numbers all Vulkan devices, so an explicit `active_gpu` 0 after `CUDA_VISIBLE_DEVICES`
   names the hidden GPU and no render device is created; Kit then renders on the visible GPU.

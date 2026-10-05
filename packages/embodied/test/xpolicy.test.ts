@@ -159,7 +159,7 @@ async function fakeBridge(chunks: unknown[][], failOn?: string) {
 			if (method === "healthz") return reply({ status: "ok" });
 			if (method === "xpolicy.action_dims") return reply({ robot: "toy", ...DUAL });
 			if (method === "xpolicy.connect")
-				return reply({ server_instance_id: "srv-1", xpolicylab_rev: "d6332bf10b15", precision: "bf16", ms: 1 });
+				return reply({ server_instance_id: "srv-1", xpolicylab_rev: "d6332bf10b15", ms: 1 });
 			if (method === "xpolicy.get_action") return reply({ actions: chunks.shift() ?? [], ms: 5 });
 			reply({ result: null, ms: 1 });
 		});
@@ -282,6 +282,21 @@ const joint = (v: number) => ({
 	right_ee_joint_state: [0],
 });
 
+test("--xpolicy-precision is validated and needs --xpolicy; undeclared it is null", async (t) => {
+	// Audit 92245e3 CM-6: the precision was XPOLICY_PRECISION from pi's shell, free text, unkeyed.
+	const bridge = await fakeBridge([]);
+	t.after(bridge.close);
+	const bad = await toy({ xpolicy: "ws://policy:19000", "xpolicy-bridge": bridge.url, "xpolicy-precision": "fp8" });
+	assert.deepEqual(bad.active(), [], "the robot did not start");
+	assert.equal(bridge.calls.filter((c) => c.method === "xpolicy.connect").length, 0);
+	const alone = await toy({ "xpolicy-precision": "bf16" });
+	assert.deepEqual(alone.active(), [], "a declared precision without --xpolicy is a misconfiguration");
+	const plain = await toy({ xpolicy: "ws://policy:19000", "xpolicy-bridge": bridge.url });
+	await plain.tools.get("finish").execute("id", { status: "failure", summary: "" });
+	await plain.emit("agent_end");
+	assert.equal(plain.entries.find((e) => e.type === RESULT_ENTRY)?.data.xpolicy_precision, null);
+});
+
 test("without --xpolicy nothing is registered, connected or reported", async () => {
 	const f = await toy({});
 	assert.equal(f.tools.has("xpolicy_act"), false);
@@ -298,7 +313,7 @@ test("xpolicy_act runs XPolicyLab's deploy loop: case, reset, then update_obs / 
 		[joint(4), joint(5)],
 	]);
 	t.after(bridge.close);
-	const f = await toy({ xpolicy: "ws://policy:19000", "xpolicy-bridge": bridge.url });
+	const f = await toy({ xpolicy: "ws://policy:19000", "xpolicy-bridge": bridge.url, "xpolicy-precision": "bf16" });
 	assert.deepEqual(f.active(), ["finish", "xpolicy_act"]);
 	const connect = bridge.calls.find((c) => c.method === "xpolicy.connect")?.kwargs;
 	assert.equal(connect?.url, "ws://policy:19000");
@@ -356,7 +371,11 @@ test("xpolicy_act runs XPolicyLab's deploy loop: case, reset, then update_obs / 
 	const r = f.entries.find((e) => e.type === RESULT_ENTRY)?.data;
 	assert.equal(r.xpolicy, "ws://policy:19000");
 	assert.equal(r.xpolicy_server_instance_id, "srv-1");
-	assert.equal(r.xpolicy_precision, "bf16");
+	assert.equal(
+		r.xpolicy_precision,
+		"bf16",
+		"the operator's declaration (--xpolicy-precision), not an env var of pi's shell",
+	);
 	assert.equal(r.xpolicy_chunks, 2, "the empty chunk of the second call raised before it counted");
 	assert.equal(r.xpolicy_actions, 5);
 	assert.deepEqual(

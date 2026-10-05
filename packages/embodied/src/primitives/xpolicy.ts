@@ -289,6 +289,9 @@ type Session = {
 	actions: number;
 };
 
+/** `--xpolicy-precision` values: the policy server's weight precision, as its launcher declares it. */
+export const PRECISIONS = ["fp32", "bf16", "fp16"] as const;
+
 const DESCRIPTION =
 	"Run the XPolicyLab policy served at --xpolicy on the native task instruction, for `chunks` action chunks (default 1): each chunk sends the current observation (update_obs), gets an action chunk (get_action) and executes every action of it, sending the fresh observation between two actions; it stops early when the episode ends. Returns the new state.";
 
@@ -312,6 +315,11 @@ export function xpolicy(
 		type: "string",
 		default: "joint",
 		description: "XPolicyLab action_type the policy emits: joint | ee",
+	});
+	pi.registerFlag("xpolicy-precision", {
+		type: "string",
+		default: "",
+		description: `The --xpolicy server's weight precision, as its launcher declares it (${PRECISIONS.join(" | ")}; recorded as xpolicy_precision, keyed by eval.sh)`,
 	});
 	pi.registerFlag("xpolicy-bridge", {
 		type: "string",
@@ -463,7 +471,16 @@ export function xpolicy(
 		/** Connect for this episode (with --xpolicy) and name the tool to activate. Throws when it cannot run. */
 		async start(): Promise<string[]> {
 			session = undefined;
-			if (!on()) return [];
+			const precision = flag("xpolicy-precision");
+			if (precision && !(PRECISIONS as readonly string[]).includes(precision))
+				throw new Error(`--xpolicy-precision must be one of ${PRECISIONS.join(", ")}, got "${precision}"`);
+			if (!on()) {
+				if (precision)
+					throw new Error(
+						"--xpolicy-precision declares the --xpolicy server's weight precision: it needs --xpolicy",
+					);
+				return [];
+			}
 			const s = current();
 			if (!s) throw new Error("--xpolicy: this robot has no XPolicyLab observation");
 			const type = actionType(flag("xpolicy-action"));
@@ -520,7 +537,8 @@ export function xpolicy(
 						xpolicy_action: session.type,
 						xpolicy_server_instance_id: session.info.server_instance_id ?? null,
 						xpolicylab_rev: session.info.xpolicylab_rev ?? null,
-						xpolicy_precision: session.info.precision ?? null,
+						// Declared by the operator (--xpolicy-precision): XPolicyLab's HELLO_ACK carries no dtype, so it cannot be verified.
+						xpolicy_precision: flag("xpolicy-precision") || null,
 						xpolicy_chunks: session.chunks,
 						xpolicy_actions: session.actions,
 					}

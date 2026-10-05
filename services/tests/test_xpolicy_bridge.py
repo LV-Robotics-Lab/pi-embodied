@@ -121,16 +121,11 @@ def test_connect_passes_trial_ids_and_reports_the_server_instance():
         "request_timeout_s": 180,
         "max_connect_seconds": 60,
     }
-    assert info["precision"] is None
+    # Audit 92245e3 CM-6: the bridge no longer reports a precision read from pi's shell.
+    assert "precision" not in info
     # A new connect closes the previous trial's client.
     b.connect("ws://127.0.0.1:19000", trial_id="t2")
     assert made[0].closed and not made[1].closed
-
-
-def test_connect_reports_the_declared_precision(monkeypatch):
-    monkeypatch.setenv("XPOLICY_PRECISION", "bf16")
-    b, _ = bridge({})
-    assert b.connect("ws://127.0.0.1:19000", trial_id="t1")["precision"] == "bf16"
 
 
 def test_get_action_returns_a_plain_chunk_of_action_dicts():

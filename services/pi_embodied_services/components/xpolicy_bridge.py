@@ -237,9 +237,8 @@ class XPolicyBridge(RpcFacade):
             "xpolicylab_rev": _git_rev(self._root),
             "xpolicylab_pin": XPOLICYLAB_PIN,
             "encode_images": self._encode,
-            # XPolicyLab's HELLO_ACK carries no dtype: the launcher declares the server's weight
-            # precision (e.g. fp32 / bf16) so a result says which one produced it.
-            "precision": os.environ.get("XPOLICY_PRECISION") or None,
+            # XPolicyLab's HELLO_ACK carries no dtype: the server's weight precision is what the
+            # operator declares to pi (--xpolicy-precision), not something this bridge can know.
             "ms": round((time.monotonic() - t0) * 1000.0, 1),
         }
 

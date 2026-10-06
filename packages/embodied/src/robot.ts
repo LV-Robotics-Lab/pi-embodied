@@ -40,6 +40,12 @@ import { fallback } from "./planner/fallback.ts";
 import { human } from "./planner/human.ts";
 import { plannerOf } from "./planner/kind.ts";
 import {
+	dropReplayedThinking,
+	FLAG as REPLAY_THINKING,
+	replayThinking,
+	replayThinkingError,
+} from "./planner/replay-thinking.ts";
+import {
 	available,
 	loadManifest,
 	type Manifest,
@@ -368,6 +374,13 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		description: "Also keep the episode's first camera frame (OpenETA's visual-history anchor) beyond --keep-images",
 	});
 	const anchored = () => pi.getFlag("anchor-image") === true;
+	// A string flag (true / false) like --units: pi keeps a boolean flag's given value verbatim, so `=false` would read true.
+	pi.registerFlag(REPLAY_THINKING, {
+		type: "string",
+		default: "false",
+		description:
+			"Send earlier turns' thinking back with every request (true / false; false keeps only the latest turn's; pi's own behaviour is true)",
+	});
 	pi.registerFlag("max-turns", {
 		type: "string",
 		default: String(spec.budget?.turns ?? 0),
@@ -685,6 +698,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 			const misconfigured =
 				configProblem(pi) ??
 				paramsError(pi) ??
+				replayThinkingError(pi) ??
 				mem?.configError() ??
 				tr.configError() ??
 				un?.configError() ??
@@ -951,6 +965,8 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		});
 		return pruned ? { messages: messages.reverse() } : undefined;
 	});
+	// Earlier turns' thinking leaves the request unless --replay-thinking=true (./planner/replay-thinking.ts).
+	pi.on("context", (event) => (replayThinking(pi) ? undefined : dropReplayedThinking(event.messages)));
 	pi.on("input", (_event, ctx) => {
 		if (ready) return undefined;
 		if (ctx.hasUI) ctx.ui.notify(`${name} is not available; nothing was sent to the model.`, "error");

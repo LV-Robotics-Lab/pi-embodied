@@ -40,6 +40,19 @@ results keeps a flag, which now says what to use rather than where it listens.
 | `--cuda-device N`, `--gpu-id N` | `cuda_device` (or `PI_EMBODIED_CUDA_DEVICE`, which eval-parallel.sh sets per worker) |
 | `--robot-ros-setup FILES` (Piper) | `ros_setup` |
 
+## Defaults that changed
+
+| Flag | Was | Now |
+|---|---|---|
+| `--replay-thinking` | (no flag) pi's behaviour: every earlier assistant turn's thinking goes back out with each request | `false`: a request carries only the latest turn's thinking (`src/planner/replay-thinking.ts`); `--replay-thinking=true` is the old behaviour |
+
+`--replay-thinking` is a string flag with the values `true` / `false` (like `--units`): pi keeps a boolean
+flag's given value verbatim, so `=false` on a boolean would read as true. Only the outgoing request
+changes, the session keeps every block, and only unsigned thinking of openai-completions turns is left
+out (Anthropic's signed blocks, OpenAI Responses' encrypted reasoning and every other api are untouched).
+The result records the value in `params`; a result without `replay-thinking` in `params` ran before the
+flag existed, with pi's replay (`true`), and `params-match.mjs` does not compare a flag a result does not record.
+
 ## Renamed flags (one concept, one name)
 
 | Old | New |

@@ -4,7 +4,7 @@ Robots as pi extensions. Each robot calls `defineRobot(pi, spec)` (`src/robot.ts
 registers only its flags, tools and observations. The base owns the rest: the task (flags, or a
 `robot_task` entry from `/robot-task` or the dashboard), fail-closed startup, the finish rules and
 the --max-turns / --time-limit budget, one `robot_result` entry per episode, the env server's
-lifecycle, pruning of old camera frames, the file-tool guard, the status published on `pi.events`
+lifecycle, pruning of old camera frames and of earlier turns' thinking, the file-tool guard, the status published on `pi.events`
 for the dashboard, and the shared modules below. Everything else (the agent loop, models,
 sessions, interactive/print/json/rpc modes) is pi.
 
@@ -70,7 +70,7 @@ Source layout (`src/`, one directory per layer; `src/robot.ts`, the `defineRobot
 | `primitives/` | shared hand-written tools (grasp, motion, perception), the `code.api` registry types, IK, the VLA and XPolicyLab adapters |
 | `modes/` | alternative action interfaces: `units/` (Show-Harness), `code/` (CaP-X run_code), `finetuned/` |
 | `capabilities/` | opt-in features a robot mounts by flag: memory, explore, operator, flywheel, Flash, GUMI, dashboard, replay, object memory, web tools |
-| `planner/` | what shapes or guards the planner's calls: fallback, ensemble, API gate, VLA seeding, context version, closed-loop contract, human-as-model |
+| `planner/` | what shapes or guards the planner's calls: fallback, ensemble, API gate, VLA seeding, context version, closed-loop contract, human-as-model, replayed thinking (`--replay-thinking`) |
 | `observation/` | what the model sees and what is recorded: episode video, VDM, Viser |
 | `infra/` | RPC client, encoders, model-service auto-start, `/robot-check`, onboarding (`setup/`) |
 | `scripts/` | `eval-parallel.sh` |
@@ -276,6 +276,14 @@ Shared modules:
 - `src/observation/vdm.ts`: `--vdm-video` describes each change from the step's episode frames
   (`--vdm-video-frames` sampled) instead of the before/after pair (CaP-X's video differencing).
 - `src/robots/libero/flash.ts`: Flash replay without an LLM (`--model flash/replay`).
+
+What the planner's context carries between turns is three flags of the base, all recorded in `params`:
+`--keep-images N` (the latest camera frames; older ones become a stub), `--anchor-image` (the first
+frame too) and `--replay-thinking true|false` (default `false`: a request carries only the latest
+turn's thinking; pi itself replays every earlier turn's, which an openai-completions endpoint such as
+NInfer / vLLM with Qwen's template counts as prompt tokens, ~36% of the planner's input on the fixed
+regression. `true` is pi's behaviour. Only the request changes, never the session; signed thinking,
+Anthropic's and OpenAI Responses' included, is never dropped; `src/planner/replay-thinking.ts`).
 
 `--tier <S1..M4>` is a CaP-X tier in one flag (`src/infra/tiers.ts`): four orthogonal axes, each an
 existing flag you may also set alone. Turns: single = `--max-turns 1` (one program, then the

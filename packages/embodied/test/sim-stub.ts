@@ -171,12 +171,13 @@ export async function fakeEnv(answer: (c: Call) => unknown) {
 		req.on("data", (c) => {
 			body += c;
 		});
-		req.on("end", () => {
+		req.on("end", async () => {
 			const { method, args = [], kwargs = {} } = JSON.parse(body);
 			const c = { method, args, kwargs };
 			calls.push(c);
 			try {
-				let result = answer(c);
+				// An answer may be a promise: a test holds a reply back to interrupt the caller mid-call.
+				let result = await answer(c);
 				// code.api: a manifest digest no pi agrees with (code mode refuses it) and nothing available.
 				if (result === undefined && method === "code.api")
 					result = { tier: null, manifest_digest: "fake", available: [], digest: "d" };

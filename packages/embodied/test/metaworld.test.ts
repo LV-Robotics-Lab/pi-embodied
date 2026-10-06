@@ -174,6 +174,15 @@ async function fakeMetaworld(perception = false) {
 			return perception ? withPerception(meta) : meta;
 		}
 		if (c.method === "env.reset") return [obs(), {}];
+		if (c.method === "env.state")
+			return {
+				tcp_pos: [0.1, 0.5, 0.3],
+				gripper_width: 0.03,
+				gripper_command: "close",
+				success_once: true,
+				info: { success: true },
+			};
+		if (c.method === "env.render_camera") return rgb();
 		if (c.method === "env.get_task_language") return "reach the goal";
 		if (c.method === "env.back_project")
 			return c.kwargs.pixels
@@ -376,4 +385,26 @@ test("--code=true: run_code runs on the env server and its result becomes the ob
 	assert.equal(result.env_steps, 23);
 	assert.equal(result.code, "true");
 	assert.equal(result.code_api, "low");
+});
+
+test("fresh observation reads server state and both cameras after an unacknowledged world change", async (t) => {
+	const env = await fakeMetaworld();
+	t.after(env.close);
+	const s = stubPi({ "env-url": env.url, task: "reach-v3" });
+	metaworld(s.pi);
+	await s.emit("session_start");
+	assert.deepEqual(s.errors, []);
+	const cached = await s.run("view_env_state", {});
+	assert.equal(cached.details.result.refreshed, false);
+	assert.equal(env.calls.filter((c) => c.method === "env.state").length, 0);
+	const fresh = await s.run("view_env_state", { fresh: true });
+	assert.equal(fresh.details.result.refreshed, true);
+	assert.equal(fresh.details.success, true);
+	assert.equal(fresh.details.state.gripper_command, "close");
+	assert.ok(fresh.details.state.tcp_pos.every((v: number, i: number) => Math.abs(v - [0.1, 0.5, 0.3][i]) < 1e-6));
+	assert.equal(fresh.content.filter((c: { type: string }) => c.type === "image").length, 2);
+	assert.deepEqual(
+		env.calls.filter((c) => c.method === "env.render_camera").map((c) => c.kwargs.camera_name),
+		["agentview", "wrist"],
+	);
 });

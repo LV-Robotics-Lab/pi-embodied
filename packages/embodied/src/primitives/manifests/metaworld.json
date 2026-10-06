@@ -12,6 +12,12 @@
 			"name": "view_env_state",
 			"side": "ts",
 			"tier": "low",
+			"params": {
+				"fresh": {
+					"type": "boolean",
+					"description": "Read state and cameras from the server, after any pending motion; required for recovery (default false)"
+				}
+			},
 			"doc": {
 				"tool": "Current state with the agentview (third-person) and wrist images."
 			},

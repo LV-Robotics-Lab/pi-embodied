@@ -29,7 +29,7 @@ import { python, service, servicesDir } from "../../infra/config.ts";
 import { MOLMO, SAM3 } from "../../infra/model-services.ts";
 import { trackFlags } from "../../infra/params.ts";
 import { encodePng } from "../../infra/png.ts";
-import type { NdArray, RpcClient } from "../../infra/rpc.ts";
+import { NdArray, type RpcClient } from "../../infra/rpc.ts";
 import type { MoveUnit, Vec3 } from "../../modes/units/index.ts";
 import { template } from "../../planner/context-version.ts";
 import { detectionActive, detectionArgs, detectionTools, registerDetectionFlags } from "../../primitives/detections.ts";
@@ -433,7 +433,36 @@ export default function metaworld(pi: ExtensionAPI) {
 
 	// Every tool below runs one env server method with the manifest's parameters
 	// (../../primitives/manifests/metaworld.json); here only what the planner sees is shaped.
-	robot.tool("view_env_state", "", Type.Object({}), async () => observe({}));
+	robot.tool("view_env_state", "", Type.Object({}), async (params: Json) => {
+		if (params.fresh === true) {
+			// A cancelled motion may have advanced the server after the last reply reached this client.
+			// Queue fresh reads behind it instead of treating cached images as recovery evidence.
+			const state = await call<{
+				tcp_pos: number[];
+				gripper_width: number;
+				gripper_command: "open" | "close";
+				success_once: boolean;
+				info: Info;
+			}>("env.state");
+			const agentview = await call<NdArray>("env.render_camera", {
+				camera_name: "agentview",
+				height: VIEW_SIZE,
+				width: VIEW_SIZE,
+			});
+			const wrist = await call<NdArray>("env.render_camera", {
+				camera_name: "wrist",
+				height: VIEW_SIZE,
+				width: VIEW_SIZE,
+			});
+			absorb(
+				{ ...obs, agentview, wrist, tcp_pos: NdArray.f32(state.tcp_pos), gripper_width: state.gripper_width },
+				state.info,
+			);
+			gripper = state.gripper_command;
+			success ||= state.success_once;
+		}
+		return observe({ refreshed: params.fresh === true });
+	});
 
 	robot.tool("get_camera_meta", "", Type.Object({}), async (params: Json) =>
 		text({ camera: params.camera_name ?? "agentview", meta: await call<CameraMeta>("env.get_camera_meta", params) }),

@@ -27,9 +27,12 @@ for robot in metaworld maniskill libero; do
    source "$envdir/$robot-env.sh"
    export PI="$out/pi" PI_REGRESSION_CLI="$root/packages/coding-agent/dist/cli.js"
    export PI_EMBODIED_SERVICES="$root/services"
+   # A fresh local memory per cell: where it lives is deployment config (dirs.memory), set for this
+   # episode through its environment override (src/infra/config.ts; --memory-dir is gone, docs/flags-migration.md).
    memory="$out/memory-$robot-$seed"
    mkdir "$memory"
    printf '# Local task memory\nNo stored task recipes.\n' > "$memory/MEMORY.md"
+   export PI_EMBODIED_DIRS_MEMORY="$memory"
    case "$robot" in
     metaworld) cells=(reach-v3 "$seed");;
     maniskill) cells=(PickCube-v1 "$seed");;
@@ -37,7 +40,7 @@ for robot in metaworld maniskill libero; do
    esac
    bash "$root/packages/embodied/src/robots/$robot/eval.sh" "$out/$robot-$seed" "${cells[@]}" \
     --model "$model" --thinking low --units=true --code=false --max-turns 40 --time-limit 300 \
-    --no-skills --no-prompt-templates --memory-profile local --memory-dir "$memory"
+    --no-skills --no-prompt-templates --memory-profile local
   ) > "$out/$robot-$seed.log" 2>&1 && status=0 || status=$?
   printf '%s %s %s\n' "$robot" "$seed" "$status" >> "$out/status.txt"
   [ "$status" -eq 0 ] || rc=1

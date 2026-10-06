@@ -20,6 +20,8 @@
 # of an earlier run (.parallel/w*.pid) is still alive, since it would race it for the same cells.
 #
 # Options:
+#   --durable                 persist episode scheduling in .parallel/durable.sqlite (Node 22.19+,
+#                             flock required); resume with the same arguments and worker count
 #   -j, --workers N            parallel eval.sh workers (default 1)
 #   --gpus LIST                GPUs (nvidia-smi indices) given to the workers round-robin, so several
 #                              workers can share one GPU (default: $CUDA_VISIBLE_DEVICES; unset leaves
@@ -67,13 +69,14 @@
 # validator score needs a serial `robocasa/eval.sh <dir> all` afterwards (it skips every valid cell).
 set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
-usage() { echo "usage: eval-parallel.sh [-j N] [--gpus LIST] [--variant NAME=ARGS]... [--max-api-concurrency M] [--dashboard-ports LIST] [--pass-k LIST] [--min-success N|P%] <robot> <out-dir> <selection...> [pi args...]" >&2 && exit 2; }
+usage() { echo "usage: eval-parallel.sh [--durable] [-j N] [--gpus LIST] [--variant NAME=ARGS]... [--max-api-concurrency M] [--dashboard-ports LIST] [--pass-k LIST] [--min-success N|P%] <robot> <out-dir> <selection...> [pi args...]" >&2 && exit 2; }
 die() { echo "eval-parallel.sh: $*" >&2 && exit 2; }
 
-workers=1 gpus=${CUDA_VISIBLE_DEVICES-} api=0 ports="" passk="" minsuccess=""
+workers=1 gpus=${CUDA_VISIBLE_DEVICES-} api=0 ports="" passk="" minsuccess="" durable=0
 vnames=() vargs=()
 while [ $# -gt 0 ]; do
 	case $1 in
+	--durable) durable=1 && shift ;;
 	-j | --workers) workers=${2:-} && shift 2 ;;
 	--workers=*) workers=${1#*=} && shift ;;
 	--gpus) gpus=${2-} && shift 2 ;;
@@ -176,6 +179,11 @@ for r in episode_specs(None, load_config("paper_fullval_v1"), sys.argv[1]):
 
 state=$out/.parallel
 mkdir -p "$state"
+if [ "$durable" -eq 1 ] || [ -e "$state/durable.sqlite" ]; then
+	command -v flock >/dev/null || die "durable evaluation requires flock"
+	exec 8>"$state/durable.lock"
+	flock -n 8 || die "$out already has a durable evaluation running"
+fi
 if [ -f "$state/pid" ] && kill -0 "$(cat "$state/pid")" 2>/dev/null; then
 	die "$out is being run by pid $(cat "$state/pid")"
 fi
@@ -229,8 +237,9 @@ if [ -n "${LOCK:-}" ]; then
 	esac
 fi
 
-worker() { # <k>
+worker() { # <k> [one-based job index, for Durable]
 	local k=$1 gpu="" line v key dirs envs args rc log=$state/w$1.log
+	local selected=${2:-0}
 	local extra=()
 	if [ ${#gpus[@]} -gt 0 ]; then
 		gpu=${gpus[k % ${#gpus[@]}]}
@@ -249,8 +258,9 @@ worker() { # <k>
 	local i=0
 	while IFS=$'\t' read -r v key dirs envs args; do
 		i=$((i + 1))
+		[ "$selected" -eq 0 ] || [ "$selected" -eq "$i" ] || continue
 		[ -e "$state/abort" ] && return
-		mkdir "$state/claims/$i" 2>/dev/null || continue
+		if [ "$selected" -eq 0 ]; then mkdir "$state/claims/$i" 2>/dev/null || continue; fi
 		local vout=$out mine=()
 		[ -n "${vnames[v]}" ] && vout=$out/${vnames[v]}
 		read -ra mine <<<"${vargs[v]}"
@@ -264,7 +274,7 @@ worker() { # <k>
 		cat "$state/w$k.call" >>"$log"
 		if grep -q "use another out dir" "$state/w$k.call" || [ "$rc" -eq 2 ]; then
 			{ echo "${vnames[v]:-.} $args:" && cat "$state/w$k.call"; } >>"$state/abort"
-			return
+			return 2
 		fi
 		local status="" d
 		for d in $dirs; do
@@ -272,6 +282,7 @@ worker() { # <k>
 		done
 		echo "[w$k]${vnames[v]:+ ${vnames[v]}} $key ($dirs):$status"
 	done <"$state/jobs"
+	return 0
 }
 
 pids=()
@@ -294,16 +305,29 @@ stop() { # on INT, TERM or HUP (an ssh drop): no episode may outlive this run, o
 trap stop INT TERM HUP
 echo "$(wc -l <"$state/jobs" | tr -d ' ') jobs (${#vnames[@]} variant(s)) on $workers worker(s); logs in $state"
 set -m
-for ((k = 0; k < workers; k++)); do
-	worker "$k" 9>&- </dev/null &
+if [ "$durable" -eq 1 ]; then
+	# Reuse the exact worker command construction and result validation. Pass the shell definitions
+	# in the environment, not an executable file later loaded from an evaluation directory.
+	PI_EVAL_WORKER_SCRIPT="$(declare -p here script state out vnames vargs gpus egl ports api common; declare -f worker)" \
+		node --conditions=source "$here/eval-durable.ts" "$state" "$workers" 9>&- </dev/null &
 	pids+=($!)
-	echo $! >"$state/w$k.pid"
-done
+	echo $! >"$state/w0.pid"
+else
+	for ((k = 0; k < workers; k++)); do
+		worker "$k" 9>&- </dev/null &
+		pids+=($!)
+		echo $! >"$state/w$k.pid"
+	done
+fi
 set +m
-wait
+runner_status=0
+for p in "${pids[@]}"; do wait "$p" || runner_status=$?; done
+# A killed scheduler may leave eval.sh and its descendants in its process group.
+# Drain that group before discarding its identity or allowing the database to reopen.
+if [ "$durable" -eq 1 ] && [ "$runner_status" -gt 128 ]; then stop; fi
 trap - INT TERM HUP
 rm -f "$state/pid" "$state"/w*.pid
-aborted=0
+aborted=$runner_status
 if [ -s "$state/abort" ]; then
 	cat "$state/abort" >&2
 	aborted=1

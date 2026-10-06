@@ -7,6 +7,7 @@ import {
 	mkdtempSync,
 	readdirSync,
 	readFileSync,
+	rmSync,
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
@@ -493,4 +494,184 @@ test("api-gate admits n model calls at once and takes over the slot of a dead pr
 	const ac = new AbortController();
 	setTimeout(() => ac.abort(), 30);
 	await assert.rejects(acquire(dir, 2, 10, ac.signal), /aborted/);
+});
+
+test("Durable runs the same A/B matrix, revalidates completed artifacts and preserves configuration checks", () => {
+	const s = sandbox();
+	const out = join(s.dir, "durable");
+	const args = [
+		"--durable",
+		"-j",
+		"2",
+		"--variant",
+		"base=",
+		"--variant",
+		"good=--good",
+		"maniskill",
+		out,
+		"PickCube-v1",
+		"0-3",
+		"--model",
+		"m/x",
+	];
+	const first = s.run(args);
+	assert.equal(first.status, 0, first.stdout + first.stderr);
+	assert.equal(s.calls().length, 8);
+	assert.ok(existsSync(join(out, ".parallel/durable.sqlite")));
+	const original = s.run([
+		"-j",
+		"2",
+		"--variant",
+		"base=",
+		"--variant",
+		"good=--good",
+		"maniskill",
+		join(s.dir, "plain"),
+		"PickCube-v1",
+		"0-3",
+		"--model",
+		"m/x",
+	]);
+	assert.equal(original.status, 0, original.stdout + original.stderr);
+	assert.deepEqual(summary(out), summary(join(s.dir, "plain")));
+	const before = s.calls().length;
+	const again = s.run(args);
+	assert.equal(again.status, 0, again.stdout + again.stderr);
+	assert.equal(s.calls().length, before, "a repeated invocation does not execute valid episodes twice");
+	rmSync(join(out, "base/PickCube-v1_s1/result.json"));
+	assert.equal(s.run(args).status, 0);
+	assert.equal(s.calls().length, before + 1, "an old Durable completion cannot hide a missing result");
+	const changed = s.run(args.map((a) => (a === "m/x" ? "m/other" : a)));
+	assert.notEqual(changed.status, 0);
+	assert.match(changed.stderr, /use another out dir/);
+	assert.equal(s.calls().length, before + 1);
+});
+
+test("Durable retries infrastructure failures through the original evaluator", () => {
+	const s = sandbox();
+	const out = join(s.dir, "out");
+	const args = ["--durable", "-j", "2", "maniskill", out, "PickCube-v1", "0-3"];
+	const first = s.run(args, { FAKE_FAIL: "1" });
+	assert.equal(first.status, 1, first.stdout + first.stderr);
+	const before = s.calls().length;
+	const retry = s.run(args);
+	assert.equal(retry.status, 0, retry.stdout + retry.stderr);
+	assert.equal(s.calls().length, before + 1);
+	assert.ok(s.calls().at(-1)?.[0].endsWith("PickCube-v1_s1"));
+});
+
+test("Durable reopens the same unfinished task after termination and refuses changed resume inputs", async () => {
+	const s = sandbox();
+	const out = join(s.dir, "out");
+	const hang = join(s.dir, "hang");
+	writeFileSync(hang, "");
+	const args = ["--durable", "-j", "2", "maniskill", out, "PickCube-v1", "0-5", "--model", "m/x"];
+	const child = spawn("bash", [RUNNER, ...args], { env: { ...s.env, FAKE_HANG: hang }, stdio: "ignore" });
+	const exited = new Promise<number | null>((resolve) => child.once("exit", resolve));
+	const pidFile = join(out, "PickCube-v1_s2/pid");
+	try {
+		for (let i = 0; i < 200 && !existsSync(pidFile); i++) await new Promise((r) => setTimeout(r, 50));
+		const hung = Number(readFileSync(pidFile, "utf8"));
+		const statusFile = join(out, ".parallel/durable-status.json");
+		const task = JSON.parse(readFileSync(statusFile, "utf8")).task;
+		const duplicate = s.run(args);
+		assert.notEqual(duplicate.status, 0);
+		assert.match(duplicate.stderr, /already has a durable evaluation running/);
+		child.kill("SIGTERM");
+		assert.equal(await exited, 130);
+		assert.ok(await untilGone(hung));
+		const done = cells(out);
+		const before = s.calls().length;
+		const changed = s.run(args.map((a) => (a === "m/x" ? "m/other" : a)));
+		assert.notEqual(changed.status, 0);
+		assert.match(changed.stderr, /unfinished durable run has different arguments/);
+		assert.equal(s.calls().length, before);
+		const environmentChanged = s.run(args, { TIME_LIMIT: "99" });
+		assert.notEqual(environmentChanged.status, 0);
+		assert.match(environmentChanged.stderr, /unfinished durable run has different arguments/);
+		assert.equal(s.calls().length, before);
+		const retry = s.run(args);
+		assert.equal(retry.status, 0, retry.stdout + retry.stderr);
+		assert.equal(
+			JSON.parse(readFileSync(statusFile, "utf8")).task,
+			task,
+			"resume preserves the original task identity",
+		);
+		const expected = [0, 1, 2, 3, 4, 5]
+			.map((i) => `PickCube-v1_s${i}`)
+			.filter((c) => done[c] !== "success" && done[c] !== "failure");
+		assert.deepEqual(
+			s
+				.calls()
+				.slice(before)
+				.map(([d]) => d.split("/").pop())
+				.sort(),
+			expected.sort(),
+		);
+	} finally {
+		child.kill("SIGTERM");
+		await exited;
+	}
+});
+
+test("Durable refuses recovery while orphaned episode processes are alive", async () => {
+	const s = sandbox();
+	const out = join(s.dir, "out");
+	const hang = join(s.dir, "hang");
+	writeFileSync(hang, "");
+	const args = ["--durable", "maniskill", out, "PickCube-v1", "2"];
+	const child = spawn("bash", [RUNNER, ...args], { env: { ...s.env, FAKE_HANG: hang }, stdio: "ignore" });
+	const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+	const pidFile = join(out, "PickCube-v1_s2/pid");
+	let pgid: number | undefined;
+	try {
+		for (let i = 0; i < 200 && !existsSync(pidFile); i++) await new Promise((r) => setTimeout(r, 50));
+		const hung = Number(readFileSync(pidFile, "utf8"));
+		[pgid] = groups(out);
+		child.kill("SIGKILL");
+		await exited;
+		const refused = s.run(args);
+		assert.notEqual(refused.status, 0);
+		assert.match(refused.stderr, /already has a durable evaluation running|still has episodes/);
+		assert.ok(!gone(hung), "recovery must not stop a surviving episode");
+		process.kill(-pgid, "SIGTERM");
+		assert.ok(await untilGone(hung));
+		for (let i = 0; i < 100 && spawnSync("pgrep", ["-g", String(pgid)]).status === 0; i++)
+			await new Promise((r) => setTimeout(r, 50));
+		const retry = s.run(args);
+		assert.equal(retry.status, 0, retry.stdout + retry.stderr);
+	} finally {
+		child.kill("SIGTERM");
+		if (pgid) {
+			try {
+				process.kill(-pgid, "SIGTERM");
+			} catch {}
+		}
+		await exited;
+	}
+});
+
+test("a killed Durable scheduler is drained by its shell before recovery", async () => {
+	const s = sandbox();
+	const out = join(s.dir, "out");
+	const hang = join(s.dir, "hang");
+	writeFileSync(hang, "");
+	const args = ["--durable", "maniskill", out, "PickCube-v1", "2"];
+	const child = spawn("bash", [RUNNER, ...args], { env: { ...s.env, FAKE_HANG: hang }, stdio: "ignore" });
+	const exited = new Promise<number | null>((resolve) => child.once("exit", resolve));
+	const pidFile = join(out, "PickCube-v1_s2/pid");
+	try {
+		for (let i = 0; i < 200 && !existsSync(pidFile); i++) await new Promise((r) => setTimeout(r, 50));
+		const hung = Number(readFileSync(pidFile, "utf8"));
+		const [scheduler] = groups(out);
+		process.kill(scheduler, "SIGKILL");
+		assert.equal(await exited, 130);
+		assert.ok(await untilGone(hung));
+		assert.deepEqual(groups(out), []);
+		const retry = s.run(args);
+		assert.equal(retry.status, 0, retry.stdout + retry.stderr);
+	} finally {
+		child.kill("SIGTERM");
+		await exited;
+	}
 });

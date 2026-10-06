@@ -5,8 +5,9 @@ working memory across MetaWorld episodes. A host event starts or resumes work;
 `policy_finish` settles the current goal or puts it into a waiting state. Waiting
 does not poll the model. A later event continues the same conversation.
 
-The host is the existing pi session. This prototype is loaded explicitly and is
-not registered as a default extension. It currently supports MetaWorld tool mode.
+The host is the existing pi session: the MetaWorld robot mounts the policy
+(`src/capabilities/policy`) with its other capabilities, and nothing is active unless
+`--policy-store` names a store. It currently supports MetaWorld tool mode.
 
 ## Start
 
@@ -16,11 +17,16 @@ installed workspace dependencies, and an already configured MetaWorld environmen
 ```bash
 NODE_OPTIONS="--conditions=source" pi \
   -e packages/embodied/src/robots/metaworld \
-  -e packages/embodied/src/capabilities/policy \
   --task reach-v3 --seed 0 --units=false --code=false \
   --policy-store "$PWD/runs/policy/reach.sqlite" \
   --model provider/model
 ```
+
+`--policy-store` is one of the robot's tracked flags: the result records it in `params`,
+so eval.sh refuses to mix cells run with a store and cells run without one (or with
+another store). `policy_goal` is declared with the other module tools in
+`src/primitives/manifests/common/modules.json`. Pi Durable and Chord are imported when a
+goal is submitted; a MetaWorld session without `--policy-store` never loads them.
 
 Use the provider/model configured in your environment. Ask the host agent to call
 `policy_goal` with these arguments:
@@ -84,6 +90,8 @@ experimental conditions and needs a separate protocol before comparing scores.
 node --conditions=source --test \
   packages/embodied/test/policy.test.ts \
   packages/embodied/test/policy-tool-world.test.ts \
+  packages/embodied/test/policy-metaworld.test.ts \
+  packages/embodied/test/policy-loader.test.ts \
   packages/embodied/test/metaworld.test.ts
 npm run check
 ```
@@ -92,5 +100,9 @@ The tests exercise real Durable scheduling and SQLite persistence with a scripte
 model, plus the actual MetaWorld extension against a fake HTTP RPC server. They
 cover goal/event persistence, waiting, interrupted actions, stale observation
 rejection, environment-confirmed success, budgets, exclusive ownership, host
-pipeline delegation, and fresh state/camera reads. They do not establish learned
+pipeline delegation, and fresh state/camera reads. `policy-metaworld.test.ts` kills
+the host (its tool call is aborted) while the fake server has applied a move but
+not yet answered, reopens the same store and shows the outcome `unknown`, the
+refused blind action, the forced re-observation, event deduplication and that no
+other goal starts before the interrupted one concludes. They do not establish learned
 policy quality or real simulator/robot task success.

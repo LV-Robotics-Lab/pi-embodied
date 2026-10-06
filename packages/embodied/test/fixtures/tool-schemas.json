@@ -4173,7 +4173,12 @@
 				"description": "Current state with the agentview (third-person) and wrist images.",
 				"parameters": {
 					"type": "object",
-					"properties": {}
+					"properties": {
+						"fresh": {
+							"type": "boolean",
+							"description": "Read state and cameras from the server, after any pending motion; required for recovery (default false)"
+						}
+					}
 				}
 			},
 			{
@@ -4615,6 +4620,35 @@
 						"object": {
 							"type": "string",
 							"description": "The object that should be in the gripper"
+						}
+					}
+				}
+			},
+			{
+				"name": "policy_goal",
+				"description": "Delegate the current MetaWorld environment task to a policy whose goal history and working memory survive episodes and process restarts. Repeat the same goal_id/event_id to recover; use a new event_id for feedback on a waiting goal, and a new goal_id after completion. The policy uses the current model and robot tool safety checks.",
+				"parameters": {
+					"type": "object",
+					"required": [
+						"goal_id",
+						"goal",
+						"event_id"
+					],
+					"properties": {
+						"goal_id": {
+							"type": "string",
+							"minLength": 1
+						},
+						"goal": {
+							"type": "string",
+							"minLength": 1
+						},
+						"event_id": {
+							"type": "string",
+							"minLength": 1
+						},
+						"input": {
+							"type": "string"
 						}
 					}
 				}

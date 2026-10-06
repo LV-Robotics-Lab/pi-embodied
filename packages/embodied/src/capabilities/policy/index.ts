@@ -1,16 +1,21 @@
 /** Opt-in persistent policy, hosted as a tool so all robot calls retain the normal execution pipeline. */
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
-import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { type AssistantMessageEventStream, createModels, createProvider } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { VLM_COST_EVENT } from "../../modes/units/vlm.ts";
 import { type RobotStatus, STATUS_EVENT } from "../../robot.ts";
-import { openStoredPolicy } from "./stored.ts";
 import { metaworldPolicyWorld } from "./tool-world.ts";
 
-export default function persistentPolicy(pi: ExtensionAPI) {
+/**
+ * Mounted by the MetaWorld robot (../../robots/metaworld) after its own tools, so `--policy-store` is one
+ * of the robot's tracked flags (the result records it in `params`: cells with a store and cells without
+ * are different configurations) and `policy_goal` is declared with the other module tools
+ * (../../primitives/manifests/common/modules.json). Pi Durable and Chord are optional peers: they are
+ * imported when a goal is submitted, never when the robot loads.
+ */
+export function persistentPolicy(pi: ExtensionAPI) {
 	pi.registerFlag("policy-store", { type: "string", description: "SQLite file for the persistent MetaWorld policy" });
 	let robot: RobotStatus | undefined;
 	let episode = randomUUID();
@@ -49,6 +54,10 @@ export default function persistentPolicy(pi: ExtensionAPI) {
 				throw new Error("persistent policy currently requires an active MetaWorld episode");
 			if (!ctx.model) throw new Error("select a policy model");
 			const model = ctx.model;
+			const [{ openStoredPolicy }, { BACKGROUND_CONTEXT, withAbortSignal }] = await Promise.all([
+				import("./stored.ts"),
+				import("@earendil-works/chord/context"),
+			]);
 			// Delegate every request to the host registry, including its configured providers and OAuth.
 			const models = createModels();
 			const account = (stream: AssistantMessageEventStream) => {

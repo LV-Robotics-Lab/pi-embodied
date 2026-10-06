@@ -237,7 +237,8 @@ test("motion classification over every robot's tools", () => {
 		.robots as Record<string, { name: string }[]>;
 	const names = new Set(Object.values(fixture).flatMap((tools) => tools.map((t) => t.name)));
 	// Tools the robot base or a capability registers, not robot.tool: never counted as motion (../robot.ts moves()).
-	const notRobotTools = new Set(["finish", "request_operator_verdict", "write_audit"]);
+	// policy_goal delegates to move_delta / set_gripper through the host pipeline, where each motion is counted and gated.
+	const notRobotTools = new Set(["finish", "request_operator_verdict", "write_audit", "policy_goal"]);
 	const motion = [...names].filter((n) => !notRobotTools.has(n) && !NON_MOTION.has(n)).sort();
 	assert.deepEqual(motion, [
 		"act",

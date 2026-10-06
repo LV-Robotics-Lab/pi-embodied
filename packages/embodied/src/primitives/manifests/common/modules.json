@@ -161,6 +161,15 @@
 			}
 		},
 		{
+			"name": "policy_goal",
+			"side": "ts",
+			"tier": "low",
+			"module": "policy",
+			"doc": {
+				"tool": "The persistent MetaWorld policy's goal event (capabilities/policy, --policy-store)."
+			}
+		},
+		{
 			"name": "web_fetch",
 			"side": "ts",
 			"tier": "low",

@@ -8,8 +8,7 @@ test("the deployed CLI loader registers the Durable policy with MetaWorld", () =
 	// accidentally resolve beneath compat.js. Exercise the deployed loader itself.
 	const script = `
 import { loadExtensions } from './packages/coding-agent/dist/core/extensions/loader.js';
-const paths = ['packages/embodied/src/robots/metaworld/index.ts', 'packages/embodied/src/capabilities/policy/index.ts'];
-const loaded = await loadExtensions(paths, process.cwd());
+const loaded = await loadExtensions(['packages/embodied/src/robots/metaworld/index.ts'], process.cwd());
 console.log(JSON.stringify({
   errors: loaded.errors,
   extensions: loaded.extensions.map(e => ({ tools: [...e.tools.keys()], flags: [...e.flags.keys()] }))
@@ -25,7 +24,9 @@ console.log(JSON.stringify({
 		extensions: { tools: string[]; flags: string[] }[];
 	};
 	assert.deepEqual(result.errors, []);
-	assert.equal(result.extensions.length, 2);
-	assert.ok(result.extensions.some((e) => e.tools.includes("policy_goal") && e.flags.includes("policy-store")));
-	assert.ok(result.extensions.some((e) => e.tools.includes("move_delta") && e.tools.includes("view_env_state")));
+	assert.equal(result.extensions.length, 1);
+	// The robot mounts the policy: one extension owns policy_goal, --policy-store and the MetaWorld tools.
+	const [robot] = result.extensions;
+	for (const tool of ["policy_goal", "move_delta", "view_env_state"]) assert.ok(robot.tools.includes(tool), tool);
+	assert.ok(robot.flags.includes("policy-store"));
 });

@@ -25,6 +25,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { simDistil } from "../../capabilities/explore.ts";
 import type { FlywheelObs, FlywheelSpec } from "../../capabilities/flywheel.ts";
+import { persistentPolicy } from "../../capabilities/policy/index.ts";
 import { python, service, servicesDir } from "../../infra/config.ts";
 import { MOLMO, SAM3 } from "../../infra/model-services.ts";
 import { trackFlags } from "../../infra/params.ts";
@@ -589,4 +590,8 @@ export default function metaworld(pi: ExtensionAPI) {
 			...pointActive(pi),
 		];
 	}
+
+	// The persistent policy prototype (../../capabilities/policy, --policy-store): a tracked flag of this
+	// robot and one more module tool, active only with a store.
+	persistentPolicy(pi);
 }

@@ -378,8 +378,11 @@ may share a GPU; each gets CUDA_VISIBLE_DEVICES and the EGL device on the same P
 over `--variant NAME=ARGS` (same cells, one subdirectory each), and reports success rate, Pass@k and
 invalid cells per variant; `--min-success N` fails a regression run, `--max-api-concurrency M` caps
 model calls across workers. Every cell is its own eval.sh call, so validity and reruns are eval.sh's.
+`--durable` keeps the schedule in `.parallel/durable.sqlite` (Pi Durable), so an interrupted matrix resumes
+with the same command, skipping every cell that already holds a valid result ([docs/durable-eval.md](docs/durable-eval.md)).
 
-Developer guides: [adding a robot](docs/adding-a-robot.md) and [adding a primitive](docs/adding-a-primitive.md); [renamed flags and flags moved to the deployment config](docs/flags-migration.md).
+Developer guides: [adding a robot](docs/adding-a-robot.md) and [adding a primitive](docs/adding-a-primitive.md); [renamed flags and flags moved to the deployment config](docs/flags-migration.md);
+[durable evaluation](docs/durable-eval.md) and the [persistent MetaWorld policy prototype](docs/durable-policy.md).
 `test/gpu-e2e.test.ts` is the GPU end-to-end suite (real simulators and model servers, no model API;
 skipped unless `PI_EMBODIED_E2E` names a robot and a GPU answers); `test/gpu-e2e.sh` runs it robot by
 robot on a GPU box (docs/adding-a-robot.md, "Testing on a GPU").

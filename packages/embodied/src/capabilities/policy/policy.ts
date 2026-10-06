@@ -5,6 +5,7 @@ import {
 	type AssistantMessage,
 	createAssistantMessageEventStream,
 	type ImageContent,
+	StringEnum,
 	type TextContent,
 	type Tool,
 } from "@earendil-works/pi-ai";
@@ -224,7 +225,7 @@ export async function openPolicy(options: {
 		description:
 			"Conclude this goal or wait for external input. Success requires fresh environment-confirmed success. Keeps the policy conversation alive for future goals.",
 		parameters: Type.Object({
-			status: Type.Union([Type.Literal("success"), Type.Literal("failure"), Type.Literal("waiting")]),
+			status: StringEnum(["success", "failure", "waiting"] as const),
 			summary: Type.String({ maxLength: 4096 }),
 		}),
 		executionMode: "sequential",

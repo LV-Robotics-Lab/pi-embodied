@@ -441,6 +441,9 @@
 			"use": "modules/web_search"
 		},
 		{
+			"use": "modules/policy_goal"
+		},
+		{
 			"use": "modules/web_fetch"
 		}
 	]

@@ -407,7 +407,10 @@ test("--flash-reanchor is on|off: off replays without Molmo, and the old `=false
 	const bad = libero({ "flash-reanchor": "false", "flash-plans": liberoPlans() });
 	const invalid = await drive(bad, liberoExec([-0.1, 0.1, 0.9]));
 	assert.equal(invalid.finish.status, "failure");
-	assert.match(invalid.finish.summary, /^flash error: no program to replay: --flash-reanchor takes on or off, not "false"/);
+	assert.match(
+		invalid.finish.summary,
+		/^flash error: no program to replay: --flash-reanchor takes on or off, not "false"/,
+	);
 });
 
 test("LIBERO with Molmo re-localizes anchors, refines from the wrist, retries a pick, and carries the held offset", async (t) => {

@@ -58,7 +58,15 @@ function rerun(
 		type: "custom",
 		customType: "robot_result",
 		// The code budget as pi's code mode records it: for the same flags its string equals eval.sh's CODE_BUDGET_FLAGS.
-		data: { robot, terminated: true, success: true, env_error: false, planner_error: null, code_budget_flags: "@BUDGET@", ...data },
+		data: {
+			robot,
+			terminated: true,
+			success: true,
+			env_error: false,
+			planner_error: null,
+			code_budget_flags: "@BUDGET@",
+			...data,
+		},
 	});
 	writeFileSync(
 		pi,
@@ -290,7 +298,13 @@ for (const [robot, positional] of [
 	test(`${robot}/eval.sh never mixes runs of another --grasp-max-tilt, --grasp or --place in one out dir`, () => {
 		const flags = ["--grasp", "contact_graspnet", "--place", "anyplace", "--grasp-max-tilt", "60"];
 		const recorded = {
-			params: { grasp: "contact_graspnet", place: "anyplace", "grasp-max-tilt": "60", "max-turns": "0", task: "Lift" },
+			params: {
+				grasp: "contact_graspnet",
+				place: "anyplace",
+				"grasp-max-tilt": "60",
+				"max-turns": "0",
+				task: "Lift",
+			},
 			params_default: { grasp: "", place: "", "grasp-max-tilt": "", "max-turns": "0", task: "Lift" },
 		};
 		const [same] = rerun(robot, positional, flags, [], recorded);

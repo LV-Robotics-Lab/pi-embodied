@@ -289,7 +289,15 @@ function rerun(
 		type: "custom",
 		customType: "robot_result",
 		// The code budget as pi's code mode records it: for the same flags its string equals eval.sh's CODE_BUDGET_FLAGS.
-		data: { robot, terminated: true, success: true, env_error: false, planner_error: null, code_budget_flags: "@BUDGET@", ...data },
+		data: {
+			robot,
+			terminated: true,
+			success: true,
+			env_error: false,
+			planner_error: null,
+			code_budget_flags: "@BUDGET@",
+			...data,
+		},
 	});
 	writeFileSync(
 		pi,

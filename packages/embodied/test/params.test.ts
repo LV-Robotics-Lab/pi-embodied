@@ -71,7 +71,10 @@ for (const robot of ["libero", "robosuite", "metaworld", "genesis", "franka", "d
 			[p.params.grasp, p.params.place, p.params["grasp-max-tilt"]],
 			["contact_graspnet", "anyplace", "60"],
 		);
-		assert.deepEqual([p.params_default.grasp, p.params_default.place, p.params_default["grasp-max-tilt"]], ["", "", ""]);
+		assert.deepEqual(
+			[p.params_default.grasp, p.params_default.place, p.params_default["grasp-max-tilt"]],
+			["", "", ""],
+		);
 		assert.match(String(numberError("grasp-max-tilt", "abc")), /must be a number/);
 		assert.match(String(numberError("grasp-max-tilt", "95")), /at most 90/);
 		assert.equal(numberError("grasp-max-tilt", "30"), undefined);

@@ -217,7 +217,10 @@ test("memory without a corpus is a fail-closed start: no tools, one env_error re
 	await f.emit("session_start");
 	assert.deepEqual(f.active(), []);
 	assert.equal(f.stderr.length, 1);
-	assert.match(f.stderr[0], /^\[toy\] unavailable: local memory corpus not found at .*memory\/toy; run exploration first/);
+	assert.match(
+		f.stderr[0],
+		/^\[toy\] unavailable: local memory corpus not found at .*memory\/toy; run exploration first/,
+	);
 	assert.equal(process.exitCode, 1);
 	await f.emit("session_shutdown");
 	const results = f.entries.filter((e) => e.type === RESULT_ENTRY);

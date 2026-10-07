@@ -88,13 +88,19 @@ test("a real robot without authorisation: every motion and reset is refused with
 			const { s, c, close } = await serve(robot, url);
 			try {
 				assert.match(s.instructions, /real robot.*operator's authorisation/);
-				const motions = s.entries().filter((e) => e.mutating).map((e) => e.name);
+				const motions = s
+					.entries()
+					.filter((e) => e.mutating)
+					.map((e) => e.name);
 				assert.ok(motions.includes("move_delta") && motions.includes("open_gripper"), motions.join(","));
 				for (const name of ["move_delta", "open_gripper", "reset"]) {
 					const r = await c.callTool(name, name === "move_delta" ? { delta_xyz: [0.001, 0, 0] } : {});
 					assert.equal(r.isError, true, `${robot}: ${name} refused`);
 					const why = textOf(r);
-					assert.match(why, new RegExp(`^${name} moves a real robot \\(${robot}\\) and the operator has not authorised it`));
+					assert.match(
+						why,
+						new RegExp(`^${name} moves a real robot \\(${robot}\\) and the operator has not authorised it`),
+					);
 					assert.match(why, /PI_EMBODIED_MOTION_CONFIRMED=1/, "names the session channel");
 					assert.match(why, /--confirm-file/, "names the ticket channel");
 					assert.match(why, /outside the model/);
@@ -166,7 +172,10 @@ test("--confirm-file: a ticket naming the tool admits exactly one call of it and
 			assert.equal(r.isError, true);
 			assert.match(textOf(r), /ticket for "open_gripper", not move_delta/);
 			assert.ok(existsSync(file), "the other tool's ticket is left for its call");
-			assert.equal(JSON.parse(textOf(await c.callTool("robot_status", {}))).operator_gate.ticket.tool, "open_gripper");
+			assert.equal(
+				JSON.parse(textOf(await c.callTool("robot_status", {}))).operator_gate.ticket.tool,
+				"open_gripper",
+			);
 			// Its own call consumes it.
 			r = await c.callTool("open_gripper", {});
 			assert.equal(r.isError, undefined, textOf(r));
@@ -265,7 +274,8 @@ test("a simulator is not gated: motions run with neither channel; --confirm-file
 test("OperatorGate alone: describe/warning/status; a ticket that cannot be removed authorises nothing; every REAL_ROBOT is gated", () => {
 	// The documented `--config confirm_file=~/.pi/agent/confirm-ur5e` reaches the server with a literal tilde.
 	assert.equal(
-		new OperatorGate({ robot: "ur5e", real: true, sessionConfirmed: false, confirmFile: "~/.pi/agent/confirm-ur5e" }).confirmFile,
+		new OperatorGate({ robot: "ur5e", real: true, sessionConfirmed: false, confirmFile: "~/.pi/agent/confirm-ur5e" })
+			.confirmFile,
 		join(homedir(), ".pi/agent/confirm-ur5e"),
 	);
 	assert.equal(expandHome("~"), homedir());
@@ -282,7 +292,12 @@ test("OperatorGate alone: describe/warning/status; a ticket that cannot be remov
 	for (const robot of REAL_ROBOTS)
 		assert.equal(new OperatorGate({ robot, real: true, sessionConfirmed: false }).gated, true, robot);
 	// A confirm file under the temp dir is where a sandboxed model may write: warned about.
-	const inTmp = new OperatorGate({ robot: "ur5e", real: true, sessionConfirmed: false, confirmFile: join(tmpdir(), "x") });
+	const inTmp = new OperatorGate({
+		robot: "ur5e",
+		real: true,
+		sessionConfirmed: false,
+		confirmFile: join(tmpdir(), "x"),
+	});
 	assert.match(inTmp.warning() ?? "", /under the temp dir/);
 	// A ticket in a directory the server cannot write to cannot be consumed: refused, and the file stays.
 	const dir = ticketDir();

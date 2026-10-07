@@ -75,7 +75,8 @@ export class OperatorGate {
 
 	/** One line for the server's log at start. */
 	describe(): string {
-		if (!this.real) return `${this.robot} is a simulator: motions are not gated by the server (the host's approval applies)`;
+		if (!this.real)
+			return `${this.robot} is a simulator: motions are not gated by the server (the host's approval applies)`;
 		if (this.sessionConfirmed)
 			return `${this.robot} is a real robot and ${CONFIRMED_ENV} is set: every motion of this session is authorised by the operator`;
 		if (this.confirmFile)
@@ -155,7 +156,12 @@ export class OperatorGate {
 			gated: this.gated,
 			session_confirmed: this.sessionConfirmed,
 			confirm_file: this.confirmFile ?? null,
-			ticket: ticket === undefined ? null : "error" in ticket ? ticket : { tool: ticket.tool, age_s: Math.round(ticket.ageMs / 1000) },
+			ticket:
+				ticket === undefined
+					? null
+					: "error" in ticket
+						? ticket
+						: { tool: ticket.tool, age_s: Math.round(ticket.ageMs / 1000) },
 		};
 	}
 }

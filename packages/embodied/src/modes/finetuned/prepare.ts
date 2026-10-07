@@ -112,7 +112,9 @@ export function convertRun(
 	if (missing.length)
 		warnings.push(`${run}: dropped steps ${missing.join(", ")} (recorded without both camera views)`);
 	if (turns.length)
-		warnings.push(`${run}: dropped RT_* steps ${turns.join(", ")} (${version} has no turns; --prompt v5-libero keeps them)`);
+		warnings.push(
+			`${run}: dropped RT_* steps ${turns.join(", ")} (${version} has no turns; --prompt v5-libero keeps them)`,
+		);
 	if (repeats)
 		warnings.push(
 			`${run}: ${repeats} steps executed their unit n>1 times from one frame; each stays one sample (one history entry)`,

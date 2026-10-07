@@ -432,10 +432,12 @@ export class RobotSession implements ToolProvider {
 				);
 			// The cameras active on this robot (ManiSkill's widowxai has no wrist), by name or by the facade's camera_name.
 			// Only a successful discovery is kept: a cancelled or failed one is retried by the next observe.
-			this.cameras ??= render.active((method, kwargs) => this.rpcCall(method, kwargs, signal)).catch((e: unknown) => {
-				this.cameras = undefined;
-				throw e;
-			});
+			this.cameras ??= render
+				.active((method, kwargs) => this.rpcCall(method, kwargs, signal))
+				.catch((e: unknown) => {
+					this.cameras = undefined;
+					throw e;
+				});
 			const active = await this.cameras;
 			const names =
 				camera === undefined ? active : active.filter((k) => k === camera || render.cameras[k] === camera);

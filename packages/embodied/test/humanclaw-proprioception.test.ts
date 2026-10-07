@@ -33,7 +33,12 @@ for (const enabled of [false, true]) {
 			return undefined;
 		});
 		t.after(() => env.close());
-		const s = stubPi({ "env-url": env.url, units: "both", "humanclaw-mode": "pi", "humanclaw-proprioception": enabled });
+		const s = stubPi({
+			"env-url": env.url,
+			units: "both",
+			"humanclaw-mode": "pi",
+			"humanclaw-proprioception": enabled,
+		});
 		humanclaw(s.pi);
 		await s.emit("session_start");
 		process.exitCode = undefined;

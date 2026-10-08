@@ -99,6 +99,14 @@ export const ROBOTS: Robot[] = [
 		task: "--task Lift --seed 0",
 	},
 	{
+		id: "genesis",
+		label: "Genesis (sim, Franka cube_pick)",
+		extension: "src/robots/genesis/index.ts",
+		needs: "NVIDIA GPU (a cu128 torch on RTX 50xx)",
+		modes: ["tools", "units"],
+		task: "--task cube_pick --seed 0",
+	},
+	{
 		id: "robocasa",
 		label: "RoboCasa365 (sim)",
 		extension: "src/robots/robocasa/index.ts",
@@ -135,6 +143,22 @@ export const ROBOTS: Robot[] = [
 		task: "--task stack_bowls --seed 0",
 	},
 	{
+		id: "behavior",
+		label: "BEHAVIOR-1K R1Pro (Isaac Sim 6.1, OmniGibson)",
+		extension: "src/robots/behavior/index.ts",
+		needs: "RTX GPU, Isaac Sim 6.1, a BEHAVIOR-1K checkout and its data (license key)",
+		modes: ["tools", "units"],
+		task: "--task turning_on_radio --seed 0",
+	},
+	{
+		id: "humanclaw",
+		label: "HumanCLAW (sim, humanoid in HSSD homes)",
+		extension: "src/robots/humanclaw/index.ts",
+		needs: "NVIDIA GPU, a Habitat-Sim build (nvcc), the gated HSSD datasets (HF_TOKEN)",
+		modes: ["tools"],
+		task: "--units=both --humanclaw-mode pi --episode one",
+	},
+	{
 		id: "franka",
 		label: "Franka (real, RLinf)",
 		extension: "src/robots/franka/index.ts",
@@ -167,6 +191,14 @@ export const ROBOTS: Robot[] = [
 		task: "--robot-config <yaml> --task banana_plate --operator=true",
 		finetuned: "--model finetuned/qwen3_5_2b_showharness_ft --ft-prompt v4-piper",
 		adapter: "qwen3_5_2b",
+	},
+	{
+		id: "ur5e",
+		label: "UR5e (real)",
+		extension: "src/robots/ur5e/index.ts",
+		needs: "UR5e with a Robotiq gripper, cameras, an operator at the e-stop",
+		modes: ["tools", "units"],
+		task: "--arm <controller serial> --robot-config <yaml> --task <task> --operator=true",
 	},
 ];
 

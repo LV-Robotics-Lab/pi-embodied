@@ -108,6 +108,12 @@ export const SPECS: Record<string, RobotCheckSpec> = {
 		pyEnv: { MUJOCO_GL: "egl" },
 		gpu: true,
 	},
+	genesis: {
+		python: PY("genesis"),
+		imports: [ENV_SERVER("genesis"), "genesis"],
+		endpoints: [{ service: "sam3", why: "SAM3 (segment)", toolsOnly: true }],
+		gpu: true,
+	},
 	robosuite: {
 		python: PY("robosuite"),
 		imports: [ENV_SERVER("robosuite"), "robosuite", "mujoco"],
@@ -155,6 +161,22 @@ export const SPECS: Record<string, RobotCheckSpec> = {
 		pyEnv: { OMNI_KIT_ACCEPT_EULA: "YES" },
 		gpu: true,
 	},
+	behavior: {
+		python: PY("behavior"),
+		imports: [ENV_SERVER("behavior")],
+		find: ["omnigibson", "isaacsim", "curobo"],
+		paths: [
+			{ env: "OMNIGIBSON_DATA_PATH", kind: "dir", required: false, why: "OmniGibson data (else the install's)" },
+		],
+		pyEnv: { OMNI_KIT_ACCEPT_EULA: "YES" },
+		gpu: true,
+	},
+	humanclaw: {
+		python: PY("humanclaw", "HUMANCLAW_PYTHON"),
+		imports: [ENV_SERVER("humanclaw")],
+		find: ["humanclaw_bench", "habitat_sim"],
+		gpu: true,
+	},
 	robocasa: {
 		python: PY("robocasa", "ROBOCASA_PYTHON"),
 		imports: [ENV_SERVER("robocasa"), "robocasa", "robosuite"],
@@ -191,6 +213,12 @@ export const SPECS: Record<string, RobotCheckSpec> = {
 	piper: {
 		python: PY("piper"),
 		imports: [ENV_SERVER("piper")],
+		endpoints: [{ flag: "env-url", why: "running env server", calls: ENV_CALLS }],
+		gpu: false,
+	},
+	ur5e: {
+		python: PY("ur5e"),
+		imports: [ENV_SERVER("ur5e")],
 		endpoints: [{ flag: "env-url", why: "running env server", calls: ENV_CALLS }],
 		gpu: false,
 	},

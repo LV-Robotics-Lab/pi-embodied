@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { type AddressInfo, createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -166,7 +166,7 @@ test("the env check asks an env server by its served method name, env.get_env_me
 	await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
 	const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 	try {
-		for (const robot of ["franka", "dual_franka", "piper"])
+		for (const robot of ["franka", "dual_franka", "piper", "ur5e"])
 			assert.deepEqual(SPECS[robot].endpoints?.find((e) => e.flag === "env-url")?.calls, ENV_CALLS);
 		const ok = await probeEndpoint(url, 3000, ENV_CALLS);
 		assert.equal(ok.ok, true, ok.detail);
@@ -294,6 +294,16 @@ test(
 		assert.equal(missing.find((r) => r.check === "services.vla")?.status, "FAIL");
 	},
 );
+
+test("every robot extension has a preflight spec (setup.sh prints check.ts <robot>, /robot-check runs it)", () => {
+	const robots = readdirSync(new URL("../src/robots/", import.meta.url), { withFileTypes: true })
+		.filter((d) => d.isDirectory())
+		.map((d) => d.name);
+	assert.deepEqual(
+		robots.filter((r) => !SPECS[r]),
+		[],
+	);
+});
 
 test("runChecks refuses an unknown robot", async () => {
 	const rows = await runChecks("nosuchrobot", {});

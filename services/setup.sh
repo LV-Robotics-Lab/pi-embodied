@@ -29,6 +29,7 @@
 #   franka-polymetis [franka-polymetis] py3.10 (real arm on a Polymetis NUC)
 #   dual-franka     [franka,sam3] py3.11 (two real arms)
 #   piper           [piper] system python with --system-site-packages (source ROS Noetic first)
+#   ur5e            [ur5e] py3.11 (real arm: ur_rtde, RealSense / webcam / RTSP cameras)
 #   finetuned       Show-Harness adapter + base model (finetuned/download.py; FT_ADAPTER, default qwen3_5_2b_sim)
 #   llamafactory    LLaMA-Factory training venv (finetuned/setup_llamafactory.sh)
 #   flywheel        [flywheel] py3.11, lerobot 0.4 (LeRobot v3.0) for /flywheel-export; its own venv: pass
@@ -87,6 +88,7 @@ flywheel) extra=flywheel py=3.11 ;;
 franka | dual-franka) extra=franka,sam3 py=3.11 ;;
 franka-polymetis) extra=franka-polymetis py=3.10 ;;
 piper) extra=piper py=system ;;
+ur5e) extra=ur5e py=3.11 ;;
 robolab | robodojo | behavior | finetuned | llamafactory | humanclaw) extra="" py="" ;;
 *) die "unknown target '$target' (see --help)" ;;
 esac
@@ -212,7 +214,6 @@ humanclaw)
 	root=${HUMANCLAW_ROOT:-$HOME/HumanCLAW}
 	run bash "$SERVICES/pi_embodied_services/robots/humanclaw/install.sh" "$venv" "$root" ${HSSD_ROOT:-}
 	export_env HUMANCLAW_PYTHON "$venv/bin/python"
-	export_env PI_EMBODIED_PYTHON "$venv/bin/python"
 	;;
 robolab)
 	root=${ROBOLAB_ROOT:-$HOME/RoboLab}

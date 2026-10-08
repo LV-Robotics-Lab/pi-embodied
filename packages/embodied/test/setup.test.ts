@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import setup, { COMMAND, NOTICE, NOTICE_ENTRY, PKG } from "../src/infra/setup/index.ts";
+import { SPECS } from "../src/infra/check.ts";
+import setup, { COMMAND, NOTICE, NOTICE_ENTRY, PKG, ROBOTS } from "../src/infra/setup/index.ts";
 
 type Handler = (event: unknown, ctx: unknown) => unknown;
 type Answers = { select?: string[]; input?: (string | undefined)[]; confirm?: boolean[] };
@@ -221,6 +222,38 @@ test("setup.sh parses and its dry run prints the plan without running it", async
 	assert.match(out, /export PI05_CHECKPOINT_PATH=/);
 	assert.throws(() => readFileSync(join(home, "venv/pi-embodied.env")));
 	assert.throws(() => execFileSync("bash", [script, "nope", "--dry-run"], { stdio: "pipe" }));
+});
+
+test("every robot has a setup.sh target, a check.ts spec and a /embodied-setup entry", () => {
+	const script = join(PKG, "../../services/setup.sh");
+	const home = mkdtempSync(join(tmpdir(), "pi-embodied-home-"));
+	const robots = readdirSync(join(PKG, "src/robots"), { withFileTypes: true })
+		.filter((d) => d.isDirectory())
+		.map((d) => d.name);
+	// piper's venv is the system python3 with its site packages: its dry run needs one on PATH.
+	const python3 = spawnSync("python3", ["-V"]).status === 0;
+	for (const robot of robots) {
+		const target = robot.replace(/_/g, "-");
+		if (target === "piper" && !python3) continue;
+		const out = execFileSync("bash", [script, target, "--dry-run", "--venv", join(home, target)], {
+			env: { ...process.env, HOME: home, PI_EMBODIED_WEIGHTS: join(home, "w") },
+			encoding: "utf8",
+		});
+		assert.equal(out.match(/^export PI_EMBODIED_PYTHON=/gm)?.length, 1, `${target}: one PI_EMBODIED_PYTHON`);
+		const checked = /preflight: .*check\.ts (\S+)$/m.exec(out)?.[1];
+		assert.equal(checked, robot, `${target}: preflight robot`);
+		assert.ok(SPECS[robot], `${robot}: check.ts spec`);
+		assert.ok(
+			ROBOTS.some((r) => r.extension === `src/robots/${robot}/index.ts`),
+			`${robot}: offered by /embodied-setup`,
+		);
+	}
+	// /embodied-setup's ids are setup.sh targets.
+	for (const r of ROBOTS.filter((r) => python3 || r.id !== "piper"))
+		execFileSync("bash", [script, r.id, "--dry-run", "--venv", join(home, r.id)], {
+			env: { ...process.env, HOME: home, PI_EMBODIED_WEIGHTS: join(home, "w") },
+			stdio: "pipe",
+		});
 });
 
 test("setup.sh flywheel installs the LeRobot v3.0 export venv and names it for --flywheel-python", () => {

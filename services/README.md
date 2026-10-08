@@ -130,7 +130,7 @@ uv pip install -e "services[molmo]"
 uv pip install -e "services[flywheel]"
 
 # IK / reach preview (components/ik_server.py, PyRoKi on the CPU): its own venv; the env
-# servers reach it over RPC (pi: --ik http://127.0.0.1:18400). [ik-curobo] adds the GPU backend.
+# servers reach it over RPC (pi: --ik, with the deployment's services.ik). [ik-curobo] adds the GPU backend.
 uv venv services/.venv-ik --python 3.12 && source services/.venv-ik/bin/activate
 uv pip install -e "services[ik]"
 python -m pi_embodied_services.components.ik_server --port 18400   # --backend curobo (GPU)
@@ -153,7 +153,7 @@ git clone https://github.com/XPolicyLab/XPolicyLab.git ~/xpolicy/XPolicyLab && g
 # The policy server reads its benchmark's env_cfg (<checkout>/../env_cfg, e.g. RoboTwin's): leave it as the
 # benchmark ships it. The bridge checks dims against components/xpolicy_env_cfg, XPolicyLab's own robot table.
 uv venv services/.venv-xpolicy --python 3.11 && source services/.venv-xpolicy/bin/activate
-uv pip install -e "services[xpolicy]"       # pi: --xpolicy-python services/.venv-xpolicy/bin/python --xpolicylab ~/xpolicy/XPolicyLab
+uv pip install -e "services[xpolicy]"       # pi: --xpolicylab ~/xpolicy/XPolicyLab, python.xpolicy = this venv
 # The policy server, per its policy/<name>/README (install.sh, download_checkpoint.sh), e.g. Evo-1 on
 # RoboTwin with the RoboTwin550 weights (sm_120: install the cu128 torch 2.7.1 instead of its 2.5.1 pin).
 # flash-attn is required: without it InternVL3 falls back to eager attention and Evo-1's actions are
@@ -163,7 +163,7 @@ cd ~/xpolicy/XPolicyLab/policy/Evo_1 && bash setup_eval_policy_server.sh RoboTwi
   Evo1_RoboTwin2_datascale aloha_agilex joint 0 <gpu> <env> 19101 127.0.0.1   # deploy.yml: dataset_key_suffix: _rand
 # then: pi -e packages/embodied/src/robots/robotwin --xpolicy ws://127.0.0.1:19101 --task-config demo_randomized ...
 
-# GraspNet-1Billion grasp detectors (components/graspnet1b_server.py, pi: --graspnet1b URL):
+# GraspNet-1Billion grasp detectors (components/graspnet1b_server.py, pi: --grasp graspnet1b and services.graspnet1b):
 # graspnet-baseline (--model baseline, checkpoint-rs.tar / checkpoint-kn.tar) or GSNet (--model
 # gsnet). setup.sh graspnet1b compiles their pointnet2 / knn CUDA ops and MinkowskiEngine against
 # the venv's torch (CUDA_HOME = a matching nvcc; libopenblas-dev), see components/graspnet1b_install.sh.
@@ -263,7 +263,7 @@ MOLMO_CHECKPOINT_PATH=/ckpt/Molmo2-8B PYTHONPATH=services \
 python -m pi_embodied_services.components.molmo_server --port 18400
 # On a GPU shared with the Pi0.5 VLA and SAM3 add `--offload-blocks 20` (the last 20 text
 # layers stay in host memory, ~7.7 GB less GPU); without it SAM3 runs out of memory and
-# every Flash anchor fails. Flash's `--molmo off` replays a recorded plan exactly instead.
+# every Flash anchor fails. Flash's `--flash-reanchor off` replays a recorded plan exactly instead.
 # RoboTwin's LingBot serve.sh also defaults to 18400: give one of them another port.
 
 # RoboCasa env (one per episode) and RLDX-1 VLA (shared, per-session state)

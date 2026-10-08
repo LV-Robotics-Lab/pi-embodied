@@ -2,9 +2,9 @@
 # Start (default) or stop the shared Pi0.5 VLA and SAM3 servers used by the LIBERO robot.
 #   [PI_EMBODIED_SERVICES=...] PI_EMBODIED_PYTHON=... PI05_CHECKPOINT_PATH=... SAM3_CHECKPOINT_PATH=... serve.sh [start|stop]
 # The third-party VLAs start too when their venv's python is set (each has its own venv, see services/README):
-#   OPENVLA_PYTHON=... [OPENVLA_CHECKPOINT_PATH=... OPENVLA_PORT=18600] mounts pi --openvla http://127.0.0.1:18600
-#   OPENVLA_OFT_PYTHON=... [OPENVLA_OFT_CHECKPOINT_PATH=... OPENVLA_OFT_PORT=18700]      --openvla-oft ...:18700
-#   GR00T_PYTHON=... [GR00T_CHECKPOINT_PATH=... GR00T_PORT=18800]                        --gr00t ...:18800
+#   OPENVLA_PYTHON=... [OPENVLA_CHECKPOINT_PATH=... OPENVLA_PORT=18600]   pi --vla-adapter openvla (services.openvla)
+#   OPENVLA_OFT_PYTHON=... [OPENVLA_OFT_CHECKPOINT_PATH=... OPENVLA_OFT_PORT=18700]   --vla-adapter openvla-oft
+#   GR00T_PYTHON=... [GR00T_CHECKPOINT_PATH=... GR00T_PORT=18800]   --vla-adapter gr00t
 # PI05=off leaves Pi0.5 out (an adapter-only run on a GPU that cannot hold both).
 # start records each server it launches in $LOG_DIR/<module>-<port>.pid, and stop stops only those:
 # a port that already answers is left alone, so servers someone else started keep running.

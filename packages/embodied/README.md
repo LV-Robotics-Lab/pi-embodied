@@ -45,8 +45,9 @@ declares, so they cannot add a robot):
 
 Settings cannot carry extension flags, so the task and mode stay on the command line, e.g.
 `cd <experiment dir> && source services/.venv-libero-pro/pi-embodied.env && pi --suite libero_10 --task 0 --seed 0 --units=true --dashboard=true`.
-Run the eval scripts outside that directory: they load the robot with `-e`, and loading it twice
-fails on duplicate tools.
+The first pi there asks to trust the project; `pi -p` cannot ask, so it runs without the robot unless
+trust was saved or `-a` (`--approve`) is given. Run the eval scripts outside that directory: they load
+the robot with `-e`, and loading it twice fails on duplicate tools.
 
 The package is publishable to npm on its own (`keywords: ["pi-package"]`, host packages as `*` peers,
 `files` = src, skills, README, `publishConfig.access: public`): `cd packages/embodied && npm publish`.
@@ -228,7 +229,7 @@ Shared modules:
   actions (XPolicyLab's deploy loop), until the episode ends. The protocol (handshake, request ids
   reused across a reconnect, `ServerRestartedError`, msgpack-numpy) stays in a Python bridge
   (services `components/xpolicy_bridge.py`, holding XPolicyLab's own `WsModelClient`), started with
-  `--xpolicy-python` and `--xpolicylab <checkout>` or attached with `--xpolicy-bridge`;
+  `python.xpolicy` of the deployment and `--xpolicylab <checkout>` or attached with `--xpolicy-bridge`;
   `--xpolicy-encode-images` sends JPEGs, `--xpolicy-timeout` / `--xpolicy-connect-timeout` are
   XPolicyLab's request and cold-start budgets. Dimensions come from the services' env_cfg
   (`components/xpolicy_env_cfg`: XPolicyLab's own robot table; `aloha_agilex`, `piper`, `franka`
